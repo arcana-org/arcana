@@ -30,11 +30,15 @@
  * tests' documents may name a host's network card (vtnet0) on a host
  * whose cards are called otherwise.
  *
- * And sysctl(3)'s reads of the integers FAKESYSCTL names, as
- * "net.add_addr_allfibs=0" (separated by spaces): the value given, not
- * the host's, which may be set otherwise than the kernel's default the
- * tests' plans are made for.  The format, description and everything
- * else are the kernel's; a write goes to the kernel.
+ * And sysctl(3)'s reads of the values FAKESYSCTL names, as
+ * "net.add_addr_allfibs=0 kern.hostname=lab" (separated by spaces): the
+ * value given, not the host's, which may be set otherwise than the
+ * kernel's default the tests' plans are made for, or name the machine
+ * the tests run on.  A number is an int, or a long where the caller's
+ * room or the number asks it (hw.physmem); anything else a string.
+ * gethostname(3) and uname(3)'s node name answer kern.hostname's.  The
+ * format, description and everything else are the kernel's; a write
+ * goes to the kernel.
  */
 
 #include <sys/param.h>
@@ -49,6 +53,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -572,12 +577,12 @@ typedef int	sysctl_fn(const int *, u_int, void *, size_t *, const void *,
 typedef int	sysctlbyname_fn(const char *, void *, size_t *, const void *,
 		    size_t);
 
-/* The integer FAKESYSCTL gives name; false if it gives none. */
+/* The value FAKESYSCTL gives name, as its text; false if none. */
 static bool
-fake_value(const char *name, int *val)
+fake_value(const char *name, char *buf, size_t buflen)
 {
 	const char	*p;
-	size_t		 n, len;
+	size_t		 n, len, vl;
 
 	if (name == NULL || (p = getenv("FAKESYSCTL")) == NULL)
 		return (false);
@@ -585,32 +590,70 @@ fake_value(const char *name, int *val)
 	for (; *(p += strspn(p, " ")) != '\0'; p += len) {
 		len = strcspn(p, " ");
 		if (len > n && strncmp(p, name, n) == 0 && p[n] == '=') {
-			*val = (int)strtol(p + n + 1, NULL, 10);
+			vl = len - n - 1;
+			if (vl >= buflen)
+				vl = buflen - 1;
+			memcpy(buf, p + n + 1, vl);
+			buf[vl] = '\0';
 			return (true);
 		}
 	}
 	return (false);
 }
 
-/* A read of an integer answered with v, as the kernel answers it. */
+/*
+ * A read answered with text v, as the kernel answers it: a number as an
+ * int, or a long where the caller's room is a long's or the number does
+ * not fit an int; anything else a string with its NUL.
+ */
 static int
-fake_read(int v, void *oldp, size_t *oldlenp)
+fake_read(const char *v, void *oldp, size_t *oldlenp)
 {
+	char		*end;
+	long		 l;
+	int		 i;
+	size_t		 need;
 
+	l = strtol(v, &end, 10);
+	if (*v == '\0' || *end != '\0') {
+		need = strlen(v) + 1;
+		if (oldp != NULL) {
+			if (*oldlenp < need) {
+				errno = ENOMEM;
+				return (-1);
+			}
+			memcpy(oldp, v, need);
+		}
+		*oldlenp = need;
+		return (0);
+	}
+	if ((oldp != NULL && *oldlenp >= sizeof(l)) || l > INT_MAX ||
+	    l < INT_MIN) {
+		if (oldp != NULL) {
+			if (*oldlenp < sizeof(l)) {
+				errno = ENOMEM;
+				return (-1);
+			}
+			memcpy(oldp, &l, sizeof(l));
+		}
+		*oldlenp = sizeof(l);
+		return (0);
+	}
+	i = (int)l;
 	if (oldp != NULL) {
-		if (*oldlenp < sizeof(v)) {
+		if (*oldlenp < sizeof(i)) {
 			errno = ENOMEM;
 			return (-1);
 		}
-		memcpy(oldp, &v, sizeof(v));
+		memcpy(oldp, &i, sizeof(i));
 	}
-	*oldlenp = sizeof(v);
+	*oldlenp = sizeof(i);
 	return (0);
 }
 
 /* The name FAKESYSCTL gives a value whose numbers are mib's. */
 static bool
-fake_mib(const int *mib, u_int miblen, int *val)
+fake_mib(const int *mib, u_int miblen, char *val, size_t vallen)
 {
 	const char	*list, *p, *eq;
 	char		 name[128];
@@ -629,7 +672,7 @@ fake_mib(const int *mib, u_int miblen, int *val)
 		n = nitems(oid);
 		if (sysctlnametomib(name, oid, &n) == 0 && n == miblen &&
 		    memcmp(oid, mib, n * sizeof(*oid)) == 0)
-			return (fake_value(name, val));
+			return (fake_value(name, val, vallen));
 	}
 	return (false);
 }
@@ -639,12 +682,12 @@ sysctl(const int *mib, u_int miblen, void *oldp, size_t *oldlenp,
     const void *newp, size_t newlen)
 {
 	static sysctl_fn	*realf;
-	int			 v;
+	char			 v[256];
 
 	/* Not the kernel's own nodes (CTL_SYSCTL): sysctlnametomib(3)
 	 * asks by them. */
 	if (newp == NULL && oldlenp != NULL && miblen > 0 &&
-	    mib[0] != CTL_SYSCTL && fake_mib(mib, miblen, &v))
+	    mib[0] != CTL_SYSCTL && fake_mib(mib, miblen, v, sizeof(v)))
 		return (fake_read(v, oldp, oldlenp));
 	if (realf == NULL && (realf = (sysctl_fn *)dlsym(RTLD_NEXT,
 	    "sysctl")) == NULL) {
@@ -659,9 +702,9 @@ sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     const void *newp, size_t newlen)
 {
 	static sysctlbyname_fn	*realf;
-	int			 v;
+	char			 v[256];
 
-	if (newp == NULL && oldlenp != NULL && fake_value(name, &v))
+	if (newp == NULL && oldlenp != NULL && fake_value(name, v, sizeof(v)))
 		return (fake_read(v, oldp, oldlenp));
 	if (realf == NULL && (realf = (sysctlbyname_fn *)dlsym(RTLD_NEXT,
 	    "sysctlbyname")) == NULL) {
@@ -669,4 +712,52 @@ sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 		return (-1);
 	}
 	return (realf(name, oldp, oldlenp, newp, newlen));
+}
+
+/* The host's name, or the one FAKESYSCTL gives kern.hostname. */
+int
+gethostname(char *name, size_t namelen)
+{
+	int		(*realf)(char *, size_t);
+	char		 v[256];
+	size_t		 n;
+
+	if (fake_value("kern.hostname", v, sizeof(v))) {
+		n = strlen(v);
+		if (n >= namelen) {
+			errno = ENAMETOOLONG;
+			return (-1);
+		}
+		memcpy(name, v, n + 1);
+		return (0);
+	}
+	if ((realf = (int (*)(char *, size_t))dlsym(RTLD_NEXT,
+	    "gethostname")) == NULL) {
+		errno = ENOSYS;
+		return (-1);
+	}
+	return (realf(name, namelen));
+}
+
+int	__xuname(int, void *);	/* libc's, behind uname(3) */
+
+/* uname(3)'s, its node name kern.hostname's where FAKESYSCTL gives it.
+ * libc's uname() is __xuname() with the struct's field length. */
+int
+__xuname(int namesize, void *namebuf)
+{
+	int		(*realf)(int, void *);
+	char		 v[256];
+	int		 rc;
+
+	if ((realf = (int (*)(int, void *))dlsym(RTLD_NEXT, "__xuname")) ==
+	    NULL) {
+		errno = ENOSYS;
+		return (-1);
+	}
+	if ((rc = realf(namesize, namebuf)) == 0 &&
+	    fake_value("kern.hostname", v, sizeof(v)) && namesize > 0)
+		/* Each field namesize bytes, the node name the second. */
+		(void)strlcpy((char *)namebuf + namesize, v, (size_t)namesize);
+	return (rc);
 }

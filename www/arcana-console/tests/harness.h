@@ -36,7 +36,10 @@
 /* What the agent reads of the kernel as the kernel's defaults have it,
  * on a host set otherwise (libfakejail's sysctl): an address's route
  * in its own table alone, as the SD-WAN plans want. */
-#define	FAKE_SYSCTL	"net.add_addr_allfibs=0"
+/* The kernel's defaults the plans are made for, and a machine of no
+ * one's: the pictures in the book say lab, not where the tests ran. */
+#define	FAKE_SYSCTL	"net.add_addr_allfibs=0 kern.hostname=lab " \
+			"hw.ncpu=4 hw.physmem=8589934592"
 
 struct resp {
 	int		 status;

@@ -13200,6 +13200,7 @@ part_jail_pkg_chflags(void)
 	wait_js("document.querySelector('form[data-form=confirm]') && "
 	    "document.querySelector('.modal').textContent.includes("
 	    "'Allow it on the running jail now')", 30);
+	shot("4k-chflags-ask");
 	ATF_CHECK(system("grep -q -- '^-j web upgrade' pkg.log") == 0);
 	ATF_CHECK(system("grep -q '^aria2-' pending") == 0);
 	click_when(".modal button.primary", 5);
