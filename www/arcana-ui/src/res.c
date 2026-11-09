@@ -123,7 +123,7 @@ res_yread(struct res *r, const char *sid, const char *path,
 }
 
 /* The same by a reader of the page's own (netread.c's), whose callback
- * gets what /api's reads gave. */
+ * gets what the console's reads of a host give. */
 void
 res_call(struct res *r, const char *sid, void (*read)(const char *,
     api_cb *, void *))

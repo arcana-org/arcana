@@ -7,7 +7,8 @@
 /*
  * Suricata's files between the page and a host, each a stream on the
  * connection the console shares with the host (as transfers.c carries
- * a snapshot):
+ * a snapshot), plain-HTTP resources beside /restconf (a pcap is no
+ * YANG data):
  *
  *	POST /api/servers/<id>/ids/pcap?instance=&file=&offset=&last=1:
  *	    the body, a capture or a part of one, sent to the host

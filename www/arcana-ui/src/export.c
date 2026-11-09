@@ -30,7 +30,7 @@
 
 struct kept {
 	char		 sid[9];
-	char		 path[300];	/* after /api/servers/<sid>/ */
+	char		 path[300];	/* below the host's entry */
 	int		 node, tab;
 	char		 jail[256];	/* the drawer's, or "" */
 	double		 t;
@@ -60,9 +60,7 @@ export_note(const char *url, int node, int tab, const ucl_object_t *o)
 
 	if (o == NULL)
 		return;
-	if (strncmp(url, "/api/servers/", 13) == 0)
-		p = url + 13;
-	else if (strncmp(url, "/restconf/", 10) == 0 && (p = strstr(url,
+	if (strncmp(url, "/restconf/", 10) == 0 && (p = strstr(url,
 	    "/host=")) != NULL)
 		p += 6;
 	else
@@ -71,8 +69,7 @@ export_note(const char *url, int node, int tab, const ucl_object_t *o)
 		return;
 	/* A node of a module's by its own names: "services", "sshd/read". */
 	snprintf(path, sizeof(path), "%s", sl + 1);
-	if (url[1] == 'r')
-		for (char *s = path, *c; (c = strchr(s, ':')) != NULL &&
+	for (char *s = path, *c; (c = strchr(s, ':')) != NULL &&
 		    (strchr(s, '/') == NULL || c < strchr(s, '/'));) {
 			memmove(s, c + 1, strlen(c + 1) + 1);
 			if ((s = strchr(s, '/')) == NULL)

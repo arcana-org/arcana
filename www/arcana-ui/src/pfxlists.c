@@ -5,8 +5,8 @@
 
 /*
  * Prefix lists of the console's: named lists of IPv4 and IPv6
- * prefixes, kept once (GET /api/prefix-lists, PUT and DELETE
- * /api/prefix-lists/<name>) and used on any host: the Network
+ * prefixes, kept once (arcana-console's prefix-lists) and used on
+ * any host: the Network
  * section's Prefix lists tab makes them, and the forms that take
  * prefixes (an ipfw table's entries, a BIRD set, an SD-WAN zone or
  * list) pick one by name and take its prefixes in.

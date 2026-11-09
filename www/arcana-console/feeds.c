@@ -2063,39 +2063,6 @@ feed_json(struct http_request *req, const ucl_object_t *f,
 	return (o);
 }
 
-/* GET /api/feeds: the presets and the feeds, each with its state. */
-int
-api_feeds(struct http_request *req)
-{
-	ucl_object_t		*doc, *state, *out, *arr;
-	const ucl_object_t	*f;
-	ucl_object_iter_t	 it;
-	int			 fd;
-
-	if (req->method != HTTP_METHOD_GET)
-		return (reply_error(req, 405, "method", "GET"));
-	if (!guard(req, false))
-		return (WEB_OK);
-	fd = lock_take();
-	doc = doc_load(FEEDS_FILE, "feeds", UCL_ARRAY);
-	state = doc_load(FEEDS_STATE, NULL, UCL_OBJECT);
-	lock_give(fd);
-	out = ucl_object_typed_new(UCL_OBJECT);
-	put(out, "presets", presets_json());
-	arr = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((f = ucl_object_iterate(ucl_object_lookup(doc, "feeds"), &it,
-	    true)) != NULL)
-		ucl_array_append(arr, feed_json(req, f, ucl_object_lookup(state,
-		    str(f, "id")), false));
-	put(out, "feeds", arr);
-	put(out, "floor", I(FEED_FLOOR_H));
-	put(out, "max_entries", I(FEED_MAX));
-	ucl_object_unref(doc);
-	ucl_object_unref(state);
-	return (reply_json(req, 200, out));
-}
-
 /* A feed as it is to be kept, from body and what a preset says. */
 static ucl_object_t *
 feed_check(struct http_request *req, const char *id, const ucl_object_t *body,
@@ -2501,88 +2468,6 @@ feeds_yang_ask(struct http_request *req, const char *id, const char *verb,
 	return (0);
 }
 
-/*
- * GET /api/feeds/<id>: the feed whole, with what it dropped, its events
- * and its hosts; PUT keeps it (fetched at once when enabled), DELETE
- * takes it away (its tables given up); POST .../fetch fetches it now,
- * POST .../preview fetches it and asks each host's dry run.
- */
-int
-api_feed(struct http_request *req)
-{
-	ucl_object_t		*doc, *state, *body, *f, *out;
-	const ucl_object_t	*e;
-	const char		*p, *verb, *who;
-	char			 id[32], err[300];
-	size_t			 n;
-	int			 fd, rc;
-
-	p = req->path + strlen("/api/feeds/");
-	n = strcspn(p, "/");
-	if (n == 0 || n >= sizeof(id))
-		return (reply_error(req, 404, "not_found", "no such feed"));
-	snprintf(id, sizeof(id), "%.*s", (int)n, p);
-	verb = p[n] == '/' ? p + n + 1 : NULL;
-	if (!id_ok(id))
-		return (reply_error(req, 400, "invalid", "a feed is named by "
-		    "lower-case letters, digits and -, 24 at most"));
-	if (req->method == HTTP_METHOD_GET && verb == NULL) {
-		if (!guard(req, false))
-			return (WEB_OK);
-		fd = lock_take();
-		doc = doc_load(FEEDS_FILE, "feeds", UCL_ARRAY);
-		state = doc_load(FEEDS_STATE, NULL, UCL_OBJECT);
-		lock_give(fd);
-		if ((e = feed_by(doc, id)) == NULL) {
-			ucl_object_unref(doc);
-			ucl_object_unref(state);
-			return (reply_error(req, 404, "not_found", "no such "
-			    "feed"));
-		}
-		out = feed_json(req, e, ucl_object_lookup(state, id), true);
-		ucl_object_unref(doc);
-		ucl_object_unref(state);
-		return (reply_json(req, 200, out));
-	}
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_POST && verb != NULL &&
-	    (strcmp(verb, "fetch") == 0 || strcmp(verb, "preview") == 0)) {
-		if ((rc = feeds_yang_ask(req, id, verb, err, sizeof(err))) != 0)
-			return (reply_error(req, rc, rc == 404 ? "not_found" :
-			    "role", "%s", err));
-		out = ucl_object_typed_new(UCL_OBJECT);
-		put(out, "asked", S(verb));
-		return (reply_json(req, 202, out));
-	}
-	if (verb != NULL) {
-		if ((who = feed_denied(req, id)) != NULL)
-			return (reply_error(req, 403, "role", "host %s is not one "
-			    "you may change, and the feed's table is on it", who));
-		return (reply_error(req, 404, "not_found", "fetch or preview"));
-	}
-	if (req->method == HTTP_METHOD_DELETE) {
-		if ((rc = feed_remove(req, id, false, err, sizeof(err))) != 0)
-			return (reply_error(req, rc, "role", "%s", err));
-		out = ucl_object_typed_new(UCL_OBJECT);
-		put(out, "removed", B(true));
-		return (reply_json(req, 200, out));
-	}
-	if (req->method != HTTP_METHOD_PUT)
-		return (reply_error(req, 405, "method", "GET, PUT, DELETE or "
-		    "POST"));
-	body = read_json(req);
-	rc = feed_put(req, id, body, false, &f, err, sizeof(err));
-	if (body != NULL)
-		ucl_object_unref(body);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 403 ? "role" : rc == 400 ?
-		    "invalid" : "store", "%s", err));
-	out = ucl_object_typed_new(UCL_OBJECT);
-	put(out, "feed", f);
-	return (reply_json(req, 200, out));
-}
-
 /* ---- arcana-console's threat feeds (cyang.c) ------------------------- */
 
 /* Of o, the numbers named copied into to under their leaves' names. */
@@ -2782,7 +2667,7 @@ feeds_yang(struct http_request *req)
 	return (out);
 }
 
-/* A feed's entry y as /api's PUT body. */
+/* A feed's entry y as feed_put() takes it. */
 static ucl_object_t *
 feed_body(const ucl_object_t *y)
 {
@@ -2808,7 +2693,7 @@ feed_body(const ucl_object_t *y)
 
 /*
  * The feeds changed from was to now, through feed_put() and
- * feed_remove(), every protection of /api's: every change checked
+ * feed_remove(), every protection of theirs: every change checked
  * before any is kept.  0, or the HTTP status and why.
  */
 int
@@ -2840,8 +2725,8 @@ feeds_yang_set(struct http_request *req, const ucl_object_t *was,
 			id = str(f, "id");
 			o = cyang_entry(ucl_object_lookup(was, "feed"), "id", id);
 			b = feed_body(f);
-			/* By what /api is given: a default left out or said
-			 * is the same. */
+			/* By what feed_put() is given: a default left out or
+			 * said is the same. */
 			if (o != NULL) {
 				ucl_object_t	*a = feed_body(o);
 				bool		 same = cyang_same(a, b);

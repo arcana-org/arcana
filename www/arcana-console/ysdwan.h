@@ -52,16 +52,5 @@ int	ysdwan_monitors(cbl_conn *conn, bool has_after, uint64_t after,
  */
 int	ysdwan_pin(cbl_conn *conn, const char *json, char *err, size_t errlen,
 	    char *tag, size_t taglen);
-/*
- * ysdwan_held(): the same of what the console holds (watch.c):
- * arcana-sdwan's state as a push held it, arcana-probe's edges and the
- * probes' read with the samples held, of which those after after.
- */
-struct arcana_sdwan;
-struct arcana_probe;
-struct arcana_probe_probes_read_output;
-ucl_object_t *ysdwan_held(const struct arcana_sdwan *sd,
-	    const struct arcana_probe *pr,
-	    const struct arcana_probe_probes_read_output *rd, uint64_t after);
 
 #endif	/* !_ARCANA_YSDWAN_H_ */

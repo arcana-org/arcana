@@ -5,8 +5,8 @@
 
 /*
  * Security, IDS/IPS, Rules: the ruleset suricata-update keeps, rule by
- * rule.  The host searches it and sends a page at a time (GET
- * /api/servers/<id>/suricata/rules): Emerging Threats Open alone is some
+ * rule.  The host searches it and sends a page at a time
+ * (arcana-suricata's read-rules): Emerging Threats Open alone is some
  * 70000 rules.  Each is turned on, off, made a drop or put back as it
  * ships by sid, a suricata job (verb rule) whose choice the agent keeps
  * and gives suricata-update every time it runs, so that it holds across

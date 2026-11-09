@@ -191,7 +191,7 @@ names_version(const char *s, const char *component, const char *b)
 }
 
 /*
- * GET /api/update/notes?component=console|agent&from=VERSION[&to=VERSION]:
+ * GET update-notes?component=console|agent&from=VERSION[&to=VERSION]:
  * what is new in the repository since the version running, for the
  * update boxes and the What's new tab.  The host the console runs on
  * (reached by its local socket), else the first, reads the
@@ -367,7 +367,7 @@ api_update_notes(struct http_request *req)
 	return (reply_json(req, 200, out));
 }
 
-/* GET /api/update: the newest release against this one. */
+/* GET arcana-console's update: the newest release against this one. */
 int
 api_update(struct http_request *req)
 {

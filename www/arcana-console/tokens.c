@@ -65,29 +65,27 @@ put(ucl_object_t *o, const char *key, ucl_object_t *v)
 }
 
 /*
- * What a token may read: anything the API tells, but the console's
- * own settings, sign-in, push and the enrolment tokens that let a host
- * join.  A read is what guard() is told is not a change.
+ * What a token may read: anything RESTCONF tells, but the console's
+ * own settings, the security keys, push and the enrolment tokens that
+ * let a host join; never sign-in.  A read is what guard() is told is
+ * not a change.
  */
 bool
 token_readable(const char *path)
 {
 
-	/* arcana-console's settings, enrolment and push as /api's. */
 	if (strncmp(path, CYANG_DATA "settings", sizeof(CYANG_DATA) + 7) ==
 	    0 || strncmp(path, CYANG_DATA "enrolment", sizeof(CYANG_DATA) +
 	    8) == 0 || strncmp(path, CYANG_DATA "push", sizeof(CYANG_DATA) +
 	    3) == 0 || strncmp(path, CYANG_DATA "credentials",
 	    sizeof(CYANG_DATA) + 10) == 0)
 		return (false);
-	/* The modules described for forms too (ymodule.c). */
-	if (strcmp(path, "/restconf") == 0 || strncmp(path, "/restconf/",
-	    10) == 0 || strncmp(path, "/yang/", 6) == 0)
-		return (true);
-	return (strncmp(path, "/api/", 5) == 0 && strncmp(path,
-	    "/api/settings", 13) != 0 && strncmp(path, "/api/auth", 9) != 0 &&
-	    strncmp(path, "/api/push", 9) != 0 && strncmp(path, "/api/enrol",
-	    10) != 0);
+	/* The modules described for forms too (ymodule.c); of /api,
+	 * the socket's reads and an IDS's pcap files. */
+	return (strcmp(path, "/restconf") == 0 || strncmp(path, "/restconf/",
+	    10) == 0 || strncmp(path, "/yang/", 6) == 0 || strcmp(path,
+	    "/api/stream") == 0 || (strncmp(path, "/api/servers/", 13) ==
+	    0 && strstr(path, "/ids/pcap") != NULL));
 }
 
 /* What a write token may change: what it may read, but the tokens and
@@ -97,10 +95,7 @@ token_writable(const char *path)
 {
 
 	/* Nor who is who: a token must not make itself an owner. */
-	return (token_readable(path) && strncmp(path, "/api/tokens", 11) !=
-	    0 && strncmp(path, "/api/ca", 7) != 0 && strncmp(path,
-	    "/api/users", 10) != 0 && strncmp(path, "/api/roles", 10) != 0 &&
-	    strncmp(path, "/api/groups", 11) != 0 && strncmp(path, CYANG_DATA
+	return (token_readable(path) && strncmp(path, CYANG_DATA
 	    "tokens", sizeof(CYANG_DATA) + 5) != 0 && strncmp(path, CYANG_DATA
 	    "users", sizeof(CYANG_DATA) + 4) != 0 && strncmp(path, CYANG_DATA
 	    "roles", sizeof(CYANG_DATA) + 4) != 0 && strncmp(path, CYANG_DATA
@@ -377,73 +372,6 @@ token_drop(const char *id, char *why, size_t len)
 		return (500);
 	}
 	return (0);
-}
-
-/*
- * GET /api/tokens: the tokens, without what opens them.
- * POST /api/tokens {"name", "kind": "read"|"write"}: a new one, a read
- * one unless said, its value in the reply only.
- * DELETE /api/tokens/<id>: one gone.
- */
-int
-api_tokens(struct http_request *req)
-{
-	ucl_object_t	*top, *a, *e, *body;
-	const char	*id, *kind;
-	char		 value[TOKEN_LEN], tid[17], why[128];
-	int		 i, rc;
-
-	if (req->method == HTTP_METHOD_GET) {
-		if (!guard(req, false))
-			return (WEB_OK);
-		tokens_load();
-		top = ucl_object_typed_new(UCL_OBJECT);
-		a = ucl_object_typed_new(UCL_ARRAY);
-		for (i = 0; i < ntokens; i++) {
-			e = ucl_object_typed_new(UCL_OBJECT);
-			put(e, "id", ucl_object_fromstring(tokens[i].id));
-			put(e, "name", ucl_object_fromstring(tokens[i].name));
-			put(e, "created", ucl_object_fromint(tokens[i].created));
-			put(e, "last", ucl_object_fromint(tokens[i].last));
-			put(e, "kind", ucl_object_fromstring(tokens[i].write ?
-			    "write" : "read"));
-			ucl_array_append(a, e);
-		}
-		put(top, "tokens", a);
-		return (reply_json(req, 200, top));
-	}
-	/* Made and deleted in a session only: guard() lets no token
-	 * through where something changes. */
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_DELETE) {
-		id = strrchr(req->path, '/') != NULL ? strrchr(req->path, '/') +
-		    1 : "";
-		if ((rc = token_drop(id, why, sizeof(why))) != 0)
-			return (reply_error(req, rc, rc == 404 ? "not-found" :
-			    "store", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	}
-	body = read_json(req);
-	kind = body != NULL ? ucl_str(body, "kind") : NULL;
-	rc = token_new(body != NULL ? ucl_str(body, "name") : NULL, kind, tid,
-	    value, why, sizeof(why));
-	if (rc != 0) {
-		ucl_object_unref(body);
-		return (reply_error(req, rc, rc == 400 ? "invalid" : rc == 409 ?
-		    "full" : "store", "%s", why));
-	}
-	top = ucl_object_typed_new(UCL_OBJECT);
-	put(top, "id", ucl_object_fromstring(tid));
-	put(top, "name", ucl_object_fromstring(ucl_str(body, "name")));
-	put(top, "kind", ucl_object_fromstring(kind != NULL && strcmp(kind,
-	    "write") == 0 ? "write" : "read"));
-	put(top, "token", ucl_object_fromstring(value));
-	explicit_bzero(value, sizeof(value));
-	ucl_object_unref(body);
-	return (reply_json(req, 200, top));
 }
 
 /* ---- arcana-console's tokens (cyang.c) ------------------------------- */

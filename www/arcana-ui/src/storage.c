@@ -1302,8 +1302,8 @@ view_mounts(struct html *h)
 
 /*
  * Snapshots sent to another host, or from one: what the console says
- * of them (/api/transfers), read again every two seconds while one of
- * this host's runs, and when the tab is opened.
+ * of them (arcana-console's transfers), read again every two seconds
+ * while one of this host's runs, and when the tab is opened.
  */
 static ucl_object_t	*xfers;
 static double		 xfers_at;
@@ -1320,7 +1320,7 @@ xfers_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		return;
 	if (xfers != NULL)
 		ucl_object_unref(xfers);
-	/* arcana-console's transfer entries, as /api's transfers. */
+	/* arcana-console's transfer entries, as the tab draws them. */
 	xfers = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(xfers, jget(o, "transfer") != NULL ?
 	    ucl_object_copy(jget(o, "transfer")) : ucl_object_typed_new(

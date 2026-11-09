@@ -8,8 +8,8 @@
  * The troubleshooter: a packet from one address to another followed
  * across the hosts the console has, and what stops it on the way.
  *
- *	POST /api/troubleshoot/path {"src", "dst", "proto", "port",
- *	    "places": [{"server", "jail"}]}
+ *	POST /restconf/operations/arcana-console:trace-path {"src",
+ *	    "dst", "proto", "port", "places": [{"server", "jail"}]}
  *
  * Each place (a host, or a vnet jail of one; every host when none are
  * named) is asked what it would do with the packet (path-check, the

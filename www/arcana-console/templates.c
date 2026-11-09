@@ -22,16 +22,15 @@
  * {{ }} and not ${ }, which rc.conf, jail.conf and the shell use for
  * their own.  A template carries no secrets: a key is the host's own.
  *
- * Applied (POST /api/servers/<id>/config with template and values),
+ * Applied (hosts/host=<id>/apply-configuration with template and
+ * values),
  * each placeholder is given its value, or its default, and the result
  * goes to the host as config-apply's bundle: checked first (what each
  * file would become, what the hardware lacks), and only then written,
  * as a bundle is.  One without a value refuses the whole.
  *
- * GET /api/templates lists them, GET, PUT and DELETE
- * /api/templates/<name> read, keep and forget one.  Kept in
- * templates.json, under flock(2): workers change it one at a time.
- * The same as arcana-console's templates (cyang.c), through
+ * Kept in templates.json, under flock(2): workers change it one at a
+ * time; served as arcana-console's templates (cyang.c), changed through
  * template_keep() and template_forget().
  */
 
@@ -389,42 +388,6 @@ template_render(const char *name, const ucl_object_t *values, char *why,
 	return ((char *)json);
 }
 
-/* GET /api/templates: each, briefly. */
-int
-api_templates(struct http_request *req)
-{
-	ucl_object_t		*all, *arr, *e, *top;
-	const ucl_object_t	*t;
-	ucl_object_iter_t	 it;
-
-	if (!guard(req, false))
-		return (WEB_OK);
-	all = all_load();
-	arr = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((t = ucl_object_iterate(ucl_object_lookup(all, "templates"),
-	    &it, true)) != NULL) {
-		e = ucl_object_typed_new(UCL_OBJECT);
-		put(e, "name", ucl_object_fromstring(ucl_object_key(t)));
-		put(e, "description", ucl_object_fromstring(str(t,
-		    "description") != NULL ? str(t, "description") : ""));
-		put(e, "files", ucl_object_fromint((int64_t)ucl_array_size(
-		    ucl_object_lookup(t, "files"))));
-		put(e, "packages", ucl_object_fromint((int64_t)ucl_array_size(
-		    ucl_object_lookup(t, "packages"))));
-		put(e, "placeholders", placeholders(t));
-		if (str(t, "from") != NULL)
-			put(e, "from", ucl_object_fromstring(str(t, "from")));
-		put(e, "updated", ucl_object_fromint(ucl_object_toint(
-		    ucl_object_lookup(t, "updated"))));
-		ucl_array_append(arr, e);
-	}
-	ucl_object_unref(all);
-	top = ucl_object_typed_new(UCL_OBJECT);
-	put(top, "templates", arr);
-	return (reply_json(req, 200, top));
-}
-
 /*
  * Template name kept as body says, checked first; dry, checked alone.
  * 0, or the HTTP status and why.
@@ -510,59 +473,6 @@ template_forget(const char *name, const char *who, char *why, size_t len)
 	    who : "?");
 	cyang_changed("templates");
 	return (0);
-}
-
-/* GET, PUT, DELETE /api/templates/<name>. */
-int
-api_template(struct http_request *req)
-{
-	ucl_object_t		*t, *body, *top;
-	const char		*name;
-	char			 why[300];
-	int			 rc;
-
-	name = req->path + strlen("/api/templates/");
-	if (!template_name_ok(name))
-		return (reply_error(req, 400, "invalid", "a template is named "
-		    "with letters, digits, . _ and -"));
-	switch (req->method) {
-	case HTTP_METHOD_GET:
-		if (!guard(req, false))
-			return (WEB_OK);
-		if ((t = template_get(name)) == NULL)
-			return (reply_error(req, 404, "not_found", "no template "
-			    "%s", name));
-		put(t, "name", ucl_object_fromstring(name));
-		put(t, "placeholders", placeholders(t));
-		return (reply_json(req, 200, t));
-	case HTTP_METHOD_PUT:
-		if (!guard(req, true))
-			return (WEB_OK);
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "invalid", "a template, "
-			    "a JSON object"));
-		rc = template_keep(name, body, session_who(req), false, why,
-		    sizeof(why));
-		ucl_object_unref(body);
-		if (rc != 0)
-			return (reply_error(req, rc, rc == 400 ? "invalid" :
-			    "store", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	case HTTP_METHOD_DELETE:
-		if (!guard(req, true))
-			return (WEB_OK);
-		if ((rc = template_forget(name, session_who(req), why,
-		    sizeof(why))) != 0)
-			return (reply_error(req, rc, rc == 404 ? "not_found" :
-			    "store", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	default:
-		return (reply_error(req, 405, "method", "GET, PUT or DELETE"));
-	}
 }
 
 /* ---- arcana-console's templates (cyang.c) ---------------------------- */
@@ -652,8 +562,8 @@ templates_yang(void)
 	return (o);
 }
 
-/* A template's entry y as /api's body; NULL and why: its facts are no
- * JSON object. */
+/* A template's entry y as template_keep() takes it; NULL and why: its
+ * facts are no JSON object. */
 static ucl_object_t *
 body_of(const ucl_object_t *y, char *why, size_t len)
 {

@@ -4883,8 +4883,7 @@ cmd_zfskey(cbl_conn *conn, int argc, char **argv)
 		nk = nkey;
 	}
 	/* arcana-storage's load-key and change-key. */
-	error = ystore_key(conn, argv[argc - 1], k, nk, NULL, err,
-	    sizeof(err));
+	error = ystore_key(conn, argv[argc - 1], k, nk, err, sizeof(err));
 	explicit_bzero(key, sizeof(key));
 	if (change)
 		explicit_bzero(nkey, sizeof(nkey));

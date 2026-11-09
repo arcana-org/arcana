@@ -17,9 +17,10 @@
  * 7951's JSON, saved through the cluster as every store is.  It is read
  * at each request, so a change another node of the cluster made is
  * what the next one sees.  Who may: the console's operators and owners,
- * as /api/sdwan (users.c).
+ * as arcana-console's sdwan (users.c).
  *
- * The SD-WAN document /api/sdwan serves (sdwan.c) is a view of it, one
+ * The SD-WAN document arcana-console's sdwan/document serves (sdwan.c)
+ * is a view of it, one
  * source of truth: read, the L3NM exported (l3nm_mef.c); written, the
  * document imported into the L3NM kept and run as RESTCONF's PUT of it,
  * checked as one.  The document's version is the datastore's, kept

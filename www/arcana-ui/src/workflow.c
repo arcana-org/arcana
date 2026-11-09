@@ -32,10 +32,10 @@ enum { WM_LIST, WM_EDIT, WM_RUN };
 
 static struct {
 	int		 mode;
-	ucl_object_t	*list;		/* /api/workflows */
+	ucl_object_t	*list;		/* the workflows */
 	bool		 all_runs;	/* every run listed, not the latest */
-	ucl_object_t	*runs;		/* /api/runs */
-	ucl_object_t	*run;		/* /api/runs/<n>, the one shown */
+	ucl_object_t	*runs;		/* the runs */
+	ucl_object_t	*run;		/* the run shown */
 	ucl_object_t	*jobs;		/* /jobs.json */
 	ucl_object_t	*draft;		/* the one being made or changed */
 	char		 run_id[16];
@@ -133,7 +133,7 @@ typed_into(ucl_object_t *o, const char *text, const ucl_object_t *x)
 	}
 }
 
-/* A workflow entry as the console keeps it (and /api had it). */
+/* A workflow entry as the console keeps it. */
 static ucl_object_t *
 wf_of(const ucl_object_t *y)
 {

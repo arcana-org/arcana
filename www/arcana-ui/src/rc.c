@@ -414,7 +414,7 @@ rc_read(const char *path, const char *input, const char *query,
 }
 
 /*
- * The same of a verb the console answers with /api's handler
+ * The same of a verb the console answers with a handler of its own
  * (arcana-console's, cyang.c's bridges): the callback gets its output's
  * result, the handler's document.
  */

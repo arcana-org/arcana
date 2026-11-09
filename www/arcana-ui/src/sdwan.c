@@ -70,7 +70,7 @@ static void	 list_put(ucl_object_t *, const char *, const char *,
 
 static struct {
 	int		 tab;
-	ucl_object_t	*doc;		/* /api/sdwan */
+	ucl_object_t	*doc;		/* sdwan/document */
 	bool		 blocked;	/* the box open waits for something
 					 * else first: no button to keep it */
 	char		*text;		/* the Document tab's box */
@@ -78,22 +78,22 @@ static struct {
 	char		 error[600];
 	char		 note[200];
 	bool		 loading, busy;
-	ucl_object_t	*plan;		/* /api/sdwan/plan */
-	ucl_object_t	*applied;	/* /api/sdwan/apply */
+	ucl_object_t	*plan;		/* sdwan/plan */
+	ucl_object_t	*applied;	/* sdwan/apply-state */
 	char		 plan_error[600];
 	char		 need_title[128];	/* an install's, for its task */
 	double		 plan_at, apply_at;
 	bool		 applying;
-	ucl_object_t	*paths;		/* sid: /api/servers/<sid>/sdwan data */
+	ucl_object_t	*paths;		/* sid: the host's SD-WAN state */
 	ucl_object_t	*faults;	/* sid: the agent's faults of the day */
-	ucl_object_t	*rekeys;	/* /api/sdwan/rekey: the rotations */
-	ucl_object_t	*steer_live;	/* /api/sdwan/steer's live: why */
-	ucl_object_t	*lists;		/* /api/sdwan/lists: the feeds and lists */
+	ucl_object_t	*rekeys;	/* sdwan/rekeys: the rotations */
+	ucl_object_t	*steer_live;	/* sdwan/steering's live: why */
+	ucl_object_t	*lists;		/* sdwan/lists: the feeds and lists */
 	char		 record_filter[80];	/* the record's filter text */
-	ucl_object_t	*identities;	/* /api/sdwan/identities */
-	ucl_object_t	*audit;		/* /api/sdwan/audit */
+	ucl_object_t	*identities;	/* sdwan/identities */
+	ucl_object_t	*audit;		/* sdwan/audit */
 	char		 audit_filter[64];
-	ucl_object_t	*sen, *san;	/* /api/sdwan/sen, /api/sdwan/san */
+	ucl_object_t	*sen, *san;	/* sdwan/sen, sdwan/san */
 	char		*config;	/* an identity's configuration, shown once */
 	char		 config_name[72];
 	double		 paths_at;
@@ -662,7 +662,7 @@ rekeys_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		render();
 }
 
-/* An edge's entry as /api/sdwan/steer's live has it (reason, from,
+/* An edge's entry as sdwan/steering's live has it (reason, from,
  * pinned), by the table and prefix of e; NULL none. */
 static const ucl_object_t *
 steer_why_of(const char *edge, const ucl_object_t *e)

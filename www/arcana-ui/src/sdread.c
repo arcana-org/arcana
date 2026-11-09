@@ -1168,7 +1168,7 @@ secsave_free(struct secsave *c)
 	free(c);
 }
 
-/* The callback told as /api's security POST told it. */
+/* The callback told how the save went. */
 static void
 secsave_done(struct secsave *c, int status, const ucl_object_t *o,
     const char *err)

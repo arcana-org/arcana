@@ -12,8 +12,8 @@
  * Last-Event-ID is sent what the agent kept since that time first (RFC
  * 8639's replay), the last one it had among them again.
  *
- * Each client is a thread of its own, as follow.c's: it subscribes to
- * the host's stream (cblink's YANG family, SUBSCRIBE, RFC 8639's
+ * Each client is a thread of its own: it subscribes to the host's
+ * stream (cblink's YANG family, SUBSCRIBE, RFC 8639's
  * establish-subscription) on a connection nothing else uses, and puts
  * what it hears in a buffer; a timer of the worker's passes the buffers
  * on to the replies, which only the worker may write to.  A comment line

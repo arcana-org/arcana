@@ -68,7 +68,7 @@ operations.
   and stream checks take every node's origin.
 - **Without a majority** a node still reads, and refuses changes,
   saying the cluster has no majority here.
-- Settings › Cluster and `GET /api/cluster` show it; console_test:cluster
+- Settings › Cluster and `GET arcana-console:cluster` show it; console_test:cluster
   runs three consoles over unix sockets.
 
 ## Not yet

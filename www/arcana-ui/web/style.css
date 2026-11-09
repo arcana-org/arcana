@@ -3822,21 +3822,6 @@ ul.listeners li.down .led { background: var(--red); }
 button.live .led { display: inline-block; width: .5rem; height: .5rem; margin-right: .4rem; border-radius: 50%; background: var(--slate); }
 button.live.on .led { background: var(--green); box-shadow: 0 0 6px var(--green); }
 html.fx button.live.on .led { animation: breathe 1.6s ease-in-out infinite; }
-.apidoc > header { display: flex; align-items: center; gap: .7rem; margin-bottom: .4rem; }
-.apidoc > header h2 { margin: 0; }
-.apidoc > header a { margin-left: auto; text-decoration: none; padding: .3rem .6rem; border: 1px solid var(--line); color: var(--fg-2); }
-.apidoc .about { white-space: pre-line; color: var(--fg-2); max-width: 60rem; }
-ul.apiops { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .3rem; }
-.apiop { border: 1px solid var(--line); padding: .5rem .7rem; cursor: pointer; }
-.apiop:hover, .apiop.open { border-color: var(--line-2); background: rgba(var(--accent-rgb), .04); }
-.apiop .line { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .7rem; }
-.apiop .method { flex: none; min-width: 3.6rem; text-transform: uppercase; font-size: .72rem; letter-spacing: .08em; color: var(--green); }
-.apiop.m-post .method { color: var(--amber); }
-.apiop.m-delete .method { color: var(--red); }
-.apiop code { word-break: break-all; }
-.apiop .line > span { color: var(--fg-2); }
-.apiop .more { margin-top: .5rem; padding-top: .5rem; border-top: 1px dashed var(--line); cursor: default; }
-.apiop .more p { margin: .3rem 0; white-space: pre-line; }
 
 /* The host's own line of facts is a line, not the map panel's grid. */
 .hostbar .facts {
@@ -3896,8 +3881,6 @@ ul.apiops { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap:
 }
 
 /* The API's light opens the API's page. */
-.link.go { cursor: pointer; }
-.link.go:hover, .link.go.on { border-color: var(--cyan); color: var(--fg); }
 
 /* A listener the agent has that the console has not tried: no colour. */
 ul.listeners li.idle .led { background: transparent; box-shadow: inset 0 0 0 1.5px var(--slate); }
@@ -4573,7 +4556,7 @@ html:not(.neon) *::after {
 }
 html:not(.neon) :is(button, .tab, .label, .state, th, h1, h2, h3, h4, h5,
     .pane h4, .drawer h4, .node .nh, .auth .sub, nav.fw-tabs .sep,
-    table.fw-layout tr.group td, .apiop .method, .age, .brand, .ecmp-side h5) {
+    table.fw-layout tr.group td, .age, .brand, .ecmp-side h5) {
 	text-transform: none;
 }
 /* What is read character by character: the fixed face. */
@@ -4751,7 +4734,7 @@ html:not(.neon) .tabs .tab.on {
 
 /* Surfaces: a panel is a card, one radius. */
 html:not(.neon) :is(.pane, .notice, .jail, .gauge, .stat, .hostcard,
-    .card, .map-panel .facts, .ecmp-group, .wfedstep, .apiop, .peek-box) {
+    .card, .map-panel .facts, .ecmp-group, .wfedstep, .peek-box) {
 	border-radius: calc(var(--radius) + 2px);
 }
 html:not(.neon) :is(.pane, .jail, .gauge, .stat, .hostcard) {

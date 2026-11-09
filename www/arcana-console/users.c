@@ -20,10 +20,8 @@
  * first key.  A group is users given roles together: a user may do
  * what its own roles allow and what its groups' do.  users.json in the
  * data directory, {"users": [...], "roles": [...], "groups": [...],
- * "invites": [...]}; GET and POST /api/users, PUT and DELETE
- * /api/users/<name>, POST /api/users/<name>/invite; POST /api/roles,
- * PUT and DELETE /api/roles/<name>; POST /api/groups, PUT and DELETE
- * /api/groups/<name>.
+ * "invites": [...]}, served as arcana-console's users, roles and groups
+ * (cyang.c), an invitation by users/user=<name>/invite.
  *
  * A user the console keeps may also have a password of the console's
  * own, beside their keys: kept as crypt(3)'s bcrypt ("$2b$"), never
@@ -332,16 +330,13 @@ user_host(const char *name, const char *sid)
 bool
 user_path_ok(enum crole r, const char *path, bool mutate)
 {
-	static const char	*owner_only[] = { "/api/settings", "/api/tokens",
-				    "/api/ca", "/api/users", "/api/roles",
-				    "/api/groups",
-				    "/api/enrol", "/api/update",
+	static const char	*owner_only[] = {
 				    CYANG_DATA "settings", CYANG_DATA "tokens",
 				    CYANG_DATA "users", CYANG_DATA "roles",
 				    CYANG_DATA "groups", CYANG_DATA "enrolment",
 				    CYANG_DATA "ca", CYANG_DATA "update",
 				    CYANG_DATA "update-notes" };
-	static const char	*operator_up[] = { "/api/sdwan", "/api/feeds",
+	static const char	*operator_up[] = {
 				    CYANG_DATA "workflows", CYANG_DATA "runs",
 				    CYANG_DATA "templates",
 				    CYANG_DATA "threat-feeds",
@@ -353,11 +348,7 @@ user_path_ok(enum crole r, const char *path, bool mutate)
 				    "/restconf/operations/arcana-console:"
 				    "trace-path",
 				    "/restconf/operations/arcana-console:"
-				    "wireguard-keypair",
-				    "/api/workflows",
-				    "/api/runs", "/api/templates",
-				    "/api/transfers", "/api/troubleshoot",
-				    "/api/wg" };
+				    "wireguard-keypair" };
 	size_t			 i, n;
 
 	if (r == CROLE_NONE)
@@ -378,10 +369,9 @@ user_path_ok(enum crole r, const char *path, bool mutate)
 		    path[n] == '/' || path[n] == '?'))
 			return (false);
 	}
-	if (mutate && (strcmp(path, "/api/servers") == 0 || strcmp(path,
-	    CYANG_DATA "hosts") == 0 || strncmp(path,
-	    "/api/prefix-lists", 17) == 0 || strncmp(path, CYANG_DATA
-	    "prefix-lists", sizeof(CYANG_DATA) + 11) == 0))
+	if (mutate && (strcmp(path, CYANG_DATA "hosts") == 0 ||
+	    strncmp(path, CYANG_DATA "prefix-lists", sizeof(CYANG_DATA) + 11) ==
+	    0))
 		return (false);
 	return (true);
 }
@@ -711,61 +701,6 @@ owners(void)
 		if (user_console(ucl_str(u, "name")) == CROLE_OWNER)
 			n++;
 	return (n);
-}
-
-/* What is said of them all: the users with what their roles come to,
- * the roles with how many have each; the invitations' hashes not. */
-static int
-reply_all(struct http_request *req)
-{
-	ucl_object_t		*o, *a, *e, *rs, *gs;
-	const ucl_object_t	*u, *inv, *r;
-	ucl_object_iter_t	 it, iit;
-	int			 n;
-
-	a = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((u = ucl_object_iterate(list_of("users"), &it, true)) != NULL) {
-		e = ucl_object_copy(u);
-		n = 0;
-		iit = NULL;
-		while ((inv = ucl_object_iterate(list_of("invites"), &iit, true))
-		    != NULL)
-			if (ucl_str(inv, "user") != NULL && strcmp(ucl_str(inv,
-			    "user"), ucl_str(u, "name")) == 0)
-				n++;
-		put(e, "invites", ucl_object_fromint(n));
-		put(e, "keys", ucl_object_fromint(cred_count_of(ucl_str(u,
-		    "name"))));
-		/* Whether they have a password; the hash is never said. */
-		put(e, "password", ucl_object_frombool(pw_of(ucl_str(u,
-		    "name")) != NULL));
-		put(e, "console", ucl_object_fromstring(crole_name(user_console(
-		    ucl_str(u, "name")))));
-		ucl_array_append(a, e);
-	}
-	rs = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((r = ucl_object_iterate(list_of("roles"), &it, true)) != NULL) {
-		e = ucl_object_copy(r);
-		put(e, "users", ucl_object_fromint(role_users(ucl_str(r,
-		    "name"))));
-		put(e, "groups", ucl_object_fromint(role_groups(ucl_str(r,
-		    "name"))));
-		ucl_array_append(rs, e);
-	}
-	gs = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((r = ucl_object_iterate(list_of("groups"), &it, true)) != NULL) {
-		e = ucl_object_copy(r);
-		put(e, "members", group_members(ucl_str(r, "name")));
-		ucl_array_append(gs, e);
-	}
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "users", a);
-	put(o, "roles", rs);
-	put(o, "groups", gs);
-	return (reply_json(req, 200, o));
 }
 
 /*
@@ -1101,7 +1036,7 @@ user_check(const ucl_object_t *body)
 	return (NULL);
 }
 
-/* Why a change is refused: its HTTP status, /api's error code, words. */
+/* Why a change is refused: its HTTP status, an error code, words. */
 struct uerr {
 	int		 status;
 	const char	*code;
@@ -1322,56 +1257,6 @@ role_remove(const char *name, const char *who, struct uerr *err)
 	return (0);
 }
 
-/* GET /api/users: the users and the roles.  POST: a user added or
- * replaced, by its name. */
-int
-api_users(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct uerr	 e;
-
-	if (!guard(req, req->method != HTTP_METHOD_GET))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_GET)
-		return (reply_all(req));
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a user: {\"name\", "
-		    "\"tenant\", \"roles\": [...]}"));
-	if (user_keep(body, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
-}
-
-/* PUT /api/users/<name>: as POST with the name; DELETE: gone, with
- * its keys, invitations, sessions and console plugins' stores. */
-int
-api_user(struct http_request *req)
-{
-	ucl_object_t		*body;
-	struct uerr		 e;
-	char			 name[72];
-
-	if (!capture(req, 3, name, sizeof(name)) || !user_name_ok(name))
-		return (reply_error(req, 400, "invalid", "a user's name"));
-	if (req->method == HTTP_METHOD_PUT) {
-		if (!guard(req, true))
-			return (WEB_OK);
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "invalid", "a user"));
-		put(body, "name", ucl_object_fromstring(name));
-		if (user_keep(body, session_who(req), &e) != 0)
-			return (reply_error(req, e.status, e.code, "%s", e.why));
-		return (reply_all(req));
-	}
-	if (req->method != HTTP_METHOD_DELETE)
-		return (reply_error(req, 405, "method", "PUT or DELETE"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (user_remove(name, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
-}
-
 /* An invitation for user name, said once into token, with when it runs
  * out: 0, or the status and why. */
 static int
@@ -1390,82 +1275,6 @@ user_invite(const char *name, const char *who, char *token, size_t len,
 	log_msg(LOG_NOTICE, "user %s invited by %s", name, who != NULL ? who :
 	    "?");
 	return (0);
-}
-
-/* POST /api/users/<name>/invite: a token for their first key, said once. */
-int
-api_user_invite(struct http_request *req)
-{
-	ucl_object_t	*o;
-	struct uerr	 e;
-	time_t		 expires;
-	char		 name[72], token[80];
-
-	if (req->method != HTTP_METHOD_POST)
-		return (reply_error(req, 405, "method", "POST"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (!capture(req, 3, name, sizeof(name)))
-		return (reply_error(req, 404, "not_found", "no such user"));
-	if (user_invite(name, session_who(req), token, sizeof(token), &expires,
-	    &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "user", ucl_object_fromstring(name));
-	put(o, "token", ucl_object_fromstring(token));
-	put(o, "expires", ucl_object_fromint(expires));
-	explicit_bzero(token, sizeof(token));
-	return (reply_json(req, 200, o));
-}
-
-/* POST /api/roles: a role added or replaced, by its name. */
-int
-api_roles(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct uerr	 e;
-
-	if (req->method != HTTP_METHOD_POST)
-		return (reply_error(req, 405, "method", "POST; the roles come "
-		    "with GET /api/users"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a role: {\"name\", "
-		    "\"console\", \"hosts\": {\"*\": \"viewer\"}}"));
-	if (role_keep(body, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
-}
-
-/* PUT /api/roles/<name>: as POST with the name; DELETE: gone, when no
- * user has it. */
-int
-api_role(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct uerr	 e;
-	char		 name[72];
-
-	if (!capture(req, 3, name, sizeof(name)) || !user_name_ok(name))
-		return (reply_error(req, 400, "invalid", "a role's name"));
-	if (req->method == HTTP_METHOD_PUT) {
-		if (!guard(req, true))
-			return (WEB_OK);
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "invalid", "a role"));
-		put(body, "name", ucl_object_fromstring(name));
-		if (role_keep(body, session_who(req), &e) != 0)
-			return (reply_error(req, e.status, e.code, "%s", e.why));
-		return (reply_all(req));
-	}
-	if (req->method != HTTP_METHOD_DELETE)
-		return (reply_error(req, 405, "method", "PUT or DELETE"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (role_remove(name, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
 }
 
 /* Is body a group that may be kept?  NULL, or what is wrong with it. */
@@ -1627,56 +1436,6 @@ group_remove(const char *name, const char *who, struct uerr *err)
 	log_msg(LOG_NOTICE, "group %s removed by %s", name, who != NULL ? who :
 	    "?");
 	return (0);
-}
-
-/* POST /api/groups: a group added or replaced, by its name. */
-int
-api_groups(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct uerr	 e;
-
-	if (req->method != HTTP_METHOD_POST)
-		return (reply_error(req, 405, "method", "POST; the groups come "
-		    "with GET /api/users"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a group: {\"name\", "
-		    "\"roles\": [...], \"members\": [...]}"));
-	if (group_keep(body, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
-}
-
-/* PUT /api/groups/<name>: as POST with the name; DELETE: gone, its users
- * out of it. */
-int
-api_group(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct uerr	 e;
-	char		 name[72];
-
-	if (!capture(req, 3, name, sizeof(name)) || !user_name_ok(name))
-		return (reply_error(req, 400, "invalid", "a group's name"));
-	if (req->method == HTTP_METHOD_PUT) {
-		if (!guard(req, true))
-			return (WEB_OK);
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "invalid", "a group"));
-		put(body, "name", ucl_object_fromstring(name));
-		if (group_keep(body, session_who(req), &e) != 0)
-			return (reply_error(req, e.status, e.code, "%s", e.why));
-		return (reply_all(req));
-	}
-	if (req->method != HTTP_METHOD_DELETE)
-		return (reply_error(req, 405, "method", "PUT or DELETE"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (group_remove(name, session_who(req), &e) != 0)
-		return (reply_error(req, e.status, e.code, "%s", e.why));
-	return (reply_all(req));
 }
 
 /* ---- arcana-console's users, roles and groups (cyang.c) -------------- */
@@ -1870,7 +1629,7 @@ strings_of(const ucl_object_t *o, const char *key)
  * arcana-console's users, roles and groups changed from was to now
  * (each the value of the three, as {"users": ..., "roles": ...,
  * "groups": ...}): each entry made or changed kept, each left out
- * removed, through the setters /api's go through.  All or nothing: what
+ * removed, through the stores' setters.  All or nothing: what
  * was kept before a refusal undone (but a user's keys and sessions, a
  * user removed being last).  0, or the status and why.
  */

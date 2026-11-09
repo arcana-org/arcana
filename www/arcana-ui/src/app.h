@@ -171,7 +171,7 @@ void		 api_reads(void);
  * rc_action() an action's or rpc's input wrapped and its output
  * unwrapped (NULL on 204), with a query when not NULL (arcana-accept=
  * the warnings accepted); rc_verb() the same of a verb of the console's
- * own that /api's handler answers (cyang.c's bridges), its result;
+ * own that a handler of its answers (cyang.c's bridges), its result;
  * rc_read() an action that only reads, a read's task and not a change's.
  * rc_error(): an ietf-restconf:errors' words (message, app-tag, path).
  */
@@ -224,7 +224,6 @@ enum node {
 	NODE_HOST,
 	NODE_JAIL,
 	NODE_NETWORK,		/* the fleet's network, as a map */
-	NODE_API,		/* the console's API, as it is documented */
 	NODE_USAGE,		/* how busy every host has been, drawn */
 	NODE_WORKFLOWS,		/* chains of steps, run on several hosts */
 	NODE_SDWAN,		/* SD-WAN services, as MEF 70.2 says them */
@@ -572,7 +571,7 @@ struct app {
 	char		 agent_build[65]; /* of the arcana-agent it sends */
 	char		 agent_version[32]; /* and its version */
 	char		 agent_source[256]; /* repository a host builds it from */
-	ucl_object_t	*notes;		/* /api/update/notes: what is new */
+	ucl_object_t	*notes;		/* update-notes: what is new */
 	bool		 notes_busy;
 	char		 notes_error[200];
 	char		 notes_for[16];	/* console or agent */
@@ -621,9 +620,9 @@ struct app {
 	bool		 who_open;	/* the top bar's menu, on a phone */
 	bool		 acct_open;	/* the account button's menu */
 	char		 theme[16];	/* "" for the default */
-	ucl_object_t	*settings;	/* /api/settings, while its dialog is open */
-	ucl_object_t	*push;		/* /api/push: the devices that are told */
-	ucl_object_t	*tokens;	/* /api/tokens: read-only API tokens */
+	ucl_object_t	*settings;	/* settings, while its dialog is open */
+	ucl_object_t	*push;		/* push: the devices that are told */
+	ucl_object_t	*tokens;	/* tokens: the API tokens */
 	char		 token_name[65];	/* the name typed for a new one */
 	bool		 token_write;	/* and whether it is to write too */
 	char		 token_value[80];	/* a new one's value, shown once */
@@ -987,9 +986,6 @@ bool		 tbl_action(const char *, const char *, const char *);
 void		 refresh_kernel(struct server *, bool);
 void		 refresh_certs(struct server *, bool);
 void		 refresh_ssh(struct server *, bool);
-void		 apidoc_open(void);
-void		 view_apidoc(struct html *);
-bool		 apidoc_action(const char *, const char *, const char *);
 void		 net_live_tick(double);
 int		 routes_held(void);
 void		 network_more(struct server *);

@@ -732,9 +732,9 @@ notices_read(const char *file, const char *filter, int64_t *countp)
 }
 
 /*
- * GET /api/sdwan/sen[.csv]?q= and /api/sdwan/san[.csv]?q=: the notices,
- * newest first, q keeping those with it anywhere in them; as CSV with
- * .csv.
+ * GET arcana-console's sdwan/sen and sdwan/san [?q=]: the notices,
+ * newest first, q keeping those with it anywhere in them; as CSV where
+ * Accept says text/csv.
  */
 static int
 notices_api(struct http_request *req, const char *file,

@@ -132,8 +132,6 @@ help_path(void)
 		return ("sections/troubleshoot.html");
 	case NODE_SETTINGS:
 		return ("sections/settings.html");
-	case NODE_API:
-		return ("reference/api.html");
 	case NODE_HOST:
 	case NODE_JAIL:
 		return (tab_help());

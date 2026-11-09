@@ -424,8 +424,8 @@ node_kind(int i, const char *kind, api_cb *cb, void *arg)
 	node_read(i, &q, cb, arg);
 }
 
-/* A sysctl of a node's, arcana-sysctl's read of it as the values /api
- * gave: {"ok": true, "data": {"values": [...]}}. */
+/* A sysctl of a node's, arcana-sysctl's read of it as the values:
+ * {"ok": true, "data": {"values": [...]}}. */
 struct sysq {
 	api_cb	*cb;
 	void	*arg;

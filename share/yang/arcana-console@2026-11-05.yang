@@ -2305,9 +2305,9 @@ module arcana-console {
        below its entry: what it holds or asks of the host, read at
        its own path alone (not in the entry's), and the console's
        verbs on it as actions.  The documents the console makes
-       (drift, a bundle, a capture) are anydata, their members /api's
-       (openapi.yaml); an action's input names are /api's with - for
-       _.";
+       (drift, a bundle, a capture) are anydata, their members the
+       console's handlers' (snake_case); an action's input names are
+       those with - for _.";
     leaf local {
       type enumeration {
         enum off;
@@ -2824,9 +2824,9 @@ module arcana-console {
        the security policies' record), a service's access attached to
        a free SAP (RFC 9408 Appendix D).  Operators' and owners'.
        Each node is read at its own path, a document of the console's
-       (anydata, its members /api's, openapi.yaml); a record's is
-       text/csv where Accept asks for it.  A refusal is /api's: 409
-       where the services make no plan, an apply runs or a warning is
+       (anydata, its members the console's handlers'); a record's is
+       text/csv where Accept asks for it.  A refusal: 409 where the
+       services make no plan, an apply runs; 400 where a warning is
        not accepted.";
     anydata document {
       description
@@ -3147,7 +3147,7 @@ module arcana-console {
       "What is new in agent_source's repository since the version
        running: its tags' release notes, else its commits; owners'.
        The query parameters component (console or agent), from, to
-       and fresh pick, as on /api.";
+       and fresh pick.";
   }
 
   anydata cluster {

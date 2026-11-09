@@ -1603,40 +1603,6 @@ api_logout(struct http_request *req)
 	return (status_reply(req, false));
 }
 
-/* GET: the registered keys, without their public keys. */
-int
-api_credentials(struct http_request *req)
-{
-	const ucl_object_t	*c, *v;
-	ucl_object_t		*a, *e;
-	ucl_object_iter_t	 it;
-	static const char	*keys[] = { "id", "name", "alg", "created",
-				    "last_used", "sign_count", "transports" };
-	const char		*u;
-	size_t			 i;
-
-	if (!guard(req, false))
-		return (WEB_OK);
-	/* The owner sees them all, with whose each is; others their own. */
-	u = session_user(req);
-	a = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((c = ucl_object_iterate(cred_list(), &it, true)) != NULL) {
-		if (u != NULL && user_console(u) != CROLE_OWNER && strcmp(
-		    cred_user(c), u) != 0)
-			continue;
-		e = ucl_object_typed_new(UCL_OBJECT);
-		for (i = 0; i < nitems(keys); i++)
-			if ((v = ucl_object_lookup(c, keys[i])) != NULL)
-				put(e, keys[i], ucl_object_copy(v));
-		put(e, "user", ucl_object_fromstring(cred_user(c)));
-		ucl_array_append(a, e);
-	}
-	e = ucl_object_typed_new(UCL_OBJECT);
-	put(e, "credentials", a);
-	return (reply_json(req, 200, e));
-}
-
 /* Is there a sign-in key of this name: a console user? */
 bool
 cred_named(const char *name)
@@ -1653,39 +1619,9 @@ cred_named(const char *name)
 	return (false);
 }
 
-/* DELETE /api/auth/credentials/<id>: never the last one. */
-int
-api_credential(struct http_request *req)
-{
-	const ucl_object_t	*c;
-	ucl_object_t		*gone;
-	char			 id[512];
-
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (req->method != HTTP_METHOD_DELETE || !capture(req, 4, id,
-	    sizeof(id)))
-		return (reply_error(req, 400, "bad_request", "bad request"));
-	if ((c = cred_find(id)) == NULL)
-		return (reply_error(req, 404, "not_found", "no such key"));
-	if (session_user(req) != NULL && user_console(session_user(req)) !=
-	    CROLE_OWNER && strcmp(cred_user(c), session_user(req)) != 0)
-		return (reply_error(req, 403, "role", "another user's key is "
-		    "removed by the owner"));
-	if (ucl_array_size(cred_list()) == 1)
-		return (reply_error(req, 409, "last_key",
-		    "register another key before removing the last one"));
-	gone = ucl_array_delete(cred_list(), (ucl_object_t *)(uintptr_t)c);
-	ucl_object_unref(gone);
-	if (creds_save() == -1)
-		return (reply_error(req, 500, "store", "cannot save"));
-	return (api_credentials(req));
-}
-
 /*
- * arcana-console's credentials (cyang.c): the keys GET
- * /api/auth/credentials shows the request's user, their public keys
- * not among them.
+ * arcana-console's credentials (cyang.c): the request's user's keys (an
+ * owner's: every user's), their public keys not among them.
  */
 ucl_object_t *
 credentials_yang(struct http_request *req)

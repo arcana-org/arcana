@@ -1659,32 +1659,3 @@ ysdwan_read(cbl_conn *conn, bool has_after, uint64_t after,
 	cbl_yarena_free(a);
 	return (error);
 }
-
-ucl_object_t *
-ysdwan_held(const struct arcana_sdwan *sd, const struct arcana_probe *pr,
-    const struct arcana_probe_probes_read_output *rd, uint64_t after)
-{
-	struct arcana_probe_probes_read_output	 out;
-	struct arcana_probe_target_state	*v;
-	ucl_object_t				*o;
-	size_t					 k;
-
-	/* Each target with the samples after the time, as the read
-	 * action gives them. */
-	out = *rd;
-	if ((v = calloc(rd->target.n + 1, sizeof(*v))) == NULL)
-		return (NULL);
-	for (size_t i = 0; i < rd->target.n; i++) {
-		v[i] = rd->target.v[i];
-		for (k = 0; k < v[i].sample.n && v[i].sample.v[k].time !=
-		    NULL && (uint64_t)epoch(v[i].sample.v[k].time) <= after;
-		    k++)
-			;
-		v[i].sample.v += k;
-		v[i].sample.n -= k;
-	}
-	out.target.v = v;
-	o = read_json(sd->sdwan, pr->probes, &out);
-	free(v);
-	return (o);
-}

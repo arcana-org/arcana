@@ -1921,7 +1921,7 @@ cluster_started(void)
 	cl.started = true;
 }
 
-/* The cluster as this node knows it, for GET /api/cluster. */
+/* The cluster as this node knows it, for arcana-console's cluster. */
 void
 cluster_status(ucl_object_t *o)
 {
@@ -1969,7 +1969,8 @@ cluster_status(ucl_object_t *o)
 	pthread_mutex_unlock(&cl.mu);
 }
 
-/* GET /api/cluster: the nodes, who leads, how far each has come. */
+/* GET arcana-console's cluster: the nodes, who leads, how far each has
+ * come. */
 int
 api_cluster(struct http_request *req)
 {

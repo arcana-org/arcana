@@ -302,9 +302,9 @@ audit_read(const char *filter, bool *intactp, int64_t *brokenp,
 }
 
 /*
- * GET /api/sdwan/audit[.csv]?q=: the audit trail, newest first, with
- * whether its chain is intact and where it broke; q keeps the events
- * with it anywhere in them.  As CSV with .csv.
+ * GET arcana-console's sdwan/audit[?q=]: the audit trail, newest first,
+ * with whether its chain is intact and where it broke; q keeps the
+ * events with it anywhere in them.  As CSV where Accept says text/csv.
  */
 int
 api_sdwan_audit(struct http_request *req)

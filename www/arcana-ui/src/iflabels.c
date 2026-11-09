@@ -7,8 +7,7 @@
  * Labels on interfaces: the console's own tag on an interface of a host
  * ("uplink A", "the UCS to the IXP"), shown under its name in the
  * Interfaces table and changed there, in place; kept by the console
- * (GET /api/labels, PUT /api/labels/<server>/<interface>), not on the
- * host.
+ * (arcana-console's labels), not on the host.
  */
 
 #include <stdbool.h>

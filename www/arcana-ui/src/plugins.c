@@ -21,7 +21,7 @@
 #include "app.h"
 
 static struct {
-	ucl_object_t	*o;		/* GET /api/plugins */
+	ucl_object_t	*o;		/* arcana-console's plugins */
 	char		*text;		/* as handed to the page */
 	bool		 loading;
 	double		 fetched;	/* 0: to be read */

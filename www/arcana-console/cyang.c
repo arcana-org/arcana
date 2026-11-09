@@ -41,22 +41,21 @@
  *							operators and owners
  *
  * What the console makes rather than keeps (a host's drift, its
- * subscription, a bundle) and its verbs on it are /api's handlers
- * answering at the module's paths too: the bridges below.
+ * subscription, a bundle) and its verbs on it are handlers of their
+ * own answering at the module's paths: the bridges below.
  *
  * No second store: a request reads the files the stores keep, each
  * store's view of itself made into a tree (settings_yang() and the
  * others), runs on it as restconf.c makes a request of the console's own
  * datastore (restconf_run_own(): GET, POST, PUT, PATCH, YANG Patch,
  * DELETE, each change checked as RFC 7950 says), and what changed is
- * kept through the setters /api's handlers go through, with their
- * checks, their log lines and their refusals (settings_yang_set() and
- * the others).  Who may is /api's: users.c's and tokens.c's rules on
- * the path.  The actions (a token made, an invitation, an enrolment
- * token, a workflow run, a step approved, a run stopped, the runs
- * cleared) are POSTed to their node, their input and output RFC 8040
- * section 3.6's.  Each part's entity-tag changes when its store does,
- * by RESTCONF or by /api.
+ * kept through the stores' setters, with their checks, their log lines
+ * and their refusals (settings_yang_set() and the others).  Who may is
+ * users.c's and tokens.c's rules on the path.  The actions (a token
+ * made, an invitation, an enrolment token, a workflow run, a step
+ * approved, a run stopped, the runs cleared) are POSTed to their node,
+ * their input and output RFC 8040 section 3.6's.  Each part's
+ * entity-tag changes when its store does.
  */
 
 #include <sys/param.h>
@@ -108,12 +107,12 @@ static const struct part {
 static void	put(ucl_object_t *, const char *, ucl_object_t *);
 
 /*
- * The /api handlers that answer at arcana-console's paths too
- * (routes.c): what the console makes rather than keeps, a node read
- * (GET) or written whole (PUT), and its verbs, actions and rpcs (POST).
- * The handler sees /api's body: the input (RFC 8040 section 3.6.1), or
- * the node's value, unwrapped; in names the input's member that is the
- * body, and with snake the input's names are /api's, - for _.  Its
+ * The handlers that answer at arcana-console's paths (routes.c): what
+ * the console makes rather than keeps, a node read (GET) or written
+ * whole (PUT), and its verbs, actions and rpcs (POST).  The handler sees
+ * the input (RFC 8040 section 3.6.1), or the node's value, unwrapped; in
+ * names the input's member that is the body, and with snake the input's
+ * names are the handler's, - for _.  Its
  * reply is RESTCONF's: a GET's nested in the nodes wrap names (the
  * path's last by default), an action's its output (in wrap's member,
  * where one is named), a PUT's none; errors ietf-restconf's.  Who may
@@ -338,7 +337,7 @@ cyang_bridge_reply(struct http_request *req, int status, ucl_object_t *o)
 	return (restconf_reply(req, top));
 }
 
-/* The same of a reply's JSON as /api would send it. */
+/* The same of a handler's reply as JSON text. */
 int
 cyang_bridge_raw(struct http_request *req, int status, const char *json)
 {

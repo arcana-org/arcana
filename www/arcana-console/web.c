@@ -922,45 +922,6 @@ http_argument_get_string(struct http_request *req, const char *name,
 	return (0);
 }
 
-/* As a URL escapes it: %XX and + for a space; 0 for a control character
- * (but for \t \n \r when not url). */
-int
-http_argument_urldecode(char *arg, int url)
-{
-	char	*p, *in, h[3];
-	long	 v;
-
-	for (p = in = arg; *p != '\0';) {
-		if (*p == '+') {
-			*in++ = ' ';
-			p++;
-			continue;
-		}
-		if (*p != '%') {
-			*in++ = *p++;
-			continue;
-		}
-		if (p[1] == '\0' || p[2] == '\0')
-			return (0);
-		if (!isxdigit((unsigned char)p[1]) ||
-		    !isxdigit((unsigned char)p[2])) {
-			*in++ = *p++;
-			continue;
-		}
-		h[0] = p[1];
-		h[1] = p[2];
-		h[2] = '\0';
-		v = strtol(h, NULL, 16);
-		if ((v <= 0x1f || v == 0x7f) && (url || (v != '\n' && v != '\r' &&
-		    v != '\t')))
-			return (0);
-		*in++ = (char)v;
-		p += 3;
-	}
-	*in = '\0';
-	return (1);
-}
-
 ssize_t
 http_body_read(struct http_request *req, void *out, size_t len)
 {
@@ -2146,16 +2107,6 @@ vhost_new(int k)
 			info.alpn = "h2,http/1.1";
 			info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
 			    LWS_SERVER_OPTION_CREATE_VHOST_SSL_CTX;
-#ifdef LWS_SERVER_OPTION_SNI_FALLBACK
-			/*
-			 * One vhost a port, named l<n>, not by the host's
-			 * names: libwebsockets 5.1 refuses an SNI name no
-			 * vhost has (unrecognized_name) unless one is the
-			 * port's fallback.  Every name the certificate is for
-			 * is this one's.
-			 */
-			info.options |= LWS_SERVER_OPTION_SNI_FALLBACK;
-#endif
 			info.ssl_cipher_list = "ECDHE+AESGCM:ECDHE+CHACHA20";
 			info.ssl_options_set = SSL_OP_NO_TLSv1 |
 			    SSL_OP_NO_TLSv1_1;

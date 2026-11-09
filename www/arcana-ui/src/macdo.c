@@ -7,7 +7,7 @@
 /*
  * A host's mac_do(4) rules, on its Security tab: who may become whom by
  * mdo(1).  Read from the kernel (security.mac.do.*, arcana-sysctl's read
- * action through /api's sysctl) with what sysctl.conf keeps; a change
+ * action) with what sysctl.conf keeps; a change
  * of the rules or of the executables let use them is put in the host's
  * candidate as sysctl.conf's settings (arcana-sysctl's kept), committed
  * confirmed (ycommit.c): set in the kernel at once by sysctl(8), and at

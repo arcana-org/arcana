@@ -783,66 +783,6 @@ put(ucl_object_t *o, const char *key, ucl_object_t *v)
 	ucl_object_insert_key(o, v, key, 0, false);
 }
 
-static ucl_object_t *
-fixed(const char *key, const char *label, const char *v)
-{
-	ucl_object_t	*e;
-
-	e = ucl_object_typed_new(UCL_OBJECT);
-	put(e, "key", ucl_object_fromstring(key));
-	put(e, "label", ucl_object_fromstring(label));
-	put(e, "value", ucl_object_fromstring(v != NULL ? v : ""));
-	put(e, "editable", ucl_object_frombool(false));
-	return (e);
-}
-
-static int
-reply(struct http_request *req)
-{
-	ucl_object_t	*o, *a, *e;
-	char		 path[1024];
-	size_t		 i;
-
-	o = ucl_object_typed_new(UCL_OBJECT);
-	a = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0; i < nitems(settings); i++) {
-		e = ucl_object_typed_new(UCL_OBJECT);
-		put(e, "key", ucl_object_fromstring(settings[i].key));
-		put(e, "label", ucl_object_fromstring(settings[i].label));
-		put(e, "help", ucl_object_fromstring(settings[i].help));
-		put(e, "type", ucl_object_fromstring(settings[i].kind ==
-		    K_BOOL ? "bool" : settings[i].kind == K_SECRET ? "secret" :
-		    "text"));
-		/* A secret's value is never sent: whether it is set. */
-		if (settings[i].kind == K_SECRET) {
-			put(e, "value", ucl_object_fromstring(""));
-			put(e, "set", ucl_object_frombool(value(
-			    settings[i].key)[0] != '\0'));
-		} else
-			put(e, "value", ucl_object_fromstring(value(
-			    settings[i].key)));
-		put(e, "base", ucl_object_fromstring(settings[i].base != NULL ?
-		    settings[i].base : ""));
-		put(e, "overridden", ucl_object_frombool(settings[i].over !=
-		    NULL));
-		put(e, "editable", ucl_object_frombool(true));
-		ucl_array_append(a, e);
-	}
-	/* Read once, at the start, from web.conf alone. */
-	ucl_array_append(a, fixed("rp_id", "Relying party", cfg.rp_id));
-	ucl_array_append(a, fixed("origin", "Origin", cfg.origin));
-	ucl_array_append(a, fixed("datadir", "Data directory", cfg.datadir));
-	ucl_array_append(a, fixed("cookie_secure", "Session cookie over "
-	    "HTTPS only", cfg.cookie_secure ? "true" : "false"));
-	ucl_array_append(a, fixed("tls", "Certificates for the agents",
-	    cfg.tls_own ? "the console's own CA, in the data directory" :
-	    cfg.tls_cert));
-	put(o, "settings", a);
-	snprintf(path, sizeof(path), "%s/%s", cfg.datadir, SETTINGS_FILE);
-	put(o, "file", ucl_object_fromstring(path));
-	return (reply_json(req, 200, o));
-}
-
 /*
  * What set says ({"key": value or null}) checked whole and kept: 0, or
  * the HTTP status and why.  A value equal to web.conf's, or null, drops
@@ -910,40 +850,6 @@ settings_set(const ucl_object_t *set, char *why, size_t len)
 	load();
 	cyang_changed("settings");
 	return (0);
-}
-
-/*
- * GET /api/settings: every setting with its value, what web.conf says,
- * and whether it can be changed here.
- * POST, {"set": {"agent_source": "https://…", "update_check": false}}:
- * change some.  A value equal to web.conf's, or null, drops the
- * override.
- */
-int
-api_settings(struct http_request *req)
-{
-	ucl_object_t		*body;
-	const ucl_object_t	*set;
-	char			 why[200];
-	int			 rc;
-
-	if (!guard(req, req->method == HTTP_METHOD_POST))
-		return (WEB_OK);
-	if (req->method != HTTP_METHOD_POST)
-		return (reply(req));
-	if ((body = read_json(req)) == NULL || (set = ucl_object_lookup(body,
-	    "set")) == NULL || ucl_object_type(set) != UCL_OBJECT) {
-		if (body != NULL)
-			ucl_object_unref(body);
-		return (reply_error(req, 400, "invalid", "a \"set\" object is "
-		    "needed"));
-	}
-	rc = settings_set(set, why, sizeof(why));
-	ucl_object_unref(body);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 400 ? "invalid" : "io", "%s",
-		    why));
-	return (reply(req));
 }
 
 /* ---- arcana-console's settings (cyang.c) ----------------------------- */

@@ -16,8 +16,8 @@
  * encrypted for each subscription (webpush.c) and posted to its
  * address over HTTPS, from a task thread.  A push service that says a
  * subscription is gone has it dropped.  Each subscription is its
- * user's: a user reads, changes and is sent to their own alone, by
- * /api or as arcana-console's push (cyang.c).
+ * user's: a user reads, changes and is sent to their own alone, as
+ * arcana-console's push (cyang.c).
  */
 
 #include <sys/types.h>
@@ -373,20 +373,6 @@ mine(const ucl_object_t *e, const char *user)
 	return (strcmp((u = ucl_str(e, "user")) != NULL ? u : "", user) == 0);
 }
 
-/* The subscriptions of user. */
-static size_t
-count_of(const char *user)
-{
-	const ucl_object_t	*e;
-	ucl_object_iter_t	 it = NULL;
-	size_t			 n = 0;
-
-	while ((e = ucl_object_iterate(sub_list(), &it, true)) != NULL)
-		if (mine(e, user))
-			n++;
-	return (n);
-}
-
 /*
  * Remove the subscription with this address, user's alone when user is
  * not NULL; true if there was one.
@@ -502,109 +488,9 @@ push_save(char *why, size_t len)
 }
 
 /*
- * GET /api/push: the key browsers subscribe with, and the devices of the
- * request's user that have, by the name they gave and the push service
- * they are at.
- */
-int
-api_push(struct http_request *req)
-{
-	const ucl_object_t	*e, *v;
-	ucl_object_t		*o, *a, *d;
-	ucl_object_iter_t	 it;
-	const char		*path, *user;
-	char			 host[256];
-
-	if (!guard(req, false))
-		return (WEB_OK);
-	user = owner_of(req);
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "public_key", ucl_object_fromstring(vapid_pub));
-	a = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((e = ucl_object_iterate(sub_list(), &it, true)) != NULL) {
-		if (!mine(e, user))
-			continue;
-		d = ucl_object_typed_new(UCL_OBJECT);
-		if ((v = ucl_object_lookup(e, "name")) != NULL)
-			put(d, "name", ucl_object_fromstring(
-			    ucl_object_tostring(v)));
-		if ((v = ucl_object_lookup(e, "added")) != NULL)
-			put(d, "added", ucl_object_fromint(ucl_object_toint(v)));
-		if ((v = ucl_object_lookup(e, "endpoint")) != NULL) {
-			put(d, "endpoint", ucl_object_fromstring(
-			    ucl_object_tostring(v)));
-			if (endpoint_parse(ucl_object_tostring(v), host,
-			    sizeof(host), &path))
-				put(d, "service", ucl_object_fromstring(host));
-		}
-		ucl_array_append(a, d);
-	}
-	put(o, "devices", a);
-	return (reply_json(req, 200, o));
-}
-
-/*
- * POST /api/push/subscribe {"endpoint", "p256dh", "auth", "name"}: this
- * browser is to be told, as the request's user.  POST
- * /api/push/unsubscribe {"endpoint"}: no longer, the user's own alone.
- */
-int
-api_push_subscribe(struct http_request *req)
-{
-	ucl_object_t	*body;
-	const char	*endpoint, *path;
-	char		 host[256], why[160];
-	int		 rc;
-
-	if (!guard(req, true))
-		return (WEB_OK);
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a JSON body is "
-		    "needed"));
-	endpoint = ucl_str(body, "endpoint");
-	if (strstr(req->path, "unsubscribe") != NULL) {
-		if (endpoint == NULL || strlen(endpoint) > 1024 ||
-		    !endpoint_parse(endpoint, host, sizeof(host), &path)) {
-			ucl_object_unref(body);
-			return (reply_error(req, 400, "invalid", "the address "
-			    "of a push service is https://host/path"));
-		}
-		if (sub_remove(endpoint, owner_of(req)))
-			(void)push_save(why, sizeof(why));
-		ucl_object_unref(body);
-		return (api_push_list(req));
-	}
-	rc = sub_add(owner_of(req), endpoint, ucl_str(body, "p256dh"),
-	    ucl_str(body, "auth"), ucl_str(body, "name"), time(NULL), why,
-	    sizeof(why));
-	ucl_object_unref(body);
-	if (rc == 0)
-		rc = push_save(why, sizeof(why));
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 400 ? "invalid" : rc == 409 ?
-		    "full" : "io", "%s", why));
-	return (api_push_list(req));
-}
-
-/* The request's user's devices as they are now, for those who changed
- * them. */
-int
-api_push_list(struct http_request *req)
-{
-	ucl_object_t	*o;
-
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "ok", ucl_object_frombool(true));
-	put(o, "devices", ucl_object_fromint((int64_t)count_of(
-	    owner_of(req))));
-	return (reply_json(req, 200, o));
-}
-
-/*
- * POST /api/push/send {"title", "body", "except"}, or arcana-console's
- * push/send action: tell every device of the request's user but the one
- * at the address "except", which is the one that asks.
+ * arcana-console's push/send action, {"title", "body", "except"}: tell
+ * every device of the request's user but the one at the address
+ * "except", which is the one that asks.
  */
 int
 api_push_send(struct http_request *req)
@@ -619,9 +505,8 @@ api_push_send(struct http_request *req)
 	char			 host[256];
 	size_t			 i, len;
 	int			 sent, gone;
-	bool			 changed, yang;
+	bool			 changed;
 
-	yang = cyang_path(req->path);
 	if (req->hdlr_extra != NULL) {
 		s = req->hdlr_extra;
 		if (task_state(&s->task) != TASK_STATE_FINISHED) {
@@ -648,8 +533,6 @@ api_push_send(struct http_request *req)
 			(void)push_save(why, sizeof(why));
 		}
 		o = ucl_object_typed_new(UCL_OBJECT);
-		if (!yang)
-			put(o, "ok", ucl_object_frombool(true));
 		put(o, "sent", ucl_object_fromint(sent));
 		put(o, "gone", ucl_object_fromint(gone));
 		put(o, "failed", ucl_object_fromint((int64_t)s->ntargets -
@@ -658,9 +541,7 @@ api_push_send(struct http_request *req)
 		res = ucl_object_typed_new(UCL_ARRAY);
 		for (i = 0; i < s->ntargets; i++) {
 			one = ucl_object_typed_new(UCL_OBJECT);
-			if (yang)
-				put(one, "index", ucl_object_fromint(
-				    (int64_t)i));
+			put(one, "index", ucl_object_fromint((int64_t)i));
 			if (endpoint_parse(s->targets[i].endpoint, host,
 			    sizeof(host), &path))
 				put(one, "service", ucl_object_fromstring(host));
@@ -671,24 +552,21 @@ api_push_send(struct http_request *req)
 				    s->targets[i].said));
 			ucl_array_append(res, one);
 		}
-		put(o, yang ? "result" : "results", res);
+		put(o, "result", res);
 		send_free(s);
-		return (yang ? cyang_output(req, o) : reply_json(req, 200, o));
+		return (cyang_output(req, o));
 	}
 	if (!guard(req, true))
 		return (WEB_OK);
 	body = read_json(req);
-	if (yang && req->http_body != NULL && req->http_body->length > 0 &&
-	    (body == NULL || (body->len > 0 && ucl_object_lookup(body,
+	if (req->http_body != NULL && req->http_body->length > 0 && (body ==
+	    NULL || (body->len > 0 && ucl_object_lookup(body,
 	    "arcana-console:input") == NULL))) {
 		ucl_object_unref(body);
 		return (restconf_error_tag(req, 400, "malformed-message",
 		    "an action's body is {\"arcana-console:input\": {...}}"));
 	}
-	if (!yang && body == NULL)
-		return (reply_error(req, 400, "invalid", "a JSON body is "
-		    "needed"));
-	in = yang ? ucl_object_lookup(body, "arcana-console:input") : body;
+	in = ucl_object_lookup(body, "arcana-console:input");
 	if ((title = ucl_str(in, "title")) == NULL)
 		title = "Arcana";
 	if ((text = ucl_str(in, "body")) == NULL)
@@ -731,10 +609,8 @@ api_push_send(struct http_request *req)
 		send_free(s);
 		free(s);
 		o = ucl_object_typed_new(UCL_OBJECT);
-		if (!yang)
-			put(o, "ok", ucl_object_frombool(true));
 		put(o, "sent", ucl_object_fromint(0));
-		return (yang ? cyang_output(req, o) : reply_json(req, 200, o));
+		return (cyang_output(req, o));
 	}
 	req->hdlr_extra = s;
 	task_create(&s->task, send_run);

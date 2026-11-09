@@ -196,11 +196,8 @@ static void
 link_led(struct html *h, const char *name, enum link l, const char *title)
 {
 
-	/* The API's light is also the way to the API's own page. */
-	h_fmt(h, "<span class=\"link %s%s\"%s", l == LINK_UP ? "up" :
-	    l == LINK_DOWN ? "down" : "unknown", strcmp(name, "API") == 0 ?
-	    app.node == NODE_API ? " go on" : " go" : "", strcmp(name,
-	    "API") == 0 ? " data-act=\"select-api\" role=\"button\"" : "");
+	h_fmt(h, "<span class=\"link %s\"", l == LINK_UP ? "up" :
+	    l == LINK_DOWN ? "down" : "unknown");
 	h_attr(h, "title", title);
 	h_raw(h, "><i class=\"led\"></i>");
 	h_txt(h, name);
@@ -228,14 +225,14 @@ topbar(struct html *h)
 	}
 	h_raw(h, "</div><nav class=\"crumbs\">");
 	if (app.node == NODE_NETWORK || app.node == NODE_FLEET || app.node ==
-	    NODE_API || app.node == NODE_USAGE || app.node == NODE_WORKFLOWS ||
+	    NODE_USAGE || app.node == NODE_WORKFLOWS ||
 	    app.node == NODE_SDWAN || app.node == NODE_SETTINGS || app.node ==
 	    NODE_DEVICES || app.node == NODE_TROUBLE || app.node ==
 	    NODE_SECURITY || app.node == NODE_BUILDER || app.node ==
 	    NODE_STORAGE)
 		h_fmt(h, "<span class=\"crumb place\">%s</span>", app.node ==
-		    NODE_NETWORK ? "Network" : app.node == NODE_API ? "API" :
-		    app.node == NODE_USAGE ? "Utilization" : app.node ==
+		    NODE_NETWORK ? "Network" : app.node == NODE_USAGE ?
+		    "Utilization" : app.node ==
 		    NODE_WORKFLOWS ? "Workflows" : app.node == NODE_SDWAN ?
 		    "SD-WAN" : app.node == NODE_TROUBLE ? "Troubleshoot" : app.node ==
 		    NODE_SECURITY ? "Security" : app.node == NODE_STORAGE ?
@@ -412,8 +409,8 @@ rail(struct html *h)
 	    "<button class=\"ghost small rail-toggle\" data-act=\""
 	    "rail-toggle\" title=\"Menu\">%s ", app.rail_open ?
 	    " open" : "", app.rail_open ? "▴" : "▾");
-	h_txt(h, app.node == NODE_NETWORK ? "Network" : app.node == NODE_API ?
-	    "API" : app.node == NODE_USAGE ? "Utilization" : app.node ==
+	h_txt(h, app.node == NODE_NETWORK ? "Network" : app.node ==
+	    NODE_USAGE ? "Utilization" : app.node ==
 	    NODE_WORKFLOWS ? "Workflows" : app.node == NODE_SDWAN ? "SD-WAN" :
 	    app.node == NODE_TROUBLE ? "Troubleshoot" :
 	    app.node == NODE_SECURITY ? "Security" :
@@ -948,11 +945,6 @@ stage(struct html *h)
 		else
 			view_netmap(h);
 		h_raw(h, "</div></main>");
-		return;
-	}
-	if (app.node == NODE_API) {
-		view_apidoc(h);
-		h_raw(h, "</main>");
 		return;
 	}
 	if (app.node == NODE_USAGE) {

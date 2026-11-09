@@ -9,10 +9,9 @@
  * host, so that it names the link whatever the interface's own
  * description says and survives the host's reinstall.  labels.json in
  * the data directory, {"labels": {"server/interface": "text"}}, under
- * labels.lock while it is changed; GET /api/labels gives them all,
- * PUT /api/labels/<server>/<interface> {"label": "text"} sets one,
- * an empty text takes it away.  The same as arcana-console's labels
- * (cyang.c), through labels_apply().
+ * labels.lock while it is changed, served as arcana-console's labels
+ * (cyang.c), changed through labels_apply(); an empty text takes one
+ * away.
  */
 
 #include <sys/param.h>
@@ -158,21 +157,6 @@ seen_load(struct http_request *req)
 	return (all);
 }
 
-/* GET /api/labels: every label of the hosts one may read, by
- * server/interface. */
-int
-api_labels(struct http_request *req)
-{
-	ucl_object_t	*all;
-
-	if (req->method != HTTP_METHOD_GET)
-		return (reply_error(req, 405, "method", "GET"));
-	if (!guard(req, false))
-		return (WEB_OK);
-	all = seen_load(req);
-	return (reply_json(req, 200, all));
-}
-
 /*
  * The labels changed as set says, {"server/interface": "text"}, an empty
  * text taking one away, each checked before any is kept; the labels
@@ -231,45 +215,6 @@ labels_apply(const ucl_object_t *set, ucl_object_t **allp, char *why,
 	else
 		ucl_object_unref(all);
 	return (0);
-}
-
-/* PUT /api/labels/<server>/<interface> {"label": "text"}. */
-int
-api_label(struct http_request *req)
-{
-	ucl_object_t	*body, *all, *set;
-	const char	*p, *label;
-	char		 sid[17], ifname[17], key[40], why[128];
-	size_t		 n;
-	int		 rc;
-
-	if (req->method != HTTP_METHOD_PUT)
-		return (reply_error(req, 405, "method", "PUT"));
-	/* The path: /api/labels/<server>/<interface>. */
-	p = req->path + strlen("/api/labels/");
-	n = strcspn(p, "/");
-	if (n == 0 || n > 16 || p[n] != '/' || strlen(p + n + 1) == 0 ||
-	    strlen(p + n + 1) > 15)
-		return (reply_error(req, 400, "invalid", "a label is of "
-		    "/api/labels/<server>/<interface>"));
-	snprintf(sid, sizeof(sid), "%.*s", (int)n, p);
-	snprintf(ifname, sizeof(ifname), "%s", p + n + 1);
-	if (!guard(req, true) || !host_allowed(req, sid, true, false))
-		return (WEB_OK);
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "{\"label\": \"text\"}; "
-		    "empty to take it away"));
-	label = ucl_str(body, "label");
-	snprintf(key, sizeof(key), "%s/%s", sid, ifname);
-	set = ucl_object_typed_new(UCL_OBJECT);
-	put(set, key, ucl_object_fromstring(label != NULL ? label : ""));
-	ucl_object_unref(body);
-	rc = labels_apply(set, &all, why, sizeof(why));
-	ucl_object_unref(set);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 400 ? "invalid" : "store",
-		    "%s", why));
-	return (reply_json(req, 200, all));
 }
 
 /* ---- arcana-console's labels (cyang.c) ------------------------------- */

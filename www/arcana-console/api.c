@@ -29,7 +29,7 @@ reply_json(struct http_request *req, int status, ucl_object_t *o)
 {
 	unsigned char	*json;
 
-	/* An /api handler at arcana-console's path: RESTCONF's shape. */
+	/* A handler bridged at arcana-console's path: RESTCONF's shape. */
 	if (cyang_bridged(req->path))
 		return (cyang_bridge_reply(req, status, o));
 	json = ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
@@ -45,18 +45,6 @@ reply_json(struct http_request *req, int status, ucl_object_t *o)
 	http_response(req, status, json, strlen((char *)json));
 	free(json);
 	return (WEB_OK);
-}
-
-/*
- * An /api/ path the console does not have (routes.c's last route): a
- * JSON 404 like every other error, not the server's plain one.
- */
-int
-api_not_found(struct http_request *req)
-{
-
-	return (reply_error(req, 404, "not-found", "no such route: %s",
-	    req->path));
 }
 
 /* {"error": {"code": "...", "message": "..."}} */
@@ -122,7 +110,7 @@ read_json(struct http_request *req)
 		ucl_object_unref(o);
 		o = NULL;
 	}
-	/* At arcana-console's path, /api's body is the input's. */
+	/* At a bridged path, the body is the input's or the node's. */
 	if (cyang_bridged(req->path))
 		o = cyang_unwrap(req, o);
 	return (o);
@@ -220,10 +208,10 @@ guard(struct http_request *req, bool mutate)
 }
 
 /*
- * Path segment idx, counting from 1: in /api/servers/<id>/jails/<name>,
- * the server is 3 and the jail 5.  The routes are compiled with
- * REG_NOSUB, so their capture groups are not available; the route's
- * regular expression has already checked the characters.
+ * Path segment idx, counting from 1: in /api/servers/<id>/ids/pcap, the
+ * host is 3.  The routes are compiled with REG_NOSUB, so their capture
+ * groups are not available; the route's regular expression has already
+ * checked the characters.
  */
 bool
 capture(struct http_request *req, int idx, char *buf, size_t len)
@@ -232,50 +220,41 @@ capture(struct http_request *req, int idx, char *buf, size_t len)
 	return (capture_path(req->path, idx, buf, len));
 }
 
-/* The host's id of a host's route: /api/servers/<id>/..., or
- * arcana-console's hosts/host=<id>/... */
+/* The host's id of arcana-console's hosts/host=<id>/... */
 bool
 server_capture(struct http_request *req, char *sid, size_t len)
 {
 	const char	*p;
 	size_t		 n;
 
-	if (strncmp(req->path, CYANG_HOST, sizeof(CYANG_HOST) - 1) != 0) {
-		if (!capture(req, 3, sid, len))
-			return (false);
-	} else {
-		p = req->path + sizeof(CYANG_HOST) - 1;
-		n = strcspn(p, "/");
-		if (n == 0 || n >= len)
-			return (false);
-		memcpy(sid, p, n);
-		sid[n] = '\0';
-	}
+	if (strncmp(req->path, CYANG_HOST, sizeof(CYANG_HOST) - 1) != 0)
+		return (false);
+	p = req->path + sizeof(CYANG_HOST) - 1;
+	n = strcspn(p, "/");
+	if (n == 0 || n >= len)
+		return (false);
+	memcpy(sid, p, n);
+	sid[n] = '\0';
 	/* An id is hex: nothing a file's name reads otherwise. */
 	return (strspn(sid, "0123456789abcdef") == strlen(sid));
 }
 
-/* Whether the request is the route api, or cy below arcana-console's
- * data. */
+/* Whether the request is of cy below arcana-console's data. */
 bool
-path_is(const struct http_request *req, const char *api, const char *cy)
+path_is(const struct http_request *req, const char *cy)
 {
 	size_t	n = sizeof(CYANG_DATA) - 1;
 
-	return (strcmp(req->path, api) == 0 || (cy != NULL &&
-	    strncmp(req->path, CYANG_DATA, n) == 0 && strcmp(req->path + n,
-	    cy) == 0));
+	return (strncmp(req->path, CYANG_DATA, n) == 0 && strcmp(req->path +
+	    n, cy) == 0);
 }
 
-/* A record as CSV: /api's .csv, or text/csv in Accept at
- * arcana-console's path. */
+/* A record as CSV: text/csv in Accept, at arcana-console's path. */
 bool
 want_csv(struct http_request *req)
 {
 	const char	*v;
 
-	if (strstr(req->path, ".csv") != NULL)
-		return (true);
 	return (cyang_path(req->path) && http_request_header(req, "accept",
 	    &v) && strstr(v, "text/csv") != NULL);
 }

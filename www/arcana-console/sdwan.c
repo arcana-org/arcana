@@ -30,9 +30,9 @@
  * document again, with the version it was made from: one made from an
  * older one is refused, so that two pages never undo each other.
  *
- *	GET  /api/sdwan		the document
- *	PUT  /api/sdwan		a new one, checked and kept
- *	POST /api/sdwan/check	one checked, not kept
+ *	GET  sdwan/document	the document (arcana-console's)
+ *	PUT  sdwan/document	a new one, checked and kept
+ *	POST sdwan/check	one checked, not kept
  */
 
 #include <sys/param.h>
@@ -3937,8 +3937,8 @@ api_sdwan(struct http_request *req)
 		ucl_object_unref(body);
 		return (reply_error(req, 400, "invalid", "%s", c.why));
 	}
-	/* A check (/api/sdwan/check, arcana-console's sdwan/check). */
-	if (!path_is(req, "/api/sdwan", "sdwan/document")) {
+	/* A check: arcana-console's sdwan/check. */
+	if (!path_is(req, "sdwan/document")) {
 		ucl_object_unref(body);
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_frombool(true), "ok", 0,

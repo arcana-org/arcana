@@ -33,8 +33,8 @@
  *
  * Appendix D's flow, a service placed on a free SAP (4.6.3):
  *
- *	POST /api/sdwan/attach	{"vpn-id", "vpn-node-id"[, "sap-id"]
- *				[, "access"]}
+ *	POST arcana-console's sdwan/attach, its input {"vpn-id",
+ *	    "vpn-node-id"[, "sap-id"][, "access"]}
  *
  * the edge's host read, the SAP named (or the first free one fit for
  * the access: a dot1q or qinq one where child SAPs are allowed) taken
@@ -918,7 +918,8 @@ api_sapnet(struct http_request *req)
 	return (WEB_RETRY);
 }
 
-/* POST /api/sdwan/attach: a service's access placed on a free SAP. */
+/* arcana-console's sdwan/attach: a service's access placed on a free
+ * SAP. */
 int
 api_sapnet_attach(struct http_request *req)
 {

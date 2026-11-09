@@ -18,13 +18,13 @@
  * in its subscription document (Authorization: Bearer; arcana-notif's
  * leaf in the https-receiver), which the console keeps hashed in the
  * host's record (servers.c), made anew by each POST of
- * /api/servers/<host>/subscription/token: then a plain listener, TLS
+ * arcana-console's hosts/host=<id>/subscription-token: then a plain listener, TLS
  * ended before it, takes the records too.  The records are kept
  * as the host's, in notif/<host>.jsonl of the data directory, a record
  * a line, so that they outlive a restart of the console: one received
  * again after a replay (the same record, the same event time) is kept
- * once.  /api/servers/<host>/notifications reads them;
- * /api/servers/<host>/subscription says what to put in the host's
+ * once.  arcana-console's hosts/host=<id>/notifications reads them;
+ * hosts/host=<id>/subscription says what to put in the host's
  * candidate for the console to be its receiver (the endpoints under
  * notif_base of web.conf, the origin by default), which RESTCONF's PUT
  * of /ietf-subscribed-notifications:subscriptions and
@@ -58,7 +58,7 @@
 
 static pthread_mutex_t	notif_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* The host's id from /api/notif/<id>/..., or /api/servers/<id>/...;
+/* The host's id from /api/notif/<id>/...;
  * false: none there. */
 static bool
 host_of(const char *path, const char *prefix, char *id, size_t len)
@@ -287,7 +287,7 @@ api_notif_relay(struct http_request *req)
 }
 
 /*
- * GET /api/servers/<id>/notifications[?after=n]: the records kept, the
+ * GET hosts/host=<id>/notifications[?after=n]: the records kept, the
  * newest NOTIF_READ at most, each with its number (its line's, from 1
  * since the file began), those after n alone: {"records": [{"n":, ...
  * the record}], "last": n}.
@@ -440,9 +440,9 @@ subscription_doc(const char *id, const char *token)
 }
 
 /*
- * GET /api/servers/<id>/subscription: the document, without a token
+ * GET hosts/host=<id>/subscription: the document, without a token
  * (the console keeps none to show): "token" says whether the host has
- * one.  POST /api/servers/<id>/subscription/token: a new token made for
+ * one.  POST hosts/host=<id>/subscription-token: a new token made for
  * the host, the one before forgotten, and the document with it, the
  * once it is shown; the receiver takes it as notif_auth allows.
  */

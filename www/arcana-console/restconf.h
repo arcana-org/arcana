@@ -53,9 +53,17 @@ int		 restconf_refuse(struct http_request *req, struct rcreq *r,
 		    const char *uri, int status, const char *why);
 bool		 restconf_confirms(const struct rcreq *r);
 /*
+ * What host sid's answer json (status 200) to r tells the console of
+ * the host: whether its agent samples it (arcana-history's sampling,
+ * read from the host's data), kept in the registry for the alerts.
+ */
+void		 restconf_seen(const struct rcreq *r, const char *sid,
+		    const char *json);
+/*
  * arcana-jobs' submit and dry-run: each safe change saying no
  * safe-wait given wait (the host's timer, servers_safe_wait(); 0 the
- * agent's own), one it says checked as /api's; 0, or 400 and *why.
+ * agent's own), one it says checked against the host's bounds; 0, or
+ * 400 and *why.
  */
 int		 restconf_safe_wait(struct rcreq *r, int wait,
 		    const char **why);

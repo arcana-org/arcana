@@ -563,8 +563,8 @@ token_find(const char *value)
 
 /*
  * A one-time token for host, its name in the console name, to join
- * with on port: *out, what /api/enrol/tokens says ({token, host, name,
- * port, expires, command}); 0, or the HTTP status and why (409: no CA
+ * with on port: *out, what enrolment/create-token says ({token, host,
+ * name, port, expires, command}); 0, or the HTTP status and why (409: no CA
  * key).
  */
 int
@@ -642,37 +642,8 @@ enrol_enabled(void)
 }
 
 /*
- * POST /api/enrol/tokens {name, host, port?}: a one-time token for a host
- * to join with, and the command to run there.
- */
-int
-api_enrol_tokens(struct http_request *req)
-{
-	ucl_object_t		*body, *o;
-	const ucl_object_t	*v;
-	char			 why[160];
-	int			 rc;
-
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (cfg.tls_ca_key == NULL)
-		return (reply_error(req, 409, "no_ca", "the console has no "
-		    "CA key (tls.ca_key in web.conf); enrolment is off"));
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "bad_request",
-		    "expected a JSON object"));
-	rc = enrol_token_new(ucl_str(body, "name"), ucl_str(body, "host"),
-	    (v = ucl_object_lookup(body, "port")) != NULL ?
-	    ucl_object_toint(v) : DEFAULT_PORT, &o, why, sizeof(why));
-	ucl_object_unref(body);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 409 ? "no_ca" : "invalid",
-		    "%s", why));
-	return (reply_json(req, 200, o));
-}
-
-/*
- * POST /api/enrol {token, csr}: no session; the token is the credential.
+ * POST /api/enrol {token, csr}: no session; the token is the
+ * credential.
  * The certificate is for the host the token was made for, whatever the
  * request's subject says.  The host joins the server list.
  */
@@ -1582,8 +1553,9 @@ rm_next(void)
 }
 
 /*
- * GET /api/ca: the CA now, the next one, the change's state.  POST
- * {"action": make | request | import | discard | rollout | finish}.
+ * GET arcana-console's ca and ca/state: the CA now, the next one, the
+ * change's state.  POST ca/<action>: make, request, import, discard,
+ * rollout or finish.
  */
 int
 api_ca(struct http_request *req)
@@ -1601,20 +1573,12 @@ api_ca(struct http_request *req)
 	if (!cfg.tls_own)
 		return (reply_error(req, 409, "not_own", "web.conf's tls block "
 		    "names the CA: it is changed there, not here"));
-	/* arcana-console's ca/<action>: the action its node, no input
-	 * none. */
-	if (cyang_path(req->path)) {
-		if ((body = read_json(req)) == NULL)
-			body = ucl_object_typed_new(UCL_OBJECT);
-		ucl_object_replace_key(body, ucl_object_fromstring(
-		    strrchr(req->path, '/') + 1), "action", 0, true);
-	} else
-		body = read_json(req);
-	if (body == NULL || (act = ucl_str(body, "action")) == NULL) {
-		if (body != NULL)
-			ucl_object_unref(body);
-		return (reply_error(req, 400, "bad_request", "an action"));
-	}
+	/* The action its node; no input, none. */
+	if ((body = read_json(req)) == NULL)
+		body = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_replace_key(body, ucl_object_fromstring(strrchr(req->path,
+	    '/') + 1), "action", 0, true);
+	act = ucl_str(body, "action");
 	pthread_mutex_lock(&ca_lock);
 	busy = ca_running;
 	pthread_mutex_unlock(&ca_lock);

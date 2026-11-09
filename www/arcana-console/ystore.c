@@ -462,14 +462,10 @@ ystore_fstab_put(cbl_conn *conn, const char *text, const char *sha256,
 
 int
 ystore_key(cbl_conn *conn, const char *dataset, const char *key,
-    const char *new_key, const char *create, char *err, size_t errlen)
+    const char *new_key, char *err, size_t errlen)
 {
-	static const char *const ciphers[] = { "on", "aes-128-ccm",
-	    "aes-192-ccm", "aes-256-ccm", "aes-128-gcm", "aes-192-gcm",
-	    "aes-256-gcm" };
 	const struct cbl_ynode	*n, *list, *act;
 	cbl_yarena		*a;
-	size_t			 i;
 	int			 error;
 
 	err[0] = '\0';
@@ -477,31 +473,7 @@ ystore_key(cbl_conn *conn, const char *dataset, const char *key,
 	list = yq_child(n, "dataset");
 	if ((a = cbl_yarena_new()) == NULL)
 		return (ENOMEM);
-	if (create != NULL && create[0] != '\0') {
-		struct arcana_storage_storage_create_encrypted_input ci;
-
-		for (i = 0; i < nitems(ciphers) && strcmp(ciphers[i],
-		    create) != 0; i++)
-			;
-		if (i == nitems(ciphers)) {
-			snprintf(err, errlen, "encryption is on, or one of "
-			    "aes-128-ccm, aes-192-ccm, aes-256-ccm, aes-128-gcm, "
-			    "aes-192-gcm, aes-256-gcm");
-			error = EINVAL;
-		} else if ((act = yq_child(n, "create-encrypted")) == NULL) {
-			snprintf(err, errlen, "arcana-storage has no "
-			    "create-encrypted");
-			error = ENOENT;
-		} else {
-			memset(&ci, 0, sizeof(ci));
-			ci.dataset = dataset;
-			ci.has_encryption = true;
-			ci.encryption = i;
-			ci.key = new_key;
-			error = yq_call(conn, n, NULL, act, &ci, NULL, a, err,
-			    errlen);
-		}
-	} else if (new_key != NULL) {
+	if (new_key != NULL) {
 		struct arcana_storage_storage_dataset_change_key_input ki;
 
 		memset(&ki, 0, sizeof(ki));

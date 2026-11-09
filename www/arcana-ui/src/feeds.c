@@ -6,8 +6,8 @@
 /*
  * Threat feeds: the Network section's tab of the lists of scanners',
  * spammers' and abusers' prefixes the console fetches from the internet
- * and keeps on the hosts chosen as ipfw(8) tables (GET /api/feeds, PUT,
- * DELETE /api/feeds/<id>, POST .../fetch and .../preview).  The presets
+ * and keeps on the hosts chosen as ipfw(8) tables (arcana-console's
+ * threat-feeds, their fetch and preview actions).  The presets
  * with their sources and terms, each enabled by an operator; every feed
  * with its last fetch, its entries and what it dropped and why; a
  * feed's preview, each host's dry run.  No rule is made here: the
@@ -39,7 +39,7 @@ static struct {
 	char		 dfilter[64];
 } fd;
 
-/* ---- arcana-console's threat-feeds as /api had them ------------------ */
+/* ---- arcana-console's threat-feeds as the page draws them ----------- */
 
 static void
 put(ucl_object_t *o, const char *key, ucl_object_t *v)
@@ -48,7 +48,7 @@ put(ucl_object_t *o, const char *key, ucl_object_t *v)
 	ucl_object_insert_key(o, v, key, 0, true);
 }
 
-/* Of y, the keys named in pairs (YANG's, /api's) copied into o: numbers,
+/* Of y, the keys named in pairs (YANG's, the page's) copied into o: numbers,
  * or times as seconds. */
 static void
 nums(ucl_object_t *o, const ucl_object_t *y, const char *const *k,
@@ -118,7 +118,7 @@ dropped_of(ucl_object_t *o, const ucl_object_t *y)
 		    "protected-hidden", 0)));
 }
 
-/* A feed entry as /api's feed: its state and what was last fetched. */
+/* A feed entry as the page's feed: its state and what was last fetched. */
 static ucl_object_t *
 feed_of(const ucl_object_t *y)
 {
@@ -837,7 +837,7 @@ feeds_form(const char *form_name, const ucl_object_t *f)
 		first = false;
 	}
 	h_raw(&b, "]}");
-	/* /api's body as the feed's entry: its id, its hosts a host
+	/* The form's body as the feed's entry: its id, its hosts a host
 	 * leaf-list. */
 	if ((y = json_parse(b.s)) == NULL) {
 		free(b.s);

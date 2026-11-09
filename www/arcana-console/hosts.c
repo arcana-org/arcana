@@ -243,7 +243,6 @@ struct call {
 	int			 rc_status;
 	char			*key;		/* zfs-key: as typed, zeroed */
 	char			*new_key;
-	char			 zcreate[16];	/* zfs-key: made encrypted so */
 	struct arc_variable	*vars;		/* service-config: to set */
 	size_t			 nvars;
 	char			*accept[8];	/* a commit's warnings accepted */
@@ -343,9 +342,9 @@ uri_host(const char *uri, char *buf, size_t len)
 #define	POOL_IDLE_US	(90 * 1000000ULL)
 
 /*
- * A connection live reads run on (hosts_read_live()): subscribed to the
- * host's steps once, when made, and told which call is on it, so that
- * each step the host tells goes to that call's page.  Only live reads
+ * A connection live reads run on (hosts_restconf_live()): subscribed to
+ * the host's steps once, when made, and told which call is on it, so
+ * that each step the host tells goes to that call's page.  Only live reads
  * take these, and they take no other: the host tells its steps to a
  * connection that subscribed, which no other read wants to hear.
  */
@@ -466,20 +465,17 @@ static ucl_object_t *job_object(struct call *, const struct arc_job *,
 		    const struct arcana_jobs_step *, size_t, bool, uint64_t);
 static const char *spec_from_json(const ucl_object_t *, struct arc_job_spec *);
 static ucl_object_t *dry_steps(const struct arcana_jobs_step *, size_t);
-static int	 jobs_post(struct http_request *, enum op);
 /*
- * What a read is asked by: the path and query string of a GET, or of a
- * read on the console's socket (stream.c) as the GET would have them.
+ * What a read is asked by: the path and query string of a GET.
  */
 struct rq {
-	const char	*path;		/* /api/servers/<id>/... */
+	const char	*path;		/* the request's path */
 	const char	*query;		/* the query string, or NULL */
 };
 #define	RQ_OF(req)	(&(struct rq){ (req)->path, (req)->query_string })
 typedef const char *read_setup(struct call *, const struct rq *);
 
 static bool	 rq_param(const struct rq *, const char *, char *, size_t);
-static bool	 rq_u64(const struct rq *, const char *, uint64_t, uint64_t *);
 static int	 read_route(struct http_request *, enum op, read_setup *);
 static void	 spec_free(struct arc_job_spec *);
 static ucl_object_t *step_object(int, int, const char *, const char *,
@@ -2021,16 +2017,14 @@ static int
 held_answer(struct call *c, ucl_object_t *top, uint64_t t1, char *detail,
     size_t len)
 {
-	struct held	*h, *ph;
+	struct held	*h;
 	struct yq_jobs	 yqj;
 	cbl_yarena	*ya;
-	ucl_object_t	*e;
-	uint64_t	 at;
 	int		 r;
 
 	if (c->on_step != NULL || c->fresh || !c->reads)
 		return (HELD_NO);
-	h = ph = NULL;
+	h = NULL;
 	r = HELD_TOP;
 	switch (c->op) {
 	case OP_STATS:
@@ -2077,34 +2071,16 @@ held_answer(struct call *c, ucl_object_t *top, uint64_t t1, char *detail,
 		}
 		cbl_yarena_free(ya);
 		break;
-	case OP_SDWAN:
-		/* The samples after those the page has: held from a time
-		 * on, the page's first read the host's.  Subscribed only
-		 * for a page that asks so: one that reads it whole each
-		 * time would have it read twice. */
-		if (!c->has_pos || (h = watch_held(c->sid, c->uri, c->peer,
-		    WATCH_SDWAN, acting)) == NULL || (ph = watch_probes_held(
-		    c->uri, c->peer, acting)) == NULL || (time_t)c->pos <
-		    ph->from || (e = ysdwan_held(h->data, ph->data, ph->more,
-		    c->pos)) == NULL) {
-			r = HELD_NO;
-			break;
-		}
-		put(top, "data", e);
-		break;
 	default:
 		return (HELD_NO);
 	}
 	if (r == HELD_NO || h == NULL) {
 		held_rele(h);
-		held_rele(ph);
 		return (HELD_NO);
 	}
-	at = ph != NULL && ph->at < h->at ? ph->at : h->at;
 	snprintf(detail, len, "%s, held: the host's subscription pushed it "
-	    "%.1f s ago", c->uri, (double)(now_us() - at) / 1000000);
+	    "%.1f s ago", c->uri, (double)(now_us() - h->at) / 1000000);
 	held_rele(h);
-	held_rele(ph);
 	return (r);
 }
 
@@ -2550,6 +2526,9 @@ connected:
 	case OP_RESTCONF:
 		restconf_run(conn, c->rc, c->sid, c->sname, c->uri,
 		    &c->rc_json, &c->rc_status);
+		/* Whether it is sampled, for the alerts (mail.c). */
+		if (c->rc_status == 200)
+			restconf_seen(c->rc, c->sid, c->rc_json);
 		ok = true;
 		break;
 	case OP_NETWORK:
@@ -3174,9 +3153,9 @@ connected:
 			put(top, "data", e);
 		break;
 	case OP_ZFS_KEY:
-		/* arcana-storage's load-key, change-key, create-encrypted. */
-		ok = ystore_key(conn, c->text, c->key, c->new_key,
-		    c->zcreate, ywhy, sizeof(ywhy)) == 0;
+		/* arcana-storage's load-key, change-key. */
+		ok = ystore_key(conn, c->text, c->key, c->new_key, ywhy,
+		    sizeof(ywhy)) == 0;
 		if (!ok)
 			put_str(top, "error", ywhy);
 		break;
@@ -3556,8 +3535,7 @@ call_start(struct http_request *req, struct call *c)
 
 /*
  * A GET of a host's read: its call set up by setup from the path and
- * query, as a read on the console's socket is too (hosts_read_live()),
- * then run; refused when setup says why.
+ * query, then run; refused when setup says why.
  */
 static int
 read_route(struct http_request *req, enum op op, read_setup *setup)
@@ -3676,76 +3654,8 @@ call_release(struct call *c)
 }
 
 /*
- * The warnings a change committed accepts: the request's "accept", an
- * error-app-tag or a list of them (rc-conf-files, rc-conf-conflict), as
- * a refusal's "error_tag" names one.
- */
-static void
-accepts_of(struct call *c, const ucl_object_t *body)
-{
-	const ucl_object_t	*a, *v;
-	ucl_object_iter_t	 it = NULL;
-	const char		*t;
-
-	if (body == NULL || (a = ucl_object_lookup(body, "accept")) == NULL)
-		return;
-	while ((v = ucl_object_iterate(a, &it, true)) != NULL &&
-	    c->naccept < nitems(c->accept)) {
-		if (ucl_object_type(v) != UCL_STRING || (t =
-		    ucl_object_tostring(v))[0] == '\0' || strlen(t) > 64 ||
-		    strspn(t, "abcdefghijklmnopqrstuvwxyz0123456789-") !=
-		    strlen(t))
-			continue;
-		c->accept[c->naccept++] = xstrdup(t);
-	}
-}
-
-/* GET /api/servers/<id>/services */
-int
-api_services(struct http_request *req)
-{
-
-	return (read_route(req, OP_SERVICES, NULL));
-}
-
-/*
- * POST /api/servers/<id>/services/<name>/action {"action": "restart"};
- * enable and disable with "accept", the warnings their commit accepts.
- */
-int
-api_service_action(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct call	*c;
-	const char	*a;
-	size_t		 i;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_SERVICE_ACTION)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	a = body != NULL ? ucl_str(body, "action") : NULL;
-	for (i = 0; a != NULL && i < nitems(service_action_names); i++)
-		if (strcmp(a, service_action_names[i]) == 0)
-			break;
-	accepts_of(c, body);
-	ucl_object_unref(body);
-	if (a == NULL || i == nitems(service_action_names) ||
-	    !capture(req, 5, c->jail, sizeof(c->jail))) {
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "action is one of "
-		    "start, stop, restart, reload, enable, disable"));
-	}
-	c->action = (uint8_t)i;
-	return (call_start(req, c));
-}
-
-/*
- * POST /api/servers/<id>/agent-build: have the host build arcana-agent
+ * POST hosts/host=<id>/agent-build (console-update too): have the host
+ * build arcana-agent
  * from agent_source, and keep it as the one the console sends.
  */
 int
@@ -3789,7 +3699,7 @@ api_agent_build(struct http_request *req)
 }
 
 /*
- * POST /api/servers/<id>/agent-update, {"restart": true}: send the host
+ * POST hosts/host=<id>/agent-update, {"restart": true}: send the host
  * the console's arcana-agent; with restart, have it restart its service.
  */
 int
@@ -3811,169 +3721,6 @@ api_agent_update(struct http_request *req)
 }
 
 /*
- * GET /api/servers/<id>/services/<name>/config: the variables.
- * POST, {"set": {"sshd_flags": "-4"}, "unset": ["sshd_x"], "accept":
- * [...]}: change them first, committed.
- */
-int
-api_service_config(struct http_request *req)
-{
-	ucl_object_t		*body;
-	const ucl_object_t	*set, *unset, *v;
-	ucl_object_iter_t	 it;
-	struct call		*c;
-	size_t			 n;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_SERVICE_CONFIG)) == NULL)
-		return (WEB_OK);
-	if (!capture(req, 5, c->jail, sizeof(c->jail))) {
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "bad service name"));
-	}
-	if (req->method == HTTP_METHOD_POST && (body = read_json(req)) != NULL) {
-		set = ucl_object_lookup(body, "set");
-		unset = ucl_object_lookup(body, "unset");
-		n = ucl_array_size(unset);
-		it = NULL;
-		while (set != NULL && ucl_object_type(set) == UCL_OBJECT &&
-		    ucl_object_iterate(set, &it, true) != NULL)
-			n++;
-		if (n > 0 && n <= 64) {
-			c->vars = xcalloc(n, sizeof(*c->vars));
-			it = NULL;
-			while (set != NULL && ucl_object_type(set) == UCL_OBJECT &&
-			    (v = ucl_object_iterate(set, &it, true)) != NULL) {
-				c->vars[c->nvars].key =
-				    xstrdup(ucl_object_key(v));
-				c->vars[c->nvars].value = xstrdup(
-				    ucl_object_tostring_forced(v));
-				c->nvars++;
-			}
-			it = NULL;
-			while ((v = ucl_object_iterate(unset, &it, true)) != NULL &&
-			    c->nvars < n) {
-				if (ucl_object_type(v) != UCL_STRING)
-					continue;
-				c->vars[c->nvars].key =
-				    xstrdup(ucl_object_tostring(v));
-				c->vars[c->nvars].remove = true;
-				c->nvars++;
-			}
-		}
-		accepts_of(c, body);
-		ucl_object_unref(body);
-	}
-	return (call_start(req, c));
-}
-
-/* GET /api/servers/<id>/hello */
-int
-api_hello(struct http_request *req)
-{
-
-	return (read_route(req, OP_HELLO, NULL));
-}
-
-/* GET /api/servers/<id>/jails[?config_only=1] */
-static const char *
-setup_jails(struct call *c, const struct rq *q)
-{
-	char	v[8];
-
-	c->config_only = rq_param(q, "config_only", v, sizeof(v)) &&
-	    strcmp(v, "1") == 0;
-	return (NULL);
-}
-
-int
-api_jails(struct http_request *req)
-{
-
-	return (read_route(req, OP_LIST, setup_jails));
-}
-
-/*
- * POST /api/servers/<id>/jails/<jail>/action {"action": "start"};
- * enable and disable with "accept", the warnings their commit accepts.
- */
-int
-api_action(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct call	*c;
-	const char	*a;
-	size_t		 i;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_ACTION)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	a = body != NULL ? ucl_str(body, "action") : NULL;
-	for (i = 0; a != NULL && i < nitems(action_names); i++)
-		if (strcmp(a, action_names[i]) == 0)
-			break;
-	accepts_of(c, body);
-	ucl_object_unref(body);
-	if (a == NULL || i == nitems(action_names) ||
-	    !capture(req, 5, c->jail, sizeof(c->jail))) {
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid",
-		    "action is one of start, stop, restart, kill"));
-	}
-	c->action = (uint8_t)i;
-	return (call_start(req, c));
-}
-
-/*
- * POST /api/servers/<id>/jails/<jail>/address
- * {"address": "10.0.0.5/24", "interface": "em0", "remove": false,
- *  "live": true, "persist": false, "dry_run": false}
- */
-int
-api_address(struct http_request *req)
-{
-	ucl_object_t	*body;
-	struct call	*c;
-	const char	*addr, *ifname;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_ADDRESS)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	addr = body != NULL ? ucl_str(body, "address") : NULL;
-	ifname = body != NULL ? ucl_str(body, "interface") : NULL;
-	if (addr == NULL || strlcpy(c->address, addr, sizeof(c->address)) >=
-	    sizeof(c->address) || (ifname != NULL && *ifname != '\0' &&
-	    strlcpy(c->ifname, ifname, sizeof(c->ifname)) >=
-	    sizeof(c->ifname)) || !capture(req, 5, c->jail,
-	    sizeof(c->jail))) {
-		ucl_object_unref(body);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "an address is "
-		    "needed, an interface name is at most 15 characters"));
-	}
-	c->addr_remove = ucl_flag(body, "remove");
-	c->addr_live = ucl_flag(body, "live");
-	c->addr_persist = ucl_flag(body, "persist");
-	c->dry_run = ucl_flag(body, "dry_run");
-	ucl_object_unref(body);
-	return (call_start(req, c));
-}
-
-/*
  * ?jail=name into the call: the vnet jail whose network is meant.
  * False when it is no name of a jail.
  */
@@ -3988,125 +3735,6 @@ pick_scope(const struct rq *q, struct call *c)
 		if (!isalnum((unsigned char)*p) && strchr("_.-", *p) == NULL)
 			return (false);
 	return (true);
-}
-
-/* ?fib=N into the call; false when it is not a number of a table. */
-static bool
-pick_fib(const struct rq *q, struct call *c)
-{
-	const char	*errstr;
-	char		 buf[16];
-
-	if (!rq_param(q, "fib", buf, sizeof(buf)) || buf[0] == '\0')
-		return (true);
-	c->fib = (uint32_t)strtonum(buf, 0, 65535, &errstr);
-	return (errstr == NULL);
-}
-
-static const char *
-setup_network(struct call *c, const struct rq *q)
-{
-	const char	*p;
-	char		 kind[16], off[16];
-	size_t		 i;
-
-	if (!capture_path(q->path, 5, kind, sizeof(kind)))
-		kind[0] = '\0';
-	if (strcmp(kind, "lookup") == 0 || strcmp(kind, "traceroute") == 0) {
-		c->op = strcmp(kind, "lookup") == 0 ? OP_ROUTE_LOOKUP :
-		    OP_TRACEROUTE;
-		/* An address is hex digits, dots and colons: no escaping. */
-		(void)rq_param(q, "to", c->address, sizeof(c->address));
-		if (c->address[0] == '\0' || c->address[strspn(c->address,
-		    "0123456789abcdefABCDEF.:")] != '\0' || !pick_fib(q, c) ||
-		    !pick_scope(q, c))
-			return ("to is an IPv4 or IPv6 address, fib a number");
-		return (NULL);
-	}
-	for (i = 0; i < nitems(net_kind_names); i++)
-		if (net_kind_names[i] != NULL && strcmp(kind,
-		    net_kind_names[i]) == 0)
-			break;
-	if (i == nitems(net_kind_names) || !pick_fib(q, c) ||
-	    !pick_scope(q, c))
-		return ("kind is one of routes, nexthops, nhgroups, "
-		    "connections, sockets, interfaces, netgraph, wireguard, "
-		    "bird, bird-routes, bird-ospf, bridges, geneve, ipfw, neighbours, "
-		    "ipsec, kept-routes, lookup; fib a number");
-	c->action = (uint8_t)i;
-	/* Read on in a table too large for one reply. */
-	if (rq_param(q, "offset", off, sizeof(off)) && off[0] != '\0') {
-		const char	*errstr;
-
-		c->offset = (uint32_t)strtonum(off, 0, 100000000, &errstr);
-		if (errstr != NULL)
-			c->offset = 0;
-	}
-	c->family = ARC_NET_FAMILY_ALL;
-	/* ?source=yang: by the standard models (the Network tab's). */
-	if (q->query != NULL && strstr(q->query, "source=yang") != NULL)
-		c->yang = true;
-	if (q->query != NULL) {
-		if (strstr(q->query, "family=inet6") != NULL)
-			c->family = ARC_NET_FAMILY_INET6;
-		else if (strstr(q->query, "family=inet") != NULL)
-			c->family = ARC_NET_FAMILY_INET;
-	}
-	/*
-	 * ?filter=text searches the routes on the host.  It is taken as
-	 * it is, so only what needs no escaping in a URL is taken.
-	 */
-	if (rq_param(q, "filter", c->jail, sizeof(c->jail))) {
-		/* BIRD's routes are asked for in words, with , between. */
-		for (p = c->jail; *p != '\0'; p++)
-			if (*p == ',' && (c->action == ARC_NET_KIND_BIRD_ROUTES ||
-			    c->action == ARC_NET_KIND_BIRD_OSPF))
-				c->jail[p - c->jail] = ' ';
-			else if (!isalnum((unsigned char)*p) && strchr(".:/_-",
-			    *p) == NULL)
-				break;
-		if (*p != '\0' || strlen(c->jail) > 128)
-			return ("the text to search for is letters, digits "
-			    "and . : / _ -");
-	}
-	return (NULL);
-}
-
-/*
- * GET /api/servers/<id>/net/<kind>[?family=inet|inet6&fib=N]
- * GET /api/servers/<id>/net/lookup?to=<address>[&fib=N]
- * GET /api/servers/<id>/net/traceroute?to=<address>: one round
- */
-int
-api_network(struct http_request *req)
-{
-
-	return (read_route(req, OP_NETWORK, setup_network));
-}
-
-/*
- * The top-level nodes of the models the agent serves, by name: ?node=
- * interfaces,routing; none, all of them.  A name is letters, digits
- * and - only.
- */
-static const char *
-setup_ydata(struct call *c, const struct rq *q)
-{
-	const char	*p;
-
-	/* node= alone, of letters, digits, - and commas. */
-	if (q->query != NULL && strncmp(q->query, "node=", 5) != 0)
-		return ("node is names of nodes, by commas");
-	if (rq_param(q, "node", c->jail, sizeof(c->jail)))
-		for (p = c->jail; *p != '\0'; p++)
-			if (!isalnum((unsigned char)*p) && *p != '-' &&
-			    *p != ',')
-				return ("node is names of nodes, by commas: "
-				    "letters, digits and -");
-	if (q->query != NULL && strlen(q->query) != 5 + strlen(c->jail))
-		return ("node is names of nodes, by commas: letters, digits "
-		    "and -");
-	return (NULL);
 }
 
 /*
@@ -4221,7 +3849,7 @@ api_restconf_host(struct http_request *req)
 			    "not JSON"));
 		}
 	}
-	/* A job's safe-wait the host's timer, as /api's (OP_JOB_SUBMIT). */
+	/* A job's safe-wait the host's timer (OP_JOB_SUBMIT's too). */
 	if ((st = restconf_prepare(c->rc, req->method, ctype, body,
 	    &why)) == 0 && (st = restconf_safe_wait(c->rc,
 	    servers_safe_wait(c->uri), &why)) == 0 &&
@@ -4292,18 +3920,7 @@ restconf_finish(struct http_request *req, struct call *c)
 }
 
 /*
- * GET /api/servers/<id>/data[?node=a,b]: the agent's YANG data as RFC
- * 7951's JSON, under "data", by cblink's YANG family.
- */
-int
-api_ydata(struct http_request *req)
-{
-
-	return (read_route(req, OP_YDATA, setup_ydata));
-}
-
-/*
- * GET /api/servers/<id>/drift: what the host has otherwise than its
+ * GET hosts/host=<id>/drift: what the host has otherwise than its
  * running configuration says (drift.c), under "drift".
  */
 int
@@ -4313,234 +3930,9 @@ api_drift(struct http_request *req)
 	return (read_route(req, OP_DRIFT, NULL));
 }
 
-/* A path of a configuration file: nothing a URL or a shell reads into. */
-static bool
-conf_path_ok(const char *s)
-{
-
-	if (s[0] != '/' || strlen(s) > 255 || strstr(s, "..") != NULL)
-		return (false);
-	for (; *s != '\0'; s++)
-		if (!isalnum((unsigned char)*s) && strchr("._/-", *s) == NULL)
-			return (false);
-	return (true);
-}
-
 /*
- * GET /api/servers/<id>/bird/config[?path=<file>]: a file of BIRD's
- * configuration, its SHA-256, and the files there are.
- * POST {"path", "text", "sha256", "check"}: put text in its place,
- * sha256 being that of the text it was made from; with check, only
- * have it parsed.
- */
-static const char *
-setup_bird_config(struct call *c, const struct rq *q)
-{
-
-	(void)rq_param(q, "path", c->jail, sizeof(c->jail));
-	if ((c->jail[0] != '\0' && !conf_path_ok(c->jail)) ||
-	    !pick_scope(q, c))
-		return ("path is a whole path of letters, digits and . _ / -; "
-		    "jail is a jail's name");
-	return (NULL);
-}
-
-int
-api_bird_config(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	const char	*s;
-	bool		 bad;
-
-	if (req->method == HTTP_METHOD_GET)
-		return (read_route(req, OP_BIRD_CONFIG, setup_bird_config));
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_BIRD_CONFIG)) == NULL)
-		return (WEB_OK);
-	bad = false;
-	if ((body = read_json(req)) == NULL)
-		bad = true;
-	else {
-		if ((s = ucl_str(body, "path")) != NULL && s[0] != '\0') {
-			bad = !conf_path_ok(s);
-			strlcpy(c->jail, s, sizeof(c->jail));
-		}
-		if ((s = ucl_str(body, "sha256")) != NULL)
-			strlcpy(c->address, s, sizeof(c->address));
-		/* Safe rides where a refresh does, confirm where config-only. */
-		c->refresh = ucl_flag(body, "safe");
-		c->config_only = ucl_flag(body, "confirm");
-		if ((s = ucl_str(body, "text")) != NULL)
-			c->text = xstrdup(s);
-		else if (!c->config_only)
-			bad = true;
-		c->dry_run = ucl_flag(body, "check");
-		if ((s = ucl_str(body, "jail")) != NULL) {
-			strlcpy(c->scope, s, sizeof(c->scope));
-			for (; *s != '\0'; s++)
-				if (!isalnum((unsigned char)*s) && strchr("_.-",
-				    *s) == NULL)
-					bad = true;
-		}
-		ucl_object_unref(body);
-	}
-	if (bad) {
-		free(c->text);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "path is a whole path "
-		    "of letters, digits and . _ / -; a change needs text and "
-		    "the sha256 of what it was made from"));
-	}
-	return (call_start(req, c));
-}
-
-/* GET /api/servers/<id>/storage/<kind>[?filter=dataset]. */
-static const char *
-setup_storage(struct call *c, const struct rq *q)
-{
-	static const char *const kinds[] = { "disks", "pools", "datasets",
-	    "snapshots", "mounts", "importable", "health" };
-	const char	*kind, *p;
-	size_t		 i;
-
-	kind = strrchr(q->path, '/') + 1;
-	for (i = 0; i < nitems(kinds); i++)
-		if (strcmp(kind, kinds[i]) == 0)
-			break;
-	(void)rq_param(q, "filter", c->jail, sizeof(c->jail));
-	for (p = c->jail; *p != '\0'; p++)
-		if (!isalnum((unsigned char)*p) && strchr("_.:/-", *p) == NULL)
-			break;
-	if (i == nitems(kinds) || *p != '\0' || !pick_scope(q, c))
-		return ("kind is one of disks, pools, datasets, snapshots, "
-		    "mounts; a dataset is letters, digits and _ . : / -");
-	c->action = (uint8_t)i;
-	return (NULL);
-}
-
-int
-api_storage(struct http_request *req)
-{
-
-	return (read_route(req, OP_STORAGE, setup_storage));
-}
-
-/*
- * GET /api/servers/<id>/ipfw/rules[?jail=]: the kept rules of the
- * firewall and the SHA-256 of their text; with ?from=rc, the file
- * rc.conf's firewall_type names instead, made into kept rules and not
- * written ("rc_file" is that file).  POST {"text", "sha256", "check"}:
- * put the text in their place, once ipfw has nothing against it.
- */
-static const char *
-setup_ipfw_rules(struct call *c, const struct rq *q)
-{
-	char	from[8];
-
-	if (!pick_scope(q, c))
-		return ("jail is a jail's name");
-	if (rq_param(q, "from", from, sizeof(from)) &&
-	    !(c->from_rc = strcmp(from, "rc") == 0))
-		return ("from is rc");
-	return (NULL);
-}
-
-int
-api_ipfw_rules(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	const char	*s;
-	bool		 bad;
-
-	if (req->method == HTTP_METHOD_GET)
-		return (read_route(req, OP_IPFW_RULES, setup_ipfw_rules));
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_IPFW_RULES)) == NULL)
-		return (WEB_OK);
-	bad = !pick_scope(RQ_OF(req), c);
-	if (!bad) {
-		if ((body = read_json(req)) == NULL)
-			bad = true;
-		else {
-			if ((s = ucl_str(body, "sha256")) != NULL)
-				strlcpy(c->address, s, sizeof(c->address));
-			if ((s = ucl_str(body, "text")) != NULL)
-				c->text = xstrdup(s);
-			else
-				bad = true;
-			c->dry_run = ucl_flag(body, "check");
-			accepts_of(c, body);
-			ucl_object_unref(body);
-		}
-	}
-	if (bad) {
-		free(c->text);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "a change needs text "
-		    "and the sha256 of what it was made from; jail is a "
-		    "jail's name; from is rc"));
-	}
-	return (call_start(req, c));
-}
-
-/*
- * GET /api/servers/<id>/fstab: its text and the SHA-256 of that.
- * POST {"text", "sha256", "check"}: put the text in its place.
- */
-int
-api_fstab(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	const char	*s;
-	bool		 bad;
-
-	if (req->method == HTTP_METHOD_GET)
-		return (read_route(req, OP_FSTAB, NULL));
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_FSTAB)) == NULL)
-		return (WEB_OK);
-	bad = false;
-	{
-		if ((body = read_json(req)) == NULL)
-			bad = true;
-		else {
-			if ((s = ucl_str(body, "sha256")) != NULL)
-				strlcpy(c->address, s, sizeof(c->address));
-			if ((s = ucl_str(body, "text")) != NULL)
-				c->text = xstrdup(s);
-			else
-				bad = true;
-			c->dry_run = ucl_flag(body, "check");
-			ucl_object_unref(body);
-		}
-	}
-	if (bad) {
-		free(c->text);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "a change needs text "
-		    "and the sha256 of what it was made from"));
-	}
-	return (call_start(req, c));
-}
-
-/*
- * GET /api/servers/<id>/transport: the agent's listeners and the
- * connections open to it.  POST {"retry": true}: it starts the SCTP
+ * GET hosts/host=<id>/transport: the agent's listeners and the
+ * connections open to it.  POST listen {"retry": true}: it starts the SCTP
  * listeners that are not up; {"sctp_also": "address ..."}: the other
  * addresses its SCTP listeners are bound to ("" none).
  */
@@ -4566,9 +3958,9 @@ api_transport(struct http_request *req)
 }
 
 /*
- * GET /api/servers/<id>/config: the host as a bundle, its secrets not
- * in it (config-export).  POST /api/servers/<id>/config/export
- * {"secrets": true}: with them, for one who may change the host.
+ * GET hosts/host=<id>/configuration: the host as a bundle, its secrets
+ * not in it (config-export).  POST export-configuration {"secrets":
+ * true}: with them, for one who may change the host.
  */
 int
 api_config_export(struct http_request *req)
@@ -4590,7 +3982,8 @@ api_config_export(struct http_request *req)
 }
 
 /*
- * POST /api/servers/<id>/config {"bundle": {...} | "from": "<id>",
+ * POST hosts/host=<id>/apply-configuration {"bundle": {...} | "from":
+ * "<id>",
  * "dry_run", "anyway", "hostname"}: a bundle made this host's
  * configuration (config-apply); from another host the console has, its
  * bundle read there with its secrets, which do not pass through the
@@ -4663,7 +4056,7 @@ api_config_apply(struct http_request *req)
 }
 
 /*
- * POST /api/servers/<id>/transport/switch {"transport": "sctp" | "tcp"}:
+ * POST hosts/host=<id>/switch-transport {"transport": "sctp" | "tcp"}:
  * reach the agent the other way, at the same address and port.  The
  * agent is asked there first, on a connection of its own, and the
  * server is changed only when it answers: there is no falling back
@@ -4722,460 +4115,8 @@ api_transport_switch(struct http_request *req)
 	return (call_start(req, c));
 }
 
-/* A number of the query, when it is there and is one. */
-static bool
-rq_u64(const struct rq *q, const char *name, uint64_t max, uint64_t *v)
-{
-	const char	*errstr;
-	char		 buf[24];
-
-	if (!rq_param(q, name, buf, sizeof(buf)) || buf[0] == '\0')
-		return (false);
-	*v = (uint64_t)strtonum(buf, 0, (long long)max, &errstr);
-	return (errstr == NULL);
-}
-
-static bool
-query_u64(struct http_request *req, const char *name, uint64_t max,
-    uint64_t *v)
-{
-
-	return (rq_u64(RQ_OF(req), name, max, v));
-}
-
-/* GET /api/servers/<id>/processes[?jail=name]: what runs there. */
-static const char *
-setup_processes(struct call *c, const struct rq *q)
-{
-	uint64_t	v;
-
-	(void)rq_param(q, "jail", c->scope, sizeof(c->scope));
-	if (rq_u64(q, "pid", 99999, &v))
-		c->fib = (uint32_t)v;
-	return (NULL);
-}
-
-int
-api_processes(struct http_request *req)
-{
-
-	return (read_route(req, OP_PROCESSES, setup_processes));
-}
-
 /*
- * GET /api/servers/<id>/log[?name=file][&filter=text][&position=n]
- * [&lines=n]: the end of a log, or what came after position.
- */
-static const char *
-setup_log(struct call *c, const struct rq *q)
-{
-	uint64_t	v;
-
-	(void)rq_param(q, "name", c->logname, sizeof(c->logname));
-	(void)rq_param(q, "jail", c->scope, sizeof(c->scope));
-	/* The text may be any: it comes escaped, as a URL has it. */
-	if (rq_param(q, "filter", c->jail, sizeof(c->jail)) &&
-	    (!http_argument_urldecode(c->jail, 1) || strlen(c->jail) > 128))
-		return ("the text looked for is at most 128 bytes, escaped as "
-		    "a URL has it");
-	c->has_pos = rq_u64(q, "position", INT64_MAX, &c->pos);
-	if (rq_u64(q, "lines", 5000, &v))
-		c->lines = (uint32_t)v;
-	return (NULL);
-}
-
-int
-api_log(struct http_request *req)
-{
-
-	return (read_route(req, OP_LOG, setup_log));
-}
-
-/*
- * GET /api/servers/<id>/history[?after=time]: how busy it has been.
- * POST {"step": seconds, "keep": samples[, "hold": seconds][,
- * "enabled": bool]}: how its agent samples it from now on; the reply is
- * as the GET's.
- */
-/* ?after=N: what comes after the position N. */
-static const char *
-setup_after(struct call *c, const struct rq *q)
-{
-
-	c->has_pos = rq_u64(q, "after", INT64_MAX, &c->pos);
-	return (NULL);
-}
-
-int
-api_history(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	int64_t		 step, keep;
-
-	if (req->method == HTTP_METHOD_GET)
-		return (read_route(req, OP_HISTORY, setup_after));
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_HISTORY)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	step = body != NULL ? ucl_object_toint(ucl_object_lookup(body,
-	    "step")) : 0;
-	keep = body != NULL && ucl_object_lookup(body, "keep") != NULL ?
-	    ucl_object_toint(ucl_object_lookup(body, "keep")) : -1;
-	/* The limits, all three or none, as percentages; storage's too
-	 * when said. */
-	if (body != NULL && ucl_object_lookup(body, "cpu") != NULL) {
-		int64_t	l[4];
-		size_t	k, nl;
-
-		l[0] = ucl_object_toint(ucl_object_lookup(body, "cpu"));
-		l[1] = ucl_object_toint(ucl_object_lookup(body, "mem"));
-		l[2] = ucl_object_toint(ucl_object_lookup(body, "swap"));
-		nl = ucl_object_lookup(body, "storage") != NULL ? 4 : 3;
-		l[3] = nl == 4 ? ucl_object_toint(ucl_object_lookup(body,
-		    "storage")) : 0;
-		for (k = 0; k < nl; k++)
-			if (l[k] < 0 || l[k] > 100)
-				step = 0;
-		c->names = xcalloc(nl, sizeof(*c->names));
-		c->nnames = nl;
-		for (k = 0; k < nl; k++) {
-			c->names[k] = xmalloc(8);
-			snprintf(c->names[k], 8, "%lld", (long long)l[k]);
-		}
-	}
-	/* {"hold": seconds}, {"enabled": false}: an agent of 0.246.0 on. */
-	c->hold = -1;
-	c->sampling = -1;
-	if (body != NULL && ucl_object_lookup(body, "hold") != NULL) {
-		c->hold = (int)ucl_object_toint(ucl_object_lookup(body, "hold"));
-		if (c->hold < 0 || c->hold > 3600)
-			step = 0;
-	}
-	if (body != NULL && ucl_object_lookup(body, "enabled") != NULL)
-		c->sampling = ucl_object_toboolean(ucl_object_lookup(body,
-		    "enabled"));
-	/* "net:igb0=125000000,jail-cpu:web=80": the agent checks them. */
-	if (body != NULL && ucl_str(body, "rules") != NULL && strlen(
-	    ucl_str(body, "rules")) <= 2048)
-		c->text = xstrdup(ucl_str(body, "rules"));
-	if (body != NULL)
-		ucl_object_unref(body);
-	if (step < 1 || step > 3600 || keep < 0 || keep > 5000) {
-		free(c->text);
-		for (keep = 0; keep < (int64_t)c->nnames; keep++)
-			free(c->names[keep]);
-		free(c->names);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "step is 1 to 3600 "
-		    "seconds, keep 0 to 5000 samples, hold 0 to 3600 "
-		    "seconds"));
-	}
-	c->retry = true;
-	c->fib = (uint32_t)step;
-	c->offset = (uint32_t)keep;
-	return (call_start(req, c));
-}
-
-/* GET /api/servers/<id>/events[?after=number]: what happened there. */
-int
-api_events(struct http_request *req)
-{
-
-	return (read_route(req, OP_EVENTS, setup_after));
-}
-
-/*
- * GET /api/servers/<id>/ipfw/trace?address=a[&seconds=s][&packets=n]
- * [&jail=j]: packets of an address followed through the firewall by
- * the kernel, for a few seconds.
- */
-static const char *
-setup_fw_trace(struct call *c, const struct rq *q)
-{
-	uint64_t	v;
-
-	/* An address is hex digits, dots and colons: no escaping. */
-	(void)rq_param(q, "address", c->address, sizeof(c->address));
-	if (c->address[0] == '\0' || c->address[strspn(c->address,
-	    "0123456789abcdefABCDEF.:")] != '\0' || !pick_scope(q, c))
-		return ("address is an IPv4 or IPv6 address");
-	if (rq_u64(q, "seconds", 60, &v))
-		c->fib = (uint32_t)v;
-	c->has_pos = rq_u64(q, "packets", 1000, &c->pos);
-	return (NULL);
-}
-
-int
-api_fw_trace(struct http_request *req)
-{
-
-	return (read_route(req, OP_FW_TRACE, setup_fw_trace));
-}
-
-/*
- * GET /api/servers/<id>/ipfw/path?src=a&dst=b[&proto=p][&port=n]
- * [&interface=i][&fib=n][&reply][&jail=j]: what the host does with a
- * packet, its firewall's ruleset walked for it and its reply, nothing
- * sent (the agent's path-check; the Troubleshoot page asks every host
- * the same by /api/troubleshoot/path).
- */
-static const char *
-setup_path(struct call *c, const struct rq *q)
-{
-	char		buf[8];
-	uint64_t	v;
-
-	(void)rq_param(q, "src", c->psrc, sizeof(c->psrc));
-	(void)rq_param(q, "dst", c->pdst, sizeof(c->pdst));
-	if (c->psrc[0] == '\0' || c->pdst[0] == '\0' || c->psrc[strspn(
-	    c->psrc, "0123456789abcdefABCDEF.:")] != '\0' || c->pdst[strspn(
-	    c->pdst, "0123456789abcdefABCDEF.:")] != '\0')
-		return ("src and dst are each an IPv4 or IPv6 address");
-	(void)rq_param(q, "proto", c->pproto, sizeof(c->pproto));
-	if (c->pproto[0] != '\0' && strcmp(c->pproto, "tcp") != 0 && strcmp(
-	    c->pproto, "udp") != 0 && strcmp(c->pproto, "sctp") != 0 &&
-	    strcmp(c->pproto, "icmp") != 0 && strcmp(c->pproto, "ip") != 0)
-		return ("proto is tcp, udp, sctp, icmp or ip");
-	if (rq_u64(q, "port", 65535, &v))
-		c->pport = (uint32_t)v;
-	(void)rq_param(q, "interface", c->ifname, sizeof(c->ifname));
-	if (c->ifname[strspn(c->ifname, "abcdefghijklmnopqrstuvwxyz"
-	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")] != '\0')
-		return ("interface is a name");
-	if (!pick_fib(q, c))
-		return ("fib is a number");
-	c->has_pos = c->fib != 0;
-	c->preply = rq_param(q, "reply", buf, sizeof(buf)) && strcmp(buf,
-	    "0") != 0 && strcmp(buf, "false") != 0;
-	if (!pick_scope(q, c))
-		return ("jail is a name");
-	snprintf(c->jail, sizeof(c->jail), "%s", c->scope);
-	return (NULL);
-}
-
-int
-api_path(struct http_request *req)
-{
-
-	return (read_route(req, OP_PATH_CHECK, setup_path));
-}
-
-/* GET /api/servers/<id>/sysctl[?filter=name]: the kernel's state. */
-static const char *
-setup_sysctl(struct call *c, const struct rq *q)
-{
-	const char	*p;
-
-	(void)rq_param(q, "filter", c->jail, sizeof(c->jail));
-	for (p = c->jail; *p != '\0'; p++)
-		if (!isalnum((unsigned char)*p) && strchr("._-%", *p) == NULL)
-			return ("a sysctl is named with letters, digits and "
-			    ". _ - %");
-	/* A vnet jail's network's, under net. */
-	if (!pick_scope(q, c))
-		return ("jail is a jail's name");
-	return (NULL);
-}
-
-int
-api_sysctl(struct http_request *req)
-{
-
-	return (read_route(req, OP_SYSCTL, setup_sysctl));
-}
-
-/* GET /api/servers/<id>/jails/files: the jails' defaults, templates and
- * files, as the jail-conf job writes them. */
-int
-api_jail_files(struct http_request *req)
-{
-
-	return (read_route(req, OP_JAIL_FILES, NULL));
-}
-
-/* GET /api/servers/<id>/builder: poudriere's jails, ports trees,
- * make.conf files, repositories, builds and runs. */
-int
-api_builder(struct http_request *req)
-{
-
-	return (read_route(req, OP_BUILDER, NULL));
-}
-
-/*
- * GET /api/servers/<id>/builder/options?jail=&ports=&set=&origin=: a
- * port's options as that build takes them.  The words go to the host
- * as they are: it checks each.
- */
-static const char *
-setup_builder_options(struct call *c, const struct rq *q)
-{
-	static const char *const keys[] = { "jail", "ports", "set", "origin" };
-	char	 v[160], buf[4 * 176];
-	size_t	 i, len;
-
-	len = 0;
-	buf[0] = '\0';
-	for (i = 0; i < nitems(keys); i++) {
-		if (!rq_param(q, keys[i], v, sizeof(v)) || v[0] == '\0')
-			continue;
-		if (!http_argument_urldecode(v, 1) || strpbrk(v, "\n=") != NULL)
-			return ("jail, ports, set and origin are words, escaped "
-			    "as a URL has them");
-		len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%s=%s\n",
-		    keys[i], v);
-	}
-	c->text = xstrdup(buf);
-	return (NULL);
-}
-
-int
-api_builder_options(struct http_request *req)
-{
-
-	return (read_route(req, OP_BUILDER_OPTIONS, setup_builder_options));
-}
-
-/*
- * GET /api/servers/<id>/suricata/rules[?q=&sid=&only=&classtype=&offset=
- * &limit=]: a page of Suricata's ruleset, searched on the host.
- */
-static const char *
-setup_suricata_rules(struct call *c, const struct rq *q)
-{
-	static const char *const keys[] = { "q", "sid", "only", "classtype",
-	    "offset", "limit", "sources", "instance", "command", "iface",
-	    "profiling" };
-	char	 v[200], buf[11 * 216];
-	size_t	 i, len;
-
-	len = 0;
-	buf[0] = '\0';
-	for (i = 0; i < nitems(keys); i++) {
-		if (!rq_param(q, keys[i], v, sizeof(v)) || v[0] == '\0')
-			continue;
-		if (!http_argument_urldecode(v, 1) || strchr(v, '\n') != NULL)
-			return ("q, sid, only, classtype, offset, limit, "
-			    "sources, instance, command, iface and profiling "
-			    "are words, "
-			    "escaped as a URL has them");
-		len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%s=%s\n",
-		    keys[i], v);
-	}
-	c->text = xstrdup(buf);
-	return (NULL);
-}
-
-int
-api_suricata_rules(struct http_request *req)
-{
-
-	return (read_route(req, OP_SURICATA_RULES, setup_suricata_rules));
-}
-
-/* GET /api/servers/<id>/netstore[?of=nfs|iscsi|hast]: the host's NFS
- * server, iSCSI target and HAST. */
-static const char *
-setup_netstore(struct call *c, const struct rq *q)
-{
-	char	v[8];
-
-	if (rq_param(q, "of", v, sizeof(v)) && v[0] != '\0') {
-		if (strcmp(v, "nfs") != 0 && strcmp(v, "iscsi") != 0 &&
-		    strcmp(v, "hast") != 0)
-			return ("of is nfs, iscsi or hast");
-		c->text = xstrdup(v);
-	}
-	return (NULL);
-}
-
-int
-api_netstore(struct http_request *req)
-{
-
-	return (read_route(req, OP_NETSTORE, setup_netstore));
-}
-
-/* GET /api/servers/<id>/system[?of=file|host]: the system's own files
- * and the host's settings beside them. */
-static const char *
-setup_system(struct call *c, const struct rq *q)
-{
-	char	v[32];
-
-	if (rq_param(q, "of", v, sizeof(v)) && v[0] != '\0') {
-		if (strspn(v, "abcdefghijklmnopqrstuvwxyz0123456789._") !=
-		    strlen(v))
-			return ("of is a file's name, or host");
-		c->text = xstrdup(v);
-	}
-	return (NULL);
-}
-
-int
-api_system(struct http_request *req)
-{
-
-	return (read_route(req, OP_SYSTEM, setup_system));
-}
-
-/* GET /api/servers/<id>/certs[?jail=]: the certificates OpenSSL trusts
- * there. */
-/* ?jail=name: the jail it is read in. */
-static const char *
-setup_scope(struct call *c, const struct rq *q)
-{
-
-	return (pick_scope(q, c) ? NULL : "jail is a jail's name");
-}
-
-int
-api_certs(struct http_request *req)
-{
-
-	return (read_route(req, OP_CERTS, setup_scope));
-}
-
-/* GET /api/servers/<id>/smtpd[?jail=]: OpenSMTPD of the host or a jail. */
-int
-api_smtpd(struct http_request *req)
-{
-
-	return (read_route(req, OP_SMTPD, setup_scope));
-}
-
-/* GET /api/servers/<id>/monitors[?after=]: the tunnels measured. */
-int
-api_monitors(struct http_request *req)
-{
-
-	return (read_route(req, OP_MONITORS, setup_after));
-}
-
-/* GET /api/servers/<id>/speeder[?jail=]: UDPspeeder's FEC relay. */
-int
-api_speeder(struct http_request *req)
-{
-
-	return (read_route(req, OP_SPEEDER, setup_scope));
-}
-
-/* GET /api/servers/<id>/ssh[?jail=]: the base system's sshd there. */
-int
-api_ssh(struct http_request *req)
-{
-
-	return (read_route(req, OP_SSH, setup_scope));
-}
-
-/*
- * POST /api/servers/<id>/capture[?jail=], {"source", "filter",
+ * POST hosts/host=<id>/capture[?jail=], {"source", "filter",
  * "packets", "seconds"}: packets taken with tcpdump; no source, the
  * sources there are.  What was on the wire is no read-only token's: a
  * session's, with the change header, as a change is.
@@ -5231,14 +4172,12 @@ api_capture(struct http_request *req)
 }
 
 /*
- * POST /api/servers/<id>/zfs/key, {"dataset", "key", "new_key",
- * "create"}: the key of an encrypted dataset asked for at a prompt,
- * typed: loaded, or changed; with create (its encryption), the dataset
- * made encrypted, the new key its passphrase.  Not a job: a job is kept.
- * The keys are zeroed as the call ends, and are in no log.  The same,
- * create aside, at arcana-console's hosts/host=<id>/dataset-key (cyang.c's
- * bridge): a dataset's name has a /, which no path below the host's
- * entry in the fleet mount carries.
+ * arcana-console's hosts/host=<id>/dataset-key, {"dataset", "key",
+ * "new-key"}: the key of an encrypted dataset asked for at a prompt,
+ * typed: loaded, or changed.  Not a job: a job is kept.  The keys are
+ * zeroed as the call ends, and are in no log.  The console's own action
+ * (cyang.c's bridge): a dataset's name has a /, which no path below the
+ * host's entry in the fleet mount carries.
  */
 int
 api_zfs_key(struct http_request *req)
@@ -5263,15 +4202,6 @@ api_zfs_key(struct http_request *req)
 			c->key = xstrdup(s);
 		if ((s = ucl_str(body, "new_key")) != NULL && s[0] != '\0')
 			c->new_key = xstrdup(s);
-		/* Made encrypted, with the new key: its encryption. */
-		if ((s = ucl_str(body, "create")) != NULL && s[0] != '\0') {
-			if (strlen(s) >= sizeof(c->zcreate) || strspn(s,
-			    "abcdefghijklmnopqrstuvwxyz0123456789-") !=
-			    strlen(s))
-				bad = true;
-			else
-				strlcpy(c->zcreate, s, sizeof(c->zcreate));
-		}
 		if ((c->key != NULL && strlen(c->key) > 512) || (c->new_key !=
 		    NULL && strlen(c->new_key) > 512) || (c->key == NULL &&
 		    c->new_key == NULL))
@@ -5302,8 +4232,8 @@ api_zfs_key(struct http_request *req)
 }
 
 /*
- * GET /api/servers/<id>/tls: the host's own certificate, its chain and
- * the CAs it trusts; POST: renewed, from the console's CA.
+ * GET hosts/host=<id>/tls: the host's own certificate, its chain and
+ * the CAs it trusts; POST renew-tls: renewed, from the console's CA.
  */
 int
 api_tls(struct http_request *req)
@@ -5321,7 +4251,7 @@ api_tls(struct http_request *req)
 }
 
 /*
- * POST /api/servers/<id>/nacm-sync: the console's roles synchronized to
+ * POST hosts/host=<id>/nacm-sync: the console's roles synchronized to
  * the host's access rules (NACM): its owners in the host's group admin,
  * its other users out of it, nothing else of the rules touched.  The
  * console's owners alone may ask: the console does it as itself.
@@ -5350,22 +4280,6 @@ api_nacm_sync(struct http_request *req)
 	return (call_start(req, c));
 }
 
-/* GET /api/servers/<id>/kernel: its modules and its memory. */
-int
-api_kernel(struct http_request *req)
-{
-
-	return (read_route(req, OP_KERNEL, NULL));
-}
-
-/* GET /api/servers/<id>/stats */
-int
-api_stats(struct http_request *req)
-{
-
-	return (read_route(req, OP_STATS, NULL));
-}
-
 /* A query string parameter's value, raw (no %-decoding needed here). */
 static bool
 rq_param(const struct rq *q, const char *name, char *buf, size_t len)
@@ -5386,95 +4300,6 @@ rq_param(const struct rq *q, const char *name, char *buf, size_t len)
 		}
 	}
 	return (false);
-}
-
-/* The jail named by ?jail=<name> or by the body, into the call. */
-static bool
-pick_jail(struct call *c, const char *name)
-{
-	const char	*p;
-
-	if (name == NULL || *name == '\0')
-		return (true);
-	for (p = name; *p != '\0'; p++)
-		if (!isalnum((unsigned char)*p) && strchr("_.-", *p) == NULL)
-			return (false);
-	return (strlcpy(c->jail, name, sizeof(c->jail)) < sizeof(c->jail));
-}
-
-/* GET /api/servers/<id>/packages[?jail=<name>&refresh=1&ip=4|6&anyos=1] */
-static const char *
-setup_packages(struct call *c, const struct rq *q)
-{
-	char	jail[256], v[8];
-
-	(void)rq_param(q, "jail", jail, sizeof(jail));
-	c->refresh = rq_param(q, "refresh", v, sizeof(v)) &&
-	    strcmp(v, "1") == 0;
-	c->installed = rq_param(q, "installed", v, sizeof(v)) &&
-	    strcmp(v, "1") == 0;
-	c->pkg_ip = rq_param(q, "ip", v, sizeof(v)) ? (uint8_t)(strcmp(v,
-	    "4") == 0 ? 4 : strcmp(v, "6") == 0 ? 6 : 0) : 0;
-	/* Past a repository for a newer FreeBSD, once asked. */
-	c->anyos = rq_param(q, "anyos", v, sizeof(v)) && strcmp(v, "1") == 0;
-	return (pick_jail(c, jail) ? NULL : "bad jail name");
-}
-
-int
-api_packages(struct http_request *req)
-{
-
-	return (read_route(req, OP_PACKAGES, setup_packages));
-}
-
-/*
- * POST /api/servers/<id>/packages/upgrade
- * {"jail": "web", "packages": ["pimd"], "dry_run": false}
- */
-int
-api_pkg_upgrade(struct http_request *req)
-{
-	ucl_object_t		*body;
-	const ucl_object_t	*a, *v;
-	ucl_object_iter_t	 it;
-	struct call		*c;
-	size_t			 n;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_PKG_UPGRADE)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	if (body == NULL || !pick_jail(c, ucl_str(body, "jail"))) {
-		ucl_object_unref(body);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "a JSON object with "
-		    "an optional jail and packages"));
-	}
-	c->dry_run = ucl_flag(body, "dry_run");
-	c->anyos = ucl_flag(body, "ignore_osversion");
-	c->pkg_ip = (uint8_t)(ucl_object_toint(ucl_object_lookup(body,
-	    "pkg_ip")) == 4 ? 4 : ucl_object_toint(ucl_object_lookup(body,
-	    "pkg_ip")) == 6 ? 6 : 0);
-	/* From one repository: the agent checks it is one of pkg's. */
-	if (ucl_str(body, "pkg_repo") != NULL)
-		snprintf(c->pkg_repo, sizeof(c->pkg_repo), "%s", ucl_str(body,
-		    "pkg_repo"));
-	a = ucl_object_lookup(body, "packages");
-	if ((n = ucl_array_size(a)) > 0) {
-		c->names = xcalloc(n, sizeof(*c->names));
-		it = NULL;
-		while ((v = ucl_object_iterate(a, &it, true)) != NULL &&
-		    c->nnames < n)
-			if (ucl_object_type(v) == UCL_STRING)
-				c->names[c->nnames++] =
-				    xstrdup(ucl_object_tostring(v));
-	}
-	ucl_object_unref(body);
-	return (call_start(req, c));
 }
 
 #include "jobs_spec.h"
@@ -5899,165 +4724,6 @@ spec_from_json(const ucl_object_t *o, struct arc_job_spec *sp)
 }
 
 /*
- * GET /api/servers/<id>/jobs: the host's jobs.
- * POST, {"jobs": [{"kind": ...}, ...]}: queue them, in that order.
- */
-int
-api_jobs(struct http_request *req)
-{
-
-	if (req->method != HTTP_METHOD_POST)
-		return (read_route(req, OP_JOBS, NULL));
-	return (jobs_post(req, OP_JOB_SUBMIT));
-}
-
-/*
- * POST /api/servers/<id>/jobs/dry-run: what POST .../jobs with the same
- * body would do, said by the agent, nothing queued or done: {"steps":
- * [{"id", "parent", "kind", "label", "detail", "status", "argv"}, ...],
- * "notes": [...]}; with {"undo": n} instead, what undoing job n, a
- * safe change waiting to be confirmed, would do, the job left waiting
- * (it is not read: a read confirms it).  The rights are POST .../jobs'.
- */
-int
-api_jobs_dry_run(struct http_request *req)
-{
-
-	return (jobs_post(req, OP_JOB_DRY_RUN));
-}
-
-/* A POST of jobs, to queue (OP_JOB_SUBMIT) or to run dry. */
-static int
-jobs_post(struct http_request *req, enum op op)
-{
-	ucl_object_t		*body;
-	const ucl_object_t	*a, *v, *u;
-	ucl_object_iter_t	 it;
-	struct call		*c;
-	const char		*e;
-	size_t			 n;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, op)) == NULL)
-		return (WEB_OK);
-	e = NULL;
-	body = read_json(req);
-	a = body != NULL ? ucl_object_lookup(body, "jobs") : NULL;
-	u = op == OP_JOB_DRY_RUN && body != NULL ? ucl_object_lookup(body,
-	    "undo") : NULL;
-	if (u != NULL) {
-		if (a != NULL || ucl_object_type(u) != UCL_INT ||
-		    ucl_object_toint(u) < 1)
-			e = "undo is a job's number, without jobs";
-		else
-			c->jobid = (uint64_t)ucl_object_toint(u);
-	} else if ((n = ucl_array_size(a)) == 0 || n > ARC_MAX_BATCH)
-		e = "jobs is a list of 1 to 64 jobs";
-	else {
-		c->specs = xcalloc(n, sizeof(*c->specs));
-		it = NULL;
-		while (e == NULL && (v = ucl_object_iterate(a, &it, true)) !=
-		    NULL)
-			e = spec_from_json(v, &c->specs[c->nspecs++]);
-	}
-	/* The keys a job carries, copied into its spec: the parsed body's
-	 * copies overwritten before they are freed. */
-	it = NULL;
-	while (a != NULL && (v = ucl_object_iterate(a, &it, true)) != NULL) {
-		static const char *const secret[] = { "text",
-		    "preshared_key" };
-		const ucl_object_t	*t;
-		size_t			 k;
-
-		for (k = 0; k < nitems(secret); k++)
-			if ((t = ucl_object_lookup(v, secret[k])) != NULL &&
-			    ucl_object_type(t) == UCL_STRING)
-				explicit_bzero((char *)(uintptr_t)
-				    ucl_object_tostring(t), strlen(
-				    ucl_object_tostring(t)));
-	}
-	ucl_object_unref(body);
-	if (e != NULL) {
-		for (n = 0; n < c->nspecs; n++)
-			spec_free(&c->specs[n]);
-		free(c->specs);
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "%s", e));
-	}
-	return (call_start(req, c));
-}
-
-/*
- * POST /api/servers/<id>/jobs/config: how many jobs of pkg in jails
- * run at once there, {"lanes": N}, 1 to 32; the reply says the number.
- */
-int
-api_jobs_config(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	int64_t		 lanes;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_JOBS_SET)) == NULL)
-		return (WEB_OK);
-	body = read_json(req);
-	lanes = body != NULL && ucl_object_lookup(body, "lanes") != NULL ?
-	    ucl_object_toint(ucl_object_lookup(body, "lanes")) : 0;
-	if (body != NULL)
-		ucl_object_unref(body);
-	if (lanes < 1 || lanes > 32) {
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "lanes is 1 to 32"));
-	}
-	c->fib = (uint32_t)lanes;
-	return (call_start(req, c));
-}
-
-/* GET /api/servers/<id>/jobs/<n>: a job with its trace; DELETE: cancel. */
-static const char *
-setup_job(struct call *c, const struct rq *q)
-{
-	char	id[24];
-
-	if (!capture_path(q->path, 5, id, sizeof(id)))
-		return ("bad job number");
-	c->jobid = strtoull(id, NULL, 10);
-	return (NULL);
-}
-
-int
-api_job(struct http_request *req)
-{
-	struct call	*c;
-	char		 id[24];
-
-	if (req->method != HTTP_METHOD_DELETE)
-		return (read_route(req, OP_JOB, setup_job));
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_JOB_CANCEL)) == NULL)
-		return (WEB_OK);
-	if (!capture(req, 5, id, sizeof(id))) {
-		free(c->sname);
-		free(c->uri);
-		free(c->peer);
-		free(c);
-		return (reply_error(req, 400, "invalid", "bad job number"));
-	}
-	c->jobid = strtoull(id, NULL, 10);
-	return (call_start(req, c));
-}
-
-/*
  * A call the console makes itself, a workflow's: c on the host at uri,
  * in this thread, as a request's task would make it.  The reply's JSON,
  * as the API answers it (the caller's to free), and its status.
@@ -6261,133 +4927,9 @@ hosts_read(const char *uri, const char *peer, const char *name,
 }
 
 /*
- * The reads of a host the console's socket takes (stream.c), each as
- * its GET: the path after /api/servers/<id>/, exactly or, ending in '/',
- * as its first segments.
- */
-static const struct hread {
-	const char	*path;
-	enum op		 op;
-	read_setup	*setup;
-} hreads[] = {
-	{ "hello", OP_HELLO, NULL },
-	{ "jails", OP_LIST, setup_jails },
-	{ "jails/files", OP_JAIL_FILES, NULL },
-	{ "builder", OP_BUILDER, NULL },
-	{ "builder/options", OP_BUILDER_OPTIONS, setup_builder_options },
-	{ "suricata/rules", OP_SURICATA_RULES, setup_suricata_rules },
-	{ "netstore", OP_NETSTORE, setup_netstore },
-	{ "system", OP_SYSTEM, setup_system },
-	{ "smtpd", OP_SMTPD, setup_scope },
-	{ "speeder", OP_SPEEDER, setup_scope },
-	{ "monitors", OP_MONITORS, setup_after },
-	{ "services", OP_SERVICES, NULL },
-	{ "packages", OP_PACKAGES, setup_packages },
-	{ "net/", OP_NETWORK, setup_network },
-	{ "bird/config", OP_BIRD_CONFIG, setup_bird_config },
-	{ "storage/", OP_STORAGE, setup_storage },
-	{ "fstab", OP_FSTAB, NULL },
-	{ "ipfw/rules", OP_IPFW_RULES, setup_ipfw_rules },
-	{ "processes", OP_PROCESSES, setup_processes },
-	{ "log", OP_LOG, setup_log },
-	{ "history", OP_HISTORY, setup_after },
-	{ "events", OP_EVENTS, setup_after },
-	{ "sysctl", OP_SYSCTL, setup_sysctl },
-	{ "certs", OP_CERTS, setup_scope },
-	{ "ssh", OP_SSH, setup_scope },
-	{ "kernel", OP_KERNEL, NULL },
-	{ "stats", OP_STATS, NULL },
-	{ "tls", OP_TLS, NULL },
-	{ "transport", OP_TRANSPORT, NULL },
-	{ "jobs", OP_JOBS, NULL },
-	{ "jobs/", OP_JOB, setup_job },
-};
-
-/* Whether read names one of the reads the socket takes. */
-bool
-hosts_read_known(const char *read)
-{
-	size_t	i, n;
-
-	n = strcspn(read, "?");
-	for (i = 0; i < nitems(hreads); i++) {
-		size_t	l = strlen(hreads[i].path);
-
-		if (hreads[i].path[l - 1] == '/' ? n > l &&
-		    strncmp(read, hreads[i].path, l) == 0 &&
-		    memchr(read + l, '/', n - l) == NULL :
-		    n == l && strncmp(read, hreads[i].path, l) == 0)
-			return (true);
-	}
-	return (false);
-}
-
-/*
- * A read of a host, what GET /api/servers/<sid>/<read> answers (read
- * is that path's tail and its query), each step of its trace given to
- * on_step as the host takes it; NULL when the host did not answer.  A
- * read it does not take, or one its setup refuses, is answered 400.
- */
-char *
-hosts_read_live(const char *sid, const char *uri, const char *peer,
-    const char *name, const char *read, void (*on_step)(const char *,
-    void *), void *arg, int *status)
-{
-	const struct hread	*h;
-	struct call		*c;
-	struct rq		 q;
-	ucl_object_t		*top, *e;
-	const char		*why, *qm;
-	char			 path[256];
-	size_t			 i, n, l;
-	char			*json;
-
-	n = strcspn(read, "?");
-	for (i = 0, h = NULL; i < nitems(hreads) && h == NULL; i++) {
-		l = strlen(hreads[i].path);
-		if (hreads[i].path[l - 1] == '/' ? n > l &&
-		    strncmp(read, hreads[i].path, l) == 0 &&
-		    memchr(read + l, '/', n - l) == NULL :
-		    n == l && strncmp(read, hreads[i].path, l) == 0)
-			h = &hreads[i];
-	}
-	c = xcalloc(1, sizeof(*c));
-	c->op = h != NULL ? h->op : OP_HELLO;
-	c->reads = true;
-	snprintf(c->sid, sizeof(c->sid), "%s", sid);
-	snprintf(path, sizeof(path), "/api/servers/%s/%.*s", sid, (int)n,
-	    read);
-	qm = read[n] == '?' ? read + n + 1 : NULL;
-	q.path = path;
-	q.query = qm;
-	why = h == NULL ? "not a read of a host the socket takes" :
-	    h->setup != NULL ? h->setup(c, &q) : NULL;
-	if (why != NULL) {
-		call_release(c);
-		free(c);
-		top = ucl_object_typed_new(UCL_OBJECT);
-		e = ucl_object_typed_new(UCL_OBJECT);
-		ucl_object_insert_key(e, ucl_object_fromstring("invalid"),
-		    "code", 0, false);
-		ucl_object_insert_key(e, ucl_object_fromstring(why),
-		    "message", 0, false);
-		ucl_object_insert_key(top, e, "error", 0, false);
-		json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
-		ucl_object_unref(top);
-		*status = 400;
-		return (json);
-	}
-	snprintf(c->route, sizeof(c->route), "socket: %.*s", (int)n, read);
-	c->on_step = on_step;
-	c->step_arg = arg;
-	return (self_call(c, uri, peer, name, path + strlen("/api/servers/") +
-	    strlen(sid) + 1, status));
-}
-
-/*
- * A kind of the host's network (routes, interfaces, wireguard, ipsec,
- * as GET /api/servers/<id>/net/<kind> answers), for a thread of the
- * console's own; NULL when kind is none.
+ * A kind of the host's network (routes, interfaces, wireguard, ipsec;
+ * net_kind_names), for a thread of the console's own; NULL when kind is
+ * none.
  */
 char *
 hosts_net(const char *uri, const char *peer, const char *name,
@@ -6575,60 +5117,6 @@ hosts_restconf_live(const char *sid, const char *uri, const char *peer,
 	call_release(c);
 	free(c);
 	return (json);
-}
-
-/*
- * POST /api/servers/<id>/security: the Security section's instances of
- * a kind, {"what": "proxy" or "ids", "instances": [the page's forms]},
- * made by security.c into what the agent takes and applied; [] stops
- * them all.
- */
-int
-api_security(struct http_request *req)
-{
-	struct call	*c;
-	ucl_object_t	*body;
-	const char	*what;
-	char		 err[256], *json;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a JSON object: what "
-		    "(proxy or ids) and instances"));
-	what = ucl_str(body, "what") != NULL ? ucl_str(body, "what") : "";
-	if ((c = call_new(req, strcmp(what, "ids") == 0 ? OP_SDWAN_IDS :
-	    OP_SDWAN_PROXY)) == NULL) {
-		ucl_object_unref(body);
-		return (WEB_OK);
-	}
-	if ((json = security_build(what, ucl_object_lookup(body,
-	    "instances"), c->sname, err, sizeof(err))) == NULL) {
-		ucl_object_unref(body);
-		call_release(c);
-		free(c);
-		return (reply_error(req, 400, "invalid", "%s", err));
-	}
-	c->text = json;
-	c->reads = false;
-	snprintf(c->route, sizeof(c->route), "POST security %s", what);
-	ucl_object_unref(body);
-	return (call_start(req, c));
-}
-
-/* GET /api/servers/<id>/sdwan: what the host's probes have seen. */
-int
-api_sdwan_state(struct http_request *req)
-{
-	struct call	*c;
-
-	if (req->hdlr_extra != NULL)
-		return (call_finish(req));
-	if ((c = call_new(req, OP_SDWAN)) == NULL)
-		return (WEB_OK);
-	/* Only the samples after a time, for a page that keeps the rest. */
-	c->has_pos = query_u64(req, "after", INT64_MAX, &c->pos);
-	return (call_start(req, c));
 }
 
 /* The host's sysctls whose names begin with prefix. */

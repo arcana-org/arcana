@@ -193,7 +193,6 @@ int		 http_request_cookie(struct http_request *, const char *,
 /* out: a char ** or a const char ** */
 int		 http_argument_get_string(struct http_request *, const char *,
 		    void *);
-int		 http_argument_urldecode(char *, int);
 ssize_t		 http_body_read(struct http_request *, void *, size_t);
 void		 http_request_sleep(struct http_request *);
 void		 http_request_wakeup(struct http_request *);

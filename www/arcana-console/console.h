@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.408.1"
+#define	ARCW_VERSION		"0.410.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -114,8 +114,6 @@ int		 config_load(const char *);
 int		 config_check_certs(void);
 
 /* cplug.c: console plugins, the page's extensions; not the hosts'. */
-int		 api_cplugs(struct http_request *);
-int		 api_cplug(struct http_request *);
 int		 api_cplug_file(struct http_request *);
 int		 api_cplug_store(struct http_request *);
 void		 cplug_store_forget(const char *);
@@ -141,9 +139,6 @@ int		 api_mail_test(struct http_request *);
 
 /* push.c: notifications to the devices that asked, by Web Push. */
 int		 push_init(void);
-int		 api_push(struct http_request *);
-int		 api_push_list(struct http_request *);
-int		 api_push_subscribe(struct http_request *);
 int		 api_push_send(struct http_request *);
 void		 api_push_free(struct http_request *);
 
@@ -151,7 +146,6 @@ void		 api_push_free(struct http_request *);
 void		 settings_init(const char *, const char *);
 void		 config_refresh(void);
 char		*settings_peek(const char *);
-int		 api_settings(struct http_request *);
 
 /* store.c: small JSON documents in the data directory. */
 ucl_object_t	*store_load(const char *);
@@ -183,7 +177,6 @@ int		 pki_node_cert(const char *, const char *, const char *, char *,
 
 /* api.c: HTTP plumbing shared by the handlers. */
 int		 reply_json(struct http_request *, int, ucl_object_t *);
-int		 api_not_found(struct http_request *);
 int		 reply_error(struct http_request *, int, const char *,
 		    const char *, ...) __printflike(4, 5);
 ucl_object_t	*read_json(struct http_request *);
@@ -207,21 +200,15 @@ int		 api_setup_password(struct http_request *);
 int		 api_auth_password(struct http_request *);
 
 /* prefixlists.c: the console's prefix lists, used on any host. */
-int		 api_prefix_lists(struct http_request *);
-int		 api_prefix_list(struct http_request *);
 ucl_object_t	*prefix_list_get(const char *);
 
 /* feeds.c: threat feeds, fetched by the console, ipfw tables on hosts. */
-int		 api_feeds(struct http_request *);
-int		 api_feed(struct http_request *);
 void		 feeds_init(void);
 void		 feeds_signin(struct http_request *, const char *);
 /* Whether a socket address is on the internet (feeds.c). */
 bool		 addr_public(const struct sockaddr *);
 
 /* labels.c: the console's own tags on hosts' interfaces. */
-int		 api_labels(struct http_request *);
-int		 api_label(struct http_request *);
 /* notif.c: the console as a host's HTTPS-notif receiver; the records
  * kept; what to put in a host's candidate. */
 int		 api_notif_capabilities(struct http_request *);
@@ -233,9 +220,6 @@ const char	*label_of(const char *, const char *, char *, size_t);
 const char	*token_who(struct http_request *);
 bool		 token_readable(const char *);
 bool		 token_writable(const char *);
-int		 api_tokens(struct http_request *);
-int		 api_workflows(struct http_request *);
-int		 api_runs(struct http_request *);
 int		 api_sdwan(struct http_request *);
 /* sdwan.c and sdwan_edge.c: SD-WAN, kept, checked, made on the edges. */
 ucl_object_t	*sdwan_load(void);
@@ -251,7 +235,6 @@ bool		 sdwan_list_exists(const char *);
 void		 sdwan_init(void);
 void		 workflows_init(void);
 void		 thread_log(int, const char *, ...) __printflike(2, 3);
-int		 api_transfers(struct http_request *);
 int		 api_ids_pcap(struct http_request *);
 void		 api_ids_pcap_free(struct http_request *);
 int		 api_ids_pcap_log(struct http_request *);
@@ -290,16 +273,9 @@ const char	*crole_name(enum crole);
 bool		 user_path_ok(enum crole, const char *, bool);
 void		 user_handle(const char *, char *, size_t);
 bool		 invite_take(const char *, char *, size_t);
-int		 api_users(struct http_request *);
-int		 api_user(struct http_request *);
-int		 api_user_invite(struct http_request *);
-int		 api_groups(struct http_request *);
-int		 api_group(struct http_request *);
-int		 api_roles(struct http_request *);
 #define	ROLES_LDAP_MAX	32
 int		 roles_ldap_groups(const char **, const char **, int);
 void		 users_ldap_sync(const char *, const char **, int);
-int		 api_role(struct http_request *);
 /* A password of the console's own, beside the keys: bcrypt by crypt(3). */
 #define	PASSWORD_MIN	12		/* characters at least */
 #define	PASSWORD_MAX	72		/* bytes at most: bcrypt's own */
@@ -394,11 +370,7 @@ char		*hosts_arcana(const char *, const char *, const char *,
 		    const char *, int *);
 char		*hosts_read(const char *, const char *, const char *,
 		    const char *, int *);
-bool		 hosts_read_known(const char *);
 ucl_object_t	*sdwan_ready(const ucl_object_t *, ucl_object_t *);
-char		*hosts_read_live(const char *, const char *, const char *,
-		    const char *, const char *, void (*)(const char *, void *),
-		    void *, int *);
 char		*hosts_events(const char *, const char *, const char *,
 		    uint64_t, int *);
 char		*hosts_net(const char *, const char *, const char *,
@@ -416,16 +388,12 @@ char		*hosts_restconf(const char *, const char *, const char *,
 char		*hosts_restconf_live(const char *, const char *, const char *,
 		    const char *, const char *, ucl_object_t *,
 		    void (*)(const char *, void *), void *, int *);
-int		 api_sdwan_state(struct http_request *);
-int		 api_security(struct http_request *);
 char		*hosts_listen(const char *, const char *, const char *,
 		    const char *, const char *, bool, int *);
 char		*hosts_notify(const char *, const char *, const char *,
 		    const char *, const char *, const char *, int *);
 int		 api_server_move(struct http_request *);
 void		 api_server_move_free(struct http_request *);
-char		*security_build(const char *, const ucl_object_t *, const char *,
-		    char *, size_t);
 bool		 sdwan_edge_split(const char *, char *, size_t, char *,
 		    size_t);
 bool		 host_ref(const char *, char *, size_t, char *, size_t, char *,
@@ -444,16 +412,12 @@ void		 hosts_tally(uint64_t *, uint64_t *, uint64_t *);
  * watch.c: what the console holds of each agent by subscription, on a
  * connection of its own (PLAN-SDN-YANG 3.4).  A topic's last push is
  * held: a tree never changed again (tree), its module's struct made of
- * it (data, in a); arcana-probe's read for a user (data the edges, more
- * what the probes saw from from to newest).  Each is one user's, read
- * as that user.
+ * it (data, in a).  Each is one user's, read as that user.
  */
 #define	WATCH_JOBS	0
 #define	WATCH_STATS	1
 #define	WATCH_JAILS	2
-#define	WATCH_SDWAN	3
-#define	WATCH_EVENTS	4
-#define	WATCH_NTOPIC	5
+#define	WATCH_NTOPIC	3
 
 #define	WATCH_S_NONE	0	/* to be asked */
 #define	WATCH_S_OPENING	1
@@ -467,24 +431,16 @@ struct held {
 	struct cbl_dtree	*tree;
 	struct cbl_yarena	*a;
 	void			*data;
-	void			*more;
 	uint64_t		 at;		/* µs, monotonic: when pushed */
-	time_t			 wall, from, newest;
+	time_t			 wall;
 };
 
 struct held	*watch_held(const char *, const char *, const char *, int,
 		    const char *);
-struct held	*watch_probes_held(const char *, const char *, const char *);
 void		 held_rele(struct held *);
-int		 watch_events(const char *, const char *, const char *,
-		    const char *);
 void		 watch_changed(const char *);
 void		 watch_forget(const char *);
 int		 api_watch(struct http_request *);
-/* follow.c: an event a host told for user, to the pages following it;
- * the host gone, why, to them all. */
-void		 follow_told(const char *, const char *, const char *);
-void		 follow_gone(const char *, const char *);
 
 /* Route handlers, named in routes.c. */
 int		 api_health(struct http_request *);
@@ -495,27 +451,13 @@ int		 api_register_finish(struct http_request *);
 int		 api_login_begin(struct http_request *);
 int		 api_login_finish(struct http_request *);
 int		 api_logout(struct http_request *);
-int		 api_credentials(struct http_request *);
-int		 api_credential(struct http_request *);
-int		 api_servers(struct http_request *);
-int		 api_server(struct http_request *);
-int		 api_enrol_tokens(struct http_request *);
 int		 api_enrol(struct http_request *);
 int		 api_update(struct http_request *);
 int		 api_update_notes(struct http_request *);
-int		 api_hello(struct http_request *);
-int		 api_jails(struct http_request *);
-int		 api_action(struct http_request *);
-int		 api_address(struct http_request *);
-int		 api_services(struct http_request *);
-int		 api_service_action(struct http_request *);
-int		 api_service_config(struct http_request *);
 int		 api_agent_update(struct http_request *);
 const char	*agent_build(void);
 const char	*agent_version(void);
 int		 api_agent_build(struct http_request *);
-int		 api_network(struct http_request *);
-int		 api_ydata(struct http_request *);
 int		 api_drift(struct http_request *);
 /* RESTCONF's reads (restconf.c); a host's part, hosts.c's. */
 int		 api_host_meta(struct http_request *);
@@ -640,7 +582,7 @@ ucl_object_t	*servers_yang(struct http_request *);
 int		 servers_yang_set(struct http_request *, const ucl_object_t *,
 		    const ucl_object_t *, char *, size_t);
 /*
- * The /api handlers answering at arcana-console's paths too (cyang.c's
+ * The handlers answering at arcana-console's paths (cyang.c's
  * bridges): whether path is one; read_json()'s body unwrapped from the
  * input or the node; reply_json()'s and a raw reply's made RESTCONF's.
  */
@@ -650,8 +592,7 @@ ucl_object_t	*cyang_unwrap(struct http_request *, ucl_object_t *);
 int		 cyang_bridge_reply(struct http_request *, int, ucl_object_t *);
 int		 cyang_bridge_raw(struct http_request *, int, const char *);
 bool		 server_capture(struct http_request *, char *, size_t);
-bool		 path_is(const struct http_request *, const char *,
-		    const char *);
+bool		 path_is(const struct http_request *, const char *);
 bool		 want_csv(struct http_request *);
 /* The tunnels a plan of an L3NM makes (sdwan_edge.c). */
 ucl_object_t	*sdwan_plan_tunnels(const ucl_object_t *);
@@ -660,20 +601,7 @@ int		 api_restconf_stream(struct http_request *);
 int		 api_restconf_fleet_stream(struct http_request *);
 void		 api_restconf_stream_free(struct http_request *);
 int		 api_restconf_subscription(struct http_request *);
-int		 api_stats(struct http_request *);
-int		 api_kernel(struct http_request *);
 int		 api_nacm_sync(struct http_request *);
-int		 api_jail_files(struct http_request *);
-int		 api_builder(struct http_request *);
-int		 api_builder_options(struct http_request *);
-int		 api_suricata_rules(struct http_request *);
-int		 api_netstore(struct http_request *);
-int		 api_system(struct http_request *);
-int		 api_smtpd(struct http_request *);
-int		 api_speeder(struct http_request *);
-int		 api_monitors(struct http_request *);
-int		 api_certs(struct http_request *);
-int		 api_ssh(struct http_request *);
 int		 api_capture(struct http_request *);
 int		 api_zfs_key(struct http_request *);
 int		 api_tls(struct http_request *);
@@ -687,37 +615,15 @@ int		 api_troubleshoot_path(struct http_request *);
 void		 api_troubleshoot_free(struct http_request *);
 int		 api_config_apply(struct http_request *);
 /* templates.c: configuration templates, a host's setup by name. */
-int		 api_templates(struct http_request *);
-int		 api_template(struct http_request *);
 bool		 template_name_ok(const char *);
 ucl_object_t	*template_get(const char *);
 char		*template_render(const char *, const ucl_object_t *, char *,
 		    size_t);
 int		 api_transport_switch(struct http_request *);
-int		 api_sysctl(struct http_request *);
-int		 api_processes(struct http_request *);
-int		 api_log(struct http_request *);
-int		 api_history(struct http_request *);
-int		 api_events(struct http_request *);
-int		 api_fw_trace(struct http_request *);
-int		 api_path(struct http_request *);
-int		 api_ipfw_rules(struct http_request *);
 int		 api_stream(struct http_request *);
 void		 stream_connect(struct conn *);
 void		 stream_message(struct conn *, u_int8_t, void *, size_t);
 void		 stream_disconnect(struct conn *);
-const char	*follow_start(struct conn *, uint64_t,
-		    const struct server *);
-bool		 follow_stop(struct conn *, uint64_t, bool);
-int		 api_storage(struct http_request *);
-int		 api_fstab(struct http_request *);
-int		 api_bird_config(struct http_request *);
-int		 api_packages(struct http_request *);
-int		 api_pkg_upgrade(struct http_request *);
-int		 api_jobs(struct http_request *);
-int		 api_jobs_config(struct http_request *);
-int		 api_jobs_dry_run(struct http_request *);
-int		 api_job(struct http_request *);
 void		 api_call_free(struct http_request *);
 
 

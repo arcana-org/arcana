@@ -731,307 +731,8 @@ remove_at(int i)
 	pthread_mutex_unlock(&table_lock);
 }
 
-/* GET: the list, the hosts the user has a role on, with it.  POST
- * {name, uri, peer_name?, tenant?}: add one. */
-int
-api_servers(struct http_request *req)
-{
-	ucl_object_t	*o, *a, *body, *so;
-	const char	*name, *uri, *peer, *tenant, *u;
-	char		 id[9];
-	int		 i;
-
-	if (!guard(req, req->method != HTTP_METHOD_GET))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_POST) {
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "bad_request",
-			    "expected a JSON object"));
-		name = ucl_str(body, "name");
-		uri = ucl_str(body, "uri");
-		peer = ucl_str(body, "peer_name");
-		tenant = ucl_str(body, "tenant");
-		if (name == NULL || !valid_name(name) || uri == NULL ||
-		    !valid_uri(uri) || (peer != NULL && (!valid_name(peer) ||
-		    strchr(peer, ' ') != NULL))) {
-			ucl_object_unref(body);
-			return (reply_error(req, 400, "invalid", "a name and a "
-			    "URI such as tcp://host:4310 or "
-			    "unix:/var/run/arcana-agent.sock are needed"));
-		}
-		if (tenant != NULL && tenant[0] != '\0' && !user_name_ok(tenant)) {
-			ucl_object_unref(body);
-			return (reply_error(req, 400, "invalid", "a tenant is "
-			    "named by letters, digits, _ . @ and -, 64 at most"));
-		}
-		if (nservers == MAX_SERVERS) {
-			ucl_object_unref(body);
-			return (reply_error(req, 409, "full",
-			    "at most %d servers", MAX_SERVERS));
-		}
-		for (i = 0; i < nservers; i++) {
-			if (strcmp(servers[i].uri, uri) == 0) {
-				/* uri is the body's: the reply first. */
-				reply_error(req, 409, "duplicate", "%s is already "
-				    "%s", uri, servers[i].name);
-				ucl_object_unref(body);
-				return (WEB_OK);
-			}
-		}
-		new_id(id, sizeof(id));
-		add(id, name, uri, peer, tenant);
-		ucl_object_unref(body);
-		if (save() == -1)
-			return (reply_error(req, 500, "store", "cannot save"));
-		log_msg(LOG_NOTICE, "server %s added: %s", id,
-		    servers[nservers - 1].uri);
-	}
-	/* The agent beside the console may have come up since. */
-	local_enrol();
-	u = session_user(req);
-	a = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0; i < nservers; i++) {
-		if (u != NULL && user_host(u, servers[i].id) == ROLE_NONE)
-			continue;
-		so = server_object(&servers[i], false);
-		if (u != NULL)
-			ucl_object_insert_key(so, ucl_object_fromstring(role_name(
-			    user_host(u, servers[i].id))), "role", 0, false);
-		ucl_array_append(a, so);
-	}
-	o = ucl_object_typed_new(UCL_OBJECT);
-	ucl_object_insert_key(o, a, "servers", 0, false);
-	/* added, removed, absent (not running), denied (not reachable). */
-	ucl_object_insert_key(o, ucl_object_fromstring(local_state), "local",
-	    0, false);
-	if (cfg.local_agent != NULL)
-		ucl_object_insert_key(o, ucl_object_fromstring(
-		    cfg.local_agent), "local_agent", 0, false);
-	return (reply_json(req, 200, o));
-}
-
 /*
- * DELETE /api/servers/<id>; POST {safe_wait}: its rollback timer, the
- * seconds a change made in safe mode there waits to be confirmed before
- * the agent undoes it, 0 for the agent's own (-w); {tenant}; {pkg_repos};
- * {notify_mute}: ["utilization", "sessions", "all"], what of it the
- * alerts leave out;
- * {uri}: where the console reaches it from now on, the console's alone
- * (the host asked nothing, so a host that cannot be reached at the old
- * address can be at another; the Transport tab's move is the agent's).
- */
-int
-api_server(struct http_request *req)
-{
-	ucl_object_t	*body;
-	const ucl_object_t *v;
-	char		 id[16];
-	int		 i, was;
-	int64_t		 k;
-
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (!capture(req, 3, id, sizeof(id)))
-		return (reply_error(req, 400, "bad_request", "bad server id"));
-	for (i = 0; i < nservers; i++)
-		if (strcmp(servers[i].id, id) == 0)
-			break;
-	if (i == nservers)
-		return (reply_error(req, 404, "not_found", "no such server"));
-	if (!host_allowed(req, id, true, true))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_POST) {
-		if ((body = read_json(req)) == NULL)
-			return (reply_error(req, 400, "bad_request",
-			    "expected a JSON object"));
-		/*
-		 * {uri, peer_name}: reached elsewhere, as the console alone
-		 * says.  Its certificate names the host it was enrolled as:
-		 * that name is still the one checked, unless peer_name says
-		 * another ("" the new address's own).
-		 */
-		if ((v = ucl_object_lookup(body, "uri")) != NULL) {
-			const char	*u = ucl_object_tostring(v);
-			const char	*pn = ucl_str(body, "peer_name");
-			char		*was_peer, oldhost[256];
-
-			if (u == NULL || (pn != NULL && pn[0] != '\0' &&
-			    (!valid_name(pn) || strchr(pn, ' ') != NULL))) {
-				ucl_object_unref(body);
-				return (reply_error(req, 400, "invalid", "a URI, "
-				    "and the name its certificate has"));
-			}
-			uri_host_of(servers[i].uri, oldhost, sizeof(oldhost));
-			was_peer = servers[i].peer_name;
-			if (!owner_asks(req) && peer_changes(&servers[i], u,
-			    pn != NULL ? pn : was_peer == NULL && oldhost[0] !=
-			    '\0' && strcmp(u, servers[i].uri) != 0 ? oldhost :
-			    was_peer)) {
-				ucl_object_unref(body);
-				return (reply_error(req, 403, "forbidden", "which "
-				    "agent a host is, its certificate's name, a "
-				    "console owner alone changes"));
-			}
-			pthread_mutex_lock(&table_lock);
-			if (pn != NULL)
-				servers[i].peer_name = pn[0] != '\0' ?
-				    xstrdup(pn) : NULL;
-			else if (was_peer == NULL && oldhost[0] != '\0' &&
-			    strcmp(u, servers[i].uri) != 0)
-				servers[i].peer_name = xstrdup(oldhost);
-			else
-				servers[i].peer_name = was_peer != NULL ?
-				    xstrdup(was_peer) : NULL;
-			pthread_mutex_unlock(&table_lock);
-			if (strcmp(u, servers[i].uri) == 0 ? save() == -1 :
-			    servers_move(id, u) == -1) {
-				pthread_mutex_lock(&table_lock);
-				free(servers[i].peer_name);
-				servers[i].peer_name = was_peer;
-				pthread_mutex_unlock(&table_lock);
-				ucl_object_unref(body);
-				return (reply_error(req, 400, "invalid", "not a URI "
-				    "an agent is reached by (tcp://host:port, "
-				    "sctp://host:port, unix:/path), or another "
-				    "server's"));
-			}
-			free(was_peer);
-			/* What it holds of the old: let go, made anew. */
-			hosts_forget(servers[i].uri);
-			if (ucl_object_lookup(body, "tenant") == NULL &&
-			    ucl_object_lookup(body, "safe_wait") == NULL &&
-			    ucl_object_lookup(body, "pkg_repos") == NULL) {
-				ucl_object_unref(body);
-				req->method = HTTP_METHOD_GET;
-				return (api_servers(req));
-			}
-		}
-		/* {notify_mute}: what of it is not mailed nor sent. */
-		if ((v = ucl_object_lookup(body, "notify_mute")) != NULL) {
-			const char	*why;
-			unsigned int	 m, mwas;
-
-			if ((m = mute_parse(v, &why)) == UINT_MAX) {
-				ucl_object_unref(body);
-				return (reply_error(req, 400, "invalid", "%s",
-				    why));
-			}
-			pthread_mutex_lock(&table_lock);
-			mwas = servers[i].mute;
-			servers[i].mute = m;
-			pthread_mutex_unlock(&table_lock);
-			if (ucl_object_lookup(body, "tenant") == NULL &&
-			    ucl_object_lookup(body, "safe_wait") == NULL &&
-			    ucl_object_lookup(body, "pkg_repos") == NULL) {
-				ucl_object_unref(body);
-				if (save() == -1) {
-					pthread_mutex_lock(&table_lock);
-					servers[i].mute = mwas;
-					pthread_mutex_unlock(&table_lock);
-					return (reply_error(req, 500, "store",
-					    "cannot save"));
-				}
-				log_msg(LOG_NOTICE, "server %s: alerts muted: %s%s%s",
-				    id, m & MUTE_UTIL ? "utilization " : "",
-				    m & MUTE_SESSIONS ? "sessions " : "",
-				    m & MUTE_ALL ? "all" : m == 0 ? "none" : "");
-				req->method = HTTP_METHOD_GET;
-				return (api_servers(req));
-			}
-		}
-		/* {tenant}: the fleet it is in, "" for none. */
-		if ((v = ucl_object_lookup(body, "tenant")) != NULL) {
-			const char	*t = ucl_object_tostring(v);
-
-			if (t == NULL || (t[0] != '\0' && !user_name_ok(t))) {
-				ucl_object_unref(body);
-				return (reply_error(req, 400, "invalid", "a tenant "
-				    "is named by letters, digits, _ . @ and -, 64 "
-				    "at most"));
-			}
-			pthread_mutex_lock(&table_lock);
-			free(servers[i].tenant);
-			servers[i].tenant = t[0] != '\0' ? xstrdup(t) : NULL;
-			pthread_mutex_unlock(&table_lock);
-			if (ucl_object_lookup(body, "safe_wait") == NULL) {
-				char	tenant[80];
-
-				/* t is the body's. */
-				strlcpy(tenant, t[0] != '\0' ? t : "none",
-				    sizeof(tenant));
-				ucl_object_unref(body);
-				if (save() == -1)
-					return (reply_error(req, 500, "store",
-					    "cannot save"));
-				log_msg(LOG_NOTICE, "server %s: tenant %s", id,
-				    tenant);
-				req->method = HTTP_METHOD_GET;
-				return (api_servers(req));
-			}
-		}
-		/*
-		 * {pkg_repos: {"<jail>" or ".": {upgrade, install, base}}}:
-		 * which of pkg's repositories each action takes packages
-		 * from there, per jail ("." the host), "" or absent for
-		 * any; kept whole, as given.
-		 */
-		if ((v = ucl_object_lookup(body, "pkg_repos")) != NULL) {
-			ucl_object_t	*keep;
-			const char	*e;
-
-			if ((e = pkg_repos_why(v)) != NULL) {
-				ucl_object_unref(body);
-				return (reply_error(req, 400, "invalid", "%s", e));
-			}
-			keep = ucl_object_ref(v);
-			pthread_mutex_lock(&table_lock);
-			if (servers[i].pkg_repos != NULL)
-				ucl_object_unref(servers[i].pkg_repos);
-			servers[i].pkg_repos = keep;
-			pthread_mutex_unlock(&table_lock);
-			if (ucl_object_lookup(body, "safe_wait") == NULL) {
-				ucl_object_unref(body);
-				if (save() == -1)
-					return (reply_error(req, 500, "store",
-					    "cannot save"));
-				log_msg(LOG_NOTICE, "server %s: pkg repositories "
-				    "chosen", id);
-				req->method = HTTP_METHOD_GET;
-				return (api_servers(req));
-			}
-		}
-		v = ucl_object_lookup(body, "safe_wait");
-		k = v != NULL && ucl_object_type(v) == UCL_INT ?
-		    ucl_object_toint(v) : -1;
-		ucl_object_unref(body);
-		if (k != 0 && (k < SAFE_WAIT_MIN || k > SAFE_WAIT_MAX))
-			return (reply_error(req, 400, "invalid", "safe_wait is "
-			    "0, the agent's own, or %d to %d seconds",
-			    SAFE_WAIT_MIN, SAFE_WAIT_MAX));
-		pthread_mutex_lock(&table_lock);
-		was = servers[i].safe_wait;
-		servers[i].safe_wait = (int)k;
-		pthread_mutex_unlock(&table_lock);
-		if (save() == -1) {
-			pthread_mutex_lock(&table_lock);
-			servers[i].safe_wait = was;
-			pthread_mutex_unlock(&table_lock);
-			return (reply_error(req, 500, "store", "cannot save"));
-		}
-		log_msg(LOG_NOTICE, "server %s: rollback timer %d s", id,
-		    (int)k);
-		req->method = HTTP_METHOD_GET;
-		return (api_servers(req));
-	}
-	remove_at(i);
-	if (save() == -1)
-		return (reply_error(req, 500, "store", "cannot save"));
-	req->method = HTTP_METHOD_GET;
-	return (api_servers(req));
-}
-
-/*
- * POST /api/servers/<id>/move {"uri": "tcp://address:port"}: the host
+ * POST hosts/host=<id>/move {"uri": "tcp://address:port"}: the host
  * reached at another address.  The agent is asked, where it is reached
  * now, to listen on the new one too; the new one is tried on a
  * connection of its own; only when it answers is the server moved, and
@@ -1250,7 +951,7 @@ api_server_move_free(struct http_request *req)
 
 /*
  * arcana-console's hosts (cyang.c): the hosts the request's user has a
- * role on, as GET /api/servers has them.
+ * role on.
  */
 ucl_object_t *
 servers_yang(struct http_request *req)
@@ -1350,7 +1051,7 @@ pkg_repos_of(const ucl_object_t *e)
 	return (o);
 }
 
-/* Why entry e is not one /api would keep, or NULL. */
+/* Why entry e is not one the registry would keep, or NULL. */
 static const char *
 entry_why(const ucl_object_t *e)
 {
@@ -1385,8 +1086,8 @@ dup_or_null(const char *s)
 }
 
 /*
- * The hosts' change from was to now (cyang.c), each as /api's add,
- * change and removal, with their checks and log lines: all checked
+ * The hosts' change from was to now (cyang.c), each an add, change or
+ * removal with its checks and log lines: all checked
  * first, then kept.  A host the user may not read is not in was and is
  * left alone; one is added by an operator or an owner (or a write
  * token), changed or removed by its admins.  0, or the HTTP status and
@@ -1421,7 +1122,7 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 			}
 			/* Who may add first: no id told to one who may not. */
 			if (u != NULL && !user_path_ok(user_console(u),
-			    "/api/servers", true)) {
+			    CYANG_DATA "hosts", true)) {
 				snprintf(why, len, "a host is added by an "
 				    "operator or an owner of this console");
 				return (403);
@@ -1536,7 +1237,7 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 		/*
 		 * Reached elsewhere: its certificate names the host it was
 		 * enrolled as, still the one checked unless a peer name
-		 * says another, as /api's.
+		 * says another.
 		 */
 		uri_host_of(servers[i].uri, oldhost, sizeof(oldhost));
 		if (o != NULL && pn == NULL && servers[i].peer_name == NULL &&

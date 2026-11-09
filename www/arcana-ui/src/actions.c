@@ -328,9 +328,8 @@ op_quiet_begin(const char *method, const char *url)
 
 	server[0] = '\0';
 	snprintf(title, sizeof(title), "%s", url);
-	if ((p = strstr(url, "/api/servers/")) != NULL ||
-	    (p = strstr(url, "/host=")) != NULL) {
-		p += p[1] == 'h' ? strlen("/host=") : strlen("/api/servers/");
+	if ((p = strstr(url, "/host=")) != NULL) {
+		p += strlen("/host=");
 		q = strchr(p, '/');
 		snprintf(sid, sizeof(sid), "%.*s", (int)(q != NULL ? q - p :
 		    (ptrdiff_t)strlen(p)), p);
@@ -340,8 +339,9 @@ op_quiet_begin(const char *method, const char *url)
 				    app.servers[i].name);
 		snprintf(title, sizeof(title), "poll %s", q != NULL ? q + 1 :
 		    "the host");
-	} else if (strncmp(url, "/api/", 5) == 0)
-		snprintf(title, sizeof(title), "poll %s", url + 5);
+	} else if ((p = strstr(url, "/restconf/data/")) != NULL)
+		snprintf(title, sizeof(title), "poll %s", p +
+		    strlen("/restconf/data/"));
 	title[strcspn(title, "?")] = '\0';
 	o = op_new(title, server);
 	o->quiet = true;
@@ -354,8 +354,8 @@ op_quiet_begin(const char *method, const char *url)
 /*
  * A change no part made a task for: one made of its request, so that
  * every change done is seen in the task list, ended by its answer.
- * Its title is what it changes (/api/servers/<id>/<what>, or RESTCONF's
- * node), its server by the id in the path.
+ * Its title is what it changes (RESTCONF's node), its server by the id
+ * in the path.
  */
 int
 op_auto(const char *method, const char *url, int req)
@@ -369,9 +369,7 @@ op_auto(const char *method, const char *url, int req)
 	verb = strcmp(method, "DELETE") == 0 ? "remove" :
 	    strcmp(method, "PATCH") == 0 ? "change" : "set";
 	snprintf(what, sizeof(what), "%s", url);
-	if ((p = strstr(url, "/api/servers/")) != NULL)
-		p += strlen("/api/servers/");
-	else if ((p = strstr(url, "/host=")) != NULL)
+	if ((p = strstr(url, "/host=")) != NULL)
 		p += strlen("/host=");
 	if (p != NULL) {
 		q = strchr(p, '/');
@@ -380,8 +378,6 @@ op_auto(const char *method, const char *url, int req)
 		snprintf(what, sizeof(what), "%s", q != NULL ? q + 1 : "the host");
 	} else if ((p = strstr(url, "/restconf/data/")) != NULL)
 		snprintf(what, sizeof(what), "%s", p + strlen("/restconf/data/"));
-	else if (strncmp(url, "/api/", 5) == 0)
-		snprintf(what, sizeof(what), "%s", url + 5);
 	what[strcspn(what, "?")] = '\0';
 	for (i = 0; sid[0] != '\0' && i < app.nservers; i++)
 		if (strcmp(app.servers[i].id, sid) == 0)

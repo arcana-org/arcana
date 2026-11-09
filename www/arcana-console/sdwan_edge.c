@@ -48,12 +48,15 @@
  * end's key is read once both ends have one), the routes, and the UNIs
  * last.  One thread does it, and one worker at a time (sdwan.lock).
  *
- *	GET  /api/sdwan/plan	what an apply would do, edge by edge
- *	POST /api/sdwan/apply	do it; {"fresh": true} takes everything
+ *	GET  sdwan/plan		what an apply would do, edge by edge
+ *	POST sdwan/apply	do it; {"fresh": true} takes everything
  *				made away first and makes it again; "accept"
  *				the warnings of the plan's the operator
  *				accepts for their steps' edits
- *	GET  /api/sdwan/apply	how the last apply went, the history, and the tunnels
+ *	GET  sdwan/apply-state	how the last apply went, the history, and
+ *				the tunnels
+ *
+ * (arcana-console's, cyang.c's bridges.)
  */
 
 #include <sys/param.h>
@@ -9137,11 +9140,11 @@ sdwan_list_exists(const char *name)
 }
 
 /*
- * GET /api/sdwan/lists: the feeds and the pasted lists, the interval,
- * and each list as kept (version, fetched_at, count, error).  PUT: the
- * feeds and the interval, checked, the pasted lists' entries parsed;
- * what was kept of a list that is gone, gone.  POST
- * /api/sdwan/lists/fetch, {"name"} or {}: fetched now.
+ * GET sdwan/lists: the feeds and the pasted lists, the interval, and
+ * each list as kept (version, fetched_at, count, error).  PUT: the feeds
+ * and the interval, checked, the pasted lists' entries parsed; what was
+ * kept of a list that is gone, gone.  POST sdwan/fetch-lists, {"name"}
+ * or {}: fetched now.
  */
 int
 api_sdwan_lists(struct http_request *req)
@@ -9152,7 +9155,7 @@ api_sdwan_lists(struct http_request *req)
 	char			 why[200];
 	bool			 fetch;
 
-	fetch = path_is(req, "/api/sdwan/lists/fetch", "sdwan/fetch-lists");
+	fetch = path_is(req, "sdwan/fetch-lists");
 	if (req->method == HTTP_METHOD_GET) {
 		if (!guard(req, false))
 			return (WEB_OK);
@@ -9325,7 +9328,8 @@ wg_keypair(char *priv, size_t plen, char *pub, size_t publen)
 }
 
 /*
- * POST /api/wg/keypair: a fresh WireGuard key pair for a client of a
+ * arcana-console:wireguard-keypair: a fresh WireGuard key pair for a
+ * client of a
  * host's wg interface (the WireGuard tab's + client), both halves in
  * the reply and kept nowhere, and a preshared key: the page puts the
  * private half and the preshared key in the client's configuration,
@@ -9585,13 +9589,14 @@ identity_config(struct plan *pl, const ucl_object_t *doc,
 }
 
 /*
- * /api/sdwan/identities: GET lists every remote end point's
+ * sdwan/identities: GET lists every remote end point's
  * identities with their addresses; POST {swvc, end_point, name, zone,
  * user} issues one, a console user's (a sign-in key's name) or a
  * name's, its key pair made here, the private half in the WireGuard
  * configuration answered once and kept nowhere, the identity in the
- * document in place of one of the name, and the edges applied; DELETE
- * ?swvc=&end_point=&name= revokes one, its peer removed by the apply
+ * document in place of one of the name, and the edges applied
+ * (issue-identity); revoke-identity {swvc, end_point, name} revokes
+ * one, its peer removed by the apply
  * that follows.
  */
 int
@@ -9623,16 +9628,10 @@ api_sdwan_identities(struct http_request *req)
 	}
 	if (!guard(req, true))
 		return (WEB_OK);
-	/* Revoked: /api's DELETE ?swvc=&end_point=&name=, or
-	 * arcana-console's revoke-identity, its input. */
-	if (req->method == HTTP_METHOD_DELETE || path_is(req, "",
-	    "sdwan/revoke-identity")) {
+	/* Revoked: arcana-console's revoke-identity, its input. */
+	if (path_is(req, "sdwan/revoke-identity")) {
 		swvc = epid = name = NULL;
-		if (req->method == HTTP_METHOD_DELETE) {
-			(void)http_argument_get_string(req, "swvc", &swvc);
-			(void)http_argument_get_string(req, "end_point", &epid);
-			(void)http_argument_get_string(req, "name", &name);
-		} else if ((body = read_json(req)) != NULL) {
+		if ((body = read_json(req)) != NULL) {
 			snprintf(rsw, sizeof(rsw), "%s", str(body, "swvc") !=
 			    NULL ? str(body, "swvc") : "");
 			snprintf(rep, sizeof(rep), "%s", str(body, "end_point") !=
@@ -9893,11 +9892,11 @@ identities_tick(const ucl_object_t *doc, time_t now)
 /* ---- The record: what the edges' security rules logged ----- */
 
 /*
- * GET /api/sdwan/record[.csv]?swvc=&policy=&edge=&since=: the edges'
- * records (each agent keeps a day of what its logged rules saw) read
- * now and put together, newest first, each with its edge; a service
- * or a policy picks by the rules' comments, since by the time.  As
- * CSV with .csv.
+ * GET sdwan/record[?swvc=&policy=&edge=&since=]: the edges' records
+ * (each agent keeps a day of what its logged rules saw) read now and
+ * put together, newest first, each with its edge; a service or a policy
+ * picks by the rules' comments, since by the time.  As CSV where Accept
+ * says text/csv.
  */
 int
 api_sdwan_record(struct http_request *req)
@@ -10536,7 +10535,7 @@ manager_tick(void)
 			continue;
 		}
 		/* Its steering as the edge has it, why each choice
-		 * (arcana-steer), for /api/sdwan/steer. */
+		 * (arcana-steer), for sdwan/steering. */
 		live_keep(live, sid, ucl_object_lookup(sd, "data"), now);
 		was = sent_of(st, sid);
 		changed = was == NULL || now - ucl_object_toint(ucl_object_lookup(
@@ -10689,9 +10688,11 @@ api_sdwan_rekey(struct http_request *req)
 	if (e1 != NULL)
 		ucl_object_unref(e1);
 	if (e1 == NULL) {
+		/* id is the body's: said before it goes. */
+		(void)reply_error(req, 404, "tunnel", "no uswe tunnel %s "
+		    "applied on two edges", id);
 		ucl_object_unref(body);
-		return (reply_error(req, 404, "tunnel", "no uswe tunnel %s "
-		    "applied on two edges", id));
+		return (WEB_OK);
 	}
 	host_refs();
 	arg = strdup(id);
@@ -11379,7 +11380,7 @@ apply_now(ucl_object_t *doc, char *why, size_t wlen)
 }
 
 /*
- * POST /api/sdwan/steer: {"edge", "table", "prefix", "candidate"} an
+ * POST sdwan/pin: {"edge", "table", "prefix", "candidate"} an
  * entry of an edge's steering pinned to one of its candidates in
  * arcana-steer (none: the pin cleared), the console's override; the
  * edge refuses a candidate that is not one of the entry's.
@@ -11452,12 +11453,12 @@ api_sdwan_edges(struct http_request *req)
 	bool			 apply, fresh, invalid;
 	int			 n, status;
 
-	apply = path_is(req, "/api/sdwan/apply", "sdwan/apply") ||
-	    path_is(req, "", "sdwan/apply-state");
+	apply = path_is(req, "sdwan/apply") || path_is(req,
+	    "sdwan/apply-state");
 	if (req->method == HTTP_METHOD_GET) {
 		if (!guard(req, false))
 			return (WEB_OK);
-		if (path_is(req, "/api/sdwan/steer", "sdwan/steering")) {
+		if (path_is(req, "sdwan/steering")) {
 			pthread_mutex_lock(&st_lock);
 			st = state_load();
 			pthread_mutex_unlock(&st_lock);
@@ -11488,7 +11489,7 @@ api_sdwan_edges(struct http_request *req)
 		}
 	} else if (!guard(req, true))
 		return (WEB_OK);
-	if (path_is(req, "/api/sdwan/steer", "sdwan/pin"))
+	if (path_is(req, "sdwan/pin"))
 		return (steer_pin(req));
 	/* The L3NM kept, as the planner reads it (l3nm_plan.c). */
 	doc = l3nm_kept();
@@ -11506,7 +11507,7 @@ api_sdwan_edges(struct http_request *req)
 			    "document is not one to make: %s", why));
 		return (reply_error(req, 409, "unplanned", "%s", why));
 	}
-	if (path_is(req, "/api/sdwan/ledger", "sdwan/ledger")) {
+	if (path_is(req, "sdwan/ledger")) {
 		body = ledger_reply(&pl);
 		plan_free(&pl);
 		ucl_object_unref(doc);

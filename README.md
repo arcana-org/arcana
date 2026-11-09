@@ -20,7 +20,7 @@ own: <https://spmzt.github.io/arcana-docs/> (its source is
 | | |
 |---|---|
 | `usr.sbin/arcana-agent` | The daemon on each host: libjail(3), libprocstat(3), jail(8), served over cblink with mutual TLS. The only privileged part. |
-| `www/arcana-console` | The console: its own HTTP server on libwebsockets, WebAuthn login (libcrypto), the server list, and the JSON API ([OpenAPI](docs/openapi.yaml)). |
+| `www/arcana-console` | The console: its own HTTP server on libwebsockets, WebAuthn login (libcrypto), the server list, and RESTCONF (RFC 8040), the console's own data and each host's through its fleet mount. |
 | `www/arcana-ui` | The PWA: C compiled with Emscripten, base libucl for JSON, installable and usable offline as a shell. |
 | `usr.sbin/jailconf` | `jailconf(8)`: change one value of a jail parameter in `jail.conf` in place, like `sysrc(8)` for `rc.conf`. |
 | `usr.sbin/arcanactl` | `arcanactl(8)`: talk to an arcana-agent from a shell, with libxo(3) output. |

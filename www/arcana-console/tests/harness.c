@@ -2052,12 +2052,44 @@ sdwan_round_trip(const char *sent, const ucl_object_t *kept, char *where,
 	return (same);
 }
 
+#define	SDWAN_DOC	"/restconf/data/arcana-console:sdwan/document"
+
+/* The SD-WAN document put (body, RESTCONF's) read back as it went. */
+static void
+sdwan_kept(const char *hdrs, const char *body)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*o;
+	struct resp		 g;
+	char			*sent, where[512];
+
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS);
+	o = ucl_parser_add_string(p, body, 0) ? ucl_parser_get_object(p) :
+	    NULL;
+	ucl_parser_free(p);
+	if (o == NULL)
+		return;
+	sent = (char *)ucl_object_emit(ucl_object_lookup(o,
+	    "arcana-console:document"), UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(o);
+	if (sent == NULL)
+		return;
+	http_on(console_socket(), "localhost:8443", hdrs, "GET", SDWAN_DOC,
+	    NULL, &g);
+	ATF_CHECK_MSG(g.status == 200 && sdwan_round_trip(sent,
+	    ucl_object_lookup(g.json, "arcana-console:document"), where,
+	    sizeof(where)), "the document as L3NM, back: %d %s", g.status,
+	    g.status == 200 ? where : g.body);
+	resp_free(&g);
+	free(sent);
+}
+
 /* One request to the console; the session cookie is kept.  An SD-WAN
  * document kept comes back as it went (sdwan_round_trip()). */
 void
 http(const char *method, const char *path, const char *body, struct resp *r)
 {
-	char	hdrs[1024], where[512];
+	char	hdrs[1024];
 
 	snprintf(hdrs, sizeof(hdrs), "%s%s%s%s%s%s%s",
 	    send_xjg ? "X-Arcana: 1\r\n" : "",
@@ -2068,10 +2100,9 @@ http(const char *method, const char *path, const char *body, struct resp *r)
 	    cookie[0] != '\0' ? "\r\n" : "");
 	http_on(console_socket(), "localhost:8443", hdrs, method, path, body,
 	    r);
-	if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/sdwan") == 0 &&
-	    r->status == 200 && body != NULL)
-		ATF_CHECK_MSG(sdwan_round_trip(body, r->json, where,
-		    sizeof(where)), "the document as L3NM, back: %s", where);
+	if (strcmp(method, "PUT") == 0 && strcmp(path, SDWAN_DOC) == 0 &&
+	    r->status == 204 && body != NULL)
+		sdwan_kept(hdrs, body);
 }
 
 /*

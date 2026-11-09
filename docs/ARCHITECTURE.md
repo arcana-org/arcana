@@ -199,12 +199,13 @@ host's administrator installed and a console owner enabled is served.
   reason and none of it served.
 * **Hashes.**  Each listed file's size and SHA-384 are kept; the page
   loads exactly these, with `integrity="sha384-..."`.  The directory is
-  looked at again at most once a second, on `GET /api/plugins` and on a
+  looked at again at most once a second, on a read of
+  `arcana-console:plugins` and on a
   plugin's file asked for: rescanned when it, a plugin's directory,
   its `plugin.json` or the directory of a listed file changed, and a
   listed file whose time or size changed is hashed again.  No restart.
-* **Enabled** by a console owner alone (`POST /api/plugins/<id>`
-  `{"enabled": bool}`), kept in `console-plugins.json` in the data
+* **Enabled** by a console owner alone (`plugins/plugin=<id>/enabled`
+  of `arcana-console`), kept in `console-plugins.json` in the data
   directory, written in the audit trail.  An enabled plugin is served
   to every signed-in user.
 * **Served** at `/plugins/<id>/<file>`: a file the plugin lists, of an
@@ -254,7 +255,8 @@ that open a screen of the plugin's.
 `Arcana.store` is where a plugin keeps what it keeps of a user (their
 progress, their choices) or of all its users: not for secrets, which
 every script of the page, any plugin's, can read.  On the console it
-is `GET` and `PUT /api/plugins/<id>/store` and `.../store/shared`, to
+is `GET` and `PUT` of `arcana-console:plugins/plugin=<id>/store` and
+`.../shared-store`, to
 a signed-in user's session alone (not an API token), only while the
 plugin is enabled and has no error (404 else); each a JSON object of
 16 KB at most (400 for anything else, 413 beyond), kept in
@@ -274,7 +276,8 @@ and are there again when it is enabled.
 Without a `tls { }` block the console runs its own CA (`pki.c`): EC
 P-256, made at first start in the data directory, with the console's
 client certificate signed by it.  A logged-in user asks for a token for
-a host (`POST /api/enrol/tokens`: name, host, port); it is 32 random
+a host (`arcana-console:enrolment/create-token`: name, host, port); it
+is 32 random
 bytes, single use, valid an hour.  `arcana-enrol(8)` on the host makes
 a key and a certificate request and sends them with the token (`POST
 /api/enrol`, no session).  The console signs a certificate for the
@@ -289,7 +292,7 @@ forming a tree.  `arcana-agent` records its own steps; the backend adds the
 API, session check and cblink request steps above them.
 
 ```
-POST /api/servers/s1/jails/web/restart          api
+POST .../host=s1/arcana-jails:jails/jail=web/restart   api
 ├─ session check                                auth
 └─ libcblink YANG action tcp://host:4310      lib   libcblink, mTLS
    └─ arcana-agent jail web restart               daemon
@@ -343,7 +346,7 @@ is asked, for the user it is asked for, whose access rules (NACM, RFC
 8341) the agent holds the subscription to, and let go when no read
 asked for it for two minutes.  A host's rules are its own: the console
 puts its owners in the host's group admin only when an owner asks
-(Settings, AAA, Roles: synchronize, `POST /api/servers/<id>/nacm-sync`)
+(Settings, AAA, Roles: synchronize, `arcana-console:hosts/host=<id>/nacm-sync`)
 and once when the host enrols, and touches nothing else of them:
 
 | Topic | Subscription | Answers |
@@ -370,7 +373,7 @@ again one second on, doubling to a minute, and the topics still asked
 for are subscribed anew.  An agent that has no such subscription (one
 of the release before) refuses it, and its reads, and the pages that
 follow its events, go to it as they did.  `GET
-/api/servers/<id>/watch` says the connection's state, each topic's,
+arcana-console:hosts/host=<id>/watch` says the connection's state, each topic's,
 and how often the console went to the agents and answered without them.
 
 ## Services
@@ -413,9 +416,9 @@ the host is unreachable.
 
 The service worker precaches the application shell (HTML, CSS, the wasm
 and its glue, fonts, icons) under a name derived from a checksum of the
-shell; `/api/` is never cached, and nothing about jails is kept in browser
-storage.  The top bar shows three signals: NET (`navigator.onLine`), API
-(`/api/health`, every 15 s) and HOST (the last request to the selected
+shell; `/restconf/` and `/api/` are never cached, and nothing about
+jails is kept in browser storage.  The top bar shows three signals: NET
+(`navigator.onLine`), API (`/api/health`, every 15 s) and HOST (the last request to the selected
 arcana-agent).  Jail data older than 30 s, or from a failed refresh, is
 dimmed and marked stale with its age; jails of an unreachable host show
 as unknown.  Started offline, the app says that it is there but jail data
@@ -436,8 +439,7 @@ usr.sbin/arcanactl/     arcanactl(8)
 usr.sbin/arcana-enrol/  arcana-enrol(8)
 www/arcana-console/     arcana-console(8)
 www/arcana-ui/          the PWA
-docs/                   this file, the other guides, openapi.yaml (deprecated),
-                        restconf-modules.py
+docs/                   this file, the other guides, restconf-modules.py
 tests/                  the top of the installed test suite
 ```
 

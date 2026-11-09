@@ -388,6 +388,23 @@ and
 .Xr arcanactl 8 ,
 .Xr jailconf 8
 .Pp
-The API is described in
-.Pa docs/openapi.yaml
-of the source tree.
+The API is RESTCONF (RFC 8040) at
+.Pa /restconf ,
+described by the YANG modules its library lists;
+.Pa docs/restconf-modules.py
+of the source tree prints each module's paths.
+Beside it, under
+.Pa /api ,
+are the console's plain-HTTP resources, no YANG data:
+.Pa /api/health ,
+the sign-in ceremonies under
+.Pa /api/auth/ ,
+.Pa /api/enrol ,
+the hosts' notification receiver
+.Pa /api/notif/ ,
+an intrusion detection's pcap files
+.Pa ( /api/servers/<id>/ids/pcap
+and
+.Pa pcap-log )
+and the page's socket
+.Pa /api/stream .

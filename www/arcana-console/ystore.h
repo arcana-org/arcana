@@ -25,9 +25,8 @@
  * fstab(5)'s text and its SHA-256, malloc'd.  ystore_fstab_put(): text
  * put in its place, sha256 that of the one it was made from (only
  * checked with dry_run), *newsha the SHA-256 now, malloc'd.  ystore_key():
- * a dataset's key loaded (key), changed (new_key, loaded first with key
- * where it is not), or, with create (its encryption), the dataset made
- * encrypted with new_key.
+ * a dataset's key loaded (key), or changed (new_key, loaded first with
+ * key where it is not).
  */
 int	ystore_read(cbl_conn *conn, int kind, const char *filter,
 	    const char *jail, ucl_object_t **data, uint64_t *total,
@@ -37,6 +36,6 @@ int	ystore_fstab(cbl_conn *conn, char **text, char **sha256, char *err,
 int	ystore_fstab_put(cbl_conn *conn, const char *text, const char *sha256,
 	    bool dry_run, char **newsha, char *err, size_t errlen);
 int	ystore_key(cbl_conn *conn, const char *dataset, const char *key,
-	    const char *new_key, const char *create, char *err, size_t errlen);
+	    const char *new_key, char *err, size_t errlen);
 
 #endif	/* !_ARCANA_YSTORE_H_ */

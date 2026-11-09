@@ -12,11 +12,13 @@
  * back to the sender only once the receiver took it, so the two go as
  * fast as the slower and nothing piles up here.
  *
- *	POST /api/transfers {"from", "snapshot", "since", "recursive",
+ *	transfers/start {"from", "snapshot", "since", "recursive",
  *	    "to", "dataset"}: one begun, its id said.
- *	GET /api/transfers: each with its state (running, done, failed,
+ *	transfers: each with its state (running, done, failed,
  *	    cancelled, interrupted), bytes, error, started and ended.
- *	DELETE /api/transfers/<id>: one running stopped.
+ *	transfers/transfer=<id>/stop: one running stopped.
+ *
+ * (arcana-console's, cyang.c.)
  *
  * A transfer has a thread of its own in the worker that began it, and
  * outlives the request.  What each has done is kept in transfers.json,
@@ -711,50 +713,6 @@ transfers_yang_start(struct http_request *req, const ucl_object_t *in,
 	}
 	(void)pthread_detach(tid);
 	return (0);
-}
-
-/*
- * POST /api/transfers: one begun; GET: each; DELETE /api/transfers/<id>:
- * one running stopped.
- */
-int
-api_transfers(struct http_request *req)
-{
-	ucl_object_t		*body, *top;
-	const char		*id;
-	char			 why[160];
-	uint32_t		 n;
-	int			 rc;
-
-	if (req->method == HTTP_METHOD_GET) {
-		if (!guard(req, false))
-			return (WEB_OK);
-		top = seen_load(req);
-		return (reply_json(req, 200, top));
-	}
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (req->method == HTTP_METHOD_DELETE) {
-		id = strrchr(req->path, '/') + 1;
-		n = (uint32_t)strtoul(id, NULL, 10);
-		if ((rc = transfers_yang_stop(req, n, why, sizeof(why))) != 0)
-			return (reply_error(req, rc, "not-found", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	}
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a JSON object"));
-	rc = transfers_yang_start(req, body, &n, why, sizeof(why));
-	ucl_object_unref(body);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 404 ? "not_found" : rc ==
-		    403 ? "role" : rc == 409 ? "busy" : rc == 400 ? "invalid" :
-		    "thread", "%s", why));
-	top = ucl_object_typed_new(UCL_OBJECT);
-	put(top, "id", ucl_object_fromint(n));
-	put(top, "state", ucl_object_fromstring("running"));
-	return (reply_json(req, 200, top));
 }
 
 /* ---- arcana-console's transfers (cyang.c) ---------------------------- */

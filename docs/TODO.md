@@ -166,7 +166,7 @@ Written and tested with stand-ins only:
 
 - A query argument's value with an "=" in it (encoded %3D, or even
   %253D) comes to the console cut at it: libwebsockets' argument
-  parsing.  So /api/servers/<id>/data takes node names, not an XPath
+  parsing.  So a read below a host's entry takes no XPath
   filter; the filter is arcanactl get -x's and cblink's.  To look at
   in lws's parser, or read the raw query from :path ourselves. The
   same parser decodes the path's %-escapes before the console sees it,

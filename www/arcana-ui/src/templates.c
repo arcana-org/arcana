@@ -21,7 +21,7 @@
 #include "app.h"
 
 static struct {
-	ucl_object_t	*list;		/* GET /api/templates's */
+	ucl_object_t	*list;		/* arcana-console's templates */
 	bool		 loading;
 	char		 filter[64];
 	char		 open[65];	/* the one opened, or "" */
@@ -81,7 +81,7 @@ each(const ucl_object_t *list, const char *const *keys)
 	return (a);
 }
 
-/* A template's entry as /api had it: {name, description, from, files,
+/* A template's entry as the page takes it: {name, description, from, files,
  * packages, facts, variables: {name: {...}}, placeholders, updated}. */
 static ucl_object_t *
 tpl_doc(const ucl_object_t *y)

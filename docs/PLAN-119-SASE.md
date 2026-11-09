@@ -8,7 +8,7 @@ left to build or to decide.
 
 Each task is one commit, reviewed before it goes in, with the agent's
 or the console's version bumped, its tests in the suite, and the book
-(arcana-docs) and openapi.yaml where it shows. A: the agent, C: the
+(arcana-docs) where it shows. A: the agent, C: the
 console, U: the page, T: tests, L: the lab on the VM.
 
 What the lab cannot give: an SD-WAN Vendor Edge of another vendor to
@@ -73,7 +73,7 @@ The security policies are MEF 138's Security Function Policies. Done
   Table 4's: who, from where, the values that changed alone, a Block's
   and Quarantine's names neutralised (R34). Both kept in the data
   directory, readable by the console alone (R26, R32), read by
-  `GET /api/sdwan/sen` and `/san` (`.csv` too), shown on the Security
+  `arcana-console:sdwan/sen` and `san` (CSV by Accept), shown on the Security
   tab, and sent to their recipients (R30, R36): `mail_sen`, `mail_san`,
   `telegram_sen`, `telegram_san` in Settings, Notifications. SENs are
   made from the events the console reads for its alerts: when no

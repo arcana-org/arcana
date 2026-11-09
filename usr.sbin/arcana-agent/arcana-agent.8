@@ -639,10 +639,10 @@ a minute, told subscription-started with the time of the last record
 it had, and sent what it missed from the events kept (configured-replay)
 then replay-completed.
 The console is the receiver meant: its
-.Pa /api/servers/<host>/subscription
-says what to put in the candidate, and
-.Pa /api/servers/<host>/subscription/token
-hands the host a token in it, for a console that knows its hosts by
+.Pa /restconf/data/arcana-console:hosts/host=<id>/subscription
+says what to put in the candidate, and its
+.Pa subscription-token
+action hands the host a token in it, for a console that knows its hosts by
 their tokens (web.conf's notif_auth) rather than their certificates.
 .It Fl -bird-watch Ar seconds
 How often the BIRD of the host, and that of each running jail with a

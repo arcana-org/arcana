@@ -148,10 +148,17 @@ Smaller decisions are listed with the phases that need them.
   The operations of `share/arcana/arcana.yaml` are an interim module
   written by `share/arcana/wire.awk`, an rpc an operation; the YAML
   stays their editing source until Y-3 moves each onto its module.
-- **D-10 The northbound.** RESTCONF replaces `/api`. The PWA,
-  `arcanactl` and the Android app move in the same release; the
-  WebAuthn ceremonies and the enrolment endpoints stay as Arcana's own
-  resources beside `/restconf` (4.4).
+- **D-10 The northbound.** RESTCONF replaces `/api` for everything
+  modelled in YANG. The PWA, `arcanactl` and the Android app move in
+  the same release. `/api` remains, beside `/restconf`, as the
+  console's plain-HTTP resources, no YANG data: authentication (the
+  WebAuthn and password ceremonies, logout), enrolment by token,
+  health, the binary files (an IDS's pcap upload and pcap-log
+  download), the receiver the agents post their notifications to and
+  the page's socket (4.4.2).  Decided 2026-11-09, the user: YANG is
+  not appropriate for those; they were never to be modelled, and
+  moving them would only rename URLs and break the Android app's
+  sign-in for nothing.
 
 ## What cblink still needs
 
@@ -500,13 +507,15 @@ Depends on Y-3.
 - **4.3 The fleet mount.** C: `arcana-fleet`, per-host SID and library
   cache, proxying, YANG-Push fan-out and relay, NACM identity. ~1.5 k.
 - **4.4 The console's own datastore.** C: `arcana-console` served by
-  RESTCONF from the libucl files; `/api` removed (D-10). What RESTCONF
-  has no place for stays as Arcana's own resources beside it: the
-  WebAuthn ceremonies (`/auth/register`, `/auth/login`, their
-  `begin` and `finish`), logout, `assetlinks.json`, enrolment by
-  token (`/enrol`), and health. The Android app's logins use those
-  and its data calls move to `/restconf`; it is updated in the same
-  release (its WebAuthn origin and `assetlinks.json` are unchanged).
+  RESTCONF from the libucl files; `/api`'s modelled routes removed
+  (D-10). What RESTCONF has no place for stays at its `/api` path, the
+  console's plain-HTTP resources: the WebAuthn ceremonies
+  (`/api/auth/register`, `/api/auth/login`, their `begin` and
+  `finish`), the password ceremonies, logout, `assetlinks.json`,
+  enrolment by token (`/api/enrol`), health, the pcap files. The
+  Android app's logins use those unchanged and its data calls move to
+  `/restconf`; it is updated in the same release (its WebAuthn origin
+  and `assetlinks.json` are unchanged).
 - **4.5 `ietf-vpn-common` and `ietf-l3vpn-ntw`.** C: stored as the
   service (D-4), the Arcana augmentations (policy map, application
   flows, breakout, security policies, probes, steering criteria, the
@@ -1972,13 +1981,13 @@ whose first part is served.
 - 4.4.1 the route table (console 0.369.0): every /api route and its
   home.  `C` = `/restconf/data/arcana-console:`, `H` =
   `/restconf/data/arcana-fleet:fleet/host=<id>`, `O` =
-  `/restconf/operations/`; beside = D-10's resources beside
-  `/restconf`, moved by 4.4.2.  No row is open; the agent's actions
+  `/restconf/operations/`; beside = D-10's plain-HTTP resources,
+  kept at their `/api` paths by 4.4.2.  No row is open; the agent's actions
   and rpcs below a host are reached through the mount (4.3.4).
 
   | /api route | Home |
   |---|---|
-  | health; auth/status, register/*, login/*, setup/password, password, logout; enrol; `/.well-known/assetlinks.json` | beside (D-10) |
+  | health; auth/status, register/*, login/*, setup/password, password, logout; enrol; `/.well-known/assetlinks.json` | kept at /api (D-10, 4.4.2) |
   | notif/<host>/capabilities, relay-notification | beside: the RFC 8650 receiver the agents post to |
   | servers/<id>/ids/pcap, ids/pcap-log | beside: binary up- and download (a pcap is no YANG data) |
   | stream (WebSocket) | `/restconf/streams/<id>/json`, `/restconf/streams/fleet/json` (events), `establish-subscription` under `H` (periodic, on-change); the reads it repeats are the rows below |
@@ -2025,8 +2034,43 @@ whose first part is served.
   (`/restconf/ds/ietf-datastores:candidate/...`) and its
   `ietf-netconf:commit`, as the fleet mount takes them now.
 - 4.4.2 C: the WebAuthn ceremonies, logout, `assetlinks.json`, enrol
-  and health moved beside `/restconf`; `/api` removed; check: the
-  console tests rewritten.
+  and health kept as `/api`'s plain-HTTP resources (D-10); the rest of
+  `/api` removed; check: the console tests rewritten.
+- 4.4.2 done (console 0.409.0, 0.410.0; agent 0.257.0): every `/api`
+  route RESTCONF serves removed, with the handlers and the code only
+  they used (the hosts' reads and jobs, servers, users, roles, groups,
+  tokens, settings, templates, labels, prefix lists, feeds, transfers,
+  workflows and runs, push, plugins, credentials, enrolment tokens,
+  the Security section's POST and security.c, the socket's `read` and
+  `events` kinds and follow.c, watch.c's sdwan topic and the held
+  probes only `/api`'s SD-WAN read asked for, the JSON 404 of `/api/`,
+  path_is()'s and want_csv()'s `/api` halves, ystore_key()'s create;
+  the console's API page with docs/openapi.yaml, apidoc.c, openapi.awk
+  and yaml_test:openapi).  Decided, the user (D-10, 2026-11-09): not
+  moved: `/api` stays, at the paths it had, as the console's
+  plain-HTTP resources that are no YANG data and were never to be
+  modelled; renaming them would break the Android app's sign-in for
+  nothing.  Kept: `/api/health`; `/api/auth/status`,
+  `register/{begin,finish}`, `login/{begin,finish,password,token}`,
+  `setup/password`, `password`, `logout`; `/api/enrol`;
+  `/api/servers/<id>/ids/pcap` and `pcap-log`; `/api/notif/<host>/`
+  (the receiver the agents post to); `/api/stream` (the page's socket,
+  its sysctl, routes, connections, sockets and `restconf` kinds);
+  `/.well-known/assetlinks.json` and `host-meta` where they were;
+  token_readable() and user_path_ok() now the RESTCONF paths and
+  these.  Added to RESTCONF: the registry's `sampled` set from a
+  host's arcana-history read through the mount (restconf_seen();
+  `/api`'s history read did it before).  Fixed on the way: sdwan/rekey's
+  404 printed the tunnel's id after its body was freed.  The page's
+  Security forms are checked by the page (sdread.c) and put into
+  arcana-sdwan by the candidate; the subscriptions' held reads
+  (watch.c) answer the console's own reads (workflow read steps, a job
+  waited on), no longer an HTTP client's.  Check: console_test rewritten
+  onto RESTCONF (every case kept; checks of `/api`'s own plumbing gone:
+  the JSON 404, the reply traces, the Security forms' 400s now the
+  page's, the held SD-WAN state, a held jobs read), pwa_test's direct
+  fetches, the harness's SD-WAN round trip on sdwan/document's PUT.
+  The Android app (4.4.3) keeps its sign-in and moves its data calls.
 - 4.4.3 (the Android app's repository): the app reimplemented as a
   RESTCONF client: WebAuthn and the token QR code as they are, then
   every read a `GET` on `/restconf/data/...` with `fields` and

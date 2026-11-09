@@ -457,7 +457,7 @@ addToLibrary({
 					    "/" || url[1] === "/")
 						return (Promise.reject(new Error(
 						    "Arcana.api: a path of the "
-						    + "console's, as /api/...")));
+						    + "console's, as /restconf/...")));
 					if (body !== undefined && body !== null) {
 						o.headers["Content-Type"] =
 						    "application/json";

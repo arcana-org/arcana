@@ -1242,8 +1242,8 @@ mail_init(void)
 		(void)pthread_detach(tid);
 }
 
-/* POST /api/settings/mail-test, or arcana-console's settings/mail-test
- * action: a mail to say mail goes out. */
+/* arcana-console's settings/mail-test action: a mail to say mail goes
+ * out. */
 int
 api_mail_test(struct http_request *req)
 {
@@ -1262,19 +1262,16 @@ api_mail_test(struct http_request *req)
 	mc_free(&mc);
 	err[0] = '\0';
 	if (mail_send("Arcana: a test", body, err, sizeof(err)) != 0)
-		return (cyang_path(req->path) ? restconf_error(req, 502, err) :
-		    reply_error(req, 502, "not-sent", "%s", err));
+		return (restconf_error(req, 502, err));
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, ucl_object_fromstring(to), "to", 0, false);
-	if (cyang_path(req->path))
-		return (cyang_output(req, o));
-	ucl_object_insert_key(o, ucl_object_frombool(true), "ok", 0, false);
-	return (reply_json(req, 200, o));
+	return (cyang_output(req, o));
 }
 
 /*
- * POST /api/settings/telegram-test: a message to say Telegram reaches
- * the chats, sent by the host Settings name (a task: an agent is asked).
+ * arcana-console's settings/telegram-test action: a message to say
+ * Telegram reaches the chats, sent by the host Settings name (a task: an
+ * agent is asked).
  */
 struct tgtest {
 	struct task task;		/* first */
@@ -1311,17 +1308,11 @@ api_telegram_test(struct http_request *req)
 			return (WEB_RETRY);
 		}
 		if (tt->rc != 0)
-			return (cyang_path(req->path) ? restconf_error(req, 502,
-			    tt->err) : reply_error(req, 502, "not-sent", "%s",
-			    tt->err));
+			return (restconf_error(req, 502, tt->err));
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(tt->chats), "to",
 		    0, false);
-		if (cyang_path(req->path))
-			return (cyang_output(req, o));
-		ucl_object_insert_key(o, ucl_object_frombool(true), "ok", 0,
-		    false);
-		return (reply_json(req, 200, o));
+		return (cyang_output(req, o));
 	}
 	if (!guard(req, true))
 		return (WEB_OK);

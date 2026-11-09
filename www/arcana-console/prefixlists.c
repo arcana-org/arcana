@@ -9,10 +9,8 @@
  * prefixes: an ipfw table filled from one, a BIRD set (define) made of
  * one, an SD-WAN zone's or list's prefixes.  prefix-lists.json in the
  * data directory, {"lists": {name: {"description", "prefixes": [...]}}},
- * under prefix-lists.lock while it is changed.  GET /api/prefix-lists
- * gives them all; PUT /api/prefix-lists/<name> keeps one, DELETE takes
- * it away.  The same as arcana-console's prefix-lists (cyang.c),
- * through pfx_apply().
+ * under prefix-lists.lock while it is changed, served as
+ * arcana-console's prefix-lists (cyang.c), changed through pfx_apply().
  */
 
 #include <sys/param.h>
@@ -191,18 +189,6 @@ prefix_list_get(const char *name)
 	return (out);
 }
 
-/* GET /api/prefix-lists. */
-int
-api_prefix_lists(struct http_request *req)
-{
-
-	if (req->method != HTTP_METHOD_GET)
-		return (reply_error(req, 405, "method", "GET"));
-	if (!guard(req, false))
-		return (WEB_OK);
-	return (reply_json(req, 200, all_load()));
-}
-
 /*
  * The lists changed as set says, {name: list, or null to take it away},
  * each checked before any is kept; the lists then into *allp when asked.
@@ -271,37 +257,6 @@ pfx_apply(const ucl_object_t *set, ucl_object_t **allp, char *why,
 	else
 		ucl_object_unref(all);
 	return (0);
-}
-
-/* PUT or DELETE /api/prefix-lists/<name>. */
-int
-api_prefix_list(struct http_request *req)
-{
-	ucl_object_t	*body, *all, *set;
-	const char	*name;
-	char		 why[128];
-	int		 rc;
-
-	name = req->path + strlen("/api/prefix-lists/");
-	if (!name_ok(name))
-		return (reply_error(req, 400, "invalid", "a list is named by "
-		    "letters, digits, _ and -, 32 at most"));
-	if (req->method != HTTP_METHOD_PUT && req->method != HTTP_METHOD_DELETE)
-		return (reply_error(req, 405, "method", "PUT or DELETE"));
-	if (!guard(req, true))
-		return (WEB_OK);
-	body = NULL;
-	if (req->method == HTTP_METHOD_PUT && (body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a list, as "
-		    "{\"description\", \"prefixes\": [...]}"));
-	set = ucl_object_typed_new(UCL_OBJECT);
-	put(set, name, body != NULL ? body : ucl_object_typed_new(UCL_NULL));
-	rc = pfx_apply(set, &all, why, sizeof(why));
-	ucl_object_unref(set);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 400 ? "invalid" : "store",
-		    "%s", why));
-	return (reply_json(req, 200, all));
 }
 
 /* ---- arcana-console's prefix lists (cyang.c) ------------------------- */

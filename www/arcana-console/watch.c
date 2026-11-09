@@ -13,12 +13,7 @@
  *	jobs	arcana-jobs, on-change: the agent tells each job queued,
  *		begun, confirmed, finished or forgotten (RFC 8641);
  *	stats	arcana-host's stats, periodic;
- *	jails	arcana-jails, periodic;
- *	sdwan	arcana-sdwan's state, periodic, and arcana-probe's
- *		targets and samples, read by the thread at the same
- *		period (their samples are a list too long to push whole);
- *	events	the NETCONF stream, each of arcana-events' events
- *		relayed to the pages that follow the host (follow.c).
+ *	jails	arcana-jails, periodic.
  *
  * A topic is subscribed once a read of it asks (watch_held(), from a
  * request's task) for the user it is asked for, whose access rules
@@ -83,8 +78,6 @@ static const struct wtopic topics[WATCH_NTOPIC] = {
 	[WATCH_STATS] = { "stats", "arcana-host", "host",
 	    "/arcana-host:host/stats", false, 500 },
 	[WATCH_JAILS] = { "jails", "arcana-jails", "jails", NULL, false, 500 },
-	[WATCH_SDWAN] = { "sdwan", "arcana-sdwan", "sdwan", NULL, false, 200 },
-	[WATCH_EVENTS] = { "events", NULL, NULL, NULL, false, 0 },
 };
 
 /* A topic subscribed for one user; wlock's but for the thread's s. */
@@ -100,10 +93,6 @@ struct wsub {
 	uint64_t		 pushes;
 	int			 bad;		/* pushes not read, in a row */
 	char			 why[160];	/* why it was refused */
-	/* The sdwan's: arcana-probe, read by the thread for this user, as
-	 * this user. */
-	struct held		*probes;
-	uint64_t		 read_at;	/* µs, probes read last */
 };
 
 struct watch {
@@ -444,8 +433,7 @@ stale(struct watch *w)
 
 	w->changed = mono_us();
 	LIST_FOREACH(ws, &w->subs, link)
-		if (ws->topic == WATCH_STATS || ws->topic == WATCH_JAILS ||
-		    ws->topic == WATCH_SDWAN)
+		if (ws->topic == WATCH_STATS || ws->topic == WATCH_JAILS)
 			held_set(ws, NULL);
 }
 
@@ -455,8 +443,6 @@ held_drop(struct wsub *ws)
 {
 
 	held_set(ws, NULL);
-	held_rele(ws->probes);
-	ws->probes = NULL;
 }
 
 /* A record of a datastore's subscription: what is held made anew. */
@@ -573,21 +559,9 @@ sub_data(cbl_stream *s, cbl_msg *data, void *arg)
 {
 	struct wsub		*ws = arg;
 	struct cbl_ynotif	 nt;
-	ucl_object_t		*o;
-	unsigned char		*json;
 	cbl_yarena		*a;
 
 	(void)s;
-	if (ws->topic == WATCH_EVENTS) {
-		if ((o = ygula_event_of(data)) == NULL)
-			return;
-		json = ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
-		ucl_object_unref(o);
-		if (json != NULL)
-			follow_told(ws->w->sid, ws->user, (const char *)json);
-		free(json);
-		return;
-	}
 	if ((a = cbl_yarena_new()) == NULL)
 		return;
 	if (cbl_msg_ynotif(data, &nt, a) == 0)
@@ -726,7 +700,6 @@ watch_up(struct watch *w)
 		pthread_mutex_unlock(&wlock);
 		return (false);
 	}
-	/* Its own: a topic's is asked as its user (watch_reads()). */
 	hosts_count(false);
 	w->up = true;
 	w->since = time(NULL);
@@ -765,8 +738,6 @@ watch_down(struct watch *w, const char *why)
 			ws->state = why != NULL ? WATCH_S_LOST : WATCH_S_NONE;
 	}
 	pthread_mutex_unlock(&wlock);
-	if (why != NULL)
-		follow_gone(w->sid, why);
 	w->backoff = w->backoff == 0 ? 1 : MIN(w->backoff * 2,
 	    WATCH_BACKOFF_S);
 	w->retry = mono_us() + (uint64_t)w->backoff * 1000000;
@@ -808,81 +779,6 @@ watch_topics(struct watch *w, uint64_t now)
 	return (any);
 }
 
-/* A date-and-time as the agent writes them, UTC; 0: not one. */
-static time_t
-ytime_of(const char *s)
-{
-	struct tm	 tm;
-
-	memset(&tm, 0, sizeof(tm));
-	if (s == NULL || strptime(s, "%Y-%m-%dT%H:%M:%S", &tm) == NULL)
-		return (0);
-	return (timegm(&tm));
-}
-
-/*
- * The targets as rd has them now, each with the samples old had of it
- * not before cutoff and rd's after them, made in a; the newest sample's
- * time in *newest.  A target is the same by its edge (jail) and id.
- */
-static struct arcana_probe_probes_read_output *
-probes_merge(cbl_yarena *a, const struct arcana_probe_probes_read_output *old,
-    const struct arcana_probe_probes_read_output *rd, time_t cutoff,
-    time_t *newest)
-{
-	struct arcana_probe_probes_read_output	*m;
-	struct arcana_probe_target_state	*v;
-	const struct arcana_probe_target_state	*o, *t;
-	struct arcana_probe_sample		*s;
-	size_t					 n, k;
-	time_t					 at;
-	char					*p;
-
-	if ((m = cbl_yarena_alloc(a, sizeof(*m))) == NULL || (v =
-	    cbl_yarena_alloc(a, (rd->target.n + 1) * sizeof(*v))) == NULL)
-		return (NULL);
-	*m = *rd;
-	for (size_t i = 0; i < rd->target.n; i++) {
-		t = &rd->target.v[i];
-		v[i] = *t;
-		o = NULL;
-		for (k = 0; old != NULL && k < old->target.n; k++)
-			if (old->target.v[k].id != NULL && t->id != NULL &&
-			    strcmp(old->target.v[k].id, t->id) == 0 &&
-			    (old->target.v[k].jail == NULL ? t->jail == NULL :
-			    t->jail != NULL && strcmp(old->target.v[k].jail,
-			    t->jail) == 0))
-				o = &old->target.v[k];
-		n = t->sample.n + (o != NULL ? o->sample.n : 0);
-		if ((s = cbl_yarena_alloc(a, (n + 1) * sizeof(*s))) == NULL)
-			return (NULL);
-		n = 0;
-		/* The old ones' times copied: their arena goes with them. */
-		for (k = 0; o != NULL && k < o->sample.n; k++) {
-			if (ytime_of(o->sample.v[k].time) < cutoff)
-				continue;
-			s[n] = o->sample.v[k];
-			if (s[n].time != NULL) {
-				if ((p = cbl_yarena_alloc(a, strlen(s[n].time) +
-				    1)) == NULL)
-					return (NULL);
-				memcpy(p, s[n].time, strlen(s[n].time) + 1);
-				s[n].time = p;
-			}
-			n++;
-		}
-		for (k = 0; k < t->sample.n; k++)
-			s[n++] = t->sample.v[k];
-		for (k = 0; k < n; k++)
-			if ((at = ytime_of(s[k].time)) > *newest)
-				*newest = at;
-		v[i].sample.n = n;
-		v[i].sample.v = s;
-	}
-	m->target.v = v;
-	return (m);
-}
-
 /*
  * arcana-probe's edges and what its probes saw, for a sdwan topic,
  * read at its period: the samples after those held (its samples are a
@@ -890,49 +786,6 @@ probes_merge(cbl_yarena *a, const struct arcana_probe_probes_read_output *old,
  * PROBES_KEEP_S.  As the topic's user, by the caller.
  */
 #define	PROBES_KEEP_S	600
-static struct held *
-probes_read(struct watch *w, const struct held *old)
-{
-	struct arcana_probe_probes_read_input in;
-	struct arcana_probe_probes_read_output rd;
-	struct arcana_probe	*pr;
-	const struct cbl_ynode	*np, *act;
-	struct held		*h;
-	struct tm		 tm;
-	time_t			 t, after;
-	char			 err[256], when[32];
-
-	t = time(NULL);
-	after = old != NULL ? old->newest : t - PROBES_KEEP_S;
-	if ((np = yq_top("arcana-probe", "probes")) == NULL || (act =
-	    yq_child(np, "read")) == NULL || (h = held_new(NULL, NULL)) ==
-	    NULL)
-		return (NULL);
-	memset(&in, 0, sizeof(in));
-	memset(&rd, 0, sizeof(rd));
-	if (gmtime_r(&after, &tm) != NULL && strftime(when, sizeof(when),
-	    "%Y-%m-%dT%H:%M:%SZ", &tm) > 0)
-		in.after = when;
-	h->newest = after;
-	h->from = old != NULL && old->from > t - PROBES_KEEP_S ? old->from :
-	    t - PROBES_KEEP_S;
-	if ((h->a = cbl_yarena_new()) == NULL || (pr = cbl_yarena_alloc(h->a,
-	    sizeof(*pr))) == NULL) {
-		held_rele(h);
-		return (NULL);
-	}
-	h->data = pr;
-	hosts_count(false);
-	if (yq_get(w->conn, np, CBL_YDS_RUNNING, pr, h->a, err,
-	    sizeof(err)) != 0 || yq_call(w->conn, np, NULL, act, &in, &rd,
-	    h->a, err, sizeof(err)) != 0 || (h->more = probes_merge(h->a,
-	    old != NULL ? old->more : NULL, &rd, h->from, &h->newest)) ==
-	    NULL) {
-		held_rele(h);
-		return (NULL);
-	}
-	return (h);
-}
 
 /*
  * What the sdwan topics need beside their pushes, arcana-probe at their
@@ -940,40 +793,6 @@ probes_read(struct watch *w, const struct held *old)
  * the host holds the read to: a topic's own is never another user's.
  */
 #define	READS_MAX	32
-static void
-watch_reads(struct watch *w, uint64_t now)
-{
-	struct wsub	*v[READS_MAX], *ws;
-	struct held	*h, *old;
-	size_t		 n = 0;
-
-	pthread_mutex_lock(&wlock);
-	LIST_FOREACH(ws, &w->subs, link) {
-		if (ws->state != WATCH_S_OPEN || now - ws->wanted >=
-		    WATCH_IDLE_US) {
-			held_rele(ws->probes);
-			ws->probes = NULL;
-			continue;
-		}
-		if (n < nitems(v) && ws->topic == WATCH_SDWAN && now -
-		    ws->read_at >= (uint64_t)topics[WATCH_SDWAN].cs * 10000)
-			v[n++] = ws;
-	}
-	pthread_mutex_unlock(&wlock);
-	/* Each still there: only this thread takes one away. */
-	for (size_t i = 0; i < n && w->conn != NULL; i++) {
-		ws = v[i];
-		hosts_act_as(ws->user[0] != '\0' ? ws->user : NULL);
-		ws->read_at = now;
-		h = probes_read(w, ws->probes);
-		hosts_act_as(NULL);
-		pthread_mutex_lock(&wlock);
-		old = ws->probes;
-		ws->probes = h;
-		pthread_mutex_unlock(&wlock);
-		held_rele(old);
-	}
-}
 
 static void
 watch_free(struct watch *w)
@@ -1015,7 +834,6 @@ watch_run(void *arg)
 			}
 			continue;
 		}
-		watch_reads(w, now);
 		if (w->conn == NULL || !cbl_conn_is_open(w->conn)) {
 			watch_down(w, "the host closed the connection");
 			continue;
@@ -1151,65 +969,6 @@ watch_held(const char *sid, const char *uri, const char *peer, int topic,
 	return (h);
 }
 
-/*
- * arcana-probe as the thread read it last for user's sdwan topic, as
- * user; NULL: none.  Never another user's.
- */
-struct held *
-watch_probes_held(const char *uri, const char *peer, const char *user)
-{
-	struct watch	*w;
-	struct wsub	*ws;
-	struct held	*h;
-
-	h = NULL;
-	if (user == NULL)
-		user = "";
-	pthread_mutex_lock(&wlock);
-	LIST_FOREACH(w, &watches, link) {
-		if (atomic_load(&w->stop) || strcmp(w->uri, uri) != 0 ||
-		    (w->peer == NULL ? peer != NULL : peer == NULL ||
-		    strcmp(w->peer, peer) != 0) || !w->up)
-			continue;
-		LIST_FOREACH(ws, &w->subs, link)
-			if (ws->topic == WATCH_SDWAN && strcmp(ws->user,
-			    user) == 0 && ws->state == WATCH_S_OPEN &&
-			    (h = ws->probes) != NULL) {
-				atomic_fetch_add(&h->refs, 1);
-				break;
-			}
-		break;
-	}
-	pthread_mutex_unlock(&wlock);
-	return (h);
-}
-
-/*
- * The host's events asked for user, kept subscribed while asked: its
- * subscription's state, WATCH_S_*.
- */
-int
-watch_events(const char *sid, const char *uri, const char *peer,
-    const char *user)
-{
-	struct watch	*w;
-	struct wsub	*ws;
-	int		 state;
-
-	state = WATCH_S_REFUSED;
-	pthread_mutex_lock(&wlock);
-	if ((w = watch_of(sid, uri, peer)) != NULL && (ws = sub_of(w,
-	    WATCH_EVENTS, user)) != NULL) {
-		w->wanted = ws->wanted = mono_us();
-		state = ws->state;
-		/* Lost is said once: asked again, it is tried again. */
-		if (state == WATCH_S_LOST)
-			ws->state = WATCH_S_NONE;
-	}
-	pthread_mutex_unlock(&wlock);
-	return (state);
-}
-
 /* The console changed something on the host at uri. */
 void
 watch_changed(const char *uri)
@@ -1247,7 +1006,7 @@ static const char *const state_names[] = {
 };
 
 /*
- * GET /api/servers/<id>/watch: the console's connection for the host's
+ * GET hosts/host=<id>/watch: the console's connection for the host's
  * subscriptions, each topic subscribed, and how often the console went
  * to the agents and answered from what it holds.
  */

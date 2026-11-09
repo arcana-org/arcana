@@ -28,9 +28,10 @@
  * and a console owner enabled alone.
  *
  * The directory is looked at again, at most once a CHECK_MS, on each
- * /api/plugins and plugin file asked for: rescanned when it, a plugin's
- * directory, a plugin.json or a directory of a listed file changed; a
- * listed file whose time or size changed hashed again.  Which are
+ * read of arcana-console's plugins and plugin file asked for: rescanned
+ * when it, a plugin's directory, a plugin.json or a directory of a
+ * listed file changed; a listed file whose time or size changed hashed
+ * again.  Which are
  * enabled is console-plugins.json in the data directory, {"enabled":
  * {"<id>": {"by": who, "at": time}}}, read again when it changed (a
  * cluster's other node wrote it).
@@ -748,76 +749,9 @@ put(ucl_object_t *o, const char *key, ucl_object_t *v)
 	ucl_object_insert_key(o, v, key, 0, true);
 }
 
-static ucl_object_t *
-plug_json(const struct cplug *p)
-{
-	static const char	*texts[] = { "name", "version", "arcana",
-				    "description", "author" };
-	const ucl_object_t	*v;
-	ucl_object_t		*o, *a, *f;
-	char			 sri[80];
-	size_t			 i;
-	int			 j;
-
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "id", ucl_object_fromstring(p->id));
-	for (i = 0; i < nitems(texts); i++)
-		if (p->m != NULL && (v = ucl_object_lookup(p->m, texts[i])) !=
-		    NULL && ucl_object_type(v) == UCL_STRING)
-			put(o, texts[i], ucl_object_copy(v));
-	if (p->m != NULL && (v = ucl_object_lookup(p->m, "provides")) !=
-	    NULL && ucl_object_type(v) == UCL_ARRAY && p->error == NULL)
-		put(o, "provides", ucl_object_copy(v));
-	else
-		put(o, "provides", ucl_object_typed_new(UCL_ARRAY));
-	put(o, "enabled", ucl_object_frombool(enabled(p->id)));
-	if (p->error != NULL) {
-		put(o, "error", ucl_object_fromstring(p->error));
-		return (o);
-	}
-	a = ucl_object_typed_new(UCL_ARRAY);
-	for (j = 0; j < p->nfiles; j++) {
-		f = ucl_object_typed_new(UCL_OBJECT);
-		put(f, "path", ucl_object_fromstring(p->files[j].path));
-		put(f, "kind", ucl_object_fromstring(p->files[j].kind ==
-		    F_SCRIPT ? "script" : p->files[j].kind == F_STYLE ? "style" :
-		    "asset"));
-		put(f, "size", ucl_object_fromint(p->files[j].size));
-		snprintf(sri, sizeof(sri), "sha384-%s", p->files[j].sri);
-		put(f, "integrity", ucl_object_fromstring(sri));
-		ucl_array_append(a, f);
-	}
-	put(o, "files", a);
-	return (o);
-}
-
-/* GET /api/plugins: every console plugin, its state and files. */
-int
-api_cplugs(struct http_request *req)
-{
-	ucl_object_t	*o, *a;
-	int		 i;
-
-	if (!guard(req, false))
-		return (WEB_OK);
-	cplug_check();
-	state_check();
-	a = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0; i < cp.n; i++)
-		ucl_array_append(a, plug_json(&cp.v[i]));
-	o = ucl_object_typed_new(UCL_OBJECT);
-	/* Where they are installed, for who may enable them. */
-	if (user_console(session_user(req)) == CROLE_OWNER)
-		put(o, "dir", ucl_object_fromstring(cfg.plugins_dir != NULL ?
-		    cfg.plugins_dir : ""));
-	put(o, "plugins", a);
-	return (reply_json(req, 200, o));
-}
-
 static int	plug_set(const char *, bool, const char *, char *, size_t);
 
-/* The plugin's id of /api/plugins/<id>/... or of arcana-console's
- * plugins/plugin=<id>/... */
+/* The plugin's id of arcana-console's plugins/plugin=<id>/... */
 static bool
 plug_id_of(struct http_request *req, char *id, size_t len)
 {
@@ -826,50 +760,13 @@ plug_id_of(struct http_request *req, char *id, size_t len)
 	size_t			 n;
 
 	if (strncmp(req->path, pre, sizeof(pre) - 1) != 0)
-		return (capture(req, 3, id, len) && id_ok(id));
+		return (false);
 	p = req->path + sizeof(pre) - 1;
 	if ((n = strcspn(p, "/")) == 0 || n >= len)
 		return (false);
 	memcpy(id, p, n);
 	id[n] = '\0';
 	return (id_ok(id));
-}
-
-/* POST /api/plugins/<id> {"enabled": bool}: by a console owner. */
-int
-api_cplug(struct http_request *req)
-{
-	ucl_object_t		*body;
-	const ucl_object_t	*v;
-	const char		*who;
-	char			 id[ID_MAX + 1], why[300];
-	bool			 on;
-	int			 status;
-
-	if (!guard(req, true))
-		return (WEB_OK);
-	if (user_console(session_user(req)) != CROLE_OWNER)
-		return (reply_error(req, 403, "role", "a console plugin is "
-		    "enabled or disabled by an owner of this console alone"));
-	if (!capture(req, 3, id, sizeof(id)) || !id_ok(id))
-		return (reply_error(req, 404, "not_found", "no such plugin"));
-	if ((body = read_json(req)) == NULL ||
-	    (v = ucl_object_lookup(body, "enabled")) == NULL ||
-	    ucl_object_type(v) != UCL_BOOLEAN) {
-		if (body != NULL)
-			ucl_object_unref(body);
-		return (reply_error(req, 400, "invalid", "{\"enabled\": true "
-		    "or false}"));
-	}
-	on = ucl_object_toboolean(v);
-	ucl_object_unref(body);
-	cplug_check();
-	state_check();
-	who = session_who(req) != NULL ? session_who(req) : "?";
-	if ((status = plug_set(id, on, who, why, sizeof(why))) != 0)
-		return (reply_error(req, status, status == 404 ? "not_found" :
-		    status == 409 ? "plugin" : "store", "%s", why));
-	return (api_cplugs(req));
 }
 
 /* Plugin id enabled or not by who: 0, or the HTTP status and why. */
@@ -923,7 +820,7 @@ plug_set(const char *id, bool on, const char *who, char *why, size_t len)
 	return (0);
 }
 
-/* arcana-console's plugins (cyang.c): /api/plugins' list, typed. */
+/* arcana-console's plugins (cyang.c): the list, typed. */
 ucl_object_t *
 cplugs_yang(struct http_request *req)
 {
@@ -986,9 +883,8 @@ cplugs_yang(struct http_request *req)
 
 /*
  * The plugins' change from was to now: each enabled or not, by an owner
- * of the console alone, as POST /api/plugins/<id>; a plugin is
- * installed and removed in its directory, not here.  0, or the HTTP
- * status and why.
+ * of the console alone (plug_set()); a plugin is installed and removed
+ * in its directory, not here.  0, or the HTTP status and why.
  */
 int
 cplugs_yang_set(struct http_request *req, const ucl_object_t *was,
@@ -1276,11 +1172,11 @@ pstore_body(struct http_request *req, ucl_object_t **op)
 }
 
 /*
- * GET /api/plugins/<id>/store[/shared]: {"data": the object or null,
- * "etag": its tag or null}, the tag as ETag too.  PUT: the object, in
- * place of the one If-Match names (*: any one), or without If-Match
- * where none is stored yet; {"etag"}.  The session user's own, or the
- * one shared, which any console role reads and an operator or an owner
+ * GET arcana-console's plugins/plugin=<id>/store or shared-store: the
+ * object, its tag the ETag; none, 404.  PUT: the object, in place of
+ * the one If-Match names (*: any one), or without If-Match where none
+ * is stored yet; its tag the ETag.  The session user's own, or the one
+ * shared, which any console role reads and an operator or an owner
  * writes.  Not an API token's; the plugin enabled and served, else not
  * found.
  */
@@ -1293,14 +1189,12 @@ api_cplug_store(struct http_request *req)
 	struct cplug	*p;
 	ssize_t		 len;
 	size_t		 plen;
-	bool		 shared, ok, rc;
+	bool		 shared, ok;
 	int		 fd, status;
 
 	plen = strlen(req->path);
-	shared = (plen > 7 && strcmp(req->path + plen - 7, "/shared") == 0) ||
-	    (plen > 13 && strcmp(req->path + plen - 13, "/shared-store") ==
-	    0);
-	rc = cyang_bridged(req->path);
+	shared = plen > 13 && strcmp(req->path + plen - 13, "/shared-store") ==
+	    0;
 	if (!guard(req, req->method != HTTP_METHOD_GET))
 		return (WEB_OK);
 	if ((user = session_user(req)) == NULL)
@@ -1315,26 +1209,12 @@ api_cplug_store(struct http_request *req)
 		    "enabled", id));
 	if (!pstore_name(id, shared ? NULL : user, name, sizeof(name)))
 		return (reply_error(req, 400, "invalid", "a user's name"));
-	if (req->method == HTTP_METHOD_GET && rc) {
-		/* RESTCONF's: the object, its tag the ETag; none, 404. */
+	if (req->method == HTTP_METHOD_GET) {
 		if ((o = pstore_load(name, etag)) == NULL)
 			return (reply_error(req, 404, "not_found", "nothing is "
 			    "stored"));
 		http_response_header(req, "etag", etag);
 		return (reply_json(req, 200, o));
-	}
-	if (req->method == HTTP_METHOD_GET) {
-		top = ucl_object_typed_new(UCL_OBJECT);
-		if ((o = pstore_load(name, etag)) != NULL) {
-			http_response_header(req, "etag", etag);
-			put(top, "data", o);
-			put(top, "etag", ucl_object_fromstring(etag));
-		} else {
-			put(top, "data", ucl_object_typed_new(UCL_NULL));
-			put(top, "etag", ucl_object_typed_new(UCL_NULL));
-		}
-		http_response_header(req, "cache-control", "no-store");
-		return (reply_json(req, 200, top));
 	}
 	if (shared && user_console(user) != CROLE_OWNER &&
 	    user_console(user) != CROLE_OPERATOR)
@@ -1344,8 +1224,8 @@ api_cplug_store(struct http_request *req)
 		return (reply_error(req, status, status == 413 ? "too_large" :
 		    "invalid", status == 413 ? "%d bytes at most" :
 		    "a JSON object", PSTORE_MAX));
-	/* RESTCONF's PUT: {"arcana-console:<store>": {...}}. */
-	if (rc && (o = cyang_unwrap(req, o)) == NULL)
+	/* {"arcana-console:<store>": {...}}. */
+	if ((o = cyang_unwrap(req, o)) == NULL)
 		return (reply_error(req, 400, "invalid", "{\"arcana-console:"
 		    "%s\": a JSON object}", shared ? "shared-store" : "store"));
 	if ((len = pstore_tag(o, etag)) == -1 || len > PSTORE_MAX) {

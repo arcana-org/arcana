@@ -553,11 +553,12 @@ prologue(const atf_tc_t *tc, int nservers)
 	ATF_CHECK(js_true("document.documentElement.classList.contains('fx')"));
 	/* A repository to build the agent from, so the hosts offer the
 	 * build; no key for it here: the builds use the host's own. */
-	run("window.unset = false; fetch('/api/settings', { method: 'POST', "
-	    "headers: { 'Content-Type': 'application/json', 'X-Arcana': '1' }, "
-	    "body: JSON.stringify({ set: { agent_ssh_key: '', agent_source: "
-	    "'git@git.example.org:me/arcana.git' } }) }).then(r => "
-	    "{ window.unset = r.ok; });");
+	run("window.unset = false; fetch('/restconf/data/arcana-console:"
+	    "settings', { method: 'PATCH', headers: { 'Content-Type': "
+	    "'application/yang-data+json', 'X-Arcana': '1' }, body: "
+	    "JSON.stringify({ 'arcana-console:settings': { 'agent-ssh-key': "
+	    "'', 'agent-source': 'git@git.example.org:me/arcana.git' } }) })"
+	    ".then(r => { window.unset = r.ok; });");
 	wait_js("window.unset", 10);
 	/* The page learns of the repository from the console's health,
 	 * read as it opens: opened again. */
@@ -661,13 +662,14 @@ part_shell(void)
 
 	/* Settings: a repository to build the agent from is set from the
 	 * page, kept by the console, and what web.conf fixes is shown. */
-	run("window.subbed = false; fetch('/api/push/subscribe', { method: "
-	    "'POST', headers: { 'Content-Type': 'application/json', "
-	    "'X-Arcana': '1' }, body: JSON.stringify({ endpoint: "
+	run("window.subbed = false; fetch('/restconf/data/arcana-console:"
+	    "push', { method: 'POST', headers: { 'Content-Type': "
+	    "'application/yang-data+json', 'X-Arcana': '1' }, body: "
+	    "JSON.stringify({ 'arcana-console:subscription': [{ endpoint: "
 	    "'https://push.example.org/x', p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc"
 	    "6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', "
-	    "auth: 'BTBZMqHH6r4Tts7J_aSIgg', name: 'Chrome on Android' }) })"
-	    ".then(r => { window.subbed = r.ok; });");
+	    "auth: 'BTBZMqHH6r4Tts7J_aSIgg', name: 'Chrome on Android' }] }) "
+	    "}).then(r => { window.subbed = r.ok; });");
 	wait_js("window.subbed", 10);
 	/*
 	 * Settings, a section at the foot of the side bar, a tab for each
@@ -992,10 +994,11 @@ part_shell(void)
 	run("document.querySelector('li[data-act=select-fleet]').click()");
 	wait_js("!document.querySelector('section.setsect')", 10);
 	/* There is no such key here: the builds below use the host's own. */
-	run("window.unset = false; fetch('/api/settings', { method: 'POST', "
-	    "headers: { 'Content-Type': 'application/json', 'X-Arcana': '1' }, "
-	    "body: JSON.stringify({ set: { agent_ssh_key: '' } }) }).then(r => "
-	    "{ window.unset = r.ok; });");
+	run("window.unset = false; fetch('/restconf/data/arcana-console:"
+	    "settings', { method: 'PATCH', headers: { 'Content-Type': "
+	    "'application/yang-data+json', 'X-Arcana': '1' }, body: "
+	    "JSON.stringify({ 'arcana-console:settings': { 'agent-ssh-key': "
+	    "'' } }) }).then(r => { window.unset = r.ok; });");
 	wait_js("window.unset", 10);
 
 	/* A desktop browser is not asked to install the console; a phone
@@ -1102,11 +1105,13 @@ part_hosts(void)
 	    "fleet'].host[0].id; window.es = new EventSource('/restconf/"
 	    "streams/' + id + '/json'); window.es.onmessage = e => window."
 	    "esMsgs.push(e.data); window.es.onopen = () => setTimeout(() => "
-	    "fetch('/api/servers/' + id + '/jobs', { method: 'POST', headers: "
-	    "{ 'Content-Type': 'application/json', 'X-Arcana': '1' }, body: "
-	    "JSON.stringify({ jobs: [{ kind: 'monitor', verb: 'set', args: "
-	    "['name=gre8', 'interface=gre8', 'address=192.0.2.8', "
-	    "'interval=500', 'eval=10000'] }] }) }), 1500); });");
+	    "fetch('/restconf/data/arcana-fleet:fleet/host=' + id + "
+	    "'/arcana-jobs:submit', { method: 'POST', headers: { "
+	    "'Content-Type': 'application/yang-data+json', 'X-Arcana': '1' }, "
+	    "body: JSON.stringify({ 'arcana-jobs:input': { change: [{ "
+	    "monitor: { verb: 'set', args: ['name=gre8', 'interface=gre8', "
+	    "'address=192.0.2.8', 'interval=500', 'eval=10000'] } }] } }) }), "
+	    "1500); });");
 	wait_js("window.esMsgs.some(m => m.includes('arcana-events:event'))",
 	    30);
 	run("window.es.close()");
@@ -1664,9 +1669,10 @@ part_hosts(void)
 	shot("6c-pkg-repo");
 	/* And the console keeps the choice for the host, per action, so the
 	 * next time the tab opens it is chosen already. */
-	run("fetch('/api/servers').then(r => r.json()).then(j => { window.prk = "
-	    "j.servers.some(s => s.pkg_repos && s.pkg_repos['.'] && "
-	    "s.pkg_repos['.'].upgrade === 'builder'); });");
+	run("fetch('/restconf/data/arcana-console:hosts').then(r => r.json())"
+	    ".then(j => { window.prk = j['arcana-console:hosts'].host.some(s "
+	    "=> (s['pkg-repos'] || []).some(p => p.jail === '.' && p.upgrade "
+	    "=== 'builder')); });");
 	wait_js("window.prk === true", 10);
 
 	/* The page opened again: what ended is still along the bottom. */
@@ -1815,12 +1821,14 @@ part_nettab_kinds(void)
 	 * as a job would; its row, changed by its dialog (kept in
 	 * monitors.json), and stopped, asked first.
 	 */
-	run("window.mset = false; fetch('/api/servers').then(r => r.json())"
-	    ".then(j => fetch('/api/servers/' + j.servers[0].id + '/jobs', { "
-	    "method: 'POST', headers: { 'Content-Type': 'application/json', "
-	    "'X-Arcana': '1' }, body: JSON.stringify({ jobs: [{ kind: "
-	    "'monitor', verb: 'set', args: ['name=gre9', 'interface=gre9', "
-	    "'address=192.0.2.9', 'loss-max=2'] }] }) })).then(r => { "
+	run("window.mset = false; fetch('/restconf/data/arcana-console:"
+	    "hosts').then(r => r.json()).then(j => fetch('/restconf/data/"
+	    "arcana-fleet:fleet/host=' + j['arcana-console:hosts'].host[0].id "
+	    "+ '/arcana-jobs:submit', { method: 'POST', headers: { "
+	    "'Content-Type': 'application/yang-data+json', 'X-Arcana': '1' }, "
+	    "body: JSON.stringify({ 'arcana-jobs:input': { change: [{ "
+	    "monitor: { verb: 'set', args: ['name=gre9', 'interface=gre9', "
+	    "'address=192.0.2.9', 'loss-max=2'] } }] } }) })).then(r => { "
 	    "window.mset = r.ok; });");
 	wait_js("window.mset === true", 10);
 	run("document.querySelector('button.tab[data-arg=network]').click()");
@@ -5112,12 +5120,19 @@ part_storage_procs(void)
 	 * crossed is shown as the agent tells it, over the stream. */
 	wait_js("document.querySelector('.stage').textContent.includes("
 	    "'the moment the agent tells it')", 10);
-	run("window.evt0 = performance.now(); window.lim = (cpu, mem) => fetch('/api/servers', {headers: {'X-Arcana': '1'}}).then(r => "
-	    "r.json()).then(j => Promise.all(j.servers.map(s => fetch("
-	    "'/api/servers/' + s.id + '/history', { method: 'POST', headers: "
-	    "{ 'Content-Type': 'application/json', 'X-Arcana': '1' }, body: "
-	    "JSON.stringify({ step: 5, keep: 720, hold: 0, cpu: cpu, mem: "
-	    "mem, swap: 50 }) }))));");
+	run("window.evt0 = performance.now(); window.lim = (cpu, mem) => "
+	    "fetch('/restconf/data/arcana-console:hosts').then(r => r.json())"
+	    ".then(j => Promise.all(j['arcana-console:hosts'].host.map(s => "
+	    "fetch('/restconf/ds/ietf-datastores:candidate/arcana-fleet:fleet/"
+	    "host=' + s.id + '/arcana-history:history', { method: 'PUT', "
+	    "headers: { 'Content-Type': 'application/yang-data+json', "
+	    "'X-Arcana': '1' }, body: JSON.stringify({ 'arcana-history:"
+	    "history': { sampling: { step: 5, keep: 720, hold: 0, enabled: "
+	    "true }, limits: { cpu: cpu, memory: mem, swap: 50, storage: 0 }, "
+	    "rule: [] } }) }).then(() => fetch('/restconf/data/arcana-fleet:"
+	    "fleet/host=' + s.id + '/ietf-netconf:commit', { method: 'POST', "
+	    "headers: { 'Content-Type': 'application/yang-data+json', "
+	    "'X-Arcana': '1' }, body: '{}' })))));");
 	/* The agent samples every five seconds, then tells the fleet's
 	 * stream, and the page draws it. */
 	run("window.lim(90, 1);");
@@ -6542,35 +6557,6 @@ part_flows_wf(void)
 	shot("9c-workflow-queue");
 	run("document.querySelector('button[data-act=wf-back]').click()");
 	run("document.querySelector('button[data-act=queue-clear]').click()");
-	/*
-	 * The API's own page, from the menu: every route of the document,
-	 * by group, searched, one unfolded.
-	 */
-	/* From the top bar: the API's light is the way to it. */
-	run("document.querySelector('.topbar .link[data-act=select-api]')"
-	    ".click()");
-	wait_js("document.querySelectorAll('ul.apiops li.apiop').length > 40",
-	    20);
-	run("document.querySelector('button[data-act=api-tag][data-arg=auth]')"
-	    ".click()");
-	wait_js("document.querySelectorAll('ul.apiops li.apiop').length === 24",
-	    5);
-	run("document.querySelector('button[data-act=api-tag][data-arg=\"\"]')"
-	    ".click()");
-	run("const i = document.querySelector('#filter'); i.value = "
-	    "'transport/switch'; i.dispatchEvent(new Event('input', { bubbles: "
-	    "true }));");
-	wait_js("document.querySelectorAll('ul.apiops li.apiop').length === 1",
-	    5);
-	run("document.querySelector('ul.apiops li.apiop').click()");
-	wait_js("document.querySelector('ul.apiops li.apiop.open .more') && "
-	    "document.querySelector('ul.apiops li.apiop.open .more')."
-	    "textContent.includes('X-Arcana')", 5);
-	shot("9-api");
-	ATF_CHECK(js_true("document.querySelector('.apidoc header a')."
-	    "getAttribute('href') === '/openapi.yaml'"));
-	run("const i = document.querySelector('#filter'); i.value = ''; "
-	    "i.dispatchEvent(new Event('input', { bubbles: true }));");
 }
 
 /*
@@ -6632,12 +6618,15 @@ part_flows_sdwan(void)
 	 * page is opened again first, to read the document as it is).  A
 	 * key of no model is not kept: the document is the L3NM's.
 	 */
-	run("fetch('/api/sdwan').then(r => r.json()).then(d => { d.ucs[0]."
-	    "tunnel.mtu = 'auto'; d.ucs[0].billing = 'usage-based'; "
-	    "return fetch('/api/sdwan', { method: 'PUT', headers: { 'content-type': "
-	    "'application/json', 'X-Arcana': '1' }, body: JSON.stringify(d) }); }).then(r => { "
+	run("fetch('/restconf/data/arcana-console:sdwan/document').then(r => "
+	    "r.json()).then(j => { const d = j['arcana-console:document']; "
+	    "d.ucs[0].tunnel.mtu = 'auto'; d.ucs[0].billing = 'usage-based'; "
+	    "return fetch('/restconf/data/arcana-console:sdwan/document', { "
+	    "method: 'PUT', headers: { 'content-type': 'application/"
+	    "yang-data+json', 'X-Arcana': '1' }, body: JSON.stringify({ "
+	    "'arcana-console:document': d }) }); }).then(r => { "
 	    "window.mtuput = r.status; });");
-	wait_js("window.mtuput === 200", 10);
+	wait_js("window.mtuput === 204", 10);
 	host_open(NULL);
 	wait_js("document.querySelector('button.tab[data-arg=summary]')", 10);
 	run("document.querySelector('li[data-act=select-sdwan]').click()");
@@ -6649,9 +6638,10 @@ part_flows_sdwan(void)
 	    "')?.value === 'net'", 5);
 	run("document.querySelector('form[data-form=sd-ucs]').requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-ucs]')", 10);
-	run("window.mtukept = null; fetch('/api/sdwan').then(r => r.json())."
-	    "then(d => { window.mtukept = d.ucs[0].tunnel.mtu === 'auto' && "
-	    "d.ucs[0].billing === 'usage-based'; });");
+	run("window.mtukept = null; fetch('/restconf/data/arcana-console:"
+	    "sdwan/document').then(r => r.json()).then(j => { const d = "
+	    "j['arcana-console:document']; window.mtukept = d.ucs[0].tunnel."
+	    "mtu === 'auto' && d.ucs[0].billing === 'usage-based'; });");
 	wait_js("window.mtukept === true", 20);
 	run("document.querySelector('.sd-guide button[data-act=sd-go]')."
 	    "click()");
@@ -7734,9 +7724,10 @@ part_netsect_paths(void)
 	wait_js("document.querySelector('select[data-input=net-jail]')?.value "
 	    "=== 'gw' && document.querySelector('table.ifaces tr[data-if="
 	    "epair1b]')", 20);
-	run("window.labIds = null; fetch('/api/servers', {headers: {'X-Arcana': '1'}}).then(r => r.json())"
-	    ".then(j => { const ids = {}; j.servers.forEach(v => ids[v.name] = "
-	    "v.id); window.labIds = ids; });");
+	run("window.labIds = null; fetch('/restconf/data/arcana-console:"
+	    "hosts').then(r => r.json()).then(j => { const ids = {}; "
+	    "j['arcana-console:hosts'].host.forEach(v => ids[v.name] = v.id); "
+	    "window.labIds = ids; });");
 	wait_js("window.labIds && window.labIds.lab2", 10);
 	/*
 	 * gw stopped (out of ./jails), as each agent would tell the fleet's
@@ -8254,7 +8245,8 @@ static const char cplug_test_js[] =
     "});\n"
     "window.tuser = Arcana.user;\n"
     "window.tversion = Arcana.version;\n"
-    "Arcana.api('GET', '/api/servers').then(function (o) {\n"
+    "Arcana.api('GET', '/restconf/data/arcana-console:hosts')"
+    ".then(function (o) {\n"
     "\twindow.tapi = o;\n"
     "});\n"
     /* Its store: none yet, a first write, one with no tag refused,
@@ -8349,7 +8341,8 @@ part_cplug(void)
 
 	/* Enabled: loaded at once with its integrity, given Arcana. */
 	click_when("tr[data-plugin=test] button[data-act=plugin-enable]", 10);
-	wait_js("window.tapi && Array.isArray(window.tapi.servers) && "
+	wait_js("window.tapi && Array.isArray(window.tapi["
+	    "'arcana-console:hosts'].host) && "
 	    "window.tservers && window.tservers.length === 1 && "
 	    "window.tservers[0].name === 'lab' && window.tuser.name !== '' && "
 	    "/^[0-9]+[.][0-9]+[.][0-9]+/.test(window.tversion) && "
@@ -9723,10 +9716,12 @@ ATF_TC_BODY(pwa_feeds, tc)
 	port = feeds_server(tc);
 	prologue(tc, 1);
 	/* The stand-in source is on loopback: let through by Settings. */
-	run("window.unset = false; fetch('/api/settings', { method: 'POST', "
-	    "headers: { 'Content-Type': 'application/json', 'X-Arcana': '1' }, "
-	    "body: JSON.stringify({ set: { feeds_allow_private: "
-	    "'127.0.0.1/32' } }) }).then(r => { window.unset = r.ok; });");
+	run("window.unset = false; fetch('/restconf/data/arcana-console:"
+	    "settings', { method: 'PATCH', headers: { 'Content-Type': "
+	    "'application/yang-data+json', 'X-Arcana': '1' }, body: "
+	    "JSON.stringify({ 'arcana-console:settings': { "
+	    "'feeds-allow-private': '127.0.0.1/32' } }) }).then(r => { "
+	    "window.unset = r.ok; });");
 	wait_js("window.unset", 10);
 	run("document.querySelector('li[data-act=select-network]').click()");
 	click_when(".netsect button.tab[data-arg=feeds]", 20);

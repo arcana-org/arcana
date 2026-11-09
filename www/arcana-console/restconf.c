@@ -2355,7 +2355,7 @@ restconf_safe_wait(struct rcreq *r, int wait, const char **why)
 	while ((ch = __DECONST(ucl_object_t *, ucl_object_iterate(
 	    job_member(in, "change"), &it, true))) != NULL) {
 		if ((v = job_member(ch, "safe-wait")) != NULL) {
-			/* Its own, within /api's bounds (servers.c). */
+			/* Its own, within the registry's bounds (servers.c). */
 			if (ucl_object_type(v) != UCL_INT ||
 			    (k = ucl_object_toint(v)) < SAFE_WAIT_MIN ||
 			    k > SAFE_WAIT_MAX)
@@ -2374,7 +2374,7 @@ restconf_safe_wait(struct rcreq *r, int wait, const char **why)
 
 /*
  * The role on its host r's action needs (PLAN-SDN-YANG 4.3.4): a
- * viewer's what only reads, as /api's routes have them; an admin's the
+ * viewer's what only reads; an admin's the
  * agent's updates and the cluster's; an operator's the rest.
  */
 int
@@ -2400,7 +2400,7 @@ restconf_act_role(const struct rcreq *r)
 	for (size_t i = 0; i < nitems(admins); i++)
 		if (strcmp(key, admins[i]) == 0)
 			return (RC_ACT_ADMIN);
-	/* arcana-system's read is of its files: /api's an operator's. */
+	/* arcana-system's read is of its files: an operator's. */
 	if (strcmp(key, "arcana-system:read") == 0)
 		return (RC_ACT_CHANGE);
 	if (strcmp(name, "read") == 0 || strncmp(name, "read-", 5) == 0 ||
@@ -2519,6 +2519,32 @@ restconf_prepare(struct rcreq *r, int method, const char *ctype,
 		return (refuse(r, 405, NULL, why, "GET, POST, PUT, PATCH, "
 		    "DELETE and OPTIONS"));
 	}
+}
+
+void
+restconf_seen(const struct rcreq *r, const char *sid, const char *json)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*top;
+	const ucl_object_t	*v;
+
+	if (r->method != HTTP_METHOD_GET || (r->ds != -1 && r->ds !=
+	    CBL_YDS_OPERATIONAL && r->ds != CBL_YDS_RUNNING) || json == NULL ||
+	    strstr(json, "arcana-history:") == NULL)
+		return;
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
+	top = ucl_parser_add_string(p, json, 0) ? ucl_parser_get_object(p) :
+	    NULL;
+	ucl_parser_free(p);
+	if ((v = ucl_object_lookup(top, "arcana-history:history")) != NULL)
+		v = ucl_object_lookup(v, "sampling");
+	else
+		v = ucl_object_lookup(top, "arcana-history:sampling");
+	if ((v = ucl_object_lookup(v, "enabled")) != NULL &&
+	    ucl_object_type(v) == UCL_BOOLEAN)
+		servers_sampling(sid, !ucl_object_toboolean(v));
+	ucl_object_unref(top);
 }
 
 /* Whether r confirms a commit, or a safe job's change (arcana-jobs'

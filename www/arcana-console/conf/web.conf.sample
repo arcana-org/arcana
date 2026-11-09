@@ -118,7 +118,7 @@ cookie_secure = true;
 # How the receiver knows a host: by its certificate from the console's
 # PKI (certificate, the default; a TLS listener of the console's), by
 # the token the console handed it in its subscription document (token:
-# POST /api/servers/<host>/subscription/token makes one; a plain
+# arcana-console's hosts/host=<id>/subscription-token makes one; a plain
 # listener, TLS ended before it, takes the records then), or by
 # whichever a request carries (either):
 #notif_auth = "certificate";

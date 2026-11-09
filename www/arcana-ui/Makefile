@@ -15,7 +15,7 @@ WWWDIR?=	${PREFIX}/www/arcana-console
 
 DIST=		${.OBJDIR}/dist
 
-APP_SRCS=	cfgfiles.c cluster.c plugins.c glmap.c users.c pfxlists.c feeds.c iflabels.c templates.c main.c actions.c ca.c carp.c api.c apidoc.c bird.c ecmp.c mtr.c fleet.c ipfw.c l2.c kernel.c storage.c sysctl.c procs.c logs.c usage.c tbl.c topo.c vpn.c jailmk.c certs.c sshd.c span.c ipsec.c workflow.c sdwan.c graph.c html.c json.c netview.c \
+APP_SRCS=	cfgfiles.c cluster.c plugins.c glmap.c users.c pfxlists.c feeds.c iflabels.c templates.c main.c actions.c ca.c carp.c api.c bird.c ecmp.c mtr.c fleet.c ipfw.c l2.c kernel.c storage.c sysctl.c procs.c logs.c usage.c tbl.c topo.c vpn.c jailmk.c certs.c sshd.c span.c ipsec.c workflow.c sdwan.c graph.c html.c json.c netview.c \
 		schema.c view.c live.c yaml.c export.c hostconf.c trouble.c routing.c birdform.c help.c secpage.c surules.c idsown.c idsstats.c nas.c sysview.c builder.c res.c mail.c relay.c monitors.c nacm.c drift.c ra.c ycommit.c ycbor.c macdo.c hosttab.c rc.c netread.c sdread.c sse.c yform.c
 UCL_SRCS=	ucl_emitter_streamline.c ucl_emitter_utils.c ucl_emitter.c \
 		ucl_hash.c ucl_msgpack.c ucl_parser.c ucl_schema.c ucl_sexp.c \
@@ -152,20 +152,8 @@ check-yang: .PHONY
 		exit 1; }; \
 	    echo "www/arcana-ui: yang/ is what make regen-yang makes"
 
-# The console's API as it is documented, for the API page: the document
-# itself, and what the page shows of it.
-${DIST}/openapi.yaml: ${ARC_TOP}/docs/openapi.yaml
-	mkdir -p ${DIST}
-	cp ${ARC_TOP}/docs/openapi.yaml ${.TARGET}
-${DIST}/openapi.json: ${ARC_TOP}/docs/openapi.yaml \
-    ${.CURDIR}/tools/openapi.awk
-	mkdir -p ${DIST}
-	awk -f ${.CURDIR}/tools/openapi.awk ${ARC_TOP}/docs/openapi.yaml > \
-	    ${.TARGET}
-
 SHELL_FILES=	${STATIC:S,^,${DIST}/,} ${DIST}/arcana.js \
 		${DIST}/yang.json ${DIST}/jobs.json \
-		${DIST}/openapi.json ${DIST}/openapi.yaml \
 		${DIST}/morphdom-umd.min.js ${FONTS:S,^,${DIST}/fonts/,} \
 		${ICONS:S,^,${DIST}/icons/,}
 

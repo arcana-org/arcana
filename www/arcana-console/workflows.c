@@ -12,8 +12,8 @@
  * needs and uses, and the steps are checked against it), a read of
  * the host whose answer a later step looks at, a message sent, or an
  * approval: the host's run waits there, told by mail or Telegram when
- * asked, until someone approves the step (POST /api/runs/<n>/approve)
- * or stops the run, or its time runs out and it fails.  Before a step there may
+ * asked, until someone approves the step (runs/run=<n>/approve) or
+ * stops the run, or its time runs out and it fails.  Before a step there may
  * be a condition: a read made then, or an earlier step's answer, a path
  * in it and a test of what is there; a step whose condition fails is
  * skipped.  A step that fails stops the host's run, or the run goes on,
@@ -32,16 +32,17 @@
  * begins when the one before is done, and a host that failed leaves
  * the rest not run.
  *
- *	GET    /api/workflows		the workflows
- *	POST   /api/workflows		one made or changed
- *	DELETE /api/workflows/<id>
- *	POST   /api/workflows/<id>/run	run now: {"params", "hosts"}
- *	GET    /api/runs		the last runs
- *	DELETE /api/runs		those ended forgotten, their traces
- *					too; ?workflow=<id>, one's alone
- *	GET    /api/runs/<n>		one, each host and step with its trace
- *	DELETE /api/runs/<n>		one running stopped
- *	POST   /api/runs/<n>/approve	{"step"}: a step waiting approved
+ *	workflows			the workflows, made, changed and
+ *					removed
+ *	workflows/workflow=<id>/run	run now: {"param", "host"}
+ *	runs				the last runs, each host and step
+ *					with its trace
+ *	runs/clear			those ended forgotten, their traces
+ *					too
+ *	runs/run=<n>/stop		one running stopped
+ *	runs/run=<n>/approve		{"step"}: a step waiting approved
+ *
+ * (arcana-console's, cyang.c.)
  *
  * The workflows are kept in workflows.json and the last runs in
  * runs.json, written as they go, each run's traces in a file of its
@@ -2601,48 +2602,6 @@ workflows_init(void)
 
 /* ---- The API --------------------------------------------------------- */
 
-static int
-reply_list(struct http_request *req, const char *file, const char *key,
-    bool traces)
-{
-	ucl_object_t		*top, *out, *arr, *c;
-	const ucl_object_t	*e;
-	ucl_object_iter_t	 it;
-
-	pthread_mutex_lock(&wf_lock);
-	top = store_load(file);
-	pthread_mutex_unlock(&wf_lock);
-	out = ucl_object_typed_new(UCL_OBJECT);
-	arr = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while (top != NULL && (e = ucl_object_iterate(ucl_object_lookup(top,
-	    key), &it, true)) != NULL) {
-		c = ucl_object_copy(e);
-		/* The list without each step's trace: one run has them. */
-		if (!traces) {
-			const ucl_object_t	*h, *s;
-			ucl_object_iter_t	 hit, sit;
-
-			hit = NULL;
-			while ((h = ucl_object_iterate(ucl_object_lookup(c,
-			    "hosts"), &hit, true)) != NULL) {
-				sit = NULL;
-				while ((s = ucl_object_iterate(
-				    ucl_object_lookup(h, "steps"), &sit,
-				    true)) != NULL)
-					(void)ucl_object_delete_key(
-					    (ucl_object_t *)(uintptr_t)s,
-					    "trace");
-			}
-		}
-		ucl_array_append(arr, c);
-	}
-	if (top != NULL)
-		ucl_object_unref(top);
-	put(out, key, arr);
-	return (reply_json(req, 200, out));
-}
-
 /* Workflow id deleted: 0, or 404. */
 static int
 wf_delete(const char *wid)
@@ -2785,83 +2744,6 @@ wf_run(struct http_request *req, const char *wid, const ucl_object_t *hosts,
 	return (0);
 }
 
-int
-api_workflows(struct http_request *req)
-{
-	ucl_object_t		*body, *w, *top, *hosts, *params;
-	const ucl_object_t	*e;
-	ucl_object_iter_t	 it;
-	const char		*p;
-	char			 wid[9], why[200];
-	uint32_t		 n;
-	int			 rc;
-
-	refs_copy();
-	if (req->method == HTTP_METHOD_GET) {
-		if (!guard(req, false))
-			return (WEB_OK);
-		return (reply_list(req, WF_FILE, "workflows", true));
-	}
-	if (!guard(req, true))
-		return (WEB_OK);
-	/* /api/workflows/<id>[/run] */
-	wid[0] = '\0';
-	if (strncmp(req->path, "/api/workflows/", 15) == 0)
-		snprintf(wid, sizeof(wid), "%.8s", req->path + 15);
-	if (req->method == HTTP_METHOD_POST && (p = strstr(req->path,
-	    "/run")) != NULL && p[4] == '\0') {
-		if ((w = wf_find(wid)) == NULL)
-			return (reply_error(req, 404, "not-found", "no such "
-			    "workflow"));
-		ucl_object_unref(w);
-		body = read_json(req);
-		hosts = body != NULL ? (ucl_object_t *)(uintptr_t)
-		    ucl_object_lookup(body, "hosts") : NULL;
-		params = body != NULL ? (ucl_object_t *)(uintptr_t)
-		    ucl_object_lookup(body, "params") : NULL;
-		it = NULL;
-		while ((e = ucl_object_iterate(hosts, &it, true)) != NULL) {
-			struct hostref	h;
-
-			if (!ref_get(ucl_object_tostring_forced(e), &h)) {
-				ucl_object_unref(body);
-				return (reply_error(req, 404, "not_found",
-				    "no such server"));
-			}
-			if (!host_allowed(req, ucl_object_tostring_forced(e),
-			    true, false)) {
-				ucl_object_unref(body);
-				return (WEB_OK);
-			}
-		}
-		rc = wf_run(req, wid, hosts, params, &n, why, sizeof(why));
-		if (body != NULL)
-			ucl_object_unref(body);
-		if (rc != 0)
-			return (reply_error(req, rc, rc == 404 ? "not-found" :
-			    "not-run", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "run", ucl_object_fromint(n));
-		return (reply_json(req, 200, top));
-	}
-	if (req->method == HTTP_METHOD_DELETE) {
-		if (wf_delete(wid) != 0)
-			return (reply_error(req, 404, "not-found", "no such "
-			    "workflow"));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	}
-	if ((body = read_json(req)) == NULL)
-		return (reply_error(req, 400, "invalid", "a workflow, as JSON"));
-	rc = wf_keep(body, &w, why, sizeof(why));
-	ucl_object_unref(body);
-	if (rc != 0)
-		return (reply_error(req, rc, rc == 400 ? "invalid" : "full",
-		    "%s", why));
-	return (reply_json(req, 200, w));
-}
-
 /*
  * The runs that ended forgotten, of workflow wid alone unless NULL,
  * out of runs.json with their traces' files; a run going on stays, its
@@ -2904,22 +2786,6 @@ runs_forget(const char *wid, const char *who)
 	    "a token");
 	cyang_changed("runs");
 	return (n);
-}
-
-/* The history cleared: ?workflow=, one's alone. */
-static int
-runs_clear(struct http_request *req)
-{
-	ucl_object_t	*out;
-	char		*wid;
-	int		 n;
-
-	wid = NULL;
-	(void)http_argument_get_string(req, "workflow", &wid);
-	n = runs_forget(wid, session_user(req));
-	out = ucl_object_typed_new(UCL_OBJECT);
-	put(out, "cleared", ucl_object_fromint(n));
-	return (reply_json(req, 200, out));
 }
 
 /*
@@ -3032,65 +2898,6 @@ run_full(uint32_t n)
 	if (top != NULL)
 		ucl_object_unref(top);
 	return (one);
-}
-
-int
-api_runs(struct http_request *req)
-{
-	ucl_object_t	*in, *top, *one;
-	char		 why[200];
-	uint32_t	 n;
-	int		 rc;
-	bool		 all;
-
-	all = strcmp(req->path, "/api/runs") == 0;
-	if (req->method == HTTP_METHOD_GET) {
-		if (!guard(req, false))
-			return (WEB_OK);
-		if (all)
-			return (reply_list(req, RUNS_FILE, "runs", false));
-	} else if (!guard(req, true))
-		return (WEB_OK);
-	if (all)
-		return (runs_clear(req));
-	n = (uint32_t)strtoul(req->path + sizeof("/api/runs/") - 1, NULL, 10);
-	if (req->method == HTTP_METHOD_POST) {
-		/* An approval of a step that waits, on any of its hosts. */
-		if ((in = read_json(req)) == NULL || ucl_str(in, "step") ==
-		    NULL) {
-			if ((one = run_full(n)) == NULL) {
-				if (in != NULL)
-					ucl_object_unref(in);
-				return (reply_error(req, 404, "not-found",
-				    "no such run"));
-			}
-			ucl_object_unref(one);
-			if (in != NULL)
-				ucl_object_unref(in);
-			return (reply_error(req, 400, "invalid", "say the step"));
-		}
-		rc = run_mark(n, ucl_str(in, "step"), session_user(req) != NULL ?
-		    session_user(req) : "?", why, sizeof(why));
-		ucl_object_unref(in);
-		if (rc != 0)
-			return (reply_error(req, rc, rc == 404 ? "not-found" :
-			    "not-waiting", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	}
-	if (req->method == HTTP_METHOD_DELETE) {
-		/* A stop: the run's threads see it when they write next. */
-		if ((rc = run_mark(n, NULL, NULL, why, sizeof(why))) != 0)
-			return (reply_error(req, rc, rc == 404 ? "not-found" :
-			    "ended", "%s", why));
-		top = ucl_object_typed_new(UCL_OBJECT);
-		put(top, "ok", ucl_object_frombool(true));
-		return (reply_json(req, 200, top));
-	}
-	if ((one = run_full(n)) == NULL)
-		return (reply_error(req, 404, "not-found", "no such run"));
-	return (reply_json(req, 200, one));
 }
 
 /* ---- arcana-console's workflows and runs (cyang.c) ------------------- */
@@ -3339,8 +3146,8 @@ workflows_yang(void)
 	return (o);
 }
 
-/* An entry of the workflow list made a workflow as /api takes it: NULL
- * and why, a field's JSON that is not. */
+/* An entry of the workflow list made a workflow as wf_check() takes it:
+ * NULL and why, a field's JSON that is not. */
 static ucl_object_t *
 wf_of_yang(const ucl_object_t *y, char *why, size_t len)
 {
@@ -3518,7 +3325,7 @@ wf_entry(const ucl_object_t *list, const char *id)
 
 /*
  * The workflows changed from was to now: each made or changed kept by
- * the check /api's go through, each left out deleted.  All or nothing:
+ * the workflows' check, each left out deleted.  All or nothing:
  * the workflows kept before put back on a refusal.  0, or the HTTP
  * status and why.
  */

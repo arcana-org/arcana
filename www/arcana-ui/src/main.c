@@ -97,7 +97,7 @@ render(void)
 
 /*
  * The page's address names what it shows: #/ the fleet, #/network,
- * #/usage, #/workflows, #/sdwan, #/api, #/settings/<tab>, a host as
+ * #/usage, #/workflows, #/sdwan, #/settings/<tab>, a host as
  * #/hosts/<id>, #/hosts/<id>/<tab> or #/hosts/<id>/<tab>/<section>
  * (hosttab.c), and a jail as #/hosts/<id>/jails/<name>.  A link, a
  * reload, the browser's back and forward, and the Android app land
@@ -178,9 +178,6 @@ loc_of(char *buf, size_t len)
 	switch (app.node) {
 	case NODE_NETWORK:
 		snprintf(buf, len, "#/network");
-		break;
-	case NODE_API:
-		snprintf(buf, len, "#/api");
 		break;
 	case NODE_USAGE:
 		snprintf(buf, len, "#/usage");
@@ -292,8 +289,6 @@ loc_go(const char *r)
 #define	IS(i, s)	(np > (i) && strcmp(f[i], (s)) == 0)
 	if (IS(0, "network"))
 		dispatch("select-network", "", "");
-	else if (IS(0, "api"))
-		dispatch("select-api", "", "");
 	else if (IS(0, "usage"))
 		dispatch("select-usage", "", "");
 	else if (IS(0, "workflows"))
@@ -1258,7 +1253,6 @@ dispatch(const char *act, const char *arg, const char *value)
 	    sysctl_action(act, arg, value) || nacm_action(act, arg, value) ||
 	    macdo_action(act, arg, value) ||
 	    ra_action(act, arg, value) || yform_action(act, arg, value) ||
-	    apidoc_action(act, arg, value) ||
 	    procs_action(act, arg, value) || logs_action(act, arg, value) ||
 	    usage_action(act, arg, value) || ecmp_action(act, arg, value) ||
 	    leaks_action(act, arg, value) ||
