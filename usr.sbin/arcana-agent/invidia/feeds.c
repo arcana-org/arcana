@@ -11,6 +11,9 @@
  * a file beside the kept rules (feeds/<table>) and filled into a scratch
  * table of the same set that is then swapped in (ipfw table T swap S),
  * so that a lookup sees the old entries or the new ones, never half.
+ * The prefixes, the table's name and the scratch's commands are
+ * libipfeeds' (ipfeeds(3)); what a feed's table is, where it is kept and
+ * when it is filled, Arcana's.
  *
  * The file is the mark of a table a feed made: no other is replaced or
  * destroyed, but an empty one of type addr that a rule made by naming
@@ -43,28 +46,23 @@
 #include <ucl.h>
 #include <unistd.h>
 
+#include <ipfeeds.h>
+
 #include "agent.h"
 #include "collect.h"
 
 #define	FEED_MAX	250000		/* entries of a table */
-#define	FEED_LINE	64		/* entries an add line: ipfw reads 4 KB a line */
 #define	FEED_TEXT_MAX	(8 * 1024 * 1024)
 
 static pthread_mutex_t	feeds_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* A table's name a feed may give: letters, digits, _ . -, 48 at most. */
+/* A table's name a feed may give: one ipfw takes (letters, digits, _ .
+ * -, not digits alone), 48 at most. */
 bool
 feed_name_ok(const char *s)
 {
-	size_t	i;
 
-	if (s == NULL || s[0] == '\0' || strlen(s) > 48)
-		return (false);
-	for (i = 0; s[i] != '\0'; i++)
-		if (!isalnum((unsigned char)s[i]) && s[i] != '_' && s[i] !=
-		    '.' && s[i] != '-')
-			return (false);
-	return (true);
+	return (s != NULL && strlen(s) <= 48 && ipf_ipfw_table_ok(s));
 }
 
 /* Where the feeds' files are: feeds/ beside Arcana's own kept rules
@@ -79,146 +77,45 @@ feeds_dir(struct work *w)
 	return (wfmt(w, "%.*s/feeds", (int)(s - r), r));
 }
 
-/* An address or prefix, its host bits cleared. */
-struct pfx {
-	int		 af;
-	uint8_t		 a[16];
-	int		 len;
-};
-
-static bool
-pfx_parse(const char *s, struct pfx *p)
-{
-	char	buf[64], *slash, *end;
-	long	l;
-	int	i, bits;
-
-	if (strlen(s) >= sizeof(buf))
-		return (false);
-	strlcpy(buf, s, sizeof(buf));
-	memset(p, 0, sizeof(*p));
-	if ((slash = strchr(buf, '/')) != NULL)
-		*slash++ = '\0';
-	if (inet_pton(AF_INET, buf, p->a) == 1) {
-		p->af = AF_INET;
-		bits = 32;
-	} else if (inet_pton(AF_INET6, buf, p->a) == 1) {
-		p->af = AF_INET6;
-		bits = 128;
-	} else
-		return (false);
-	p->len = bits;
-	if (slash != NULL) {
-		l = strtol(slash, &end, 10);
-		if (*slash == '\0' || *end != '\0' || l < 0 || l > bits)
-			return (false);
-		p->len = (int)l;
-	}
-	for (i = p->len; i < bits; i++)
-		p->a[i / 8] &= ~(0x80 >> (i % 8));
-	return (true);
-}
-
-static const char *
-pfx_text(struct work *w, const struct pfx *p)
-{
-	char	buf[INET6_ADDRSTRLEN];
-
-	if (inet_ntop(p->af, p->a, buf, sizeof(buf)) == NULL)
-		return (NULL);
-	return (wfmt(w, "%s/%d", buf, p->len));
-}
-
-/* Does p cover the address a (of family af)? */
-static bool
-pfx_covers(const struct pfx *p, int af, const uint8_t *a)
-{
-	int	i;
-
-	if (p->af != af)
-		return (false);
-	for (i = 0; i < p->len; i++)
-		if ((p->a[i / 8] ^ a[i / 8]) & (0x80 >> (i % 8)))
-			return (false);
-	return (true);
-}
-
-static int
-strpcmp(const void *a, const void *b)
-{
-
-	return (strcmp(*(const char *const *)a, *(const char *const *)b));
-}
-
 /*
  * The entries of a text, one a line (what follows # left out), made
- * canonical, sorted, each once; those covering the address of af and a
- * (none: af 0) left out and counted.  NULL and why when one is no
- * prefix or there are too many.
+ * canonical, sorted, each once, none another covers, into l (its memory
+ * w's); those covering the address of af and a (none: af 0) left out
+ * and counted.  -1 and why when one is no prefix or there are too many.
  */
-static const char **
+static int
 entries_of(struct work *w, const char *text, int af, const uint8_t *a,
-    size_t *np, size_t *leftp, const char **errp)
+    struct ipf_list *l, size_t *leftp, const char **errp)
 {
-	const char	**v, *p, *e, *t;
-	char		  line[80];
-	struct pfx	  x;
-	size_t		  n, k, len, cap;
+	struct ipf_prefix	 peer;
+	struct ipf_parse	 ps;
+	char			 err[256];
+	int			 rc;
 
-	*np = *leftp = 0;
-	cap = 1024;
-	v = wcalloc(w, cap, sizeof(*v));
-	n = 0;
-	for (p = text; *p != '\0'; p = *e == '\n' ? e + 1 : e) {
-		e = p + strcspn(p, "\n");
-		len = (size_t)(e - p);
-		while (len > 0 && isspace((unsigned char)*p)) {
-			p++;
-			len--;
-		}
-		len = strcspn(p, "#\r\n \t") < len ? strcspn(p, "#\r\n \t") :
-		    len;
-		if (len == 0)
-			continue;
-		if (len >= sizeof(line)) {
-			*errp = wfmt(w, "%.40s…: not a prefix", p);
-			return (NULL);
-		}
-		memcpy(line, p, len);
-		line[len] = '\0';
-		if (!pfx_parse(line, &x)) {
-			*errp = wfmt(w, "%s: not an IPv4 or IPv6 address or "
-			    "prefix", line);
-			return (NULL);
-		}
-		if (af != 0 && pfx_covers(&x, af, a)) {
-			(*leftp)++;
-			continue;
-		}
-		if (n >= FEED_MAX) {
-			*errp = wfmt(w, "more than %d entries", FEED_MAX);
-			return (NULL);
-		}
-		if (n + 1 >= cap) {
-			const char	**nv;
-
-			nv = wcalloc(w, cap * 2, sizeof(*v));
-			memcpy(nv, v, n * sizeof(*v));
-			v = nv;
-			cap *= 2;
-		}
-		if ((t = pfx_text(w, &x)) == NULL) {
-			*errp = wfmt(w, "%s: not an address", line);
-			return (NULL);
-		}
-		v[n++] = t;
+	*leftp = 0;
+	memset(&ps, 0, sizeof(ps));
+	ps.format = IPF_FORMAT_PLAIN;
+	ps.strict = true;
+	ps.keep_reserved = true;
+	ps.max = FEED_MAX;
+	if (af == AF_INET || af == AF_INET6) {
+		memset(&peer, 0, sizeof(peer));
+		peer.af = af;
+		peer.len = af == AF_INET ? 32 : 128;
+		memcpy(peer.addr, a, af == AF_INET ? 4 : 16);
+		ps.protect = &peer;
+		ps.nprotect = 1;
 	}
-	qsort(v, n, sizeof(*v), strpcmp);
-	for (k = 0, len = 0; k < n; k++)
-		if (len == 0 || strcmp(v[len - 1], v[k]) != 0)
-			v[len++] = v[k];
-	*np = len;
-	return (v);
+	ipf_list_init(l);
+	rc = ipf_parse(&ps, text, strlen(text), l, err, sizeof(err));
+	(void)wadopt(w, l->v);
+	if (rc != 0) {
+		*errp = wtext(w, wstrdup(w, err));
+		return (-1);
+	}
+	*leftp = ps.dropped[IPF_DROP_PROTECTED];
+	(void)ipf_list_aggregate(l);
+	return (0);
 }
 
 /* A feed's file: its feed, when, and its entries, as written. */
@@ -427,43 +324,30 @@ fw(struct work *w, const char **errp, int set, ...)
 }
 
 /*
- * The table filled whole with the entries (body, a line each), in set
+ * The table filled whole with the list l, in set
  * (-1: tables_sets is 0 and a table is in every set): a scratch table
  * filled by one ipfw run of a file and swapped in, then destroyed.
  */
 static int
-fill(struct work *w, const char *name, int set, const char *body,
+fill(struct work *w, const char *name, int set, const struct ipf_list *l,
     bool exists, const char **errp)
 {
 	struct execres	 res;
 	FILE		*fp;
 	char		*buf, *argv[4];
-	const char	*scratch, *sp, *p, *e, *path;
-	size_t		 len, k;
+	const char	*scratch, *path;
+	size_t		 len;
 	int		 fd, rc;
 
 	scratch = wfmt(w, "%s_load", name);
-	sp = set >= 0 ? wfmt(w, "set %d ", set) : "";
 	(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
 	if ((fp = open_memstream(&buf, &len)) == NULL) {
 		*errp = "out of memory";
 		return (-1);
 	}
-	fprintf(fp, "%stable %s create type addr\n", sp, scratch);
-	k = 0;
-	for (p = body; *p != '\0'; p = *e == '\n' ? e + 1 : e) {
-		e = p + strcspn(p, "\n");
-		if (e == p)
-			continue;
-		if (k % FEED_LINE == 0)
-			fprintf(fp, "%s%stable %s add", k > 0 ? "\n" : "", sp,
-			    scratch);
-		fprintf(fp, " %.*s 0", (int)(e - p), p);
-		k++;
-	}
-	if (k > 0)
-		fputc('\n', fp);
-	if (fclose(fp) != 0) {
+	rc = ipf_ipfw_script(fp, scratch, set, l);
+	if (fclose(fp) != 0 || rc != 0) {
+		free(buf);
 		*errp = "out of memory";
 		return (-1);
 	}
@@ -498,42 +382,19 @@ fill(struct work *w, const char *name, int set, const char *body,
 	return (0);
 }
 
-/* Added and removed, between two sorted lists of entries. */
-static void
-diff_count(const char **a, size_t na, const char **b, size_t nb,
-    uint32_t *addp, uint32_t *remp)
-{
-	size_t	i, j;
-	int	c;
-
-	*addp = *remp = 0;
-	for (i = j = 0; i < na || j < nb; ) {
-		c = i == na ? 1 : j == nb ? -1 : strcmp(a[i], b[j]);
-		if (c == 0) {
-			i++;
-			j++;
-		} else if (c < 0) {
-			(*remp)++;
-			i++;
-		} else {
-			(*addp)++;
-			j++;
-		}
-	}
-}
-
 int
 feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
     const char **errp)
 {
 	struct feedfile		 ff;
+	struct ipf_list		 v, old;
 	struct ktable		*kt;
 	const struct ktable	*t;
-	const char		**v, **old, *dir, *path, *tmp, *body;
+	const char		*dir, *path, *tmp;
 	struct stat		 sb;
 	FILE			*fp;
-	char			*buf;
-	size_t			 n, nold, left, i, len, nk;
+	char			*buf, p[IPF_PREFIX_STRLEN];
+	size_t			 n, left, i, len, nk, add, rem;
 	int			 set, fd, step;
 	bool			 had, exists;
 
@@ -556,18 +417,21 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 		*errp = "the entries, 8 MB at most, are needed";
 		return (-1);
 	}
-	if ((v = entries_of(w, rq->entries, rq->peer_af, rq->peer, &n, &left,
-	    errp)) == NULL)
+	if (entries_of(w, rq->entries, rq->peer_af, rq->peer, &v, &left,
+	    errp) != 0)
 		return (-1);
+	n = v.n;
 	rs->left_out = (uint32_t)left;
 	pthread_mutex_lock(&feeds_lock);
 	had = file_of(w, rq->name, &ff);
-	nold = 0;
-	old = NULL;
-	if (had && (old = entries_of(w, ff.body, 0, NULL, &nold, &i, errp)) ==
-	    NULL)
+	ipf_list_init(&old);
+	if (had && entries_of(w, ff.body, 0, NULL, &old, &i, errp) != 0) {
 		had = false;
-	diff_count(old, nold, v, n, &rs->added, &rs->removed);
+		ipf_list_init(&old);
+	}
+	ipf_list_diff(&old, &v, &add, &rem);
+	rs->added = (uint32_t)add;
+	rs->removed = (uint32_t)rem;
 	rs->count = (uint32_t)n;
 	/* A table there that no feed made, with entries: the host's own. */
 	nk = ktables(w, &kt);
@@ -608,7 +472,7 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 	fprintf(fp, "# arcana feed %s\n# updated %jd\n", rq->feed,
 	    (intmax_t)time(NULL));
 	for (i = 0; i < n; i++)
-		fprintf(fp, "%s\n", v[i]);
+		fprintf(fp, "%s\n", ipf_prefix_format(&v.v[i], p, sizeof(p)));
 	(void)fclose(fp);
 	wadopt(w, buf);
 	path = wfmt(w, "%s/%s", dir, rq->name);
@@ -624,11 +488,9 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 		return (-1);
 	}
 	step_end(w, step, true, NULL);
-	body = buf + strcspn(buf, "\n") + 1;
-	body += strcspn(body, "\n") + 1;
 	step = step_begin(w, STEP_DAEMON, "feed", "table %s, set %d", rq->name,
 	    set);
-	if (fill(w, rq->name, tables_sets(w) == 1 ? set : -1, body, exists,
+	if (fill(w, rq->name, tables_sets(w) == 1 ? set : -1, &v, exists,
 	    errp) != 0) {
 		step_end(w, step, false, "%s", *errp);
 		/* The file says what the table is to be; the next load or
@@ -745,10 +607,11 @@ int
 feeds_fill_set1(struct work *w)
 {
 	struct feedfile		 ff;
+	struct ipf_list		 l;
 	struct ktable		*kt;
 	const struct ktable	*t0, *t1;
 	const char		*names[256], *e;
-	size_t			 n, i, nk;
+	size_t			 n, i, nk, left;
 	int			 step;
 
 	if (w->jail != NULL || tables_sets(w) != 1)
@@ -765,7 +628,8 @@ feeds_fill_set1(struct work *w)
 		step = step_begin(w, STEP_DAEMON, "feed", "table %s into set 1",
 		    names[i]);
 		e = NULL;
-		if (fill(w, names[i], 1, ff.body, t1 != NULL, &e) != 0) {
+		if (entries_of(w, ff.body, 0, NULL, &l, &left, &e) != 0 ||
+		    fill(w, names[i], 1, &l, t1 != NULL, &e) != 0) {
 			step_end(w, step, false, "%s", e);
 			continue;
 		}
@@ -784,11 +648,12 @@ void
 feeds_start(void)
 {
 	struct feedfile		 ff;
+	struct ipf_list		 l;
 	struct work		 w;
 	struct ktable		*kt;
 	const struct ktable	*t;
 	const char		*names[256], *e;
-	size_t			 n, i, nk;
+	size_t			 n, i, nk, left;
 	int			 set, ts;
 
 	if (!kmod_loaded("ipfw") && strcmp(opts.ipfw_bin, "/sbin/ipfw") == 0)
@@ -806,7 +671,8 @@ feeds_start(void)
 		if (t != NULL && t->items == (long)ff.count)
 			continue;
 		e = NULL;
-		if (fill(&w, names[i], set, ff.body, t != NULL, &e) != 0)
+		if (entries_of(&w, ff.body, 0, NULL, &l, &left, &e) != 0 ||
+		    fill(&w, names[i], set, &l, t != NULL, &e) != 0)
 			logmsg(LOG_WARNING, "feed table %s not filled: %s",
 			    names[i], e);
 		else

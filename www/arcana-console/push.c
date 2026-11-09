@@ -41,6 +41,7 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 
+#include <ipfeeds.h>
 #include <webpush.h>
 
 #include "console.h"
@@ -190,7 +191,7 @@ connect_to(const char *host)
 	fd = -1;
 	for (ai = res; ai != NULL; ai = ai->ai_next) {
 		/* A push service is on the internet: nothing only we reach. */
-		if (!addr_public(ai->ai_addr))
+		if (!ipf_sockaddr_public(ai->ai_addr))
 			continue;
 		if ((fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC,
 		    ai->ai_protocol)) == -1)

@@ -8,11 +8,13 @@
 # checked out with git submodule update --init and built first, in its
 # own obj/; devel/libcbor is what it needs.  jailconf (libjailconf,
 # jailconf(8)) is the submodule jailconf/, built the same way.
-# libwebpush (Web Push's encryption and VAPID) is the submodule
-# libwebpush/, built before the console and linked into it.  The console
-# needs net/libwebsockets and emcc(1); see config.mk.sample to point at
-# copies not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only
-# the jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
+# libipfeeds, the threat feeds' library, is the submodule ipfeeds/,
+# built first the same way and linked in.  libwebpush (Web Push's
+# encryption and VAPID) is the submodule libwebpush/, built before the
+# console and linked into it.  The console needs net/libwebsockets and
+# emcc(1); see config.mk.sample to point at copies not installed in
+# ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only the jail host's
+# programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
 # emdawnwebgpu package, which "make depends" fetches, not the build.  "make check" runs the tests in the build tree: those
 # that need root are skipped unless it runs as root, the browser test
 # unless Chromium and chromedriver are installed.
@@ -41,6 +43,13 @@ jailconf-install: .PHONY
 	@${_JAILCONF_MAKE} install DESTDIR=${DESTDIR} PREFIX=${PREFIX}
 beforeinstall: jailconf-install
 
+# libipfeeds from the submodule, before the agent and the console that
+# link it in; nothing of it installed.
+.if ${IPFEEDS_SUBMODULE} == "yes"
+ipfeeds-build: .PHONY
+	@${MAKE} -C ${.CURDIR}/ipfeeds WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes all
+.endif
+
 SUBDIR=		lib/libvarconf \
 		usr.sbin/arcana-enrol \
 		usr.sbin/arcana-agent \
@@ -61,6 +70,12 @@ all_subdir_www/arcana-console: webpush-build
 .for _d in ${SUBDIR} ${SUBDIR.yes}
 all_subdir_${_d}: jailconf-build
 .endfor
+.if ${IPFEEDS_SUBMODULE} == "yes"
+.for _d in ${SUBDIR} ${SUBDIR.yes}
+all_subdir_${_d}: ipfeeds-build
+.endfor
+ipfeeds-build: _deps-build
+.endif
 .if ${CBLINK_SUBMODULE} == "yes"
 .for _d in ${SUBDIR} ${SUBDIR.yes}
 all_subdir_${_d}: cblink-build
@@ -226,6 +241,6 @@ check-root: .PHONY
 # Everything built is under obj/, each submodule's under its own.
 clean cleandir: .PHONY
 	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj ${ARC_TOP}/jailconf/obj \
-	    ${ARC_TOP}/libwebpush/obj
+	    ${ARC_TOP}/ipfeeds/obj ${ARC_TOP}/libwebpush/obj
 
 .include <bsd.subdir.mk>

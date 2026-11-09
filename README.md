@@ -68,6 +68,10 @@ What it needs:
   installed `devel/cblink`. jailconf is the submodule `jailconf/`, built
   by `make` before the agent, which links its library, and needing
   nothing beyond base;
+  installed `devel/cblink`. ipfeeds (libipfeeds, the threat feeds'
+  fetching and parsing, and its `ipfeeds(8)`) is the submodule
+  `ipfeeds/`, built first the same way and linked into the agent and
+  the console; without it, an installed one at `IPFEEDS_PREFIX`;
 - for the console as well: `devel/emscripten` for the page, and
   `net/libwebsockets` for its HTTP server (`config.mk.sample` says how
   to use a copy elsewhere);

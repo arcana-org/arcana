@@ -110,6 +110,28 @@ WEBPUSH_PREFIX?=	${LOCALBASE}
 WEBPUSH_CFLAGS?=	-I${WEBPUSH_PREFIX}/include
 WEBPUSH_LIBS?=	-L${WEBPUSH_PREFIX}/lib -lwebpush
 .endif
+# libipfeeds: the threat feeds' generic work (formats, presets, parsing,
+# the safe HTTPS fetch, ipfw's table swapped in), the submodule
+# ipfeeds/, built by the top-level make before anything that links it,
+# in its own object directory, and linked in: the agent is shipped to
+# hosts that have none.  Without the submodule an installed one, at
+# IPFEEDS_PREFIX, is linked in the same way.
+.if !defined(IPFEEDS_PREFIX) && exists(${ARC_TOP}/ipfeeds/lib/libipfeeds/ipfeeds.h)
+IPFEEDS_SUBMODULE=	yes
+.if defined(MAKEOBJDIRPREFIX)
+IPFEEDS_OBJ?=	${MAKEOBJDIRPREFIX}${ARC_TOP}/ipfeeds
+.else
+IPFEEDS_OBJ?=	${ARC_TOP}/ipfeeds/obj
+.endif
+IPFEEDS_CFLAGS?=	-I${ARC_TOP}/ipfeeds/lib/libipfeeds
+IPFEEDS_LIBA?=	${IPFEEDS_OBJ}/lib/libipfeeds/libipfeeds_pic.a
+.else
+IPFEEDS_SUBMODULE=	no
+IPFEEDS_PREFIX?=	${LOCALBASE}
+IPFEEDS_CFLAGS?=	-I${IPFEEDS_PREFIX}/include
+IPFEEDS_LIBA?=	${IPFEEDS_PREFIX}/lib/libipfeeds_pic.a
+.endif
+IPFEEDS_LIBS?=	${IPFEEDS_LIBA} -lfetch -lssl -lcrypto -lpthread
 
 # libwebsockets(3), the console's HTTP server (net/libwebsockets).
 LWS_CFLAGS?=	-I${LOCALBASE}/include

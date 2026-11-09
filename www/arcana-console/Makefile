@@ -39,6 +39,10 @@ LDADD+=		${LWS_LIBS} ${UCL_LIBS} ${WEBPUSH_LIBS} ${SSL_LDFLAGS} -lssl -lcrypto -
 .if ${WEBPUSH_SUBMODULE} == "yes"
 DPADD+=		${WEBPUSH_LIBS}
 .endif
+# The threat feeds' fetching and parsing (feeds.c), libipfeeds' (arcana.mk).
+CFLAGS+=	${IPFEEDS_CFLAGS}
+LDADD+=		${IPFEEDS_LIBS}
+DPADD+=		${IPFEEDS_LIBA}
 
 # The configuration's sample and the rc.d(8) script.
 FILESGROUPS+=	CONF RC

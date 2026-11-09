@@ -55,6 +55,10 @@ LDADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 DPADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 CFLAGS+=	-I${.CURDIR}/../../lib/libvarconf
 DPADD+=		${JAILCONF_LIBS}
+# The feeds' tables (invidia/feeds.c): libipfeeds linked in (arcana.mk).
+CFLAGS+=	${IPFEEDS_CFLAGS}
+LDADD+=		${IPFEEDS_LIBA}
+DPADD+=		${IPFEEDS_LIBA}
 LDADD+=		-lfetch -ljail -lgeom -lmemstat -lprocstat -ldevstat -lnv -lutil -lpthread -lcrypto -lz ${UCL_LIBS}
 # Every symbol bound when the agent starts (ld(1) -z now): with a
 # libcblink older than the agent, it stops there, rtld(1) saying what

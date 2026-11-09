@@ -205,8 +205,6 @@ ucl_object_t	*prefix_list_get(const char *);
 /* feeds.c: threat feeds, fetched by the console, ipfw tables on hosts. */
 void		 feeds_init(void);
 void		 feeds_signin(struct http_request *, const char *);
-/* Whether a socket address is on the internet (feeds.c). */
-bool		 addr_public(const struct sockaddr *);
 
 /* labels.c: the console's own tags on hosts' interfaces. */
 /* notif.c: the console as a host's HTTPS-notif receiver; the records

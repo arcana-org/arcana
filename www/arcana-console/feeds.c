@@ -11,15 +11,18 @@
  * the agent fills a scratch table and swaps it in.  No rule is added:
  * the Firewall page offers one, which the admin keeps or not.
  *
- * A feed is fetched over HTTP or HTTPS (OpenSSL, verified against the
- * system's CAs for the URL's name) at its interval (an hour at least;
- * the presets' as their sources ask), conditionally (If-Modified-Since),
- * 16 MB and 250 000 entries at most, in a minute; only from an address
- * of the internet, the one resolved and checked connected to, and so at
- * each redirect, followed here (3 at most, none from https to http).  Each entry is made
- * an address or prefix with no host bits, once, those another covers
- * left out; dropped, with why: what is no prefix, the whole address
- * space, what covers the console's own addresses, a host's (the
+ * The generic work is libipfeeds' (the submodule ipfeeds/, ipfeeds(3)):
+ * the presets and formats, a feed fetched over HTTP or HTTPS (verified
+ * for the URL's name) conditionally (If-Modified-Since), 16 MB and
+ * 250 000 entries at most, in a minute, only from an address of the
+ * internet, the one resolved and checked connected to, and so at each
+ * redirect (3 at most, none from https to http); each entry made an
+ * address or prefix with no host bits, once, those another covers left
+ * out.  Arcana's is the policy: which feeds, at which interval (an hour
+ * at least; the presets' as their sources ask), what reserved space
+ * Settings' feeds_allow_private lets a fetch reach, and what no feed
+ * may cut off: dropped, with why, is what is no prefix, the whole
+ * address space, what covers the console's own addresses, a host's (the
  * address its servers.json URI names) or a user's last sign-in, and
  * private or reserved space unless the feed lists it on purpose.
  *
@@ -48,21 +51,19 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
-#include <poll.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <fetch.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <openssl/evp.h>
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
+
+#include <ipfeeds.h>
 
 #include "console.h"
 #include "ynet.h"
@@ -89,75 +90,9 @@
 #define	I(x)	ucl_object_fromint(x)
 #define	B(x)	ucl_object_frombool(x)
 
-/*
- * The presets, off until an operator enables one: each source's own
- * list as it publishes it, at the interval its terms ask for at least.
- */
-static const struct preset {
-	const char	*id, *name, *url, *format, *what, *terms, *terms_url;
-	int		 interval;
-	bool		 bogons;
-} presets[] = {
-	{ "spamhaus-drop-v4", "Spamhaus DROP (IPv4)",
-	    "https://www.spamhaus.org/drop/drop_v4.json", "spamhaus-json",
-	    "Netblocks hijacked or leased by spammers and cyber-criminals: "
-	    "no legitimate traffic comes from them.",
-	    "Free for any use under Spamhaus' DROP terms; fetch it no more "
-	    "than once an hour.", "https://www.spamhaus.org/drop/terms/", 12,
-	    false },
-	{ "spamhaus-drop-v6", "Spamhaus DROP (IPv6)",
-	    "https://www.spamhaus.org/drop/drop_v6.json", "spamhaus-json",
-	    "The IPv6 netblocks of the same list.",
-	    "Free for any use under Spamhaus' DROP terms; fetch it no more "
-	    "than once an hour.", "https://www.spamhaus.org/drop/terms/", 12,
-	    false },
-	{ "firehol-level1", "FireHOL level 1",
-	    "https://iplists.firehol.org/files/firehol_level1.netset", "plain",
-	    "Spamhaus DROP, DShield, Feodo Tracker and the full bogons, "
-	    "aggregated: made to drop at an internet-facing interface, it "
-	    "lists private and reserved space on purpose.",
-	    "FireHOL's aggregation of public lists; each source's own terms "
-	    "hold.", "https://iplists.firehol.org/?ipset=firehol_level1", 6,
-	    true },
-	{ "feodo", "abuse.ch Feodo Tracker",
-	    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", "plain",
-	    "Botnet command-and-control servers (Dridex, Emotet, QakBot and "
-	    "others) seen online now.",
-	    "CC0: no restriction on use.",
-	    "https://feodotracker.abuse.ch/blocklist/", 1, false },
-	{ "blocklist-de", "blocklist.de: all",
-	    "https://lists.blocklist.de/lists/all.txt", "plain",
-	    "Addresses reported in the last 48 hours for attacks on SSH, "
-	    "mail, FTP, web logins and more; IPv4 and IPv6.",
-	    "Free to use; fetch it no more than every half hour.",
-	    "https://www.blocklist.de/en/export.html", 6, false },
-	{ "dshield", "DShield recommended block list",
-	    "https://feeds.dshield.org/block.txt", "dshield",
-	    "The 20 /24 networks that scanned the most targets in the last "
-	    "three days, by the SANS Internet Storm Center.",
-	    "CC BY-NC-SA 2.5: not for commercial use.",
-	    "https://creativecommons.org/licenses/by-nc-sa/2.5/", 6, false },
-	{ "et-compromised", "Emerging Threats: compromised hosts",
-	    "https://rules.emergingthreats.net/blockrules/compromised-ips.txt",
-	    "plain",
-	    "Hosts known to be compromised, by Proofpoint's Emerging Threats "
-	    "Open.", "Emerging Threats Open's terms; read them before use.",
-	    "https://rules.emergingthreats.net/OPEN_download_instructions.html",
-	    12, false },
-};
-
-static const char *const formats[] = { "plain", "spamhaus-json", "dshield" };
-
-/* An address or prefix: its family, its bits, its length. */
-struct pfx {
-	int	af;
-	uint8_t	a[16];
-	int	len;
-};
-
 /* An address no feed may cut off, and why. */
 struct prot {
-	struct pfx	 p;
+	struct ipf_prefix p;
 	char		 why[96];
 	char		 host[9];	/* the host's whose it is, or "" */
 };
@@ -199,130 +134,6 @@ num(const ucl_object_t *o, const char *key)
 	    0);
 }
 
-/* ---- Prefixes ------------------------------------------------------ */
-
-static bool
-pfx_parse(const char *s, struct pfx *p)
-{
-	char	buf[64], *slash, *end;
-	long	l;
-	int	i, bits;
-
-	if (strlen(s) >= sizeof(buf))
-		return (false);
-	strlcpy(buf, s, sizeof(buf));
-	memset(p, 0, sizeof(*p));
-	if ((slash = strchr(buf, '/')) != NULL)
-		*slash++ = '\0';
-	if (inet_pton(AF_INET, buf, p->a) == 1) {
-		p->af = AF_INET;
-		bits = 32;
-	} else if (inet_pton(AF_INET6, buf, p->a) == 1) {
-		p->af = AF_INET6;
-		bits = 128;
-	} else
-		return (false);
-	p->len = bits;
-	if (slash != NULL) {
-		l = strtol(slash, &end, 10);
-		if (*slash == '\0' || *end != '\0' || l < 0 || l > bits)
-			return (false);
-		p->len = (int)l;
-	}
-	for (i = p->len; i < bits; i++)
-		p->a[i / 8] &= ~(0x80 >> (i % 8));
-	return (true);
-}
-
-static void
-pfx_str(const struct pfx *p, char *out, size_t len)
-{
-	char	buf[INET6_ADDRSTRLEN];
-
-	if (inet_ntop(p->af, p->a, buf, sizeof(buf)) == NULL)
-		buf[0] = '\0';
-	snprintf(out, len, "%s/%d", buf, p->len);
-}
-
-/* Do a and b share an address: is one within the other? */
-static bool
-pfx_overlap(const struct pfx *a, const struct pfx *b)
-{
-	int	i, n;
-
-	if (a->af != b->af)
-		return (false);
-	n = MIN(a->len, b->len);
-	for (i = 0; i < n; i++)
-		if ((a->a[i / 8] ^ b->a[i / 8]) & (0x80 >> (i % 8)))
-			return (false);
-	return (true);
-}
-
-/* Is b within a? */
-static bool
-pfx_covers(const struct pfx *a, const struct pfx *b)
-{
-
-	return (a->len <= b->len && pfx_overlap(a, b));
-}
-
-static int
-pfx_cmp(const void *x, const void *y)
-{
-	const struct pfx	*a = x, *b = y;
-	int			 c;
-
-	if (a->af != b->af)
-		return (a->af < b->af ? -1 : 1);
-	if ((c = memcmp(a->a, b->a, sizeof(a->a))) != 0)
-		return (c);
-	return (a->len < b->len ? -1 : a->len > b->len);
-}
-
-/* Private, shared, loopback, link-local, multicast and reserved space. */
-static const char *const bogons[] = {
-	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-	"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
-	"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
-	"224.0.0.0/3", "::/128", "::1/128", "::ffff:0:0/96", "64:ff9b::/96",
-	"100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
-};
-
-static bool
-bogon(const struct pfx *p)
-{
-	struct pfx	b;
-	size_t		i;
-
-	for (i = 0; i < nitems(bogons); i++)
-		if (pfx_parse(bogons[i], &b) && pfx_overlap(&b, p))
-			return (true);
-	return (false);
-}
-
-/* Whether a socket address is on the internet: none of the bogons'. */
-bool
-addr_public(const struct sockaddr *sa)
-{
-	struct pfx	p;
-
-	memset(&p, 0, sizeof(p));
-	if (sa->sa_family == AF_INET) {
-		p.af = AF_INET;
-		p.len = 32;
-		memcpy(p.a, &((const struct sockaddr_in *)(const void *)sa)->
-		    sin_addr, 4);
-	} else if (sa->sa_family == AF_INET6) {
-		p.af = AF_INET6;
-		p.len = 128;
-		memcpy(p.a, &((const struct sockaddr_in6 *)(const void *)sa)->
-		    sin6_addr, 16);
-	} else
-		return (false);
-	return (!bogon(&p));
-}
-
 /* ---- What is protected ------------------------------------------- */
 
 static void
@@ -340,7 +151,7 @@ prot_add(struct prot *v, size_t *np, int af, const void *addr,
 	memset(&v[*np], 0, sizeof(v[*np]));
 	v[*np].p.af = af;
 	v[*np].p.len = af == AF_INET ? 32 : 128;
-	memcpy(v[*np].p.a, addr, af == AF_INET ? 4 : 16);
+	memcpy(v[*np].p.addr, addr, af == AF_INET ? 4 : 16);
 	va_start(ap, fmt);
 	vsnprintf(v[*np].why, sizeof(v[*np].why), fmt, ap);
 	va_end(ap);
@@ -445,10 +256,10 @@ feeds_signin(struct http_request *req, const char *user)
 	const ucl_object_t	*u, *old;
 	ucl_object_iter_t	 it;
 	char			 addr[INET6_ADDRSTRLEN + 8];
-	struct pfx		 p;
+	struct ipf_prefix	 p;
 
 	if (user == NULL || user[0] == '\0' || web_peer(req, addr,
-	    sizeof(addr)) == NULL || !pfx_parse(addr, &p))
+	    sizeof(addr)) == NULL || ipf_prefix_parse(addr, &p) != 0)
 		return;
 	if ((si = store_load(SIGNINS_FILE)) == NULL || ucl_object_type(si) !=
 	    UCL_OBJECT) {
@@ -486,64 +297,6 @@ feeds_signin(struct http_request *req, const char *user)
 
 /* ---- Parsing a feed ---------------------------------------------- */
 
-/* The entry a line gives, by the feed's format, in buf; false: none. */
-static bool
-line_entry(const char *format, const char *line, size_t n, char *buf,
-    size_t blen)
-{
-	const char	*p, *q;
-	size_t		 k;
-
-	while (n > 0 && isspace((unsigned char)*line)) {
-		line++;
-		n--;
-	}
-	if (n == 0 || *line == '#' || *line == ';')
-		return (false);
-	if (strcmp(format, "spamhaus-json") == 0) {
-		/* {"cidr":"1.10.16.0/20","sblid":...}; the metadata line
-		 * has none. */
-		for (p = line; p + 8 <= line + n; p++)
-			if (strncmp(p, "\"cidr\":\"", 8) == 0)
-				break;
-		if (p + 8 > line + n)
-			return (false);
-		p += 8;
-		for (q = p; q < line + n && *q != '"'; q++)
-			;
-		k = (size_t)(q - p);
-	} else if (strcmp(format, "dshield") == 0) {
-		/* start <tab> end <tab> bits <tab> ...; "Start" heads it. */
-		char		 a[64];
-		const char	*t1, *t2;
-		long		 bits;
-
-		if ((t1 = memchr(line, '\t', n)) == NULL || (size_t)(t1 - line) >=
-		    sizeof(a))
-			return (false);
-		snprintf(a, sizeof(a), "%.*s", (int)(t1 - line), line);
-		if ((t2 = memchr(t1 + 1, '\t', (size_t)(line + n - t1 - 1))) ==
-		    NULL)
-			return (false);
-		bits = strtol(t2 + 1, NULL, 10);
-		if (!isdigit((unsigned char)a[0]) || bits <= 0)
-			return (false);
-		snprintf(buf, blen, "%s/%ld", a, bits);
-		return (true);
-	} else {
-		/* The first word: "1.2.3.0/24 ; SBL1", "1.2.3.4 # x". */
-		p = line;
-		k = strcspn(p, " \t#;\r");
-		if (k > n)
-			k = n;
-	}
-	if (k == 0 || k >= blen)
-		return (false);
-	memcpy(buf, p, k);
-	buf[k] = '\0';
-	return (true);
-}
-
 #define	PROTECTED	"covers a protected address: the console, a host, or a " \
 			"sign-in"
 
@@ -571,112 +324,101 @@ dropped_add(ucl_object_t *dropped, size_t *ndropped, const char *entry,
 	ucl_array_append(dropped, o);
 }
 
+/* What ipf_parse() drops, kept as feed_json() tells it. */
+struct drops {
+	const struct prot	*pv;
+	ucl_object_t		*dropped;
+	size_t			 n;
+};
+
+static void
+drop_kept(void *arg, enum ipf_drop why, size_t line,
+    const struct ipf_prefix *x, size_t which)
+{
+	struct drops	*d = arg;
+	char		 s[IPF_PREFIX_STRLEN], a[IPF_PREFIX_STRLEN], w[200];
+
+	switch (why) {
+	case IPF_DROP_SYNTAX:
+		/* Its line, not its words: a source is not to be read
+		 * through the console. */
+		snprintf(s, sizeof(s), "line %zu", line);
+		dropped_add(d->dropped, &d->n, s, "not an address or prefix",
+		    NULL, NULL);
+		break;
+	case IPF_DROP_ALL:
+		dropped_add(d->dropped, &d->n, ipf_prefix_format(x, s,
+		    sizeof(s)), "the whole address space", NULL, NULL);
+		break;
+	case IPF_DROP_PROTECTED:
+		snprintf(w, sizeof(w), "covers %s, %s", ipf_prefix_addr(
+		    &d->pv[which].p, a, sizeof(a)), d->pv[which].why);
+		dropped_add(d->dropped, &d->n, ipf_prefix_format(x, s,
+		    sizeof(s)), PROTECTED, w, d->pv[which].host);
+		break;
+	default:
+		dropped_add(d->dropped, &d->n, ipf_prefix_format(x, s,
+		    sizeof(s)), "private or reserved space, which this feed "
+		    "does not list on purpose", NULL, NULL);
+		break;
+	}
+}
+
 /*
- * A feed's text made its entries: each made canonical, once, those
- * another covers left out (counted in *covered); those dropped with why,
- * the first FEED_DROPPED of them, all counted in *ndropped.  NULL and
- * err when it has more than FEED_MAX or none at all.
+ * A feed's text made its entries (ipf_parse(3)): each made canonical,
+ * once, those another covers left out (counted in *covered); those
+ * dropped with why, the first FEED_DROPPED of them, all counted in
+ * *ndropped.  NULL and err when it has more than FEED_MAX or none at
+ * all.
  */
 static ucl_object_t *
 feed_parse(const char *text, size_t len, const char *format, bool keep_bogons,
     const struct prot *pv, size_t np, ucl_object_t *dropped, size_t *ndropped,
     size_t *covered, char *err, size_t errlen)
 {
-	struct pfx	*v, x;
-	ucl_object_t	*out;
-	const char	*p, *e, *end;
-	char		 buf[80], s[80];
-	size_t		 n, cap, i, k, lines, ln, nbad;
-	bool		 bad;
+	struct ipf_prefix	*prot;
+	struct ipf_parse	 ps;
+	struct ipf_list		 l;
+	struct drops		 d;
+	ucl_object_t		*out;
+	char			 s[IPF_PREFIX_STRLEN];
+	size_t			 i;
 
 	*ndropped = *covered = 0;
-	cap = 4096;
-	if ((v = calloc(cap, sizeof(*v))) == NULL) {
+	memset(&ps, 0, sizeof(ps));
+	if (ipf_format_parse(format, &ps.format) != 0) {
+		snprintf(err, errlen, "no such format: %s", format);
+		return (NULL);
+	}
+	if ((prot = calloc(np > 0 ? np : 1, sizeof(*prot))) == NULL) {
 		snprintf(err, errlen, "out of memory");
 		return (NULL);
 	}
-	n = lines = nbad = 0;
-	end = text + len;
-	for (p = text, ln = 1; p < end; p = e + 1, ln++) {
-		if ((e = memchr(p, '\n', (size_t)(end - p))) == NULL)
-			e = end;
-		if (!line_entry(format, p, (size_t)(e - p), buf, sizeof(buf)))
-			continue;
-		lines++;
-		/* Its line, not its words: a source is not to be read
-		 * through the console. */
-		if (!pfx_parse(buf, &x)) {
-			snprintf(s, sizeof(s), "line %zu", ln);
-			nbad++;
-			dropped_add(dropped, ndropped, s, "not an address or "
-			    "prefix", NULL, NULL);
-			continue;
-		}
-		pfx_str(&x, s, sizeof(s));
-		if (x.len == 0) {
-			dropped_add(dropped, ndropped, s, "the whole address "
-			    "space", NULL, NULL);
-			continue;
-		}
-		bad = false;
-		for (i = 0; i < np && !bad; i++)
-			if (pfx_covers(&x, &pv[i].p)) {
-				char	a[80], why[200];
-
-				pfx_str(&pv[i].p, a, sizeof(a));
-				a[strcspn(a, "/")] = '\0';
-				snprintf(why, sizeof(why), "covers %s, %s", a,
-				    pv[i].why);
-				dropped_add(dropped, ndropped, s, PROTECTED, why,
-				    pv[i].host);
-				bad = true;
-			}
-		if (bad)
-			continue;
-		if (!keep_bogons && bogon(&x)) {
-			dropped_add(dropped, ndropped, s, "private or reserved "
-			    "space, which this feed does not list on purpose",
-			    NULL, NULL);
-			continue;
-		}
-		if (n >= FEED_MAX) {
-			free(v);
-			snprintf(err, errlen, "more than %d entries", FEED_MAX);
-			return (NULL);
-		}
-		if (n == cap) {
-			struct pfx	*nv;
-
-			if ((nv = reallocarray(v, cap * 2, sizeof(*v))) == NULL) {
-				free(v);
-				snprintf(err, errlen, "out of memory");
-				return (NULL);
-			}
-			v = nv;
-			cap *= 2;
-		}
-		v[n++] = x;
-	}
-	if (lines == 0 || nbad == lines) {
-		free(v);
-		snprintf(err, errlen, "no entry in it: not a list of the format "
-		    "%s", format);
+	for (i = 0; i < np; i++)
+		prot[i] = pv[i].p;
+	d.pv = pv;
+	d.dropped = dropped;
+	d.n = 0;
+	ps.keep_reserved = keep_bogons;
+	ps.protect = prot;
+	ps.nprotect = np;
+	ps.max = FEED_MAX;
+	ps.drop = drop_kept;
+	ps.arg = &d;
+	ipf_list_init(&l);
+	if (ipf_parse(&ps, text, len, &l, err, errlen) != 0) {
+		free(prot);
+		ipf_list_free(&l);
 		return (NULL);
 	}
-	/* Sorted, each once; one within the last kept is left out. */
-	qsort(v, n, sizeof(*v), pfx_cmp);
+	free(prot);
+	*ndropped = d.n;
+	*covered = ipf_list_aggregate(&l);
 	out = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0, k = SIZE_MAX; i < n; i++) {
-		if (k != SIZE_MAX && pfx_covers(&v[k], &v[i])) {
-			if (pfx_cmp(&v[k], &v[i]) != 0)
-				(*covered)++;
-			continue;
-		}
-		k = i;
-		pfx_str(&v[i], s, sizeof(s));
-		ucl_array_append(out, S(s));
-	}
-	free(v);
+	for (i = 0; i < l.n; i++)
+		ucl_array_append(out, S(ipf_prefix_format(&l.v[i], s,
+		    sizeof(s))));
+	ipf_list_free(&l);
 	return (out);
 }
 
@@ -722,17 +464,6 @@ doc_load(const char *name, const char *key, int type)
 	return (o);
 }
 
-static const struct preset *
-preset_of(const char *id)
-{
-	size_t	i;
-
-	for (i = 0; id != NULL && i < nitems(presets); i++)
-		if (strcmp(presets[i].id, id) == 0)
-			return (&presets[i]);
-	return (NULL);
-}
-
 static const ucl_object_t *
 feed_by(const ucl_object_t *doc, const char *id)
 {
@@ -764,9 +495,7 @@ table_ok(const char *s)
 	size_t	n;
 
 	n = s != NULL ? strlen(s) : 0;
-	return (n > 0 && n <= 48 && strspn(s, "abcdefghijklmnopqrstuvwxyz"
-	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n &&
-	    strspn(s, "0123456789") != n);
+	return (n <= 48 && ipf_ipfw_table_ok(s));
 }
 
 static void
@@ -842,483 +571,63 @@ entries_text(const ucl_object_t *entries, size_t *lenp)
  * resolves to loopback, private, shared, link-local (a cloud's metadata
  * at 169.254.169.254), multicast or reserved space is refused, unless
  * Settings' feeds_allow_private lets its prefix through: the console is
- * not to be aimed at what only it can reach.
+ * not to be aimed at what only it can reach.  The prefixes let through
+ * into allow, f made to fetch as the console does.
  */
-static bool
-addr_allowed(const struct pfx *a, char *err, size_t errlen)
+static void
+fetch_init(struct ipf_fetch *f, struct ipf_list *allow, char *ua, size_t len)
 {
-	struct pfx	 p;
-	char		*allow, *w, *next, s[80];
-	bool		 ok;
+	char	*w;
 
-	if (!bogon(a))
-		return (true);
-	ok = false;
-	allow = settings_peek("feeds_allow_private");
-	for (w = allow; w != NULL && *w != '\0' && !ok; w = next) {
-		w += strspn(w, " ,");
-		next = w + strcspn(w, " ,");
-		if (*next != '\0')
-			*next++ = '\0';
-		if (*w != '\0' && pfx_parse(w, &p) && pfx_covers(&p, a))
-			ok = true;
-	}
-	free(allow);
-	if (!ok) {
-		pfx_str(a, s, sizeof(s));
-		s[strcspn(s, "/")] = '\0';
-		snprintf(err, errlen, "%s is a private or reserved address: a "
-		    "feed comes from the internet (Settings' "
-		    "feeds_allow_private lets a prefix through)", s);
-	}
-	return (ok);
-}
-
-/* An http or https URL taken apart. */
-struct hurl {
-	bool	 tls;
-	char	 host[256];
-	char	 port[8];
-	char	*doc;		/* the path and query, malloc'd */
-};
-
-static bool
-hurl_parse(const char *url, struct hurl *h, char *err, size_t errlen)
-{
-	struct url	*u;
-
-	memset(h, 0, sizeof(*h));
-	if ((u = fetchParseURL(url)) == NULL || (strcmp(u->scheme, "http") !=
-	    0 && strcmp(u->scheme, "https") != 0) || u->host[0] == '\0' ||
-	    u->user[0] != '\0') {
-		if (u != NULL)
-			fetchFreeURL(u);
-		snprintf(err, errlen, "a feed's url is https (or http), with a "
-		    "host and no user");
-		return (false);
-	}
-	h->tls = strcmp(u->scheme, "https") == 0;
-	/* An IPv6 address without its brackets. */
-	snprintf(h->host, sizeof(h->host), "%.*s", (int)strcspn(u->host +
-	    (u->host[0] == '['), "]"), u->host + (u->host[0] == '['));
-	snprintf(h->port, sizeof(h->port), "%d", u->port > 0 ? u->port :
-	    h->tls ? 443 : 80);
-	if ((h->doc = strdup(u->doc != NULL && u->doc[0] != '\0' ? u->doc :
-	    "/")) == NULL)
-		abort();
-	fetchFreeURL(u);
-	return (true);
-}
-
-/*
- * The host's addresses, every one allowed (one that is not and the rest
- * may be the one a second resolution gives); up to max in v.
- */
-static int
-hurl_resolve(const struct hurl *h, struct sockaddr_storage *v, int max,
-    char *err, size_t errlen)
-{
-	struct addrinfo	 hints, *res, *ai;
-	struct pfx	 p;
-	int		 n, e;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_socktype = SOCK_STREAM;
-	if ((e = getaddrinfo(h->host, h->port, &hints, &res)) != 0) {
-		snprintf(err, errlen, "%s: %s", h->host, gai_strerror(e));
-		return (-1);
-	}
-	n = 0;
-	for (ai = res; ai != NULL; ai = ai->ai_next) {
-		memset(&p, 0, sizeof(p));
-		if (ai->ai_family == AF_INET) {
-			p.af = AF_INET;
-			p.len = 32;
-			memcpy(p.a, &((struct sockaddr_in *)(void *)ai->ai_addr)->
-			    sin_addr, 4);
-		} else if (ai->ai_family == AF_INET6) {
-			p.af = AF_INET6;
-			p.len = 128;
-			memcpy(p.a, &((struct sockaddr_in6 *)(void *)ai->
-			    ai_addr)->sin6_addr, 16);
-		} else
-			continue;
-		if (!addr_allowed(&p, err, errlen)) {
-			freeaddrinfo(res);
-			return (-1);
-		}
-		if (n < max)
-			memcpy(&v[n++], ai->ai_addr, ai->ai_addrlen);
-	}
-	freeaddrinfo(res);
-	if (n == 0)
-		snprintf(err, errlen, "%s has no address", h->host);
-	return (n > 0 ? n : -1);
+	ipf_list_init(allow);
+	w = settings_peek("feeds_allow_private");
+	(void)ipf_list_words(allow, w);
+	free(w);
+	snprintf(ua, len, "arcana-console/%s", ARCW_VERSION);
+	memset(f, 0, sizeof(*f));
+	f->user_agent = ua;
+	f->max_bytes = FEED_MAX_BYTES;
+	f->timeout = FEED_TIMEOUT;
+	f->redirects = 3;
+	f->allow = allow->v;
+	f->nallow = allow->n;
+	f->allow_hint = "Settings' feeds_allow_private lets a prefix through";
 }
 
 /* May a feed be fetched from the URL now?  Why not in err. */
 static bool
 url_allowed(const char *url, char *err, size_t errlen)
 {
-	struct sockaddr_storage	 v[8];
-	struct hurl		 h;
-	int			 n;
+	struct ipf_fetch	f;
+	struct ipf_list		allow;
+	char			ua[64];
+	int			rc;
 
-	if (!hurl_parse(url, &h, err, errlen))
-		return (false);
-	n = hurl_resolve(&h, v, (int)nitems(v), err, errlen);
-	free(h.doc);
-	return (n > 0);
-}
-
-static SSL_CTX		*feeds_ssl;
-static pthread_once_t	 feeds_ssl_once = PTHREAD_ONCE_INIT;
-
-/* The system's CAs, as fetch(1) has them; TLS 1.2 at least. */
-static void
-ssl_init(void)
-{
-
-	if ((feeds_ssl = SSL_CTX_new(TLS_client_method())) == NULL)
-		return;
-	(void)SSL_CTX_set_min_proto_version(feeds_ssl, TLS1_2_VERSION);
-	SSL_CTX_set_verify(feeds_ssl, SSL_VERIFY_PEER, NULL);
-	(void)SSL_CTX_set_default_verify_paths(feeds_ssl);
-	if (access("/usr/local/etc/ssl/cert.pem", R_OK) == 0)
-		(void)SSL_CTX_load_verify_locations(feeds_ssl,
-		    "/usr/local/etc/ssl/cert.pem", NULL);
-}
-
-/* A connection to one of the addresses resolved, in the time left. */
-static int
-hurl_connect(const struct sockaddr_storage *v, int n, time_t deadline,
-    char *err, size_t errlen)
-{
-	struct pollfd	 pfd;
-	struct timeval	 tv;
-	socklen_t	 sl;
-	int		 i, s, e, left, fl;
-
-	for (i = 0; i < n; i++) {
-		if ((s = socket(v[i].ss_family, SOCK_STREAM | SOCK_CLOEXEC, 0)) ==
-		    -1)
-			continue;
-		fl = fcntl(s, F_GETFL);
-		(void)fcntl(s, F_SETFL, fl | O_NONBLOCK);
-		sl = v[i].ss_family == AF_INET ? sizeof(struct sockaddr_in) :
-		    sizeof(struct sockaddr_in6);
-		if (connect(s, (const struct sockaddr *)&v[i], sl) == -1 &&
-		    errno != EINPROGRESS) {
-			snprintf(err, errlen, "connect: %s", strerror(errno));
-			close(s);
-			continue;
-		}
-		left = (int)(deadline - time(NULL));
-		pfd.fd = s;
-		pfd.events = POLLOUT;
-		e = 0;
-		sl = sizeof(e);
-		/* Ten seconds an address, so that one that never answers
-		 * (an IPv6 route that goes nowhere) leaves time for the next. */
-		if (left <= 0 || poll(&pfd, 1, MIN(left, i + 1 < n ? 10 : left) *
-		    1000) != 1 ||
-		    getsockopt(s, SOL_SOCKET, SO_ERROR, &e, &sl) != 0 || e != 0) {
-			snprintf(err, errlen, "connect: %s", e != 0 ?
-			    strerror(e) : "timed out");
-			close(s);
-			continue;
-		}
-		(void)fcntl(s, F_SETFL, fl);
-		tv.tv_sec = left > 0 ? left : 1;
-		tv.tv_usec = 0;
-		(void)setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-		(void)setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-		return (s);
-	}
-	return (-1);
-}
-
-/* A chunked body made plain, in place; false when it is not one. */
-static bool
-dechunk(char *b, size_t *lenp)
-{
-	char	*r, *w, *end, *e;
-	size_t	 n;
-
-	r = w = b;
-	end = b + *lenp;
-	for (;;) {
-		n = strtoul(r, &e, 16);
-		if (e == r || (e = strstr(e, "\r\n")) == NULL || e >= end)
-			return (false);
-		r = e + 2;
-		if (n == 0)
-			break;
-		if (n > (size_t)(end - r))
-			return (false);
-		memmove(w, r, n);
-		w += n;
-		r += n;
-		if (r + 2 > end || r[0] != '\r' || r[1] != '\n')
-			return (false);
-		r += 2;
-	}
-	*lenp = (size_t)(w - b);
-	return (true);
-}
-
-/* A header's value in the head (its lines), copied into out; or NULL. */
-static const char *
-header(const char *head, const char *name, char *out, size_t len)
-{
-	const char	*p, *e;
-	size_t		 n;
-
-	n = strlen(name);
-	for (p = strstr(head, "\r\n"); p != NULL; p = strstr(p + 2, "\r\n")) {
-		if (strncasecmp(p + 2, name, n) != 0 || p[2 + n] != ':')
-			continue;
-		p += 3 + n;
-		p += strspn(p, " \t");
-		e = strstr(p, "\r\n");
-		snprintf(out, len, "%.*s", (int)(e != NULL ? e - p :
-		    (ptrdiff_t)strlen(p)), p);
-		return (out);
-	}
-	return (NULL);
+	fetch_init(&f, &allow, ua, sizeof(ua));
+	rc = ipf_url_check(&f, url, err, errlen);
+	ipf_list_free(&allow);
+	return (rc == 0);
 }
 
 /*
- * One request: GET of h at an address resolved and allowed (no second
- * resolution), TLS verified for its name; the reply whole in *bufp
- * (malloc'd), its head ending at *bodyp.  Its status, or -1 and err.
- */
-static int
-hurl_get(const struct hurl *h, time_t ims, time_t deadline, char **bufp,
-    size_t *lenp, char **bodyp, char *err, size_t errlen)
-{
-	struct sockaddr_storage	 v[8];
-	struct tm		 tm;
-	SSL			*ssl;
-	char			*buf, req[2048], date[64], *e;
-	size_t			 len, cap;
-	ssize_t			 r;
-	int			 n, s, status;
-	bool			 v6lit;
-
-	*bufp = *bodyp = NULL;
-	*lenp = 0;
-	if ((n = hurl_resolve(h, v, (int)nitems(v), err, errlen)) < 0)
-		return (-1);
-	if ((s = hurl_connect(v, n, deadline, err, errlen)) == -1)
-		return (-1);
-	ssl = NULL;
-	if (h->tls) {
-		(void)pthread_once(&feeds_ssl_once, ssl_init);
-		if (feeds_ssl == NULL || (ssl = SSL_new(feeds_ssl)) == NULL) {
-			close(s);
-			snprintf(err, errlen, "TLS: out of memory");
-			return (-1);
-		}
-		/* The name the certificate is for: the URL's. */
-		if (inet_pton(AF_INET, h->host, date) == 1 || inet_pton(AF_INET6,
-		    h->host, date) == 1)
-			(void)X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),
-			    h->host);
-		else {
-			char	sni[256];
-
-			snprintf(sni, sizeof(sni), "%s", h->host);
-			(void)SSL_set_tlsext_host_name(ssl, sni);
-			(void)SSL_set1_host(ssl, h->host);
-		}
-		(void)SSL_set_fd(ssl, s);
-		if (SSL_connect(ssl) != 1) {
-			snprintf(err, errlen, "TLS with %s: %s", h->host,
-			    SSL_get_verify_result(ssl) != X509_V_OK ?
-			    X509_verify_cert_error_string(SSL_get_verify_result(
-			    ssl)) : "handshake failed");
-			SSL_free(ssl);
-			close(s);
-			return (-1);
-		}
-	}
-	v6lit = strchr(h->host, ':') != NULL;
-	date[0] = '\0';
-	if (ims > 0 && gmtime_r(&ims, &tm) != NULL)
-		strftime(date, sizeof(date), "If-Modified-Since: %a, %d %b %Y "
-		    "%H:%M:%S GMT\r\n", &tm);
-	n = snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s%s%s%s%s"
-	    "\r\nUser-Agent: arcana-console/%s\r\nAccept: */*\r\nConnection: "
-	    "close\r\n%s\r\n", h->doc, v6lit ? "[" : "", h->host, v6lit ? "]" :
-	    "", strcmp(h->port, h->tls ? "443" : "80") == 0 ? "" : ":",
-	    strcmp(h->port, h->tls ? "443" : "80") == 0 ? "" : h->port,
-	    ARCW_VERSION, date);
-	if (n <= 0 || (size_t)n >= sizeof(req) || (ssl != NULL ? SSL_write(ssl,
-	    req, n) != n : write(s, req, (size_t)n) != n)) {
-		snprintf(err, errlen, "the request could not be sent");
-		goto fail;
-	}
-	cap = 65536;
-	if ((buf = malloc(cap + 1)) == NULL)
-		abort();
-	len = 0;
-	for (;;) {
-		if (time(NULL) > deadline) {
-			free(buf);
-			snprintf(err, errlen, "timed out after %d s", FEED_TIMEOUT);
-			goto fail;
-		}
-		if (len == cap) {
-			if (cap > FEED_MAX_BYTES) {
-				free(buf);
-				snprintf(err, errlen, "more than 16 MB");
-				goto fail;
-			}
-			cap *= 2;
-			if ((buf = reallocf(buf, cap + 1)) == NULL)
-				abort();
-		}
-		r = ssl != NULL ? SSL_read(ssl, buf + len, (int)(cap - len)) :
-		    read(s, buf + len, cap - len);
-		if (r <= 0) {
-			if (ssl != NULL && r < 0 && SSL_get_error(ssl, (int)r) !=
-			    SSL_ERROR_ZERO_RETURN && SSL_get_error(ssl, (int)r) !=
-			    SSL_ERROR_SYSCALL) {
-				free(buf);
-				snprintf(err, errlen, "TLS: the reply was cut "
-				    "short");
-				goto fail;
-			}
-			if (ssl == NULL && r < 0) {
-				free(buf);
-				snprintf(err, errlen, "read: %s", strerror(errno));
-				goto fail;
-			}
-			break;
-		}
-		len += (size_t)r;
-	}
-	if (ssl != NULL) {
-		(void)SSL_shutdown(ssl);
-		SSL_free(ssl);
-	}
-	close(s);
-	buf[len] = '\0';
-	if (strncmp(buf, "HTTP/1.", 7) != 0 || (e = strstr(buf, "\r\n\r\n")) ==
-	    NULL) {
-		free(buf);
-		snprintf(err, errlen, "no HTTP reply");
-		return (-1);
-	}
-	status = atoi(buf + 9);
-	*e = '\0';
-	*bufp = buf;
-	*bodyp = e + 4;
-	*lenp = len - (size_t)(e + 4 - buf);
-	return (status);
-fail:
-	if (ssl != NULL)
-		SSL_free(ssl);
-	close(s);
-	return (-1);
-}
-
-/*
- * The feed's text: 0 and *bodyp (malloc'd), 1 when not modified since
- * ims, -1 and err.  Every address it is fetched from allowed, at each
- * of its redirects too, which are followed here (3 at most, never from
- * https to http).
+ * The feed's text (ipf_fetch(3)): 0 and *bodyp (malloc'd), 1 when not
+ * modified since ims, -1 and err.
  */
 static int
 fetch_url(const char *url, time_t ims, char **bodyp, size_t *lenp,
     time_t *lmp, char *err, size_t errlen)
 {
-	struct hurl	 h;
-	struct tm	 tm;
-	char		*buf, *body, loc[1024], next[1300], v[128];
-	size_t		 len;
-	time_t		 deadline;
-	int		 status, hop;
-	bool		 was_tls;
+	struct ipf_fetch	f;
+	struct ipf_list		allow;
+	char			ua[64];
+	int			rc;
 
-	*bodyp = NULL;
-	*lenp = 0;
-	*lmp = 0;
-	deadline = time(NULL) + FEED_TIMEOUT;
-	snprintf(next, sizeof(next), "%s", url);
-	was_tls = false;
-	for (hop = 0;; hop++) {
-		if (!hurl_parse(next, &h, err, errlen))
-			return (-1);
-		if (was_tls && !h.tls) {
-			free(h.doc);
-			snprintf(err, errlen, "redirected from https to http: "
-			    "refused");
-			return (-1);
-		}
-		was_tls = h.tls;
-		status = hurl_get(&h, ims, deadline, &buf, &len, &body, err,
-		    errlen);
-		if (status < 0) {
-			free(h.doc);
-			return (-1);
-		}
-		if (status != 301 && status != 302 && status != 303 && status !=
-		    307 && status != 308)
-			break;
-		if (hop == 3 || header(buf, "Location", loc, sizeof(loc)) ==
-		    NULL) {
-			free(buf);
-			free(h.doc);
-			snprintf(err, errlen, hop == 3 ? "more than 3 redirects" :
-			    "a redirect with no Location");
-			return (-1);
-		}
-		/* An absolute path on the same host, or a URL. */
-		if (loc[0] == '/')
-			snprintf(next, sizeof(next), "%s://%s%s%s:%s%s", h.tls ?
-			    "https" : "http", strchr(h.host, ':') != NULL ? "[" :
-			    "", h.host, strchr(h.host, ':') != NULL ? "]" : "",
-			    h.port, loc);
-		else
-			snprintf(next, sizeof(next), "%s", loc);
-		free(buf);
-		free(h.doc);
-	}
-	free(h.doc);
-	if (status == 304) {
-		free(buf);
-		return (1);
-	}
-	if (status != 200) {
-		free(buf);
-		snprintf(err, errlen, "HTTP %d", status);
-		return (-1);
-	}
-	if (header(buf, "Transfer-Encoding", v, sizeof(v)) != NULL &&
-	    strcasestr(v, "chunked") != NULL && !dechunk(body, &len)) {
-		free(buf);
-		snprintf(err, errlen, "a chunked reply cut short");
-		return (-1);
-	}
-	if (header(buf, "Last-Modified", v, sizeof(v)) != NULL) {
-		memset(&tm, 0, sizeof(tm));
-		if (strptime(v, "%a, %d %b %Y %H:%M:%S GMT", &tm) != NULL)
-			*lmp = timegm(&tm);
-	}
-	if (len > FEED_MAX_BYTES) {
-		free(buf);
-		snprintf(err, errlen, "more than 16 MB");
-		return (-1);
-	}
-	if ((*bodyp = malloc(len + 1)) == NULL)
-		abort();
-	memcpy(*bodyp, body, len);
-	(*bodyp)[len] = '\0';
-	*lenp = len;
-	free(buf);
-	return (0);
+	fetch_init(&f, &allow, ua, sizeof(ua));
+	f.if_modified_since = ims;
+	rc = ipf_fetch(&f, url, bodyp, lenp, err, errlen);
+	*lmp = f.last_modified;
+	ipf_list_free(&allow);
+	return (rc);
 }
 
 /* ---- Delivery ------------------------------------------------------ */
@@ -1905,21 +1214,23 @@ feeds_init(void)
 static ucl_object_t *
 presets_json(void)
 {
-	ucl_object_t	*arr, *o;
-	size_t		 i;
+	const struct ipf_preset	*presets;
+	ucl_object_t		*arr, *o;
+	size_t			 i, n;
 
+	presets = ipf_presets(&n);
 	arr = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0; i < nitems(presets); i++) {
+	for (i = 0; i < n; i++) {
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put(o, "id", S(presets[i].id));
 		put(o, "name", S(presets[i].name));
 		put(o, "url", S(presets[i].url));
-		put(o, "format", S(presets[i].format));
-		put(o, "what", S(presets[i].what));
+		put(o, "format", S(ipf_format_name(presets[i].format)));
+		put(o, "what", S(presets[i].description));
 		put(o, "terms", S(presets[i].terms));
 		put(o, "terms_url", S(presets[i].terms_url));
 		put(o, "interval", I(presets[i].interval));
-		put(o, "bogons", B(presets[i].bogons));
+		put(o, "bogons", B(presets[i].reserved));
 		ucl_array_append(arr, o);
 	}
 	return (arr);
@@ -2068,16 +1379,17 @@ static ucl_object_t *
 feed_check(struct http_request *req, const char *id, const ucl_object_t *body,
     const ucl_object_t *doc, char *err, size_t errlen)
 {
-	const struct preset	*pr;
+	const struct ipf_preset	*pr;
 	const ucl_object_t	*v, *e, *g;
 	ucl_object_iter_t	 it, git;
 	ucl_object_t		*f, *hosts;
 	const char		*url, *fmt, *name, *table;
 	char			 tdef[64];
+	enum ipf_format		 fv;
 	int64_t			 h;
 	size_t			 i;
 
-	pr = preset_of(str(body, "preset") != NULL ? str(body, "preset") :
+	pr = ipf_preset_find(str(body, "preset") != NULL ? str(body, "preset") :
 	    id);
 	if (str(body, "preset") != NULL && pr == NULL) {
 		snprintf(err, errlen, "no such preset");
@@ -2102,10 +1414,8 @@ feed_check(struct http_request *req, const char *id, const ucl_object_t *body,
 	    errlen))
 		return (NULL);
 	fmt = str(body, "format") != NULL ? str(body, "format") : pr != NULL ?
-	    pr->format : "plain";
-	for (i = 0; i < nitems(formats) && strcmp(formats[i], fmt) != 0; i++)
-		;
-	if (i == nitems(formats)) {
+	    ipf_format_name(pr->format) : "plain";
+	if (ipf_format_parse(fmt, &fv) != 0) {
 		snprintf(err, errlen, "a format is plain, spamhaus-json or "
 		    "dshield");
 		return (NULL);
@@ -2176,7 +1486,7 @@ feed_check(struct http_request *req, const char *id, const ucl_object_t *body,
 	put(f, "enabled", B(ucl_flag(body, "enabled")));
 	put(f, "table", S(table));
 	put(f, "bogons", B(ucl_object_lookup(body, "bogons") != NULL ?
-	    ucl_flag(body, "bogons") : pr != NULL && pr->bogons));
+	    ucl_flag(body, "bogons") : pr != NULL && pr->reserved));
 	if (pr != NULL)
 		put(f, "preset", S(pr->id));
 	put(f, "hosts", hosts);
@@ -2224,9 +1534,9 @@ hosts_denied(struct http_request *req, const ucl_object_t *f,
 static bool
 feed_custom(const ucl_object_t *f)
 {
-	const struct preset	*pr;
+	const struct ipf_preset	*pr;
 
-	return ((pr = preset_of(str(f, "preset"))) == NULL || str(f, "url") ==
+	return ((pr = ipf_preset_find(str(f, "preset"))) == NULL || str(f, "url") ==
 	    NULL || strcmp(str(f, "url"), pr->url) != 0);
 }
 
