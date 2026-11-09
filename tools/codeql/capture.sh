@@ -6,7 +6,8 @@
 #
 #	compiles.log	the compiles, one JSON line each (ccwrap.py)
 #	emcc-sysroot	where emcc's sysroot is, below root/
-#	obj/, cblink/obj/	the generated sources and headers of the build
+#	obj/, cblink/obj/, libwebpush/obj/
+#			the generated sources and headers of the build
 #	root/		the headers outside the tree: base's, the packages',
 #			libucl's and libyaml's sources, emcc's sysroot
 #
@@ -44,7 +45,7 @@ done
 tar -C "${SRC}" -cf - --exclude '*.o' --exclude '*.pico' \
     --exclude '*.pieo' --exclude '*.po' --exclude '*.a' --exclude '*.so*' \
     --exclude '*.full' --exclude '*.debug' --exclude '*.wasm' \
-    --exclude '*.core' obj cblink/obj | tar -C "${OUT}" -xf -
+    --exclude '*.core' obj cblink/obj libwebpush/obj | tar -C "${OUT}" -xf -
 rm -rf "${OUT}/bin"
 tar -C "${OUT}" --zstd -cf /tmp/codeql.tar.zst .
 echo "capture: $(wc -l < "${CODEQL_LOG}") compiles," \

@@ -13,7 +13,7 @@
  * address to post to and its keys.  The console keeps those in
  * push.json, and its own key, which the push services know it by
  * (VAPID), in vapid.pem, both in the data directory.  A message is
- * encrypted for each subscription (webpush.c) and posted to its
+ * encrypted for each subscription (libwebpush(3)) and posted to its
  * address over HTTPS, from a task thread.  A push service that says a
  * subscription is gone has it dropped.  Each subscription is its
  * user's: a user reads, changes and is sent to their own alone, as
@@ -41,9 +41,10 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 
+#include <webpush.h>
+
 #include "console.h"
 #include "restconf.h"
-#include "webpush.h"
 
 #define	PUSH_FILE	"push.json"
 #define	VAPID_FILE	"vapid.pem"
@@ -117,7 +118,7 @@ push_init(void)
 	}
 	if ((publen = EVP_PKEY_get1_encoded_public_key(vapid, &pub)) != 65)
 		return (-1);
-	vapid_pub = wp_b64url(pub, publen);
+	vapid_pub = webpush_b64url(pub, publen);
 	OPENSSL_free(pub);
 	push_reload();
 	return (vapid_pub != NULL ? 0 : -1);
@@ -306,10 +307,10 @@ send_run(struct task *t)
 			snprintf(contact, sizeof(contact), "mailto:arcana@%s",
 			    strcmp(cfg.rp_id, "localhost") == 0 ?
 			    "localhost.localdomain" : cfg.rp_id);
-		auth = wp_vapid(vapid, aud, contact, time(NULL));
-		if (auth == NULL || wp_encrypt(tg->p256dh, tg->auth, NULL, NULL,
-		    (const uint8_t *)s->payload, strlen(s->payload), &body,
-		    &len) != 0) {
+		auth = webpush_vapid(vapid, aud, contact, time(NULL));
+		if (auth == NULL || webpush_encrypt(tg->p256dh, tg->auth, NULL,
+		    NULL, (const uint8_t *)s->payload, strlen(s->payload),
+		    &body, &len) != 0) {
 			free(auth);
 			continue;
 		}
@@ -415,15 +416,15 @@ keys_bad(const char *p256dh, const char *auth)
 	uint8_t	*raw;
 	size_t	 len;
 
-	if (p256dh == NULL || (raw = wp_unb64url(p256dh, &len)) == NULL ||
-	    len != 65 || raw[0] != 0x04) {
+	if (p256dh == NULL || (raw = webpush_unb64url(p256dh, &len)) == NULL ||
+	    len != WEBPUSH_KEYLEN || raw[0] != 0x04) {
 		if (p256dh != NULL)
 			free(raw);
 		return ("p256dh is not a P-256 public key");
 	}
 	free(raw);
-	if (auth == NULL || (raw = wp_unb64url(auth, &len)) == NULL ||
-	    len != 16) {
+	if (auth == NULL || (raw = webpush_unb64url(auth, &len)) == NULL ||
+	    len != WEBPUSH_AUTHLEN) {
 		free(raw);
 		return ("auth is not 16 bytes");
 	}
@@ -593,8 +594,8 @@ api_push_send(struct http_request *req)
 			continue;
 		tg = &s->targets[s->ntargets];
 		tg->endpoint = strdup(ep);
-		tg->p256dh = wp_unb64url(k, &len);
-		tg->auth = wp_unb64url(a, &len);
+		tg->p256dh = webpush_unb64url(k, &len);
+		tg->auth = webpush_unb64url(a, &len);
 		if (tg->endpoint == NULL || tg->p256dh == NULL ||
 		    tg->auth == NULL) {
 			free(tg->endpoint);

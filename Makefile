@@ -6,7 +6,9 @@
 # Build products go to obj/, mirroring the tree (share/mk/arcana.mk).
 # cblink (libcblink, cblink-gen, cblink.mk) is the submodule cblink/,
 # checked out with git submodule update --init and built first, in its
-# own obj/; devel/libcbor is what it needs.  The console needs
+# own obj/; devel/libcbor is what it needs.  libwebpush (Web Push's
+# encryption and VAPID) is the submodule libwebpush/, built before the
+# console and linked into it.  The console needs
 # net/libwebsockets and emcc(1); see config.mk.sample to point at copies
 # not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only the
 # jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
@@ -39,6 +41,14 @@ SUBDIR.${MK_CONSOLE}+= www/arcana-ui \
 SUBDIR.${MK_TESTS}+= tests
 SUBDIR_DEPEND_usr.sbin/jailconf=	lib/libjailconf
 SUBDIR_DEPEND_usr.sbin/arcana-agent=	lib/libjailconf lib/libvarconf
+
+# libwebpush from the submodule, before the console, without its tests:
+# linked into the console in whole, it is not installed.
+.if ${MK_CONSOLE} != "no" && ${WEBPUSH_SUBMODULE} == "yes"
+webpush-build: .PHONY
+	@${MAKE} -C ${.CURDIR}/libwebpush WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes all
+all_subdir_www/arcana-console: webpush-build
+.endif
 
 .if ${CBLINK_SUBMODULE} == "yes"
 .for _d in ${SUBDIR} ${SUBDIR.yes}
@@ -204,8 +214,9 @@ check-root: .PHONY
 	    -k Kyuafile ${_ROOT_CASES} 2>&1 | ${_KYUA_OUT} || \
 	    { ${_KYUA_FAIL}; exit 1; }
 
-# Everything built is under obj/, cblink's under its own.
+# Everything built is under obj/, cblink's and libwebpush's under their
+# own.
 clean cleandir: .PHONY
-	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj
+	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj ${ARC_TOP}/libwebpush/obj
 
 .include <bsd.subdir.mk>

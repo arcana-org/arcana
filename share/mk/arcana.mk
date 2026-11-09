@@ -89,6 +89,28 @@ CBLINK_CFLAGS?=	-I${CBLINK_PREFIX}/include
 CBLINK_LIBS?=	-L${CBLINK_PREFIX}/lib -lcblink
 .endif
 
+# libwebpush(3): Web Push's encryption (RFC 8291) and VAPID tokens
+# (RFC 8292), for the console's notifications (push.c).  It comes with
+# the tree as the submodule libwebpush/: the top-level make builds it
+# first, in its own object directory, and the console links it in whole
+# (libwebpush_pic.a), so nothing of it is installed.  Without the
+# submodule an installed one is used, at WEBPUSH_PREFIX.
+.if !defined(WEBPUSH_PREFIX) && exists(${ARC_TOP}/libwebpush/webpush.h)
+WEBPUSH_SUBMODULE=	yes
+.if defined(MAKEOBJDIRPREFIX)
+WEBPUSH_OBJ?=	${MAKEOBJDIRPREFIX}${ARC_TOP}/libwebpush
+.else
+WEBPUSH_OBJ?=	${ARC_TOP}/libwebpush/obj
+.endif
+WEBPUSH_CFLAGS?=	-I${ARC_TOP}/libwebpush
+WEBPUSH_LIBS?=	${WEBPUSH_OBJ}/libwebpush_pic.a
+.else
+WEBPUSH_SUBMODULE=	no
+WEBPUSH_PREFIX?=	${LOCALBASE}
+WEBPUSH_CFLAGS?=	-I${WEBPUSH_PREFIX}/include
+WEBPUSH_LIBS?=	-L${WEBPUSH_PREFIX}/lib -lwebpush
+.endif
+
 # libwebsockets(3), the console's HTTP server (net/libwebsockets).
 LWS_CFLAGS?=	-I${LOCALBASE}/include
 LWS_LIBS?=	-L${LOCALBASE}/lib -lwebsockets

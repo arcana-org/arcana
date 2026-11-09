@@ -4,14 +4,12 @@ TESTSDIR=	${TESTSBASE}/arcana/console
 ATF_TESTS_C=	pwa_test \
 		console_test \
 		raft_test \
-		webpush_test \
 		yaml_test \
 		yxlate_test
 
 # The page's YANG-CBOR reader, for the pass-through's case.
 SRCS.console_test=	console_test.c harness.c ycbor.c
 SRCS.pwa_test=		pwa_test.c harness.c
-SRCS.webpush_test=	webpush_test.c webpush.c
 SRCS.raft_test=		raft_test.c craft.c
 # The panel's YAML, natively: base's libucl and libyaml.
 SRCS.yaml_test=		yaml_test.c yaml.c

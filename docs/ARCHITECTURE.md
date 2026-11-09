@@ -428,6 +428,7 @@ is not, and reconnects by itself.
 
 ```
 cblink/                 the transport, a submodule
+libwebpush/             Web Push encryption and VAPID, a submodule
 share/arcana/           the kept structures, the jobs, the cluster's family
 share/mk/               build settings shared by every Makefile
 share/yang/             the YANG modules and their SIDs

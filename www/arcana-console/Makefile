@@ -5,7 +5,7 @@ PROG=		arcana-console
 SRCS=		web.c keymgr.c routes.c api.c auth.c config.c hosts.c pki.c push.c servers.c settings.c troubleshoot.c \
 		stream.c watch.c tokens.c transfers.c workflows.c sdwan.c \
 		sdwan_edge.c \
-		store.c update.c webpush.c audit.c sen.c mail.c templates.c ldap.c labels.c notif.c prefixlists.c feeds.c users.c \
+		store.c update.c audit.c sen.c mail.c templates.c ldap.c labels.c notif.c prefixlists.c feeds.c users.c \
 		craft.c nodes.c ytrans.c yjsonin.c restconf.c rcstream.c idsfiles.c drift.c \
 		l3nm.c l3nm_mef.c l3nm_plan.c vn.c cyang.c \
 		ysid.c yxlate.c ycache.c sapnet.c \
@@ -30,12 +30,15 @@ ARC_YANG_CONSOLE=	yes
 .include "${.CURDIR}/../../share/mk/arcana.yang.mk"
 
 CFLAGS+=	-I${.CURDIR}/../../usr.sbin/arcana-agent/ira
-CFLAGS+=	${LWS_CFLAGS} ${UCL_CFLAGS} ${SSL_CFLAGS} \
+CFLAGS+=	${LWS_CFLAGS} ${UCL_CFLAGS} ${SSL_CFLAGS} ${WEBPUSH_CFLAGS} \
 		-DARCW_WEBROOT=\"${PREFIX}/www/arcana-console\" \
 		-DARCW_PLUGINS=\"${PREFIX}/share/arcana-console/plugins\" \
 		-DARCW_CONF=\"${PREFIX}/etc/arcana/web.conf\"
-LDADD+=		${LWS_LIBS} ${UCL_LIBS} ${SSL_LDFLAGS} -lssl -lcrypto -lfetch \
+LDADD+=		${LWS_LIBS} ${UCL_LIBS} ${WEBPUSH_LIBS} ${SSL_LDFLAGS} -lssl -lcrypto -lfetch \
 		-lcrypt -lutil -lm -lpthread -lz
+.if ${WEBPUSH_SUBMODULE} == "yes"
+DPADD+=		${WEBPUSH_LIBS}
+.endif
 
 # The configuration's sample and the rc.d(8) script.
 FILESGROUPS+=	CONF RC

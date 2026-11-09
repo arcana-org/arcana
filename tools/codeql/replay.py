@@ -28,7 +28,7 @@ with open(os.path.join(cap, "emcc-sysroot")) as f:
     emsysroot = root + f.read().strip()
 
 
-OBJS = ("/obj", "/cblink/obj")
+OBJS = ("/obj", "/cblink/obj", "/libwebpush/obj")
 
 
 def path(p):
