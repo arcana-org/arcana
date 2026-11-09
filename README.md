@@ -22,10 +22,9 @@ own: <https://spmzt.github.io/arcana-docs/> (its source is
 | `usr.sbin/arcana-agent` | The daemon on each host: libjail(3), libprocstat(3), jail(8), served over cblink with mutual TLS. The only privileged part. |
 | `www/arcana-console` | The console: its own HTTP server on libwebsockets, WebAuthn login (libcrypto), the server list, and RESTCONF (RFC 8040), the console's own data and each host's through its fleet mount. |
 | `www/arcana-ui` | The PWA: C compiled with Emscripten, base libucl for JSON, installable and usable offline as a shell. |
-| `usr.sbin/jailconf` | `jailconf(8)`: change one value of a jail parameter in `jail.conf` in place, like `sysrc(8)` for `rc.conf`. |
+| `jailconf` | The submodule [jailconf](https://github.com/spmzt/jailconf), its own repository: `jailconf(8)`, which changes one value of a jail parameter in `jail.conf` in place, like `sysrc(8)` for `rc.conf`, and libjailconf, the in-place editor behind it and the agent's persistent jail changes. |
 | `usr.sbin/arcanactl` | `arcanactl(8)`: talk to an arcana-agent from a shell, with libxo(3) output. |
 | `usr.sbin/arcana-enrol` | `arcana-enrol(8)`: join a host to the console with a one-time token; it gets its certificate from the console's CA. |
-| `lib/libjailconf` | The in-place editor behind both. |
 | `share/yang` | The contract between arcana-agent and its clients: its YANG models, the standard ones and Arcana's, with their SIDs, on cblink's YANG family. |
 | `share/arcana/arcana.yaml` | What the programs keep for their own use (a jail, a service, a job and its change), no family; `share/arcana/wire.awk` writes its structures' module and header. |
 
@@ -66,7 +65,9 @@ What it needs:
   build dependency only). [cblink](https://github.com/spmzt/cblink) is
   the submodule `cblink/`, built by `make` first and installed with the
   rest; a tree without it (a release tarball, the port) uses an
-  installed `devel/cblink`;
+  installed `devel/cblink`. jailconf is the submodule `jailconf/`, built
+  by `make` before the agent, which links its library, and needing
+  nothing beyond base;
 - for the console as well: `devel/emscripten` for the page, and
   `net/libwebsockets` for its HTTP server (`config.mk.sample` says how
   to use a copy elsewhere);

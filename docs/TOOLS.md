@@ -143,7 +143,7 @@ usage.
 Adds or removes one value of one jail's parameter in `jail.conf`, in
 place, leaving every other byte as it was: what `sysrc(8)` is for
 `rc.conf`. `arcana-agent` uses the same library for persistent address
-changes.
+changes. It is its own repository, the submodule `jailconf/`.
 
 ```sh
 jailconf web ip4.addr+=10.0.0.12        # add

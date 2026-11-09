@@ -429,12 +429,11 @@ is not, and reconnects by itself.
 ```
 cblink/                 the transport, a submodule
 libwebpush/             Web Push encryption and VAPID, a submodule
+jailconf/               jailconf(8) and libjailconf, in-place jail.conf editing, a submodule
 share/arcana/           the kept structures, the jobs, the cluster's family
 share/mk/               build settings shared by every Makefile
 share/yang/             the YANG modules and their SIDs
-lib/libjailconf/        in-place jail.conf editing
 lib/libvarconf/         in-place rc.conf, loader.conf, sysctl.conf editing
-usr.sbin/jailconf/      jailconf(8)
 usr.sbin/arcana-agent/  arcana-agent(8)
 usr.sbin/arcanactl/     arcanactl(8)
 usr.sbin/arcana-enrol/  arcana-enrol(8)
@@ -446,11 +445,10 @@ tests/                  the top of the installed test suite
 
 Each directory has a `tests/` with atf-c or atf-sh tests; `make check`
 runs them with kyua(1), and they install to `${TESTSBASE}/arcana`.
+The submodules' suites (cblink's, jailconf's) are their repositories'.
 
 | Suite | Kind | Covers |
 |---|---|---|
-| `libjailconf` | atf-c | edits, quoting, inherited values, includes, diff, atomic writes |
-| `jailconf` | atf-sh | the command line, dry runs, errors |
 | `arcana-agent` | atf-sh | listing through jail(8) -e, actions and address changes with a stand-in jail(8), traces, mutual TLS; as root, a real throwaway jail, live addresses and alias cleanup |
 | `console` | atf-c | WebAuthn as an authenticator would do it (ES256, Ed25519, wrong origin, RP, challenge, signature, counter), CSRF, servers, jails through arcana-agent over a socket and over mutual TLS |
 | `console/pwa` | atf-c | the PWA in Chromium with a virtual authenticator: enrolment, an action, the workflow and raw output, an address preview, login, offline reload |

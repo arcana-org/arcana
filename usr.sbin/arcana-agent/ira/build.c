@@ -672,18 +672,25 @@ agent_build(struct work *w, const char *source, const char *ref,
 			return (0);
 		}
 	}
-	/* The libraries the agent links, then the agent; no tests. */
+	/* jailconf, the submodule: libjailconf, which the agent links. */
 	n = 0;
 	argv[n++] = opts.make_bin;
 	argv[n++] = "-C";
-	argv[n++] = wfmt(w, "%s/lib/libjailconf", src);
-	argv[n++] = "MK_TESTS=no";
+	argv[n++] = src;
+	argv[n++] = "jailconf-build";
 	argv[n] = NULL;
 	if (run_as(w, unpriv, argv, &res) != 0) {
-		rsp->error = wtext(w, exec_error(w, &res, "make libjailconf"));
+		rsp->error = wtext(w, exec_error(w, &res,
+		    "make jailconf-build"));
 		return (0);
 	}
-	argv[2] = wfmt(w, "%s/lib/libvarconf", src);
+	/* The library the agent links, then the agent; no tests. */
+	n = 0;
+	argv[n++] = opts.make_bin;
+	argv[n++] = "-C";
+	argv[n++] = wfmt(w, "%s/lib/libvarconf", src);
+	argv[n++] = "MK_TESTS=no";
+	argv[n] = NULL;
 	if (run_as(w, unpriv, argv, &res) != 0) {
 		rsp->error = wtext(w, exec_error(w, &res, "make libvarconf"));
 		return (0);

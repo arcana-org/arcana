@@ -4,3 +4,6 @@
 [submodule "libwebpush"]
 	path = libwebpush
 	url = ../libwebpush.git
+[submodule "jailconf"]
+	path = jailconf
+	url = ../jailconf.git

@@ -9521,7 +9521,7 @@ fi
 for a; do last=\$a; done
 case " \$* " in *" --branch chatty "*) jot 400 | sed 's/^/remote: line /' >&2; exit 128 ;; esac
 case " \$* " in *" --branch nope "*) printf "Cloning into 'x'...\nfatal: no such branch\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n" >&2; exit 128 ;; esac
-mkdir -p "\$last/lib/libjailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent" "\$last/cblink/share/cblink"
+mkdir -p "\$last/jailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent" "\$last/cblink/share/cblink"
 touch "\$last/cblink/share/cblink/cblink.mk"
 echo "\$*" > "\$last/CLONED"
 EOS
@@ -9559,11 +9559,13 @@ EOS
 	    "$JGC" -t -c "$SOCK" agent-build -o built https://example.org/arcana.git main
 	atf_check cmp -s "$JGD" built
 	atf_check test -x built
-	# cblink (the submodule: cblink-gen makes arcana.h) and the
-	# libraries the agent links, before it, in that order.
-	atf_check -o inline:'cblink-build\nlibjailconf\nlibvarconf\narcana-agent\n' \
+	# cblink (the submodule: cblink-gen makes arcana.h), jailconf (the
+	# submodule: libjailconf) and the library the agent links, before
+	# it, in that order.
+	atf_check -o inline:'cblink-build\njailconf-build\nlibvarconf\narcana-agent\n' \
 	    sh -c "grep -v -e '^HOME=' -e '-V .OBJDIR' made | sed -n \
-	    -e 's,.* cblink-build\$,cblink-build,p' -e 's,.*/lib/\\(lib[a-z]*\\) .*,\\1,p' \
+	    -e 's,.* cblink-build\$,cblink-build,p' -e 's,.* jailconf-build\$,jailconf-build,p' \
+	    -e 's,.*/lib/\\(lib[a-z]*\\) .*,\\1,p' \
 	    -e 's,.*/usr.sbin/arcana-agent .*,arcana-agent,p'"
 	# Sent back compressed: past what a frame carries as it is.
 	dd if=/dev/zero of=zeros bs=1m count=7 2>/dev/null

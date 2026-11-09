@@ -50,11 +50,11 @@ yjobs_spec.c: ${ARC_TOP}/share/arcana/jobs.awk ${ARC_TOP}/share/arcana/jobs.yaml
 	mv ${.TARGET}.tmp ${.TARGET}
 
 CFLAGS+=	${JAILCONF_CFLAGS} ${UCL_CFLAGS}
-LDADD+=		${.OBJDIR}/../../lib/libjailconf/libjailconf_pie.a
+LDADD+=		${JAILCONF_LIBS}
 LDADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 DPADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 CFLAGS+=	-I${.CURDIR}/../../lib/libvarconf
-DPADD+=		${.OBJDIR}/../../lib/libjailconf/libjailconf_pie.a
+DPADD+=		${JAILCONF_LIBS}
 LDADD+=		-lfetch -ljail -lgeom -lmemstat -lprocstat -ldevstat -lnv -lutil -lpthread -lcrypto -lz ${UCL_LIBS}
 # Every symbol bound when the agent starts (ld(1) -z now): with a
 # libcblink older than the agent, it stops there, rtld(1) saying what

@@ -18,6 +18,9 @@ USES=		uidfix
 USE_GITHUB=	yes
 GH_ACCOUNT=	spmzt
 GH_PROJECT=	arcana
+# jailconf(8) and libjailconf, the submodule jailconf/: the commit the
+# tree's submodule is at, which a GitHub tarball does not carry.
+GH_TUPLE=	spmzt:jailconf:e5ff11dc3551f462d5814e26e7e224ed7d648438:jailconf/jailconf
 
 MAKE_ARGS=	LOCALBASE=${LOCALBASE} \
 		PREFIX=${PREFIX} \

@@ -517,7 +517,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "done; mkdir -p \"$last\"; echo bare > \"$last/HEAD\"; exit 0; }\n"
 	    "[ \"$1\" = clone ] || exit 2\n"
 	    "for a; do last=$a; done\n"
-	    "mkdir -p \"$last/lib/libjailconf\" \"$last/usr.sbin/arcana-agent\"\n");
+	    "mkdir -p \"$last/jailconf\" \"$last/usr.sbin/arcana-agent\"\n");
 	ATF_REQUIRE(chmod("fake-git", 0755) == 0);
 	/* traceroute(8): the host itself first, then a hop that answers
 	 * every other round, then the address. */

@@ -6,12 +6,13 @@
 # Build products go to obj/, mirroring the tree (share/mk/arcana.mk).
 # cblink (libcblink, cblink-gen, cblink.mk) is the submodule cblink/,
 # checked out with git submodule update --init and built first, in its
-# own obj/; devel/libcbor is what it needs.  libwebpush (Web Push's
-# encryption and VAPID) is the submodule libwebpush/, built before the
-# console and linked into it.  The console needs
-# net/libwebsockets and emcc(1); see config.mk.sample to point at copies
-# not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only the
-# jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
+# own obj/; devel/libcbor is what it needs.  jailconf (libjailconf,
+# jailconf(8)) is the submodule jailconf/, built the same way.
+# libwebpush (Web Push's encryption and VAPID) is the submodule
+# libwebpush/, built before the console and linked into it.  The console
+# needs net/libwebsockets and emcc(1); see config.mk.sample to point at
+# copies not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only
+# the jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
 # emdawnwebgpu package, which "make depends" fetches, not the build.  "make check" runs the tests in the build tree: those
 # that need root are skipped unless it runs as root, the browser test
 # unless Chromium and chromedriver are installed.
@@ -30,17 +31,24 @@ beforeinstall: .PHONY
 	@${_CBLINK_MAKE} install DESTDIR=${DESTDIR} PREFIX=${PREFIX}
 .endif
 
-SUBDIR=		lib/libjailconf \
-		lib/libvarconf \
-		usr.sbin/jailconf \
+# jailconf from the submodule, before the agent, which links
+# libjailconf, without its tests; make install installs jailconf(8).
+# It needs nothing beyond base, so not _deps-build either.
+_JAILCONF_MAKE=	${MAKE} -C ${.CURDIR}/jailconf WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes
+jailconf-build: .PHONY
+	@${_JAILCONF_MAKE} all
+jailconf-install: .PHONY
+	@${_JAILCONF_MAKE} install DESTDIR=${DESTDIR} PREFIX=${PREFIX}
+beforeinstall: jailconf-install
+
+SUBDIR=		lib/libvarconf \
 		usr.sbin/arcana-enrol \
 		usr.sbin/arcana-agent \
 		usr.sbin/arcanactl
 SUBDIR.${MK_CONSOLE}+= www/arcana-ui \
 		www/arcana-console
 SUBDIR.${MK_TESTS}+= tests
-SUBDIR_DEPEND_usr.sbin/jailconf=	lib/libjailconf
-SUBDIR_DEPEND_usr.sbin/arcana-agent=	lib/libjailconf lib/libvarconf
+SUBDIR_DEPEND_usr.sbin/arcana-agent=	lib/libvarconf
 
 # libwebpush from the submodule, before the console, without its tests:
 # linked into the console in whole, it is not installed.
@@ -50,6 +58,9 @@ webpush-build: .PHONY
 all_subdir_www/arcana-console: webpush-build
 .endif
 
+.for _d in ${SUBDIR} ${SUBDIR.yes}
+all_subdir_${_d}: jailconf-build
+.endfor
 .if ${CBLINK_SUBMODULE} == "yes"
 .for _d in ${SUBDIR} ${SUBDIR.yes}
 all_subdir_${_d}: cblink-build
@@ -118,9 +129,7 @@ TESTDIRS=
 TESTDIRS+=	www/arcana-console/tests
 .endif
 TESTDIRS+=	usr.sbin/arcana-agent/tests \
-		lib/libjailconf/tests \
-		lib/libvarconf/tests \
-		usr.sbin/jailconf/tests
+		lib/libvarconf/tests
 
 # Every suite under one kyua, its Kyuafile in obj/ including theirs:
 # CHECK_PARALLEL cases side by side, each with a directory and sockets
@@ -214,9 +223,9 @@ check-root: .PHONY
 	    -k Kyuafile ${_ROOT_CASES} 2>&1 | ${_KYUA_OUT} || \
 	    { ${_KYUA_FAIL}; exit 1; }
 
-# Everything built is under obj/, cblink's and libwebpush's under their
-# own.
+# Everything built is under obj/, each submodule's under its own.
 clean cleandir: .PHONY
-	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj ${ARC_TOP}/libwebpush/obj
+	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj ${ARC_TOP}/jailconf/obj \
+	    ${ARC_TOP}/libwebpush/obj
 
 .include <bsd.subdir.mk>

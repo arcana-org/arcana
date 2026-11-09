@@ -145,8 +145,21 @@ UCL_LIBS=	-lprivateucl
 # The family spec shared by arcana-agent, arcanactl and the web backend.
 ARC_SPEC=	${ARC_TOP}/share/arcana/arcana.yaml
 
-# libjailconf, built in lib/libjailconf.
-JAILCONF_CFLAGS=	-I${ARC_TOP}/lib/libjailconf
+# jailconf (libjailconf, jailconf(8)): the submodule jailconf/, its own
+# repository.  The top-level make builds it first, in its own object
+# directory, without its tests; the agent links libjailconf from there
+# (an internal library: nothing of it is installed), make install
+# installs jailconf(8).  The port fetches the same tree into jailconf/.
+.if !exists(${ARC_TOP}/jailconf/lib/libjailconf/jailconf.h)
+.error jailconf/ is empty: git submodule update --init
+.endif
+.if defined(MAKEOBJDIRPREFIX)
+JAILCONF_OBJ?=	${MAKEOBJDIRPREFIX}${ARC_TOP}/jailconf
+.else
+JAILCONF_OBJ?=	${ARC_TOP}/jailconf/obj
+.endif
+JAILCONF_CFLAGS=	-I${ARC_TOP}/jailconf/lib/libjailconf
+JAILCONF_LIBS=	${JAILCONF_OBJ}/lib/libjailconf/libjailconf_pie.a
 
 # No mtree(8) hierarchy outside the source tree: make the directories
 # before installing.

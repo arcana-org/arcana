@@ -3,7 +3,7 @@
 .\"
 .\" Copyright (c) 2026 Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>
 .\"
-.Dd November 4, 2026
+.Dd November 10, 2026
 .Dt ARCANA-AGENT 8
 .Os
 .Sh NAME
@@ -1295,9 +1295,13 @@ is set, and
 .Xr arcanactl 8
 with
 .Cm agent-build .
-The repository is cloned afresh, without history, into the build
-directory, and
-.Pa lib/libjailconf
+The repository is cloned afresh, without history, with its submodules,
+into the build directory, and
+.Pa cblink
+and
+.Pa jailconf ,
+the submodules,
+.Pa lib/libvarconf
 and
 .Pa usr.sbin/arcana-agent
 are built there with
