@@ -11,10 +11,11 @@
 # libipfeeds, the threat feeds' library, is the submodule ipfeeds/,
 # built first the same way and linked in.  libwebpush (Web Push's
 # encryption and VAPID) is the submodule libwebpush/, built before the
-# console and linked into it.  The console needs net/libwebsockets and
-# emcc(1); see config.mk.sample to point at copies not installed in
-# ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only the jail host's
-# programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
+# console and linked into it.  stamp (stampd, stamp, libstamp) is the
+# submodule stamp/, built and installed with the rest.  The console
+# needs net/libwebsockets and emcc(1); see config.mk.sample to point at
+# copies not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only
+# the jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
 # emdawnwebgpu package, which "make depends" fetches, not the build.  "make check" runs the tests in the build tree: those
 # that need root are skipped unless it runs as root, the browser test
 # unless Chromium and chromedriver are installed.
@@ -48,6 +49,20 @@ beforeinstall: jailconf-install
 .if ${IPFEEDS_SUBMODULE} == "yes"
 ipfeeds-build: .PHONY
 	@${MAKE} -C ${.CURDIR}/ipfeeds WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes all
+.endif
+
+# stamp from the submodule stamp/: stampd(8), the STAMP reflector the
+# agent runs by rc.conf in the FIBs its services use, stamp(1) and
+# libstamp; built without its tests (its own make check runs them),
+# installed with the rest.  The agent's root case answers with them.
+.if exists(${.CURDIR}/stamp/Makefile)
+_STAMP_MAKE=	${MAKE} -C ${.CURDIR}/stamp WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes
+stamp-build: .PHONY
+	@${_STAMP_MAKE} all
+stamp-install: .PHONY
+	@${_STAMP_MAKE} install DESTDIR=${DESTDIR} PREFIX=${PREFIX}
+beforeinstall: stamp-install
+all_subdir_usr.sbin/arcana-agent: stamp-build
 .endif
 
 SUBDIR=		lib/libvarconf \
@@ -241,6 +256,6 @@ check-root: .PHONY
 # Everything built is under obj/, each submodule's under its own.
 clean cleandir: .PHONY
 	rm -rf ${ARC_TOP}/obj ${ARC_TOP}/cblink/obj ${ARC_TOP}/jailconf/obj \
-	    ${ARC_TOP}/ipfeeds/obj ${ARC_TOP}/libwebpush/obj
+	    ${ARC_TOP}/ipfeeds/obj ${ARC_TOP}/libwebpush/obj ${ARC_TOP}/stamp/obj
 
 .include <bsd.subdir.mk>

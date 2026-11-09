@@ -2761,6 +2761,44 @@ whose first part is served.
   unauthenticated 44-byte packets, T2/T3 by SO_TIMESTAMP and
   clock_gettime; check: a TWAMP Light sender gets replies.
 - 5.1.2 A: stateful reflector mode; SSID; check: sequence counters.
+  Done (5.1.1 and 5.1.2) in a repository of its own, `stamp`, the
+  submodule `stamp/` (built and installed by the top-level make and
+  the port, as cblink is): libstamp (the unauthenticated packets with
+  RFC 8972's SSID, room for the authenticated mode and a TLV reader;
+  NTP and PTP timestamps; the Error Estimate from `ntp_gettime`; the
+  reflector's core: stateless or stateful sessions keyed by FIB,
+  addresses, ports and SSID, 4096 at most, 300 s idle; per-source
+  token buckets in a fixed hashed table with a random secret and a
+  global cap; replies only to 44 octets or more, as long as the
+  request, never from port 0 or 862), `stampd(8)` (UDP 862 in the
+  FIB it is started in, T2 by SO_TS_REALTIME, T3 by clock_gettime,
+  the reply from the address the request came to; root given up once
+  bound, chroot /var/empty and `_stampd`; SIGHUP rereads
+  `stampd.conf`; syslog) and `stamp(1)`, a sender for tests and by
+  hand.  One stampd a FIB, the base's way: its rc script runs one for
+  each of `stampd_fibs` under rc.subr's `stampd_fib` (setfib -F), its
+  reload starting the new, stopping the gone and HUPing the rest, FIB
+  0's alone with `net.inet.udp.bind_all_fibs` 1.  The agent reflects
+  nothing (agent 0.262.0, gula/stampd.c): when the FIBs of its probe
+  targets and steered routes change (probe_fibs, sdwan_fibs), it
+  writes `stampd_enable` and `stampd_fibs` through its rc.conf writer
+  (Arcana's file or the admin's, by config-files) and runs `service
+  stampd reload`; with none, it takes out what it set and stops
+  stampd; a refusal (rc-conf-files, the admin's value) is logged once
+  and retried.  probe.c's targets_swap no longer carries a kept
+  target's emptied slot over as a ghost (no id, FIB 0, a "no answer"
+  fault).  Checked: stamp's own suite (libstamp_test: packets,
+  timestamps, field echo, the 44-octet rule, ports, stateful
+  counters, the session table, rate limits; stampd_test: stateless
+  and stateful over IPv4 and IPv6, the rates, SIGHUP, FIB 1, the rc
+  script's instances and reload, the privileges);
+  agent_test:stampd_conf and stampd_refused (the settings written and
+  taken out, reload and onestop, nothing when unchanged or across a
+  restart, rc-conf-files and the admin's own value refused, not
+  installed said) and agent_root_test:stampd_fib (the agent, the real
+  rc script and stampd: answered in FIB 1 from FIB 1's address as
+  nobody, FIB 0 not, stopped when the target goes).  Jail edges have
+  none yet (an agent in a vnet jail sets its own).
 - 5.1.3 A: STAMP sender replacing the ICMP engine's scheduling for
   Arcana targets, RTT with reflector time removed, directional loss;
   check: dummynet `plr` seen per direction.

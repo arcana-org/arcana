@@ -7367,6 +7367,138 @@ sdwan_probes_cleanup()
 	stop_daemon
 }
 
+# stampd's rc script, as the stamp package installs it, and a root
+# whose rc.conf reads Arcana's file (accepted rc-conf-files).
+stampd_root()
+{
+	mkdir -p root/etc/defaults root/usr/local/etc
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
+	    > root/etc/rc.conf
+	DAEMON_ARGS="--root $(pwd)/root -d"
+}
+
+stampd_script()
+{
+	mkdir -p local/rc.d
+	printf '#!/bin/sh\n' > local/rc.d/stampd
+	chmod +x local/rc.d/stampd
+}
+
+atf_test_case stampd_conf cleanup
+stampd_conf_head()
+{
+	atf_set "descr" "stampd answers in the FIBs the host's services use:" \
+	    "stampd_enable and stampd_fibs in Arcana's rc.conf file, then" \
+	    "service stampd reload, as the probe targets and the steered" \
+	    "routes come and go; none left, taken out and stopped"
+	atf_set "timeout" "120"
+}
+stampd_conf_body()
+{
+	stampd_root
+	stampd_script
+	start_daemon
+	A=root/usr/local/etc/rc.conf.d/arcana
+	# No service: nothing written, nothing told.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	sleep 1
+	atf_check -s exit:1 test -e $A
+	touch service.log
+	atf_check -s exit:1 grep -q stampd service.log
+	# A tunnel probed in FIB 1.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":1}]'
+	wait_match '^stampd_fibs="1"$' cat $A || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'^stampd_enable="YES"$' cat $A
+	wait_match '^stampd reload$' cat service.log ||
+	    atf_fail "not reloaded: $(cat service.log)"
+	atf_check -o match:'stampd: answering in FIB 1 \(stampd_fibs in /usr/local/etc/rc.conf.d/arcana\)' \
+	    cat daemon.out
+	# Another in FIB 0, the first kept: both, once each.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":1},{"id":"t0","address":"127.0.0.1"},{"id":"t2","address":"::1","fib":1}]'
+	wait_match '^stampd_fibs="0 1"$' cat $A || atf_fail "$(cat $A)"
+	wait_match 'answering in FIBs 0 1' cat daemon.out ||
+	    atf_fail "$(cat daemon.out)"
+	atf_check -o inline:'2\n' grep -c '^stampd reload$' service.log
+	# The same FIBs again: nothing written, nothing told.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t3","address":"127.0.0.1","fib":1},{"id":"t0","address":"127.0.0.1"}]'
+	sleep 2
+	atf_check -o inline:'2\n' grep -c '^stampd reload$' service.log
+	# Restarted: the targets back, rc.conf as they say, nothing told.
+	stop_daemon
+	start_daemon
+	sleep 2
+	atf_check -o inline:'2\n' grep -c '^stampd reload$' service.log
+	# None: what Arcana set taken out, stampd stopped.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	wait_match '^stampd onestop$' cat service.log ||
+	    atf_fail "not stopped: $(cat service.log)"
+	atf_check -o not-match:'stampd' cat $A
+	atf_check -o match:'stampd: no service uses a FIB: stampd_enable and stampd_fibs taken out of /usr/local/etc/rc.conf.d/arcana, stampd stopped' \
+	    cat daemon.out
+}
+stampd_conf_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case stampd_refused cleanup
+stampd_refused_head()
+{
+	atf_set "descr" "stampd's settings follow rc.conf's rules: refused," \
+	    "said once, while rc_conf_files does not name Arcana's file," \
+	    "written once it does; the admin's own stampd_fibs never" \
+	    "overwritten; nothing while stampd is not installed"
+	atf_set "timeout" "180"
+}
+stampd_refused_body()
+{
+	stampd_root
+	printf 'sshd_enable="YES"\n' > root/etc/rc.conf
+	start_daemon
+	A=root/usr/local/etc/rc.conf.d/arcana
+	# Not installed: said, nothing written.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":1}]'
+	wait_match 'stampd: not installed \(no rc script in .*\): FIB 1 not reflected' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -s exit:1 test -e $A
+	# Installed, its file not read by rc(8): refused, said once.
+	stampd_script
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":2}]'
+	wait_match 'stampd: not set to answer in FIB 2: Arcana keeps what it writes of rc.conf in /usr/local/etc/rc.conf.d/arcana' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -s exit:1 test -e $A
+	touch service.log
+	atf_check -s exit:1 grep -q '^stampd ' service.log
+	# Accepted (the admin's rc_conf_files): written at the next look.
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\nstampd_fibs="5"\n' \
+	    > root/etc/rc.conf
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":3}]'
+	# The admin's stampd_fibs: a conflict, theirs kept.
+	wait_match 'stampd: not set to answer in FIB 3: .*stampd_fibs' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'^stampd_fibs="5"$' cat root/etc/rc.conf
+	atf_check -s exit:1 grep -q '^stampd reload' service.log
+	# Theirs gone: Arcana's written.
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
+	    > root/etc/rc.conf
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":4}]'
+	wait_match '^stampd_fibs="4"$' cat $A || atf_fail "$(cat daemon.out)"
+	wait_match '^stampd reload$' cat service.log ||
+	    atf_fail "not reloaded: $(cat service.log)"
+}
+stampd_refused_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sdwan_rules cleanup
 sdwan_rules_head()
 {
@@ -15134,6 +15266,8 @@ atf_init_test_cases()
 	atf_add_test_case observe_limits
 	atf_add_test_case observe_history
 	atf_add_test_case sdwan_probes
+	atf_add_test_case stampd_conf
+	atf_add_test_case stampd_refused
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog

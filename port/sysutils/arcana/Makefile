@@ -18,9 +18,21 @@ USES=		uidfix
 USE_GITHUB=	yes
 GH_ACCOUNT=	spmzt
 GH_PROJECT=	arcana
-# jailconf(8) and libjailconf, the submodule jailconf/: the commit the
-# tree's submodule is at, which a GitHub tarball does not carry.
-GH_TUPLE=	spmzt:jailconf:e5ff11dc3551f462d5814e26e7e224ed7d648438:jailconf/jailconf
+# The submodules, at the commits the tree's are at, which a GitHub
+# tarball does not carry: jailconf(8) and libjailconf; libipfeeds and
+# libwebpush, linked in; stamp: stampd(8), the STAMP reflector the agent
+# runs in the FIBs of its services, built and installed with the rest.
+GH_TUPLE=	spmzt:jailconf:e5ff11dc3551f462d5814e26e7e224ed7d648438:jailconf/jailconf \
+		spmzt:ipfeeds:e384c0bd4c33152ac20b288c840076dee348bd9e:ipfeeds/ipfeeds \
+		spmzt:libwebpush:e23bc37c0ad6d535b5be9ddb36d73e3d816e561c:libwebpush/libwebpush \
+		spmzt:stamp:19350fdad83d1bc28433f3a5bdba92170a25ae56:stamp/stamp
+
+# stampd gives up root to its own user once bound; not in the ports'
+# UIDs and GIDs yet, so in this port's.
+USERS=		_stampd
+GROUPS=		_stampd
+UID_FILES=	${PORTSDIR}/UIDs ${FILESDIR}/UIDs
+GID_FILES=	${PORTSDIR}/GIDs ${FILESDIR}/GIDs
 
 MAKE_ARGS=	LOCALBASE=${LOCALBASE} \
 		PREFIX=${PREFIX} \

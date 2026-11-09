@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.261.0"
+#define	ARCANA_AGENT_VERSION	"0.262.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -898,6 +898,11 @@ int		 probe_state_of(const char *, const char *);
 bool		 probe_sample_of(const char *, const char *, double *, double *,
 		    double *);
 void		 probe_link(const char *, const char *, bool);
+int		 probe_fibs(int *, int);
+/* gula/stampd.c: stampd(8), the STAMP reflector of the submodule stamp/,
+ * set in rc.conf to answer in each FIB the host's services use. */
+void		 stampd_start(void);
+void		 stampd_nudge(void);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);
@@ -921,6 +926,7 @@ struct sdwan_pin {
 	const char	*candidate;
 };
 char		*sdwan_steer_json(void);
+int		 sdwan_fibs(int *, int);
 char		*sdwan_pins_json(void);
 int		 sdwan_pin_check(struct work *, const char *,
 		    const struct sdwan_pin *, const char **);

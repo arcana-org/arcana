@@ -2146,6 +2146,123 @@ monitors_fib_cleanup()
 	cleanup
 }
 
+# stampd(8), stamp(1) and stampd's rc script, of the submodule stamp/:
+# its objects beside Arcana's (MAKEOBJDIRPREFIX) or in its own obj/,
+# else installed.
+stamp_programs()
+{
+	local s=$(atf_get_srcdir) d
+
+	SD= ; SS= ; SRC=
+	for d in "$s/../../../stamp" "$s/../../../../stamp/obj"; do
+		[ -x "$d/usr.sbin/stampd/stampd" ] || continue
+		SD=$d/usr.sbin/stampd/stampd
+		SS=$d/usr.bin/stamp/stamp
+		SRC=$d/etc/rc.d/stampd
+		break
+	done
+	if [ -z "$SD" ]; then
+		SD=/usr/local/sbin/stampd
+		SS=/usr/local/bin/stamp
+		SRC=/usr/local/etc/rc.d/stampd
+	fi
+	[ -x "$SD" -a -x "$SS" -a -f "$SRC" ] ||
+	    atf_skip "no stampd, stamp and rc script (the submodule stamp/)"
+}
+
+atf_test_case stampd_fib cleanup
+stampd_fib_head()
+{
+	atf_set "descr" "A probe target in FIB 1: the agent sets stampd_fibs" \
+	    "and reloads stampd, whose rc script starts one in FIB 1" \
+	    "(stampd_fib) that answers there from the address the packet" \
+	    "came to; FIB 0 not answered; the target gone, stopped"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stampd_fib_body()
+{
+	local i P
+
+	[ "$(sysctl -n net.fibs)" -ge 2 ] || atf_skip "one FIB alone here"
+	[ "$(sysctl -n net.inet.udp.bind_all_fibs)" = 0 ] ||
+	    atf_skip "net.inet.udp.bind_all_fibs is 1: one socket for all"
+	ifconfig lo58 >/dev/null 2>&1 && atf_skip "lo58 is there already"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check -o ignore ifconfig lo58 create
+	atf_check ifconfig lo58 fib 1
+	atf_check ifconfig lo58 inet 192.0.2.59/32
+	# A root whose rc.conf reads Arcana's file; stampd's script in the
+	# rc.d directory the agent looks in.
+	mkdir -p root/etc/defaults root/usr/local/etc rc.d
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
+	    > root/etc/rc.conf
+	cp "$SRC" rc.d/stampd
+	chmod +x rc.d/stampd
+	# service(8) as the host's would be for stampd: the script run on
+	# what the agent wrote, its port the case's, as nobody.
+	cat > fake-service <<EOS
+#!/bin/sh
+echo "\$*" >> $(pwd)/service.log
+[ "\$1" = stampd ] || exit 0
+stampd_enable=NO stampd_fibs=
+. $(pwd)/root/usr/local/etc/rc.conf.d/arcana 2>/dev/null
+exec env stampd_enable="\$stampd_enable" stampd_fibs="\$stampd_fibs" \\
+    stampd_program="$SD" stampd_flags="-p $P -u nobody" \\
+    stampd_rundir="$(pwd)/run" /bin/sh "$SRC" "\$2"
+EOS
+	chmod +x fake-service
+	DAEMON_ARGS="--root $(pwd)/root -R $(pwd)/rc.d -s $(pwd)/fake-service -d" \
+	    start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"192.0.2.59","fib":1}]'
+	for i in $(seq 1 100); do
+		[ -f run/fib1.pid ] && break
+		sleep 0.1
+	done
+	atf_check -o match:'^stampd_fibs="1"$' \
+	    cat root/usr/local/etc/rc.conf.d/arcana
+	atf_check -o match:'^stampd reload$' cat service.log
+	for i in $(seq 1 50); do
+		setfib 1 "$SS" -p $P -W 0.2 192.0.2.59 | grep -q '^len=44' &&
+		    break
+	done
+	atf_check -o match:"^len=44 from=192\.0\.2\.59 seq=0 ssid=3 sseq=10 ttl=77 rttl=255 echo=ok order=ok clock=ok serr=ok mbz=ok pad=ok " \
+	    setfib 1 "$SS" -p $P -q 10 -s 3 -t 77 -S 40862 192.0.2.59
+	atf_check -o match:'^len=44 .* seq=1 ssid=3 sseq=11 ' \
+	    setfib 1 "$SS" -p $P -q 11 -s 3 -S 40862 192.0.2.59
+	atf_check -o inline:'nobody\n' ps -o user= -p "$(cat run/fib1.pid)"
+	# FIB 0: no service there, nothing listening.
+	atf_check -s exit:2 -o inline:'none\n' "$SS" -p $P -W 0.5 127.0.0.1
+	# The target gone: Arcana's settings taken out, stampd stopped.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	for i in $(seq 1 100); do
+		grep -q '^stampd onestop$' service.log && break
+		sleep 0.1
+	done
+	atf_check -o not-match:'stampd' cat root/usr/local/etc/rc.conf.d/arcana
+	# service(8) logged as it starts: stopped a moment later.
+	for i in $(seq 1 50); do
+		[ -f run/fib1.pid ] && pkill -0 -F run/fib1.pid 2>/dev/null ||
+		    break
+		sleep 0.1
+	done
+	atf_check -s exit:2 -o inline:'none\n' \
+	    setfib 1 "$SS" -p $P -W 0.5 192.0.2.59
+}
+stampd_fib_cleanup()
+{
+	local pf
+
+	for pf in run/fib*.pid; do
+		[ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null
+	done
+	ifconfig lo58 destroy 2>/dev/null
+	cleanup
+}
+
 atf_test_case monitors_qos cleanup
 monitors_qos_head()
 {
@@ -3718,6 +3835,7 @@ atf_init_test_cases()
 	atf_add_test_case jail_events_nested
 	atf_add_test_case monitors_probe
 	atf_add_test_case monitors_fib
+	atf_add_test_case stampd_fib
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake

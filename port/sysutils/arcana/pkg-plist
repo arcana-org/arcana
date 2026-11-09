@@ -2,6 +2,14 @@
 %%CONSOLE%%etc/rc.d/arcana_console
 etc/rc.d/arcana_agent
 etc/rc.d/arcana_relay
+etc/rc.d/stampd
+bin/stamp
+include/stamp.h
+lib/libstamp.a
+sbin/stampd
+share/man/man1/stamp.1.gz
+share/man/man3/libstamp.3.gz
+share/man/man8/stampd.8.gz
 %%CONSOLE%%sbin/arcana-console
 sbin/jailconf
 sbin/arcana-enrol

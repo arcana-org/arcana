@@ -974,10 +974,12 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 		t->next_send = now;
 		t->state = target_open(t) ? ST_UNKNOWN : ST_ERROR;
 	}
-	/* The other edges' and owners', moved over as they are. */
+	/* The other edges' and owners', moved over as they are; not those
+	 * kept above, emptied (their id ""), which would come back as a
+	 * target of no id nor address, in FIB 0, faulted for no answer. */
 	for (k = 0; k < nold; k++)
-		if (strcmp(old[k].jail, jail) != 0 || strcmp(old[k].owner,
-		    owner) != 0) {
+		if (old[k].id[0] != '\0' && (strcmp(old[k].jail, jail) != 0 ||
+		    strcmp(old[k].owner, owner) != 0)) {
 			new[n++] = old[k];
 			memset(&old[k], 0, sizeof(old[k]));
 			old[k].sock = -1;
@@ -988,6 +990,8 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 		target_free(&old[k]);
 	free(old);
 	pthread_mutex_unlock(&lock);
+	/* Their FIBs stampd's (gula/stampd.c). */
+	stampd_nudge();
 	return (true);
 }
 
@@ -1312,6 +1316,27 @@ probe_start(void)
 		(void)pthread_detach(tid);
 	else
 		logmsg(LOG_ERR, "sdwan probes: no thread: %s", strerror(errno));
+}
+
+/* The FIBs the host's targets are probed in, each once, into v (max
+ * of them): stampd answers there (gula/stampd.c). */
+int
+probe_fibs(int *v, int max)
+{
+	int	i, k, n;
+
+	n = 0;
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ntargets && n < max; i++) {
+		if (targets[i].jail[0] != '\0')
+			continue;
+		for (k = 0; k < n && v[k] != targets[i].fib; k++)
+			;
+		if (k == n)
+			v[n++] = targets[i].fib;
+	}
+	pthread_mutex_unlock(&lock);
+	return (n);
 }
 
 /* A target's state by its edge (jail, "" the host) and id; PROBE_NONE

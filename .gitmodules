@@ -10,3 +10,6 @@
 [submodule "ipfeeds"]
 	path = ipfeeds
 	url = ../ipfeeds.git
+[submodule "stamp"]
+	path = stamp
+	url = ../stamp.git

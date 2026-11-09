@@ -22,7 +22,7 @@ SRCS+=		build.c exec.c jail.c jails.c jailwatch.c jobs.c lifecycle.c jailmake.c 
 # Acedia: storage.  Avaritia: resources.  Gula: observation.
 SRCS+=		record.c \
 		pools.c storage.c zfskey.c xfer.c health.c resources.c stats.c trace.c procs.c log.c \
-		history.c events.c faults.c kmsg.c probe.c hostwatch.c crashes.c \
+		history.c events.c faults.c kmsg.c probe.c stampd.c hostwatch.c crashes.c \
 		ystorage.c yev.c yhist.c ylog.c ysyslog.c yprobe.c yprocs.c yalarms.c
 .PATH:		${.CURDIR}/superbia ${.CURDIR}/invidia ${.CURDIR}/ira \
 		${.CURDIR}/acedia ${.CURDIR}/avaritia ${.CURDIR}/gula \

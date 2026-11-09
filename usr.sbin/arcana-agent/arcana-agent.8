@@ -963,7 +963,23 @@ tunnel, the host's and each vnet jail edge's, set together an edge and
 a kind at a time, kept beside the history file for the next start
 .Pq Pa sdwan-probes.json , monitors.json , No and their Pa @ Ns Ar jail No files ;
 a monitor without an address, on the host, probes its interface's far
-end through the interface's FIB;
+end through the interface's FIB.
+The far end of a measurement is
+.Xr stampd 8 ,
+the STAMP reflector Arcana installs, one a FIB: the agent sets
+.Va stampd_enable
+and
+.Va stampd_fibs ,
+the FIBs of the host's probe targets and steered routes, as it writes
+the rest of
+.Xr rc.conf 5
+(Arcana's file or the admin's, by config-files), and runs
+.Ql service stampd reload ,
+which starts it in a FIB added, stops it in one gone and tells the
+others; with no such FIB, what it set is taken out and stampd stopped.
+A refusal (rc-conf-files not accepted, a value of the admin's in the
+way) is logged once and tried again a minute later or at the next
+change; nothing is set while stampd's rc script is not installed;
 .It
 the SD-WAN edge (arcana-sdwan): the host's rules (an
 .Xr ipfw 8
@@ -1431,4 +1447,5 @@ socket:
 .Xr jailconf 8 ,
 .Xr pkg 8 ,
 .Xr service 8 ,
+.Xr stampd 8 ,
 .Xr sysrc 8

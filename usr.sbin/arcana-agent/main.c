@@ -808,6 +808,7 @@ main(int argc, char *argv[])
 	probe_start();
 	record_start();
 	sdwan_start();
+	stampd_start();
 	feeds_start();
 	sdwan_bird_start();
 	sdwan_dhcp_start();

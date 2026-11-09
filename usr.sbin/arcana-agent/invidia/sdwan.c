@@ -1115,6 +1115,8 @@ do_sdwan_steer(struct work *w, const char *json, const char **errp)
 	ed->routes = rv;
 	ed->nroutes = nr;
 	ed->routed = false;
+	/* Their FIBs stampd's (gula/stampd.c). */
+	stampd_nudge();
 	step = step_begin(w, STEP_DAEMON, "arcana-agent", "steer%s%s: "
 	    "%d prefix%s%s%s", jail[0] != '\0' ? " of " : "", jail, n, n == 1 ?
 	    "" : "es", nr > 0 ? ", the breakout's default route" : "", nr > 1 ?
@@ -1428,6 +1430,27 @@ why_json(const struct edge *e, ucl_object_t *o, const struct why *y,
 		ucl_array_append(arr, c);
 	}
 	ucl_object_insert_key(o, arr, "candidates", 0, false);
+}
+
+/* The FIBs of the host's steered routes, each once, into v (max of
+ * them): stampd answers there (gula/stampd.c). */
+int
+sdwan_fibs(int *v, int max)
+{
+	const struct edge	*e;
+	int			 i, k, n;
+
+	n = 0;
+	pthread_mutex_lock(&lock);
+	if ((e = edge_of("", false)) != NULL)
+		for (i = 0; i < e->nroutes && n < max; i++) {
+			for (k = 0; k < n && v[k] != e->routes[i].fib; k++)
+				;
+			if (k == n)
+				v[n++] = e->routes[i].fib;
+		}
+	pthread_mutex_unlock(&lock);
+	return (n);
 }
 
 /*
