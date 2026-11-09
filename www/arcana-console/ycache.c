@@ -8,10 +8,10 @@
  * Each host's schema as its agent has it, for the fleet mount
  * (PLAN-SDN-YANG 4.3.1, 4.3.2): what its YANG library (RFC 8525) says it
  * implements and imports, and the SIDs of each module (GET-SID's .sid
- * files), resolved against the console's tables (ysid.c), kept by the
- * agent's URI.  RESTCONF names, types and checks a host's paths and data
- * by it: an agent of another release has modules, nodes and numbers of
- * its own.
+ * files), resolved against the console's tables (cblink's cbl_ysids),
+ * kept by the agent's URI.  RESTCONF names, types and checks a host's
+ * paths and data by it: an agent of another release has modules, nodes
+ * and numbers of its own.
  *
  * Kept until it may have changed: a new connection to the agent (a
  * restart, an agent-update) and the library's yang-library-update mark
@@ -31,16 +31,16 @@
 
 #include <cblink.h>
 #include <cbl_schema.h>
+#include <cbl_yxlate.h>
 #include <ucl.h>
 
 #include "console.h"
 #include "ycache.h"
 #include "ymodel.h"
-#include "ysid.h"
 #include "ytrans.h"
 
 struct yview {
-	struct ysids	*s;
+	struct cbl_ysids	*s;
 	atomic_int	 refs;
 };
 
@@ -55,7 +55,7 @@ static struct yentry	*ents;
 static size_t		 nents;
 static atomic_uint	 reads;
 
-const struct ysids *
+const struct cbl_ysids *
 yview_sids(const struct yview *v)
 {
 
@@ -68,7 +68,7 @@ ycache_put(struct yview *v)
 
 	if (v == NULL || atomic_fetch_sub(&v->refs, 1) != 1)
 		return;
-	ysids_free(v->s);
+	cbl_ysids_free(v->s);
 	free(v);
 }
 
@@ -174,7 +174,7 @@ read_view(cbl_conn *conn, const struct ietf_yang_library_yang_library *yl,
     struct yview **out, char *why, size_t whylen)
 {
 	const struct ietf_yang_library_yang_library_module_set *ms;
-	struct ysids	*s;
+	struct cbl_ysids	*s;
 	struct yview	*v;
 	cbl_dump	*d = NULL;
 	cbl_msg		*req, *item;
@@ -183,20 +183,20 @@ read_view(cbl_conn *conn, const struct ietf_yang_library_yang_library *yl,
 	int		 error;
 
 	*out = NULL;
-	if ((s = ysids_new(&ymodel_schema)) == NULL)
+	if ((s = cbl_ysids_new(&ymodel_schema)) == NULL)
 		return (ENOMEM);
 	/* The console's own datastore's modules are never a host's. */
-	ysids_skip(s, l3nm_module);
+	cbl_ysids_skip(s, l3nm_module);
 	if ((error = cbl_msg_new(cbl_conn_ctx(conn), CBL_YANG_FAMILY,
 	    CBL_YCMD_GET_SID, CBL_F_DUMP, &req)) != 0 ||
 	    (error = cbl_dump_start(conn, req, &d)) != 0) {
 		snprintf(why, whylen, "GET-SID: %s", strerror(error));
-		ysids_free(s);
+		cbl_ysids_free(s);
 		return (error);
 	}
 	while ((error = cbl_dump_next(d, &item)) == 0 && item != NULL) {
 		if (cbl_msg_sid_raw(item, CBL_YSID_FILE, &p, &len) == 0) {
-			error = ysids_file_cbor(s, p, len, why, whylen);
+			error = cbl_ysids_file_cbor(s, p, len, why, whylen);
 			files++;
 		}
 		cbl_msg_free(item);
@@ -214,27 +214,28 @@ read_view(cbl_conn *conn, const struct ietf_yang_library_yang_library *yl,
 	for (size_t i = 0; error == 0 && i < yl->module_set.n; i++) {
 		ms = &yl->module_set.v[i];
 		for (size_t k = 0; error == 0 && k < ms->module.n; k++)
-			error = ysids_module(s, ms->module.v[k].name,
+			error = cbl_ysids_module(s, ms->module.v[k].name,
 			    ms->module.v[k].revision, true);
 		for (size_t k = 0; error == 0 && k < ms->import_only_module.n;
 		    k++) {
 			__typeof__(*ms->import_only_module.v) *io =
 			    &ms->import_only_module.v[k];
 
-			error = ysids_module(s, io->name, io->revision.which ==
-			    0 ? io->revision.v.m0 : "", false);
+			error = cbl_ysids_module(s, io->name,
+			    io->revision.which == 0 ? io->revision.v.m0 : "",
+			    false);
 		}
 	}
 	if (error == 0 && yl->content_id != NULL)
-		error = ysids_set_content_id(s, yl->content_id);
+		error = cbl_ysids_set_content_id(s, yl->content_id);
 	if (error == 0)
-		error = ysids_done(s, why, whylen);
+		error = cbl_ysids_done(s, why, whylen);
 	if (error != 0 || (v = calloc(1, sizeof(*v))) == NULL) {
 		if (error == 0)
 			error = ENOMEM;
 		if (why[0] == '\0')
 			snprintf(why, whylen, "%s", strerror(error));
-		ysids_free(s);
+		cbl_ysids_free(s);
 		return (error);
 	}
 	v->s = s;
@@ -302,7 +303,7 @@ ycache_get(cbl_conn *conn, const char *uri, char *why, size_t whylen)
 		return (v);
 	}
 	/* The same library: the same modules and SIDs. */
-	cid = v != NULL ? ysids_content_id(v->s) : NULL;
+	cid = v != NULL ? cbl_ysids_content_id(v->s) : NULL;
 	if (v != NULL && cid != NULL && yl->content_id != NULL &&
 	    strcmp(cid, yl->content_id) == 0) {
 		keep(uri, v);
@@ -314,7 +315,8 @@ ycache_get(cbl_conn *conn, const char *uri, char *why, size_t whylen)
 	if (read_view(conn, yl, &v, why, whylen) == 0) {
 		keep(uri, v);
 		log_msg(LOG_INFO, "%s: its schema read: %zu modules, %zu SIDs, "
-		    "content-id %s", uri, ysids_nmod(v->s), ysids_count(v->s),
+		    "content-id %s", uri, cbl_ysids_nmod(v->s),
+		    cbl_ysids_count(v->s),
 		    yl->content_id != NULL ? yl->content_id : "none");
 	}
 	cbl_yarena_free(a);

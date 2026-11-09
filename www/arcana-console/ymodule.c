@@ -57,13 +57,13 @@
 
 #include <cblink.h>
 #include <cbl_schema.h>
+#include <cbl_yxlate.h>
 #include <ucl.h>
 
 #include "console.h"
 #include "restconf.h"
 #include "ydesc.h"
 #include "ymodel.h"
-#include "ysid.h"
 
 #define	YM_PREFIX	"/yang/"
 #define	YM_PATH		512
@@ -276,7 +276,7 @@ type_of(const struct cbl_ytype *t, const struct cbl_ynode *n,
 		if (t->path >= 0 && (uint32_t)t->path < ymodel_schema.nxpath)
 			put_str(e, "path", ymodel_schema.xpath[t->path]);
 		if (n != NULL && n->lref != NULL &&
-		    ysids_node_path(n->lref, tgt, sizeof(tgt)))
+		    cbl_ysids_node_path(n->lref, tgt, sizeof(tgt)))
 			put_str(e, "target", tgt);
 		ucl_object_insert_key(e, ucl_object_frombool((t->flags &
 		    CBL_YTF_REQUIRE) != 0), "require-instance", 0, false);
@@ -427,7 +427,7 @@ children_of(const struct cbl_ynode *p, const struct cbl_ymodule *m)
 	const struct ydesc	*d;
 
 	base[0] = '\0';
-	if (p != NULL && !ysids_node_path(p, base, sizeof(base)))
+	if (p != NULL && !cbl_ysids_node_path(p, base, sizeof(base)))
 		base[0] = '\0';
 	pl = xcalloc(nv + 1, sizeof(*pl));
 	for (uint32_t i = 0; i < nv; i++) {
@@ -438,7 +438,7 @@ children_of(const struct cbl_ynode *p, const struct cbl_ymodule *m)
 			for (uint16_t k = 0; k < p->nkeys; k++)
 				if (p->child[p->keys[k]] == v[i])
 					pl[npl].key = k + 1u;
-		if (ysids_node_path(v[i], path, sizeof(path)) &&
+		if (cbl_ysids_node_path(v[i], path, sizeof(path)) &&
 		    (d = desc_of(path)) != NULL)
 			pl[npl].order = d->order;
 		npl++;
@@ -469,7 +469,7 @@ node_of(const struct cbl_ynode *n)
 	put_str(o, "name", n->name);
 	put_str(o, "module", n->module->name);
 	put_str(o, "kind", kind_name(n->kind));
-	if (ysids_node_path(n, path, sizeof(path))) {
+	if (cbl_ysids_node_path(n, path, sizeof(path))) {
 		put_str(o, "path", path);
 		d = desc_of(path);
 	} else
@@ -542,7 +542,7 @@ augments_of(const struct cbl_ymodule *m)
 		if (n->module != m || n->parent == NULL ||
 		    n->parent->module == m || !shown(n) ||
 		    n->kind == CBL_YN_INPUT ||
-		    !ysids_node_path(n->parent, path, sizeof(path)))
+		    !cbl_ysids_node_path(n->parent, path, sizeof(path)))
 			continue;
 		if (nodes == NULL || strcmp(path, prev) != 0) {
 			e = ucl_object_typed_new(UCL_OBJECT);

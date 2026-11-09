@@ -70,15 +70,14 @@
 #include <cblink.h>
 #include <cbl_schema.h>
 #include <cbl_data.h>
+#include <cbl_yxlate.h>
 #include <ucl.h>
 
 #include "console.h"
 #include "restconf.h"
 #include "ycache.h"
 #include "ymodel.h"
-#include "ysid.h"
 #include "ytrans.h"
-#include "yxlate.h"
 
 #define	FLEET		"/restconf/data/arcana-fleet:fleet"
 #define	YLIB_VERSION	"2019-01-04"
@@ -157,8 +156,8 @@ struct rcreq {
 const char	 restconf_no_node[] = "no such node";
 
 static char	*errors_of(int, const char *, const char *, const char *);
-struct ysids;
-static int	host_tree(const struct ysids *, const cbl_dtree *,
+struct cbl_ysids;
+static int	host_tree(const struct cbl_ysids *, const cbl_dtree *,
 		    const char **, char *, size_t);
 
 /* The error-tag and its status (RFC 8040 section 7) of the console's
@@ -3287,7 +3286,7 @@ edits_done(struct rcreq *r, char **json, int *status)
  * DELETE's 204, a YANG Patch's 200 and its status.
  */
 static void
-edits_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s,
+edits_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
     const char *uri, char **json, int *status)
 {
 	const struct cbl_ynode	*tops[32];
@@ -3345,7 +3344,7 @@ done:
  * the warnings it gives with 200; the edits' as edits_run() says;
  * refused, ietf-restconf's errors. */
 static void
-change_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s,
+change_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
     const char *uri, char **json, int *status)
 {
 	const ucl_object_t	*in, *v;
@@ -3396,28 +3395,28 @@ change_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s,
  * made once, a host read by it where its agent gives no .sid files.
  */
 static pthread_once_t	 own_once = PTHREAD_ONCE_INIT;
-static struct ysids	*own_sids;
+static struct cbl_ysids	*own_sids;
 
 static void
 own_make(void)
 {
-	struct ysids	*s;
+	struct cbl_ysids	*s;
 	char		 why[160];
 
 	why[0] = '\0';
-	if ((s = ysids_new(&ymodel_schema)) != NULL)
-		ysids_skip(s, l3nm_module);
-	if (s == NULL || ysids_tables(s) != 0 ||
-	    ysids_done(s, why, sizeof(why)) != 0) {
+	if ((s = cbl_ysids_new(&ymodel_schema)) != NULL)
+		cbl_ysids_skip(s, l3nm_module);
+	if (s == NULL || cbl_ysids_tables(s) != 0 ||
+	    cbl_ysids_done(s, why, sizeof(why)) != 0) {
 		log_msg(LOG_ERR, "the console's SIDs: %s", why[0] != '\0' ?
 		    why : "out of memory");
-		ysids_free(s);
+		cbl_ysids_free(s);
 		return;
 	}
 	own_sids = s;
 }
 
-const struct ysids *
+const struct cbl_ysids *
 restconf_agent_sids(void)
 {
 
@@ -3486,7 +3485,7 @@ restconf_body(const struct rcreq *r, const void **p, size_t *len)
 /* A node of r's path, or of an edit's, that the host's modules do not
  * have: a 404's body (*status), malloc'd; NULL: all there. */
 static char *
-host_path(const struct ysids *s, const struct rcreq *r, int *status)
+host_path(const struct cbl_ysids *s, const struct rcreq *r, int *status)
 {
 	const struct rcreq	*t;
 	char			 msg[256];
@@ -3494,7 +3493,7 @@ host_path(const struct ysids *s, const struct rcreq *r, int *status)
 	for (size_t i = 0; i <= r->nedit; i++) {
 		t = i < r->nedit ? r->edit[i].t : r;
 		for (size_t k = 0; t != NULL && k < t->nseg; k++) {
-			if (ysids_of(s, t->seg[k].n) != NULL)
+			if (cbl_ysids_of(s, t->seg[k].n) != NULL)
 				continue;
 			*status = 404;
 			snprintf(msg, sizeof(msg), "the host's modules have no "
@@ -3503,7 +3502,7 @@ host_path(const struct ysids *s, const struct rcreq *r, int *status)
 			return (errors_of(404, "invalid-value", NULL, msg));
 		}
 	}
-	if (r->act != NULL && ysids_of(s, r->act) == NULL) {
+	if (r->act != NULL && cbl_ysids_of(s, r->act) == NULL) {
 		*status = 404;
 		snprintf(msg, sizeof(msg), "the host's modules have no %s %s:%s",
 		    r->act->kind == CBL_YN_RPC ? "rpc" : "action",
@@ -3519,16 +3518,16 @@ host_path(const struct ysids *s, const struct rcreq *r, int *status)
  * which the console's encoder would send wrong, operation-not-supported.
  */
 static int
-host_tree(const struct ysids *s, const cbl_dtree *w, const char **tag,
+host_tree(const struct cbl_ysids *s, const cbl_dtree *w, const char **tag,
     char *err, size_t errlen)
 {
 	const struct cbl_ynode	*sn;
-	const struct ysid_item	*it;
+	const struct cbl_ysid_item	*it;
 	const cbl_dnode		*n, *c;
 
 	for (n = cbl_dnode_first(cbl_dtree_root(w)); n != NULL; n = c) {
 		sn = cbl_dnode_schema(n);
-		if ((it = ysids_of(s, sn)) == NULL) {
+		if ((it = cbl_ysids_of(s, sn)) == NULL) {
 			*tag = "unknown-element";
 			snprintf(err, errlen, "the host's modules have no %s:%s",
 			    sn->module->name, sn->name);
@@ -3559,11 +3558,11 @@ host_tree(const struct ysids *s, const cbl_dtree *w, const char **tag,
  * only the host has as YANG-CBOR's kind says.
  */
 static int
-host_get(cbl_conn *conn, const struct ysids *s, const struct rcreq *r,
+host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
     ucl_object_t **out, char *err, size_t errlen, uint64_t *errsid)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
-	const struct ysid_item	*it;
+	const struct cbl_ysid_item	*it;
 	struct ucl_parser	*p;
 	cbl_msg			*rep;
 	const void		*v;
@@ -3573,24 +3572,24 @@ host_get(cbl_conn *conn, const struct ysids *s, const struct rcreq *r,
 	int			 error;
 
 	*out = NULL;
-	sid = r->nseg > 0 ? ysids_of(s, r->seg[0].n)->sid : 0;
+	sid = r->nseg > 0 ? cbl_ysids_of(s, r->seg[0].n)->sid : 0;
 	if ((error = ytrans_get_msg(conn, r->nseg > 0 ? &sid : NULL,
 	    r->nseg > 0 ? 1 : 0, r->xpath, r->ds, r->origin, &rep, err,
 	    errlen, errsid)) != 0)
 		return (error);
-	if ((sids = calloc(ysids_count(s) + 1, sizeof(*sids))) == NULL) {
+	if ((sids = calloc(cbl_ysids_count(s) + 1, sizeof(*sids))) == NULL) {
 		cbl_msg_free(rep);
 		return (ENOMEM);
 	}
-	n = ysids_tops(s, sids, ysids_count(s));
+	n = cbl_ysids_tops(s, sids, cbl_ysids_count(s));
 	b.p = (uint8_t *)strdup("{");
 	b.len = b.cap = b.p != NULL ? 1 : 0;
 	error = b.p == NULL ? ENOMEM : 0;
 	for (size_t i = 0; error == 0 && i < n; i++)
 		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0 &&
-		    (it = ysids_sid(s, sids[i])) != NULL)
-			error = yx_json_member(s, it, v, len, &first, &b, err,
-			    errlen);
+		    (it = cbl_ysids_sid(s, sids[i])) != NULL)
+			error = cbl_yxlate_json_member(s, it, v, len, &first, &b,
+			    err, errlen);
 	free(sids);
 	cbl_msg_free(rep);
 	/* And the object closed. */
@@ -3628,8 +3627,8 @@ host_get(cbl_conn *conn, const struct ysids *s, const struct rcreq *r,
  * of it, with what is above), or of each the agent has (those of s).
  */
 static void
-cbor_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
-    int *status)
+cbor_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
+    char **json, int *status)
 {
 	struct cbl_ybuf	 b = { NULL, 0, 0 };
 	const char	*tag;
@@ -3640,7 +3639,7 @@ cbor_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 	char		 err[256], path[512];
 	int		 error;
 
-	sid = r->nseg > 0 ? ysids_of(s, r->seg[0].n)->sid : 0;
+	sid = r->nseg > 0 ? cbl_ysids_of(s, r->seg[0].n)->sid : 0;
 	if ((error = ytrans_get_msg(conn, r->nseg > 0 ? &sid : NULL,
 	    r->nseg > 0 ? 1 : 0, r->xpath, r->ds, r->origin, &rep, err,
 	    sizeof(err), &errsid)) != 0) {
@@ -3653,8 +3652,9 @@ cbor_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 	if (r->nseg > 0) {
 		sids = &sid;
 		n = 1;
-	} else if ((sids = calloc(ysids_count(s) + 1, sizeof(*sids))) != NULL)
-		n = ysids_tops(s, sids, ysids_count(s));
+	} else if ((sids = calloc(cbl_ysids_count(s) + 1,
+	    sizeof(*sids))) != NULL)
+		n = cbl_ysids_tops(s, sids, cbl_ysids_count(s));
 	for (size_t i = 0; i < n; i++)
 		cnt += cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0;
 	if (r->nseg > 0 && cnt == 0) {
@@ -3662,11 +3662,11 @@ cbor_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 		*json = restconf_errors(404, "no such resource");
 		goto done;
 	}
-	error = sids == NULL ? ENOMEM : yx_put_head(&b, 5, cnt);
+	error = sids == NULL ? ENOMEM : cbl_ybuf_head(&b, 5, cnt);
 	for (size_t i = 0; error == 0 && i < n; i++) {
 		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) != 0)
 			continue;
-		if ((error = yx_put_head(&b, 0, sids[i])) != 0)
+		if ((error = cbl_ybuf_head(&b, 0, sids[i])) != 0)
 			break;
 		/* The value as it came. */
 		if (b.len + len > b.cap) {
@@ -3719,23 +3719,23 @@ buf_add(struct cbl_ybuf *b, const void *p, size_t len)
 }
 
 /* The host's item of r's action's input or output (kind), NULL: none. */
-static const struct ysid_item *
-act_io(const struct ysids *s, const struct rcreq *r, int kind)
+static const struct cbl_ysid_item *
+act_io(const struct cbl_ysids *s, const struct rcreq *r, int kind)
 {
 
 	for (uint32_t i = 0; i < r->act->nchild; i++)
 		if (r->act->child[i]->kind == kind)
-			return (ysids_of(s, r->act->child[i]));
+			return (cbl_ysids_of(s, r->act->child[i]));
 	return (NULL);
 }
 
 ucl_object_t *
-restconf_act_input(const struct rcreq *r, const struct ysids *s,
+restconf_act_input(const struct rcreq *r, const struct cbl_ysids *s,
     const void *cbor, size_t len)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
-	struct yxrd		 rd = { cbor, (const uint8_t *)cbor + len };
-	const struct ysid_item	*ai, *ii;
+	struct cbl_ycrd		 rd = { cbor, (const uint8_t *)cbor + len };
+	const struct cbl_ysid_item	*ai, *ii;
 	struct ucl_parser	*p;
 	ucl_object_t		*o = NULL;
 	uint64_t		 n, sid;
@@ -3745,15 +3745,16 @@ restconf_act_input(const struct rcreq *r, const struct ysids *s,
 
 	/* {SID: input}, the action's SID the host's. */
 	if (r == NULL || r->act == NULL || s == NULL ||
-	    (ai = ysids_of(s, r->act)) == NULL ||
+	    (ai = cbl_ysids_of(s, r->act)) == NULL ||
 	    (ii = act_io(s, r, CBL_YN_INPUT)) == NULL ||
-	    yxrd_head(&rd, &major, &n) != 0 || major != 5 || n != 1 ||
-	    yxrd_head(&rd, &major, &sid) != 0 || major != 0 || sid != ai->sid)
+	    cbl_ycrd_head(&rd, &major, &n) != 0 || major != 5 || n != 1 ||
+	    cbl_ycrd_head(&rd, &major, &sid) != 0 || major != 0 ||
+	    sid != ai->sid)
 		return (NULL);
-	if (yxrd_peek(&rd, &major, &n) == 0 && major == 7 && n == 22 &&
+	if (cbl_ycrd_peek(&rd, &major, &n) == 0 && major == 7 && n == 22 &&
 	    rd.p + 1 == rd.end)
 		return (ucl_object_typed_new(UCL_OBJECT));
-	if (buf_add(&b, "{", 1) == 0 && yx_json_member(s, ii, rd.p,
+	if (buf_add(&b, "{", 1) == 0 && cbl_yxlate_json_member(s, ii, rd.p,
 	    (size_t)(rd.end - rd.p), &first, &b, why, sizeof(why)) == 0 &&
 	    buf_add(&b, "}", 1) == 0) {
 		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
@@ -3773,10 +3774,10 @@ restconf_act_input(const struct rcreq *r, const struct ysids *s,
  * none, 204; as YANG-CBOR, {SID: output} as the agent sent it.
  */
 static void
-act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
+act_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s, char **json,
     int *status)
 {
-	const struct ysid_item		*ai, *ii, *oi, *ei;
+	const struct cbl_ysid_item	*ai, *ii, *oi, *ei;
 	const struct cbl_ywarning	*w;
 	const ucl_object_t		*in;
 	struct cbl_ybuf			 b = { NULL, 0, 0 }, t = { NULL, 0, 0 };
@@ -3787,12 +3788,12 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 	const uint8_t			*v;
 	const char			*tag;
 	size_t				 len, nw;
-	char				 err[512], apptag[80], key[160];
+	char				 err[512], apptag[80], key[160], *itext;
 	bool				 first = true;
 	int				 error;
 
 	*json = NULL;
-	ai = ysids_of(s, r->act);
+	ai = cbl_ysids_of(s, r->act);
 	ii = act_io(s, r, CBL_YN_INPUT);
 	oi = act_io(s, r, CBL_YN_OUTPUT);
 	snprintf(key, sizeof(key), "%s:input", r->act->module->name);
@@ -3806,15 +3807,21 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 			    "host's action has no input");
 			goto done;
 		}
-		if ((error = yx_cbor_member(s, ii, in, &b, &tag, err,
-		    sizeof(err))) != 0) {
+		/* cblink reads JSON's text: the body's input as it. */
+		if ((itext = (char *)ucl_object_emit(in,
+		    UCL_EMIT_JSON_COMPACT)) == NULL)
+			goto nomem;
+		error = cbl_yxlate_cbor_member(s, ii, itext, strlen(itext), &b,
+		    &tag, err, sizeof(err));
+		free(itext);
+		if (error != 0) {
 			*status = error == ENOMEM ? 500 : status_of(tag);
 			*json = errors_of(*status, tag, NULL, err);
 			goto done;
 		}
-	} else if (yx_put_head(&b, 7, 22) != 0)
+	} else if (cbl_ybuf_head(&b, 7, 22) != 0)
 		goto nomem;
-	if (r->nseg > 0 && (error = yx_iid(s, r->xpath, &t, err,
+	if (r->nseg > 0 && (error = cbl_yxlate_iid(s, r->xpath, &t, err,
 	    sizeof(err))) != 0) {
 		*status = error == ENOMEM ? 500 : 400;
 		*json = errors_of(*status, "invalid-value", NULL, err);
@@ -3840,7 +3847,8 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 			snprintf(apptag, sizeof(apptag), "%s",
 			    cbl_msg_err_apptag(rep));
 		/* The node at fault by the host's own name of it. */
-		ei = rep != NULL ? ysids_sid(s, cbl_msg_err_sid(rep)) : NULL;
+		ei = rep != NULL ? cbl_ysids_sid(s, cbl_msg_err_sid(rep)) :
+		    NULL;
 		*status = refusal(error, &tag);
 		*json = errors_of_app(*status, tag, ei != NULL ? ei->id : NULL,
 		    apptag[0] != '\0' ? apptag : NULL, err);
@@ -3874,7 +3882,7 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 		top = ucl_object_typed_new(UCL_OBJECT);
 	} else if (r->cbor) {
 		cbl_ybuf_free(&t);
-		if (yx_put_head(&t, 5, 1) != 0 || yx_put_head(&t, 0,
+		if (cbl_ybuf_head(&t, 5, 1) != 0 || cbl_ybuf_head(&t, 0,
 		    ai->sid) != 0 || buf_add(&t, v, len) != 0)
 			goto nomem;
 		r->out = t.p;
@@ -3893,8 +3901,8 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct ysids *s, char **json,
 		}
 		if (buf_add(&b, "{", 1) != 0)
 			goto nomem;
-		if ((error = yx_json_member(s, oi, v, len, &first, &b, err,
-		    sizeof(err))) != 0) {
+		if ((error = cbl_yxlate_json_member(s, oi, v, len, &first, &b,
+		    err, sizeof(err))) != 0) {
 			*status = 502;
 			*json = errors_of(502, "operation-failed", NULL, err);
 			goto done;
@@ -3934,7 +3942,7 @@ done:
 
 /* restconf_run()'s, by s. */
 static void
-run(cbl_conn *conn, struct rcreq *r, const struct ysids *ys, const char *id,
+run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
     const char *name, const char *uri, char **json, int *status)
 {
 	const struct cbl_ynode	*n;
@@ -4166,7 +4174,7 @@ void
 restconf_run(cbl_conn *conn, struct rcreq *r, const char *id,
     const char *name, const char *uri, char **json, int *status)
 {
-	const struct ysids	*s;
+	const struct cbl_ysids	*s;
 	struct yview		*v;
 	char			 why[256];
 

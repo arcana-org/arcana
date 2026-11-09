@@ -32,6 +32,8 @@
 
 #include <openssl/evp.h>
 
+#include <cbl_yxlate.h>
+
 #include "console.h"
 #include "restconf.h"
 #include "ytrans.h"
@@ -47,7 +49,6 @@
 #include "ytshoot.h"
 #include "yreads.h"
 #include "ycache.h"
-#include "yxlate.h"
 #include "zprog.h"
 
 enum op {
@@ -3744,7 +3745,7 @@ pick_scope(const struct rq *q, struct call *c)
 #define	CBOR_BODY_MAX	(8 * 1024 * 1024)
 
 static ucl_object_t *
-read_cbor(struct http_request *req, const struct ysids *s,
+read_cbor(struct http_request *req, const struct cbl_ysids *s,
     const struct rcreq *act)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
@@ -3765,8 +3766,8 @@ read_cbor(struct http_request *req, const struct ysids *s,
 	if (act != NULL) {
 		if (len > 0 && len < CBOR_BODY_MAX)
 			o = restconf_act_input(act, s, buf, len);
-	} else if (len > 0 && len < CBOR_BODY_MAX && yx_json(s, buf, len, &b,
-	    why, sizeof(why)) == 0) {
+	} else if (len > 0 && len < CBOR_BODY_MAX && cbl_yxlate_json(s, buf, len,
+	    &b, why, sizeof(why)) == 0) {
 		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
 		    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
 		if (ucl_parser_add_chunk(p, b.p, b.len))

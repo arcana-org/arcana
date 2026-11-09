@@ -15,7 +15,7 @@
 /*
  * Each host's schema as its agent has it (ycache.c, PLAN-SDN-YANG
  * 4.3.1, 4.3.2): the modules of its YANG library and their SIDs (its
- * GET-SID's .sid files, struct ysids), kept by the agent's URI.
+ * GET-SID's .sid files, struct cbl_ysids), kept by the agent's URI.
  *
  * ycache_get(): the host's, read over conn where none is kept or where
  * the kept one is to be checked (its library's content-id read again,
@@ -28,14 +28,14 @@
  * read, of every host.
  */
 struct yview;
-struct ysids;
+struct cbl_ysids;
 
 struct yview	*ycache_get(cbl_conn *conn, const char *uri, char *why,
 		    size_t whylen);
 struct yview	*ycache_peek(const char *uri);
 void		 ycache_put(struct yview *v);
 void		 ycache_stale(const char *uri);
-const struct ysids *yview_sids(const struct yview *v);
+const struct cbl_ysids *yview_sids(const struct yview *v);
 unsigned	 ycache_reads(void);
 
 #endif	/* !_ARCANA_YCACHE_H_ */

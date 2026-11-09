@@ -1769,6 +1769,12 @@ whose first part is served.
   null for an entry without; origin is one of them.  Check: yxlate_test's
   rfc7952, a tree of cblink's with each kind annotated, the same JSON as
   `cbl_dtree_json()`.
+- 4.2.1 and 4.2.2 moved to cblink (console 0.414.0, libcblink 0.2.23):
+  YANG-CBOR is cblink's job.  `<cbl_yxlate.h>`: `cbl_ysids_*`,
+  `cbl_yxlate_json()`, `cbl_yxlate_cbor()` (JSON's text, read by
+  cblink's own strict reader, not libucl), their `_member()`s,
+  `cbl_yxlate_iid()`.  The test is cblink-gen's yxlate_test, with
+  json_text added (one node each way, escapes, what is not JSON).
 - 4.3.1 done (console ycache.c, restconf.c): each host read by its
   own schema, its YANG library's modules and its GET-SID `.sid` files
   resolved against the console's tables (4.2's `struct ysids`), kept

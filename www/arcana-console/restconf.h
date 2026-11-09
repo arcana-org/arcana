@@ -100,14 +100,14 @@ void		 restconf_own_changed(const char *uri);
  * JSON); 0, or the status and *why.  restconf_body(): that reply's
  * bytes, when it is one.  restconf_agent_sids(): the console's
  * numbering of what an agent may serve, its tables less its own
- * datastore's modules (ysid.c).
+ * datastore's modules (cbl_ysids).
  */
-struct ysids;
+struct cbl_ysids;
 int		 restconf_media(struct rcreq *r, const char *accept,
 		    const char **why);
 bool		 restconf_body(const struct rcreq *r, const void **p,
 		    size_t *len);
-const struct ysids *restconf_agent_sids(void);
+const struct cbl_ysids *restconf_agent_sids(void);
 /*
  * An action of a host's, or an rpc of its (PLAN-SDN-YANG 4.3.4):
  * restconf_act_role(), the role on the host it needs, RC_ACT_NONE where
@@ -119,7 +119,7 @@ enum { RC_ACT_NONE, RC_ACT_READ, RC_ACT_CHANGE, RC_ACT_ADMIN };
 
 int		 restconf_act_role(const struct rcreq *r);
 ucl_object_t	*restconf_act_input(const struct rcreq *r,
-		    const struct ysids *s, const void *cbor, size_t len);
+		    const struct cbl_ysids *s, const void *cbor, size_t len);
 /* establish-subscription POSTed under host sid's entry, or under the fleet
  * (sid NULL): every host's (rcstream.c). */
 int		 restconf_establish(struct http_request *req, const char *sid);

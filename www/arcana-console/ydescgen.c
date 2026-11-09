@@ -15,7 +15,7 @@
  * it writes them as a C table sorted by key (ydesc.h):
  *
  *	/m:a/b		a data node, by its schema-node path as RFC 9595's
- *			.sid files name it (ysids_node_path())
+ *			.sid files name it (cbl_ysids_node_path())
  *	/m:a/b=x	enum x of leaf or leaf-list /m:a/b
  *	/m:a/(c)	choice c below /m:a, /m:a/(c)/(k) its case k
  *	m:i		identity i of module m
