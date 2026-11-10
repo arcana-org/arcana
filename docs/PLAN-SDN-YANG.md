@@ -2894,6 +2894,34 @@ whose first part is served.
   0.1 ms either way on the other address, one way, ptp/sw; stampd
   started again with a second's error: half the round trip, flagged).
 - 5.1.5 A: class-of-service TLV with DSCP echo; check: `tcpdump -v`.
+  Done (agent 0.267.0, stamp's cos commit): libstamp writes and reads
+  RFC 8972 4.4's Class of Service TLV.  The sender's core asks for it
+  (`cos`, `dscp`: DSCP1, the DSCP the reply is to carry), after the
+  Timestamp Information TLV; the reflector fills DSCP2 and ECN from the
+  TOS or traffic class the request came with (`IP_RECVTOS`,
+  `IPV6_RECVTCLASS`, both ends' sockets) and sends its reply with DSCP1
+  (`IP_TOS`, `IPV6_TCLASS` by cmsg, `stamp_refl_reply_tos()`), unless
+  its configuration refuses that DSCP: then with the request's, RP 1
+  (stampd `-D`, `dscp-refuse` in stampd.conf; a TLV not of 4 octets
+  marked malformed).  stamp(1) `-D dscp[/reply]` sends with one DSCP
+  and asks for another back.  The agent's STAMP targets ask for the
+  target's DSCP and keep, from the last reply, the DSCP the probe
+  reached the reflector with (forward), the DSCP the reply came back
+  with (backward) and whether the reflector refused it: the target's
+  JSON (`dscp_forward`, `dscp_backward`, `dscp_refused`) and a second
+  `-d` line a target an interval (`stamp path: dscp 46 sent, forward
+  46, backward 46`); a per-path property, not a series, so no sample
+  column.  arcana-probe carries none of it yet (5.1.8).  Checked:
+  stamp's suite (libstamp_test:tlv_cos; stampd_test:cos, 46 asked of
+  packets of 10: 46 back, DSCP2 10; refused: 10 back, RP 1; the file's
+  setting under the command line's; IPv4 and IPv6);
+  agent_root_test:stamp_cos (stampd in a vnet jail refusing 34, the
+  jail's ipfw `setdscp 0` on what comes in to one of its addresses:
+  46 forward and back on the other, 0 forward and 46 back through the
+  bleaching, 34 refused: the reply with what came, 34 or 0, RP; tcpdump
+  -v's `tos 0xb8` and `0x88` each way where bpf(4) is, which the lab's
+  jail has not: there the reflector's DSCP2 and the reply's
+  `IP_RECVTOS` say it).
 - 5.1.6 A: direct-measurement TLV from ipfw counters; location TLV;
   check: NAT detection on the lab.
 - 5.1.7 A: authenticated mode (HMAC-SHA-256-128, libcrypto), keys over

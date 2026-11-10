@@ -1000,7 +1000,13 @@ the packets carrying the Timestamp Information TLV (RFC 8972), one way
 estimates say their clocks are synchronised
 .Pq Xr ntp_gettime 2 , No or Fl -stamp-clock
 and the two errors together are no more than a tenth of half the round
-trip, else half the round trip, flagged an estimate; and, the
+trip, else half the round trip, flagged an estimate; the DSCP each way,
+the Class of Service TLV asking the reflector to reply with the
+target's DSCP and telling the DSCP the probe reached it with, the
+reply's read as it comes
+.Pq Dv IP_RECVTOS , IPV6_RECVTCLASS ,
+so that a DSCP rewritten on the way, or one the reflector refuses, is
+seen; and, the
 reflector being stateful, the loss on the way out told from the loss on
 the way back; the others, the monitors and a jail edge's targets are pinged
 .Pq ICMP echo .

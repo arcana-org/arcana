@@ -36,7 +36,12 @@
  * synchronised closely enough (libstamp's rule: both Error Estimates'
  * S bit, their errors together within a tenth of half the round trip),
  * else half the round trip, flagged an estimate; the reflector's
- * Timestamp Information TLV (RFC 8972 4.3) asked for and kept.  Arcana's
+ * Timestamp Information TLV (RFC 8972 4.3) asked for and kept; and the
+ * DSCP each way, the Class of Service TLV (4.4) asking the reflector
+ * to reply with the target's DSCP and telling the DSCP the probe
+ * reached it with, the reply's read as it comes (IP_RECVTOS,
+ * IPV6_RECVTCLASS): a DSCP rewritten or bleached on the way out or
+ * back is seen, and a reflector that refuses the DSCP (RP).  Arcana's
  * far end, until arcana-probe says a target's kind (PLAN-SDN-YANG
  * 5.1.8), is an SD-WAN target of the host's that is a tunnel's: not a
  * monitor (the admin's, on any tunnel), not a breakout's beacon (the
@@ -146,6 +151,11 @@ struct target {
 	double			 last_dfwd, last_dback, last_err;
 	bool			 has_delay, last_owd, has_ti;
 	struct stamp_tsinfo	 ti;
+	/* The DSCP of the last reply each way: the probe's as it reached
+	 * the reflector (its Class of Service TLV), the reply's as it
+	 * came back; whether the reflector refused the target's (RP). */
+	int			 dscp_fwd, dscp_back;
+	bool			 has_cos, has_rtos, dscp_refused;
 	uint16_t		 ident, seq;
 	struct {
 		uint16_t	 seq;
@@ -554,6 +564,7 @@ window_end(struct target *t, double now)
 	if (t->by_stamp && t->ss != NULL) {
 		struct stamp_sender_stats	st;
 		char				name[200], ti[48];
+		char				dsf[8], dsb[8];
 		uint64_t			df, db;
 
 		stamp_sender_stats(t->ss, &st);
@@ -583,6 +594,19 @@ window_end(struct target *t, double now)
 		    t->w_recv, (uintmax_t)t->fwd_lost, (uintmax_t)t->back_lost,
 		    s->dfwd, s->dback, s->owd == 1 ? "one way" : s->owd == 0 ?
 		    "estimated: half the round trip" : "no reply", ti);
+		/* The path as the last reply saw it: the DSCP each way. */
+		if (t->has_cos)
+			snprintf(dsf, sizeof(dsf), "%d", t->dscp_fwd);
+		else
+			snprintf(dsf, sizeof(dsf), "-");
+		if (t->has_rtos)
+			snprintf(dsb, sizeof(dsb), "%d", t->dscp_back);
+		else
+			snprintf(dsb, sizeof(dsb), "-");
+		logmsg(LOG_DEBUG, "probe: %s: stamp path: dscp %d sent, "
+		    "forward %s, backward %s%s", target_name(t, name,
+		    sizeof(name)), t->dscp, dsf, dsb, t->has_cos &&
+		    t->dscp_refused ? " (the reflector refused it)" : "");
 	}
 	if (t->w_sent > 0)
 		tca_check(t, s);
@@ -727,6 +751,8 @@ stamp_open(struct target *t)
 		memset(&c, 0, sizeof(c));
 		c.ssid = t->ssid;
 		c.tsinfo = true;
+		c.cos = true;
+		c.dscp = (uint8_t)t->dscp;
 		c.timeout = t->timeout / 1000.0;
 		c.window = (unsigned)(t->timeout / t->interval + 2);
 		if (c.window > STAMP_WINDOW)
@@ -843,6 +869,23 @@ stamp_delay(struct target *t, const struct stamp_sample *sm)
 		t->ti = sm->tsinfo;
 }
 
+/* A STAMP reply's DSCP each way: the probe's at the reflector, by its
+ * Class of Service TLV; the reply's here, as it came (tos -1: not
+ * said). */
+static void
+stamp_dscp(struct target *t, const struct stamp_sample *sm, int tos)
+{
+
+	t->has_cos = sm->has_cos;
+	if (sm->has_cos) {
+		t->dscp_fwd = sm->cos.dscp2;
+		t->dscp_refused = sm->cos.rp != 0;
+	}
+	t->has_rtos = tos >= 0;
+	if (tos >= 0)
+		t->dscp_back = tos >> 2;
+}
+
 /* The replies to the target's STAMP probes: hits; to a fallen-back
  * target's try, STAMP again. */
 static void
@@ -874,6 +917,7 @@ stamp_recv_all(struct target *t)
 		if (t->by_stamp) {
 			hit(t, sm.rtt * 1000);
 			stamp_delay(t, &sm);
+			stamp_dscp(t, &sm, ri.tos);
 			continue;
 		}
 		/* Measured by STAMP again, by a sender of its own: the try's
@@ -1834,6 +1878,17 @@ target_json(const struct target *t, double now, uint64_t after)
 			ucl_object_insert_key(o, ucl_object_fromdouble(
 			    t->last_err), "clock_error", 0, false);
 		}
+		/* The DSCP each way as the last reply saw it: the probe's
+		 * at the reflector, the reply's here. */
+		if (t->by_stamp && t->has_cos) {
+			ucl_object_insert_key(o, ucl_object_fromint(
+			    t->dscp_fwd), "dscp_forward", 0, false);
+			ucl_object_insert_key(o, ucl_object_frombool(
+			    t->dscp_refused), "dscp_refused", 0, false);
+		}
+		if (t->by_stamp && t->has_rtos)
+			ucl_object_insert_key(o, ucl_object_fromint(
+			    t->dscp_back), "dscp_backward", 0, false);
 		if (t->has_ti) {
 			cur = ucl_object_typed_new(UCL_OBJECT);
 			ucl_object_insert_key(cur, ucl_object_fromstring(

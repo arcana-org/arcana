@@ -2576,6 +2576,122 @@ stamp_delay_cleanup()
 	true
 }
 
+# STAMP's DSCP each way (PLAN-SDN-YANG 5.1.5): stampd in a vnet jail
+# behind an epair, refusing DSCP 34; the jail's ipfw bleaching the DSCP
+# of what comes in to one of its two addresses.
+STC_J=arc-tsc
+STC_NET=198.18.64
+
+# A target's last "stamp path" line, as -d logs it.
+stc_last()
+{
+	grep "probe: $1: stamp path: " daemon.out | tail -1
+}
+
+atf_test_case stamp_cos cleanup
+stamp_cos_head()
+{
+	atf_set "descr" "Arcana's far ends' DSCP each way by STAMP's Class" \
+	    "of Service TLV: stampd in a vnet jail across an epair refusing" \
+	    "DSCP 34, the jail's ipfw setting DSCP 0 on what comes in to one" \
+	    "address; DSCP 46 there and back on the other (tcpdump -v sees" \
+	    "tos 0xb8 each way, where bpf is), 0 forward and 46 back through" \
+	    "the bleaching," \
+	    "34 refused: the reply with what came, RP"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_cos_body()
+{
+	local ep i P t
+
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	jls -j $STC_J >/dev/null 2>&1 && atf_skip "a jail $STC_J exists"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STC_J vnet persist path=/ host.hostname=$STC_J
+	ep=$(epair_create)
+	echo "$ep" > stc.epair
+	atf_check ifconfig "$ep" inet $STC_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STC_J
+	atf_check jexec $STC_J ifconfig "${ep%a}b" inet $STC_NET.2/29 up
+	atf_check jexec $STC_J ifconfig "${ep%a}b" inet $STC_NET.3/32 alias
+	# The jail's own ruleset: what comes in to .3 its DSCP 0, the rest
+	# let by.
+	atf_check -o ignore jexec $STC_J ipfw add 100 setdscp 0 udp from any \
+	    to $STC_NET.3 dst-port $P in
+	atf_check -o ignore jexec $STC_J ipfw add 65000 allow ip from any to any
+	jexec $STC_J "$SD" -d -u nobody -r 0 -R 0 -p $P -D 34 > stc.d.out 2>&1 &
+	echo $! > stc.spid
+	for i in $(seq 1 100); do
+		grep -q started stc.d.out && break
+		sleep 0.05
+	done
+	grep -q started stc.d.out || atf_fail "stampd: $(cat stc.d.out)"
+	# What the wire carries to and from .2, both ways, where bpf(4) is
+	# (not in a jail without its devices, as the lab's: there the DSCP
+	# each way is the reflector's DSCP2 and the reply's IP_RECVTOS).
+	if command -v tcpdump >/dev/null && tcpdump -D >/dev/null 2>&1; then
+		tcpdump -l -n -t -v -i "$ep" -c 40 udp and host $STC_NET.2 \
+		    > stc.tcpdump 2>stc.tcpdump.err &
+		echo $! > stc.tpid
+		sleep 1
+	fi
+	DAEMON_ARGS="-d --stamp-port $P" start_daemon
+	t='"interval":50,"eval":1000,"timeout":500,"down":10'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"ef\",\"address\":\"$STC_NET.2\",\"dscp\":46,$t},{\"id\":\"bleached\",\"address\":\"$STC_NET.3\",\"dscp\":46,$t},{\"id\":\"refused\",\"address\":\"$STC_NET.2\",\"dscp\":34,$t},{\"id\":\"refused0\",\"address\":\"$STC_NET.3\",\"dscp\":34,$t}]"
+	sleep 3
+	for i in ef bleached refused refused0; do
+		stc_last $i > stc.$i
+		[ -s stc.$i ] || atf_fail "$i not measured by STAMP: $(cat daemon.out)"
+		cat stc.$i
+	done
+	atf_check -o match:': stamp path: dscp 46 sent, forward 46, backward 46$' \
+	    cat stc.ef
+	atf_check -o match:': stamp path: dscp 46 sent, forward 0, backward 46$' \
+	    cat stc.bleached
+	atf_check -o match:': stamp path: dscp 34 sent, forward 34, backward 34 \(the reflector refused it\)$' \
+	    cat stc.refused
+	atf_check -o match:': stamp path: dscp 34 sent, forward 0, backward 0 \(the reflector refused it\)$' \
+	    cat stc.refused0
+	# The wire: tos 0xb8 (DSCP 46) and 0x88 (34) out to .2 and back.
+	if [ -f stc.tpid ]; then
+		for i in $(seq 1 50); do
+			kill -0 "$(cat stc.tpid)" 2>/dev/null || break
+			sleep 0.1
+		done
+		kill "$(cat stc.tpid)" 2>/dev/null
+		head -8 stc.tcpdump
+		# -v's header line, then the addresses on the next.
+		awk -v n=$STC_NET -v p=$P '
+		    /^IP \(tos / { tos = $3; sub(/,$/, "", tos); next }
+		    index($1, n ".1.") == 1 && $3 == n ".2." p ":" { o[tos]++ }
+		    $1 == n ".2." p && index($3, n ".1.") == 1 { b[tos]++ }
+		    END { print (o["0xb8"] > 0 ? "out" : "-") " " \
+			(b["0xb8"] > 0 ? "back" : "-") " " \
+			(o["0x88"] > 0 ? "out34" : "-") " " \
+			(b["0x88"] > 0 ? "back34" : "-") }' stc.tcpdump > stc.wire
+		atf_check -o inline:'out back out34 back34\n' cat stc.wire
+	fi
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_cos_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f stc.spid ] && kill "$(cat stc.spid)" 2>/dev/null
+	[ -f stc.tpid ] && kill "$(cat stc.tpid)" 2>/dev/null
+	jexec $STC_J ipfw -q flush 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f stc.epair ]; then
+		ep=$(cat stc.epair)
+		ifconfig "${ep%a}b" -vnet $STC_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STC_J >/dev/null 2>&1
+	true
+}
+
 atf_test_case monitors_qos cleanup
 monitors_qos_head()
 {
@@ -4151,6 +4267,7 @@ atf_init_test_cases()
 	atf_add_test_case stampd_fib
 	atf_add_test_case stamp_loss
 	atf_add_test_case stamp_delay
+	atf_add_test_case stamp_cos
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake
