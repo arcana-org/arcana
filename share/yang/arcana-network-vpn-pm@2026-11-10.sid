@@ -1,0 +1,258 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-network-vpn-pm",
+    "module-revision": "2026-11-10",
+    "sid-file-version": 0,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-network",
+        "module-revision": "2018-02-26"
+      },
+      {
+        "module-name": "ietf-network-topology",
+        "module-revision": "2018-02-26"
+      },
+      {
+        "module-name": "ietf-network-vpn-pm",
+        "module-revision": "2023-03-20"
+      },
+      {
+        "module-name": "ietf-vpn-common",
+        "module-revision": "2022-02-11"
+      },
+      {
+        "module-name": "ietf-inet-types",
+        "module-revision": "2025-12-22"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "93100",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-network-vpn-pm",
+        "sid": "93100"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "ipsec",
+        "sid": "93101"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "pm-source-icmp-echo",
+        "sid": "93102"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "wireguard",
+        "sid": "93103"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:dscp",
+        "sid": "93104"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:one-way-measured-at",
+        "sid": "93105"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics",
+        "sid": "93106"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics",
+        "sid": "93107"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/high-delay-percentile",
+        "sid": "93108"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/intermediate-delay-percentile",
+        "sid": "93109"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/low-delay-percentile",
+        "sid": "93110"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/max-delay-value",
+        "sid": "93111"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/min-delay-value",
+        "sid": "93112"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/unit-value",
+        "sid": "93113"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics",
+        "sid": "93114"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/high-jitter-percentile",
+        "sid": "93115"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/intermediate-jitter-percentile",
+        "sid": "93116"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/low-jitter-percentile",
+        "sid": "93117"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/max-jitter-value",
+        "sid": "93118"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/min-jitter-value",
+        "sid": "93119"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/unit-value",
+        "sid": "93120"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics",
+        "sid": "93121"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics/loss-ratio",
+        "sid": "93122"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics/packet-loss-count",
+        "sid": "93123"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:dscp",
+        "sid": "93124"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:one-way-measured-at",
+        "sid": "93125"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics",
+        "sid": "93126"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics",
+        "sid": "93127"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/high-delay-percentile",
+        "sid": "93128"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/intermediate-delay-percentile",
+        "sid": "93129"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/low-delay-percentile",
+        "sid": "93130"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/max-delay-value",
+        "sid": "93131"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/min-delay-value",
+        "sid": "93132"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/delay-statistics/unit-value",
+        "sid": "93133"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics",
+        "sid": "93134"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/high-jitter-percentile",
+        "sid": "93135"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/intermediate-jitter-percentile",
+        "sid": "93136"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/low-jitter-percentile",
+        "sid": "93137"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/max-jitter-value",
+        "sid": "93138"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/min-jitter-value",
+        "sid": "93139"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/jitter-statistics/unit-value",
+        "sid": "93140"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics",
+        "sid": "93141"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics/loss-ratio",
+        "sid": "93142"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-network:networks/network/ietf-network-topology:link/ietf-network-vpn-pm:perf-mon/pm/pm-attributes/one-way-pm-statistics-per-class/arcana-network-vpn-pm:round-trip-pm-statistics/loss-statistics/packet-loss-count",
+        "sid": "93143"
+      }
+    ]
+  }
+}

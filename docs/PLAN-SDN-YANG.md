@@ -3211,6 +3211,62 @@ whose first part is served.
 - 5.3.1 C: `ietf-network-vpn-pm`: one network per service and the
   underlay, two links per tunnel, `pm` entries from the agents'
   records; check: RFC 9375's examples' shape.
+  Done (console 0.422.0).  The console serves RFC 9375's view beside
+  the SAP network in /restconf/data/ietf-network:networks (vpnpm.c,
+  sapnet.c's task), made at each read of the L3NM kept, the plan's
+  tunnels (sdwan_plan_tunnels()) and, through the fleet mount, each
+  edge's host's arcana-probe state (its targets' pm) and arcana-stamp
+  sessions (the method); read alone, where the user may read the L3NM,
+  the pm of the hosts the user may read.  Network arcana:underlay (no
+  service: the network itself): a node each edge, a termination point
+  each UCS End Point a tunnel leaves by, a link each way between two
+  UCS End Points a tunnel joins, no pm yet (5.3.3).  Network
+  arcana:vpn:<vpn-id> a service, over it: network-types' service (the
+  L3NM's vpn-type, else l3vpn; vpn-id; vpn-service-topology), a node
+  each vpn-node (pe; its role a hub where an access's profile is,
+  spoke where all are, else any-to-any), a termination point each
+  tunnel interface over its UCS End Point, two links a tunnel (one
+  each way, each over the underlay's link), each link's perf-mon the
+  percentiles and length its figures were made with (the source end
+  target's, else the service's probe settings, else 10, 50, 90 and 60
+  s, all four said since RFC 9375's high default is 95), one pm entry,
+  pm-type-vpn-tunnel, of the last completed measurement interval, and
+  vpn-tunnel-type (gre; ip-in-ip for gif; geneve; Arcana's for wg and
+  uswe).  Every id an inet:uri (RFC 9911's pattern wants a scheme):
+  arcana:edge:, arcana:if:, arcana:ucs-ep:, arcana:tunnel:<tunnel>,
+  <from>,<to> and arcana:underlay:<from>,<to>; the underlay is over no
+  network, the SAP network's ids (a host's id, an interface's name)
+  being no URIs.  A link pair is filled so: a link from A to B takes
+  its one-way figures (loss by the sequence, delay and IPDV in
+  microseconds, the percentiles said non-zero) from A's target's
+  forward ones, else from B's backward ones of the interval of the
+  same start; RFC 9375's metrics are one-way alone, so the round trip
+  the source end measured is an augment's, and all an ICMP-measured
+  tunnel (or a STAMP one whose reflector's clock gave no one-way
+  delay) has.  Classes of service: RFC 9375's
+  one-way-pm-statistics-per-class, a class-id each of the service's
+  probe classes, filled the same way from the class's sessions.
+  `arcana-network-vpn-pm` (93 100), the console's: identities
+  wireguard and ipsec (`vpn-common` protocol types) and
+  pm-source-icmp-echo; in a pm's attributes and each per-class entry,
+  one-way-measured-at (source|destination), dscp and
+  round-trip-pm-statistics (RFC 9375's groupings).  pm-source is
+  pm-source-stamp or pm-source-icmp-echo as the session's method says.
+  `ietf-network-vpn-pm` (92 800) and `ietf-lime-time-types` (93 000,
+  its time units, imported alone) numbered in the experimental range.
+  A view not of the schema is left out and said in the log.  No page
+  yet.  Checked: console_test:sdwan_vpn_pm (stampd unprivileged on the
+  loopback, the agent's --stamp-port, sdwan_good's service with a low
+  percentile of 25, intervals of 2 s and class voice=46, its tunnels'
+  targets by STAMP: the networks before (links, no pm) and after an
+  interval; A.2's and A.3's shape: the service container, PEs with
+  roles, six links, each over the underlay's, perf-mon 25/50/90 and 2,
+  pm-type-vpn-tunnel, vpn-tunnel-type gre and ip-in-ip, pm-source-stamp,
+  start and end; the values against the agent's interval of that start:
+  the round trip's, its loss, the one way's where the clock allowed;
+  the class's entry, its DSCP and round trip; the underlay's nodes,
+  termination points and links; both networks valid by yanglint
+  (libyang 3) with the modules as published).
 - 5.3.2 A: typed TP counters from if_data; per-FIB route counts;
   check: equals `netstat`.
 - 5.3.3 A, C: underlay-link probes (the far edge's WAN address, FIB

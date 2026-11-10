@@ -24,7 +24,9 @@
  *					the console's own (l3nm.c)
  *	/restconf/data/ietf-network:networks
  *					the fleet's SAPs (RFC 9408), each
- *					host's node merged (sapnet.c)
+ *					host's node merged (sapnet.c); the
+ *					services' performance (RFC 9375),
+ *					read alone (vpnpm.c)
  *	/restconf/data/ietf-vn:access-point, virtual-network[/<api-path>]
  *					their VN view (RFC 9731), read
  *					alone (vn.c)

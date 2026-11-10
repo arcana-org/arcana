@@ -17,7 +17,9 @@
  * its interfaces termination points and an epair(4)'s two ends a link;
  * over it network arcana-sap, the same nodes with their SAPs.  A host
  * not read, or whose agent has no SAP network (a release before
- * 4.6.1), is left out.
+ * 4.6.1), is left out.  Beside them, where the user may read the
+ * L3NM, the services' performance view (RFC 9375, vpnpm.c): network
+ * arcana:underlay, and arcana:vpn:<vpn-id> each service over it.
  *
  * service-status is the console's, of the L3NM kept (where the user may
  * read it): an access names a SAP by its interface-id, the SAP's
@@ -545,8 +547,24 @@ sap_node(const ucl_object_t *sd, const char *sid, const ucl_object_t *y,
 	return (nd);
 }
 
+/* vpnpm.c's reads: path of host sid's entry, where it is one of r's. */
+static char *
+pm_get(void *arg, const char *sid, const char *path, int *status)
+{
+	struct snreq	*r = arg;
+
+	for (size_t i = 0; i < r->nh; i++)
+		if (strcmp(r->h[i].sid, sid) == 0)
+			return (hosts_restconf(r->h[i].sid, r->h[i].uri,
+			    r->h[i].peer, r->h[i].name, HTTP_METHOD_GET, path,
+			    NULL, status));
+	*status = 0;
+	return (NULL);
+}
+
 /* The fleet's SAP network and the physical network under it, of the
- * hosts of r: ietf-network:networks' value. */
+ * hosts of r, and the services' performance view: ietf-network:networks'
+ * value. */
 static ucl_object_t *
 merge(struct snreq *r)
 {
@@ -591,8 +609,6 @@ merge(struct snreq *r)
 		ucl_array_append(sn, sap_node(sd, r->h[i].sid, y, applied));
 		ucl_object_unref(sd);
 	}
-	if (y != NULL)
-		ucl_object_unref(y);
 	if (applied != NULL)
 		ucl_object_unref(applied);
 
@@ -616,6 +632,23 @@ merge(struct snreq *r)
 	list = arr();
 	ucl_array_append(list, phys);
 	ucl_array_append(list, sap);
+	/* The services' performance view (vpnpm.c), where it is of the
+	 * schema. */
+	if (y != NULL) {
+		a = arr();
+		vpnpm_networks(y, pm_get, r, a);
+		one = obj();
+		put(one, "network", a);
+		if (ucl_array_size(a) > 0 && !valid(one, why, sizeof(why)))
+			log_msg(LOG_WARNING, "the services' performance view "
+			    "left out: %s", why);
+		else
+			for (unsigned i = 0; at(a, i) != NULL; i++)
+				ucl_array_append(list, ucl_object_copy(at(a,
+				    i)));
+		ucl_object_unref(one);
+		ucl_object_unref(y);
+	}
 	nws = obj();
 	put(nws, "network", list);
 	return (nws);

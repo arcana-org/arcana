@@ -121,6 +121,11 @@ ARC_YFEATS+=	-F ietf-vpn-common:* -F ietf-l3vpn-ntw:*
 ARC_YMODS+=	ietf-vn@2025-03-27 ietf-te-types@2020-06-10 \
 		ietf-te-topology@2020-08-06 arcana-sdwan-underlay@2026-11-05
 ARC_YFEATS+=	-F ietf-vn:multi-src-dest
+# Their performance view (RFC 9375 over RFC 8345's networks, vpnpm.c),
+# read alone, with Arcana's augments; RFC 8532's time units its
+# identities' alone.
+ARC_YMODS+=	ietf-network-vpn-pm@2023-03-20 arcana-network-vpn-pm@2026-11-10
+ARC_YIMPORTS+=	ietf-lime-time-types@2019-04-16
 # The console's own configuration and state (cyang.c), from its files.
 ARC_YMODS+=	arcana-console@2026-11-05
 .endif

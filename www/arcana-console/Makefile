@@ -7,7 +7,7 @@ SRCS=		web.c keymgr.c routes.c api.c auth.c config.c hosts.c pki.c push.c server
 		sdwan_edge.c \
 		store.c update.c audit.c sen.c mail.c templates.c ldap.c labels.c notif.c prefixlists.c feeds.c users.c \
 		ytrans.c yjsonin.c restconf.c rcstream.c idsfiles.c drift.c \
-		l3nm.c l3nm_mef.c l3nm_plan.c vn.c cyang.c \
+		l3nm.c l3nm_mef.c l3nm_plan.c vn.c vpnpm.c cyang.c \
 		ycache.c sapnet.c \
 		cplug.c
 # A program compressed for agent-update, and one agent-build sent so:

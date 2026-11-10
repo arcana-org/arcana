@@ -184,6 +184,9 @@ on the wire.
 | 92 300 | 300 | `arcana-console`, its third range: the SD-WAN's verbs (their first in the second), the console's update, notes, cluster, CA, plugins, security keys, the path finder and the WireGuard key pair | `share/yang/arcana-console@2026-11-05.sid` (138 used) |
 | 92 600 | 100 | `arcana-stamp`, STAMP's sessions, the sender's settings and stampd as the agent sets it | `share/yang/arcana-stamp@2026-11-10.sid` (63 used, numbered again in path order with a session's class) |
 | 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2) | `share/yang/arcana-probe@2026-10-15.sid` (55 used) |
+| 92 800 | 200 | `ietf-network-vpn-pm@2023-03-20`, RFC 9375 (no IETF range): the services' performance view, the console's | `share/yang/ietf-network-vpn-pm@2023-03-20.sid` (116 used) |
+| 93 000 | 100 | `ietf-lime-time-types@2019-04-16`, RFC 8532 (no IETF range; imported by `ietf-network-vpn-pm`, its time units used) | `share/yang/ietf-lime-time-types@2019-04-16.sid` (14 used) |
+| 93 100 | 100 | `arcana-network-vpn-pm`, the performance view's augments: WireGuard and route-based IPsec as tunnel types, ICMP echo as a PM source, which end measured a link's one way, its DSCP and the round trip, the console's | `share/yang/arcana-network-vpn-pm@2026-11-10.sid` (44 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

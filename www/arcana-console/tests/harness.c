@@ -40,7 +40,7 @@ char		 harness_webconf[1024];	/* appended to web.conf */
 char		 harness_server[1024];	/* and inside its server { } */
 static char	 console_path[MAXPATHLEN];
 /* The agent's command line and stand-ins, for agent_restart(). */
-static char	*agent_argv[140];
+static char	*agent_argv[144];
 static char	 agent_fjl[MAXPATHLEN], agent_fjf[MAXPATHLEN + 8];
 
 static void	 terminate(const char *);
@@ -53,6 +53,7 @@ bool		 harness_newer_agent;
 /* The agent beside the console is looked for, as outside the tests. */
 bool		 harness_local_agent;
 bool		 harness_bird_watch;
+int		 harness_stamp_port;
 /* web.conf's local_agent is the test's own line. */
 bool		 harness_webconf_only_local;
 char		 harness_telegram_api[128];	/* the agent's Bot API, or "" */
@@ -255,9 +256,11 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 fstab[MAXPATHLEN], pdetc[MAXPATHLEN], surules[MAXPATHLEN];
 	char	 fjl[MAXPATHLEN], fjf[MAXPATHLEN + 8], tls[4 * MAXPATHLEN + 128];
 	char	 ca[MAXPATHLEN], acert[MAXPATHLEN], akey[MAXPATHLEN];
-	char	*argv[140];
+	char	 sport[16];
+	char	*argv[144];
 	FILE	*fp;
 	pid_t	 pid;
+	int	 n;
 
 	if (started_by == 0) {
 		started_by = getpid();
@@ -1454,20 +1457,26 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	/* Its configured subscriptions, the test's own. */
 	argv[130] = (char *)(uintptr_t)"--subscriptions";
 	argv[131] = (char *)(uintptr_t)"subscriptions.cbor";
-	argv[132] = NULL;
+	n = 132;
+	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
+	if (harness_stamp_port != 0) {
+		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);
+		argv[n++] = (char *)(uintptr_t)"--stamp-port";
+		argv[n++] = sport;
+	}
 	/* Its certificate, to reach the console's receiver. */
 	if (harness_tls_port != 0) {
 		snprintf(ca, sizeof(ca), "%s/ca.pem", cwd);
 		snprintf(acert, sizeof(acert), "%s/agent.pem", cwd);
 		snprintf(akey, sizeof(akey), "%s/agent.key", cwd);
-		argv[132] = (char *)(uintptr_t)"-A";
-		argv[133] = ca;
-		argv[134] = (char *)(uintptr_t)"-C";
-		argv[135] = acert;
-		argv[136] = (char *)(uintptr_t)"-K";
-		argv[137] = akey;
-		argv[138] = NULL;
+		argv[n++] = (char *)(uintptr_t)"-A";
+		argv[n++] = ca;
+		argv[n++] = (char *)(uintptr_t)"-C";
+		argv[n++] = acert;
+		argv[n++] = (char *)(uintptr_t)"-K";
+		argv[n++] = akey;
 	}
+	argv[n] = NULL;
 	snprintf(pdetc, sizeof(pdetc), "%s/pe", cwd);
 	snprintf(surules, sizeof(surules), "%s/rules", cwd);
 	snprintf(rootdir, sizeof(rootdir), "%s/root", cwd);
@@ -1506,7 +1515,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
 	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", fjl, 1) == 0);
-	for (int i = 0; i < 139 && argv[i] != NULL; i++) {
+	for (int i = 0; i < 143 && argv[i] != NULL; i++) {
 		free(agent_argv[i]);
 		agent_argv[i] = strdup(argv[i]);
 		agent_argv[i + 1] = NULL;

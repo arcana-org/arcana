@@ -1,0 +1,86 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "ietf-lime-time-types",
+    "module-revision": "2019-04-16",
+    "sid-file-version": 0,
+    "description": "No IETF range: RFC 9595's experimental range, for now (share/yang/SIDS.md).",
+    "assignment-range": [
+      {
+        "entry-point": "93000",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "ietf-lime-time-types",
+        "sid": "93000"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "hours",
+        "sid": "93001"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "icmp",
+        "sid": "93002"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "microseconds",
+        "sid": "93003"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "milliseconds",
+        "sid": "93004"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "minutes",
+        "sid": "93005"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "nanoseconds",
+        "sid": "93006"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "ntp64",
+        "sid": "93007"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "ptp80",
+        "sid": "93008"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "seconds",
+        "sid": "93009"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "time-unit-type",
+        "sid": "93010"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "timestamp-type",
+        "sid": "93011"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "truncated-ntp",
+        "sid": "93012"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "truncated-ptp",
+        "sid": "93013"
+      }
+    ]
+  }
+}

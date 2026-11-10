@@ -1,0 +1,121 @@
+module arcana-network-vpn-pm {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-network-vpn-pm";
+  prefix arcnvp;
+
+  import ietf-network {
+    prefix nw;
+    reference
+      "RFC 8345: A YANG Data Model for Network Topologies";
+  }
+  import ietf-network-topology {
+    prefix nt;
+    reference
+      "RFC 8345: A YANG Data Model for Network Topologies";
+  }
+  import ietf-network-vpn-pm {
+    prefix nvp;
+    reference
+      "RFC 9375: A YANG Data Model for Network and VPN Service
+       Performance Monitoring";
+  }
+  import ietf-vpn-common {
+    prefix vpn-common;
+    reference
+      "RFC 9181: A Common YANG Data Model for Layer 2 and Layer 3
+       VPNs";
+  }
+  import ietf-inet-types {
+    prefix inet;
+    reference
+      "RFC 9911: Common YANG Data Types";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "The console's: what RFC 9375's performance view of the SD-WAN
+     services has beyond ietf-network-vpn-pm.  The tunnel types RFC
+     9181 has no identity for (WireGuard, route-based IPsec), ICMP
+     echo as a PM source, and of a link's pm (RFC 9375's metrics all
+     one-way): which end measured its one-way figures, the DSCP its
+     probes went by, and the round trip its source end measured, the
+     only figures an ICMP-measured tunnel has.";
+
+  revision 2026-11-10 {
+    description
+      "Initial revision.";
+  }
+
+  identity wireguard {
+    base vpn-common:protocol-type;
+    description
+      "WireGuard, wg(4).";
+  }
+
+  identity ipsec {
+    base vpn-common:protocol-type;
+    description
+      "Route-based IPsec in tunnel mode, if_ipsec(4).";
+  }
+
+  identity pm-source-icmp-echo {
+    base nvp:pm-source-type;
+    description
+      "ICMP echo (RFC 792, RFC 4443): a round trip, no one-way
+       figures.";
+  }
+
+  grouping arcana-pm {
+    description
+      "What Arcana tells of a link's measurement beyond RFC 9375's.";
+    leaf one-way-measured-at {
+      type enumeration {
+        enum source {
+          description
+            "The link's source end measured them: its STAMP session's
+             forward direction.";
+        }
+        enum destination {
+          description
+            "The link's destination end measured them: its STAMP
+             session's backward direction, the reflected packets
+             going the link's way.";
+        }
+      }
+      description
+        "Which end's STAMP session the one-way figures are of; none
+         where there are none (ICMP echo, a reflector whose clock
+         said nothing to go by).";
+    }
+    leaf dscp {
+      type inet:dscp;
+      description
+        "The DSCP the probes went by.";
+    }
+    container round-trip-pm-statistics {
+      description
+        "The round trip the link's source end measured, there and
+         back: the tunnel both ways, not the link alone.";
+      uses nvp:link-loss-statistics;
+      uses nvp:link-delay-statistics;
+      uses nvp:link-jitter-statistics;
+    }
+  }
+
+  augment "/nw:networks/nw:network/nt:link/nvp:perf-mon/nvp:pm"
+        + "/nvp:pm-attributes" {
+    description
+      "Of the target's own session.";
+    uses arcana-pm;
+  }
+
+  augment "/nw:networks/nw:network/nt:link/nvp:perf-mon/nvp:pm"
+        + "/nvp:pm-attributes/nvp:one-way-pm-statistics-per-class" {
+    description
+      "Of a class's session.";
+    uses arcana-pm;
+  }
+}

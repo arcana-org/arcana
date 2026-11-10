@@ -16681,6 +16681,375 @@ ATF_TC_BODY(sdwan_apply_steer, tc)
 
 #undef	ST
 
+/*
+ * The services' performance view (PLAN-SDN-YANG 5.3.1, RFC 9375):
+ * networks arcana:underlay and arcana:vpn:<vpn-id> beside the SAP
+ * network, in the shape of RFC 9375 Appendix A.2 and A.3, made of the
+ * plan's tunnels and what the agent measured.
+ */
+
+/* Entry key=id of list member l of o; NULL: none. */
+static const ucl_object_t *
+pm_entry(const ucl_object_t *o, const char *l, const char *key,
+    const char *id)
+{
+	const ucl_object_t	*e, *k;
+	ucl_object_iter_t	 it = NULL;
+
+	while ((e = ucl_object_iterate(ucl_object_lookup(o, l), &it, true)) !=
+	    NULL)
+		if ((k = ucl_object_lookup(e, key)) != NULL &&
+		    strcmp(ucl_object_tostring_forced(k), id) == 0)
+			return (e);
+	return (NULL);
+}
+
+static const char *
+pm_str(const ucl_object_t *o, const char *path)
+{
+	const ucl_object_t	*v;
+
+	if (o == NULL || (v = ucl_object_lookup_path(o, path)) == NULL)
+		return (NULL);
+	return (ucl_object_tostring_forced(v));
+}
+
+/* Whether RFC 9375's statistics s (delay or jitter, what) are interval
+ * figures f's (min, max, the three percentiles, microseconds). */
+static bool
+pm_same(const ucl_object_t *s, const char *what, const ucl_object_t *f,
+    char *why, size_t len)
+{
+	static const char *const lv[] = { "low", "intermediate", "high" };
+	char	k[64], fk[64];
+
+	if (s == NULL || f == NULL) {
+		snprintf(why, len, "%s: none", what);
+		return (false);
+	}
+	if (pm_str(s, "unit-value") == NULL || strcmp(pm_str(s, "unit-value"),
+	    "ietf-lime-time-types:microseconds") != 0) {
+		snprintf(why, len, "%s: unit %s", what, pm_str(s, "unit-value"));
+		return (false);
+	}
+	snprintf(k, sizeof(k), "min-%s-value", what);
+	if (pm_str(s, k) == NULL || pm_str(f, "min") == NULL ||
+	    strcmp(pm_str(s, k), pm_str(f, "min")) != 0) {
+		snprintf(why, len, "%s %s != %s", k, pm_str(s, k), pm_str(f,
+		    "min"));
+		return (false);
+	}
+	snprintf(k, sizeof(k), "max-%s-value", what);
+	if (pm_str(s, k) == NULL || strcmp(pm_str(s, k), pm_str(f, "max")) !=
+	    0) {
+		snprintf(why, len, "%s %s", k, pm_str(s, k));
+		return (false);
+	}
+	for (size_t i = 0; i < nitems(lv); i++) {
+		snprintf(k, sizeof(k), "%s-%s-percentile", lv[i], what);
+		snprintf(fk, sizeof(fk), "%s-percentile", lv[i]);
+		if (pm_str(s, k) == NULL || pm_str(f, fk) == NULL ||
+		    strcmp(pm_str(s, k), pm_str(f, fk)) != 0) {
+			snprintf(why, len, "%s %s != %s", k, pm_str(s, k),
+			    pm_str(f, fk));
+			return (false);
+		}
+	}
+	return (true);
+}
+
+CONSOLE_TC(sdwan_vpn_pm, "The services' performance view (RFC 9375): the "
+    "underlay and a network a service in ietf-network:networks, two links "
+    "a tunnel, each one's pm of the agent's last completed measurement "
+    "interval (the percentiles and length the service sets, a class's "
+    "own), in the shape of RFC 9375's examples, valid by yanglint")
+ATF_TC_BODY(sdwan_vpn_pm, tc)
+{
+	struct authn		 a;
+	struct resp		 r, st;
+	const ucl_object_t	*nw, *un, *n, *l, *pa, *t, *iv, *c, *cs;
+	const char		*sd, *start;
+	char			 sa[16], sb[16], doc[8192], t1[8192], lifn[32];
+	char			 laddr[64], path[512], cand[256], data[256];
+	char			 port[16], why[200], lid[256], *json;
+	char			 ea[64], eb[64];
+	char			*argv[12];
+	FILE			*fp;
+	int			 i, p;
+
+	/* Under MAKEOBJDIRPREFIX, or in the submodule's own obj/. */
+	sd = locate(tc, "../../../stamp/usr.sbin/stampd/stampd", "stampd",
+	    "/usr/local/sbin/stampd");
+	if (access(sd, X_OK) != 0)
+		sd = locate(tc, "../../../../stamp/obj/usr.sbin/stampd/stampd",
+		    "stampd", "/usr/local/sbin/stampd");
+	if (sd == NULL || access(sd, X_OK) != 0)
+		atf_tc_skip("no stampd (the submodule stamp/)");
+	/* A stampd of the test's on the loopback, the agent's far end. */
+	p = 20000 + (int)arc4random_uniform(40000);
+	snprintf(port, sizeof(port), "%d", p);
+	argv[0] = __DECONST(char *, sd);
+	argv[1] = __DECONST(char *, "-d");
+	argv[2] = __DECONST(char *, "-r");
+	argv[3] = __DECONST(char *, "0");
+	argv[4] = __DECONST(char *, "-R");
+	argv[5] = __DECONST(char *, "0");
+	argv[6] = __DECONST(char *, "-p");
+	argv[7] = port;
+	argv[8] = NULL;
+	(void)spawn(argv, "stampd.out");
+	for (i = 0; i < 100 && system("grep -q started stampd.out") != 0; i++)
+		usleep(50000);
+	ATF_REQUIRE_MSG(i < 100, "stampd did not start");
+	harness_stamp_port = p;
+
+	/* The service: its probes' percentiles, a measurement interval of
+	 * 2 s, and a class of service. */
+	sdwan_apply_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc), lifn,
+	    sizeof(lifn), laddr, sizeof(laddr));
+	ATF_REQUIRE(swap_in(doc, "\"bfd\":{\"interval\":200,\"multiplier\":3},",
+	    "\"bfd\":{\"interval\":200,\"multiplier\":3},\"probe\":{"
+	    "\"low_percentile\":25,\"measurement_interval\":2,\"classes\":[{"
+	    "\"name\":\"voice\",\"dscp\":46}]},", t1, sizeof(t1)));
+	ATF_REQUIRE(swap_in(t1, "\"version\":0,", "\"version\":1,", doc,
+	    sizeof(doc)));
+	r4_keep(doc, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+
+	/* Nothing measured yet: the networks, their links without pm. */
+	http("GET", "/restconf/data/ietf-network:networks", NULL, &r);
+	EXPECT(&r, 200);
+	nw = ucl_object_lookup(r.json, "ietf-network:networks");
+	ATF_REQUIRE_MSG(pm_entry(nw, "network", "network-id",
+	    "arcana-physical") != NULL && pm_entry(nw, "network", "network-id",
+	    "arcana-sap") != NULL && pm_entry(nw, "network", "network-id",
+	    "arcana:underlay") != NULL && (n = pm_entry(nw, "network",
+	    "network-id", "arcana:vpn:acme")) != NULL, "%s", r.body);
+	snprintf(lid, sizeof(lid), "arcana:tunnel:acme/a-inet-b-inet,a-inet,"
+	    "b-inet");
+	snprintf(ea, sizeof(ea), "arcana:edge:%s", sa);
+	snprintf(eb, sizeof(eb), "arcana:edge:%s", sb);
+	l = pm_entry(n, "ietf-network-topology:link", "link-id", lid);
+	ATF_REQUIRE_MSG(l != NULL, "%s", r.body);
+	ATF_CHECK_MSG(pm_str(l, "ietf-network-vpn-pm:perf-mon.pm") == NULL,
+	    "%s", r.body);
+	resp_free(&r);
+
+	/*
+	 * Each tunnel's target at the agent as the apply would make it, by
+	 * STAMP to the test's stampd, with the service's settings.
+	 */
+	snprintf(data, sizeof(data), FLEET "%s", sa);
+	snprintf(cand, sizeof(cand), "/restconf/ds/ietf-datastores:candidate/"
+	    "arcana-fleet:fleet/host=%s", sa);
+	snprintf(path, sizeof(path), "%s/arcana-probe:probes", cand);
+	http("PUT", path, "{\"arcana-probe:probes\":{\"target\":["
+	    "{\"id\":\"acme/a-inet-b-inet\",\"address\":\"127.0.0.1\","
+	    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
+	    "\"low-percentile\":\"25\",\"measurement-interval\":2,"
+	    "\"class\":[{\"name\":\"voice\",\"dscp\":46}]},"
+	    "{\"id\":\"acme/a-mpls-b-mpls\",\"address\":\"127.0.0.1\","
+	    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
+	    "\"low-percentile\":\"25\",\"measurement-interval\":2}]}}", &r);
+	ATF_REQUIRE_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, "{}", 204, NULL);
+
+	/* Until an interval of 2 s has ended and is in the view. */
+	snprintf(path, sizeof(path), "/restconf/data/ietf-network:networks/"
+	    "network=arcana:vpn:acme");
+	for (i = 0; i < 100; i++) {
+		http("GET", path, NULL, &r);
+		EXPECT(&r, 200);
+		n = ucl_array_find_index(ucl_object_lookup(r.json,
+		    "ietf-network:network"), 0);
+		l = pm_entry(n, "ietf-network-topology:link", "link-id", lid);
+		if (pm_str(l, "ietf-network-vpn-pm:perf-mon.pm") != NULL &&
+		    (c = ucl_array_find_index(ucl_object_lookup_path(l,
+		    "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
+		    "one-way-pm-statistics-per-class"), 0)) != NULL)
+			break;
+		resp_free(&r);
+		usleep(200000);
+	}
+	ATF_REQUIRE_MSG(i < 100, "no interval in the view: %s", r.body);
+
+	/* RFC 9375 Appendix A.2's shape: the service, its nodes PEs. */
+	ATF_CHECK_STREQ("arcana:vpn:acme", pm_str(n, "network-id"));
+	ATF_CHECK_STREQ("acme", pm_str(n, "network-types."
+	    "ietf-network-vpn-pm:service.vpn-id"));
+	ATF_CHECK_STREQ("ietf-vpn-common:l3vpn", pm_str(n, "network-types."
+	    "ietf-network-vpn-pm:service.service-type"));
+	ATF_CHECK(pm_str(n, "network-types.ietf-network-vpn-pm:service."
+	    "vpn-service-topology") != NULL);
+	ATF_CHECK_STREQ("arcana:underlay", pm_str(n,
+	    "supporting-network.0.network-ref"));
+	for (i = 0; i < 2; i++) {
+		t = pm_entry(n, "node", "node-id", i == 0 ? ea : eb);
+		ATF_CHECK_MSG(t != NULL && strcmp(pm_str(t,
+		    "ietf-network-vpn-pm:node-type"), "ietf-network-vpn-pm:pe") ==
+		    0 && pm_str(t, "ietf-network-vpn-pm:role") != NULL &&
+		    strcmp(pm_str(t, "supporting-node.0.network-ref"),
+		    "arcana:underlay") == 0 && pm_str(t,
+		    "ietf-network-topology:termination-point.1.tp-id") != NULL,
+		    "%s", r.body);
+	}
+	/* Two links a tunnel (inet's, mpls', the control plane's), one
+	 * each way, each over the underlay's. */
+	ATF_CHECK_EQ(6, (int)ucl_array_size(ucl_object_lookup(n,
+	    "ietf-network-topology:link")));
+	ATF_CHECK_STREQ(ea, pm_str(l, "source.source-node"));
+	ATF_CHECK_STREQ(eb, pm_str(l, "destination.dest-node"));
+	ATF_CHECK_MSG(pm_str(l, "source.source-tp") != NULL && strncmp(pm_str(
+	    l, "source.source-tp"), "arcana:if:gre", 13) == 0, "%s", r.body);
+	ATF_CHECK_STREQ("arcana:underlay:a-inet,b-inet", pm_str(l,
+	    "supporting-link.0.link-ref"));
+	t = pm_entry(n, "ietf-network-topology:link", "link-id",
+	    "arcana:tunnel:acme/a-inet-b-inet,b-inet,a-inet");
+	ATF_CHECK_MSG(t != NULL && strcmp(pm_str(t, "source.source-node"), eb) ==
+	    0 && strcmp(pm_str(t, "destination.dest-node"), ea) == 0, "%s",
+	    r.body);
+	t = pm_entry(n, "ietf-network-topology:link", "link-id",
+	    "arcana:tunnel:acme/a-mpls-b-mpls,a-mpls,b-mpls");
+	ATF_CHECK_STREQ("ietf-vpn-common:ip-in-ip", pm_str(t,
+	    "ietf-network-vpn-pm:perf-mon.vpn-pm-type.vpn-tunnel."
+	    "vpn-tunnel-type"));
+	/* A.3's: the percentiles the service set, Arcana's high 90. */
+	ATF_CHECK_STREQ("25.000", pm_str(l, "ietf-network-vpn-pm:perf-mon."
+	    "low-percentile"));
+	ATF_CHECK_STREQ("50.000", pm_str(l, "ietf-network-vpn-pm:perf-mon."
+	    "intermediate-percentile"));
+	ATF_CHECK_STREQ("90.000", pm_str(l, "ietf-network-vpn-pm:perf-mon."
+	    "high-percentile"));
+	ATF_CHECK_STREQ("2", pm_str(l, "ietf-network-vpn-pm:perf-mon."
+	    "measurement-interval"));
+	ATF_CHECK_STREQ("ietf-network-vpn-pm:pm-type-vpn-tunnel", pm_str(l,
+	    "ietf-network-vpn-pm:perf-mon.pm.0.pm-type"));
+	ATF_CHECK_STREQ("ietf-vpn-common:gre", pm_str(l,
+	    "ietf-network-vpn-pm:perf-mon.vpn-pm-type.vpn-tunnel."
+	    "vpn-tunnel-type"));
+	pa = ucl_object_lookup_path(l, "ietf-network-vpn-pm:perf-mon.pm.0."
+	    "pm-attributes");
+	ATF_CHECK_STREQ("ietf-network-vpn-pm:pm-source-stamp", pm_str(pa,
+	    "pm-source"));
+	ATF_REQUIRE((start = pm_str(pa, "start-time")) != NULL);
+	ATF_CHECK(pm_str(pa, "end-time") != NULL);
+	ATF_CHECK_STREQ("voice", pm_str(c, "class-id"));
+	ATF_CHECK_STREQ("46", pm_str(c, "arcana-network-vpn-pm:dscp"));
+
+	/*
+	 * The values mapped: the agent's interval of that start, the
+	 * one-way figures its forward direction's (where the reflector's
+	 * clock allowed one way), the round trip the augment's.
+	 */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-probe:probes/state", sa);
+	rc_get(path, &st);
+	EXPECT(&st, 200);
+	t = pm_entry(ucl_object_lookup_path(st.json, "arcana-probe:state"),
+	    "target", "id", "acme/a-inet-b-inet");
+	iv = pm_entry(ucl_object_lookup_path(t, "pm"), "interval", "start",
+	    start);
+	ATF_REQUIRE_MSG(iv != NULL, "no interval %s: %s", start, st.body);
+	ATF_CHECK_STREQ("true", pm_str(iv, "complete"));
+	ATF_CHECK_MSG(pm_same(ucl_object_lookup_path(pa, "arcana-network-vpn-pm:"
+	    "round-trip-pm-statistics.delay-statistics"), "delay",
+	    ucl_object_lookup(iv, "round-trip"), why, sizeof(why)), "round "
+	    "trip: %s", why);
+	ATF_CHECK_STREQ(pm_str(iv, "loss.count"), pm_str(pa,
+	    "arcana-network-vpn-pm:round-trip-pm-statistics.loss-statistics."
+	    "packet-loss-count"));
+	if (pm_str(iv, "forward.count") != NULL && atoi(pm_str(iv,
+	    "forward.count")) > 0) {
+		ATF_CHECK_STREQ("source", pm_str(pa,
+		    "arcana-network-vpn-pm:one-way-measured-at"));
+		ATF_CHECK_MSG(pm_same(ucl_object_lookup_path(pa,
+		    "one-way-pm-statistics.delay-statistics"), "delay",
+		    ucl_object_lookup(iv, "forward"), why, sizeof(why)),
+		    "one way: %s", why);
+		ATF_CHECK_MSG(pm_same(ucl_object_lookup_path(pa,
+		    "one-way-pm-statistics.jitter-statistics"), "jitter",
+		    ucl_object_lookup_path(iv, "jitter.forward"), why,
+		    sizeof(why)), "one way's jitter: %s", why);
+		ATF_CHECK_STREQ(pm_str(iv, "loss.forward-count"), pm_str(pa,
+		    "one-way-pm-statistics.loss-statistics.packet-loss-count"));
+	} else
+		ATF_CHECK_MSG(pm_str(pa, "one-way-pm-statistics") == NULL,
+		    "one way where the agent has none: %s", r.body);
+	/* The class's own session. */
+	cs = NULL;
+	{
+		const ucl_object_t	*e;
+		ucl_object_iter_t	 it = NULL;
+
+		while ((e = ucl_object_iterate(ucl_object_lookup_path(st.json,
+		    "arcana-probe:state.target"), &it, true)) != NULL)
+			if (pm_str(e, "class") != NULL && strcmp(pm_str(e,
+			    "class"), "voice") == 0 && strcmp(pm_str(e, "id"),
+			    "acme/a-inet-b-inet") == 0)
+				cs = e;
+	}
+	iv = pm_entry(ucl_object_lookup(cs, "pm"), "interval", "start", start);
+	if (iv != NULL)
+		ATF_CHECK_MSG(pm_same(ucl_object_lookup_path(c,
+		    "arcana-network-vpn-pm:round-trip-pm-statistics."
+		    "delay-statistics"), "delay", ucl_object_lookup(iv,
+		    "round-trip"), why, sizeof(why)), "voice's round trip: %s",
+		    why);
+	resp_free(&st);
+
+	/* The underlay: no service, the edges, a link each way between two
+	 * UCS End Points. */
+	http("GET", "/restconf/data/ietf-network:networks/"
+	    "network=arcana:underlay", NULL, &st);
+	EXPECT(&st, 200);
+	un = ucl_array_find_index(ucl_object_lookup(st.json,
+	    "ietf-network:network"), 0);
+	ATF_CHECK(pm_str(un, "network-types.ietf-network-vpn-pm:service") ==
+	    NULL);
+	t = pm_entry(un, "node", "node-id", ea);
+	ATF_CHECK_MSG(t != NULL && pm_entry(t,
+	    "ietf-network-topology:termination-point", "tp-id",
+	    "arcana:ucs-ep:a-inet") != NULL && pm_entry(t,
+	    "ietf-network-topology:termination-point", "tp-id",
+	    "arcana:ucs-ep:a-mpls") != NULL, "%s", st.body);
+	ATF_CHECK_MSG(pm_entry(un, "ietf-network-topology:link", "link-id",
+	    "arcana:underlay:a-inet,b-inet") != NULL && pm_entry(un,
+	    "ietf-network-topology:link", "link-id",
+	    "arcana:underlay:b-mpls,a-mpls") != NULL, "%s", st.body);
+
+	/* Valid by libyang too: both networks, the modules as published. */
+	if (access("/usr/local/bin/yanglint", X_OK) == 0) {
+		ucl_object_t	*top, *nws, *list;
+
+		list = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(list, ucl_object_copy(un));
+		ucl_array_append(list, ucl_object_copy(n));
+		nws = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(nws, list, "network", 0, false);
+		top = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(top, nws, "ietf-network:networks", 0,
+		    false);
+		json = (char *)ucl_object_emit(top, UCL_EMIT_JSON);
+		ucl_object_unref(top);
+		ATF_REQUIRE((fp = fopen("vpnpm.json", "w")) != NULL);
+		fputs(json, fp);
+		fclose(fp);
+		free(json);
+		snprintf(path, sizeof(path), "cd %s/../../../share/yang && "
+		    "/usr/local/bin/yanglint -i -t get -f json "
+		    "-F ietf-vpn-common:'*' ietf-network-vpn-pm@2023-03-20.yang "
+		    "arcana-network-vpn-pm@2026-11-10.yang \"$OLDPWD/vpnpm.json\" "
+		    "> \"$OLDPWD/yanglint.out\" 2>&1", TESTSRC);
+		if (system(path) != 0)
+			show("yanglint.out");
+		ATF_CHECK_MSG(system(path) == 0, "yanglint refused the view");
+	}
+	resp_free(&st);
+	resp_free(&r);
+}
+
 CONSOLE_TC_LONG(sdwan_apply_change, "SD-WAN changed on the edges: the MPLS no "
     "longer the service's, its tunnel taken away")
 ATF_TC_BODY(sdwan_apply_change, tc)
@@ -21849,6 +22218,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, workflows);
 	ATF_TP_ADD_TC(tp, troubleshoot);
 	ATF_TP_ADD_TC(tp, sdwan_apply_plan);
+	ATF_TP_ADD_TC(tp, sdwan_vpn_pm);
 	ATF_TP_ADD_TC(tp, telegram);
 	ATF_TP_ADD_TC(tp, telegram_workflow);
 	ATF_TP_ADD_TC(tp, cluster_catchup);

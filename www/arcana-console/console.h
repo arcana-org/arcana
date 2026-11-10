@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.421.0"
+#define	ARCW_VERSION		"0.422.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -505,6 +505,15 @@ ucl_object_t	*sdwan_applied(void);
 int		 api_sapnet(struct http_request *);
 void		 api_sapnet_free(struct http_request *);
 int		 api_sapnet_attach(struct http_request *);
+/*
+ * vpnpm.c: the services' performance view (RFC 9375), the underlay's
+ * network and one a service of L3NM y appended to list (ietf-network's
+ * network list), what the agents measured read by get: path of host
+ * sid's fleet entry, its JSON (malloc'd) and status; NULL, not read.
+ */
+typedef char	*vpnpm_get_fn(void *, const char *, const char *, int *);
+void		 vpnpm_networks(const ucl_object_t *, vpnpm_get_fn *, void *,
+		    ucl_object_t *);
 /* vn.c: the services' customer view (RFC 9731), made of the L3NM kept. */
 bool		 vn_path(const char *);
 ucl_object_t	*vn_view(struct http_request *, const ucl_object_t *);
