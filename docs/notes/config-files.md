@@ -32,6 +32,9 @@ commented out any more. Accepted:
     untouched; rc(8) reads Arcana's file last, so it wins without
     hiding the admin's words.
   - `system`: the merge is written where the admin's line is.
+  - A list Arcana only adds to (`cf_additive`: `stampd_fibs`, the
+    FIBs `gula/stampd.c` writes) is no conflict to accept: none of
+    the admin's words is ever taken out, only Arcana's own.
 - A value (a scalar, or anything a merge of words cannot express) is
   not written: the commit is refused again with `rc-conf-merge`, the
   rows kept as `pending` (file, line, the admin's value, Arcana's).

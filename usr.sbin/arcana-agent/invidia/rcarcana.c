@@ -25,7 +25,8 @@
  * Arcana's not among them, a word the commit takes out (one Arcana
  * had, or the caller read) out of it; in Arcana's file (theirs left as
  * it is, Arcana's read last wins without hiding their words) or where
- * theirs is.  A value that no merge of words gives is refused again,
+ * theirs is.  A list Arcana only adds to (cf_list_additive(): stampd's
+ * FIBs) loses none of their words and is no conflict.  A value that no merge of words gives is refused again,
  * rc-conf-merge, its rows kept as pending for the page's merge editor:
  * resolve's value for it, or Arcana's with the warning accepted, is
  * written then.  The ledger keeps what Arcana changed of theirs (the
@@ -215,28 +216,35 @@ saw(struct rca *x, const char *name, const char *value)
 }
 
 const char *
+rca_user_get(struct rca *x, const char *name)
+{
+	const struct vc_assign	*a;
+	char			 err[128];
+
+	if (x->uf == NULL) {
+		if ((x->uf = calloc(x->nuser + 1, sizeof(*x->uf))) == NULL)
+			return (NULL);
+		for (size_t i = 0; i < x->nuser; i++)
+			if (vc_read(&x->uf[i], VC_SH, x->user[i], err,
+			    sizeof(err)) == -1)
+				memset(&x->uf[i], 0, sizeof(x->uf[i]));
+	}
+	for (size_t i = x->nuser; i-- > 0; )
+		if ((a = vc_get(&x->uf[i], name)) != NULL)
+			return (a->value != NULL ? a->value : "");
+	return (NULL);
+}
+
+const char *
 rca_get(struct rca *x, const char *name)
 {
 	const struct vc_assign	*a;
-	const char		*v = NULL;
-	char			 err[128];
+	const char		*v;
 
 	if ((a = vc_get(x->f, name)) != NULL)
 		v = a->value != NULL ? a->value : "";
-	else {
-		if (x->uf == NULL) {
-			if ((x->uf = calloc(x->nuser + 1, sizeof(*x->uf))) ==
-			    NULL)
-				return (NULL);
-			for (size_t i = 0; i < x->nuser; i++)
-				if (vc_read(&x->uf[i], VC_SH, x->user[i], err,
-				    sizeof(err)) == -1)
-					memset(&x->uf[i], 0, sizeof(x->uf[i]));
-		}
-		for (size_t i = x->nuser; v == NULL && i-- > 0; )
-			if ((a = vc_get(&x->uf[i], name)) != NULL)
-				v = a->value != NULL ? a->value : "";
-	}
+	else
+		v = rca_user_get(x, name);
 	saw(x, name, v);
 	return (v);
 }
@@ -462,6 +470,37 @@ eq(const char *a, const char *b)
 	return (a != NULL && b != NULL && strcmp(a, b) == 0);
 }
 
+/*
+ * A list Arcana only adds to (cf_list_additive()): of the words it had
+ * that p has not, those that are not the admin's.  Theirs: in Arcana's
+ * file mode, all their file has; where Arcana writes into their file,
+ * what it has less Arcana's own (the ledger's) that were not theirs
+ * before.
+ */
+static char *
+additive_removed(const struct rca *x, const struct op *o, const char *prev)
+{
+	const char	*uv = o->u->value != NULL ? o->u->value : "";
+	char		*gone, *theirs, *added, *r;
+
+	if ((gone = cf_minus(prev != NULL ? prev : "", o->p != NULL ? o->p :
+	    "")) == NULL)
+		return (NULL);
+	if (!x->sys || o->led == NULL || o->led->arcana == NULL)
+		theirs = strdup(uv);
+	else if ((added = cf_minus(o->led->arcana, o->led->before != NULL ?
+	    o->led->before : "")) == NULL)
+		theirs = NULL;
+	else {
+		theirs = cf_minus(uv, added);
+		free(added);
+	}
+	r = theirs != NULL ? cf_minus(gone, theirs) : NULL;
+	free(theirs);
+	free(gone);
+	return (r);
+}
+
 /* The words a commit takes out of name: those the caller saw, or
  * Arcana had, that p has not. */
 static char *
@@ -477,6 +516,8 @@ removed(const struct rca *x, const struct op *o)
 		prev = o->led->arcana;
 	else if ((b = vc_get(x->base, o->name)) != NULL)
 		prev = b->value;
+	if (o->u != NULL && cf_list_additive(o->name))
+		return (additive_removed(x, o, prev));
 	return (cf_minus(prev != NULL ? prev : "", o->p != NULL ? o->p :
 	    ""));
 }
@@ -640,8 +681,10 @@ rca_write(struct rca *x, cbl_req *req, char *err, size_t errlen)
 			free(r);
 			if (error != 0)
 				break;
-			o->conflict = !o->approved && !cf_same_words(o->val,
-			    o->p);
+			/* Added to theirs alone, nothing of theirs taken
+			 * out: no conflict. */
+			o->conflict = !o->approved && !cf_list_additive(o->name) &&
+			    !cf_same_words(o->val, o->p);
 			o->write = x->sys ? !eq(o->val, uv) : true;
 			continue;
 		}

@@ -130,6 +130,8 @@ void	rca_undo(struct rca *x);
  * user's files that sets it; NULL, none.  rca_set(): name's value in
  * Arcana's file ("" ends a list of aliases, as rc(8) reads it). */
 const char *rca_get(struct rca *x, const char *name);
+/* What the last of the user's files that sets name has; NULL, none. */
+const char *rca_user_get(struct rca *x, const char *name);
 int	rca_set(struct rca *x, const char *name, const char *value,
 	    char *err, size_t errlen);
 /* name taken out: of Arcana's file at once, of the user's files by
@@ -197,6 +199,7 @@ bool	cf_arcana_at_boot(void);
 const char *cf_not_at_boot(void);
 const char *cf_ipfw_home(void);
 bool	cf_list_var(const char *name);
+bool	cf_list_additive(const char *name);
 const char *cf_rooted(char *buf, size_t len, const char *path);
 const char *cf_unrooted(const char *path);
 char	*cf_merge(const char *yours, const char *arcana, const char *removed);

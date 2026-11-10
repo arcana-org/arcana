@@ -973,7 +973,10 @@ and
 the FIBs of the host's probe targets and steered routes, as it writes
 the rest of
 .Xr rc.conf 5
-(Arcana's file or the admin's, by config-files), and runs
+(Arcana's file or the admin's, by config-files);
+.Va stampd_fibs
+is a word list: Arcana's FIBs are added after the admin's, and only its
+own are taken out; it runs
 .Ql service stampd reload ,
 which starts it in a FIB added, stops it in one gone and tells the
 others; with no such FIB, what it set is taken out and stampd stopped.

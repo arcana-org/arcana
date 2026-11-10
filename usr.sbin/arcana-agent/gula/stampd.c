@@ -14,8 +14,10 @@
  * commit writes rc.conf (rca_*: Arcana's file or the admin's, by
  * config-files), and has "service stampd reload" start the instances
  * of FIBs added (one a FIB, rc.subr's stampd_fib), stop those of FIBs
- * gone and tell the others.  No service, no setting: what Arcana set
- * taken out, stampd stopped; what the admin set left alone.
+ * gone and tell the others.  stampd_fibs is a word list: Arcana's FIBs
+ * added to the admin's, its own alone taken out.  No service, no
+ * setting: what Arcana set taken out, stampd stopped; what the admin
+ * set left alone.
  *
  * Looked at again a moment after the probes or the routes change
  * (stampd_nudge()), the changes of that moment together, and every
@@ -166,8 +168,37 @@ service(struct work *w, const char *verb, char *err, size_t errlen)
 	return (-1);
 }
 
-/* rc.conf made to say what want says (n FIBs), and stampd told.  Under
- * change_lock. */
+/*
+ * Does stampd_fibs (fb, as rca_get() has it) say want already?  A word
+ * list Arcana only adds to (cf_list_additive()): the admin's FIBs kept,
+ * Arcana's after them.  In Arcana's file, theirs merged with want; where
+ * Arcana writes into theirs, fb is Arcana's own (the ledger's), or
+ * theirs while Arcana wrote none.
+ */
+static bool
+said_already(struct rca *x, const char *fb, const char *want)
+{
+	const char	*theirs;
+	char		*m;
+	bool		 same;
+
+	if (x->sys)
+		return (cf_same_words(fb, want));
+	if ((theirs = rca_user_get(x, STAMPD "_fibs")) == NULL)
+		return (cf_same_words(fb, want));
+	if ((m = cf_merge(theirs, want, "")) == NULL)
+		return (false);
+	same = cf_same_words(fb, m);
+	free(m);
+	return (same);
+}
+
+/*
+ * rc.conf made to say what want says (n FIBs), and stampd told: want
+ * Arcana's FIBs, added to the admin's stampd_fibs (a word list,
+ * cf_list_additive()); the FIBs Arcana takes out its own alone.  Under
+ * change_lock.
+ */
 static void
 apply(struct work *w, const char *want, int n)
 {
@@ -192,7 +223,7 @@ apply(struct work *w, const char *want, int n)
 		rca_close(&x);
 		return;
 	}
-	if (n > 0 && yes(en) && fb != NULL && strcmp(fb, want) == 0) {
+	if (n > 0 && yes(en) && fb != NULL && said_already(&x, fb, want)) {
 		(void)strlcpy(applied, want, sizeof(applied));
 		known = true;
 		rca_close(&x);

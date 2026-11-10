@@ -87,21 +87,46 @@ static const char *const cf_lists[] = {
 	"ldconfig_local32_dirs", "altlog_proglist", "msconvd_ports",
 	"devfs_set_rulesets", "zfskeys_datasets",
 	"vlans_*", "wlans_*", "ipv4_addrs_*",
+	/* The ports' rc scripts Arcana drives: stamp's FIBs. */
+	"stampd_fibs",
 };
+
+/*
+ * The word lists Arcana only adds to (cf_list_additive()): what it
+ * writes is its own words, gula/stampd.c's FIBs; the admin's words are
+ * kept whatever Arcana's are, never taken out by Arcana, so a merge
+ * changes nothing of theirs and is not a conflict to accept.
+ */
+static const char *const cf_additive[] = {
+	"stampd_fibs",
+};
+
+static bool
+in_names(const char *const *v, size_t n, const char *name)
+{
+
+	for (size_t i = 0; i < n; i++) {
+		size_t l = strlen(v[i]);
+
+		if (v[i][l - 1] == '*' ? strncmp(name, v[i], l - 1) == 0 &&
+		    name[l - 1] != '\0' : strcmp(name, v[i]) == 0)
+			return (true);
+	}
+	return (false);
+}
 
 bool
 cf_list_var(const char *name)
 {
 
-	for (size_t i = 0; i < nitems(cf_lists); i++) {
-		size_t n = strlen(cf_lists[i]);
+	return (in_names(cf_lists, nitems(cf_lists), name));
+}
 
-		if (cf_lists[i][n - 1] == '*' ? strncmp(name, cf_lists[i],
-		    n - 1) == 0 && name[n - 1] != '\0' : strcmp(name,
-		    cf_lists[i]) == 0)
-			return (true);
-	}
-	return (false);
+bool
+cf_list_additive(const char *name)
+{
+
+	return (in_names(cf_additive, nitems(cf_additive), name));
 }
 
 const char *

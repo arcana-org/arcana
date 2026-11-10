@@ -7450,8 +7450,9 @@ stampd_refused_head()
 {
 	atf_set "descr" "stampd's settings follow rc.conf's rules: refused," \
 	    "said once, while rc_conf_files does not name Arcana's file," \
-	    "written once it does; the admin's own stampd_fibs never" \
-	    "overwritten; nothing while stampd is not installed"
+	    "written once it does; the admin's own stampd_fibs a word list" \
+	    "Arcana's FIBs are added to, its own alone taken out; nothing" \
+	    "while stampd is not installed"
 	atf_set "timeout" "180"
 }
 stampd_refused_body()
@@ -7480,11 +7481,37 @@ stampd_refused_body()
 	    > root/etc/rc.conf
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
 	    '[{"id":"t1","address":"127.0.0.1","fib":3}]'
-	# The admin's stampd_fibs: a conflict, theirs kept.
-	wait_match 'stampd: not set to answer in FIB 3: .*stampd_fibs' \
-	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	# The admin's stampd_fibs: a word list, Arcana's FIB added after
+	# theirs in Arcana's file, theirs as it is.
+	wait_match '^stampd_fibs="5 3"$' cat $A || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'^stampd_enable="YES"$' cat $A
 	atf_check -o match:'^stampd_fibs="5"$' cat root/etc/rc.conf
-	atf_check -s exit:1 grep -q '^stampd reload' service.log
+	wait_match '^stampd reload$' cat service.log ||
+	    atf_fail "not reloaded: $(cat service.log)"
+	atf_check -o match:'stampd: answering in FIB 3 ' cat daemon.out
+	atf_check -s exit:1 grep -q 'not set to answer in FIB 3' daemon.out
+	# Another FIB of Arcana's: its own taken out, theirs kept.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":4}]'
+	wait_match '^stampd_fibs="5 4"$' cat $A || atf_fail "$(cat $A)"
+	atf_check -o inline:'2\n' grep -c '^stampd reload$' service.log
+	# One that is theirs too: rc.conf says it already, nothing
+	# written, nothing told.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":4},{"id":"t2","address":"127.0.0.1","fib":5}]'
+	sleep 2
+	atf_check -o match:'^stampd_fibs="5 4"$' cat $A
+	atf_check -o inline:'2\n' grep -c '^stampd reload$' service.log
+	# Arcana's 5 gone again: theirs kept.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","fib":3}]'
+	wait_match '^stampd_fibs="5 3"$' cat $A || atf_fail "$(cat $A)"
+	# None of Arcana's: its lines out, theirs read alone.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	wait_match '^stampd onestop$' cat service.log ||
+	    atf_fail "not stopped: $(cat service.log)"
+	atf_check -o not-match:'stampd' cat $A
+	atf_check -o match:'^stampd_fibs="5"$' cat root/etc/rc.conf
 	# Theirs gone: Arcana's written.
 	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
 	    > root/etc/rc.conf
