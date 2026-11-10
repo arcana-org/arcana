@@ -80,6 +80,10 @@ target_of(const ucl_object_t *t)
 	/* How it is measured: auto, stamp or icmp. */
 	if ((v = ucl_object_lookup(t, "kind")) != NULL)
 		ucl_object_insert_key(o, ucl_object_copy(v), "kind", 0, true);
+	/* Its end's tunnel, whose counters the edge reports. */
+	if ((v = ucl_object_lookup(t, "interface")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v), "interface", 0,
+		    true);
 	/* A plain tunnel's: what its STAMP key is derived from. */
 	if ((v = ucl_object_lookup(t, "stamp_interface")) != NULL)
 		ucl_object_insert_key(o, ucl_object_copy(v), "stamp-interface", 0,

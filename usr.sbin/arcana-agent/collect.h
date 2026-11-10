@@ -634,6 +634,8 @@ char	*yprobe_edge_json(const char *jail, size_t nt,
 	    const struct arcana_probe_link *lv);
 char	*yprobe_monitors_json(const char *jail, size_t n,
 	    const struct arcana_probe_monitor *v);
+int	yprobe_edges_from_json(const char *json, cbl_yarena *a,
+	    struct arcana_probe_probes_state *st);
 int	yprobe_state_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_probe_probes_state *out);
 /*

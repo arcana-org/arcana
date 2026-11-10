@@ -7379,6 +7379,8 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 			tg = ucl_object_typed_new(UCL_OBJECT);
 			put(tg, "id", S(str(t, "id")));
 			put(tg, "address", S(faddr));
+			/* Its end's tunnel: its counters the edge reports. */
+			put(tg, "interface", S(str(a, "ifname")));
 			put(tg, "fib", I(ucl_object_toint(ucl_object_lookup(t,
 			    "fib"))));
 			/* The service's probe settings, and its eval interval. */
@@ -11681,9 +11683,10 @@ api_sdwan_edges(struct http_request *req)
 /*
  * The tunnels a plan of L3NM y makes, both ends each (the VN view's
  * underlay, vn.c); NULL where it plans none.  Each end with its
- * edge's name and what vn-compute weighs a bandwidth against, where
- * said: its UCS End Point's bandwidth, its edge's uplinks and
- * policies' commits (the sums of 4.5.6), bit/s.
+ * edge's name, its UCS End Point's interface (ucs_interface) and what
+ * vn-compute weighs a bandwidth against, where said: its UCS End
+ * Point's bandwidth, its edge's uplinks and policies' commits (the
+ * sums of 4.5.6), bit/s.
  */
 /* Tunnel end end of plan pl: its edge's name, bandwidth and sums. */
 static void
@@ -11699,6 +11702,9 @@ end_caps(const struct plan *pl, ucl_object_t *end)
 	    "server", sid), "ucs_end_points"), "id", str(end, "ucs_ep"));
 	if (ucl_object_type(b = ucl_object_lookup(u, "bandwidth")) == UCL_INT)
 		put(end, "bandwidth", I(ucl_object_toint(b)));
+	/* Its interface, whose counters are its termination point's. */
+	if (str(u, "interface") != NULL)
+		put(end, "ucs_interface", S(str(u, "interface")));
 	if ((c = ucl_object_lookup(pl->caps, sid)) != NULL) {
 		put(end, "capacity", ucl_object_copy(ucl_object_lookup(c,
 		    "capacity")));

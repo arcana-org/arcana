@@ -131,8 +131,40 @@ main(int argc, char **argv)
 
 		if ((error = yprobe_state_from_json(slurp(argv[2]), a, &s)) != 0)
 			errc(1, error, "yprobe_state_from_json");
+		/* Each edge's counters and routes (probe_edges_json()'s). */
+		if (strstr(slurp(argv[2]), "\"edges\"") != NULL && (error =
+		    yprobe_edges_from_json(slurp(argv[2]), a, &s)) != 0)
+			errc(1, error, "yprobe_edges_from_json");
 		printf("probing=%s time=%s\n", s.probing ? "yes" : "no", str(
 		    s.time));
+		for (size_t i = 0; i < s.edge.n; i++) {
+			const struct arcana_probe_edge_state *e = &s.edge.v[i];
+
+			printf("edge %s\n", e->jail != NULL ? e->jail : "-");
+			for (size_t k = 0; k < e->interface.n; k++) {
+				const struct arcana_probe_if_counters *c =
+				    &e->interface.v[k];
+
+				printf("  if %s %s in %ju/%ju/%ju/%ju/%ju/%ju out "
+				    "%ju/%ju/%ju/%ju/%ju\n", c->name,
+				    str(c->last_updated),
+				    (uintmax_t)c->inbound_octets,
+				    (uintmax_t)c->inbound_unicast,
+				    (uintmax_t)c->inbound_multicast,
+				    (uintmax_t)c->inbound_discards,
+				    (uintmax_t)c->inbound_errors,
+				    (uintmax_t)c->inbound_unknown_protocol,
+				    (uintmax_t)c->outbound_octets,
+				    (uintmax_t)c->outbound_unicast,
+				    (uintmax_t)c->outbound_multicast,
+				    (uintmax_t)c->outbound_discards,
+				    (uintmax_t)c->outbound_errors);
+			}
+			for (size_t k = 0; k < e->fib.n; k++)
+				printf("  fib %u %u/%u\n", e->fib.v[k].fib,
+				    e->fib.v[k].ipv4_routes,
+				    e->fib.v[k].ipv6_routes);
+		}
 		for (size_t i = 0; i < s.target.n; i++) {
 			const struct arcana_probe_target_state *t =
 			    &s.target.v[i];

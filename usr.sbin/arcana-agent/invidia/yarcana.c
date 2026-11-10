@@ -2863,6 +2863,13 @@ arcana_probe_probes_get(cbl_req *req, struct arcana_probe *data, cbl_yarena *a)
 		return (ENOMEM);
 	if ((error = yprobe_state_from_json(r.json, a, st)) != 0)
 		return (error);
+	/* Each edge's interfaces' counters and FIBs' routes, now. */
+	if ((json = probe_edges_json()) == NULL)
+		return (ENOMEM);
+	error = yprobe_edges_from_json(json, a, st);
+	free(json);
+	if (error != 0)
+		return (error);
 	o->state = st;
 	return (0);
 }

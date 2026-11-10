@@ -64,6 +64,16 @@
  * DSCP each session's probes went by in the augment's dscp, the
  * target's own in pm-attributes'.
  *
+ * Termination points and nodes (PLAN-SDN-YANG 5.3.2): each termination
+ * point's pm-statistics, RFC 9375's tp-svc-telemetry, the counters of
+ * its interface (a service's: the tunnel's at that end; the underlay's:
+ * the UCS End Point's) as the edge's agent read them from the kernel's
+ * if_data (arcana-probe's state, its edge's interface; FreeBSD counts
+ * broadcasts among the multicasts, so none apart); each node's
+ * entry-summary, the routes of its table as the agent counted them (a
+ * service's node: the service's FIB at that edge; the underlay's: FIB
+ * 0), total-active-routes each family, no maximum (FreeBSD has none).
+ *
  * Read alone, of the hosts the user may read (their pm; the services'
  * nodes and links whatever), where the user may read the L3NM.  Left
  * out, and said in the log, where it is not of the schema.
@@ -103,7 +113,7 @@ struct pmset {
 struct vctx {
 	vpnpm_get_fn	*get;
 	void		*arg;
-	ucl_object_t	*probes;	/* sid: arcana-probe's state targets */
+	ucl_object_t	*probes;	/* sid: arcana-probe's state */
 	ucl_object_t	*stamp;		/* sid: arcana-stamp's sessions */
 };
 
@@ -146,6 +156,20 @@ sval(const ucl_object_t *o, const char *k)
 	    UCL_ARRAY || ucl_object_type(v) == UCL_NULL)
 		return (NULL);
 	return (ucl_object_tostring_forced(v));
+}
+
+/* The entry of list l whose member k is v; NULL: none. */
+static const ucl_object_t *
+pm_entry_of(const ucl_object_t *l, const char *k, const char *v)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+	const char		*s;
+
+	while ((e = ucl_object_iterate(l, &it, true)) != NULL)
+		if ((s = sval(e, k)) != NULL && strcmp(s, v) == 0)
+			return (e);
+	return (NULL);
 }
 
 static bool
@@ -206,26 +230,32 @@ fleet_json(struct vctx *x, const char *sid, const char *path)
 	return (o);
 }
 
-/* Host sid's list key of top member at path, read once a view; NULL:
- * not read (not the user's, not reached, no such module). */
+/* Host sid's list key of top member at path, read once a view (the
+ * member kept, its other lists too); NULL: not read (not the user's,
+ * not reached, no such module). */
 static const ucl_object_t *
 host_list(struct vctx *x, ucl_object_t *cache, const char *sid,
     const char *path, const char *top, const char *list)
 {
 	const ucl_object_t	*v;
-	ucl_object_t		*o, *l;
+	ucl_object_t		*o, *t;
 
-	if ((v = ucl_object_lookup(cache, sid)) != NULL)
-		return (ucl_object_type(v) == UCL_ARRAY ? v : NULL);
-	l = NULL;
-	if ((o = fleet_json(x, sid, path)) != NULL) {
-		v = ucl_object_lookup(ucl_object_lookup(o, top), list);
-		l = v != NULL && ucl_object_type(v) == UCL_ARRAY ?
-		    ucl_object_copy(v) : arr();
-		ucl_object_unref(o);
+	if ((v = ucl_object_lookup(cache, sid)) == NULL) {
+		t = NULL;
+		if ((o = fleet_json(x, sid, path)) != NULL) {
+			v = ucl_object_lookup(o, top);
+			t = v != NULL && ucl_object_type(v) == UCL_OBJECT ?
+			    ucl_object_copy(v) : obj();
+			ucl_object_unref(o);
+		}
+		put(cache, sid, t != NULL ? t : ucl_object_typed_new(
+		    UCL_NULL));
+		v = ucl_object_lookup(cache, sid);
 	}
-	put(cache, sid, l != NULL ? l : ucl_object_typed_new(UCL_NULL));
-	return (l);
+	if (ucl_object_type(v) != UCL_OBJECT)
+		return (NULL);
+	v = ucl_object_lookup(v, list);
+	return (v != NULL && ucl_object_type(v) == UCL_ARRAY ? v : NULL);
 }
 
 /* Whether entry e is of target id in jail (""), class cls (NULL: the
@@ -276,6 +306,81 @@ target_at(struct vctx *x, const char *edge, const char *id, const char *cls,
 		if (is_of(e, "target", id, jail, cls))
 			*method = ucl_str(e, "method");
 	return (found);
+}
+
+/* Edge edge's entry of the agent's edges (its interfaces' counters, its
+ * FIBs' routes); NULL: none read. */
+static const ucl_object_t *
+edge_at(struct vctx *x, const char *edge)
+{
+	const ucl_object_t	*l, *e;
+	ucl_object_iter_t	 it = NULL;
+	const char		*j;
+	char			 sid[64], jail[64], path[256];
+
+	if (!sdwan_edge_split(edge, sid, sizeof(sid), jail, sizeof(jail)))
+		return (NULL);
+	snprintf(path, sizeof(path), "/restconf/data/arcana-fleet:fleet/"
+	    "host=%s/arcana-probe:probes/state", sid);
+	l = host_list(x, x->probes, sid, path, "arcana-probe:state", "edge");
+	while ((e = ucl_object_iterate(l, &it, true)) != NULL) {
+		j = ucl_str(e, "jail");
+		if (strcmp(j != NULL ? j : "", jail) == 0)
+			return (e);
+	}
+	return (NULL);
+}
+
+/* RFC 9375's pm-statistics of interface ifname at edge, its counters
+ * as the agent read them; NULL: none. */
+static ucl_object_t *
+tp_stats(struct vctx *x, const char *edge, const char *ifname)
+{
+	const ucl_object_t	*e, *m;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*o;
+	const char		*k;
+
+	if (ifname == NULL || (e = pm_entry_of(ucl_object_lookup(edge_at(x,
+	    edge), "interface"), "name", ifname)) == NULL)
+		return (NULL);
+	o = obj();
+	while ((m = ucl_object_iterate(e, &it, true)) != NULL) {
+		k = ucl_object_key(m);
+		if (strcmp(k, "last-updated") == 0 || strncmp(k, "inbound-", 8) ==
+		    0 || strncmp(k, "outbound-", 9) == 0)
+			put(o, k, ucl_object_copy(m));
+	}
+	return (o);
+}
+
+/* RFC 9375's entry-summary of FIB fib at edge, its routes as the agent
+ * counted them; NULL: none. */
+static ucl_object_t *
+entry_summary(struct vctx *x, const char *edge, long long fib)
+{
+	const ucl_object_t	*f;
+	ucl_object_t		*o, *n;
+	char			 k[24];
+
+	snprintf(k, sizeof(k), "%lld", fib);
+	if ((f = pm_entry_of(ucl_object_lookup(edge_at(x, edge), "fib"), "fib",
+	    k)) == NULL)
+		return (NULL);
+	o = obj();
+	if (sval(f, "ipv4-routes") != NULL) {
+		n = obj();
+		put(n, "total-active-routes", ucl_object_fromint(
+		    ucl_object_toint(ucl_object_lookup(f, "ipv4-routes"))));
+		put(o, "ipv4-num", n);
+	}
+	if (sval(f, "ipv6-routes") != NULL) {
+		n = obj();
+		put(n, "total-active-routes", ucl_object_fromint(
+		    ucl_object_toint(ucl_object_lookup(f, "ipv6-routes"))));
+		put(o, "ipv6-num", n);
+	}
+	return (o);
 }
 
 /* Target t's last completed measurement interval; NULL: none yet. */
@@ -505,17 +610,21 @@ node_entry(ucl_object_t *nodes, const char *id, const char *below,
 	return (n);
 }
 
-/* Node n's termination point tp, supported by sup's (NULL: none). */
+/* Node n's termination point tp, supported by sup's (NULL: none), its
+ * pm-statistics st (NULL: none; taken). */
 static void
 tp_add(ucl_object_t *n, const char *tp, const char *net, const char *node,
-    const char *sup)
+    const char *sup, ucl_object_t *st)
 {
 	ucl_object_t	*tps, *e, *a, *r;
 
 	tps = __DECONST(ucl_object_t *, ucl_object_lookup(n, NT
 	    "termination-point"));
-	if (ucl_object_lookup(tps, tp) != NULL)
+	if (ucl_object_lookup(tps, tp) != NULL) {
+		if (st != NULL)
+			ucl_object_unref(st);
 		return;
+	}
 	e = obj();
 	puts_(e, "tp-id", tp);
 	if (sup != NULL) {
@@ -525,6 +634,8 @@ tp_add(ucl_object_t *n, const char *tp, const char *net, const char *node,
 		ucl_array_append(a, r);
 		put(e, "supporting-termination-point", a);
 	}
+	if (st != NULL)
+		put(e, NVP "pm-statistics", st);
 	put(tps, tp, e);
 }
 
@@ -764,7 +875,7 @@ svc_network(struct vctx *x, const ucl_object_t *s, const ucl_object_t *tuns,
 {
 	const ucl_object_t	*nd, *t, *es, *ed;
 	ucl_object_iter_t	 it = NULL;
-	ucl_object_t		*nw, *ty, *sv, *nodes, *links, *n, *a;
+	ucl_object_t		*nw, *ty, *sv, *nodes, *links, *n, *a, *es0;
 	const char		*vid, *edge;
 	char			 nid[200], lid[200], en[160], dn[160], tp[64];
 	char			 utp[160], dtp[160];
@@ -825,7 +936,11 @@ svc_network(struct vctx *x, const ucl_object_t *s, const ucl_object_t *tuns,
 			/* The underlay's: the edge, the UCS End Point the
 			 * tunnel leaves by, the way to the far one. */
 			n = node_entry(unodes, en, NULL, NULL);
-			tp_add(n, utp, NULL, NULL, NULL);
+			if (ucl_object_lookup(n, NVP "entry-summary") == NULL &&
+			    (es0 = entry_summary(x, edge, 0)) != NULL)
+				put(n, NVP "entry-summary", es0);
+			tp_add(n, utp, NULL, NULL, NULL, tp_stats(x, edge,
+			    ucl_str(es, "ucs_interface")));
 			snprintf(lid, sizeof(lid), ULINK "%s,%s", ucl_str(es,
 			    "ucs_ep"), ucl_str(ed, "ucs_ep"));
 			if (ucl_object_lookup(ulinks, lid) == NULL)
@@ -833,9 +948,14 @@ svc_network(struct vctx *x, const ucl_object_t *s, const ucl_object_t *tuns,
 				    dtp));
 			/* The service's: the tunnel's interface at the edge. */
 			n = node_entry(nodes, en, UNDERLAY, en);
+			if (ucl_object_lookup(n, NVP "entry-summary") == NULL &&
+			    (es0 = entry_summary(x, edge, ucl_object_toint(
+			    ucl_object_lookup(t, "fib")))) != NULL)
+				put(n, NVP "entry-summary", es0);
 			snprintf(tp, sizeof(tp), IFACE "%s", ucl_str(es,
 			    "ifname"));
-			tp_add(n, tp, UNDERLAY, en, utp);
+			tp_add(n, tp, UNDERLAY, en, utp, tp_stats(x, edge,
+			    ucl_str(es, "ifname")));
 			ucl_array_append(links, svc_link(x, s, t, es, ed));
 		}
 	}

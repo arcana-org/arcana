@@ -1277,3 +1277,54 @@ route_watch_start(void)
 	}
 	(void)pthread_detach(tid);
 }
+
+/*
+ * How many routes of family af FIB fib has, as netlink(4) dumps them (as
+ * netstat -rn -F does): RFC 9375's total-active-routes.  0, or an
+ * error (no such FIB).
+ */
+int
+rt_count(int fib, int af, uint32_t *np)
+{
+	struct {
+		struct nlmsghdr	hdr;
+		struct rtmsg	rtm;
+		struct nlattr	nla;
+		uint32_t	fib;
+	} msg;
+	struct snl_errmsg_data e = { 0 };
+	struct snl_state ss;
+	struct nlmsghdr *hdr;
+	const struct rtmsg *rtm;
+	uint32_t n = 0;
+
+	*np = 0;
+	if (!snl_init(&ss, NETLINK_ROUTE))
+		return (errno != 0 ? errno : EIO);
+	memset(&msg, 0, sizeof(msg));
+	msg.hdr.nlmsg_type = RTM_GETROUTE;
+	msg.hdr.nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
+	msg.hdr.nlmsg_seq = snl_get_seq(&ss);
+	msg.hdr.nlmsg_len = sizeof(msg);
+	msg.rtm.rtm_family = af;
+	msg.nla.nla_len = sizeof(struct nlattr) + sizeof(uint32_t);
+	msg.nla.nla_type = RTA_TABLE;
+	msg.fib = (uint32_t)fib;
+	if (!snl_send_message(&ss, &msg.hdr)) {
+		snl_free(&ss);
+		return (errno != 0 ? errno : EIO);
+	}
+	while ((hdr = snl_read_reply_multi(&ss, msg.hdr.nlmsg_seq, &e)) !=
+	    NULL) {
+		rtm = (const struct rtmsg *)(const void *)(hdr + 1);
+		if (hdr->nlmsg_type == RTM_NEWROUTE && hdr->nlmsg_len >=
+		    NLMSG_LENGTH(sizeof(*rtm)) && rtm->rtm_family == af)
+			n++;
+		snl_clear_lb(&ss);
+	}
+	snl_free(&ss);
+	if (e.error != 0)
+		return (e.error);
+	*np = n;
+	return (0);
+}

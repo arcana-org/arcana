@@ -4,6 +4,7 @@ module: arcana-probe
      |  +--rw id                         string
      |  +--rw address                    inet:ip-address-no-zone
      |  +--rw kind?                      enumeration
+     |  +--rw interface?                 string
      |  +--rw stamp-interface?           string
      |  +--rw stamp-peer?                string
      |  +--rw class* [name]
@@ -61,6 +62,7 @@ module: arcana-probe
      |  |  +--rw id                         string
      |  |  +--rw address                    inet:ip-address-no-zone
      |  |  +--rw kind?                      enumeration
+     |  |  +--rw interface?                 string
      |  |  +--rw stamp-interface?           string
      |  |  +--rw stamp-peer?                string
      |  |  +--rw class* [name]
@@ -116,120 +118,140 @@ module: arcana-probe
      |  +--ro probing?   boolean
      |  +--ro time?      yang:date-and-time
      |  +--ro target*
-     |     +--ro id?         string
-     |     +--ro address?    inet:ip-address-no-zone
-     |     +--ro family?     enumeration
-     |     +--ro fib?        uint16
-     |     +--ro state?      enumeration
-     |     +--ro error?      string
-     |     +--ro since?      yang:date-and-time
-     |     +--ro interval?   uint32
-     |     +--ro size?       uint16
-     |     +--ro eval?       uint32
-     |     +--ro dscp?       uint8
-     |     +--ro sent?       uint64
-     |     +--ro received?   uint64
-     |     +--ro misses?     uint32
-     |     +--ro last-rtt?   ms
-     |     +--ro now
-     |     |  +--ro sent?       uint32
-     |     |  +--ro received?   uint32
-     |     |  +--ro delay?      ms
-     |     |  +--ro ipdv?       ms
-     |     |  +--ro loss?       decimal64
-     |     |  +--ro age?        ms
-     |     +--ro kept?       uint32
-     |     +--ro sample* [time]
-     |     |  +--ro time              yang:date-and-time
-     |     |  +--ro delay?            ms
-     |     |  +--ro ipdv?             ms
-     |     |  +--ro loss?             decimal64
-     |     |  +--ro min?              ms
-     |     |  +--ro max?              ms
-     |     |  +--ro sent?             uint32
-     |     |  +--ro received?         uint32
-     |     |  +--ro lost-forward?     uint32
-     |     |  +--ro lost-backward?    uint32
-     |     |  +--ro delay-forward?    ms
-     |     |  +--ro delay-backward?   ms
-     |     |  +--ro one-way?          enumeration
-     |     +--ro class?      string
-     |     +--ro pm
-     |     |  +--ro measurement-interval?      uint32
-     |     |  +--ro low-percentile?            percentile
-     |     |  +--ro intermediate-percentile?   percentile
-     |     |  +--ro high-percentile?           percentile
-     |     |  +--ro interval* [start]
-     |     |     +--ro start         yang:date-and-time
-     |     |     +--ro end?          yang:date-and-time
-     |     |     +--ro complete?     boolean
-     |     |     +--ro sent?         uint32
-     |     |     +--ro received?     uint32
-     |     |     +--ro kept?         uint32
-     |     |     +--ro loss
-     |     |     |  +--ro count?            uint32
-     |     |     |  +--ro ratio?            percentage
-     |     |     |  +--ro forward-count?    uint32
-     |     |     |  +--ro forward-ratio?    percentage
-     |     |     |  +--ro backward-count?   uint32
-     |     |     |  +--ro backward-ratio?   percentage
-     |     |     +--ro round-trip
-     |     |     |  +--ro count?                     uint32
-     |     |     |  +--ro min?                       us
-     |     |     |  +--ro max?                       us
-     |     |     |  +--ro mean?                      us
-     |     |     |  +--ro low-percentile?            us
-     |     |     |  +--ro intermediate-percentile?   us
-     |     |     |  +--ro high-percentile?           us
-     |     |     +--ro forward
-     |     |     |  +--ro count?                     uint32
-     |     |     |  +--ro min?                       us
-     |     |     |  +--ro max?                       us
-     |     |     |  +--ro mean?                      us
-     |     |     |  +--ro low-percentile?            us
-     |     |     |  +--ro intermediate-percentile?   us
-     |     |     |  +--ro high-percentile?           us
-     |     |     +--ro backward
-     |     |     |  +--ro count?                     uint32
-     |     |     |  +--ro min?                       us
-     |     |     |  +--ro max?                       us
-     |     |     |  +--ro mean?                      us
-     |     |     |  +--ro low-percentile?            us
-     |     |     |  +--ro intermediate-percentile?   us
-     |     |     |  +--ro high-percentile?           us
-     |     |     +--ro jitter
-     |     |     |  +--ro round-trip
-     |     |     |  |  +--ro count?                     uint32
-     |     |     |  |  +--ro min?                       us
-     |     |     |  |  +--ro max?                       us
-     |     |     |  |  +--ro mean?                      us
-     |     |     |  |  +--ro low-percentile?            us
-     |     |     |  |  +--ro intermediate-percentile?   us
-     |     |     |  |  +--ro high-percentile?           us
-     |     |     |  +--ro forward
-     |     |     |  |  +--ro count?                     uint32
-     |     |     |  |  +--ro min?                       us
-     |     |     |  |  +--ro max?                       us
-     |     |     |  |  +--ro mean?                      us
-     |     |     |  |  +--ro low-percentile?            us
-     |     |     |  |  +--ro intermediate-percentile?   us
-     |     |     |  |  +--ro high-percentile?           us
-     |     |     |  +--ro backward
-     |     |     |     +--ro count?                     uint32
-     |     |     |     +--ro min?                       us
-     |     |     |     +--ro max?                       us
-     |     |     |     +--ro mean?                      us
-     |     |     |     +--ro low-percentile?            us
-     |     |     |     +--ro intermediate-percentile?   us
-     |     |     |     +--ro high-percentile?           us
-     |     |     +--ro raw
-     |     |        +--ro round-trip*          uint32
-     |     |        +--ro forward*             uint32
-     |     |        +--ro backward*            uint32
-     |     |        +--ro jitter-round-trip*   uint32
-     |     |        +--ro jitter-forward*      uint32
-     |     |        +--ro jitter-backward*     uint32
-     |     +--ro jail?       string
+     |  |  +--ro id?         string
+     |  |  +--ro address?    inet:ip-address-no-zone
+     |  |  +--ro family?     enumeration
+     |  |  +--ro fib?        uint16
+     |  |  +--ro state?      enumeration
+     |  |  +--ro error?      string
+     |  |  +--ro since?      yang:date-and-time
+     |  |  +--ro interval?   uint32
+     |  |  +--ro size?       uint16
+     |  |  +--ro eval?       uint32
+     |  |  +--ro dscp?       uint8
+     |  |  +--ro sent?       uint64
+     |  |  +--ro received?   uint64
+     |  |  +--ro misses?     uint32
+     |  |  +--ro last-rtt?   ms
+     |  |  +--ro now
+     |  |  |  +--ro sent?       uint32
+     |  |  |  +--ro received?   uint32
+     |  |  |  +--ro delay?      ms
+     |  |  |  +--ro ipdv?       ms
+     |  |  |  +--ro loss?       decimal64
+     |  |  |  +--ro age?        ms
+     |  |  +--ro kept?       uint32
+     |  |  +--ro sample* [time]
+     |  |  |  +--ro time              yang:date-and-time
+     |  |  |  +--ro delay?            ms
+     |  |  |  +--ro ipdv?             ms
+     |  |  |  +--ro loss?             decimal64
+     |  |  |  +--ro min?              ms
+     |  |  |  +--ro max?              ms
+     |  |  |  +--ro sent?             uint32
+     |  |  |  +--ro received?         uint32
+     |  |  |  +--ro lost-forward?     uint32
+     |  |  |  +--ro lost-backward?    uint32
+     |  |  |  +--ro delay-forward?    ms
+     |  |  |  +--ro delay-backward?   ms
+     |  |  |  +--ro one-way?          enumeration
+     |  |  +--ro class?      string
+     |  |  +--ro pm
+     |  |  |  +--ro measurement-interval?      uint32
+     |  |  |  +--ro low-percentile?            percentile
+     |  |  |  +--ro intermediate-percentile?   percentile
+     |  |  |  +--ro high-percentile?           percentile
+     |  |  |  +--ro interval* [start]
+     |  |  |     +--ro start         yang:date-and-time
+     |  |  |     +--ro end?          yang:date-and-time
+     |  |  |     +--ro complete?     boolean
+     |  |  |     +--ro sent?         uint32
+     |  |  |     +--ro received?     uint32
+     |  |  |     +--ro kept?         uint32
+     |  |  |     +--ro loss
+     |  |  |     |  +--ro count?            uint32
+     |  |  |     |  +--ro ratio?            percentage
+     |  |  |     |  +--ro forward-count?    uint32
+     |  |  |     |  +--ro forward-ratio?    percentage
+     |  |  |     |  +--ro backward-count?   uint32
+     |  |  |     |  +--ro backward-ratio?   percentage
+     |  |  |     +--ro round-trip
+     |  |  |     |  +--ro count?                     uint32
+     |  |  |     |  +--ro min?                       us
+     |  |  |     |  +--ro max?                       us
+     |  |  |     |  +--ro mean?                      us
+     |  |  |     |  +--ro low-percentile?            us
+     |  |  |     |  +--ro intermediate-percentile?   us
+     |  |  |     |  +--ro high-percentile?           us
+     |  |  |     +--ro forward
+     |  |  |     |  +--ro count?                     uint32
+     |  |  |     |  +--ro min?                       us
+     |  |  |     |  +--ro max?                       us
+     |  |  |     |  +--ro mean?                      us
+     |  |  |     |  +--ro low-percentile?            us
+     |  |  |     |  +--ro intermediate-percentile?   us
+     |  |  |     |  +--ro high-percentile?           us
+     |  |  |     +--ro backward
+     |  |  |     |  +--ro count?                     uint32
+     |  |  |     |  +--ro min?                       us
+     |  |  |     |  +--ro max?                       us
+     |  |  |     |  +--ro mean?                      us
+     |  |  |     |  +--ro low-percentile?            us
+     |  |  |     |  +--ro intermediate-percentile?   us
+     |  |  |     |  +--ro high-percentile?           us
+     |  |  |     +--ro jitter
+     |  |  |     |  +--ro round-trip
+     |  |  |     |  |  +--ro count?                     uint32
+     |  |  |     |  |  +--ro min?                       us
+     |  |  |     |  |  +--ro max?                       us
+     |  |  |     |  |  +--ro mean?                      us
+     |  |  |     |  |  +--ro low-percentile?            us
+     |  |  |     |  |  +--ro intermediate-percentile?   us
+     |  |  |     |  |  +--ro high-percentile?           us
+     |  |  |     |  +--ro forward
+     |  |  |     |  |  +--ro count?                     uint32
+     |  |  |     |  |  +--ro min?                       us
+     |  |  |     |  |  +--ro max?                       us
+     |  |  |     |  |  +--ro mean?                      us
+     |  |  |     |  |  +--ro low-percentile?            us
+     |  |  |     |  |  +--ro intermediate-percentile?   us
+     |  |  |     |  |  +--ro high-percentile?           us
+     |  |  |     |  +--ro backward
+     |  |  |     |     +--ro count?                     uint32
+     |  |  |     |     +--ro min?                       us
+     |  |  |     |     +--ro max?                       us
+     |  |  |     |     +--ro mean?                      us
+     |  |  |     |     +--ro low-percentile?            us
+     |  |  |     |     +--ro intermediate-percentile?   us
+     |  |  |     |     +--ro high-percentile?           us
+     |  |  |     +--ro raw
+     |  |  |        +--ro round-trip*          uint32
+     |  |  |        +--ro forward*             uint32
+     |  |  |        +--ro backward*            uint32
+     |  |  |        +--ro jitter-round-trip*   uint32
+     |  |  |        +--ro jitter-forward*      uint32
+     |  |  |        +--ro jitter-backward*     uint32
+     |  |  +--ro jail?       string
+     |  +--ro edge*
+     |     +--ro jail?   string
+     |     +--ro interface* [name]
+     |     |  +--ro name                        string
+     |     |  +--ro last-updated?               yang:date-and-time
+     |     |  +--ro inbound-octets?             yang:counter64
+     |     |  +--ro inbound-unicast?            yang:counter64
+     |     |  +--ro inbound-multicast?          yang:counter64
+     |     |  +--ro inbound-discards?           yang:counter64
+     |     |  +--ro inbound-errors?             yang:counter64
+     |     |  +--ro inbound-unknown-protocol?   yang:counter64
+     |     |  +--ro outbound-octets?            yang:counter64
+     |     |  +--ro outbound-unicast?           yang:counter64
+     |     |  +--ro outbound-multicast?         yang:counter64
+     |     |  +--ro outbound-discards?          yang:counter64
+     |     |  +--ro outbound-errors?            yang:counter64
+     |     +--ro fib* [fib]
+     |        +--ro fib            uint16
+     |        +--ro ipv4-routes?   uint32
+     |        +--ro ipv6-routes?   uint32
      +---x read
         +---w input
         |  +---w after?      yang:date-and-time

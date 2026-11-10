@@ -601,6 +601,15 @@ module arcana-probe {
           "How it is measured; arcana-stamp's session has what STAMP
            sees of it.";
       }
+      leaf interface {
+        type string {
+          length "1..15";
+        }
+        description
+          "This end's tunnel interface the target is measured over:
+           its counters are in the state's edge (RFC 9375's
+           termination point statistics).";
+      }
       leaf stamp-interface {
         type string {
           length "1..15";
@@ -954,6 +963,121 @@ module arcana-probe {
           "Each target as it is: the host's, and each jail's edge's,
            whose ids may be the same (both ends of a tunnel).";
         uses target-state;
+      }
+      list edge {
+        cg:struct "edge-state";
+        description
+          "Each edge's interfaces and routing tables, as the kernel
+           counts them when read: the host's, and each vnet jail
+           edge's from its own network.";
+        leaf jail {
+          type string;
+          description
+            "The vnet jail that is the edge; none, the host.";
+        }
+        list interface {
+          cg:struct "if-counters";
+          key "name";
+          description
+            "Each interface the edge measures over or watches (its
+             targets' tunnels, its links' UCS End Points and UNIs),
+             its counters from the interface's if_data
+             (getifaddrs(3)), as netstat -ibn shows them, in RFC 9375's
+             termination point statistics' terms (tp-svc-telemetry).
+             FreeBSD counts broadcasts among the multicasts: none
+             apart.";
+          leaf name {
+            type string;
+            description
+              "The interface.";
+          }
+          leaf last-updated {
+            type yang:date-and-time;
+            description
+              "When read.";
+          }
+          leaf inbound-octets {
+            type yang:counter64;
+            description
+              "Octets received (ifi_ibytes).";
+          }
+          leaf inbound-unicast {
+            type yang:counter64;
+            description
+              "Packets received but multicast and broadcast ones
+               (ifi_ipackets less ifi_imcasts).";
+          }
+          leaf inbound-multicast {
+            type yang:counter64;
+            description
+              "Multicast and broadcast packets received
+               (ifi_imcasts).";
+          }
+          leaf inbound-discards {
+            type yang:counter64;
+            description
+              "Packets dropped on input (ifi_iqdrops).";
+          }
+          leaf inbound-errors {
+            type yang:counter64;
+            description
+              "Input errors (ifi_ierrors).";
+          }
+          leaf inbound-unknown-protocol {
+            type yang:counter64;
+            description
+              "Packets of a protocol not supported (ifi_noproto).";
+          }
+          leaf outbound-octets {
+            type yang:counter64;
+            description
+              "Octets sent (ifi_obytes).";
+          }
+          leaf outbound-unicast {
+            type yang:counter64;
+            description
+              "Packets sent but multicast and broadcast ones
+               (ifi_opackets less ifi_omcasts).";
+          }
+          leaf outbound-multicast {
+            type yang:counter64;
+            description
+              "Multicast and broadcast packets sent (ifi_omcasts).";
+          }
+          leaf outbound-discards {
+            type yang:counter64;
+            description
+              "Packets dropped on output (ifi_oqdrops).";
+          }
+          leaf outbound-errors {
+            type yang:counter64;
+            description
+              "Output errors (ifi_oerrors).";
+          }
+        }
+        list fib {
+          cg:struct "fib-routes";
+          key "fib";
+          description
+            "Each routing table the edge's targets go by, and FIB 0:
+             its routes as netlink(4) dumps them (as netstat -rn -F
+             does), RFC 9375's entry-summary total-active-routes.";
+          leaf fib {
+            type uint16;
+            description
+              "The FIB.";
+          }
+          leaf ipv4-routes {
+            type uint32;
+            description
+              "Its IPv4 routes.";
+          }
+          leaf ipv6-routes {
+            type uint32;
+            description
+              "Its IPv6 routes.";
+          }
+        }
       }
     }
     action read {

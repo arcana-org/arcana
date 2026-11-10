@@ -3269,6 +3269,43 @@ whose first part is served.
   (libyang 3) with the modules as published).
 - 5.3.2 A: typed TP counters from if_data; per-FIB route counts;
   check: equals `netstat`.
+  Done (agent 0.273.0, console 0.423.0).  The agent's arcana-probe
+  state gained a list `edge`, the host's and each vnet jail edge's (the
+  jail's read in its own network by the helper, one question for its
+  interfaces, one for its FIBs): each interface the edge's targets go
+  over (a target's new `interface`, its end's tunnel, which the
+  console's apply now says) or its links watch (the UCS End Points',
+  the UNIs'), its counters from if_data (getifaddrs(3), as netstat
+  -ibn reads them) in RFC 9375's tp-svc-telemetry terms: octets,
+  unicast (packets less multicast), multicast (FreeBSD counts the
+  broadcasts there, so no broadcast leaf), discards, errors, unknown
+  protocol in, and out the same but unknown protocol, with
+  last-updated; and FIB 0 and each FIB its targets go by, its IPv4
+  and IPv6 routes as netlink(4) dumps them (RTM_GETROUTE with
+  RTA_TABLE, the messages counted, as netstat -rn -F reads them; a
+  FIB the kernel has not left out).  Counted at each read of the
+  probes' state, not kept.  arcana-probe numbered again.  The
+  console's view (vpnpm.c) reads it with the targets (one read a host):
+  each termination point's RFC 9375 pm-statistics, a service's
+  (arcana:if:) its tunnel interface's at that end, the underlay's
+  (arcana:ucs-ep:) its UCS End Point's interface's (the plan's tunnel
+  ends now say it, ucs_interface); each node's entry-summary, its
+  ipv4-num and ipv6-num total-active-routes (no maximum: FreeBSD has
+  none), a service's node the service's FIB at that edge, the
+  underlay's FIB 0.  The per-access vpn-network-access list is not
+  filled (no access is an interface of its own yet).  Checked:
+  agent_test:sdwan_counters (a target over lo0 in the last FIB and one
+  in FIB 4000, links on lo0 and on an interface not there: lo0's
+  counters between netstat -ibnd's read before and after, packets the
+  unicast and the multicast together, FIB 0's and the last FIB's
+  routes netstat -rn -F's, the absent interface and FIB left out, the
+  target's interface read back; none, FIB 0 alone),
+  agent_test:yang_sdwan (the edges through YANG-CBOR and back, the
+  unicast the packets less the multicast), console_test:sdwan_vpn_pm
+  (the underlay's nodes' entry-summary the agent's FIB 0 counts, the
+  service node's its FIB 1's, b-mpls's termination point's
+  pm-statistics on the host's interface between the agent's reads
+  before and after, no broadcast; both networks valid by yanglint).
 - 5.3.3 A, C: underlay-link probes (the far edge's WAN address, FIB
   0); check: `pm-type-network-link` entries.
 - 5.4.2 A, C: shelving (the alarms' control in `running`), the

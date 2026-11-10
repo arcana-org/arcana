@@ -3585,6 +3585,147 @@ probe_conf_json(void)
 	return (json);
 }
 
+/* Word w added to the comma-separated set at key k of o, once. */
+static void
+set_add(ucl_object_t *o, const char *k, const char *w)
+{
+	const ucl_object_t	*v;
+	const char		*s, *p;
+	char			 buf[4096];
+	size_t			 n = strlen(w);
+
+	if (w[0] == '\0')
+		return;
+	if ((v = ucl_object_lookup(o, k)) == NULL) {
+		ucl_object_insert_key(o, ucl_object_fromstring(w), k, 0, true);
+		return;
+	}
+	s = ucl_object_tostring(v);
+	for (p = s; p != NULL; p = (p = strchr(p, ',')) != NULL ? p + 1 :
+	    NULL)
+		if (strncmp(p, w, n) == 0 && (p[n] == ',' || p[n] == '\0'))
+			return;
+	if ((size_t)snprintf(buf, sizeof(buf), "%s,%s", s, w) >= sizeof(buf))
+		return;
+	ucl_object_replace_key(o, ucl_object_fromstring(buf), k, 0, true);
+}
+
+/*
+ * Each edge's interfaces and routing tables as the kernel counts them
+ * now (PLAN-SDN-YANG 5.3.2, RFC 9375's termination point statistics
+ * and entry summary): the interfaces its targets are measured over
+ * (their interface) and its links watch, from their if_data; the FIBs
+ * its targets go by, and FIB 0, their routes as netlink(4) dumps them.
+ * A vnet jail's read in its own network by the helper, one question
+ * for its interfaces and one for its FIBs.  As JSON {"edges": [{"jail",
+ * "time", "interfaces": [{"name", "ibytes", ...}], "fibs": [{"fib",
+ * "ipv4", "ipv6"}]}]}, the host's first; malloc'd, NULL for no memory.
+ */
+char *
+probe_edges_json(void)
+{
+	static const char *const cn[] = { "ibytes", "ipackets", "imcasts",
+	    "iqdrops", "ierrors", "noproto", "obytes", "opackets", "omcasts",
+	    "oqdrops", "oerrors" };
+	ucl_object_t		*want, *top, *arr, *e, *l, *o;
+	const ucl_object_t	*w, *v;
+	ucl_object_iter_t	 it;
+	struct work		 jw;
+	const char		*jail, *txt, *err, *line, *nl;
+	char			 name[IFNAMSIZ], fb[16], *json;
+	uintmax_t		 c[nitems(cn)];
+	unsigned int		 f, n4, n6;
+	int			 k;
+
+	/* What each edge has: its interfaces and FIBs, as words. */
+	want = ucl_object_typed_new(UCL_OBJECT);
+	e = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(e, ucl_object_fromstring("0"), "fibs", 0, true);
+	ucl_object_insert_key(want, e, "", 0, true);
+	pthread_mutex_lock(&lock);
+	for (k = 0; k < ntargets + nlinks; k++) {
+		if (k < ntargets && targets[k].id[0] == '\0')
+			continue;
+		jail = k < ntargets ? targets[k].jail : links[k - ntargets].jail;
+		if ((w = ucl_object_lookup(want, jail)) == NULL) {
+			e = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(want, e, jail, 0, true);
+		} else
+			e = __DECONST(ucl_object_t *, w);
+		if (k < ntargets) {
+			set_add(e, "ifs", targets[k].ifname);
+			snprintf(fb, sizeof(fb), "%d", targets[k].fib);
+			set_add(e, "fibs", fb);
+		} else
+			set_add(e, "ifs", links[k - ntargets].ifname);
+	}
+	pthread_mutex_unlock(&lock);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((w = ucl_object_iterate(want, &it, true)) != NULL) {
+		jail = ucl_object_key(w);
+		work_init(&jw);
+		err = NULL;
+		if (jail[0] != '\0' && scope_enter(&jw, jail, &err) != 0) {
+			/* A jail not running: its network not there. */
+			work_free(&jw);
+			continue;
+		}
+		e = ucl_object_typed_new(UCL_OBJECT);
+		if (jail[0] != '\0')
+			ucl_object_insert_key(e, ucl_object_fromstring(jail),
+			    "jail", 0, true);
+		ucl_object_insert_key(e, ucl_object_fromint((int64_t)time(
+		    NULL)), "time", 0, true);
+		l = ucl_object_typed_new(UCL_ARRAY);
+		if ((v = ucl_object_lookup(w, "ifs")) != NULL && (txt =
+		    if_counters_text(&jw, ucl_object_tostring(v))) != NULL)
+			for (line = txt; *line != '\0'; line = nl + 1) {
+				if ((nl = strchr(line, '\n')) == NULL)
+					break;
+				if (sscanf(line, "%15s %ju %ju %ju %ju %ju %ju %ju "
+				    "%ju %ju %ju %ju", name, &c[0], &c[1], &c[2],
+				    &c[3], &c[4], &c[5], &c[6], &c[7], &c[8], &c[9],
+				    &c[10]) != 12)
+					continue;
+				o = ucl_object_typed_new(UCL_OBJECT);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    name), "name", 0, true);
+				for (size_t i = 0; i < nitems(cn); i++)
+					ucl_object_insert_key(o, ucl_object_fromint(
+					    (int64_t)c[i]), cn[i], 0, true);
+				ucl_array_append(l, o);
+			}
+		ucl_object_insert_key(e, l, "interfaces", 0, true);
+		l = ucl_object_typed_new(UCL_ARRAY);
+		if ((v = ucl_object_lookup(w, "fibs")) != NULL && (txt =
+		    fib_routes_text(&jw, ucl_object_tostring(v))) != NULL)
+			for (line = txt; *line != '\0'; line = nl + 1) {
+				if ((nl = strchr(line, '\n')) == NULL)
+					break;
+				if (sscanf(line, "%u %u %u", &f, &n4, &n6) != 3)
+					continue;
+				o = ucl_object_typed_new(UCL_OBJECT);
+				ucl_object_insert_key(o, ucl_object_fromint(f),
+				    "fib", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromint(n4),
+				    "ipv4", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromint(n6),
+				    "ipv6", 0, true);
+				ucl_array_append(l, o);
+			}
+		ucl_object_insert_key(e, l, "fibs", 0, true);
+		work_free(&jw);
+		ucl_array_append(arr, e);
+	}
+	ucl_object_unref(want);
+	ucl_object_insert_key(top, arr, "edges", 0, false);
+	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(top);
+	return (json);
+}
+
 /*
  * An edge's monitors set together, json {"jail", "targets"} (a
  * monitor's id its name): on the host one without an address probes

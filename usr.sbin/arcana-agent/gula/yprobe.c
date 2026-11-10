@@ -137,6 +137,7 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 			    0 ? ARCANA_PROBE_TARGET_KIND_ICMP :
 			    ARCANA_PROBE_TARGET_KIND_AUTO;
 		}
+		t[n].interface = yj_str(a, o, "interface");
 		t[n].stamp_interface = yj_str(a, o, "stamp_interface");
 		t[n].stamp_peer = yj_str(a, o, "stamp_peer");
 		YJ_NUM(o, "count", &t[n], count);
@@ -353,6 +354,10 @@ yprobe_edge_json(const char *jail, size_t nt,
 			ucl_object_insert_key(o, ucl_object_fromstring(t->kind ==
 			    ARCANA_PROBE_TARGET_KIND_STAMP ? "stamp" : "icmp"),
 			    "kind", 0, true);
+		/* Its end's tunnel, whose counters the edge reports. */
+		if (t->interface != NULL)
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->interface), "interface", 0, true);
 		/* A plain tunnel's: what its STAMP key comes from. */
 		if (t->stamp_interface != NULL)
 			ucl_object_insert_key(o, ucl_object_fromstring(
@@ -763,6 +768,100 @@ yprobe_state_from_json(const char *json, cbl_yarena *a,
 	}
 	out->target.n = k;
 	out->target.v = v;
+	ucl_object_unref(top);
+	return (0);
+}
+
+/*
+ * Each edge's interfaces' counters and FIBs' routes (probe.c's
+ * probe_edges_json()) into st's edge list, RFC 9375's terms.
+ */
+int
+yprobe_edges_from_json(const char *json, cbl_yarena *a,
+    struct arcana_probe_probes_state *st)
+{
+	struct arcana_probe_edge_state	*ev;
+	struct arcana_probe_if_counters	*iv, *c;
+	struct arcana_probe_fib_routes	*fv;
+	const ucl_object_t		*e, *x, *o, *list;
+	ucl_object_iter_t		 it, jt;
+	ucl_object_t			*top;
+	int64_t				 n, t, ip, im, op, om;
+	size_t				 k = 0, m;
+
+	if ((top = yj_parse(json)) == NULL)
+		return (EINVAL);
+	list = ucl_object_lookup(top, "edges");
+	if ((ev = cbl_yarena_alloc(a, (yj_count(list) + 1) * sizeof(*ev))) ==
+	    NULL) {
+		ucl_object_unref(top);
+		return (ENOMEM);
+	}
+	YJ_EACH(list, it, e) {
+		memset(&ev[k], 0, sizeof(ev[k]));
+		ev[k].jail = yj_str(a, e, "jail");
+		t = 0;
+		(void)yj_num(e, "time", &t);
+		o = ucl_object_lookup(e, "interfaces");
+		if ((iv = cbl_yarena_alloc(a, (yj_count(o) + 1) *
+		    sizeof(*iv))) == NULL) {
+			ucl_object_unref(top);
+			return (ENOMEM);
+		}
+		m = 0;
+		YJ_EACH(o, jt, x) {
+			c = &iv[m];
+			memset(c, 0, sizeof(*c));
+			if ((c->name = yj_str(a, x, "name")) == NULL)
+				continue;
+			c->last_updated = datetime(a, t);
+			/* FreeBSD counts broadcasts with the multicasts. */
+			ip = im = op = om = 0;
+			(void)yj_num(x, "ipackets", &ip);
+			(void)yj_num(x, "imcasts", &im);
+			(void)yj_num(x, "opackets", &op);
+			(void)yj_num(x, "omcasts", &om);
+#define	C(f, v)	do { c->has_##f = true; c->f = (uint64_t)(v); } while (0)
+#define	CK(f, k) do { if (yj_num(x, k, &n)) C(f, n); } while (0)
+			CK(inbound_octets, "ibytes");
+			C(inbound_unicast, ip - MIN(im, ip));
+			C(inbound_multicast, im);
+			CK(inbound_discards, "iqdrops");
+			CK(inbound_errors, "ierrors");
+			CK(inbound_unknown_protocol, "noproto");
+			CK(outbound_octets, "obytes");
+			C(outbound_unicast, op - MIN(om, op));
+			C(outbound_multicast, om);
+			CK(outbound_discards, "oqdrops");
+			CK(outbound_errors, "oerrors");
+#undef	CK
+#undef	C
+			m++;
+		}
+		ev[k].interface.n = m;
+		ev[k].interface.v = iv;
+		o = ucl_object_lookup(e, "fibs");
+		if ((fv = cbl_yarena_alloc(a, (yj_count(o) + 1) *
+		    sizeof(*fv))) == NULL) {
+			ucl_object_unref(top);
+			return (ENOMEM);
+		}
+		m = 0;
+		YJ_EACH(o, jt, x) {
+			memset(&fv[m], 0, sizeof(fv[m]));
+			if (!yj_num(x, "fib", &n))
+				continue;
+			fv[m].fib = (uint16_t)n;
+			YJ_NUM(x, "ipv4", &fv[m], ipv4_routes);
+			YJ_NUM(x, "ipv6", &fv[m], ipv6_routes);
+			m++;
+		}
+		ev[k].fib.n = m;
+		ev[k].fib.v = fv;
+		k++;
+	}
+	st->edge.n = k;
+	st->edge.v = ev;
 	ucl_object_unref(top);
 	return (0);
 }

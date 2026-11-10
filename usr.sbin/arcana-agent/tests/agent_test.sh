@@ -2169,7 +2169,7 @@ target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interva
 target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interval=0 size=0 eval=0 dscp=46 sent=0 received=0 misses=0 last-rtt=0 kept=0
   class voice
 target tvc-2 fd00:5a::2 ipv6 fib=0 error error=no route since=2026-10-14T16:23:20Z interval=100 size=64 eval=1000 dscp=0 sent=0 received=0 misses=0 last-rtt=0 kept=0
-yang-cbor 783 bytes, the same back
+yang-cbor 785 bytes, the same back
 EOT
 	atf_check -o file:want "$y" probes probes.json
 	# arcana-stamp: a session a target STAMP measures or may (its
@@ -2261,6 +2261,13 @@ EOT
 	atf_check -o match:'^yang-cbor [0-9]+ bytes, the same back$' tail -1 got
 	printf '%s\n' '{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","jail":"gateway","fib":0,"state":"up","since":1791995000,"samples":[],"kept":0}],"time":1791995110,"probing":true}' > jp.json
 	atf_check -o match:'^  jail gateway$' -o match:'the same back' "$y" probes jp.json
+	# Each edge's counters and routes (5.3.2), RFC 9375's terms: the
+	# unicast packets the packets less the multicast ones.
+	printf '%s\n' '{"targets":[],"time":1791995110,"probing":true,"edges":[{"time":1791995110,"interfaces":[{"name":"vtnet0","ibytes":9000,"ipackets":100,"imcasts":7,"iqdrops":2,"ierrors":1,"noproto":3,"obytes":8000,"opackets":90,"omcasts":5,"oqdrops":4,"oerrors":6}],"fibs":[{"fib":0,"ipv4":12,"ipv6":20},{"fib":1,"ipv4":3,"ipv6":0}]},{"jail":"gateway","time":1791995110,"interfaces":[],"fibs":[{"fib":0,"ipv4":2,"ipv6":4}]}]}' > ep.json
+	atf_check -o match:'^edge -$' -o match:'^edge gateway$' \
+	    -o match:'^  if vtnet0 2026-[0-9-]+T[0-9:]+Z in 9000/93/7/2/1/3 out 8000/85/5/4/6$' \
+	    -o match:'^  fib 0 12/20$' -o match:'^  fib 1 3/0$' -o match:'^  fib 0 2/4$' \
+	    -o match:'the same back' "$y" probes ep.json
 	printf '%s\n' '{"rules":{"set":0,"rules":0,"tables":[],"objects":0,"counters":[]},"steer":[],"steered":false,"edges":[{"jail":"gateway","rules":{"set":30,"rules":1,"tables":["sw1_p1"],"objects":0,"counters":[]},"steer":[{"table":"sw1_p1","prefix":"10.3.0.0/24","chosen":0,"candidates":[{"id":"tvc-1","via":"10.202.0.2","state":"up"}]}],"steered":true},{"jail":"down","error":"jail down is not running"}]}' > je.json
 	atf_check -o match:'^edge gateway set=30 rules=1 tables=1 steered=yes sw1_p1/10.3.0.0/24:1$' \
 	    -o match:'^edge down steered=no error=jail down is not running$' \
@@ -7973,6 +7980,155 @@ sdwan_classes_cleanup()
 	stop_daemon
 	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
 	true
+}
+
+# The edge's counters and routes (tpcheck.py before.json probes.json
+# after.json routes...): each interface of the agent's edge between
+# netstat -ibnd's before and after the read, each FIB's routes netstat
+# -rn -F's.
+tp_check_tool()
+{
+	command -v python3 > /dev/null || atf_skip "no python3"
+	cat > tpcheck.py <<'EOS'
+import json, sys
+# tpcheck.py before.json probes.json after.json [fib:v4:v6]...: the
+# host's edge in the probes' state, each interface's counters between
+# netstat -ibnd's of before and after (the traffic between the reads),
+# each FIB's routes netstat's.
+def pairs(kv):
+    d = {}
+    for k, v in kv:
+        # netstat -d says dropped-packets twice: in, then out.
+        if k == "dropped-packets" and k in d:
+            k = "out-dropped-packets"
+        d[k] = v
+    return d
+def links(p):
+    st = json.load(open(p), object_pairs_hook=pairs)["statistics"]
+    return {i["name"]: i for i in st["interface"]
+        if i.get("network", "").startswith("<Link")}
+before, after = links(sys.argv[1]), links(sys.argv[3])
+def find(o, k):
+    if isinstance(o, dict):
+        if k in o:
+            return o[k]
+        for v in o.values():
+            r = find(v, k)
+            if r is not None:
+                return r
+    if isinstance(o, list):
+        for v in o:
+            r = find(v, k)
+            if r is not None:
+                return r
+    return None
+edges = find(json.load(open(sys.argv[2])), "edge") or []
+host = [e for e in edges if not e.get("jail")]
+if len(host) != 1:
+    sys.exit("no host edge: %s" % edges)
+host = host[0]
+ifs = {i["name"]: i for i in host.get("interface", [])}
+if not ifs:
+    sys.exit("no interface: %s" % host)
+said = []
+for name, c in sorted(ifs.items()):
+    b, a = before[name], after[name]
+    if not c.get("last-updated", "").endswith("Z"):
+        sys.exit("%s: last-updated %s" % (name, c.get("last-updated")))
+    v = lambda k: int(c.get(k, 0))
+    for mine, ns in (("inbound-octets", "received-bytes"),
+        ("outbound-octets", "sent-bytes"),
+        ("inbound-errors", "received-errors"),
+        ("outbound-errors", "send-errors"),
+        ("inbound-discards", "dropped-packets"),
+        ("outbound-discards", "out-dropped-packets")):
+        if not int(b[ns]) <= v(mine) <= int(a[ns]):
+            sys.exit("%s: %s %d, netstat's %s %s to %s" % (name, mine,
+                v(mine), ns, b[ns], a[ns]))
+    pk = v("inbound-unicast") + v("inbound-multicast")
+    if not int(b["received-packets"]) <= pk <= int(a["received-packets"]):
+        sys.exit("%s: packets in %d, netstat's %s to %s" % (name, pk,
+            b["received-packets"], a["received-packets"]))
+    pk = v("outbound-unicast") + v("outbound-multicast")
+    if not int(b["sent-packets"]) <= pk <= int(a["sent-packets"]):
+        sys.exit("%s: packets out %d, netstat's %s to %s" % (name, pk,
+            b["sent-packets"], a["sent-packets"]))
+    said.append(name)
+fibs = {int(f["fib"]): f for f in host.get("fib", [])}
+for w in sys.argv[4:]:
+    f, v4, v6 = (int(x) for x in w.split(":"))
+    if f not in fibs:
+        sys.exit("no FIB %d: %s" % (f, host.get("fib")))
+    if int(fibs[f].get("ipv4-routes", -1)) != v4 or \
+        int(fibs[f].get("ipv6-routes", -1)) != v6:
+        sys.exit("FIB %d: %s, netstat's %d and %d" % (f, fibs[f], v4, v6))
+    said.append("fib %d %d/%d" % (f, v4, v6))
+print("ok " + ", ".join(said) + "; fibs " + " ".join(str(f) for f in
+    sorted(fibs)))
+EOS
+}
+
+# A FIB's routes of a family, as netstat -rn -F counts them.
+nroutes()
+{
+	netstat -rn -F "$1" -f "$2" --libxo json 2>/dev/null | python3 -I -c '
+import json, sys
+n = 0
+for f in json.load(sys.stdin)["statistics"]["route-information"]["route-table"].get("rt-family", []):
+    n += len(f.get("rt-entry", []))
+print(n)'
+}
+
+atf_test_case sdwan_counters cleanup
+sdwan_counters_head()
+{
+	atf_set "descr" "The edge's termination points and tables (PLAN-SDN-YANG" \
+	    "5.3.2): each interface a target goes over or a link watches, its" \
+	    "counters from if_data in RFC 9375's terms, equal to netstat -ibnd's" \
+	    "read about it; FIB 0 and each target's FIB, their routes netstat" \
+	    "-rn -F's; a target's interface kept as configuration; a FIB the" \
+	    "kernel has not left out"
+	atf_set "timeout" "60"
+}
+sdwan_counters_body()
+{
+	local f1 r i
+
+	tp_check_tool
+	start_daemon
+	f1=$(($(sysctl -n net.fibs) - 1))
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "{\"targets\":[{\"id\":\"t\",\"address\":\"127.0.0.1\",\"interface\":\"lo0\",\"fib\":$f1,\"kind\":\"icmp\"},{\"id\":\"far\",\"address\":\"127.0.0.1\",\"fib\":4000,\"kind\":\"icmp\"}],\"links\":[{\"id\":\"ucs\",\"interface\":\"lo0\"},{\"id\":\"gone\",\"interface\":\"nosuch0\"}]}"
+	# The target's interface is configuration, read back as it is.
+	atf_check -o match:'"id":"t","interface":"lo0"' \
+	    "$JGC" -c "$SOCK" get -d running probes
+	# The routes as netstat counts them, the same before and after
+	# (none changes them here); the counters read about the agent's.
+	for i in 1 2 3; do
+		r="0:$(nroutes 0 inet):$(nroutes 0 inet6)"
+		[ "$f1" -gt 0 ] && r="$r $f1:$(nroutes $f1 inet):$(nroutes $f1 inet6)"
+		netstat -ibnd --libxo json > before.json
+		"$JGC" -c "$SOCK" get probes > probes.json
+		netstat -ibnd --libxo json > after.json
+		[ "$r" = "0:$(nroutes 0 inet):$(nroutes 0 inet6)$([ "$f1" -gt 0 ] &&
+		    echo " $f1:$(nroutes $f1 inet):$(nroutes $f1 inet6)")" ] && break
+	done
+	atf_check -o match:"^ok lo0, fib 0 [0-9]+/[0-9]+.*; fibs 0( $f1)?\$" \
+	    python3 -I tpcheck.py before.json probes.json after.json $r
+	# Each interface once, the one not there left out; a FIB the
+	# kernel has not (4000) left out too.
+	atf_check -o match:'"name":"lo0"' -o not-match:'"name":"lo0".*"name":"lo0"' \
+	    -o not-match:'"name":"nosuch0"' \
+	    -o not-match:'"fib":4000,"ipv4-routes"' cat probes.json
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	# None: the host's FIB 0 still.
+	atf_check -o save:none.json "$JGC" -c "$SOCK" get probes
+	atf_check -o match:'"edge":\[\{"fib":\[\{"fib":0,"ipv4-routes":[0-9]+,"ipv6-routes":[0-9]+\}\]\}\]' \
+	    cat none.json
+}
+sdwan_counters_cleanup()
+{
+	stop_daemon
 }
 
 atf_test_case sdwan_rules cleanup
@@ -15750,6 +15906,7 @@ atf_init_test_cases()
 	atf_add_test_case stamp_kind
 	atf_add_test_case sdwan_pm
 	atf_add_test_case sdwan_classes
+	atf_add_test_case sdwan_counters
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog

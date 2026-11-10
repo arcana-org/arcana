@@ -1517,10 +1517,104 @@ if_owning(const struct sockaddr *sa, char *ifname, size_t len)
 }
 
 /*
+ * The counters of the interfaces named (names, a comma-separated list)
+ * from their if_data (getifaddrs(3), as netstat -ibn reads them): a line
+ * each one there, its name and ibytes ipackets imcasts iqdrops ierrors
+ * noproto obytes opackets omcasts oqdrops oerrors.  malloc(3)ed; NULL
+ * when it cannot be told.
+ */
+static char *
+counters_text(const char *names)
+{
+	struct ifaddrs		*ifap, *ifa;
+	const struct if_data	*d;
+	char			*out = NULL, *p, *n, *list;
+	size_t			 len = 0;
+	FILE			*fp;
+	bool			 want;
+
+	if ((list = strdup(names)) == NULL)
+		return (NULL);
+	if (getifaddrs(&ifap) == -1) {
+		free(list);
+		return (NULL);
+	}
+	if ((fp = open_memstream(&out, &len)) == NULL) {
+		freeifaddrs(ifap);
+		free(list);
+		return (NULL);
+	}
+	for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family !=
+		    AF_LINK || (d = ifa->ifa_data) == NULL)
+			continue;
+		want = false;
+		for (p = list; !want && p != NULL; ) {
+			n = p;
+			if ((p = strchr(p, ',')) != NULL)
+				*p = '\0';
+			want = strcmp(n, ifa->ifa_name) == 0;
+			if (p != NULL)
+				*p++ = ',';
+		}
+		if (!want)
+			continue;
+		fprintf(fp, "%s %ju %ju %ju %ju %ju %ju %ju %ju %ju %ju %ju\n",
+		    ifa->ifa_name, (uintmax_t)d->ifi_ibytes,
+		    (uintmax_t)d->ifi_ipackets, (uintmax_t)d->ifi_imcasts,
+		    (uintmax_t)d->ifi_iqdrops, (uintmax_t)d->ifi_ierrors,
+		    (uintmax_t)d->ifi_noproto, (uintmax_t)d->ifi_obytes,
+		    (uintmax_t)d->ifi_opackets, (uintmax_t)d->ifi_omcasts,
+		    (uintmax_t)d->ifi_oqdrops, (uintmax_t)d->ifi_oerrors);
+	}
+	freeifaddrs(ifap);
+	free(list);
+	if (fclose(fp) != 0) {
+		free(out);
+		return (NULL);
+	}
+	return (out);
+}
+
+/*
+ * The routes of the FIBs named (fibs, a comma-separated list), as
+ * netlink(4) dumps them: a line each FIB it could read, the FIB, its
+ * IPv4 routes and its IPv6 routes.  malloc(3)ed; NULL for no memory.
+ */
+static char *
+routes_text(const char *fibs)
+{
+	char		*out = NULL, *e;
+	const char	*p;
+	size_t		 len = 0;
+	uint32_t	 n4, n6;
+	unsigned long	 fib;
+	FILE		*fp;
+
+	if ((fp = open_memstream(&out, &len)) == NULL)
+		return (NULL);
+	for (p = fibs; *p != '\0'; p = *e == ',' ? e + 1 : e) {
+		fib = strtoul(p, &e, 10);
+		if (e == p || (*e != ',' && *e != '\0'))
+			break;
+		if (fib > 65535 || rt_count((int)fib, AF_INET, &n4) != 0 ||
+		    rt_count((int)fib, AF_INET6, &n6) != 0)
+			continue;
+		fprintf(fp, "%lu %u %u\n", fib, n4, n6);
+	}
+	if (fclose(fp) != 0) {
+		free(out);
+		return (NULL);
+	}
+	return (out);
+}
+
+/*
  * What the daemon asks of the interfaces in its own process, answered
  * as text: the same question is put to the helper when it is about a
- * jail.  what is interfaces (arg the family), exists, current, up or
- * prefix (arg the address).  malloc(3)ed; NULL when it cannot be told.
+ * jail.  what is interfaces (arg the family), exists, current, up,
+ * prefix (arg the address), counters (arg the interfaces) or routes
+ * (arg the FIBs).  malloc(3)ed; NULL when it cannot be told.
  */
 char *
 ifq_text(const char *what, const char *ifname, const char *arg)
@@ -1541,6 +1635,10 @@ ifq_text(const char *what, const char *ifname, const char *arg)
 		    ARC_NET_FAMILY_ALL, &rsp);
 		if (rsp.ok && rsp.json != NULL)
 			out = strdup(rsp.json);
+	} else if (strcmp(what, "counters") == 0 && arg != NULL) {
+		out = counters_text(arg);
+	} else if (strcmp(what, "routes") == 0 && arg != NULL) {
+		out = routes_text(arg);
 	} else if (strcmp(what, "plugins") == 0) {
 		/* The plugins' programs, as this jail sees its files. */
 		if (asprintf(&out, "%u", plugins_here()) == -1)
@@ -1586,6 +1684,23 @@ ifq(struct work *w, const char *what, const char *ifname, const char *arg)
 	if (run_read_max(w, argv, &res, ARC_MAX_JSON) != 0 || res.out == NULL)
 		return (NULL);
 	return (res.out);
+}
+
+/* counters_text() where w works: here, or in its jail by the helper;
+ * NULL when it cannot be told. */
+const char *
+if_counters_text(struct work *w, const char *names)
+{
+
+	return (ifq(w, "counters", NULL, names));
+}
+
+/* routes_text() where w works; NULL when it cannot be told. */
+const char *
+fib_routes_text(struct work *w, const char *fibs)
+{
+
+	return (ifq(w, "routes", NULL, fibs));
 }
 
 bool

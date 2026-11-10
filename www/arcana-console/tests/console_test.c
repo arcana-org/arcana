@@ -15686,9 +15686,11 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	ATF_CHECK(changes_of(&r, "make") > 10);
 	ATF_CHECK(strstr(r.body, "\"key\":\"uni:branch\"") != NULL);
 	/* Each edge measures its tunnels: the far inner address, through
-	 * the service's table, as the service's probe settings say. */
+	 * the service's table, as the service's probe settings say; over
+	 * its end's tunnel (its counters, PLAN-SDN-YANG 5.3.2). */
 	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"sdwan-probes\",\"targets\":[{"
-	    "\"id\":\"acme/a-inet-b-inet\",\"address\":\"100.64.0.1\",\"fib\":1,"
+	    "\"id\":\"acme/a-inet-b-inet\",\"address\":\"100.64.0.1\","
+	    "\"interface\":\"gre100\",\"fib\":1,"
 	    "\"eval\":1000,\"tca\":{\"delay\":30,\"loss\":0.050000,\"damping\":2}}")
 	    != NULL, "%s", r.body);
 	/*
@@ -16843,15 +16845,32 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 	snprintf(data, sizeof(data), FLEET "%s", sa);
 	snprintf(cand, sizeof(cand), "/restconf/ds/ietf-datastores:candidate/"
 	    "arcana-fleet:fleet/host=%s", sa);
-	snprintf(path, sizeof(path), "%s/arcana-probe:probes", cand);
-	http("PUT", path, "{\"arcana-probe:probes\":{\"target\":["
-	    "{\"id\":\"acme/a-inet-b-inet\",\"address\":\"127.0.0.1\","
-	    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
-	    "\"low-percentile\":\"25\",\"measurement-interval\":2,"
-	    "\"class\":[{\"name\":\"voice\",\"dscp\":46}]},"
-	    "{\"id\":\"acme/a-mpls-b-mpls\",\"address\":\"127.0.0.1\","
-	    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
-	    "\"low-percentile\":\"25\",\"measurement-interval\":2}]}}", &r);
+	/*
+	 * And, for the termination points and the nodes (PLAN-SDN-YANG
+	 * 5.3.2), a target in the service's FIB 1 (its node's routes) and B's
+	 * UCS End Point b-mpls watched on the host's interface where it has
+	 * one (its counters): one agent is both hosts here, so one list.
+	 */
+	{
+		char	tg[2048], lk[256];
+
+		lk[0] = '\0';
+		if (lifn[0] != '\0')
+			snprintf(lk, sizeof(lk), ",\"link\":[{\"id\":\"b-mpls\","
+			    "\"interface\":\"%s\"}]", lifn);
+		snprintf(tg, sizeof(tg), "{\"arcana-probe:probes\":{\"target\":["
+		    "{\"id\":\"acme/a-inet-b-inet\",\"address\":\"127.0.0.1\","
+		    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
+		    "\"low-percentile\":\"25\",\"measurement-interval\":2,"
+		    "\"class\":[{\"name\":\"voice\",\"dscp\":46}]},"
+		    "{\"id\":\"acme/a-mpls-b-mpls\",\"address\":\"127.0.0.1\","
+		    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
+		    "\"low-percentile\":\"25\",\"measurement-interval\":2},"
+		    "{\"id\":\"fib1\",\"address\":\"127.0.0.1\",\"kind\":\"icmp\","
+		    "\"fib\":1}]%s}}", lk);
+		snprintf(path, sizeof(path), "%s/arcana-probe:probes", cand);
+		http("PUT", path, tg, &r);
+	}
 	ATF_REQUIRE_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
 	    r.body);
 	resp_free(&r);
@@ -16871,10 +16890,12 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 		    "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
 		    "one-way-pm-statistics-per-class"), 0)) != NULL)
 			break;
+		if (i == 99)
+			break;
 		resp_free(&r);
 		usleep(200000);
 	}
-	ATF_REQUIRE_MSG(i < 100, "no interval in the view: %s", r.body);
+	ATF_REQUIRE_MSG(i < 99, "no interval in the view: %s", r.body);
 
 	/* RFC 9375 Appendix A.2's shape: the service, its nodes PEs. */
 	ATF_CHECK_STREQ("arcana:vpn:acme", pm_str(n, "network-id"));
@@ -17018,6 +17039,108 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 	    "arcana:underlay:a-inet,b-inet") != NULL && pm_entry(un,
 	    "ietf-network-topology:link", "link-id",
 	    "arcana:underlay:b-mpls,a-mpls") != NULL, "%s", st.body);
+
+	/*
+	 * The termination points' counters and the nodes' routes
+	 * (PLAN-SDN-YANG 5.3.2), as the agents read them: the underlay's
+	 * nodes FIB 0's, the service's A its FIB 1's; b-mpls's on the
+	 * host's interface, between the agent's reads before and after.
+	 */
+	{
+		struct resp	 sa0, sb0, sb1, sb2;
+		const ucl_object_t *f, *ps, *i0, *i1;
+		char		 k[64];
+
+		snprintf(path, sizeof(path), FLEET "%s/arcana-probe:probes/"
+		    "state", sa);
+		rc_get(path, &sa0);
+		EXPECT(&sa0, 200);
+		f = pm_entry(ucl_array_find_index(ucl_object_lookup_path(
+		    sa0.json, "arcana-probe:state.edge"), 0), "fib", "fib", "0");
+		ATF_REQUIRE_MSG(f != NULL, "%s", sa0.body);
+		t = pm_entry(un, "node", "node-id", ea);
+		ATF_CHECK_STREQ_MSG(pm_str(f, "ipv4-routes"), pm_str(t,
+		    "ietf-network-vpn-pm:entry-summary.ipv4-num."
+		    "total-active-routes"), "%s", st.body);
+		ATF_CHECK_STREQ(pm_str(f, "ipv6-routes"), pm_str(t,
+		    "ietf-network-vpn-pm:entry-summary.ipv6-num."
+		    "total-active-routes"));
+		ATF_CHECK(pm_str(t, "ietf-network-vpn-pm:entry-summary.ipv4-num."
+		    "maximum-routes") == NULL);
+		f = pm_entry(ucl_array_find_index(ucl_object_lookup_path(
+		    sa0.json, "arcana-probe:state.edge"), 0), "fib", "fib", "1");
+		t = pm_entry(n, "node", "node-id", ea);
+		if (f != NULL)
+			ATF_CHECK_STREQ_MSG(pm_str(f, "ipv4-routes"), pm_str(t,
+			    "ietf-network-vpn-pm:entry-summary.ipv4-num."
+			    "total-active-routes"), "%s", r.body);
+		else {
+			int	nf = 0;
+			size_t	nl = sizeof(nf);
+
+			(void)sysctlbyname("net.fibs", &nf, &nl, NULL, 0);
+			ATF_CHECK_MSG(nf < 2, "no FIB 1 at the agent: %s",
+			    sa0.body);
+		}
+		resp_free(&sa0);
+		if (lifn[0] != '\0') {
+			snprintf(path, sizeof(path), FLEET "%s/arcana-probe:"
+			    "probes/state", sb);
+			rc_get(path, &sb0);
+			EXPECT(&sb0, 200);
+			http("GET", "/restconf/data/ietf-network:networks/"
+			    "network=arcana:underlay", NULL, &sb1);
+			EXPECT(&sb1, 200);
+			t = pm_entry(ucl_array_find_index(ucl_object_lookup(
+			    sb1.json, "ietf-network:network"), 0), "node",
+			    "node-id", eb);
+			t = pm_entry(t, "ietf-network-topology:termination-point",
+			    "tp-id", "arcana:ucs-ep:b-mpls");
+			ps = ucl_object_lookup(t, "ietf-network-vpn-pm:"
+			    "pm-statistics");
+			ATF_REQUIRE_MSG(ps != NULL, "%s", sb1.body);
+			ATF_CHECK(pm_str(ps, "last-updated") != NULL);
+			i0 = pm_entry(ucl_array_find_index(ucl_object_lookup_path(
+			    sb0.json, "arcana-probe:state.edge"), 0), "interface",
+			    "name", lifn);
+			ATF_REQUIRE_MSG(i0 != NULL, "%s", sb0.body);
+			rc_get(path, &sb2);
+			i1 = pm_entry(ucl_array_find_index(ucl_object_lookup_path(
+			    sb2.json, "arcana-probe:state.edge"), 0), "interface",
+			    "name", lifn);
+			ATF_REQUIRE(i1 != NULL);
+			static const char *const cnt[] = { "inbound-octets",
+			    "inbound-unicast", "inbound-multicast",
+			    "inbound-discards", "inbound-errors",
+			    "inbound-unknown-protocol", "outbound-octets",
+			    "outbound-unicast", "outbound-multicast",
+			    "outbound-discards", "outbound-errors" };
+			for (size_t q = 0; q < nitems(cnt); q++) {
+				snprintf(k, sizeof(k), "%s", cnt[q]);
+				if (pm_str(ps, k) == NULL || pm_str(i0, k) == NULL ||
+				    pm_str(i1, k) == NULL) {
+					ATF_CHECK_MSG(false, "%s: none: %s", k,
+					    sb1.body);
+					continue;
+				}
+				ATF_CHECK_MSG(strtoull(pm_str(i0, k), NULL, 10) <=
+				    strtoull(pm_str(ps, k), NULL, 10) && strtoull(
+				    pm_str(ps, k), NULL, 10) <= strtoull(pm_str(i1,
+				    k), NULL, 10),
+				    "%s: %s, the agent's %s to %s", k, pm_str(ps,
+				    k), pm_str(i0, k), pm_str(i1, k));
+			}
+			ATF_CHECK(pm_str(ps, "inbound-broadcast") == NULL);
+			resp_free(&sb0);
+			resp_free(&sb2);
+			/* Kept for yanglint, below. */
+			ucl_object_unref(st.json);
+			st.json = ucl_object_ref(sb1.json);
+			un = ucl_array_find_index(ucl_object_lookup(st.json,
+			    "ietf-network:network"), 0);
+			resp_free(&sb1);
+		}
+	}
 
 	/* Valid by libyang too: both networks, the modules as published. */
 	if (access("/usr/local/bin/yanglint", X_OK) == 0) {

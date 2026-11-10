@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.272.0"
+#define	ARCANA_AGENT_VERSION	"0.273.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -742,6 +742,9 @@ void		 if_current(struct work *, const char *, unsigned int *, int *,
 bool		 if_is_up(struct work *, const char *, bool *);
 bool		 if_link(struct work *, const char *, bool *);
 bool		 if_exists(struct work *, const char *);
+const char	*if_counters_text(struct work *, const char *);
+const char	*fib_routes_text(struct work *, const char *);
+int		 rt_count(int, int, uint32_t *);
 const char	*if_json(struct work *);
 struct ucl_object_s *if_object(struct work *, const char *);
 int		 if_recreate(struct work *, const char *, const struct ucl_object_s *, int,
@@ -898,6 +901,8 @@ int		 do_monitor_job(struct work *, const struct arc_job_spec *,
 int		 do_monitors_set(struct work *, const char *, const char **);
 /* The targets, links and monitors of each edge, as JSON (malloc'd). */
 char		*probe_conf_json(void);
+/* Each edge's interfaces' counters and FIBs' routes now, as JSON. */
+char		*probe_edges_json(void);
 int		 probe_state_of(const char *, const char *);
 bool		 probe_sample_of(const char *, const char *, double *, double *,
 		    double *);
