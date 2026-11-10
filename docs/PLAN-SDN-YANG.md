@@ -2852,6 +2852,47 @@ whose first part is served.
 - 5.1.4 A: timestamp information TLV from `ntp_gettime`; one-way delay
   only when both error estimates allow, else half RTT flagged; check:
   dummynet `delay` one way.
+  Done (agent 0.266.0, stamp's owd commit): libstamp writes and reads
+  RFC 8972's TLVs; the reflector fills the Timestamp Information TLV
+  of a request that carries one (the clock's source, `ntp` when
+  `ntp_gettime` says synchronised, `local` when not; T2 `hw` when
+  `SCM_TIME_INFO` says the hardware took it, else `sw`; T3 `sw`), the
+  reply as long as the request, any other TLV but Extra Padding marked
+  unrecognised, and a tail that is not TLVs to its end (a TWAMP Light
+  sender's zeros) copied as before.  The clock as the process says,
+  for one the kernel does not know is synchronised (PTP without the
+  kernel's PLL, GNSS, one host's clock both ends'): `source[:error]`,
+  stampd `-C`, stamp `-C`, the agent's `--stamp-clock`.  The sender's
+  core keeps T1 and T4 on the time of day beside the monotonic round
+  trip (T4 the kernel's monotonic receive time put on the time of day)
+  and says the delay forward (T2 − T1) and backward (T4 − T3) only when
+  both Error Estimates have S and their errors together are no more
+  than a tenth of half the round trip (`owd_frac`), neither way
+  negative: what is said is right to a tenth; otherwise half the round
+  trip each, flagged an estimate.  The Error Estimate stays
+  `ntp_gettime`'s maxerror, a bound, so an NTP-synchronised pair says
+  one way only over paths long against its error.  The agent's STAMP
+  targets ask for the TLV and keep the delay each way beside the round
+  trip where 5.1.3 put the loss: three columns after the ten (forward,
+  backward in ms, and 1 one way, 0 half the round trip, -1 not by
+  STAMP; one way when every reply of the interval was), the target's
+  JSON (`forward_delay`, `backward_delay`, `one_way`
+  measured|estimated, `clock_error`, `timestamp_info`) and the `-d`
+  line (with the reflector's timestamps); arcana-probe carries none of
+  it yet (5.1.8).  Checked: stamp's suite (libstamp_test:clock_set,
+  tlv_tsinfo, sender_owd: synchronised one way 30 ms out and 5 back,
+  free-running or 1 ms each of error half the round trip;
+  sender_owd_bounds: a reflector's clock behind, no T4;
+  stampd_test:owd through a relay holding packets 30 ms on the way
+  out: measured, then half the round trip flagged from a reflector of
+  a second's error); agent_root_test:stamp_delay (stampd in a vnet
+  jail, one address's packets held 50 ms on the way in by dummynet's
+  `delay` where it is loaded, else, as on the lab VM's jail without
+  dummynet, a relay in the jail in front of stampd, no ipfw rule
+  delaying; both clocks said synchronised within 100 ns, true by
+  construction on one host: 52 ms forward and 0.07 back there, under
+  0.1 ms either way on the other address, one way, ptp/sw; stampd
+  started again with a second's error: half the round trip, flagged).
 - 5.1.5 A: class-of-service TLV with DSCP echo; check: `tcpdump -v`.
 - 5.1.6 A: direct-measurement TLV from ipfw counters; location TLV;
   check: NAT detection on the lab.

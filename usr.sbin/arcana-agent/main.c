@@ -33,6 +33,7 @@
 #include "agent.h"
 #include "ystream.h"
 #include "collect.h"
+#include "stamp.h"
 
 #define	PATH_SOCKET	"unix:/var/run/arcana-agent.sock"
 #define	PATH_PIDFILE	"/var/run/arcana-agent.pid"
@@ -132,7 +133,8 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SURICATA_RULES, OPT_EXPORTS, OPT_CTL_CONF, OPT_HAST_CONF,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
-    OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT };
+    OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
+    OPT_STAMP_CLOCK };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -154,6 +156,9 @@ static const struct option longopts[] = {
 	/* The UDP port Arcana's far ends reflect STAMP on (stampd(8)): a
 	 * test's own; 0, every target pinged. */
 	{ "stamp-port", required_argument, NULL, OPT_STAMP_PORT },
+	/* This host's clock as STAMP tells it, for one ntp_gettime(2)
+	 * does not know is synchronised: source[:error]. */
+	{ "stamp-clock", required_argument, NULL, OPT_STAMP_CLOCK },
 	/* More addresses each SCTP listener is bound to (sctp_bindx(3)),
 	 * separated by spaces: an association with the console over
 	 * several paths. */
@@ -219,6 +224,7 @@ usage(void)
 	    "                 [--exports file] [--ctl-conf file] [--hast-conf file]\n"
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
+	    "                 [--stamp-clock source[:error]]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file]\n"
 	    "                 [--subscriptions file] [--features list]\n");
@@ -490,6 +496,11 @@ main(int argc, char *argv[])
 			opts.stamp_port = (int)strtonum(optarg, 0, 65535, &errstr);
 			if (errstr != NULL)
 				errx(1, "--stamp-port %s: %s", optarg, errstr);
+			break;
+		case OPT_STAMP_CLOCK:
+			if (stamp_clock_set(optarg) == -1)
+				errx(1, "--stamp-clock %s: ntp, ptp, ssu, gnss or "
+				    "local, and :error in seconds", optarg);
 			break;
 		case OPT_SMTPD_WATCH:
 			opts.smtpd_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);

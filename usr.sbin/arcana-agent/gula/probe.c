@@ -31,7 +31,12 @@
  * (which the far agent runs in the FIBs it probes in, gula/stampd.c),
  * on the same schedule, its samples the same, the round trip with the
  * reflector's time taken out; and, a stateful reflector's counter
- * telling the way out from the way back, the loss each way.  Arcana's
+ * telling the way out from the way back, the loss each way; and the
+ * delay each way, one way when both ends' clocks say they are
+ * synchronised closely enough (libstamp's rule: both Error Estimates'
+ * S bit, their errors together within a tenth of half the round trip),
+ * else half the round trip, flagged an estimate; the reflector's
+ * Timestamp Information TLV (RFC 8972 4.3) asked for and kept.  Arcana's
  * far end, until arcana-probe says a target's kind (PLAN-SDN-YANG
  * 5.1.8), is an SD-WAN target of the host's that is a tunnel's: not a
  * monitor (the admin's, on any tunnel), not a breakout's beacon (the
@@ -106,6 +111,10 @@ struct sample {
 	double	t, delay, ipdv, loss, min, max;
 	int	sent, recv;
 	double	fwd, back;	/* lost each way, by STAMP; -1 not told */
+	/* The delay each way (ms), by STAMP: one way when owd is 1, half
+	 * the round trip when 0 (an estimate); -1 each when not told. */
+	double	dfwd, dback;
+	int	owd;
 };
 
 struct target {
@@ -132,6 +141,11 @@ struct target {
 	uint64_t		 tk_fwd, tk_back;	/* of ss's, taken */
 	uint64_t		 fwd_lost, back_lost;	/* all along */
 	double			 stamp_retry;
+	/* The delay each way of the last reply (ms), one way or half its
+	 * round trip; the reflector's Timestamp Information. */
+	double			 last_dfwd, last_dback, last_err;
+	bool			 has_delay, last_owd, has_ti;
+	struct stamp_tsinfo	 ti;
 	uint16_t		 ident, seq;
 	struct {
 		uint16_t	 seq;
@@ -148,6 +162,8 @@ struct target {
 	/* The eval interval in progress. */
 	int			 w_sent, w_recv, w_ipdv_n;
 	double			 w_sum, w_min, w_max, w_ipdv_sum, w_prev;
+	int			 w_owd_n, w_est_n;	/* STAMP replies */
+	double			 w_dfwd, w_dback;	/* one way, ms */
 	bool			 w_has_prev;
 	struct sample		*samples;
 	int			 nsamples, head;
@@ -520,12 +536,24 @@ window_end(struct target *t, double now)
 	s->min = t->w_recv > 0 ? t->w_min / 2 : 0;
 	s->max = t->w_recv > 0 ? t->w_max / 2 : 0;
 	s->fwd = s->back = -1;
+	/* The delay each way: one way when every STAMP reply of the
+	 * interval had it so, else half the round trip, an estimate. */
+	s->dfwd = s->dback = -1;
+	s->owd = -1;
+	if (t->w_owd_n > 0 && t->w_est_n == 0) {
+		s->dfwd = t->w_dfwd / t->w_owd_n;
+		s->dback = t->w_dback / t->w_owd_n;
+		s->owd = 1;
+	} else if (t->w_owd_n + t->w_est_n > 0) {
+		s->dfwd = s->dback = s->delay;
+		s->owd = 0;
+	}
 	/* The loss each way, told by a stateful reflector's counter: a
 	 * loss is told once the reply after it is in, so the counts
 	 * trail the samples by up to a timeout. */
 	if (t->by_stamp && t->ss != NULL) {
 		struct stamp_sender_stats	st;
-		char				name[200];
+		char				name[200], ti[48];
 		uint64_t			df, db;
 
 		stamp_sender_stats(t->ss, &st);
@@ -539,17 +567,30 @@ window_end(struct target *t, double now)
 			s->fwd = (double)df / t->w_sent;
 			s->back = (double)db / t->w_sent;
 		}
+		if (t->has_ti)
+			snprintf(ti, sizeof(ti), "%s/%s,%s/%s",
+			    stamp_sync_name(t->ti.sync_in),
+			    stamp_tsm_name(t->ti.ts_in),
+			    stamp_sync_name(t->ti.sync_out),
+			    stamp_tsm_name(t->ti.ts_out));
+		else
+			snprintf(ti, sizeof(ti), "-");
 		logmsg(LOG_DEBUG, "probe: %s: stamp (%s reflector): sent %d, "
-		    "received %d; lost forward %ju, backward %ju all along",
-		    target_name(t, name, sizeof(name)), stamp_mode_name(
-		    st.mode), t->w_sent, t->w_recv, (uintmax_t)t->fwd_lost,
-		    (uintmax_t)t->back_lost);
+		    "received %d; lost forward %ju, backward %ju all along; "
+		    "delay forward %.3f ms, backward %.3f ms (%s); the "
+		    "reflector's timestamps %s", target_name(t, name,
+		    sizeof(name)), stamp_mode_name(st.mode), t->w_sent,
+		    t->w_recv, (uintmax_t)t->fwd_lost, (uintmax_t)t->back_lost,
+		    s->dfwd, s->dback, s->owd == 1 ? "one way" : s->owd == 0 ?
+		    "estimated: half the round trip" : "no reply", ti);
 	}
 	if (t->w_sent > 0)
 		tca_check(t, s);
 reset:
 	t->w_sent = t->w_recv = t->w_ipdv_n = 0;
 	t->w_sum = t->w_ipdv_sum = 0;
+	t->w_owd_n = t->w_est_n = 0;
+	t->w_dfwd = t->w_dback = 0;
 	t->w_min = t->w_max = 0;
 	t->win_start = now;
 }
@@ -685,6 +726,7 @@ stamp_open(struct target *t)
 	if (t->ss == NULL) {
 		memset(&c, 0, sizeof(c));
 		c.ssid = t->ssid;
+		c.tsinfo = true;
 		c.timeout = t->timeout / 1000.0;
 		c.window = (unsigned)(t->timeout / t->interval + 2);
 		if (c.window > STAMP_WINDOW)
@@ -750,7 +792,10 @@ stamp_send_one(struct target *t, bool counted)
 			stamp_fallback(t, now, strerror(errno));
 		return (false);
 	}
-	len = t->size < STAMP_UNAUTH_LEN ? STAMP_UNAUTH_LEN : (size_t)t->size;
+	/* The base, the Timestamp Information TLV, the rest padding. */
+	len = stamp_sender_len(t->ss, t->size > 0 ? (size_t)t->size : 0);
+	if (len > sizeof(pkt))
+		len = sizeof(pkt);
 	memset(pkt, 0, len);
 	clock_gettime(CLOCK_REALTIME, &t1);
 	now = now_s();
@@ -775,6 +820,27 @@ stamp_send_one(struct target *t, bool counted)
 	} else if (counted)
 		t->error[0] = '\0';
 	return (true);
+}
+
+/* A STAMP reply's delay each way, into the interval and the last. */
+static void
+stamp_delay(struct target *t, const struct stamp_sample *sm)
+{
+
+	t->last_dfwd = sm->fwd * 1000;
+	t->last_dback = sm->back * 1000;
+	t->last_err = sm->err * 1000;
+	t->last_owd = sm->owd;
+	t->has_delay = true;
+	if (sm->owd) {
+		t->w_owd_n++;
+		t->w_dfwd += t->last_dfwd;
+		t->w_dback += t->last_dback;
+	} else
+		t->w_est_n++;
+	t->has_ti = sm->has_tsinfo;
+	if (sm->has_tsinfo)
+		t->ti = sm->tsinfo;
 }
 
 /* The replies to the target's STAMP probes: hits; to a fallen-back
@@ -802,10 +868,12 @@ stamp_recv_all(struct target *t)
 		if (t->ss == NULL)
 			continue;
 		at = (double)ri.mono.tv_sec + (double)ri.mono.tv_nsec / 1e9;
-		if (stamp_sender_reply(t->ss, in, (size_t)n, at, &sm) != 1)
+		if (stamp_sender_reply(t->ss, in, (size_t)n, at, &ri.t,
+		    &sm) != 1)
 			continue;
 		if (t->by_stamp) {
 			hit(t, sm.rtt * 1000);
+			stamp_delay(t, &sm);
 			continue;
 		}
 		/* Measured by STAMP again, by a sender of its own: the try's
@@ -1753,6 +1821,35 @@ target_json(const struct target *t, double now, uint64_t after)
 		    t->fwd_lost), "forward_lost", 0, false);
 		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
 		    t->back_lost), "backward_lost", 0, false);
+		/* The last reply's delay each way: one way, or half its
+		 * round trip ("estimated"); the reflector's clock. */
+		if (t->by_stamp && t->has_delay) {
+			ucl_object_insert_key(o, ucl_object_fromdouble(
+			    t->last_dfwd), "forward_delay", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromdouble(
+			    t->last_dback), "backward_delay", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->last_owd ? "measured" : "estimated"), "one_way",
+			    0, false);
+			ucl_object_insert_key(o, ucl_object_fromdouble(
+			    t->last_err), "clock_error", 0, false);
+		}
+		if (t->has_ti) {
+			cur = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(cur, ucl_object_fromstring(
+			    stamp_sync_name(t->ti.sync_in)), "sync_in", 0, true);
+			ucl_object_insert_key(cur, ucl_object_fromstring(
+			    stamp_tsm_name(t->ti.ts_in)), "timestamp_in", 0,
+			    true);
+			ucl_object_insert_key(cur, ucl_object_fromstring(
+			    stamp_sync_name(t->ti.sync_out)), "sync_out", 0,
+			    true);
+			ucl_object_insert_key(cur, ucl_object_fromstring(
+			    stamp_tsm_name(t->ti.ts_out)), "timestamp_out", 0,
+			    true);
+			ucl_object_insert_key(o, cur, "timestamp_info", 0,
+			    false);
+		}
 	}
 	/* The interval in progress, so far. */
 	cur = ucl_object_typed_new(UCL_OBJECT);
@@ -1771,9 +1868,10 @@ target_json(const struct target *t, double now, uint64_t after)
 	    t->win_start), "age", 0, false);
 	ucl_object_insert_key(o, cur, "now", 0, false);
 	/* The samples, the oldest first: t, delay, ipdv, loss, min,
-	 * max, sent, received, and the loss forward and backward (-1 not
-	 * told: not by a stateful reflector); the last report * eval ms
-	 * are the report's. */
+	 * max, sent, received, the loss forward and backward (-1 not
+	 * told: not by a stateful reflector), and the delay forward and
+	 * backward with how (1 one way, 0 half the round trip, -1 not by
+	 * STAMP: -1 each); the last report * eval ms are the report's. */
 	s = ucl_object_typed_new(UCL_ARRAY);
 	from = t->nsamples > 3600 ? t->nsamples - 3600 : 0;
 	for (k = from; k < t->nsamples; k++) {
@@ -1792,6 +1890,9 @@ target_json(const struct target *t, double now, uint64_t after)
 		ucl_array_append(row, ucl_object_fromint(sm->recv));
 		ucl_array_append(row, ucl_object_fromdouble(sm->fwd));
 		ucl_array_append(row, ucl_object_fromdouble(sm->back));
+		ucl_array_append(row, ucl_object_fromdouble(sm->dfwd));
+		ucl_array_append(row, ucl_object_fromdouble(sm->dback));
+		ucl_array_append(row, ucl_object_fromint(sm->owd));
 		ucl_array_append(s, row);
 	}
 	ucl_object_insert_key(o, s, "samples", 0, false);

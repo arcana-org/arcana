@@ -68,6 +68,7 @@
 .Op Fl -bird-watch Ar seconds
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -stamp-port Ar port
+.Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -sctp-also Ar addresses
 .Op Fl -telegram-api Ar url
 .Op Fl -poudriere Ar poudriere
@@ -695,6 +696,21 @@ The UDP port the far ends'
 .Xr stampd 8
 answers STAMP on, for the probes to Arcana's far ends; default 862, 0
 to ping every target.
+.It Fl -stamp-clock Ar source Ns Op : Ns Ar error
+This host's clock as the STAMP probes tell it, for one that
+.Xr ntp_gettime 2
+does not know is synchronised (by PTP without the kernel's PLL, a GNSS
+receiver):
+.Ar source
+.Cm ntp , ptp , ssu , gnss
+or
+.Cm local ,
+.Ar error
+in seconds, as
+.Xr stampd 8 Ns 's
+.Fl C ,
+which the admin gives the host's reflectors by
+.Va stampd_flags .
 .It Fl I Ar ifconfig , Fl n Ar ngctl , Fl k Ar wg , Fl b Ar birdc
 The
 .Xr ifconfig 8 ,
@@ -978,9 +994,15 @@ sender, a UDP socket in the target's FIB
 .Pq Dv SO_SETFIB ,
 receive times by
 .Dv SO_TS_MONOTONIC :
-the round trip with the reflector's time taken out and, the reflector
-being stateful, the loss on the way out told from the loss on the way
-back; the others, the monitors and a jail edge's targets are pinged
+the round trip with the reflector's time taken out; the delay each way,
+the packets carrying the Timestamp Information TLV (RFC 8972), one way
+(T2 \- T1 and T4 \- T3 on the time of day) when both ends' error
+estimates say their clocks are synchronised
+.Pq Xr ntp_gettime 2 , No or Fl -stamp-clock
+and the two errors together are no more than a tenth of half the round
+trip, else half the round trip, flagged an estimate; and, the
+reflector being stateful, the loss on the way out told from the loss on
+the way back; the others, the monitors and a jail edge's targets are pinged
 .Pq ICMP echo .
 A far end whose STAMP port is refused, or that answers none of as many
 STAMP probes as would make the target down, is pinged instead, the

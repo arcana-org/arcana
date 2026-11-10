@@ -2378,6 +2378,204 @@ stamp_loss_cleanup()
 	true
 }
 
+# STAMP's delay each way (PLAN-SDN-YANG 5.1.4): stampd in a vnet jail
+# behind an epair, its packets to one address held 50 ms on the way in
+# and the replies none.  One host, one clock: the agent's and stampd's
+# are the same one, synchronised with each other by construction, which
+# --stamp-clock and -C say (the VM's own clock need not be).
+STD_J=arc-tsd
+STD_NET=198.18.63
+# The forward delay within lo and hi ms, the backward under 10.
+STD_AWK='{ match($0, /delay forward [0-9.]+ ms, backward [0-9.]+ ms/);
+    split(substr($0, RSTART, RLENGTH), v, " ");
+    ok = v[3] >= lo && v[3] <= hi && v[6] >= 0 && v[6] < 10;
+    print ok ? "ok" : "bad " v[3] " " v[6] }'
+
+# A target's last interval as -d logs it.
+std_last()
+{
+	grep "probe: $1: stamp (stateful reflector): " daemon.out | tail -1
+}
+
+# stampd in the jail, its clock as $1 says.
+std_stampd()
+{
+	local i
+
+	: > std.d.out
+	jexec $STD_J "$SD" -d -u nobody -r 0 -R 0 -p $P -C "$1" \
+	    > std.d.out 2>&1 &
+	echo $! > std.spid
+	for i in $(seq 1 100); do
+		grep -q started std.d.out && break
+		sleep 0.05
+	done
+	grep -q started std.d.out || atf_fail "stampd: $(cat std.d.out)"
+}
+
+# The relay in the jail (relay.py), on .3's port in front of stampd.
+std_relay()
+{
+	local i
+
+	: > std.r.out
+	jexec $STD_J python3 -I "$(pwd)/relay.py" $STD_NET.3 $P $STD_NET.2 \
+	    50 > std.r.out 2>&1 &
+	echo $! > std.rpid
+	for i in $(seq 1 100); do
+		grep -q ready std.r.out && break
+		sleep 0.05
+	done
+	grep -q ready std.r.out || atf_fail "relay: $(cat std.r.out)"
+}
+
+atf_test_case stamp_delay cleanup
+stamp_delay_head()
+{
+	atf_set "descr" "Arcana's far ends' delay each way by STAMP: stampd" \
+	    "in a vnet jail across an epair, the packets to one address held" \
+	    "50 ms on the way in, the replies none (dummynet delay where it" \
+	    "is loaded, else a relay in the jail holding them: no ipfw rule" \
+	    "delays); both clocks said synchronised within 100 ns (an" \
+	    "epair's tens of microseconds told to a tenth), the delay one" \
+	    "way, 50 ms forward on the one and next to none" \
+	    "backward, none either way on the other; the Timestamp" \
+	    "Information TLV filled; a reflector whose error is a second," \
+	    "half the round trip, flagged"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_delay_body()
+{
+	local ep i P
+
+	jls -j $STD_J >/dev/null 2>&1 && atf_skip "a jail $STD_J exists"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STD_J vnet persist path=/ host.hostname=$STD_J
+	ep=$(epair_create)
+	echo "$ep" > std.epair
+	atf_check ifconfig "$ep" inet $STD_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STD_J
+	atf_check jexec $STD_J ifconfig "${ep%a}b" inet $STD_NET.2/29 up
+	atf_check jexec $STD_J ifconfig "${ep%a}b" inet $STD_NET.3/32 alias
+	std_stampd ptp:0.0000001
+	# .3: the way in 50 ms longer; .2: as it is.
+	if kldstat -q -m dummynet && kldstat -q -m ipfw; then
+		echo "dummynet: pipe 1 delay 50 on the way in to .3"
+		atf_check -o ignore jexec $STD_J ipfw pipe 1 config delay 50
+		atf_check -o ignore jexec $STD_J ipfw add 100 pipe 1 udp from \
+		    any to $STD_NET.3 dst-port $P in
+		atf_check -o ignore jexec $STD_J ipfw add 65000 allow ip from \
+		    any to any
+	else
+		# No ipfw-only way to delay: a relay on .3's port, in front
+		# of stampd, holds what comes in and sends the replies back
+		# at once.  Its own time, both ways, is next to nothing.
+		command -v python3 >/dev/null ||
+		    atf_skip "neither dummynet(4) nor python3 for a relay"
+		echo "dummynet(4) not loaded: a relay in the jail holds the" \
+		    "packets to .3 50 ms"
+		cat > relay.py <<'EOF'
+import collections, select, socket, sys, time
+la, port, ra, delay = sys.argv[1], int(sys.argv[2]), sys.argv[3], float(sys.argv[4]) / 1000
+i = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+i.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+i.bind((la, port))
+o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+o.connect((ra, port))
+print("ready", flush=True)
+q = collections.deque()
+peer = None
+while True:
+    now = time.monotonic()
+    while q and q[0][0] <= now:
+        try:
+            o.send(q.popleft()[1])
+        except OSError:
+            pass
+    r, _, _ = select.select([i, o], [], [], max(0, q[0][0] - now) if q else None)
+    if i in r:
+        d, peer = i.recvfrom(9000)
+        q.append((time.monotonic() + delay, d))
+    if o in r:
+        try:
+            d = o.recv(9000)
+        except OSError:
+            continue
+        if peer is not None:
+            i.sendto(d, peer)
+EOF
+		std_relay
+	fi
+	DAEMON_ARGS="-d --stamp-port $P --stamp-clock ptp:0.0000001" start_daemon
+	t='"interval":50,"eval":1000,"timeout":500,"down":10'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"slow\",\"address\":\"$STD_NET.3\",$t},{\"id\":\"clean\",\"address\":\"$STD_NET.2\",$t}]"
+	sleep 5
+	# Each target's last interval, as -d logs it (arcana-probe carries
+	# none of it yet: 5.1.8): the delay forward and backward, how, and
+	# the reflector's Timestamp Information.
+	for i in slow clean; do
+		std_last $i > std.$i
+		[ -s std.$i ] || atf_fail "$i not measured by STAMP: $(cat daemon.out)"
+		cat std.$i
+	done
+	atf_check -o inline:'one way|ptp/sw,ptp/sw\n' \
+	    sed -E 's/.* ms \(([^)]*)\); the reflector.s timestamps (.*)/\1|\2/' \
+	    std.slow
+	atf_check -o inline:'one way|ptp/sw,ptp/sw\n' \
+	    sed -E 's/.* ms \(([^)]*)\); the reflector.s timestamps (.*)/\1|\2/' \
+	    std.clean
+	# 50 ms more forward on the one, next to nothing backward; nothing
+	# either way on the other.
+	atf_check -o inline:'ok\n' awk -v lo=45 -v hi=80 "$STD_AWK" std.slow
+	atf_check -o inline:'ok\n' awk -v lo=0 -v hi=10 "$STD_AWK" std.clean
+	# The reflector's error a second: half the round trip, flagged.  Its
+	# restart gap makes the agent ping until STAMP answers again (tried
+	# every 10 s).  The relay's socket on the port first gone: stampd
+	# binds the wildcard address alone.
+	if [ -f std.rpid ]; then
+		kill "$(cat std.rpid)"
+		wait "$(cat std.rpid)" 2>/dev/null
+	fi
+	kill "$(cat std.spid)"
+	wait "$(cat std.spid)" 2>/dev/null
+	std_stampd ntp:1
+	[ -f std.rpid ] && std_relay
+	for i in $(seq 1 250); do
+		std_last slow | grep -q 'estimated: half the round trip); the reflector.s timestamps ntp/sw,ntp/sw$' &&
+		    break
+		sleep 0.1
+	done
+	std_last slow > std.slow
+	cat std.slow
+	atf_check -o match:'\(estimated: half the round trip\); the reflector.s timestamps ntp/sw,ntp/sw$' \
+	    cat std.slow
+	# Half the round trip each way: 25 ms and a little, the same.
+	atf_check -o inline:'ok\n' awk '{ match($0, /delay forward [0-9.]+ ms, backward [0-9.]+ ms/);
+	    split(substr($0, RSTART, RLENGTH), v, " ");
+	    ok = v[3] == v[6] && v[3] >= 20 && v[3] <= 45;
+	    print ok ? "ok" : "bad " v[3] " " v[6] }' std.slow
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_delay_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f std.spid ] && kill "$(cat std.spid)" 2>/dev/null
+	[ -f std.rpid ] && kill "$(cat std.rpid)" 2>/dev/null
+	jexec $STD_J ipfw -q flush 2>/dev/null
+	jexec $STD_J ipfw -q pipe flush 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f std.epair ]; then
+		ep=$(cat std.epair)
+		ifconfig "${ep%a}b" -vnet $STD_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STD_J >/dev/null 2>&1
+	true
+}
+
 atf_test_case monitors_qos cleanup
 monitors_qos_head()
 {
@@ -3952,6 +4150,7 @@ atf_init_test_cases()
 	atf_add_test_case monitors_fib
 	atf_add_test_case stampd_fib
 	atf_add_test_case stamp_loss
+	atf_add_test_case stamp_delay
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake
