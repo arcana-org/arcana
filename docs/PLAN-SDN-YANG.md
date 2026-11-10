@@ -2802,6 +2802,53 @@ whose first part is served.
 - 5.1.3 A: STAMP sender replacing the ICMP engine's scheduling for
   Arcana targets, RTT with reflector time removed, directional loss;
   check: dummynet `plr` seen per direction.
+  Done (agent 0.264.0, stamp's sender): libstamp has the
+  Session-Sender's core beside the reflector's, as free of I/O
+  (stamp_send.c: a session's SSID, a random first sequence number not
+  0, the packets in flight a ring of the window, each reply matched by
+  the sequence and SSID it echoes, a sample a packet: the round trip
+  (T4 − T1) − (T3 − T2), T1 and T4 on the monotonic clock, the
+  kernel's receive time by `SO_TS_MONOTONIC`; lost past the timeout;
+  the reflector's mode told by the first reply, its counter, when
+  stateful, telling between two replies how many reached it: lost
+  forward, lost backward (a late reply among those), else not told:
+  a stateless reflector's, before the first reply, across a counter
+  that went back), `stamp_socket_fib` (SO_SETFIB before the bind),
+  and stamp(1) on it (one packet each interval whatever came back,
+  `-m`, the loss each way at the end).  The agent (gula/probe.c)
+  measures Arcana's far ends by STAMP on the ICMP engine's schedule
+  and into its samples, faults, events and steering: a target is
+  Arcana's while arcana-probe has no `kind` (5.1.8) when it is an
+  SD-WAN target of the host's that is a tunnel's (not a breakout
+  beacon's, the console's `bo:` ids; not a monitor; not at a jail's
+  edge, which has no UDP socket of its network yet); a UDP socket in
+  the target's FIB connected to the far stampd (`--stamp-port`,
+  default 862, 0 for none), its DSCP the target's, its sender's
+  window the timeout over the interval.  ICMP stays the fallback: a
+  refused STAMP port, or as many unanswered STAMP probes in a row as
+  `down`, and the target is pinged, its misses left one short of
+  down so that the first echo decides between a tunnel down and its
+  reflector gone; one STAMP probe every 10 s, not counted, and its
+  answer brings STAMP back with a fresh sender.  The loss each way
+  is kept per sample (two columns after the eight) and all along in
+  the target's JSON (`method`, `reflector`, `forward_lost`,
+  `backward_lost`) and logged per eval interval with `-d`; arcana-probe
+  carries none of it yet (arcana-stamp's counters, 5.1.8), the
+  round-trip loss, delay and variation as before.  libstamp is linked
+  from the submodule (arcana.mk's STAMP_LIBS; stamp-build before the
+  agent, in agent-build too).  Checked: stamp's suite (libstamp_test:
+  the round trip less the reflector's time, the loss each way from a
+  stateful reflector and the round trip's alone from a stateless one,
+  a late reply, the window and the wrap of the numbers, a reflector
+  started again; stampd_test:loss, stamp(1) through a relay dropping
+  every 5th packet out and every 7th reply back, exactly 5 and 3 from
+  stampd stateful, 8 not told apart from stateless);
+  agent_root_test:stamp_loss (stampd in a vnet jail across an epair,
+  a fifth lost in to one address and out of another, by dummynet's
+  `plr` where dummynet is loaded, else `ipfw prob 0.2 deny`, the same
+  per packet: forward loss on the one, backward on the other, none the
+  other way; a refused port pinged and up; a breakout's beacon never
+  STAMP).
 - 5.1.4 A: timestamp information TLV from `ntp_gettime`; one-way delay
   only when both error estimates allow, else half RTT flagged; check:
   dummynet `delay` one way.

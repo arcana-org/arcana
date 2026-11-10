@@ -104,6 +104,7 @@ struct opts opts = {
 	.birdc_bin = PATH_BIRDC_BIN,
 	.bird_watch_s = 15,
 	.smtpd_watch_s = 60,
+	.stamp_port = 862,
 	.pkg_idle_s = PKG_IDLE_SEC,
 	.pkg_lanes = PKG_LANES,
 	.bird_bin = PATH_BIRD_BIN,
@@ -131,7 +132,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SURICATA_RULES, OPT_EXPORTS, OPT_CTL_CONF, OPT_HAST_CONF,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
-    OPT_RTADVCTL, OPT_FEATURES };
+    OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -150,6 +151,9 @@ static const struct option longopts[] = {
 	/* How often BIRD's sessions are looked at for faults; 0, never. */
 	{ "bird-watch", required_argument, NULL, OPT_BIRD_WATCH },
 	{ "smtpd-watch", required_argument, NULL, OPT_SMTPD_WATCH },
+	/* The UDP port Arcana's far ends reflect STAMP on (stampd(8)): a
+	 * test's own; 0, every target pinged. */
+	{ "stamp-port", required_argument, NULL, OPT_STAMP_PORT },
 	/* More addresses each SCTP listener is bound to (sctp_bindx(3)),
 	 * separated by spaces: an association with the console over
 	 * several paths. */
@@ -214,7 +218,7 @@ usage(void)
 	    "                 [--suricata-rules directory]\n"
 	    "                 [--exports file] [--ctl-conf file] [--hast-conf file]\n"
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
-	    "                 [--smtpd-watch seconds]\n"
+	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file]\n"
 	    "                 [--subscriptions file] [--features list]\n");
@@ -481,6 +485,11 @@ main(int argc, char *argv[])
 			opts.bird_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);
 			if (errstr != NULL)
 				errx(1, "--bird-watch %s: %s", optarg, errstr);
+			break;
+		case OPT_STAMP_PORT:
+			opts.stamp_port = (int)strtonum(optarg, 0, 65535, &errstr);
+			if (errstr != NULL)
+				errx(1, "--stamp-port %s: %s", optarg, errstr);
 			break;
 		case OPT_SMTPD_WATCH:
 			opts.smtpd_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);

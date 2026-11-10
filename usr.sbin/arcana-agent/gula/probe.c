@@ -25,6 +25,25 @@
  * answers), timeout (ms), eval (ms), history (samples kept) and report.
  * A raw socket needs root: without it the target says so.
  *
+ * A target that is Arcana's far end is measured by STAMP (RFC 8762)
+ * instead, through libstamp's sender (the submodule stamp/): its UDP
+ * socket in the target's FIB, connected to the far end's stampd(8)
+ * (which the far agent runs in the FIBs it probes in, gula/stampd.c),
+ * on the same schedule, its samples the same, the round trip with the
+ * reflector's time taken out; and, a stateful reflector's counter
+ * telling the way out from the way back, the loss each way.  Arcana's
+ * far end, until arcana-probe says a target's kind (PLAN-SDN-YANG
+ * 5.1.8), is an SD-WAN target of the host's that is a tunnel's: not a
+ * monitor (the admin's, on any tunnel), not a breakout's beacon (the
+ * console's ids "bo:..."), not at a jail's edge (no socket of its
+ * network yet); --stamp-port 0 measures none so.  ICMP stays the
+ * fallback: a reflector that refuses (port unreachable), or as many
+ * STAMP probes unanswered in a row as make the target down, and the
+ * target is pinged instead, its misses left one short of down, so
+ * that the first echo decides whether the tunnel is down or its
+ * reflector alone; one STAMP probe every STAMP_RETRY seconds, not
+ * counted, and an answer brings STAMP back.
+ *
  * The same prober measures tunnels outside SD-WAN too: the monitors an
  * admin puts on any tunnel interface (the monitor job), each target's
  * owner "monitor" rather than "sdwan".  An owner's list is replaced by
@@ -64,6 +83,7 @@
 #include <ucl.h>
 
 #include "agent.h"
+#include "stamp.h"
 
 #define	PROBE_FILE	"sdwan-probes.json"
 #define	MONITOR_FILE	"monitors.json"
@@ -73,6 +93,9 @@
 #define	OUT_MAX		64	/* probes in the air, each */
 #define	SAMPLES_MAX	100000
 #define	PKT_MAX		10000
+#define	BREAKOUT	"bo:"	/* a breakout beacon's id, the console's */
+#define	STAMP_RETRY	10.0	/* s: STAMP tried again, fallen back */
+#define	STAMP_WINDOW	4096	/* STAMP probes in the air, at most */
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
@@ -82,6 +105,7 @@ static const char *const state_names[] = { "unknown", "up", "down", "ended",
 struct sample {
 	double	t, delay, ipdv, loss, min, max;
 	int	sent, recv;
+	double	fwd, back;	/* lost each way, by STAMP; -1 not told */
 };
 
 struct target {
@@ -100,6 +124,14 @@ struct target {
 	int			 damping, tca_over[3], tca_under[3];
 	bool			 tca_on[3];
 	int			 sock;
+	/* STAMP to Arcana's far end, ICMP the fallback. */
+	bool			 arcana, by_stamp;
+	int			 usock;		/* UDP, connected */
+	uint16_t		 ssid;
+	struct stamp_sender	*ss;
+	uint64_t		 tk_fwd, tk_back;	/* of ss's, taken */
+	uint64_t		 fwd_lost, back_lost;	/* all along */
+	double			 stamp_retry;
 	uint16_t		 ident, seq;
 	struct {
 		uint16_t	 seq;
@@ -206,6 +238,16 @@ is_monitor(const struct target *t)
 	return (strcmp(t->owner, OWN_MONITOR) == 0);
 }
 
+/* Arcana's far end, measured by STAMP: an SD-WAN target of the host's
+ * that is a tunnel's, not a breakout's beacon. */
+static bool
+is_arcana(const struct target *t)
+{
+
+	return (opts.stamp_port != 0 && !is_monitor(t) && t->jail[0] == '\0' &&
+	    strncmp(t->id, BREAKOUT, strlen(BREAKOUT)) != 0);
+}
+
 /* The file of an owner's targets at an edge: the host's, or jail's. */
 static const char *
 conf_path(char *buf, size_t len, const char *jail, const char *owner)
@@ -231,6 +273,16 @@ conf_path(char *buf, size_t len, const char *jail, const char *owner)
 
 /* ---- One target --------------------------------------------------- */
 
+/* The STAMP sender given up, its socket kept: its counts from 0. */
+static void
+stamp_drop(struct target *t)
+{
+
+	stamp_sender_free(t->ss);
+	t->ss = NULL;
+	t->tk_fwd = t->tk_back = 0;
+}
+
 static void
 target_close(struct target *t)
 {
@@ -238,6 +290,10 @@ target_close(struct target *t)
 	if (t->sock != -1)
 		close(t->sock);
 	t->sock = -1;
+	if (t->usock != -1)
+		close(t->usock);
+	t->usock = -1;
+	stamp_drop(t);
 }
 
 static void
@@ -463,6 +519,32 @@ window_end(struct target *t, double now)
 	    0;
 	s->min = t->w_recv > 0 ? t->w_min / 2 : 0;
 	s->max = t->w_recv > 0 ? t->w_max / 2 : 0;
+	s->fwd = s->back = -1;
+	/* The loss each way, told by a stateful reflector's counter: a
+	 * loss is told once the reply after it is in, so the counts
+	 * trail the samples by up to a timeout. */
+	if (t->by_stamp && t->ss != NULL) {
+		struct stamp_sender_stats	st;
+		char				name[200];
+		uint64_t			df, db;
+
+		stamp_sender_stats(t->ss, &st);
+		df = st.fwd_lost - t->tk_fwd;
+		db = st.back_lost - t->tk_back;
+		t->tk_fwd = st.fwd_lost;
+		t->tk_back = st.back_lost;
+		t->fwd_lost += df;
+		t->back_lost += db;
+		if (st.mode == STAMP_MODE_STATEFUL && t->w_sent > 0) {
+			s->fwd = (double)df / t->w_sent;
+			s->back = (double)db / t->w_sent;
+		}
+		logmsg(LOG_DEBUG, "probe: %s: stamp (%s reflector): sent %d, "
+		    "received %d; lost forward %ju, backward %ju all along",
+		    target_name(t, name, sizeof(name)), stamp_mode_name(
+		    st.mode), t->w_sent, t->w_recv, (uintmax_t)t->fwd_lost,
+		    (uintmax_t)t->back_lost);
+	}
 	if (t->w_sent > 0)
 		tca_check(t, s);
 reset:
@@ -507,8 +589,9 @@ hit(struct target *t, double rtt_ms)
 		state_set(t, ST_UP);
 }
 
+/* An echo request. */
 static void
-target_send(struct target *t, double now)
+icmp_send(struct target *t, double now)
 {
 	unsigned char	pkt[PKT_MAX];
 	size_t		len;
@@ -562,6 +645,195 @@ target_send(struct target *t, double now)
 		    strerror(errno));
 	} else
 		t->error[0] = '\0';
+}
+
+/* ---- STAMP to Arcana's far end -------------------------------------- */
+
+/* Its UDP socket, in its FIB, connected to the far end's reflector;
+ * its sender, the timeout and the interval the target's. */
+static bool
+stamp_open(struct target *t)
+{
+	struct stamp_sender_conf	c;
+	struct sockaddr_storage		to;
+	int				v;
+
+	if (t->usock == -1) {
+		if ((t->usock = stamp_socket_fib(t->af, 0, STAMP_SOCK_MONOTONIC,
+		    t->fib)) == -1)
+			return (false);
+		to = t->sa;
+		if (to.ss_family == AF_INET)
+			((struct sockaddr_in *)(void *)&to)->sin_port =
+			    htons((uint16_t)opts.stamp_port);
+		else
+			((struct sockaddr_in6 *)(void *)&to)->sin6_port =
+			    htons((uint16_t)opts.stamp_port);
+		v = t->dscp << 2;
+		if (t->af == AF_INET)
+			(void)setsockopt(t->usock, IPPROTO_IP, IP_TOS, &v,
+			    sizeof(v));
+		else
+			(void)setsockopt(t->usock, IPPROTO_IPV6, IPV6_TCLASS, &v,
+			    sizeof(v));
+		if (connect(t->usock, (struct sockaddr *)&to, to.ss_len) == -1) {
+			close(t->usock);
+			t->usock = -1;
+			return (false);
+		}
+	}
+	if (t->ss == NULL) {
+		memset(&c, 0, sizeof(c));
+		c.ssid = t->ssid;
+		c.timeout = t->timeout / 1000.0;
+		c.window = (unsigned)(t->timeout / t->interval + 2);
+		if (c.window > STAMP_WINDOW)
+			c.window = STAMP_WINDOW;
+		t->tk_fwd = t->tk_back = 0;
+		if ((t->ss = stamp_sender_new(&c)) == NULL)
+			return (false);
+	}
+	return (true);
+}
+
+/* No STAMP from the far end (why): pinged instead, STAMP tried again
+ * every STAMP_RETRY seconds.  Said when it was measured by STAMP. */
+static void
+stamp_fallback(struct target *t, double now, const char *why)
+{
+	char	name[200];
+
+	stamp_drop(t);
+	t->stamp_retry = now + STAMP_RETRY;
+	if (!t->by_stamp)
+		return;
+	t->by_stamp = false;
+	logmsg(LOG_NOTICE, "probe: %s (%s): %s: pinged until STAMP answers",
+	    target_name(t, name, sizeof(name)), t->address, why);
+}
+
+/* A STAMP probe lost: a miss, unless it would make the target down,
+ * which the first echo decides instead (the reflector may be all that
+ * is gone). */
+static void
+stamp_lost(struct target *t, double now)
+{
+	char	why[64];
+
+	if (t->misses + 1 < t->down) {
+		miss(t);
+		return;
+	}
+	t->w_sent++;
+	t->hits = 0;
+	t->misses = t->down - 1;
+	snprintf(why, sizeof(why), "no STAMP reply in %d probes", t->down);
+	stamp_fallback(t, now, why);
+	t->next_send = now;
+}
+
+/* A STAMP probe: one of the target's (counted), or a fallen-back
+ * target's try (not); false when none went. */
+static bool
+stamp_send_one(struct target *t, bool counted)
+{
+	unsigned char		pkt[PKT_MAX];
+	struct stamp_sample	sm;
+	struct timespec		t1;
+	size_t			len;
+	double			now;
+	int			rc;
+
+	now = now_s();
+	if (!stamp_open(t)) {
+		if (counted)
+			stamp_fallback(t, now, strerror(errno));
+		return (false);
+	}
+	len = t->size < STAMP_UNAUTH_LEN ? STAMP_UNAUTH_LEN : (size_t)t->size;
+	memset(pkt, 0, len);
+	clock_gettime(CLOCK_REALTIME, &t1);
+	now = now_s();
+	if ((rc = stamp_sender_packet(t->ss, pkt, len, &t1, now, &sm)) == -1)
+		return (false);
+	if (rc == 1 && counted)
+		stamp_lost(t, now);
+	if (!t->by_stamp && counted)
+		return (false);
+	if (counted)
+		t->sent++;
+	if (send(t->usock, pkt, len, 0) == -1) {
+		/* Port unreachable: no reflector there. */
+		if (errno == ECONNREFUSED) {
+			if (counted)
+				stamp_fallback(t, now, "its STAMP port refused");
+			return (false);
+		}
+		if (counted)
+			snprintf(t->error, sizeof(t->error), "send: %s",
+			    strerror(errno));
+	} else if (counted)
+		t->error[0] = '\0';
+	return (true);
+}
+
+/* The replies to the target's STAMP probes: hits; to a fallen-back
+ * target's try, STAMP again. */
+static void
+stamp_recv_all(struct target *t)
+{
+	unsigned char		in[PKT_MAX + 64];
+	struct stamp_rxinfo	ri;
+	struct stamp_sample	sm;
+	char			name[200];
+	ssize_t			n;
+	double			at;
+
+	for (;;) {
+		if ((n = stamp_recv(t->usock, in, sizeof(in), &ri)) == -1) {
+			if (errno == ECONNREFUSED) {
+				if (t->by_stamp)
+					stamp_fallback(t, now_s(), "its STAMP port "
+					    "refused");
+				continue;
+			}
+			return;
+		}
+		if (t->ss == NULL)
+			continue;
+		at = (double)ri.mono.tv_sec + (double)ri.mono.tv_nsec / 1e9;
+		if (stamp_sender_reply(t->ss, in, (size_t)n, at, &sm) != 1)
+			continue;
+		if (t->by_stamp) {
+			hit(t, sm.rtt * 1000);
+			continue;
+		}
+		/* Measured by STAMP again, by a sender of its own: the try's
+		 * counts are none of the target's; no echo in the air. */
+		t->by_stamp = true;
+		stamp_drop(t);
+		for (int i = 0; i < OUT_MAX; i++)
+			t->out[i].live = false;
+		logmsg(LOG_NOTICE, "probe: %s (%s): STAMP answers again",
+		    target_name(t, name, sizeof(name)), t->address);
+	}
+}
+
+/* The target's next probe: STAMP to Arcana's far end, else an echo. */
+static void
+target_send(struct target *t, double now)
+{
+
+	if (t->by_stamp)
+		(void)stamp_send_one(t, true);
+	/* Not by STAMP, or no longer: an echo. */
+	if (!t->by_stamp)
+		icmp_send(t, now);
+	/* Fallen back: STAMP tried now and then. */
+	if (t->arcana && !t->by_stamp && now >= t->stamp_retry) {
+		t->stamp_retry = now + STAMP_RETRY;
+		(void)stamp_send_one(t, false);
+	}
 	if (t->count > 0 && t->sent >= (uint64_t)t->count)
 		t->next_send = -1;
 	else
@@ -631,7 +903,8 @@ sock_recv(int sock, int af, struct target *t, double now)
 static void
 target_timers(struct target *t, double now)
 {
-	int	i;
+	struct stamp_sample	sm;
+	int			i;
 
 	for (i = 0; i < OUT_MAX; i++)
 		if (t->out[i].live && now - t->out[i].sent > t->timeout /
@@ -639,10 +912,15 @@ target_timers(struct target *t, double now)
 			t->out[i].live = false;
 			miss(t);
 		}
+	/* A fallen-back target's tries lost: nothing to count. */
+	while (t->ss != NULL && stamp_sender_expire(t->ss, now, &sm) == 1)
+		if (t->by_stamp)
+			stamp_lost(t, now);
 	if (now - t->win_start >= t->eval / 1000.0)
 		window_end(t, now);
 	if (t->next_send < 0 && t->state != ST_ENDED && t->state != ST_ERROR) {
-		bool	air = false;
+		bool	air = t->by_stamp && t->ss != NULL &&
+			    stamp_sender_next(t->ss) > 0;
 
 		for (i = 0; i < OUT_MAX; i++)
 			air = air || t->out[i].live;
@@ -662,7 +940,17 @@ prober(void *arg __unused)
 	int		 i, n, ms;
 	bool		 moved;
 
-	pfd = calloc(TARGETS_MAX + 2 * RX_FIBS, sizeof(*pfd));
+	/* Each target's echo and STAMP sockets, then the FIBs'
+	 * listeners; whose each is, by its index (-1 a listener's). */
+	int	*pt, *pk;
+
+	pfd = calloc(2 * TARGETS_MAX + 2 * RX_FIBS, sizeof(*pfd));
+	pt = calloc(2 * TARGETS_MAX + 2 * RX_FIBS, sizeof(*pt));
+	pk = calloc(2 * TARGETS_MAX + 2 * RX_FIBS, sizeof(*pk));
+	if (pfd == NULL || pt == NULL || pk == NULL) {
+		logmsg(LOG_ERR, "sdwan probes: no memory");
+		return (NULL);
+	}
 	for (int k = 0; k < 2; k++)
 		for (int fib = 0; fib < RX_FIBS; fib++)
 			rx[k][fib] = -1;
@@ -688,7 +976,15 @@ prober(void *arg __unused)
 			pfd[n].fd = t->sock;
 			pfd[n].events = POLLIN;
 			pfd[n].revents = 0;
-			n++;
+			pt[n] = i;
+			pk[n++] = 0;
+			if (t->usock != -1) {
+				pfd[n].fd = t->usock;
+				pfd[n].events = POLLIN;
+				pfd[n].revents = 0;
+				pt[n] = i;
+				pk[n++] = 1;
+			}
 		}
 		for (int k = 0; k < 2; k++)
 			for (int fib = 0; fib < RX_FIBS; fib++)
@@ -696,7 +992,8 @@ prober(void *arg __unused)
 					pfd[n].fd = rx[k][fib];
 					pfd[n].events = POLLIN;
 					pfd[n].revents = 0;
-					n++;
+					pt[n] = -1;
+					pk[n++] = k;
 				}
 		moved = changed;
 		changed = false;
@@ -710,24 +1007,24 @@ prober(void *arg __unused)
 			continue;
 		pthread_mutex_lock(&lock);
 		now = now_s();
-		n = 0;
-		for (i = 0; i < ntargets; i++) {
-			t = &targets[i];
-			if (t->sock == -1)
+		/* The targets may have changed meanwhile: each socket still
+		 * the one it was, or passed over. */
+		for (int j = 0; j < n; j++) {
+			if (!(pfd[j].revents & POLLIN))
 				continue;
-			if (pfd[n].fd == t->sock && (pfd[n].revents & POLLIN))
+			if (pt[j] == -1) {
+				sock_recv(pfd[j].fd, pk[j] == 0 ? AF_INET : AF_INET6,
+				    NULL, now);
+				continue;
+			}
+			if (pt[j] >= ntargets)
+				continue;
+			t = &targets[pt[j]];
+			if (pk[j] == 0 && t->sock == pfd[j].fd)
 				sock_recv(t->sock, t->af, t, now);
-			n++;
+			else if (pk[j] == 1 && t->usock == pfd[j].fd)
+				stamp_recv_all(t);
 		}
-		for (int k = 0; k < 2; k++)
-			for (int fib = 0; fib < RX_FIBS; fib++)
-				if (rx[k][fib] != -1) {
-					if (pfd[n].fd == rx[k][fib] &&
-					    (pfd[n].revents & POLLIN))
-						sock_recv(rx[k][fib], k == 0 ?
-						    AF_INET : AF_INET6, NULL, now);
-					n++;
-				}
 		pthread_mutex_unlock(&lock);
 	}
 	return (NULL);
@@ -810,6 +1107,7 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		t = &new[n];
 		memset(t, 0, sizeof(*t));
 		t->sock = -1;
+		t->usock = -1;
 		id = (v = ucl_object_lookup(o, "id")) != NULL && ucl_object_type(
 		    v) == UCL_STRING ? ucl_object_tostring(v) : NULL;
 		addr = (v = ucl_object_lookup(o, "address")) != NULL &&
@@ -835,6 +1133,7 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		    ucl_object_tostring(v)) < sizeof(t->ifname))
 			snprintf(t->ifname, sizeof(t->ifname), "%s",
 			    ucl_object_tostring(v));
+		t->arcana = t->by_stamp = is_arcana(t);
 		s4 = (struct sockaddr_in *)&t->sa;
 		s6 = (struct sockaddr_in6 *)&t->sa;
 		if (inet_pton(AF_INET, addr, &s4->sin_addr) == 1) {
@@ -942,12 +1241,16 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			snprintf(ifn, sizeof(ifn), "%s", t->ifname);
 			double	tc[3] = { t->tca[0], t->tca[1], t->tca[2] };
 
-			/* As it was, with what may change under it. */
+			/* As it was, with what may change under it; its STAMP
+			 * sender made again for another timeout or interval. */
 			*t = *o;
+			if (t->interval != iv || t->timeout != to)
+				stamp_drop(t);
 			memcpy(t->tca, tc, sizeof(tc));
 			t->damping = dm;
 			memset(o, 0, sizeof(*o));
 			o->sock = -1;
+			o->usock = -1;
 			t->interval = iv;
 			t->count = cnt;
 			t->down = dn;
@@ -969,6 +1272,7 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			continue;
 		}
 		t->ident = (uint16_t)((getpid() + i * 7919 + (int)now) & 0xffff);
+		t->ssid = (uint16_t)arc4random();
 		t->since = time(NULL);
 		t->win_start = now;
 		t->next_send = now;
@@ -983,6 +1287,7 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			new[n++] = old[k];
 			memset(&old[k], 0, sizeof(old[k]));
 			old[k].sock = -1;
+			old[k].usock = -1;
 		}
 	targets = new;
 	ntargets = n;
@@ -1432,6 +1737,23 @@ target_json(const struct target *t, double now, uint64_t after)
 	    0, false);
 	ucl_object_insert_key(o, ucl_object_fromdouble(t->last_rtt),
 	    "last_rtt", 0, false);
+	/* How it is measured: STAMP to Arcana's far end, with the loss
+	 * each way all along (arcana-stamp's to carry, 5.1.8). */
+	ucl_object_insert_key(o, ucl_object_fromstring(t->by_stamp ? "stamp" :
+	    "icmp"), "method", 0, false);
+	if (t->arcana) {
+		struct stamp_sender_stats	st;
+
+		if (t->ss != NULL) {
+			stamp_sender_stats(t->ss, &st);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    stamp_mode_name(st.mode)), "reflector", 0, false);
+		}
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
+		    t->fwd_lost), "forward_lost", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
+		    t->back_lost), "backward_lost", 0, false);
+	}
 	/* The interval in progress, so far. */
 	cur = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(cur, ucl_object_fromint(t->w_sent), "sent",
@@ -1449,8 +1771,9 @@ target_json(const struct target *t, double now, uint64_t after)
 	    t->win_start), "age", 0, false);
 	ucl_object_insert_key(o, cur, "now", 0, false);
 	/* The samples, the oldest first: t, delay, ipdv, loss, min,
-	 * max, sent, received; the last report * eval ms are the
-	 * report's. */
+	 * max, sent, received, and the loss forward and backward (-1 not
+	 * told: not by a stateful reflector); the last report * eval ms
+	 * are the report's. */
 	s = ucl_object_typed_new(UCL_ARRAY);
 	from = t->nsamples > 3600 ? t->nsamples - 3600 : 0;
 	for (k = from; k < t->nsamples; k++) {
@@ -1467,6 +1790,8 @@ target_json(const struct target *t, double now, uint64_t after)
 		ucl_array_append(row, ucl_object_fromdouble(sm->max));
 		ucl_array_append(row, ucl_object_fromint(sm->sent));
 		ucl_array_append(row, ucl_object_fromint(sm->recv));
+		ucl_array_append(row, ucl_object_fromdouble(sm->fwd));
+		ucl_array_append(row, ucl_object_fromdouble(sm->back));
 		ucl_array_append(s, row);
 	}
 	ucl_object_insert_key(o, s, "samples", 0, false);

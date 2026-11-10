@@ -684,6 +684,12 @@ agent_build(struct work *w, const char *source, const char *ref,
 		    "make jailconf-build"));
 		return (0);
 	}
+	/* stamp, the submodule: libstamp, the prober's STAMP sender. */
+	argv[3] = "stamp-build";
+	if (run_as(w, unpriv, argv, &res) != 0) {
+		rsp->error = wtext(w, exec_error(w, &res, "make stamp-build"));
+		return (0);
+	}
 	/* The library the agent links, then the agent; no tests. */
 	n = 0;
 	argv[n++] = opts.make_bin;

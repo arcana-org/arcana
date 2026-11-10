@@ -185,6 +185,21 @@ JAILCONF_OBJ?=	${ARC_TOP}/jailconf/obj
 JAILCONF_CFLAGS=	-I${ARC_TOP}/jailconf/lib/libjailconf
 JAILCONF_LIBS=	${JAILCONF_OBJ}/lib/libjailconf/libjailconf_pie.a
 
+# libstamp: STAMP's packets and its sender's core, the submodule stamp/
+# (with stampd(8) and stamp(1)), built by the top-level make before the
+# agent (stamp-build) in its own object directory; the agent's prober
+# links it in for its STAMP sender (gula/probe.c).
+.if !exists(${ARC_TOP}/stamp/lib/libstamp/stamp.h)
+.error stamp/ is empty: git submodule update --init
+.endif
+.if defined(MAKEOBJDIRPREFIX)
+STAMP_OBJ?=	${MAKEOBJDIRPREFIX}${ARC_TOP}/stamp
+.else
+STAMP_OBJ?=	${ARC_TOP}/stamp/obj
+.endif
+STAMP_CFLAGS=	-I${ARC_TOP}/stamp/lib/libstamp
+STAMP_LIBS=	${STAMP_OBJ}/lib/libstamp/libstamp.a
+
 # No mtree(8) hierarchy outside the source tree: make the directories
 # before installing.
 jg-dirs: .PHONY

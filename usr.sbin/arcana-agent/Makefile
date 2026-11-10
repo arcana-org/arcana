@@ -55,6 +55,10 @@ LDADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 DPADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 CFLAGS+=	-I${.CURDIR}/../../lib/libvarconf
 DPADD+=		${JAILCONF_LIBS}
+# The STAMP sender (gula/probe.c): libstamp linked in (arcana.mk).
+CFLAGS+=	${STAMP_CFLAGS}
+LDADD+=		${STAMP_LIBS}
+DPADD+=		${STAMP_LIBS}
 # The feeds' tables (invidia/feeds.c): libipfeeds linked in (arcana.mk).
 CFLAGS+=	${IPFEEDS_CFLAGS}
 LDADD+=		${IPFEEDS_LIBA}

@@ -9719,11 +9719,12 @@ EOS
 	atf_check cmp -s "$JGD" built
 	atf_check test -x built
 	# cblink (the submodule: cblink-gen makes arcana.h), jailconf (the
-	# submodule: libjailconf) and the library the agent links, before
-	# it, in that order.
-	atf_check -o inline:'cblink-build\njailconf-build\nlibvarconf\narcana-agent\n' \
+	# submodule: libjailconf), stamp (the submodule: libstamp) and the
+	# library the agent links, before it, in that order.
+	atf_check -o inline:'cblink-build\njailconf-build\nstamp-build\nlibvarconf\narcana-agent\n' \
 	    sh -c "grep -v -e '^HOME=' -e '-V .OBJDIR' made | sed -n \
 	    -e 's,.* cblink-build\$,cblink-build,p' -e 's,.* jailconf-build\$,jailconf-build,p' \
+	    -e 's,.* stamp-build\$,stamp-build,p' \
 	    -e 's,.*/lib/\\(lib[a-z]*\\) .*,\\1,p' \
 	    -e 's,.*/usr.sbin/arcana-agent .*,arcana-agent,p'"
 	# Sent back compressed: past what a frame carries as it is.

@@ -2263,6 +2263,121 @@ stampd_fib_cleanup()
 	cleanup
 }
 
+# STAMP's loss each way (PLAN-SDN-YANG 5.1.3): stampd in a vnet jail
+# behind an epair, four addresses on its end, each a target of the
+# agent's.
+STL_J=arc-tsl
+STL_NET=198.18.62
+
+atf_test_case stamp_loss cleanup
+stamp_loss_head()
+{
+	atf_set "descr" "Arcana's far ends measured by STAMP: stampd in a" \
+	    "vnet jail across an epair, a fifth of the packets lost on the" \
+	    "way in to one address and of the replies on the way out of" \
+	    "another (dummynet plr, else ipfw prob deny when dummynet is" \
+	    "not loaded); the agent's loss forward on the one and backward" \
+	    "on the other, none the other way; a refused STAMP port pinged" \
+	    "instead, a breakout's beacon pinged anyway"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_loss_body()
+{
+	local ep i f b P
+
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	# A new vnet's ipfw starts with the default rule: deny would cut it.
+	[ "$(sysctl -n net.inet.ip.fw.default_to_accept)" = 1 ] ||
+	    atf_skip "net.inet.ip.fw.default_to_accept is not 1"
+	jls -j $STL_J >/dev/null 2>&1 && atf_skip "a jail $STL_J exists"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STL_J vnet persist path=/ host.hostname=$STL_J
+	ep=$(epair_create)
+	echo "$ep" > stl.epair
+	atf_check ifconfig "$ep" inet $STL_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STL_J
+	atf_check jexec $STL_J ifconfig "${ep%a}b" inet $STL_NET.2/29 up
+	for i in 3 4 5; do
+		atf_check jexec $STL_J ifconfig "${ep%a}b" inet $STL_NET.$i/32 \
+		    alias
+	done
+	jexec $STL_J "$SD" -d -u nobody -r 0 -R 0 -p $P > stl.d.out 2>&1 &
+	echo $! > stl.spid
+	for i in $(seq 1 100); do
+		grep -q started stl.d.out && break
+		sleep 0.05
+	done
+	grep -q started stl.d.out || atf_fail "stampd: $(cat stl.d.out)"
+	# .2: a fifth lost on the way in; .3: a fifth of the replies lost
+	# on the way out; .4: its port refused; .5: as it is.
+	if kldstat -q -m dummynet; then
+		atf_check -o ignore jexec $STL_J ipfw pipe 1 config plr 0.2
+		atf_check -o ignore jexec $STL_J ipfw pipe 2 config plr 0.2
+		atf_check -o ignore jexec $STL_J ipfw add 100 pipe 1 udp from \
+		    any to $STL_NET.2 dst-port $P in
+		atf_check -o ignore jexec $STL_J ipfw add 110 pipe 2 udp from \
+		    $STL_NET.3 $P to any out
+	else
+		echo "dummynet(4) not loaded: ipfw prob 0.2 deny instead"
+		atf_check -o ignore jexec $STL_J ipfw add 100 prob 0.2 deny udp \
+		    from any to $STL_NET.2 dst-port $P in
+		atf_check -o ignore jexec $STL_J ipfw add 110 prob 0.2 deny udp \
+		    from $STL_NET.3 $P to any out
+	fi
+	atf_check -o ignore jexec $STL_J ipfw add 120 unreach port udp from \
+	    any to $STL_NET.4 dst-port $P in
+	DAEMON_ARGS="-d --stamp-port $P" start_daemon
+	# down 10: twenty per cent lost never makes ten in a row.
+	t='"interval":20,"eval":1000,"timeout":300,"down":10'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"fwd\",\"address\":\"$STL_NET.2\",$t},{\"id\":\"back\",\"address\":\"$STL_NET.3\",$t},{\"id\":\"refused\",\"address\":\"$STL_NET.4\",$t},{\"id\":\"clean\",\"address\":\"$STL_NET.5\",$t},{\"id\":\"bo:gw\",\"address\":\"$STL_NET.2\",$t}]"
+	sleep 10
+	atf_check -o save:stl.json "$JGC" -c "$SOCK" sdwan
+	# Each target's last window: lost forward F, backward B all along.
+	for i in fwd back clean; do
+		grep "probe: $i: stamp (stateful reflector): " daemon.out | tail -1 \
+		    > stl.$i
+		[ -s stl.$i ] || atf_fail "$i not measured by STAMP: $(cat daemon.out)"
+		cat stl.$i
+	done
+	f=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+).*/\1/' stl.fwd)
+	b=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+).*/\2/' stl.fwd)
+	[ "$f" -ge 40 ] || atf_fail "fwd: $f lost forward of some 450"
+	[ "$b" -le 2 ] || atf_fail "fwd: $b lost backward, none dropped so"
+	f=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+).*/\1/' stl.back)
+	b=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+).*/\2/' stl.back)
+	[ "$b" -ge 40 ] || atf_fail "back: $b lost backward of some 450"
+	[ "$f" -le 2 ] || atf_fail "back: $f lost forward, none dropped so"
+	atf_check -o match:'lost forward 0, backward 0 all along' cat stl.clean
+	# The round trip's loss, as the console reads it, a fifth each.
+	atf_check -o match:'"id":"fwd","address":"198\.18\.62\.2","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"back","address":"198\.18\.62\.3","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"refused","address":"198\.18\.62\.4","family":"inet","fib":0,"state":"up"' \
+	    cat stl.json
+	# A refused port: pinged, up all the same; a beacon: never STAMP.
+	atf_check -o match:'probe: refused \(198\.18\.62\.4\): its STAMP port refused: pinged until STAMP answers' \
+	    cat daemon.out
+	atf_check -o not-match:'probe: (refused|bo:gw): stamp' cat daemon.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_loss_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f stl.spid ] && kill "$(cat stl.spid)" 2>/dev/null
+	jexec $STL_J ipfw -q flush 2>/dev/null
+	jexec $STL_J ipfw -q pipe flush 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f stl.epair ]; then
+		ep=$(cat stl.epair)
+		ifconfig "${ep%a}b" -vnet $STL_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STL_J >/dev/null 2>&1
+	true
+}
+
 atf_test_case monitors_qos cleanup
 monitors_qos_head()
 {
@@ -3836,6 +3951,7 @@ atf_init_test_cases()
 	atf_add_test_case monitors_probe
 	atf_add_test_case monitors_fib
 	atf_add_test_case stampd_fib
+	atf_add_test_case stamp_loss
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake

@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.263.0"
+#define	ARCANA_AGENT_VERSION	"0.264.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -175,6 +175,7 @@ struct opts {
 	const char	*root;		/* --root: the system's files under it */
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
+	int		 stamp_port;	/* --stamp-port: far ends' STAMP; 0 none */
 	int		 pkg_idle_s;	/* --pkg-idle: a silent pkg, stopped after */
 	int		 pkg_lanes;	/* jobs of pkg in jails at once, at start */
 	const char	*jobs_conf;	/* where lanes is kept */
@@ -878,7 +879,8 @@ bool		 kmsg_lines(struct work *, uint64_t, const char *, uint32_t,
 bool		 kmsg_crash_line(const char *, time_t);
 void		 kmsg_crash_sweep(time_t);
 void		 history_save(void);
-/* gula/probe.c: the tunnels measured, ICMP echo again and again. */
+/* gula/probe.c: the tunnels measured, STAMP to Arcana's far ends, ICMP echo
+ * to the others, again and again. */
 enum { PROBE_NONE = -1, PROBE_UNKNOWN, PROBE_UP, PROBE_DOWN, PROBE_ENDED,
     PROBE_ERROR };
 void		 probe_start(void);

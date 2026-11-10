@@ -54,9 +54,9 @@ ipfeeds-build: .PHONY
 
 # stamp from the submodule stamp/: stampd(8), the STAMP reflector the
 # agent runs by rc.conf in the FIBs its services use, stamp(1) and
-# libstamp; built without its tests (its own make check runs them),
-# installed with the rest.  The agent's root case answers with them.
-.if exists(${.CURDIR}/stamp/Makefile)
+# libstamp, whose sender the agent links in; built before the agent,
+# without its tests (its own make check runs them), installed with the
+# rest.  The agent's root cases answer and measure with them.
 _STAMP_MAKE=	${MAKE} -C ${.CURDIR}/stamp WITH_AUTO_OBJ=yes WITHOUT_TESTS=yes
 stamp-build: .PHONY
 	@${_STAMP_MAKE} all
@@ -64,7 +64,6 @@ stamp-install: .PHONY
 	@${_STAMP_MAKE} install DESTDIR=${DESTDIR} PREFIX=${PREFIX}
 beforeinstall: stamp-install
 all_subdir_usr.sbin/arcana-agent: stamp-build
-.endif
 
 SUBDIR=		lib/libvarconf \
 		usr.sbin/arcana-enrol \

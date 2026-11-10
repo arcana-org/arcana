@@ -67,6 +67,7 @@
 .Op Fl -features Ar list
 .Op Fl -bird-watch Ar seconds
 .Op Fl -smtpd-watch Ar seconds
+.Op Fl -stamp-port Ar port
 .Op Fl -sctp-also Ar addresses
 .Op Fl -telegram-api Ar url
 .Op Fl -poudriere Ar poudriere
@@ -689,6 +690,11 @@ fault when it is enabled and not running, or when more are queued than
 the limit the tab set
 .Pq Pa watch.json No beside its tables .
 Default 60; 0 looks never.
+.It Fl -stamp-port Ar port
+The UDP port the far ends'
+.Xr stampd 8
+answers STAMP on, for the probes to Arcana's far ends; default 862, 0
+to ping every target.
 .It Fl I Ar ifconfig , Fl n Ar ngctl , Fl k Ar wg , Fl b Ar birdc
 The
 .Xr ifconfig 8 ,
@@ -964,6 +970,22 @@ a kind at a time, kept beside the history file for the next start
 .Pq Pa sdwan-probes.json , monitors.json , No and their Pa @ Ns Ar jail No files ;
 a monitor without an address, on the host, probes its interface's far
 end through the interface's FIB.
+A target that is Arcana's far end (an SD-WAN target of the host's that
+is a tunnel's, not a breakout's beacon) is measured by STAMP (RFC 8762)
+through
+.Xr libstamp 3 Ns 's
+sender, a UDP socket in the target's FIB
+.Pq Dv SO_SETFIB ,
+receive times by
+.Dv SO_TS_MONOTONIC :
+the round trip with the reflector's time taken out and, the reflector
+being stateful, the loss on the way out told from the loss on the way
+back; the others, the monitors and a jail edge's targets are pinged
+.Pq ICMP echo .
+A far end whose STAMP port is refused, or that answers none of as many
+STAMP probes as would make the target down, is pinged instead, the
+first echo deciding whether the tunnel is down; STAMP is tried every
+ten seconds and taken up again when it answers.
 The far end of a measurement is
 .Xr stampd 8 ,
 the STAMP reflector Arcana installs, one a FIB: the agent sets
