@@ -9680,8 +9680,8 @@ fi
 for a; do last=\$a; done
 case " \$* " in *" --branch chatty "*) jot 400 | sed 's/^/remote: line /' >&2; exit 128 ;; esac
 case " \$* " in *" --branch nope "*) printf "Cloning into 'x'...\nfatal: no such branch\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n" >&2; exit 128 ;; esac
-mkdir -p "\$last/jailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent" "\$last/cblink/share/cblink"
-touch "\$last/cblink/share/cblink/cblink.mk"
+mkdir -p "\$last/jailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent" "\$last/cblink/share/cblink" "\$last/ipfeeds/lib/libipfeeds"
+touch "\$last/cblink/share/cblink/cblink.mk" "\$last/ipfeeds/lib/libipfeeds/ipfeeds.h"
 echo "\$*" > "\$last/CLONED"
 EOS
 	cat > fake-make <<EOS
@@ -9719,12 +9719,13 @@ EOS
 	atf_check cmp -s "$JGD" built
 	atf_check test -x built
 	# cblink (the submodule: cblink-gen makes arcana.h), jailconf (the
-	# submodule: libjailconf), stamp (the submodule: libstamp) and the
-	# library the agent links, before it, in that order.
-	atf_check -o inline:'cblink-build\njailconf-build\nstamp-build\nlibvarconf\narcana-agent\n' \
+	# submodule: libjailconf), ipfeeds (the submodule: libipfeeds),
+	# stamp (the submodule: libstamp) and the library the agent links,
+	# before it, in that order.
+	atf_check -o inline:'cblink-build\njailconf-build\nipfeeds-build\nstamp-build\nlibvarconf\narcana-agent\n' \
 	    sh -c "grep -v -e '^HOME=' -e '-V .OBJDIR' made | sed -n \
 	    -e 's,.* cblink-build\$,cblink-build,p' -e 's,.* jailconf-build\$,jailconf-build,p' \
-	    -e 's,.* stamp-build\$,stamp-build,p' \
+	    -e 's,.* ipfeeds-build\$,ipfeeds-build,p' -e 's,.* stamp-build\$,stamp-build,p' \
 	    -e 's,.*/lib/\\(lib[a-z]*\\) .*,\\1,p' \
 	    -e 's,.*/usr.sbin/arcana-agent .*,arcana-agent,p'"
 	# Sent back compressed: past what a frame carries as it is.

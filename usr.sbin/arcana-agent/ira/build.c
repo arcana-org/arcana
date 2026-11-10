@@ -684,6 +684,20 @@ agent_build(struct work *w, const char *source, const char *ref,
 		    "make jailconf-build"));
 		return (0);
 	}
+	/*
+	 * ipfeeds, the submodule: libipfeeds, which the agent links.  A
+	 * tree without it builds with the libipfeeds installed, as the
+	 * top-level make does.
+	 */
+	if (access(wfmt(w, "%s/ipfeeds/lib/libipfeeds/ipfeeds.h", src),
+	    R_OK) == 0) {
+		argv[3] = "ipfeeds-build";
+		if (run_as(w, unpriv, argv, &res) != 0) {
+			rsp->error = wtext(w, exec_error(w, &res,
+			    "make ipfeeds-build"));
+			return (0);
+		}
+	}
 	/* stamp, the submodule: libstamp, the prober's STAMP sender. */
 	argv[3] = "stamp-build";
 	if (run_as(w, unpriv, argv, &res) != 0) {
