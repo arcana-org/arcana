@@ -2647,13 +2647,13 @@ stamp_cos_body()
 		[ -s stc.$i ] || atf_fail "$i not measured by STAMP: $(cat daemon.out)"
 		cat stc.$i
 	done
-	atf_check -o match:': stamp path: dscp 46 sent, forward 46, backward 46$' \
+	atf_check -o match:': stamp path: dscp 46 sent, forward 46, backward 46; ' \
 	    cat stc.ef
-	atf_check -o match:': stamp path: dscp 46 sent, forward 0, backward 46$' \
+	atf_check -o match:': stamp path: dscp 46 sent, forward 0, backward 46; ' \
 	    cat stc.bleached
-	atf_check -o match:': stamp path: dscp 34 sent, forward 34, backward 34 \(the reflector refused it\)$' \
+	atf_check -o match:': stamp path: dscp 34 sent, forward 34, backward 34 \(the reflector refused it\); ' \
 	    cat stc.refused
-	atf_check -o match:': stamp path: dscp 34 sent, forward 0, backward 0 \(the reflector refused it\)$' \
+	atf_check -o match:': stamp path: dscp 34 sent, forward 0, backward 0 \(the reflector refused it\); ' \
 	    cat stc.refused0
 	# The wire: tos 0xb8 (DSCP 46) and 0x88 (34) out to .2 and back.
 	if [ -f stc.tpid ]; then
@@ -2689,6 +2689,150 @@ stamp_cos_cleanup()
 		ifconfig "$ep" destroy 2>/dev/null
 	fi
 	jail -r $STC_J >/dev/null 2>&1
+	true
+}
+
+# STAMP's Location and Direct Measurement TLVs (PLAN-SDN-YANG 5.1.6):
+# stampd in a vnet jail behind an epair; one address reached directly,
+# a fifth of what comes in to it lost, the other through a relay in the
+# jail that rewrites the source (and the destination) as a NAT does.
+STN_J=arc-tsn
+STN_NET=198.18.65
+
+# A target's last "stamp path" line, and its last interval's, as -d
+# logs them.
+stn_path()
+{
+	grep "probe: $1: stamp path: " daemon.out | tail -1
+}
+stn_last()
+{
+	grep "probe: $1: stamp (stateful reflector): " daemon.out | tail -1
+}
+
+atf_test_case stamp_location cleanup
+stamp_location_head()
+{
+	atf_set "descr" "Arcana's far ends' view of the probes by STAMP's" \
+	    "Location TLV and the loss each way by its Direct Measurement" \
+	    "TLV: stampd in a vnet jail across an epair, one address" \
+	    "reached directly, a fifth of what comes in to it denied by the" \
+	    "jail's ipfw (prob), the other through a relay in the jail that" \
+	    "sends on from its own address and port: no NAT and the agent's" \
+	    "own address and port seen on the one, the loss forward by the" \
+	    "counters as by the sequence; a NAT, the source and destination" \
+	    "rewritten, on the other"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_location_body()
+{
+	local ep i P t f b cf cb d
+
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	command -v python3 >/dev/null || atf_skip "no python3 for the relay"
+	jls -j $STN_J >/dev/null 2>&1 && atf_skip "a jail $STN_J exists"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STN_J vnet persist path=/ host.hostname=$STN_J
+	ep=$(epair_create)
+	echo "$ep" > stn.epair
+	atf_check ifconfig "$ep" inet $STN_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STN_J
+	atf_check jexec $STN_J ifconfig "${ep%a}b" inet $STN_NET.2/29 up
+	atf_check jexec $STN_J ifconfig "${ep%a}b" inet $STN_NET.3/32 alias
+	# The jail's own ruleset: a fifth of what comes in to .2 denied.
+	atf_check -o ignore jexec $STN_J ipfw add 100 prob 0.2 deny udp from \
+	    $STN_NET.1 to $STN_NET.2 dst-port $P in
+	atf_check -o ignore jexec $STN_J ipfw add 65000 allow ip from any to any
+	jexec $STN_J "$SD" -d -u nobody -r 0 -R 0 -p $P > stn.d.out 2>&1 &
+	echo $! > stn.spid
+	for i in $(seq 1 100); do
+		grep -q started stn.d.out && break
+		sleep 0.05
+	done
+	grep -q started stn.d.out || atf_fail "stampd: $(cat stn.d.out)"
+	# The relay on .3's port: on to stampd at .2 from a socket of its
+	# own, the replies back to whoever sent last.
+	cat > relay.py <<'EOF'
+import select, socket, sys
+la, port, ra = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+i = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+i.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+i.bind((la, port))
+o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+o.connect((ra, port))
+print("ready", flush=True)
+peer = None
+while True:
+    r, _, _ = select.select([i, o], [], [])
+    if i in r:
+        d, peer = i.recvfrom(9000)
+        try:
+            o.send(d)
+        except OSError:
+            pass
+    if o in r:
+        try:
+            d = o.recv(9000)
+        except OSError:
+            continue
+        if peer is not None:
+            i.sendto(d, peer)
+EOF
+	jexec $STN_J python3 -I "$(pwd)/relay.py" $STN_NET.3 $P $STN_NET.2 \
+	    > stn.r.out 2>&1 &
+	echo $! > stn.rpid
+	for i in $(seq 1 100); do
+		grep -q ready stn.r.out && break
+		sleep 0.05
+	done
+	grep -q ready stn.r.out || atf_fail "relay: $(cat stn.r.out)"
+	DAEMON_ARGS="-d --stamp-port $P" start_daemon
+	t='"interval":20,"eval":1000,"timeout":300,"down":10'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"direct\",\"address\":\"$STN_NET.2\",$t},{\"id\":\"natted\",\"address\":\"$STN_NET.3\",$t}]"
+	sleep 8
+	for i in direct natted; do
+		stn_path $i > stn.$i
+		stn_last $i > stn.$i.last
+		[ -s stn.$i ] || atf_fail "$i not measured by STAMP: $(cat daemon.out)"
+		cat stn.$i stn.$i.last
+	done
+	# Direct: its own address seen, no NAT.
+	atf_check -o match:"; seen from $STN_NET\.1 port [0-9]+ to $STN_NET\.2 port $P \(no NAT\); " \
+	    cat stn.direct
+	# Through the relay: from the relay's address and port, to stampd's.
+	atf_check -o match:"; seen from $STN_NET\.2 port [0-9]+ to $STN_NET\.2 port $P \(NAT: both rewritten\); " \
+	    cat stn.natted
+	# The loss forward by the counters, as by the stateful sequence
+	# (both trail by up to a timeout, read a moment apart); none back.
+	f=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\1/' stn.direct.last)
+	b=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\2/' stn.direct.last)
+	cf=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\1/' stn.direct)
+	cb=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\2/' stn.direct)
+	echo "sequence $f/$b, counters $cf/$cb"
+	[ "$cf" -ge 30 ] || atf_fail "direct: $cf lost forward by counters of some 400"
+	[ "$cb" -le 2 ] || atf_fail "direct: $cb lost backward by counters, none dropped so"
+	d=$((cf - f))
+	[ "${d#-}" -le 3 ] || atf_fail "direct: $cf forward by counters, $f by the sequence"
+	atf_check -o match:'lost by counters forward 0, backward 0 all along$' \
+	    cat stn.natted
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_location_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f stn.spid ] && kill "$(cat stn.spid)" 2>/dev/null
+	[ -f stn.rpid ] && kill "$(cat stn.rpid)" 2>/dev/null
+	jexec $STN_J ipfw -q flush 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f stn.epair ]; then
+		ep=$(cat stn.epair)
+		ifconfig "${ep%a}b" -vnet $STN_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STN_J >/dev/null 2>&1
 	true
 }
 
@@ -4268,6 +4412,7 @@ atf_init_test_cases()
 	atf_add_test_case stamp_loss
 	atf_add_test_case stamp_delay
 	atf_add_test_case stamp_cos
+	atf_add_test_case stamp_location
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake

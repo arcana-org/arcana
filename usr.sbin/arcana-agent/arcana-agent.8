@@ -1006,9 +1006,13 @@ target's DSCP and telling the DSCP the probe reached it with, the
 reply's read as it comes
 .Pq Dv IP_RECVTOS , IPV6_RECVTCLASS ,
 so that a DSCP rewritten on the way, or one the reflector refuses, is
-seen; and, the
+seen; the addresses and ports the far end saw, the Location TLV, a NAT
+on the way told (the source not the socket's own, the destination not
+the target's); and, the
 reflector being stateful, the loss on the way out told from the loss on
-the way back; the others, the monitors and a jail edge's targets are pinged
+the way back, by its sequence numbers and by the Direct Measurement
+TLV's counters (the packets sent, those the reflector received and
+sent back); the others, the monitors and a jail edge's targets are pinged
 .Pq ICMP echo .
 A far end whose STAMP port is refused, or that answers none of as many
 STAMP probes as would make the target down, is pinged instead, the

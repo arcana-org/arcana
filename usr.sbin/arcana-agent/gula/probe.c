@@ -41,7 +41,17 @@
  * to reply with the target's DSCP and telling the DSCP the probe
  * reached it with, the reply's read as it comes (IP_RECVTOS,
  * IPV6_RECVTCLASS): a DSCP rewritten or bleached on the way out or
- * back is seen, and a reflector that refuses the DSCP (RP).  Arcana's
+ * back is seen, and a reflector that refuses the DSCP (RP); the
+ * Location TLV (4.2), the address and port the probe reached the far
+ * end from and to, which a NAT on the way rewrites (the source not the
+ * socket's own, the destination not the target's); and the loss each
+ * way by the Direct Measurement TLV's counters (4.5), the packets the
+ * sender sent and the reflector's session received and sent, beside
+ * the sequence's.  Those counters are the two processes', not ipfw's:
+ * the probe is one UDP flow both ends own and count, so a count rule
+ * would see the same packets (bar the kernel's drops before ipfw) at
+ * the price of rules in the admin's ruleset; ipfw's counters belong to
+ * the service's own traffic (alternate marking, 5.5).  Arcana's
  * far end, until arcana-probe says a target's kind (PLAN-SDN-YANG
  * 5.1.8), is an SD-WAN target of the host's that is a tunnel's: not a
  * monitor (the admin's, on any tunnel), not a breakout's beacon (the
@@ -156,6 +166,16 @@ struct target {
 	 * came back; whether the reflector refused the target's (RP). */
 	int			 dscp_fwd, dscp_back;
 	bool			 has_cos, has_rtos, dscp_refused;
+	/* The last reply's Location TLV: the source and destination as
+	 * the reflector saw them, and what of them a NAT rewrote
+	 * (STAMP_NAT_*). */
+	bool			 has_loc;
+	struct stamp_location	 loc;
+	int			 nat;
+	/* The loss each way by the Direct Measurement counters, of ss's
+	 * taken and all along; whether any reply had them. */
+	uint64_t		 tk_dmf, tk_dmb, dm_fwd_lost, dm_back_lost;
+	bool			 dm_told;
 	uint16_t		 ident, seq;
 	struct {
 		uint16_t	 seq;
@@ -307,6 +327,7 @@ stamp_drop(struct target *t)
 	stamp_sender_free(t->ss);
 	t->ss = NULL;
 	t->tk_fwd = t->tk_back = 0;
+	t->tk_dmf = t->tk_dmb = 0;
 }
 
 static void
@@ -521,6 +542,21 @@ tca_check(struct target *t, const struct sample *s)
 	}
 }
 
+/* An address and port as "a port p" ("-" not said). */
+static const char *
+addr_port(const struct sockaddr_storage *ss, char *buf, size_t len)
+{
+	char	a[INET6_ADDRSTRLEN];
+
+	if (ss->ss_family == 0)
+		snprintf(buf, len, "-");
+	else
+		snprintf(buf, len, "%s port %u", stamp_sa_ntop((const struct
+		    sockaddr *)ss, a, sizeof(a)), stamp_sa_port((const struct
+		    sockaddr *)ss));
+	return (buf);
+}
+
 static void
 window_end(struct target *t, double now)
 {
@@ -564,7 +600,8 @@ window_end(struct target *t, double now)
 	if (t->by_stamp && t->ss != NULL) {
 		struct stamp_sender_stats	st;
 		char				name[200], ti[48];
-		char				dsf[8], dsb[8];
+		char				dsf[8], dsb[8], src[64], dst[64];
+		char				nat[48], dm[64];
 		uint64_t			df, db;
 
 		stamp_sender_stats(t->ss, &st);
@@ -577,6 +614,14 @@ window_end(struct target *t, double now)
 		if (st.mode == STAMP_MODE_STATEFUL && t->w_sent > 0) {
 			s->fwd = (double)df / t->w_sent;
 			s->back = (double)db / t->w_sent;
+		}
+		/* The same by the Direct Measurement counters. */
+		if (st.dm_told) {
+			t->dm_fwd_lost += st.dm_fwd_lost - t->tk_dmf;
+			t->dm_back_lost += st.dm_back_lost - t->tk_dmb;
+			t->tk_dmf = st.dm_fwd_lost;
+			t->tk_dmb = st.dm_back_lost;
+			t->dm_told = true;
 		}
 		if (t->has_ti)
 			snprintf(ti, sizeof(ti), "%s/%s,%s/%s",
@@ -603,10 +648,27 @@ window_end(struct target *t, double now)
 			snprintf(dsb, sizeof(dsb), "%d", t->dscp_back);
 		else
 			snprintf(dsb, sizeof(dsb), "-");
+		/* ... the addresses the far end saw, a NAT; the loss by
+		 * counters. */
+		addr_port(&t->loc.src, src, sizeof(src));
+		addr_port(&t->loc.dst, dst, sizeof(dst));
+		snprintf(nat, sizeof(nat), "%s", !t->has_loc ? "not told" :
+		    t->nat == 0 ? "no NAT" : t->nat == STAMP_NAT_SRC ?
+		    "NAT: the source rewritten" : t->nat == STAMP_NAT_DST ?
+		    "NAT: the destination rewritten" :
+		    "NAT: both rewritten");
+		if (t->dm_told)
+			snprintf(dm, sizeof(dm), "forward %ju, backward %ju",
+			    (uintmax_t)t->dm_fwd_lost,
+			    (uintmax_t)t->dm_back_lost);
+		else
+			snprintf(dm, sizeof(dm), "not told");
 		logmsg(LOG_DEBUG, "probe: %s: stamp path: dscp %d sent, "
-		    "forward %s, backward %s%s", target_name(t, name,
+		    "forward %s, backward %s%s; seen from %s to %s (%s); lost "
+		    "by counters %s all along", target_name(t, name,
 		    sizeof(name)), t->dscp, dsf, dsb, t->has_cos &&
-		    t->dscp_refused ? " (the reflector refused it)" : "");
+		    t->dscp_refused ? " (the reflector refused it)" : "", src,
+		    dst, nat, dm);
 	}
 	if (t->w_sent > 0)
 		tca_check(t, s);
@@ -753,6 +815,8 @@ stamp_open(struct target *t)
 		c.tsinfo = true;
 		c.cos = true;
 		c.dscp = (uint8_t)t->dscp;
+		c.dm = true;
+		c.location = true;
 		c.timeout = t->timeout / 1000.0;
 		c.window = (unsigned)(t->timeout / t->interval + 2);
 		if (c.window > STAMP_WINDOW)
@@ -886,6 +950,34 @@ stamp_dscp(struct target *t, const struct stamp_sample *sm, int tos)
 		t->dscp_back = tos >> 2;
 }
 
+/* A STAMP reply's Location TLV: the source and destination the far end
+ * saw, against the socket's own address and port and the target's. */
+static void
+stamp_where(struct target *t, const struct stamp_sample *sm)
+{
+	struct sockaddr_storage	self, far;
+	socklen_t		slen = sizeof(self);
+
+	if (!sm->has_loc)
+		return;
+	t->has_loc = true;
+	t->loc = sm->loc;
+	far = t->sa;
+	if (far.ss_family == AF_INET)
+		((struct sockaddr_in *)(void *)&far)->sin_port =
+		    htons((uint16_t)opts.stamp_port);
+	else
+		((struct sockaddr_in6 *)(void *)&far)->sin6_port =
+		    htons((uint16_t)opts.stamp_port);
+	/* Connected: the socket's address is the one it sends from. */
+	if (getsockname(t->usock, (struct sockaddr *)&self, &slen) == -1)
+		t->nat = stamp_location_nat(&sm->loc, NULL,
+		    (struct sockaddr *)&far);
+	else
+		t->nat = stamp_location_nat(&sm->loc, (struct sockaddr *)&self,
+		    (struct sockaddr *)&far);
+}
+
 /* The replies to the target's STAMP probes: hits; to a fallen-back
  * target's try, STAMP again. */
 static void
@@ -918,6 +1010,7 @@ stamp_recv_all(struct target *t)
 			hit(t, sm.rtt * 1000);
 			stamp_delay(t, &sm);
 			stamp_dscp(t, &sm, ri.tos);
+			stamp_where(t, &sm);
 			continue;
 		}
 		/* Measured by STAMP again, by a sender of its own: the try's
@@ -1889,6 +1982,28 @@ target_json(const struct target *t, double now, uint64_t after)
 		if (t->by_stamp && t->has_rtos)
 			ucl_object_insert_key(o, ucl_object_fromint(
 			    t->dscp_back), "dscp_backward", 0, false);
+		/* The far end's view of the probe's addresses, a NAT. */
+		if (t->has_loc) {
+			char	ap[96];
+
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    addr_port(&t->loc.src, ap, sizeof(ap))),
+			    "seen_source", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    addr_port(&t->loc.dst, ap, sizeof(ap))),
+			    "seen_destination", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->nat == 0 ? "none" : t->nat == STAMP_NAT_SRC ?
+			    "source" : t->nat == STAMP_NAT_DST ? "destination" :
+			    "both"), "nat", 0, false);
+		}
+		/* The loss each way by the counters, all along. */
+		if (t->dm_told) {
+			ucl_object_insert_key(o, ucl_object_fromint((int64_t)
+			    t->dm_fwd_lost), "dm_forward_lost", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromint((int64_t)
+			    t->dm_back_lost), "dm_backward_lost", 0, false);
+		}
 		if (t->has_ti) {
 			cur = ucl_object_typed_new(UCL_OBJECT);
 			ucl_object_insert_key(cur, ucl_object_fromstring(

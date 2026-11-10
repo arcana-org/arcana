@@ -2924,6 +2924,46 @@ whose first part is served.
   `IP_RECVTOS` say it).
 - 5.1.6 A: direct-measurement TLV from ipfw counters; location TLV;
   check: NAT detection on the lab.
+  Done (agent 0.268.0, stamp's dm/location commit), the counters the
+  two processes', not ipfw's: the probe is one UDP flow both ends own
+  and count, so an ipfw count rule would see the same packets (bar the
+  kernel's drops before ipfw) at the price of rules in the admin's
+  ruleset; ipfw's counters stay for the service's own traffic (5.5).
+  libstamp writes and reads RFC 8972 4.5's Direct Measurement TLV: the
+  sender puts the packets sent in the session, this one too; a stateful
+  reflector's session counts the requests it received (one over a rate
+  limit among them) and the replies it made, a stateless one answers
+  zeros (not counted).  The sender's core sums the loss each way by
+  them between replies (forward: sent less received by the reflector;
+  backward: sent by it less received here, a late one among them), a
+  reordered reply passed over, counters gone back a new start.  And 4.2's
+  Location TLV: the sender asks for the destination and source
+  addresses (sub-TLVs 4 and 7), the reflector fills the ports and
+  answers each in the request's family (5/6, 8/9), a source MAC as an
+  EUI-64 of zero (no UDP socket sees it), and says none of it with
+  stampd.conf's `location hide`; `stamp_location_nat()` tells a source
+  or destination rewritten on the way.  stamp(1) `-M`, `-L`.  The
+  agent's STAMP targets ask for both and keep the far end's view
+  (`seen_source`, `seen_destination`, `nat` none|source|destination|both
+  in the target's JSON, against the connected socket's own address and
+  port and the target's) and the loss each way by counters all along
+  (`dm_forward_lost`, `dm_backward_lost`), on the `-d` "stamp path"
+  line too (`seen from A port p to B port q (no NAT); lost by counters
+  forward n, backward m all along`); arcana-probe carries none of it
+  yet (5.1.8).  Checked: stamp's suite (libstamp_test:tlv_dm, the
+  counts and the loss by them with a reply lost each way and two
+  swapped, the rate's drop received not sent, stateless zeros, 12
+  octets or malformed; tlv_location, IPv4 and IPv6, a NAT told, hidden,
+  the MAC, an unknown sub-TLV, sub-TLVs past the TLV;
+  stampd_test:dm_location through a relay dropping every 5th packet out
+  and 7th reply back: 5 and 3 by counters as by the sequence, the
+  relay's source a NAT, none direct, stateless none, `location hide`);
+  agent_root_test:stamp_location (stampd in a vnet jail, a fifth of
+  what comes in to one address denied by the jail's ipfw `prob`: no
+  NAT, the agent's own address seen, 66 lost forward by counters
+  against 63 by the sequence read a moment before, none back; the other
+  address through a relay in the jail sending on from its own address
+  and port: a NAT, both rewritten).
 - 5.1.7 A: authenticated mode (HMAC-SHA-256-128, libcrypto), keys over
   cblink, on by default on plain tunnels; check: a tampered packet
   refused.
