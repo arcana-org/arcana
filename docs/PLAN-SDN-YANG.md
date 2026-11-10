@@ -3308,6 +3308,46 @@ whose first part is served.
   before and after, no broadcast; both networks valid by yanglint).
 - 5.3.3 A, C: underlay-link probes (the far edge's WAN address, FIB
   0); check: `pm-type-network-link` entries.
+  Done (agent 0.274.0, console 0.424.0).  The apply's plan gives each
+  edge, beside each tunnel's target, one target a pair of UCS End
+  Points a tunnel joins (once, whatever services' tunnels share the
+  pair): id underlay:<near UCS End Point>,<far one>, the far one's WAN
+  address (the tunnel end's outer address), in the near one's table
+  (its own vrf where it has one, else FIB 0), arcana-probe's new
+  `underlay` true, kind auto and the default probing (no service's
+  settings: the underlay is no service's).  So STAMP to the far
+  agent's stampd at the host's edge (ICMP at a jail's edge, its
+  fallback), the far end's own such target putting that FIB in its
+  stampd_fibs (probe_fibs() takes every target's FIB, 0 too: checked),
+  unauthenticated (no tunnel key pair is the underlay's).  An underlay
+  target is measured as a tunnel's is but is no tunnel: its state
+  changes are no sdwan-tunnel event, its no answer is a fault of its
+  own type, arcana-alarms' new underlay (Major, "no answer from <WAN>
+  in FIB n after k probes"), not tunnel; underlay is refused on a
+  monitor.  arcana-probe and arcana-alarms numbered again.  The view
+  (vpnpm.c): each underlay link a perf-mon, the percentiles and length
+  of its source end's target (else Arcana's 10/50/90, 60 s), and, once
+  measured, one pm entry, pm-type-network-link, filled as a service's
+  link is (link_fill(), now told each end's target id): the link from
+  A to B from A's underlay:A,B forward figures, else from B's
+  underlay:B,A backward ones of the same interval, the round trip the
+  augment's, pm-source by the session's method; no class, no
+  vpn-pm-type.  Checked: agent_test:sdwan_underlay (stampd unprivileged
+  on the loopback, a target of underlay true and kind stamp in FIB 0:
+  read back; stampd_fibs="0" written for it alone; measured by STAMP,
+  stateful, up in FIB 0, its interval of 2 s against the sorted dump;
+  the reflector killed: down, the underlay fault Major with its
+  description, no tunnel fault, no sdwan-tunnel event, the alarm type
+  arcana-alarms:underlay; underlay not a boolean refused),
+  console_test:sdwan_apply_plan (the plan's underlay targets:
+  underlay:a-inet,b-inet to 192.0.2.2 in a-inet's FIB 3,
+  underlay:b-inet,a-inet to 192.0.2.1 in FIB 0, once each),
+  console_test:sdwan_vpn_pm (an underlay target by STAMP: the link
+  a-inet to b-inet's pm-type-network-link, pm-source-stamp, no
+  vpn-pm-type, its length 2, its round trip the agent's interval's;
+  the way back filled from its backward figures, measured at the
+  destination; a pair no target measures, perf-mon without pm; valid by
+  yanglint).
 - 5.4.2 A, C: shelving (the alarms' control in `running`), the
   `purge-alarms` and `compress-alarms` actions; the Paths tab reads
   alarms; check: the browser test.

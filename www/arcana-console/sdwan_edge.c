@@ -7414,6 +7414,32 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 				put(tg, "stamp_peer", S(ref));
 			}
 			ucl_array_append(targets, tg);
+			/*
+			 * The underlay's path under it (PLAN-SDN-YANG 5.3.3,
+			 * RFC 9375's pm-type-network-link): the far UCS End
+			 * Point's WAN address, by this one's table (its own,
+			 * else FIB 0), once a pair of UCS End Points whatever
+			 * tunnels join them; STAMP to the far end's stampd,
+			 * which answers in that table as its own such target
+			 * has it, else ICMP (the agent's auto).
+			 */
+			if (str(b, "underlay") != NULL && str(a, "ucs_ep") !=
+			    NULL && str(b, "ucs_ep") != NULL) {
+				char	uid[200];
+
+				snprintf(uid, sizeof(uid), "underlay:%s,%s",
+				    str(a, "ucs_ep"), str(b, "ucs_ep"));
+				if (by(targets, "id", uid) == NULL) {
+					tg = ucl_object_typed_new(UCL_OBJECT);
+					put(tg, "id", S(uid));
+					put(tg, "address", S(str(b, "underlay")));
+					put(tg, "fib", I(ucl_object_lookup(a,
+					    "vrf") != NULL ? ucl_object_toint(
+					    ucl_object_lookup(a, "vrf")) : 0));
+					put(tg, "underlay", B(true));
+					ucl_array_append(targets, tg);
+				}
+			}
 		}
 	}
 	/*

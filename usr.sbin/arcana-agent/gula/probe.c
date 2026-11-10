@@ -206,6 +206,9 @@ struct target {
 	char			 jail[64];	/* its network's; "" the host's */
 	char			 owner[8];	/* sdwan, monitor */
 	char			 ifname[IFNAMSIZ];	/* a monitor's tunnel */
+	/* The underlay's path between two UCS End Points, not a tunnel
+	 * (RFC 9375's pm-type-network-link): its fault its own. */
+	bool			 underlay;
 	int			 af;
 	struct sockaddr_storage	 sa;
 	int			 fib, interval, size, count, dscp, down, up;
@@ -647,6 +650,20 @@ state_set(struct target *t, int state)
 		*p++ = t->id[i];
 	}
 	*p = '\0';
+	/* An underlay path is no tunnel: its fault alone, no event. */
+	if (t->underlay) {
+		logmsg(state == ST_UP ? LOG_NOTICE : LOG_WARNING, "sdwan: "
+		    "underlay %s (%s) is %s", target_name(t, id, sizeof(id)),
+		    t->address, state_names[state]);
+		if (state == ST_DOWN)
+			fault_set("underlay", "Major", id, "probe", "no answer "
+			    "from %s in FIB %d after %d probes", t->address,
+			    t->fib, t->misses);
+		else
+			fault_clear("underlay", id, "%s answers again",
+			    t->address);
+		return;
+	}
 	/* A jail's: said, its name a jail's (letters, digits, - _ .). */
 	event_add(is_monitor(t) ? "monitor" : "sdwan-tunnel", "{\"id\":\"%s\","
 	    "\"address\":\"%s\",\"state\":\"%s\",\"misses\":%d%s%s%s%s%s%s}",
@@ -1967,6 +1984,16 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		    ucl_object_tostring(v)) < sizeof(t->ifname))
 			snprintf(t->ifname, sizeof(t->ifname), "%s",
 			    ucl_object_tostring(v));
+		/* The underlay's path, not a tunnel: SD-WAN's alone. */
+		if ((v = ucl_object_lookup(o, "underlay")) != NULL) {
+			if (ucl_object_type(v) != UCL_BOOLEAN ||
+			    strcmp(owner, OWN_MONITOR) == 0) {
+				*errp = wfmt(w, "target %s: underlay is true or "
+				    "false, an SD-WAN target's", id);
+				goto bad;
+			}
+			t->underlay = ucl_object_toboolean(v);
+		}
 		/* How it is measured: auto, stamp or icmp. */
 		t->kind = KIND_AUTO;
 		if ((v = ucl_object_lookup(o, "kind")) != NULL) {
@@ -3137,6 +3164,9 @@ target_conf(const struct target *t)
 	if (t->kind != KIND_AUTO)
 		ucl_object_insert_key(o, ucl_object_fromstring(
 		    kind_names[t->kind]), "kind", 0, false);
+	if (t->underlay)
+		ucl_object_insert_key(o, ucl_object_frombool(true), "underlay",
+		    0, false);
 	if (t->stamp_peer[0] != '\0') {
 		ucl_object_insert_key(o, ucl_object_fromstring(t->stamp_if),
 		    "stamp_interface", 0, false);

@@ -15,8 +15,7 @@
  *				each edge; a termination point each UCS
  *				End Point a tunnel leaves by; a link each
  *				way between two UCS End Points a tunnel
- *				joins (no pm yet: PLAN-SDN-YANG 5.3.3's
- *				probes)
+ *				joins, its pm pm-type-network-link
  *	arcana:vpn:<vpn-id>	a service: network-types' service (its
  *				vpn-type, else l3vpn; its vpn-id; its
  *				vpn-service-topology), a node each
@@ -63,6 +62,14 @@
  * probe classes, a session each at the ends), filled the same way; the
  * DSCP each session's probes went by in the augment's dscp, the
  * target's own in pm-attributes'.
+ *
+ * The underlay's links (PLAN-SDN-YANG 5.3.3): each one's perf-mon, one pm
+ * entry, pm-type-network-link, of the last completed interval of the
+ * targets the plan gives each pair of UCS End Points a tunnel joins
+ * (underlay:<from>,<to> at the from end's edge: the far UCS End Point's
+ * WAN address in the near one's table), filled as a service's link is,
+ * the link from A to B from A's target's forward figures, else B's
+ * (underlay:<B>,<A>) backward ones; no class, no vpn-pm-type.
  *
  * Termination points and nodes (PLAN-SDN-YANG 5.3.2): each termination
  * point's pm-statistics, RFC 9375's tp-svc-telemetry, the counters of
@@ -517,15 +524,16 @@ round_trip(const ucl_object_t *v, const struct pmset *ps)
 }
 
 /*
- * What the link from edge src to edge dst of tunnel id has measured of
- * it in class cls (NULL: the target's own) into o (pm-attributes, or a
- * per-class entry): the one-way figures, which end they are of, the
- * DSCP, the round trip; *start and *end the interval's.  False: none
- * measured yet.
+ * What the link from edge src to edge dst has measured of it, by the
+ * target id at src and the target fid at dst (a tunnel's both its id;
+ * an underlay path's each its way's), in class cls (NULL: the target's
+ * own) into o (pm-attributes, or a per-class entry): the one-way
+ * figures, which end they are of, the DSCP, the round trip; *start and
+ * *end the interval's.  False: none measured yet.
  */
 static bool
-link_fill(struct vctx *x, ucl_object_t *o, const char *id, const char *src,
-    const char *dst, const char *cls, const struct pmset *ps,
+link_fill(struct vctx *x, ucl_object_t *o, const char *id, const char *fid,
+    const char *src, const char *dst, const char *cls, const struct pmset *ps,
     const char **start, const char **end, const char **method)
 {
 	const ucl_object_t	*ts, *td, *a, *b;
@@ -534,7 +542,7 @@ link_fill(struct vctx *x, ucl_object_t *o, const char *id, const char *src,
 	const char		*at = NULL;
 
 	ts = target_at(x, src, id, cls, method);
-	td = target_at(x, dst, id, cls, &m2);
+	td = target_at(x, dst, fid, cls, &m2);
 	a = ts != NULL ? last_complete(ts) : NULL;
 	b = td != NULL ? last_complete(td) : NULL;
 	if (a == NULL && b == NULL)
@@ -714,6 +722,96 @@ pmset_of(struct vctx *x, const ucl_object_t *sw, const char *id,
 		ps->len = (long long)d;
 }
 
+/* A link's perf-mon, the settings ps its figures were made with. */
+static ucl_object_t *
+perf_mon(const struct pmset *ps)
+{
+	ucl_object_t	*pm;
+	char		 v[32];
+
+	pm = obj();
+	snprintf(v, sizeof(v), "%.3f", ps->pct[0]);
+	puts_(pm, "low-percentile", v);
+	snprintf(v, sizeof(v), "%.3f", ps->pct[1]);
+	puts_(pm, "intermediate-percentile", v);
+	snprintf(v, sizeof(v), "%.3f", ps->pct[2]);
+	puts_(pm, "high-percentile", v);
+	put(pm, "measurement-interval", ucl_object_fromint(ps->len));
+	return (pm);
+}
+
+/* A perf-mon's pm list: one entry of type, its attributes pa's after
+ * the interval's start and end and the source its method says. */
+static ucl_object_t *
+pm_list(const ucl_object_t *pa, const char *type, const char *start,
+    const char *end, const char *method)
+{
+	ucl_object_t		*p0 = obj(), *pms = arr(), *ord = obj();
+	const ucl_object_t	*m;
+	ucl_object_iter_t	 mt = NULL;
+
+	/* start-time and end-time first, as the model has them. */
+	if (start != NULL)
+		puts_(ord, "start-time", start);
+	if (end != NULL)
+		puts_(ord, "end-time", end);
+	if (method != NULL && strcmp(method, "stamp") == 0)
+		puts_(ord, "pm-source", NVP "pm-source-stamp");
+	else if (method != NULL && strcmp(method, "icmp") == 0)
+		puts_(ord, "pm-source", ARC "pm-source-icmp-echo");
+	else if (ucl_object_lookup(pa, "one-way-pm-statistics") != NULL)
+		puts_(ord, "pm-source", NVP "pm-source-stamp");
+	while ((m = ucl_object_iterate(pa, &mt, true)) != NULL)
+		put(ord, ucl_object_key(m), ucl_object_copy(m));
+	puts_(p0, "pm-type", type);
+	put(p0, "pm-attributes", ord);
+	ucl_array_append(pms, p0);
+	return (pms);
+}
+
+/*
+ * The underlay's link l, from UCS End Point fu at edge fe to tu at te
+ * (its ids'): its perf-mon, of the target underlay:<fu>,<tu> at fe (the
+ * way from) and underlay:<tu>,<fu> at te (the way back).
+ */
+static void
+ulink_pm(struct vctx *x, ucl_object_t *l)
+{
+	const char	*fe, *te, *fu, *tu, *start = NULL, *end = NULL;
+	const char	*method = NULL;
+	ucl_object_t	*pm, *pa;
+	struct pmset	 ps;
+	char		 id[200], fid[200];
+
+	fe = ucl_object_tostring(ucl_object_lookup_path(l,
+	    "source.source-node"));
+	te = ucl_object_tostring(ucl_object_lookup_path(l,
+	    "destination.dest-node"));
+	fu = ucl_object_tostring(ucl_object_lookup_path(l, "source.source-tp"));
+	tu = ucl_object_tostring(ucl_object_lookup_path(l,
+	    "destination.dest-tp"));
+	if (fe == NULL || te == NULL || fu == NULL || tu == NULL ||
+	    strncmp(fe, EDGE, strlen(EDGE)) != 0 || strncmp(te, EDGE,
+	    strlen(EDGE)) != 0 || strncmp(fu, UCS_EP, strlen(UCS_EP)) != 0 ||
+	    strncmp(tu, UCS_EP, strlen(UCS_EP)) != 0)
+		return;
+	fe += strlen(EDGE);
+	te += strlen(EDGE);
+	fu += strlen(UCS_EP);
+	tu += strlen(UCS_EP);
+	snprintf(id, sizeof(id), "underlay:%s,%s", fu, tu);
+	snprintf(fid, sizeof(fid), "underlay:%s,%s", tu, fu);
+	pmset_of(x, NULL, id, fe, &ps);
+	pm = perf_mon(&ps);
+	pa = obj();
+	if (link_fill(x, pa, id, fid, fe, te, NULL, &ps, &start, &end,
+	    &method))
+		put(pm, "pm", pm_list(pa, NVP "pm-type-network-link", start,
+		    end, method));
+	ucl_object_unref(pa);
+	put(l, NVP "perf-mon", pm);
+}
+
 static const char *
 tunnel_type(const char *kind)
 {
@@ -742,7 +840,7 @@ svc_link(struct vctx *x, const ucl_object_t *s, const ucl_object_t *t,
 	struct pmset		 ps;
 	const char		*id, *start = NULL, *end = NULL, *method = NULL;
 	const char		*cs, *ce2, *cm, *name;
-	char			 lid[400], v[32], sn[160], dn[160], stp[64];
+	char			 lid[400], sn[160], dn[160], stp[64];
 	char			 dtp[64];
 	bool			 any;
 
@@ -765,18 +863,11 @@ svc_link(struct vctx *x, const ucl_object_t *s, const ucl_object_t *t,
 
 	sw = ucl_object_lookup(s, "arcana-l3nm:sdwan");
 	pmset_of(x, sw, id, ucl_str(es, "edge"), &ps);
-	pm = obj();
-	snprintf(v, sizeof(v), "%.3f", ps.pct[0]);
-	puts_(pm, "low-percentile", v);
-	snprintf(v, sizeof(v), "%.3f", ps.pct[1]);
-	puts_(pm, "intermediate-percentile", v);
-	snprintf(v, sizeof(v), "%.3f", ps.pct[2]);
-	puts_(pm, "high-percentile", v);
-	put(pm, "measurement-interval", ucl_object_fromint(ps.len));
+	pm = perf_mon(&ps);
 
 	pa = obj();
-	any = link_fill(x, pa, id, ucl_str(es, "edge"), ucl_str(ed, "edge"),
-	    NULL, &ps, &start, &end, &method);
+	any = link_fill(x, pa, id, id, ucl_str(es, "edge"), ucl_str(ed,
+	    "edge"), NULL, &ps, &start, &end, &method);
 	cl = arr();
 	while ((c = ucl_object_iterate(ucl_object_lookup_path(sw,
 	    "probe.class"), &it, true)) != NULL) {
@@ -785,7 +876,7 @@ svc_link(struct vctx *x, const ucl_object_t *s, const ucl_object_t *t,
 		ce = obj();
 		puts_(ce, "class-id", name);
 		cs = ce2 = NULL;
-		if (!link_fill(x, ce, id, ucl_str(es, "edge"), ucl_str(ed,
+		if (!link_fill(x, ce, id, id, ucl_str(es, "edge"), ucl_str(ed,
 		    "edge"), name, &ps, &cs, &ce2, &cm)) {
 			ucl_object_unref(ce);
 			continue;
@@ -801,30 +892,9 @@ svc_link(struct vctx *x, const ucl_object_t *s, const ucl_object_t *t,
 		any = true;
 	} else
 		ucl_object_unref(cl);
-	if (any) {
-		ucl_object_t	*p0 = obj(), *pms = arr(), *ord = obj();
-		const ucl_object_t *m;
-		ucl_object_iter_t	 mt = NULL;
-
-		/* start-time and end-time first, as the model has them. */
-		if (start != NULL)
-			puts_(ord, "start-time", start);
-		if (end != NULL)
-			puts_(ord, "end-time", end);
-		if (method != NULL && strcmp(method, "stamp") == 0)
-			puts_(ord, "pm-source", NVP "pm-source-stamp");
-		else if (method != NULL && strcmp(method, "icmp") == 0)
-			puts_(ord, "pm-source", ARC "pm-source-icmp-echo");
-		else if (ucl_object_lookup(pa, "one-way-pm-statistics") !=
-		    NULL)
-			puts_(ord, "pm-source", NVP "pm-source-stamp");
-		while ((m = ucl_object_iterate(pa, &mt, true)) != NULL)
-			put(ord, ucl_object_key(m), ucl_object_copy(m));
-		puts_(p0, "pm-type", NVP "pm-type-vpn-tunnel");
-		put(p0, "pm-attributes", ord);
-		ucl_array_append(pms, p0);
-		put(pm, "pm", pms);
-	}
+	if (any)
+		put(pm, "pm", pm_list(pa, NVP "pm-type-vpn-tunnel", start, end,
+		    method));
 	ucl_object_unref(pa);
 	e = obj();
 	puts_(e, "vpn-tunnel-type", tunnel_type(ucl_str(t, "kind")));
@@ -999,8 +1069,12 @@ vpnpm_networks(const ucl_object_t *y, vpnpm_get_fn *get, void *arg,
 	put(u, "node", node_list(unodes));
 	a = arr();
 	it = NULL;
-	while ((l = ucl_object_iterate(ulinks, &it, true)) != NULL)
-		ucl_array_append(a, ucl_object_copy(l));
+	while ((l = ucl_object_iterate(ulinks, &it, true)) != NULL) {
+		ucl_object_t	*c = ucl_object_copy(l);
+
+		ulink_pm(&x, c);
+		ucl_array_append(a, c);
+	}
 	ucl_object_unref(ulinks);
 	if (ucl_array_size(a) > 0)
 		put(u, NT "link", a);

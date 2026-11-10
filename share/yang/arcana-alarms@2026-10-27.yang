@@ -37,6 +37,13 @@ module arcana-alarms {
       "An SD-WAN tunnel's far end did not answer its probes.";
   }
 
+  identity underlay {
+    base arcana-fault;
+    description
+      "The far UCS End Point of an SD-WAN underlay path (the far edge's
+       WAN address, outside the tunnels) did not answer its probes.";
+  }
+
   identity tca {
     base arcana-fault;
     description

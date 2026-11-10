@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-alarms",
     "module-revision": "2026-10-27",
-    "sid-file-version": 2,
+    "sid-file-version": 3,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -69,38 +69,43 @@
       },
       {
         "namespace": "identity",
-        "identifier": "memory",
+        "identifier": "mail",
         "sid": "77610"
       },
       {
         "namespace": "identity",
-        "identifier": "ospf-neighbor",
+        "identifier": "memory",
         "sid": "77611"
       },
       {
         "namespace": "identity",
-        "identifier": "storage",
+        "identifier": "ospf-neighbor",
         "sid": "77612"
       },
       {
         "namespace": "identity",
-        "identifier": "tca",
+        "identifier": "storage",
         "sid": "77613"
       },
       {
         "namespace": "identity",
-        "identifier": "tunnel",
+        "identifier": "tca",
         "sid": "77614"
       },
       {
         "namespace": "identity",
-        "identifier": "mail",
+        "identifier": "tunnel",
         "sid": "77615"
       },
       {
         "namespace": "identity",
-        "identifier": "undo",
+        "identifier": "underlay",
         "sid": "77616"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "undo",
+        "sid": "77617"
       }
     ]
   }

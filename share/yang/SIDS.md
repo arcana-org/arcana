@@ -117,7 +117,7 @@ on the wire.
 | 71 600 | 100 | `arcana-host` | `share/yang/arcana-host@2026-10-15.sid` (100 used, 34 obsolete: the host's certificates, a read-certificates action's output now; its rest at 82 000 and 83 000) |
 | 71 700 | 200 | `arcana-agent` | `share/yang/arcana-agent@2026-10-15.sid` (200 used, 1 obsolete: the certificate's chain as subjects, its intermediate certificates now; its rest at 82 100 and 83 100) |
 | 71 900 | 100 | `arcana-jail-files` | `share/yang/arcana-jail-files@2026-10-15.sid` (25 used, 11 obsolete: the jails' files as state, the read-files action's output now) |
-| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, numbered again in path order with a target's interface and each edge's interface counters and FIBs' routes (PLAN-SDN-YANG 5.3.2); its rest at 80 300, 85 100 and 92 700) |
+| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, numbered again in path order with a target's interface and each edge's interface counters and FIBs' routes (PLAN-SDN-YANG 5.3.2), and a target's underlay (5.3.3); its rest at 80 300, 85 100 and 92 700) |
 | 72 100 | 200 | `arcana-sdwan` | `share/yang/arcana-sdwan@2026-10-15.sid` (200 used, 3 obsolete: the rules' and the steer's jail, the jail list's now, and a proxy's deny, which its form says; its rest at 81 000) |
 | 72 300 | 100 | `arcana-sshd` | `share/yang/arcana-sshd@2026-10-15.sid` (69 used, 35 obsolete: the jail augment, the read action's jail input in its place, and user-ca, the user-ca-key list now; its rest at 85 000) |
 | 72 400 | 200 | `arcana-builder` | `share/yang/arcana-builder@2026-10-17.sid` (98 used) |
@@ -127,7 +127,7 @@ on the wire.
 | 77 200 | 100 | `ietf-yang-library@2019-01-04`, RFC 8525 (no IETF range) | `share/yang/ietf-yang-library@2019-01-04.sid` (51 used) |
 | 77 300 | 100 | `ietf-datastores@2018-02-14`, RFC 8342 (no IETF range; its identities used) | `share/yang/ietf-datastores@2018-02-14.sid` (9 used) |
 | 77 400 | 200 | `ietf-alarms@2019-09-11`, RFC 8632 (no IETF range) | `share/yang/ietf-alarms@2019-09-11.sid` (183 used) |
-| 77 600 | 100 | `arcana-alarms` | `share/yang/arcana-alarms@2026-10-27.sid` (17 used) |
+| 77 600 | 100 | `arcana-alarms` | `share/yang/arcana-alarms@2026-10-27.sid` (18 used, numbered again with underlay) |
 | 77 700 | 200 | `ietf-hardware@2018-03-13`, RFC 8348 (no IETF range) | `share/yang/ietf-hardware@2018-03-13.sid` (51 used) |
 | 77 900 | 100 | `iana-hardware@2018-03-13`, RFC 8348's classes (no IETF range) | `share/yang/iana-hardware@2018-03-13.sid` (16 used) |
 | 78 000 | 200 | `ietf-subscribed-notifications@2019-09-09`, RFC 8639 (no IETF range) | `share/yang/ietf-subscribed-notifications@2019-09-09.sid` (156 used) |
@@ -183,7 +183,7 @@ on the wire.
 | 92 100 | 200 | `arcana-console`, its second range, for what did not fit the first: the settings' test actions, the templates, interface labels, prefix lists, threat feeds, transfers, Web Push subscriptions, the hosts and the first of the SD-WAN's verbs | `share/yang/arcana-console@2026-11-05.sid` (200 used) |
 | 92 300 | 300 | `arcana-console`, its third range: the SD-WAN's verbs (their first in the second), the console's update, notes, cluster, CA, plugins, security keys, the path finder and the WireGuard key pair | `share/yang/arcana-console@2026-11-05.sid` (138 used) |
 | 92 600 | 100 | `arcana-stamp`, STAMP's sessions, the sender's settings and stampd as the agent sets it | `share/yang/arcana-stamp@2026-11-10.sid` (63 used, numbered again in path order with a session's class) |
-| 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2), the edges' counters and routes (5.3.2) | `share/yang/arcana-probe@2026-10-15.sid` (77 used) |
+| 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2), the edges' counters and routes (5.3.2), the underlay's targets (5.3.3) | `share/yang/arcana-probe@2026-10-15.sid` (79 used) |
 | 92 800 | 200 | `ietf-network-vpn-pm@2023-03-20`, RFC 9375 (no IETF range): the services' performance view, the console's | `share/yang/ietf-network-vpn-pm@2023-03-20.sid` (116 used) |
 | 93 000 | 100 | `ietf-lime-time-types@2019-04-16`, RFC 8532 (no IETF range; imported by `ietf-network-vpn-pm`, its time units used) | `share/yang/ietf-lime-time-types@2019-04-16.sid` (14 used) |
 | 93 100 | 100 | `arcana-network-vpn-pm`, the performance view's augments: WireGuard and route-based IPsec as tunnel types, ICMP echo as a PM source, which end measured a link's one way, its DSCP and the round trip, the console's | `share/yang/arcana-network-vpn-pm@2026-11-10.sid` (44 used) |

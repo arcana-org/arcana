@@ -84,6 +84,10 @@ target_of(const ucl_object_t *t)
 	if ((v = ucl_object_lookup(t, "interface")) != NULL)
 		ucl_object_insert_key(o, ucl_object_copy(v), "interface", 0,
 		    true);
+	/* The underlay's path between two UCS End Points, no tunnel. */
+	if ((v = ucl_object_lookup(t, "underlay")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v), "underlay", 0,
+		    true);
 	/* A plain tunnel's: what its STAMP key is derived from. */
 	if ((v = ucl_object_lookup(t, "stamp_interface")) != NULL)
 		ucl_object_insert_key(o, ucl_object_copy(v), "stamp-interface", 0,

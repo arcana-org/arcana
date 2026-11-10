@@ -13256,22 +13256,31 @@ ATF_TC_BODY(sdwan_jail, tc)
 		ATF_CHECK_MSG(rules, "%s", r.body);
 	}
 	resp_free(&r);
-	/* Its probes the jail's, in the service's table. */
+	/* Its probes the jail's, its tunnel's in the service's table, its
+	 * underlay's (PLAN-SDN-YANG 5.3.3) in FIB 0. */
 	r3_read(sa, "/arcana-probe:probes", &r);
 	EXPECT(&r, 200);
 	{
 		const ucl_object_t	*e;
 		ucl_object_iter_t	 it = NULL;
-		bool			 fib = false;
+		bool			 fib = false, ufib = false, u;
 
 		while ((e = ucl_object_iterate(ucl_object_lookup_path(r.json,
-		    "state.target"), &it, true)) != NULL)
-			if (ucl_object_lookup(e, "jail") != NULL &&
+		    "state.target"), &it, true)) != NULL) {
+			if (ucl_object_lookup(e, "jail") == NULL ||
 			    strcmp(ucl_object_tostring_forced(ucl_object_lookup(
-			    e, "jail")), "gw") == 0)
+			    e, "jail")), "gw") != 0)
+				continue;
+			u = strncmp(ucl_object_tostring_forced(ucl_object_lookup(
+			    e, "id")), "underlay:", 9) == 0;
+			if (u)
+				ufib = ucl_object_toint(ucl_object_lookup(e,
+				    "fib")) == 0;
+			else
 				fib = ucl_object_toint(ucl_object_lookup(e,
 				    "fib")) == 1;
-		ATF_CHECK_MSG(fib, "%s", r.body);
+		}
+		ATF_CHECK_MSG(fib && ufib, "%s", r.body);
 	}
 	resp_free(&r);
 	/* What only the host's own edge has yet (its NTP, say) is refused
@@ -15693,6 +15702,26 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	    "\"interface\":\"gre100\",\"fib\":1,"
 	    "\"eval\":1000,\"tca\":{\"delay\":30,\"loss\":0.050000,\"damping\":2}}")
 	    != NULL, "%s", r.body);
+	/* And the underlay's path under it (PLAN-SDN-YANG 5.3.3): the far
+	 * UCS End Point's WAN address, by the near one's table (a-inet's
+	 * own, 3; b-inet's FIB 0), once a pair. */
+	ATF_CHECK_MSG(strstr(r.body, "{\"id\":\"underlay:a-inet,b-inet\","
+	    "\"address\":\"192.0.2.2\",\"fib\":3,\"underlay\":true}") != NULL,
+	    "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "{\"id\":\"underlay:b-inet,a-inet\","
+	    "\"address\":\"192.0.2.1\",\"fib\":0,\"underlay\":true}") != NULL,
+	    "%s", r.body);
+	{
+		const char	*u = r.body;
+		int		 nu = 0;
+
+		while ((u = strstr(u, "\"id\":\"underlay:a-inet,b-inet\"")) !=
+		    NULL) {
+			nu++;
+			u++;
+		}
+		ATF_CHECK_EQ_MSG(1, nu, "underlay:a-inet,b-inet %d times", nu);
+	}
 	/*
 	 * The gif, plain (no IPsec): its STAMP authenticated by default
 	 * (PLAN-SDN-YANG 5.1.7), the key derived by each end from its
@@ -16867,7 +16896,10 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 		    "\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,"
 		    "\"low-percentile\":\"25\",\"measurement-interval\":2},"
 		    "{\"id\":\"fib1\",\"address\":\"127.0.0.1\",\"kind\":\"icmp\","
-		    "\"fib\":1}]%s}}", lk);
+		    "\"fib\":1},"
+		    "{\"id\":\"underlay:a-inet,b-inet\",\"address\":\"127.0.0.1\","
+		    "\"underlay\":true,\"kind\":\"stamp\",\"interval\":20,"
+		    "\"timeout\":300,\"measurement-interval\":2}]%s}}", lk);
 		snprintf(path, sizeof(path), "%s/arcana-probe:probes", cand);
 		http("PUT", path, tg, &r);
 	}
@@ -16876,7 +16908,9 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 	resp_free(&r);
 	rc_expect("POST", data, "/ietf-netconf:commit", NULL, "{}", 204, NULL);
 
-	/* Until an interval of 2 s has ended and is in the view. */
+	/* Until an interval of 2 s has ended and is in the view with its
+	 * source end's round trip: a far end's interval may end first,
+	 * the link then the far end's figures alone (no round trip). */
 	snprintf(path, sizeof(path), "/restconf/data/ietf-network:networks/"
 	    "network=arcana:vpn:acme");
 	for (i = 0; i < 100; i++) {
@@ -16888,7 +16922,11 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 		if (pm_str(l, "ietf-network-vpn-pm:perf-mon.pm") != NULL &&
 		    (c = ucl_array_find_index(ucl_object_lookup_path(l,
 		    "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
-		    "one-way-pm-statistics-per-class"), 0)) != NULL)
+		    "one-way-pm-statistics-per-class"), 0)) != NULL &&
+		    pm_str(l, "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
+		    "arcana-network-vpn-pm:round-trip-pm-statistics") != NULL &&
+		    pm_str(c, "arcana-network-vpn-pm:round-trip-pm-statistics") !=
+		    NULL)
 			break;
 		if (i == 99)
 			break;
@@ -17140,6 +17178,83 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 			    "ietf-network:network"), 0);
 			resp_free(&sb1);
 		}
+	}
+
+	/*
+	 * The underlay's links' pm (PLAN-SDN-YANG 5.3.3): a-inet to b-inet
+	 * of the target underlay:a-inet,b-inet's last completed interval,
+	 * pm-type-network-link, by STAMP, its round trip the agent's; the
+	 * way back, of no target of its own here, from that one's backward
+	 * figures where it has them.
+	 */
+	{
+		struct resp	 ul, sa1;
+		const ucl_object_t *u0, *lk, *ut, *uv, *upa;
+		const char	*us;
+
+		for (i = 0; i < 50; i++) {
+			http("GET", "/restconf/data/ietf-network:networks/"
+			    "network=arcana:underlay", NULL, &ul);
+			EXPECT(&ul, 200);
+			u0 = ucl_array_find_index(ucl_object_lookup(ul.json,
+			    "ietf-network:network"), 0);
+			lk = pm_entry(u0, "ietf-network-topology:link", "link-id",
+			    "arcana:underlay:a-inet,b-inet");
+			if (pm_str(lk, "ietf-network-vpn-pm:perf-mon.pm.0."
+			    "pm-attributes.arcana-network-vpn-pm:"
+			    "round-trip-pm-statistics") != NULL || i == 49)
+				break;
+			resp_free(&ul);
+			usleep(200000);
+		}
+		ATF_REQUIRE_MSG(i < 49, "no underlay pm: %s", ul.body);
+		ATF_CHECK_STREQ("ietf-network-vpn-pm:pm-type-network-link",
+		    pm_str(lk, "ietf-network-vpn-pm:perf-mon.pm.0.pm-type"));
+		ATF_CHECK(pm_str(lk, "ietf-network-vpn-pm:perf-mon.vpn-pm-type") ==
+		    NULL);
+		ATF_CHECK_STREQ("2", pm_str(lk, "ietf-network-vpn-pm:perf-mon."
+		    "measurement-interval"));
+		upa = ucl_object_lookup_path(lk, "ietf-network-vpn-pm:perf-mon."
+		    "pm.0.pm-attributes");
+		ATF_CHECK_STREQ("ietf-network-vpn-pm:pm-source-stamp", pm_str(upa,
+		    "pm-source"));
+		ATF_REQUIRE((us = pm_str(upa, "start-time")) != NULL);
+		snprintf(path, sizeof(path), FLEET "%s/arcana-probe:probes/state",
+		    sa);
+		rc_get(path, &sa1);
+		EXPECT(&sa1, 200);
+		ut = pm_entry(ucl_object_lookup_path(sa1.json,
+		    "arcana-probe:state"), "target", "id",
+		    "underlay:a-inet,b-inet");
+		uv = pm_entry(ucl_object_lookup_path(ut, "pm"), "interval",
+		    "start", us);
+		ATF_REQUIRE_MSG(uv != NULL, "no interval %s: %s", us, sa1.body);
+		ATF_CHECK_MSG(pm_same(ucl_object_lookup_path(upa,
+		    "arcana-network-vpn-pm:round-trip-pm-statistics."
+		    "delay-statistics"), "delay", ucl_object_lookup(uv,
+		    "round-trip"), why, sizeof(why)), "underlay round trip: %s",
+		    why);
+		lk = pm_entry(u0, "ietf-network-topology:link", "link-id",
+		    "arcana:underlay:b-inet,a-inet");
+		ATF_CHECK_STREQ("ietf-network-vpn-pm:pm-type-network-link",
+		    pm_str(lk, "ietf-network-vpn-pm:perf-mon.pm.0.pm-type"));
+		if (pm_str(lk, "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
+		    "one-way-pm-statistics") != NULL)
+			ATF_CHECK_STREQ("destination", pm_str(lk,
+			    "ietf-network-vpn-pm:perf-mon.pm.0.pm-attributes."
+			    "arcana-network-vpn-pm:one-way-measured-at"));
+		/* An underlay path no target measures: its settings, no pm. */
+		lk = pm_entry(u0, "ietf-network-topology:link", "link-id",
+		    "arcana:underlay:a-mpls,b-mpls");
+		ATF_CHECK(pm_str(lk, "ietf-network-vpn-pm:perf-mon."
+		    "measurement-interval") != NULL && pm_str(lk,
+		    "ietf-network-vpn-pm:perf-mon.pm") == NULL);
+		resp_free(&sa1);
+		/* Kept for yanglint, below. */
+		ucl_object_unref(st.json);
+		st.json = ucl_object_ref(ul.json);
+		un = u0;
+		resp_free(&ul);
 	}
 
 	/* Valid by libyang too: both networks, the modules as published. */

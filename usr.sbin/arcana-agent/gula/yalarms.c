@@ -34,6 +34,8 @@ static const struct kind {
 	const char	*descr;
 } kinds[] = {
 	{ "tunnel", { 5, 0 }, "an SD-WAN tunnel's far end did not answer" },
+	{ "underlay", { 5, 0 }, "an SD-WAN underlay path's far end did not "
+	    "answer" },
 	{ "tca", { 4, 0 }, "a probe's metric crossed its threshold" },
 	{ "bfd", { 5, 0 }, "a BFD session went down" },
 	{ "bgp-neighbor", { 4, 5 }, "a BGP session left Established" },

@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-probe",
     "module-revision": "2026-10-15",
-    "sid-file-version": 8,
+    "sid-file-version": 9,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 000, 100, and 80 300, 100.",
     "dependency-revision": [
       {
@@ -334,1593 +334,1603 @@
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/jail/target/up",
+        "identifier": "/arcana-probe:probes/jail/target/underlay",
         "sid": "72059"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/link",
+        "identifier": "/arcana-probe:probes/jail/target/up",
         "sid": "72060"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/link/id",
+        "identifier": "/arcana-probe:probes/link",
         "sid": "72061"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/link/interface",
+        "identifier": "/arcana-probe:probes/link/id",
         "sid": "72062"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/link/role",
+        "identifier": "/arcana-probe:probes/link/interface",
         "sid": "72063"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor",
+        "identifier": "/arcana-probe:probes/link/role",
         "sid": "72064"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/address",
+        "identifier": "/arcana-probe:probes/monitor",
         "sid": "72065"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/down",
+        "identifier": "/arcana-probe:probes/monitor/address",
         "sid": "72066"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/dscp",
+        "identifier": "/arcana-probe:probes/monitor/down",
         "sid": "72067"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/eval",
+        "identifier": "/arcana-probe:probes/monitor/dscp",
         "sid": "72068"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/fib",
+        "identifier": "/arcana-probe:probes/monitor/eval",
         "sid": "72069"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/high-percentile",
+        "identifier": "/arcana-probe:probes/monitor/fib",
         "sid": "72070"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/history",
+        "identifier": "/arcana-probe:probes/monitor/high-percentile",
         "sid": "72071"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/interface",
+        "identifier": "/arcana-probe:probes/monitor/history",
         "sid": "72072"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/monitor/interface",
         "sid": "72073"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/interval",
+        "identifier": "/arcana-probe:probes/monitor/intermediate-percentile",
         "sid": "72074"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/low-percentile",
+        "identifier": "/arcana-probe:probes/monitor/interval",
         "sid": "72075"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/measurement-interval",
+        "identifier": "/arcana-probe:probes/monitor/low-percentile",
         "sid": "72076"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/name",
+        "identifier": "/arcana-probe:probes/monitor/measurement-interval",
         "sid": "72077"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/size",
+        "identifier": "/arcana-probe:probes/monitor/name",
         "sid": "72078"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/tca",
+        "identifier": "/arcana-probe:probes/monitor/size",
         "sid": "72079"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/tca/damping",
+        "identifier": "/arcana-probe:probes/monitor/tca",
         "sid": "72080"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/tca/delay",
+        "identifier": "/arcana-probe:probes/monitor/tca/damping",
         "sid": "72081"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/tca/ipdv",
+        "identifier": "/arcana-probe:probes/monitor/tca/delay",
         "sid": "72082"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/tca/loss",
+        "identifier": "/arcana-probe:probes/monitor/tca/ipdv",
         "sid": "72083"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/timeout",
+        "identifier": "/arcana-probe:probes/monitor/tca/loss",
         "sid": "72084"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/monitor/up",
+        "identifier": "/arcana-probe:probes/monitor/timeout",
         "sid": "72085"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read",
+        "identifier": "/arcana-probe:probes/monitor/up",
         "sid": "72086"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/input",
+        "identifier": "/arcana-probe:probes/read",
         "sid": "72087"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/input/after",
+        "identifier": "/arcana-probe:probes/read/input",
         "sid": "72088"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/input/monitors",
+        "identifier": "/arcana-probe:probes/read/input/after",
         "sid": "72089"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/input/raw",
+        "identifier": "/arcana-probe:probes/read/input/monitors",
         "sid": "72090"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output",
+        "identifier": "/arcana-probe:probes/read/input/raw",
         "sid": "72091"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/probing",
+        "identifier": "/arcana-probe:probes/read/output",
         "sid": "72092"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target",
+        "identifier": "/arcana-probe:probes/read/output/probing",
         "sid": "72093"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/address",
+        "identifier": "/arcana-probe:probes/read/output/target",
         "sid": "72094"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/class",
+        "identifier": "/arcana-probe:probes/read/output/target/address",
         "sid": "72095"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/dscp",
+        "identifier": "/arcana-probe:probes/read/output/target/class",
         "sid": "72096"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/error",
+        "identifier": "/arcana-probe:probes/read/output/target/dscp",
         "sid": "72097"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/eval",
+        "identifier": "/arcana-probe:probes/read/output/target/error",
         "sid": "72098"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/family",
+        "identifier": "/arcana-probe:probes/read/output/target/eval",
         "sid": "72099"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/fib",
+        "identifier": "/arcana-probe:probes/read/output/target/family",
         "sid": "80300"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/id",
+        "identifier": "/arcana-probe:probes/read/output/target/fib",
         "sid": "80301"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/interval",
+        "identifier": "/arcana-probe:probes/read/output/target/id",
         "sid": "80302"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/jail",
+        "identifier": "/arcana-probe:probes/read/output/target/interval",
         "sid": "80303"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/kept",
+        "identifier": "/arcana-probe:probes/read/output/target/jail",
         "sid": "80304"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/last-rtt",
+        "identifier": "/arcana-probe:probes/read/output/target/kept",
         "sid": "80305"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/misses",
+        "identifier": "/arcana-probe:probes/read/output/target/last-rtt",
         "sid": "80306"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now",
+        "identifier": "/arcana-probe:probes/read/output/target/misses",
         "sid": "80307"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/age",
+        "identifier": "/arcana-probe:probes/read/output/target/now",
         "sid": "80308"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/delay",
+        "identifier": "/arcana-probe:probes/read/output/target/now/age",
         "sid": "80309"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/ipdv",
+        "identifier": "/arcana-probe:probes/read/output/target/now/delay",
         "sid": "80310"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/loss",
+        "identifier": "/arcana-probe:probes/read/output/target/now/ipdv",
         "sid": "80311"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/received",
+        "identifier": "/arcana-probe:probes/read/output/target/now/loss",
         "sid": "80312"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/now/sent",
+        "identifier": "/arcana-probe:probes/read/output/target/now/received",
         "sid": "80313"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm",
+        "identifier": "/arcana-probe:probes/read/output/target/now/sent",
         "sid": "80314"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm",
         "sid": "80315"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/high-percentile",
         "sid": "80316"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/intermediate-percentile",
         "sid": "80317"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval",
         "sid": "80318"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward",
         "sid": "80319"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/count",
         "sid": "80320"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/high-percentile",
         "sid": "80321"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/intermediate-percentile",
         "sid": "80322"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/low-percentile",
         "sid": "80323"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/max",
         "sid": "80324"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/mean",
         "sid": "80325"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/complete",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/backward/min",
         "sid": "80326"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/end",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/complete",
         "sid": "80327"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/end",
         "sid": "80328"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward",
         "sid": "80329"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/count",
         "sid": "80330"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/high-percentile",
         "sid": "80331"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/intermediate-percentile",
         "sid": "80332"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/low-percentile",
         "sid": "80333"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/max",
         "sid": "80334"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/mean",
         "sid": "80335"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/forward/min",
         "sid": "80336"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter",
         "sid": "80337"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward",
         "sid": "80338"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/count",
         "sid": "80339"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/high-percentile",
         "sid": "80340"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/intermediate-percentile",
         "sid": "80341"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/low-percentile",
         "sid": "80342"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/max",
         "sid": "80343"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/mean",
         "sid": "80344"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/backward/min",
         "sid": "80345"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward",
         "sid": "80346"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/count",
         "sid": "80347"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/high-percentile",
         "sid": "80348"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/intermediate-percentile",
         "sid": "80349"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/low-percentile",
         "sid": "80350"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/max",
         "sid": "80351"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/mean",
         "sid": "80352"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/forward/min",
         "sid": "80353"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip",
         "sid": "80354"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/count",
         "sid": "80355"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/high-percentile",
         "sid": "80356"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/intermediate-percentile",
         "sid": "80357"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/low-percentile",
         "sid": "80358"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/max",
         "sid": "80359"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/mean",
         "sid": "80360"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/kept",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/jitter/round-trip/min",
         "sid": "80361"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/kept",
         "sid": "80362"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/backward-count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss",
         "sid": "80363"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/backward-ratio",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/backward-count",
         "sid": "80364"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/backward-ratio",
         "sid": "80365"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/forward-count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/count",
         "sid": "80366"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/forward-ratio",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/forward-count",
         "sid": "80367"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/ratio",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/forward-ratio",
         "sid": "80368"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/loss/ratio",
         "sid": "80369"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/backward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw",
         "sid": "80370"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/forward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/backward",
         "sid": "80371"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-backward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/forward",
         "sid": "80372"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-forward",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-backward",
         "sid": "80373"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-round-trip",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-forward",
         "sid": "80374"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/round-trip",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/jitter-round-trip",
         "sid": "80375"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/received",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/raw/round-trip",
         "sid": "80376"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/received",
         "sid": "80377"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/count",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip",
         "sid": "80378"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/high-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/count",
         "sid": "80379"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/high-percentile",
         "sid": "80380"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/intermediate-percentile",
         "sid": "80381"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/max",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/low-percentile",
         "sid": "80382"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/mean",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/max",
         "sid": "80383"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/min",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/mean",
         "sid": "80384"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/sent",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/round-trip/min",
         "sid": "80385"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/start",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/sent",
         "sid": "80386"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/low-percentile",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/interval/start",
         "sid": "80387"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/pm/measurement-interval",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/low-percentile",
         "sid": "80388"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/received",
+        "identifier": "/arcana-probe:probes/read/output/target/pm/measurement-interval",
         "sid": "80389"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample",
+        "identifier": "/arcana-probe:probes/read/output/target/received",
         "sid": "80390"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/delay",
+        "identifier": "/arcana-probe:probes/read/output/target/sample",
         "sid": "80391"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/delay-backward",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/delay",
         "sid": "80392"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/delay-forward",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/delay-backward",
         "sid": "80393"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/ipdv",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/delay-forward",
         "sid": "80394"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/loss",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/ipdv",
         "sid": "80395"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/lost-backward",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/loss",
         "sid": "80396"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/lost-forward",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/lost-backward",
         "sid": "80397"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/max",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/lost-forward",
         "sid": "80398"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/min",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/max",
         "sid": "80399"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/one-way",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/min",
         "sid": "85100"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/received",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/one-way",
         "sid": "85101"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/sent",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/received",
         "sid": "85102"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sample/time",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/sent",
         "sid": "85103"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/sent",
+        "identifier": "/arcana-probe:probes/read/output/target/sample/time",
         "sid": "85104"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/since",
+        "identifier": "/arcana-probe:probes/read/output/target/sent",
         "sid": "85105"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/size",
+        "identifier": "/arcana-probe:probes/read/output/target/since",
         "sid": "85106"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/target/state",
+        "identifier": "/arcana-probe:probes/read/output/target/size",
         "sid": "85107"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/read/output/time",
+        "identifier": "/arcana-probe:probes/read/output/target/state",
         "sid": "85108"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state",
+        "identifier": "/arcana-probe:probes/read/output/time",
         "sid": "85109"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge",
+        "identifier": "/arcana-probe:probes/state",
         "sid": "85110"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/fib",
+        "identifier": "/arcana-probe:probes/state/edge",
         "sid": "85111"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/fib/fib",
+        "identifier": "/arcana-probe:probes/state/edge/fib",
         "sid": "85112"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/fib/ipv4-routes",
+        "identifier": "/arcana-probe:probes/state/edge/fib/fib",
         "sid": "85113"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/fib/ipv6-routes",
+        "identifier": "/arcana-probe:probes/state/edge/fib/ipv4-routes",
         "sid": "85114"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface",
+        "identifier": "/arcana-probe:probes/state/edge/fib/ipv6-routes",
         "sid": "85115"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-discards",
+        "identifier": "/arcana-probe:probes/state/edge/interface",
         "sid": "85116"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-errors",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-discards",
         "sid": "85117"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-multicast",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-errors",
         "sid": "85118"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-octets",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-multicast",
         "sid": "85119"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-unicast",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-octets",
         "sid": "85120"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-unknown-protocol",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-unicast",
         "sid": "85121"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/last-updated",
+        "identifier": "/arcana-probe:probes/state/edge/interface/inbound-unknown-protocol",
         "sid": "85122"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/name",
+        "identifier": "/arcana-probe:probes/state/edge/interface/last-updated",
         "sid": "85123"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-discards",
+        "identifier": "/arcana-probe:probes/state/edge/interface/name",
         "sid": "85124"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-errors",
+        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-discards",
         "sid": "85125"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-multicast",
+        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-errors",
         "sid": "85126"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-octets",
+        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-multicast",
         "sid": "85127"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-unicast",
+        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-octets",
         "sid": "85128"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/edge/jail",
+        "identifier": "/arcana-probe:probes/state/edge/interface/outbound-unicast",
         "sid": "85129"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/probing",
+        "identifier": "/arcana-probe:probes/state/edge/jail",
         "sid": "85130"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target",
+        "identifier": "/arcana-probe:probes/state/probing",
         "sid": "85131"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/address",
+        "identifier": "/arcana-probe:probes/state/target",
         "sid": "85132"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/class",
+        "identifier": "/arcana-probe:probes/state/target/address",
         "sid": "85133"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/dscp",
+        "identifier": "/arcana-probe:probes/state/target/class",
         "sid": "85134"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/error",
+        "identifier": "/arcana-probe:probes/state/target/dscp",
         "sid": "85135"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/eval",
+        "identifier": "/arcana-probe:probes/state/target/error",
         "sid": "85136"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/family",
+        "identifier": "/arcana-probe:probes/state/target/eval",
         "sid": "85137"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/fib",
+        "identifier": "/arcana-probe:probes/state/target/family",
         "sid": "85138"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/id",
+        "identifier": "/arcana-probe:probes/state/target/fib",
         "sid": "85139"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/interval",
+        "identifier": "/arcana-probe:probes/state/target/id",
         "sid": "85140"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/jail",
+        "identifier": "/arcana-probe:probes/state/target/interval",
         "sid": "85141"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/kept",
+        "identifier": "/arcana-probe:probes/state/target/jail",
         "sid": "85142"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/last-rtt",
+        "identifier": "/arcana-probe:probes/state/target/kept",
         "sid": "85143"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/misses",
+        "identifier": "/arcana-probe:probes/state/target/last-rtt",
         "sid": "85144"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now",
+        "identifier": "/arcana-probe:probes/state/target/misses",
         "sid": "85145"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/age",
+        "identifier": "/arcana-probe:probes/state/target/now",
         "sid": "85146"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/delay",
+        "identifier": "/arcana-probe:probes/state/target/now/age",
         "sid": "85147"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/ipdv",
+        "identifier": "/arcana-probe:probes/state/target/now/delay",
         "sid": "85148"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/loss",
+        "identifier": "/arcana-probe:probes/state/target/now/ipdv",
         "sid": "85149"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/received",
+        "identifier": "/arcana-probe:probes/state/target/now/loss",
         "sid": "85150"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/now/sent",
+        "identifier": "/arcana-probe:probes/state/target/now/received",
         "sid": "85151"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm",
+        "identifier": "/arcana-probe:probes/state/target/now/sent",
         "sid": "85152"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm",
         "sid": "85153"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/high-percentile",
         "sid": "85154"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval",
+        "identifier": "/arcana-probe:probes/state/target/pm/intermediate-percentile",
         "sid": "85155"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval",
         "sid": "85156"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward",
         "sid": "85157"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/count",
         "sid": "85158"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/high-percentile",
         "sid": "85159"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/intermediate-percentile",
         "sid": "85160"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/low-percentile",
         "sid": "85161"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/max",
         "sid": "85162"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/mean",
         "sid": "85163"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/complete",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/backward/min",
         "sid": "85164"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/end",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/complete",
         "sid": "85165"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/end",
         "sid": "85166"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward",
         "sid": "85167"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/count",
         "sid": "85168"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/high-percentile",
         "sid": "85169"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/intermediate-percentile",
         "sid": "85170"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/low-percentile",
         "sid": "85171"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/max",
         "sid": "85172"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/mean",
         "sid": "85173"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/forward/min",
         "sid": "85174"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter",
         "sid": "85175"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward",
         "sid": "85176"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/count",
         "sid": "85177"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/high-percentile",
         "sid": "85178"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/intermediate-percentile",
         "sid": "85179"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/low-percentile",
         "sid": "85180"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/max",
         "sid": "85181"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/mean",
         "sid": "85182"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/backward/min",
         "sid": "85183"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward",
         "sid": "85184"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/count",
         "sid": "85185"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/high-percentile",
         "sid": "85186"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/intermediate-percentile",
         "sid": "85187"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/low-percentile",
         "sid": "85188"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/max",
         "sid": "85189"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/mean",
         "sid": "85190"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/forward/min",
         "sid": "85191"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip",
         "sid": "85192"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/count",
         "sid": "85193"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/high-percentile",
         "sid": "85194"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/intermediate-percentile",
         "sid": "85195"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/low-percentile",
         "sid": "85196"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/max",
         "sid": "85197"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/mean",
         "sid": "85198"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/kept",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/jitter/round-trip/min",
         "sid": "85199"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/kept",
         "sid": "92700"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/backward-count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss",
         "sid": "92701"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/backward-ratio",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/backward-count",
         "sid": "92702"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/backward-ratio",
         "sid": "92703"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/forward-count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/count",
         "sid": "92704"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/forward-ratio",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/forward-count",
         "sid": "92705"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/ratio",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/forward-ratio",
         "sid": "92706"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/loss/ratio",
         "sid": "92707"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/backward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw",
         "sid": "92708"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/forward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/backward",
         "sid": "92709"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-backward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/forward",
         "sid": "92710"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-forward",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-backward",
         "sid": "92711"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-round-trip",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-forward",
         "sid": "92712"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/round-trip",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/jitter-round-trip",
         "sid": "92713"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/received",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/raw/round-trip",
         "sid": "92714"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/received",
         "sid": "92715"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/count",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip",
         "sid": "92716"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/high-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/count",
         "sid": "92717"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/high-percentile",
         "sid": "92718"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/intermediate-percentile",
         "sid": "92719"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/max",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/low-percentile",
         "sid": "92720"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/mean",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/max",
         "sid": "92721"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/min",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/mean",
         "sid": "92722"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/sent",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/round-trip/min",
         "sid": "92723"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/interval/start",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/sent",
         "sid": "92724"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/low-percentile",
+        "identifier": "/arcana-probe:probes/state/target/pm/interval/start",
         "sid": "92725"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/pm/measurement-interval",
+        "identifier": "/arcana-probe:probes/state/target/pm/low-percentile",
         "sid": "92726"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/received",
+        "identifier": "/arcana-probe:probes/state/target/pm/measurement-interval",
         "sid": "92727"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample",
+        "identifier": "/arcana-probe:probes/state/target/received",
         "sid": "92728"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/delay",
+        "identifier": "/arcana-probe:probes/state/target/sample",
         "sid": "92729"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/delay-backward",
+        "identifier": "/arcana-probe:probes/state/target/sample/delay",
         "sid": "92730"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/delay-forward",
+        "identifier": "/arcana-probe:probes/state/target/sample/delay-backward",
         "sid": "92731"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/ipdv",
+        "identifier": "/arcana-probe:probes/state/target/sample/delay-forward",
         "sid": "92732"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/loss",
+        "identifier": "/arcana-probe:probes/state/target/sample/ipdv",
         "sid": "92733"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/lost-backward",
+        "identifier": "/arcana-probe:probes/state/target/sample/loss",
         "sid": "92734"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/lost-forward",
+        "identifier": "/arcana-probe:probes/state/target/sample/lost-backward",
         "sid": "92735"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/max",
+        "identifier": "/arcana-probe:probes/state/target/sample/lost-forward",
         "sid": "92736"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/min",
+        "identifier": "/arcana-probe:probes/state/target/sample/max",
         "sid": "92737"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/one-way",
+        "identifier": "/arcana-probe:probes/state/target/sample/min",
         "sid": "92738"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/received",
+        "identifier": "/arcana-probe:probes/state/target/sample/one-way",
         "sid": "92739"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/sent",
+        "identifier": "/arcana-probe:probes/state/target/sample/received",
         "sid": "92740"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sample/time",
+        "identifier": "/arcana-probe:probes/state/target/sample/sent",
         "sid": "92741"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/sent",
+        "identifier": "/arcana-probe:probes/state/target/sample/time",
         "sid": "92742"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/since",
+        "identifier": "/arcana-probe:probes/state/target/sent",
         "sid": "92743"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/size",
+        "identifier": "/arcana-probe:probes/state/target/since",
         "sid": "92744"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/target/state",
+        "identifier": "/arcana-probe:probes/state/target/size",
         "sid": "92745"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/state/time",
+        "identifier": "/arcana-probe:probes/state/target/state",
         "sid": "92746"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target",
+        "identifier": "/arcana-probe:probes/state/time",
         "sid": "92747"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/address",
+        "identifier": "/arcana-probe:probes/target",
         "sid": "92748"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/class",
+        "identifier": "/arcana-probe:probes/target/address",
         "sid": "92749"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/class/dscp",
+        "identifier": "/arcana-probe:probes/target/class",
         "sid": "92750"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/class/name",
+        "identifier": "/arcana-probe:probes/target/class/dscp",
         "sid": "92751"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/count",
+        "identifier": "/arcana-probe:probes/target/class/name",
         "sid": "92752"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/down",
+        "identifier": "/arcana-probe:probes/target/count",
         "sid": "92753"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/dscp",
+        "identifier": "/arcana-probe:probes/target/down",
         "sid": "92754"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/eval",
+        "identifier": "/arcana-probe:probes/target/dscp",
         "sid": "92755"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/fib",
+        "identifier": "/arcana-probe:probes/target/eval",
         "sid": "92756"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/high-percentile",
+        "identifier": "/arcana-probe:probes/target/fib",
         "sid": "92757"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/history",
+        "identifier": "/arcana-probe:probes/target/high-percentile",
         "sid": "92758"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/id",
+        "identifier": "/arcana-probe:probes/target/history",
         "sid": "92759"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/interface",
+        "identifier": "/arcana-probe:probes/target/id",
         "sid": "92760"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/intermediate-percentile",
+        "identifier": "/arcana-probe:probes/target/interface",
         "sid": "92761"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/interval",
+        "identifier": "/arcana-probe:probes/target/intermediate-percentile",
         "sid": "92762"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/kind",
+        "identifier": "/arcana-probe:probes/target/interval",
         "sid": "92763"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/low-percentile",
+        "identifier": "/arcana-probe:probes/target/kind",
         "sid": "92764"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/measurement-interval",
+        "identifier": "/arcana-probe:probes/target/low-percentile",
         "sid": "92765"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/report",
+        "identifier": "/arcana-probe:probes/target/measurement-interval",
         "sid": "92766"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/size",
+        "identifier": "/arcana-probe:probes/target/report",
         "sid": "92767"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/stamp-interface",
+        "identifier": "/arcana-probe:probes/target/size",
         "sid": "92768"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/stamp-peer",
+        "identifier": "/arcana-probe:probes/target/stamp-interface",
         "sid": "92769"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/tca",
+        "identifier": "/arcana-probe:probes/target/stamp-peer",
         "sid": "92770"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/tca/damping",
+        "identifier": "/arcana-probe:probes/target/tca",
         "sid": "92771"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/tca/delay",
+        "identifier": "/arcana-probe:probes/target/tca/damping",
         "sid": "92772"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/tca/ipdv",
+        "identifier": "/arcana-probe:probes/target/tca/delay",
         "sid": "92773"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/tca/loss",
+        "identifier": "/arcana-probe:probes/target/tca/ipdv",
         "sid": "92774"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/timeout",
+        "identifier": "/arcana-probe:probes/target/tca/loss",
         "sid": "92775"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-probe:probes/target/up",
+        "identifier": "/arcana-probe:probes/target/timeout",
         "sid": "92776"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-probe:probes/target/underlay",
+        "sid": "92777"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-probe:probes/target/up",
+        "sid": "92778"
       }
     ]
   }

@@ -610,6 +610,18 @@ module arcana-probe {
            its counters are in the state's edge (RFC 9375's
            termination point statistics).";
       }
+      leaf underlay {
+        type boolean;
+        default "false";
+        description
+          "Not a tunnel but the underlay's path between two UCS End
+           Points (RFC 9375's pm-type-network-link): the far edge's WAN
+           address, in the UCS End Point's routing table (FIB 0 unless
+           it has its own).  Measured as a tunnel is (STAMP to the far
+           end's stampd, which then answers in that FIB too, or ICMP),
+           with no sdwan-tunnel event; no answer is arcana-alarms'
+           underlay fault, not a tunnel's.";
+      }
       leaf stamp-interface {
         type string {
           length "1..15";

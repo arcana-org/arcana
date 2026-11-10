@@ -138,6 +138,7 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 			    ARCANA_PROBE_TARGET_KIND_AUTO;
 		}
 		t[n].interface = yj_str(a, o, "interface");
+		t[n].underlay = yj_yes(o, "underlay", &t[n].has_underlay);
 		t[n].stamp_interface = yj_str(a, o, "stamp_interface");
 		t[n].stamp_peer = yj_str(a, o, "stamp_peer");
 		YJ_NUM(o, "count", &t[n], count);
@@ -358,6 +359,10 @@ yprobe_edge_json(const char *jail, size_t nt,
 		if (t->interface != NULL)
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    t->interface), "interface", 0, true);
+		/* The underlay's path between two UCS End Points. */
+		if (t->has_underlay && t->underlay)
+			ucl_object_insert_key(o, ucl_object_frombool(true),
+			    "underlay", 0, true);
 		/* A plain tunnel's: what its STAMP key comes from. */
 		if (t->stamp_interface != NULL)
 			ucl_object_insert_key(o, ucl_object_fromstring(

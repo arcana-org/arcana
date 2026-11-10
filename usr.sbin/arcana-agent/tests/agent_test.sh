@@ -2169,7 +2169,7 @@ target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interva
 target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interval=0 size=0 eval=0 dscp=46 sent=0 received=0 misses=0 last-rtt=0 kept=0
   class voice
 target tvc-2 fd00:5a::2 ipv6 fib=0 error error=no route since=2026-10-14T16:23:20Z interval=100 size=64 eval=1000 dscp=0 sent=0 received=0 misses=0 last-rtt=0 kept=0
-yang-cbor 785 bytes, the same back
+yang-cbor 787 bytes, the same back
 EOT
 	atf_check -o file:want "$y" probes probes.json
 	# arcana-stamp: a session a target STAMP measures or may (its
@@ -8129,6 +8129,82 @@ sdwan_counters_body()
 sdwan_counters_cleanup()
 {
 	stop_daemon
+}
+
+atf_test_case sdwan_underlay cleanup
+sdwan_underlay_head()
+{
+	atf_set "descr" "The underlay's path between two UCS End Points" \
+	    "(PLAN-SDN-YANG 5.3.3): a target of underlay true, the far edge's" \
+	    "WAN address in FIB 0, read back; stampd told to answer in FIB 0" \
+	    "for it alone; measured by STAMP to the test's stampd, its" \
+	    "intervals against the sorted dump; its reflector gone, down:" \
+	    "arcana-alarms' underlay fault, no sdwan-tunnel event nor tunnel" \
+	    "fault; underlay not a boolean refused"
+	atf_set "timeout" "120"
+}
+sdwan_underlay_body()
+{
+	local P i A U
+
+	stamp_programs
+	pm_check_tool
+	stampd_root
+	stampd_script
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	DAEMON_ARGS="$DAEMON_ARGS --stamp-port $P" start_daemon
+	A=root/usr/local/etc/rc.conf.d/arcana
+	U='underlay:a-inet,b-inet'
+	atf_check -s exit:1 -e match:'underlay' -o ignore "$JGC" -c "$SOCK" \
+	    sdwan probes '[{"id":"x","address":"127.0.0.1","underlay":"yes"}]'
+	# STAMP alone: auto would open its ICMP fallback's raw socket
+	# first, root's.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"$U\",\"address\":\"127.0.0.1\",\"underlay\":true,\"kind\":\"stamp\",\"interval\":20,\"timeout\":300,\"down\":3,\"measurement_interval\":2}]"
+	# Configuration, read back as it is.
+	atf_check -o match:"\"id\":\"$U\",\"interval\":20,\"kind\":\"stamp\",\"measurement-interval\":2,\"report\":1,\"size\":64,\"timeout\":300,\"underlay\":true" \
+	    "$JGC" -c "$SOCK" get -d running probes
+	# stampd answers in its FIB, 0, for it alone.
+	wait_match '^stampd_fibs="0"$' cat $A || atf_fail "$(cat $A)"
+	atf_check -o match:'^stampd_enable="YES"$' cat $A
+	# Measured by STAMP in FIB 0; its intervals as a tunnel's.
+	wait_match "^$U: stamp \\(stateful" "$JGC" -c "$SOCK" sdwan stamp ||
+	    atf_fail "$("$JGC" -c "$SOCK" sdwan stamp; cat daemon.out)"
+	atf_check -o match:"\"id\":\"$U\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"up\"" \
+	    "$JGC" -c "$SOCK" sdwan
+	pm_wait 20 || atf_fail "no interval ended"
+	atf_check -o save:read.json "$JGC" -c "$SOCK" action probes read raw=true
+	atf_check -o match:'^ok round-trip [0-9]+' \
+	    python3 pmcheck.py read.json "$U" 10 50 90 2
+	# Its reflector gone: down, the underlay's fault, no tunnel's, no
+	# sdwan-tunnel event.
+	kill "$(cat sd.spid)"
+	wait_match "\"id\":\"$U\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"down\"" \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "$("$JGC" -c "$SOCK" sdwan)"
+	atf_check -o match:"\"type\":\"underlay\",\"severity\":\"Major\",\"was\":\"Major\",\"object\":\"$U\",\"by\":\"probe\",\"description\":\"no answer from 127\\.0\\.0\\.1 in FIB 0 after 3 probes\",\"cleared\":false" \
+	    -o not-match:"\"type\":\"tunnel\"[^}]*\"object\":\"$U\"" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:"\"kind\":\"sdwan-fault\",\"data\":\\{\"type\":\"underlay\"" \
+	    -o not-match:"\"kind\":\"sdwan-tunnel\",\"data\":\\{\"id\":\"$U\"" \
+	    "$JGC" -c "$SOCK" events
+	atf_check -o match:'"alarm-type-id":"arcana-alarms:underlay"' \
+	    "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:"sdwan: underlay $U \\(127\\.0\\.0\\.1\\) is down" \
+	    cat daemon.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+sdwan_underlay_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
 }
 
 atf_test_case sdwan_rules cleanup
@@ -15907,6 +15983,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_pm
 	atf_add_test_case sdwan_classes
 	atf_add_test_case sdwan_counters
+	atf_add_test_case sdwan_underlay
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog

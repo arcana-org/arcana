@@ -7,8 +7,9 @@
 /*
  * Faults (Mplify 119 §11.3): each with the time it was seen or
  * cleared, a type (Table 4: interface-down, bfd, bgp-neighbor, cpu,
- * memory, storage; and ours: tunnel, bird-instance, ospf-neighbor,
- * tca; luxuria/birdwatch.c's for the host's BIRD; crash, kmsg.c's,
+ * memory, storage; and ours: tunnel, underlay (a UCS End Point's path
+ * outside the tunnels), bird-instance, ospf-neighbor, tca;
+ * luxuria/birdwatch.c's for the host's BIRD; crash, kmsg.c's,
  * a program the kernel saw die of a signal), a severity
  * (Warning, Minor, Major, Critical; Cleared when it is), what it is
  * of, who saw it and a line of description (Table 5).  One open fault
