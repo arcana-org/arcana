@@ -7046,7 +7046,7 @@ probe_target(struct plan *pl, const char *sid, const ucl_object_t *sw,
 	    "key", "probes");
 	if (o == NULL) {
 		o = object(pl, sid, "probes", PH_PROBE, "the tunnels measured: "
-		    "ICMP echo through the service's table");
+		    "STAMP, or ICMP echo, through the service's table");
 		if (o == NULL)
 			return;
 		make(o, job("sdwan-probes", "targets", ucl_object_typed_new(
@@ -7069,6 +7069,9 @@ probe_target(struct plan *pl, const char *sid, const ucl_object_t *sw,
 		while ((v = ucl_object_iterate(po, &pit, true)) != NULL)
 			put(tg, ucl_object_key(v), ucl_object_copy(v));
 	}
+	/* A beacon is no Arcana host: no stampd answers it, pinged alone
+	 * (arcana-probe's kind; a tunnel's far end is auto, STAMP). */
+	put(tg, "kind", S("icmp"));
 	ucl_array_append(targets, tg);
 }
 
@@ -7360,8 +7363,8 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 			    pl->edges, str(a, "edge")), "key", "probes");
 			if (o == NULL) {
 				o = object(pl, str(a, "edge"), "probes", PH_PROBE,
-				    "the tunnels measured: ICMP echo through "
-				    "the service's table");
+				    "the tunnels measured: STAMP, or ICMP echo, "
+				    "through the service's table");
 				targets = ucl_object_typed_new(UCL_ARRAY);
 				make(o, job("sdwan-probes", "targets", targets,
 				    NULL));
@@ -7461,8 +7464,8 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 		    str(e, "server")), "key", "probes");
 		if (o == NULL) {
 			o = object(pl, str(e, "server"), "probes", PH_PROBE,
-			    "the tunnels measured: ICMP echo through the "
-			    "service's table");
+			    "the tunnels measured: STAMP, or ICMP echo, through "
+			    "the service's table");
 			make(o, job("sdwan-probes", "targets",
 			    ucl_object_typed_new(UCL_ARRAY), NULL));
 			unmake(o, job("sdwan-probes", "targets",

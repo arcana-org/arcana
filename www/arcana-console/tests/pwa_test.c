@@ -6994,6 +6994,19 @@ part_flows_sdwan(void)
 	wait_js("document.querySelector('button[data-act=sd-span][data-arg="
 	    "\"3600\"].on') && document.querySelector('.sd-path .sd-mon p')"
 	    ".textContent.includes('last 60 min')", 5);
+	/* How each end measures (arcana-stamp): a row an end, its method,
+	 * the round trip, the delay and the loss each way, the DSCP, the
+	 * NAT, authenticated; sorted by a column picked. */
+	wait_js("document.querySelectorAll('.sd-stamp tbody tr').length >= 2 "
+	    "&& [...document.querySelectorAll('.sd-stamp th.sortable')].map(t "
+	    "=> t.textContent).join('|') === 'From|Tunnel|Method|Round trip|"
+	    "Forward|Backward|Lost fwd|Lost back|DSCP|NAT|Authenticated' && "
+	    "document.querySelector('.sd-stamp tbody').textContent.includes("
+	    "'STAMP')", 20);
+	run("document.querySelector('.sd-stamp th[data-act=t-sort][data-value="
+	    "\"3\"]').click()");
+	wait_js("document.querySelector('.sd-stamp th[data-value=\"3\"]')"
+	    ".classList.contains('asc')", 5);
 	shot("9-sdwan-paths");
 	/* Security: the policies, and the record of what their deny rules
 	 * logged, nothing yet; its filter and the CSV link. */

@@ -1,0 +1,62 @@
+module: arcana-stamp
+  +--ro stamp
+     +--ro sender
+     |  +--ro port?                 inet:port-number
+     |  +--ro clock-source?         clock-source
+     |  +--ro clock-error?          ms
+     |  +--ro clock-synchronised?   boolean
+     |  +--ro clock-set?            string
+     +--ro reflector
+     |  +--ro installed?   boolean
+     |  +--ro fib*         uint16
+     |  +--ro key-file?    string
+     |  +--ro keys?        uint32
+     |  +--ro status?      string
+     +--ro session*
+        +--ro target?               string
+        +--ro jail?                 string
+        +--ro kind?                 kind
+        +--ro method?               enumeration
+        +--ro reason?               string
+        +--ro reflector-address?    inet:ip-address-no-zone
+        +--ro reflector-udp-port?   inet:port-number
+        +--ro fib?                  uint16
+        +--ro ssid?                 uint16
+        +--ro reflector-mode?       enumeration
+        +--ro authenticated?        boolean
+        +--ro key-error?            string
+        +--ro delay
+        |  +--ro rtt?           ms
+        |  +--ro forward?       ms
+        |  +--ro backward?      ms
+        |  +--ro one-way?       enumeration
+        |  +--ro clock-error?   ms
+        +--ro timestamp-info
+        |  +--ro sync-in?         clock-source
+        |  +--ro timestamp-in?    timestamp-method
+        |  +--ro sync-out?        clock-source
+        |  +--ro timestamp-out?   timestamp-method
+        +--ro dscp
+        |  +--ro sent?       inet:dscp
+        |  +--ro forward?    inet:dscp
+        |  +--ro backward?   inet:dscp
+        |  +--ro refused?    boolean
+        +--ro location
+        |  +--ro source-address?        inet:ip-address-no-zone
+        |  +--ro source-port?           inet:port-number
+        |  +--ro destination-address?   inet:ip-address-no-zone
+        |  +--ro destination-port?      inet:port-number
+        |  +--ro nat?                   enumeration
+        +--ro counters
+           +--ro sent?               uint64
+           +--ro received?           uint64
+           +--ro lost?               uint64
+           +--ro lost-forward?       uint64
+           +--ro lost-backward?      uint64
+           +--ro lost-unknown?       uint64
+           +--ro dm-lost-forward?    uint64
+           +--ro dm-lost-backward?   uint64
+           +--ro late?               uint64
+           +--ro auth-failed?        uint64
+           +--ro refused?            uint64
+           +--ro fallbacks?          uint64

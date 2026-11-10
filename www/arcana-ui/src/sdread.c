@@ -658,6 +658,109 @@ steer_why(ucl_object_t *top, const ucl_object_t *st)
 	}
 }
 
+/* A decimal64 of src's (RFC 7951's string) as a number, where it is. */
+static void
+cp_dec(ucl_object_t *dst, const char *to, const ucl_object_t *src,
+    const char *from)
+{
+
+	if (jget(src, from) != NULL)
+		put(dst, to, ucl_object_fromdouble(jnum(src, from, 0)));
+}
+
+/*
+ * arcana-stamp's session s as the pages have it, each target's "stamp"
+ * (the console's ysdwan.c makes the same for arcanactl).
+ */
+static ucl_object_t *
+stamp_json(const ucl_object_t *s)
+{
+	static const char *const counters[] = { "sent", "received", "lost",
+	    "lost-forward", "lost-backward", "lost-unknown",
+	    "dm-lost-forward", "dm-lost-backward", "late", "auth-failed",
+	    "refused", "fallbacks", NULL };
+	ucl_object_t	*o, *c;
+	char		 key[32];
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	cp(o, "target", s, "target");
+	cp(o, "jail", s, "jail");
+	cp(o, "kind", s, "kind");
+	cp(o, "method", s, "method");
+	cp(o, "reason", s, "reason");
+	cp(o, "reflector", s, "reflector-address");
+	cp_int(o, "port", s, "reflector-udp-port");
+	cp_int(o, "fib", s, "fib");
+	cp_int(o, "ssid", s, "ssid");
+	cp(o, "mode", s, "reflector-mode");
+	cp_yes(o, "authenticated", s, "authenticated");
+	cp(o, "key_error", s, "key-error");
+	cp_dec(o, "rtt", s, "delay.rtt");
+	cp_dec(o, "delay_forward", s, "delay.forward");
+	cp_dec(o, "delay_backward", s, "delay.backward");
+	cp(o, "one_way", s, "delay.one-way");
+	cp_dec(o, "clock_error", s, "delay.clock-error");
+	cp(o, "sync_in", s, "timestamp-info.sync-in");
+	cp(o, "timestamp_in", s, "timestamp-info.timestamp-in");
+	cp(o, "sync_out", s, "timestamp-info.sync-out");
+	cp(o, "timestamp_out", s, "timestamp-info.timestamp-out");
+	cp_int(o, "dscp_sent", s, "dscp.sent");
+	cp_int(o, "dscp_forward", s, "dscp.forward");
+	cp_int(o, "dscp_backward", s, "dscp.backward");
+	cp_yes(o, "dscp_refused", s, "dscp.refused");
+	cp(o, "nat", s, "location.nat");
+	cp(o, "seen_source", s, "location.source-address");
+	cp_int(o, "seen_source_port", s, "location.source-port");
+	cp(o, "seen_destination", s, "location.destination-address");
+	cp_int(o, "seen_destination_port", s, "location.destination-port");
+	/* Its counters, 64-bit (RFC 7951's strings) as numbers, named
+	 * with _ for -. */
+	c = ucl_object_typed_new(UCL_OBJECT);
+	for (size_t i = 0; counters[i] != NULL; i++) {
+		char	 path[48], *p;
+		int64_t	 n;
+
+		snprintf(path, sizeof(path), "counters.%s", counters[i]);
+		if (jget(s, path) == NULL)
+			continue;
+		n = jint(s, path, 0);
+		snprintf(key, sizeof(key), "%s", counters[i]);
+		for (p = key; *p != '\0'; p++)
+			if (*p == '-')
+				*p = '_';
+		put(c, key, ucl_object_fromint(n));
+	}
+	put(o, "counters", c);
+	return (o);
+}
+
+/* arcana-stamp's sessions, st, into the read's targets: each its
+ * "stamp" (one measured by ICMP alone has none). */
+static void
+stamp_facts(ucl_object_t *top, const ucl_object_t *st)
+{
+	const ucl_object_t	*s;
+	ucl_object_t		*e;
+	ucl_object_iter_t	 it, tit;
+
+	it = NULL;
+	while ((s = ucl_object_iterate(jget(st, "session"), &it, true)) !=
+	    NULL) {
+		tit = NULL;
+		while ((e = (ucl_object_t *)(uintptr_t)ucl_object_iterate(jget(
+		    top, "targets"), &tit, true)) != NULL) {
+			if (jstr(e, "id") == NULL || jstr(s, "target") == NULL ||
+			    strcmp(jstr(e, "id"), jstr(s, "target")) != 0 ||
+			    (jstr(e, "jail") != NULL) != (jstr(s, "jail") !=
+			    NULL) || (jstr(s, "jail") != NULL && strcmp(jstr(e,
+			    "jail"), jstr(s, "jail")) != 0))
+				continue;
+			put(e, "stamp", stamp_json(s));
+			break;
+		}
+	}
+}
+
 /* ---- the read: four of the host's, one after another --------------- */
 
 struct sdr {
@@ -668,12 +771,15 @@ struct sdr {
 	ucl_object_t	*probes;	/* running's */
 	ucl_object_t	*read;		/* the probes' read */
 	ucl_object_t	*sdwan;
+	ucl_object_t	*steer;		/* arcana-steer's, if any */
 };
 
 static void
 sdr_free(struct sdr *r)
 {
 
+	if (r->steer != NULL)
+		ucl_object_unref(r->steer);
 	if (r->probes != NULL)
 		ucl_object_unref(r->probes);
 	if (r->read != NULL)
@@ -691,23 +797,40 @@ sdr_fail(struct sdr *r, int status, const ucl_object_t *o, const char *err)
 	sdr_free(r);
 }
 
-/* arcana-steer's (an agent without the module read as before). */
+/* arcana-stamp's sessions (an agent without the module read as
+ * before), then the read made. */
 static void
-sdr_steer_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+sdr_stamp_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 	struct sdr	*r = arg;
 	ucl_object_t	*top, *d;
 
 	(void)err;
 	d = read_json(r->sdwan, r->probes, r->read);
+	if (r->steer != NULL)
+		steer_why(d, jget(r->steer, "state"));
 	if (status == 200 && o != NULL)
-		steer_why(d, jget(o, "state"));
+		stamp_facts(d, o);
 	top = ucl_object_typed_new(UCL_OBJECT);
 	put(top, "ok", ucl_object_frombool(true));
 	put(top, "data", d);
 	r->cb(200, top, NULL, r->arg);
 	ucl_object_unref(top);
 	sdr_free(r);
+}
+
+/* arcana-steer's (an agent without the module read as before). */
+static void
+sdr_steer_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	struct sdr	*r = arg;
+	char		 url[300];
+
+	(void)err;
+	if (status == 200 && o != NULL)
+		r->steer = ucl_object_copy(o);
+	rc_get(rc_h(url, sizeof(url), r->sid, "arcana-stamp:stamp"), NULL,
+	    sdr_stamp_cb, r);
 }
 
 static void

@@ -1078,6 +1078,25 @@ probe_target(const ucl_object_t *t, const ucl_object_t *c, bool monitor)
 		ucl_array_append(row, ucl_object_fromint(jint(s, "sent", 0)));
 		ucl_array_append(row, ucl_object_fromint(jint(s, "received",
 		    0)));
+		/* By STAMP, as the agent's rows: the loss each way, a
+		 * fraction of those sent (-1 not told), the delay each way
+		 * and how (1 one way, 0 half the round trip, -1 not by
+		 * STAMP: -1 each). */
+		ucl_array_append(row, ucl_object_fromdouble(jget(s,
+		    "lost-forward") != NULL && jint(s, "sent", 0) > 0 ?
+		    (double)jint(s, "lost-forward", 0) / jint(s, "sent", 0) :
+		    -1));
+		ucl_array_append(row, ucl_object_fromdouble(jget(s,
+		    "lost-backward") != NULL && jint(s, "sent", 0) > 0 ?
+		    (double)jint(s, "lost-backward", 0) / jint(s, "sent", 0) :
+		    -1));
+		ucl_array_append(row, ucl_object_fromdouble(jstr(s, "one-way") !=
+		    NULL ? jnum(s, "delay-forward", 0) : -1));
+		ucl_array_append(row, ucl_object_fromdouble(jstr(s, "one-way") !=
+		    NULL ? jnum(s, "delay-backward", 0) : -1));
+		ucl_array_append(row, ucl_object_fromint(jstr(s, "one-way") ==
+		    NULL ? -1 : strcmp(jstr(s, "one-way"), "measured") == 0 ? 1 :
+		    0));
 		ucl_array_append(arr, row);
 	}
 	put(o, "samples", arr);

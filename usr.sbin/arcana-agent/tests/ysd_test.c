@@ -17,6 +17,7 @@
  *	ysd state reply.json		the sdwan read, all of it
  *	ysd pins pins.json		arcana-steer's pins
  *	ysd steering steer.json		arcana-steer's state
+ *	ysd stamp reply.json		arcana-stamp's sessions of the read
  *
  * Through YANG-CBOR and back, the same bytes; the configuration back as
  * the JSON the setters take, of the jail named.
@@ -28,6 +29,7 @@ static const char *const tstates[] = { "unknown", "up", "down", "ended",
     "error" };
 static const char *const cstates[] = { "up", "down", "unknown",
     "not-probed" };
+static const char *const kinds[] = { "auto", "stamp", "icmp" };
 
 int
 main(int argc, char **argv)
@@ -38,7 +40,7 @@ main(int argc, char **argv)
 
 	if (argc != 3 && argc != 4)
 		errx(2, "usage: ysd targets|probes|rules|steer|bird|dhcp|dns|"
-		    "proxy|ids|state|pins|steering file.json [jail]");
+		    "proxy|ids|state|pins|steering|stamp file.json [jail]");
 	jail = argc == 4 ? argv[3] : NULL;
 	if ((a = cbl_yarena_new()) == NULL)
 		err(1, "cbl_yarena_new");
@@ -71,6 +73,8 @@ main(int argc, char **argv)
 				    t->fib, t->interval, t->size, t->count,
 				    t->dscp, t->down, t->up, t->timeout,
 				    t->eval, t->history, t->report);
+				if (t->has_kind)
+					printf(" kind=%s", kinds[t->kind]);
 				if (t->tca != NULL)
 					printf(" tca delay=%jd ipdv=%jd loss=%jd "
 					    "damping=%u", (intmax_t)t->tca->delay,
@@ -146,6 +150,21 @@ main(int argc, char **argv)
 				    t->sample.v[k].loss, (intmax_t)t->sample.v[k].min,
 				    (intmax_t)t->sample.v[k].max, t->sample.v[k].sent,
 				    t->sample.v[k].received);
+			/* By STAMP: the loss and the delay each way. */
+			for (size_t k = 0; k < t->sample.n; k++)
+				if (t->sample.v[k].has_one_way ||
+				    t->sample.v[k].has_lost_forward)
+					printf("  stamp %s lost=%d/%d delay=%jd/%jd "
+					    "%s\n", t->sample.v[k].time,
+					    t->sample.v[k].has_lost_forward ? (int)
+					    t->sample.v[k].lost_forward : -1,
+					    t->sample.v[k].has_lost_backward ? (int)
+					    t->sample.v[k].lost_backward : -1,
+					    (intmax_t)t->sample.v[k].delay_forward,
+					    (intmax_t)t->sample.v[k].delay_backward,
+					    !t->sample.v[k].has_one_way ? "-" :
+					    t->sample.v[k].one_way == 0 ? "measured" :
+					    "estimated");
 		}
 		same((void *)arcana_probe_probes_state_encode, (void *)
 		    arcana_probe_probes_state_decode, &s, &back, a);
@@ -217,6 +236,77 @@ main(int argc, char **argv)
 				    s.jail.v[k].pin.v[i].candidate);
 		same((void *)arcana_steer_steering_encode, (void *)
 		    arcana_steer_steering_decode, &s, &back, a);
+	} else if (strcmp(argv[1], "stamp") == 0) {
+		static const char *const modes[] = { "unknown", "stateless",
+		    "stateful" };
+		static const char *const nats[] = { "none", "source",
+		    "destination", "both" };
+		struct arcana_stamp_stamp s = { 0 }, back;
+
+		if ((error = ystamp_sessions_from_json(slurp(argv[2]), a,
+		    &s)) != 0)
+			errc(1, error, "ystamp_sessions_from_json");
+		for (size_t i = 0; i < s.session.n; i++) {
+			const struct arcana_stamp_session *v = &s.session.v[i];
+
+			printf("session %s %s kind=%s method=%s reason=%s "
+			    "port=%u fib=%u ssid=%u mode=%s auth=%s\n", v->target,
+			    v->has_reflector_address ? v->reflector_address.v.m0 :
+			    "-", v->has_kind ? kinds[v->kind] : "-",
+			    !v->has_method ? "-" : v->method == 0 ? "stamp" :
+			    "icmp", str(v->reason), v->reflector_udp_port, v->fib,
+			    v->ssid, v->has_reflector_mode ?
+			    modes[v->reflector_mode] : "-", v->has_authenticated ?
+			    (v->authenticated ? "yes" : "no") : "-");
+			if (v->delay != NULL)
+				printf("  delay rtt=%jd forward=%jd backward=%jd %s "
+				    "error=%jd\n", (intmax_t)v->delay->rtt,
+				    (intmax_t)v->delay->forward,
+				    (intmax_t)v->delay->backward,
+				    v->delay->one_way == 0 ? "measured" :
+				    "estimated", (intmax_t)v->delay->clock_error);
+			if (v->timestamp_info != NULL)
+				printf("  timestamps %d/%d %d/%d\n",
+				    v->timestamp_info->sync_in,
+				    v->timestamp_info->timestamp_in,
+				    v->timestamp_info->sync_out,
+				    v->timestamp_info->timestamp_out);
+			if (v->dscp != NULL)
+				printf("  dscp sent=%u forward=%s%u backward=%s%u "
+				    "refused=%s\n", v->dscp->sent,
+				    v->dscp->has_forward ? "" : "-",
+				    v->dscp->forward, v->dscp->has_backward ? "" :
+				    "-", v->dscp->backward, v->dscp->has_refused &&
+				    v->dscp->refused ? "yes" : "no");
+			if (v->location != NULL)
+				printf("  location %s %u -> %s %u nat=%s\n",
+				    v->location->has_source_address ?
+				    v->location->source_address.v.m0 : "-",
+				    v->location->source_port,
+				    v->location->has_destination_address ?
+				    v->location->destination_address.v.m0 : "-",
+				    v->location->destination_port,
+				    nats[v->location->nat]);
+			if (v->counters != NULL)
+				printf("  counters sent=%ju received=%ju lost=%ju "
+				    "fwd=%ju back=%ju unknown=%ju dm=%ju/%ju "
+				    "late=%ju auth-failed=%ju refused=%ju "
+				    "fallbacks=%ju\n",
+				    (uintmax_t)v->counters->sent,
+				    (uintmax_t)v->counters->received,
+				    (uintmax_t)v->counters->lost,
+				    (uintmax_t)v->counters->lost_forward,
+				    (uintmax_t)v->counters->lost_backward,
+				    (uintmax_t)v->counters->lost_unknown,
+				    (uintmax_t)v->counters->dm_lost_forward,
+				    (uintmax_t)v->counters->dm_lost_backward,
+				    (uintmax_t)v->counters->late,
+				    (uintmax_t)v->counters->auth_failed,
+				    (uintmax_t)v->counters->refused,
+				    (uintmax_t)v->counters->fallbacks);
+		}
+		same((void *)arcana_stamp_stamp_encode, (void *)
+		    arcana_stamp_stamp_decode, &s, &back, a);
 	} else if (strcmp(argv[1], "steering") == 0) {
 		static const char *const rs[] = { "preference", "first-up",
 		    "failover", "override", "none" };

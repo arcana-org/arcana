@@ -172,7 +172,8 @@ and Arcana's own modules, each read as the operation that reads the
 same:
 .Cm jails , services , packages , jobs , storage , sysctl , kernel ,
 .Cm processes , logs , firewall , troubleshoot , history , events ,
-.Cm bird , wireguard , netgraph , host , agent , probes , sdwan , steering , sshd
+.Cm bird , wireguard , netgraph , host , agent , probes , sdwan , steering ,
+.Cm stamp , sshd
 and
 .Cm builder ;
 of
@@ -2614,12 +2615,29 @@ samples kept: the one-way delay, its variation, the loss, each eval
 interval) and arcana-sdwan's state (the rules and the steering, each
 edge that is a vnet jail, the services' instances, ClamAV, the record,
 the keys and the faults), each steering entry with arcana-steer's why
-of its choice: reason, from, since, changes and pinned.
+of its choice: reason, from, since, changes and pinned; and each target
+STAMP measures, or may, with its arcana-stamp session as its
+.Qq stamp :
+method and why not STAMP, the reflector and its mode, the round trip
+and the delay each way (one way or estimated), the DSCP each way, the
+NAT, authenticated, the counters.
+.It Cm sdwan stamp
+arcana-stamp's state, a line a target: how it is measured (STAMP, or
+ICMP fallen back and why), the reflector's mode, the round trip, the
+delay each way by the clocks or
+.Qq estimated: half the rtt each way ,
+the loss forward and backward of those sent, the DSCP sent, at the far
+end and back (remarked when they differ), the NAT the far end saw, and
+whether authenticated; the sender's port and clock and stampd as the
+agent sets it before them.
+With
+.Fl -libxo
+the same as structured output.
 .It Cm sdwan probes Ar json
 The targets the agent is to measure from now on, a JSON array as the
 console's SD-WAN apply makes them: each an id and an address, and maybe
-fib, interval, size, count, dscp, down, up, timeout, eval, history,
-report and tca, put in arcana-probe's
+kind (auto, stamp or icmp), fib, interval, size, count, dscp, down, up,
+timeout, eval, history, report and tca, put in arcana-probe's
 .Ic target
 list by a commit, the edge's links and monitors and the other edges'
 as running has them.

@@ -43,6 +43,16 @@ int	ysdwan_read(cbl_conn *conn, bool has_after, uint64_t after,
 int	ysdwan_monitors(cbl_conn *conn, bool has_after, uint64_t after,
 	    ucl_object_t **data, char *err, size_t errlen);
 /*
+ * arcana-stamp: ysdwan_read() puts each target's session in it as its
+ * "stamp" (method, reason, reflector, port, mode, ssid, authenticated,
+ * rtt, delay_forward, delay_backward, one_way, dscp_sent, dscp_forward,
+ * dscp_backward, dscp_refused, nat, seen_source, seen_destination,
+ * counters); ysdwan_stamp(): {"sender", "reflector", "sessions"}, the
+ * module's state alone, into *data.
+ */
+int	ysdwan_stamp(cbl_conn *conn, ucl_object_t **data, char *err,
+	    size_t errlen);
+/*
  * ysdwan_pin() (ysteer.c, the console's): json {"jail", "table",
  * "prefix", "candidate"} an edge's entry pinned to the candidate in
  * arcana-steer, none clearing the pin, committed confirmed and confirmed

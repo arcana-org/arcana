@@ -508,6 +508,7 @@ main(int argc, char *argv[])
 			if (stamp_clock_set(optarg) == -1)
 				errx(1, "--stamp-clock %s: ntp, ptp, ssu, gnss or "
 				    "local, and :error in seconds", optarg);
+			opts.stamp_clock = optarg;
 			break;
 		case OPT_SMTPD_WATCH:
 			opts.smtpd_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);

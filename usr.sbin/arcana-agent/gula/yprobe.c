@@ -9,6 +9,9 @@
  * and monitors (probe.c's probe_conf_json()) as configuration, and
  * back as the JSON do_probes_set() and do_monitors_set() take; the
  * sdwan read's targets as state, each sample taken apart from its row.
+ * And arcana-stamp's sessions, from the same read: each target that
+ * STAMP measures, or may (probe.c's target_json() says its reflector's
+ * port), with what STAMP saw of it.
  */
 
 #include <sys/param.h>
@@ -115,6 +118,14 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		if ((t[n].id = yj_str(a, o, "id")) == NULL)
 			continue;
 		t[n].has_address = addr_union(a, o, "address", &t[n].address);
+		/* How it is measured, auto unless said. */
+		if ((s = yj_str(a, o, "kind")) != NULL) {
+			t[n].has_kind = true;
+			t[n].kind = strcmp(s, "stamp") == 0 ?
+			    ARCANA_PROBE_TARGET_KIND_STAMP : strcmp(s, "icmp") ==
+			    0 ? ARCANA_PROBE_TARGET_KIND_ICMP :
+			    ARCANA_PROBE_TARGET_KIND_AUTO;
+		}
 		t[n].stamp_interface = yj_str(a, o, "stamp_interface");
 		t[n].stamp_peer = yj_str(a, o, "stamp_peer");
 		YJ_NUM(o, "count", &t[n], count);
@@ -290,6 +301,11 @@ yprobe_edge_json(const char *jail, size_t nt,
 		if (t->has_address)
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    t->address.v.m0), "address", 0, true);
+		/* Its kind, auto unless said. */
+		if (t->has_kind && t->kind != ARCANA_PROBE_TARGET_KIND_AUTO)
+			ucl_object_insert_key(o, ucl_object_fromstring(t->kind ==
+			    ARCANA_PROBE_TARGET_KIND_STAMP ? "stamp" : "icmp"),
+			    "kind", 0, true);
 		/* A plain tunnel's: what its STAMP key comes from. */
 		if (t->stamp_interface != NULL)
 			ucl_object_insert_key(o, ucl_object_fromstring(
@@ -415,6 +431,24 @@ samples_of(cbl_yarena *a, const ucl_object_t *arr, size_t *np,
 			v[n].sent = (uint32_t)d;
 		if ((v[n].has_received = nth(e, 7, &d)))
 			v[n].received = (uint32_t)d;
+		/* By STAMP: the loss each way (a fraction of those sent, -1
+		 * not told), the delay each way and how (1 one way, 0 half
+		 * the round trip, -1 not by STAMP). */
+		if (nth(e, 8, &d) && d >= 0 && v[n].has_sent) {
+			v[n].has_lost_forward = true;
+			v[n].lost_forward = (uint32_t)(d * v[n].sent + 0.5);
+		}
+		if (nth(e, 9, &d) && d >= 0 && v[n].has_sent) {
+			v[n].has_lost_backward = true;
+			v[n].lost_backward = (uint32_t)(d * v[n].sent + 0.5);
+		}
+		if (nth(e, 12, &d) && d >= 0) {
+			v[n].has_one_way = true;
+			v[n].one_way = d > 0 ? ARCANA_PROBE_SAMPLE_ONE_WAY_MEASURED :
+			    ARCANA_PROBE_SAMPLE_ONE_WAY_ESTIMATED;
+			ROW_DEC(e, 10, &v[n], delay_forward, 1000.0);
+			ROW_DEC(e, 11, &v[n], delay_backward, 1000.0);
+		}
 		if (v[n].time != NULL)
 			n++;
 	}
@@ -507,4 +541,187 @@ yprobe_state_from_json(const char *json, cbl_yarena *a,
 	out->target.v = v;
 	ucl_object_unref(top);
 	return (0);
+}
+
+/* A name of RFC 8972's Sync Source registry (stamp_sync_name()) as
+ * arcana-stamp's clock-source, its enums' order: ntp, ptp, ssu, gnss,
+ * local, unknown. */
+static int
+sync_of(const char *s)
+{
+	static const char *const n[] = { "ntp", "ptp", "ssu", "gnss",
+	    "local" };
+
+	for (size_t i = 0; s != NULL && i < nitems(n); i++)
+		if (strcmp(s, n[i]) == 0)
+			return ((int)i);
+	return ((int)nitems(n));
+}
+
+/* A Timestamp Method's name (stamp_tsm_name()): hw, sw, control,
+ * unknown. */
+static int
+tsm_of(const char *s)
+{
+
+	if (s == NULL)
+		return (3);
+	return (strcmp(s, "hw") == 0 ? 0 : strcmp(s, "sw") == 0 ? 1 :
+	    strcmp(s, "cp") == 0 ? 2 : 3);
+}
+
+/* An address of o's, key, into an inet:ip-address-no-zone union. */
+#define	ADDR_OF(a, o, key, y, f)	do {				\
+	const char *s_;							\
+									\
+	if (((y)->has_##f = (s_ = yj_str((a), (o), (key))) != NULL)) {	\
+		(y)->f.which = strchr(s_, ':') != NULL ? 1 : 0;		\
+		(y)->f.v.m0 = s_;					\
+	}								\
+} while (0)
+
+/* One target of the probes' read as its session. */
+static int
+session_of(cbl_yarena *a, const ucl_object_t *e, struct arcana_stamp_session *s)
+{
+	struct arcana_stamp_session_delay	*d;
+	struct arcana_stamp_session_timestamp_info *ti;
+	struct arcana_stamp_session_dscp	*ds;
+	struct arcana_stamp_session_location	*lo;
+	struct arcana_stamp_session_counters	*c;
+	const ucl_object_t			*o;
+	const char				*v;
+
+	s->target = yj_str(a, e, "id");
+	s->jail = yj_str(a, e, "jail");
+	if ((v = yj_str(a, e, "kind")) != NULL) {
+		s->has_kind = true;
+		s->kind = strcmp(v, "stamp") == 0 ?
+		    ARCANA_STAMP_SESSION_KIND_STAMP : strcmp(v, "icmp") == 0 ?
+		    ARCANA_STAMP_SESSION_KIND_ICMP :
+		    ARCANA_STAMP_SESSION_KIND_AUTO;
+	}
+	if ((v = yj_str(a, e, "method")) != NULL) {
+		s->has_method = true;
+		s->method = strcmp(v, "stamp") == 0 ?
+		    ARCANA_STAMP_SESSION_METHOD_STAMP :
+		    ARCANA_STAMP_SESSION_METHOD_ICMP;
+	}
+	s->reason = yj_str(a, e, "reason");
+	ADDR_OF(a, e, "address", s, reflector_address);
+	YJ_NUM(e, "reflector_port", s, reflector_udp_port);
+	YJ_NUM(e, "fib", s, fib);
+	YJ_NUM(e, "ssid", s, ssid);
+	s->has_reflector_mode = true;
+	v = yj_str(a, e, "reflector");
+	s->reflector_mode = v != NULL && strcmp(v, "stateful") == 0 ?
+	    ARCANA_STAMP_SESSION_REFLECTOR_MODE_STATEFUL : v != NULL &&
+	    strcmp(v, "stateless") == 0 ?
+	    ARCANA_STAMP_SESSION_REFLECTOR_MODE_STATELESS :
+	    ARCANA_STAMP_SESSION_REFLECTOR_MODE_UNKNOWN;
+	s->authenticated = yj_yes(e, "authenticated", &s->has_authenticated);
+	s->key_error = yj_str(a, e, "key_error");
+	if ((d = cbl_yarena_alloc(a, sizeof(*d))) == NULL ||
+	    (ti = cbl_yarena_alloc(a, sizeof(*ti))) == NULL ||
+	    (ds = cbl_yarena_alloc(a, sizeof(*ds))) == NULL ||
+	    (lo = cbl_yarena_alloc(a, sizeof(*lo))) == NULL ||
+	    (c = cbl_yarena_alloc(a, sizeof(*c))) == NULL)
+		return (ENOMEM);
+	memset(d, 0, sizeof(*d));
+	memset(ti, 0, sizeof(*ti));
+	memset(ds, 0, sizeof(*ds));
+	memset(lo, 0, sizeof(*lo));
+	memset(c, 0, sizeof(*c));
+	/* The last reply's delay, when by STAMP. */
+	if ((v = yj_str(a, e, "one_way")) != NULL) {
+		d->has_rtt = dec(e, "last_rtt", 3, &d->rtt);
+		d->has_forward = dec(e, "forward_delay", 3, &d->forward);
+		d->has_backward = dec(e, "backward_delay", 3, &d->backward);
+		d->has_one_way = true;
+		d->one_way = strcmp(v, "measured") == 0 ?
+		    ARCANA_STAMP_SESSION_DELAY_ONE_WAY_MEASURED :
+		    ARCANA_STAMP_SESSION_DELAY_ONE_WAY_ESTIMATED;
+		d->has_clock_error = dec(e, "clock_error", 3, &d->clock_error);
+		s->delay = d;
+	}
+	if ((o = ucl_object_lookup(e, "timestamp_info")) != NULL) {
+		ti->has_sync_in = ti->has_timestamp_in = true;
+		ti->has_sync_out = ti->has_timestamp_out = true;
+		ti->sync_in = sync_of(yj_str(a, o, "sync_in"));
+		ti->timestamp_in = tsm_of(yj_str(a, o, "timestamp_in"));
+		ti->sync_out = sync_of(yj_str(a, o, "sync_out"));
+		ti->timestamp_out = tsm_of(yj_str(a, o, "timestamp_out"));
+		s->timestamp_info = ti;
+	}
+	YJ_NUM(e, "dscp", ds, sent);
+	YJ_NUM(e, "dscp_forward", ds, forward);
+	YJ_NUM(e, "dscp_backward", ds, backward);
+	ds->refused = yj_yes(e, "dscp_refused", &ds->has_refused);
+	s->dscp = ds;
+	if ((v = yj_str(a, e, "nat")) != NULL) {
+		ADDR_OF(a, e, "seen_source_addr", lo, source_address);
+		YJ_NUM(e, "seen_source_port", lo, source_port);
+		ADDR_OF(a, e, "seen_destination_addr", lo, destination_address);
+		YJ_NUM(e, "seen_destination_port", lo, destination_port);
+		lo->has_nat = true;
+		lo->nat = strcmp(v, "source") == 0 ?
+		    ARCANA_STAMP_SESSION_LOCATION_NAT_SOURCE : strcmp(v,
+		    "destination") == 0 ?
+		    ARCANA_STAMP_SESSION_LOCATION_NAT_DESTINATION : strcmp(v,
+		    "both") == 0 ? ARCANA_STAMP_SESSION_LOCATION_NAT_BOTH :
+		    ARCANA_STAMP_SESSION_LOCATION_NAT_NONE;
+		s->location = lo;
+	}
+	if ((o = ucl_object_lookup(e, "stamp_counters")) != NULL) {
+		YJ_NUM(o, "sent", c, sent);
+		YJ_NUM(o, "received", c, received);
+		YJ_NUM(o, "lost", c, lost);
+		YJ_NUM(o, "lost_forward", c, lost_forward);
+		YJ_NUM(o, "lost_backward", c, lost_backward);
+		YJ_NUM(o, "lost_unknown", c, lost_unknown);
+		YJ_NUM(o, "dm_lost_forward", c, dm_lost_forward);
+		YJ_NUM(o, "dm_lost_backward", c, dm_lost_backward);
+		YJ_NUM(o, "late", c, late);
+		YJ_NUM(o, "auth_failed", c, auth_failed);
+		YJ_NUM(o, "refused", c, refused);
+		YJ_NUM(o, "fallbacks", c, fallbacks);
+		s->counters = c;
+	}
+	return (0);
+}
+
+int
+ystamp_sessions_from_json(const char *json, cbl_yarena *a,
+    struct arcana_stamp_stamp *out)
+{
+	struct arcana_stamp_session	*v;
+	const ucl_object_t		*e, *list;
+	ucl_object_iter_t		 it;
+	ucl_object_t			*top;
+	size_t				 k = 0;
+	int				 error = 0;
+
+	if ((top = yj_parse(json)) == NULL)
+		return (EINVAL);
+	list = ucl_object_lookup(top, "targets");
+	if ((v = cbl_yarena_alloc(a, (yj_count(list) + 1) * sizeof(*v))) ==
+	    NULL) {
+		ucl_object_unref(top);
+		return (ENOMEM);
+	}
+	/* A target STAMP measures, or may (auto fallen back): one with
+	 * the reflector's port said (probe.c's target_json()). */
+	YJ_EACH(list, it, e) {
+		if (ucl_object_lookup(e, "reflector_port") == NULL ||
+		    yj_str(a, e, "id") == NULL)
+			continue;
+		memset(&v[k], 0, sizeof(v[k]));
+		if ((error = session_of(a, e, &v[k])) != 0)
+			break;
+		k++;
+	}
+	out->session.n = k;
+	out->session.v = v;
+	ucl_object_unref(top);
+	return (error);
 }

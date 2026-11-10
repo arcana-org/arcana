@@ -3293,6 +3293,189 @@ monitor(struct html *h, const ucl_object_t *t)
 	h_raw(h, "</div>");
 }
 
+/*
+ * How each end measures each of its tunnels: STAMP's facts per target,
+ * arcana-stamp's session (sdread.c), one row an end: the method (and
+ * why not STAMP), the round trip, the delay each way (one way by the
+ * clocks, or about half the round trip), the loss each way, the DSCP
+ * sent, at the far end and back (remarked marked), the NAT the far end
+ * saw, authenticated.  Sorted and filtered as every table is (tbl.c).
+ */
+static void
+view_stamp(struct html *h)
+{
+	static const struct tcol	cols[] = {
+		{ "From", "from", false }, { "Tunnel", "tunnel", false },
+		{ "Method", "method", false }, { "Round trip", "rtt", true },
+		{ "Forward", "fwd", true }, { "Backward", "back", true },
+		{ "Lost fwd", "lost_fwd", true }, { "Lost back", "lost_back",
+		true }, { "DSCP", "dscp", false }, { "NAT", "nat", false },
+		{ "Authenticated", "auth", false },
+	};
+	const ucl_object_t	*t, *e, *tg, *st, **rows, *r;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*all, *o;
+	char			 b1[32], b2[32], ds[48];
+	int			 k, n;
+
+	all = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(jget(sd.plan, "tunnels"), &it, true)) !=
+	    NULL)
+		for (k = 0; k < 2; k++) {
+			e = ucl_array_find_index(jget(t, "ends"), (unsigned int)k);
+			if ((tg = target_of(jstr(e, "edge"), jstr(t, "id"))) ==
+			    NULL)
+				continue;
+			st = jget(tg, "stamp");
+			o = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(o, ucl_object_fromstring(host_name(
+			    jstr(e, "edge"))), "from", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(jstr(t,
+			    "id")), "tunnel", 0, true);
+			/* None: measured by ICMP alone (kind icmp, a jail's
+			 * edge, or an agent before arcana-stamp). */
+			ucl_object_insert_key(o, ucl_object_fromstring(st != NULL &&
+			    jstr(st, "method") != NULL ? jstr(st, "method") :
+			    "icmp"), "method", 0, true);
+			if (st == NULL) {
+				ucl_array_append(all, o);
+				continue;
+			}
+			if (jstr(st, "reason") != NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(jstr(st,
+				    "reason")), "reason", 0, true);
+			if (jstr(st, "kind") != NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(jstr(st,
+				    "kind")), "kind", 0, true);
+			if (jget(st, "rtt") != NULL) {
+				ucl_object_insert_key(o, ucl_object_fromdouble(jnum(st,
+				    "rtt", 0)), "rtt", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromdouble(jnum(st,
+				    "delay_forward", 0)), "fwd", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromdouble(jnum(st,
+				    "delay_backward", 0)), "back", 0, true);
+				ucl_object_insert_key(o, ucl_object_frombool(jstr(st,
+				    "one_way") != NULL && strcmp(jstr(st, "one_way"),
+				    "measured") == 0), "one_way", 0, true);
+			}
+			ucl_object_insert_key(o, ucl_object_fromint(jint(st,
+			    "counters.lost_forward", 0)), "lost_fwd", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromint(jint(st,
+			    "counters.lost_backward", 0)), "lost_back", 0, true);
+			if (jget(st, "dscp_forward") != NULL) {
+				snprintf(ds, sizeof(ds), "%lld → %lld / %lld",
+				    (long long)jint(st, "dscp_sent", 0), (long long)
+				    jint(st, "dscp_forward", 0), (long long)jint(st,
+				    "dscp_backward", jint(st, "dscp_sent", 0)));
+				ucl_object_insert_key(o, ucl_object_fromstring(ds),
+				    "dscp", 0, true);
+				ucl_object_insert_key(o, ucl_object_frombool(jint(st,
+				    "dscp_forward", 0) != jint(st, "dscp_sent", 0) ||
+				    jint(st, "dscp_backward", jint(st, "dscp_sent", 0))
+				    != jint(st, "dscp_sent", 0)), "remarked", 0, true);
+				ucl_object_insert_key(o, ucl_object_frombool(jbool(st,
+				    "dscp_refused")), "refused", 0, true);
+			}
+			if (jstr(st, "nat") != NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(jstr(st,
+				    "nat")), "nat", 0, true);
+			if (jstr(st, "seen_source") != NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(jstr(st,
+				    "seen_source")), "seen", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(jbool(st,
+			    "authenticated") ? "yes" : "no"), "auth", 0, true);
+			ucl_array_append(all, o);
+		}
+	h_raw(h, "<div class=\"sd-block sd-stamp\"><h3>How each end measures "
+	    "<small class=\"dim\">STAMP (RFC 8762) to an Arcana far end, its "
+	    "stampd(8) reflecting in the tunnel's FIB: the delay each way by "
+	    "both clocks when their error estimates allow it, else half the "
+	    "round trip; the loss each way by the reflector's counter; the DSCP "
+	    "the probe reached the far end with and the reply came back with "
+	    "(RFC 8972's Class of Service TLV); the addresses it saw (its "
+	    "Location TLV); ICMP echo where the tunnel's kind says so, or while "
+	    "the reflector does not answer</small></h3>"
+	    "<table class=\"net sd\">");
+	tbl_head(h, "sd-stamp", cols, (int)nitems(cols), 0);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-stamp", all, cols, (int)nitems(cols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		h_raw(h, "<tr><td><b>");
+		h_txt(h, jstr(r, "from"));
+		h_raw(h, "</b></td><td class=\"mono\">");
+		h_txt(h, jstr(r, "tunnel"));
+		h_fmt(h, "</td><td><span class=\"chip st-%s\">%s</span>",
+		    strcmp(jstr(r, "method"), "stamp") == 0 ? "up" : "half",
+		    strcmp(jstr(r, "method"), "stamp") == 0 ? "STAMP" : "ICMP");
+		if (jstr(r, "kind") != NULL && strcmp(jstr(r, "kind"), "stamp") ==
+		    0)
+			h_raw(h, " <small class=\"dim\">alone</small>");
+		if (jstr(r, "reason") != NULL) {
+			h_raw(h, " <small class=\"bad\">");
+			h_txt(h, jstr(r, "reason"));
+			h_raw(h, "</small>");
+		}
+		h_raw(h, "</td>");
+		if (jget(r, "rtt") == NULL)
+			h_raw(h, "<td class=\"dim\" colspan=\"3\">no STAMP reply"
+			    "</td>");
+		else if (jbool(r, "one_way"))
+			h_fmt(h, "<td class=\"num\">%s</td><td class=\"num\">%s"
+			    "</td><td class=\"num\">%s</td>", ms(jnum(r, "rtt", 0),
+			    b1, sizeof(b1)), ms(jnum(r, "fwd", 0), b2, sizeof(b2)),
+			    ms(jnum(r, "back", 0), (char[32]){ 0 }, 32));
+		else
+			h_fmt(h, "<td class=\"num\">%s</td><td class=\"num dim\" "
+			    "title=\"the clocks' error too large to tell one way: "
+			    "half the round trip\" colspan=\"2\">≈ half RTT, %s "
+			    "each</td>", ms(jnum(r, "rtt", 0), b1, sizeof(b1)),
+			    ms(jnum(r, "fwd", 0), b2, sizeof(b2)));
+		h_fmt(h, "<td class=\"num\">%lld</td><td class=\"num\">%lld</td>",
+		    (long long)jint(r, "lost_fwd", 0), (long long)jint(r,
+		    "lost_back", 0));
+		if (jstr(r, "dscp") == NULL)
+			h_raw(h, "<td class=\"dim\">—</td>");
+		else {
+			h_fmt(h, "<td class=\"mono%s\"%s>", jbool(r, "remarked") ?
+			    " bad" : "", jbool(r, "remarked") ? " title=\"remarked "
+			    "on the way: sent → at the far end / back\"" : "");
+			h_txt(h, jstr(r, "dscp"));
+			if (jbool(r, "remarked"))
+				h_raw(h, " <span class=\"chip st-down\">remarked"
+				    "</span>");
+			if (jbool(r, "refused"))
+				h_raw(h, " <small class=\"dim\">refused by the far "
+				    "end</small>");
+			h_raw(h, "</td>");
+		}
+		if (jstr(r, "nat") == NULL)
+			h_raw(h, "<td class=\"dim\">—</td>");
+		else {
+			h_fmt(h, "<td><span class=\"chip st-%s\">", strcmp(jstr(r,
+			    "nat"), "none") == 0 ? "up" : "half");
+			h_txt(h, jstr(r, "nat"));
+			h_raw(h, "</span>");
+			if (jstr(r, "seen") != NULL && strcmp(jstr(r, "nat"),
+			    "none") != 0) {
+				h_raw(h, " <small class=\"mono dim\">seen from ");
+				h_txt(h, jstr(r, "seen"));
+				h_raw(h, "</small>");
+			}
+			h_raw(h, "</td>");
+		}
+		h_raw(h, "<td>");
+		h_txt(h, jstr(r, "auth") != NULL ? jstr(r, "auth") : "—");
+		h_raw(h, "</td></tr>");
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"11\" class=\"dim\">Nothing measured "
+		    "yet, or nothing matches the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table></div>");
+	ucl_object_unref(all);
+}
+
 static void
 view_paths(struct html *h)
 {
@@ -3436,6 +3619,8 @@ view_paths(struct html *h)
 	    "tunnels")) == 0)
 		h_raw(h, "<p class=\"dim\">No tunnel: a service with end points "
 		    "on two edges or more has them.</p>");
+	else
+		view_stamp(h);
 	/* The uswe tunnels' keys: each end's, when they were set and the
 	 * half-life they turn at; a rotation on its way; one by hand. */
 	n = 0;

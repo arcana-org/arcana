@@ -1,19 +1,22 @@
 module: arcana-probe
   +--rw probes
      +--rw target* [id]
-     |  +--rw id          string
-     |  +--rw address     inet:ip-address-no-zone
-     |  +--rw count?      uint32
-     |  +--rw report?     uint16
-     |  +--rw fib?        uint16
-     |  +--rw interval?   uint32
-     |  +--rw size?       uint16
-     |  +--rw dscp?       uint8
-     |  +--rw down?       uint8
-     |  +--rw up?         uint8
-     |  +--rw timeout?    uint32
-     |  +--rw eval?       uint32
-     |  +--rw history?    uint32
+     |  +--rw id                 string
+     |  +--rw address            inet:ip-address-no-zone
+     |  +--rw kind?              enumeration
+     |  +--rw stamp-interface?   string
+     |  +--rw stamp-peer?        string
+     |  +--rw count?             uint32
+     |  +--rw report?            uint16
+     |  +--rw fib?               uint16
+     |  +--rw interval?          uint32
+     |  +--rw size?              uint16
+     |  +--rw dscp?              uint8
+     |  +--rw down?              uint8
+     |  +--rw up?                uint8
+     |  +--rw timeout?           uint32
+     |  +--rw eval?              uint32
+     |  +--rw history?           uint32
      |  +--rw tca
      |     +--rw delay?     ms
      |     +--rw ipdv?      ms
@@ -44,19 +47,22 @@ module: arcana-probe
      +--rw jail* [name]
      |  +--rw name    string
      |  +--rw target* [id]
-     |  |  +--rw id          string
-     |  |  +--rw address     inet:ip-address-no-zone
-     |  |  +--rw count?      uint32
-     |  |  +--rw report?     uint16
-     |  |  +--rw fib?        uint16
-     |  |  +--rw interval?   uint32
-     |  |  +--rw size?       uint16
-     |  |  +--rw dscp?       uint8
-     |  |  +--rw down?       uint8
-     |  |  +--rw up?         uint8
-     |  |  +--rw timeout?    uint32
-     |  |  +--rw eval?       uint32
-     |  |  +--rw history?    uint32
+     |  |  +--rw id                 string
+     |  |  +--rw address            inet:ip-address-no-zone
+     |  |  +--rw kind?              enumeration
+     |  |  +--rw stamp-interface?   string
+     |  |  +--rw stamp-peer?        string
+     |  |  +--rw count?             uint32
+     |  |  +--rw report?            uint16
+     |  |  +--rw fib?               uint16
+     |  |  +--rw interval?          uint32
+     |  |  +--rw size?              uint16
+     |  |  +--rw dscp?              uint8
+     |  |  +--rw down?              uint8
+     |  |  +--rw up?                uint8
+     |  |  +--rw timeout?           uint32
+     |  |  +--rw eval?              uint32
+     |  |  +--rw history?           uint32
      |  |  +--rw tca
      |  |     +--rw delay?     ms
      |  |     +--rw ipdv?      ms
@@ -112,14 +118,19 @@ module: arcana-probe
      |     |  +--ro age?        ms
      |     +--ro kept?       uint32
      |     +--ro sample* [time]
-     |     |  +--ro time        yang:date-and-time
-     |     |  +--ro delay?      ms
-     |     |  +--ro ipdv?       ms
-     |     |  +--ro loss?       decimal64
-     |     |  +--ro min?        ms
-     |     |  +--ro max?        ms
-     |     |  +--ro sent?       uint32
-     |     |  +--ro received?   uint32
+     |     |  +--ro time              yang:date-and-time
+     |     |  +--ro delay?            ms
+     |     |  +--ro ipdv?             ms
+     |     |  +--ro loss?             decimal64
+     |     |  +--ro min?              ms
+     |     |  +--ro max?              ms
+     |     |  +--ro sent?             uint32
+     |     |  +--ro received?         uint32
+     |     |  +--ro lost-forward?     uint32
+     |     |  +--ro lost-backward?    uint32
+     |     |  +--ro delay-forward?    ms
+     |     |  +--ro delay-backward?   ms
+     |     |  +--ro one-way?          enumeration
      |     +--ro jail?       string
      +---x read
         +---w input
@@ -153,12 +164,17 @@ module: arcana-probe
               |  +--ro age?        ms
               +--ro kept?       uint32
               +--ro sample* [time]
-              |  +--ro time        yang:date-and-time
-              |  +--ro delay?      ms
-              |  +--ro ipdv?       ms
-              |  +--ro loss?       decimal64
-              |  +--ro min?        ms
-              |  +--ro max?        ms
-              |  +--ro sent?       uint32
-              |  +--ro received?   uint32
+              |  +--ro time              yang:date-and-time
+              |  +--ro delay?            ms
+              |  +--ro ipdv?             ms
+              |  +--ro loss?             decimal64
+              |  +--ro min?              ms
+              |  +--ro max?              ms
+              |  +--ro sent?             uint32
+              |  +--ro received?         uint32
+              |  +--ro lost-forward?     uint32
+              |  +--ro lost-backward?    uint32
+              |  +--ro delay-forward?    ms
+              |  +--ro delay-backward?   ms
+              |  +--ro one-way?          enumeration
               +--ro jail?       string

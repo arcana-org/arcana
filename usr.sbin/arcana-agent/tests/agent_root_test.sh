@@ -779,7 +779,7 @@ sdwan_probe_body()
 	sleep 2
 	atf_check -o save:up.json "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'"id":"lo","address":"127.0.0.1","family":"inet","fib":0,"state":"up"' \
-	    -o match:'"samples":\[\[[0-9]+,[0-9.]+,[0-9.]+,0(\.0+)?,[0-9.]+,[0-9.]+,[1-9][0-9]*,[1-9][0-9]*\]' cat up.json
+	    -o match:'"samples":\[\[[0-9]+,[0-9.]+,[0-9.]+,0(\.0+)?,[0-9.]+,[0-9.]+,[1-9][0-9]*,[1-9][0-9]*,' cat up.json
 	atf_check -o match:'"kind":"sdwan-tunnel","data":\{"id":"lo","address":"127.0.0.1","state":"up"' \
 	    "$JGC" -c "$SOCK" events "$last"
 	# A table with no way to it: every probe lost, down in two.
@@ -2278,7 +2278,7 @@ stamp_loss_head()
 	    "another (dummynet plr, else ipfw prob deny when dummynet is" \
 	    "not loaded); the agent's loss forward on the one and backward" \
 	    "on the other, none the other way; a refused STAMP port pinged" \
-	    "instead, a breakout's beacon pinged anyway"
+	    "instead, a breakout's beacon (kind icmp) pinged anyway"
 	atf_set "require.user" "root"
 	atf_set "timeout" "120"
 }
@@ -2332,7 +2332,7 @@ stamp_loss_body()
 	# down 10: twenty per cent lost never makes ten in a row.
 	t='"interval":20,"eval":1000,"timeout":300,"down":10'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
-	    "[{\"id\":\"fwd\",\"address\":\"$STL_NET.2\",$t},{\"id\":\"back\",\"address\":\"$STL_NET.3\",$t},{\"id\":\"refused\",\"address\":\"$STL_NET.4\",$t},{\"id\":\"clean\",\"address\":\"$STL_NET.5\",$t},{\"id\":\"bo:gw\",\"address\":\"$STL_NET.2\",$t}]"
+	    "[{\"id\":\"fwd\",\"address\":\"$STL_NET.2\",$t},{\"id\":\"back\",\"address\":\"$STL_NET.3\",$t},{\"id\":\"refused\",\"address\":\"$STL_NET.4\",$t},{\"id\":\"clean\",\"address\":\"$STL_NET.5\",$t},{\"id\":\"bo:gw\",\"address\":\"$STL_NET.2\",\"kind\":\"icmp\",$t}]"
 	sleep 10
 	atf_check -o save:stl.json "$JGC" -c "$SOCK" sdwan
 	# Each target's last window: lost forward F, backward B all along.
@@ -2356,7 +2356,8 @@ stamp_loss_body()
 	    -o match:'"id":"back","address":"198\.18\.62\.3","family":"inet","fib":0,"state":"up"' \
 	    -o match:'"id":"refused","address":"198\.18\.62\.4","family":"inet","fib":0,"state":"up"' \
 	    cat stl.json
-	# A refused port: pinged, up all the same; a beacon: never STAMP.
+	# A refused port: pinged, up all the same; a beacon (kind icmp, as
+	# the console says it): never STAMP.
 	atf_check -o match:'probe: refused \(198\.18\.62\.4\): its STAMP port refused: pinged until STAMP answers' \
 	    cat daemon.out
 	atf_check -o not-match:'probe: (refused|bo:gw): stamp' cat daemon.out
@@ -3043,6 +3044,113 @@ stamp_auth_cleanup()
 		ifconfig "$ep" destroy 2>/dev/null
 	fi
 	jail -r $STA_J >/dev/null 2>&1
+	true
+}
+
+# Both kinds in one service (PLAN-SDN-YANG 5.1.8): stampd in a vnet jail
+# behind an epair, three addresses on its end, each a target of the same
+# service's table: one of kind stamp, one of kind icmp, one auto whose
+# STAMP port is refused.
+STK_J=arc-tsk
+STK_NET=198.18.67
+
+atf_test_case stamp_kinds cleanup
+stamp_kinds_head()
+{
+	atf_set "descr" "Both kinds in one service: stampd in a vnet jail" \
+	    "across an epair; a target of kind stamp measured by STAMP" \
+	    "(arcana-stamp's session: stateful, the DSCP each way, no NAT), one" \
+	    "of kind icmp pinged and never STAMP, no session, an auto one" \
+	    "whose STAMP port is refused fallen back to ICMP, why said; all up;" \
+	    "STAMP to the first denied, it goes down though it answers echoes" \
+	    "(no fallback), the others up"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_kinds_body()
+{
+	local ep i P
+
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	[ "$(sysctl -n net.inet.ip.fw.default_to_accept)" = 1 ] ||
+	    atf_skip "net.inet.ip.fw.default_to_accept is not 1"
+	jls -j $STK_J >/dev/null 2>&1 && atf_skip "a jail $STK_J exists"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STK_J vnet persist path=/ host.hostname=$STK_J
+	ep=$(epair_create)
+	echo "$ep" > stk.epair
+	atf_check ifconfig "$ep" inet $STK_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STK_J
+	atf_check jexec $STK_J ifconfig "${ep%a}b" inet $STK_NET.2/29 up
+	for i in 3 4; do
+		atf_check jexec $STK_J ifconfig "${ep%a}b" inet $STK_NET.$i/32 \
+		    alias
+	done
+	jexec $STK_J "$SD" -d -u nobody -r 0 -R 0 -p $P > stk.d.out 2>&1 &
+	echo $! > stk.spid
+	for i in $(seq 1 100); do
+		grep -q started stk.d.out && break
+		sleep 0.05
+	done
+	grep -q started stk.d.out || atf_fail "stampd: $(cat stk.d.out)"
+	# .4: its STAMP port refused.
+	atf_check -o ignore jexec $STK_J ipfw add 120 unreach port udp from \
+	    any to $STK_NET.4 dst-port $P in
+	DAEMON_ARGS="-d --stamp-port $P" start_daemon
+	t='"interval":20,"eval":1000,"timeout":300,"down":5,"dscp":46'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"svc/a-b\",\"address\":\"$STK_NET.2\",\"kind\":\"stamp\",$t},{\"id\":\"svc/a-c\",\"address\":\"$STK_NET.3\",\"kind\":\"icmp\",$t},{\"id\":\"svc/a-d\",\"address\":\"$STK_NET.4\",$t}]"
+	sleep 4
+	# Each as its kind says: STAMP, an echo, STAMP fallen back.
+	atf_check -o save:stk.txt "$JGC" -c "$SOCK" sdwan stamp
+	cat stk.txt
+	atf_check -o match:'^svc/a-b: stamp \(stateful, stamp alone\), rtt [0-9.]+ ms, .*lost forward 0, backward 0 of [1-9][0-9]*, dscp 46>46>46, NAT none, auth no$' \
+	    -o match:'^svc/a-d: icmp \(unknown\) because its STAMP port refused' \
+	    -o not-match:'^svc/a-c' cat stk.txt
+	atf_check -o save:stk.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"id":"svc/a-b","address":"198\.18\.67\.2","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"svc/a-c","address":"198\.18\.67\.3","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"svc/a-d","address":"198\.18\.67\.4","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"stamp":\{"target":"svc/a-b","kind":"stamp","method":"stamp"' \
+	    -o match:'"stamp":\{"target":"svc/a-d","kind":"auto","method":"icmp","reason":"its STAMP port refused"' \
+	    cat stk.json
+	atf_check -o match:'"target":"svc/a-d"' \
+	    -o match:'"fallbacks":"1","late":"[0-9]+","lost":"[0-9]+","lost-backward":"[0-9]+","lost-forward":"[0-9]+","lost-unknown":"[0-9]+","received":"0","refused":"[1-9][0-9]*"' \
+	    -o not-match:'"target":"svc/a-c"' "$JGC" -c "$SOCK" get stamp
+	atf_check -o not-match:'probe: svc/a-c: stamp' cat daemon.out
+	grep -q 'probe: svc/a-b: stamp (stateful reflector): ' daemon.out ||
+	    atf_fail "svc/a-b not measured by STAMP: $(cat daemon.out)"
+	# STAMP to the first denied: down, though it answers echoes; no
+	# fallback, why said.
+	atf_check -o ignore jexec $STK_J ipfw add 100 deny udp from any to \
+	    $STK_NET.2 dst-port $P in
+	atf_check -o ignore ping -c 1 -t 2 $STK_NET.2
+	for i in $(seq 1 100); do
+		"$JGC" -c "$SOCK" sdwan | grep -q '"id":"svc/a-b","address":"198\.18\.67\.2","family":"inet","fib":0,"state":"down"' && break
+		sleep 0.1
+	done
+	atf_check -o match:'"id":"svc/a-b","address":"198\.18\.67\.2","family":"inet","fib":0,"state":"down"' \
+	    -o match:'"id":"svc/a-c","address":"198\.18\.67\.3","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"svc/a-d","address":"198\.18\.67\.4","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"stamp":\{"target":"svc/a-b","kind":"stamp","method":"stamp","reason":"no STAMP reply in 5 probes"' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'probe: svc/a-b \(198\.18\.67\.2\): no STAMP reply in 5 probes: STAMP alone, no fallback' \
+	    -o not-match:'probe: svc/a-b .*pinged until STAMP answers' cat daemon.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_kinds_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f stk.spid ] && kill "$(cat stk.spid)" 2>/dev/null
+	jexec $STK_J ipfw -q flush 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f stk.epair ]; then
+		ep=$(cat stk.epair)
+		ifconfig "${ep%a}b" -vnet $STK_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STK_J >/dev/null 2>&1
 	true
 }
 
@@ -4624,6 +4732,7 @@ atf_init_test_cases()
 	atf_add_test_case stamp_cos
 	atf_add_test_case stamp_location
 	atf_add_test_case stamp_auth
+	atf_add_test_case stamp_kinds
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake

@@ -209,7 +209,8 @@ usage(void)
 	    "    route get address\n"
 	    "    traceroute address\n"
 	    "    reboot\n"
-	    "    sdwan [probes | rules | steer | bird | dhcp | dns | proxy | ids json]\n"
+	    "    sdwan [stamp | probes | rules | steer | bird | dhcp | dns | proxy |\n"
+	    "        ids json]\n"
 	    "    ng mkpeer | connect | rmhook | shutdown | name argument "
 	    "...\n"
 	    "    wg interface init [port]\n"
@@ -3907,11 +3908,117 @@ json_arg(const char *arg)
 	return (text);
 }
 
+/* A member of o's as a string, "" when absent. */
+static const char *
+ostr(const ucl_object_t *o, const char *key)
+{
+	const ucl_object_t	*v;
+
+	v = ucl_object_lookup(o, key);
+	return (v != NULL && ucl_object_type(v) == UCL_STRING ?
+	    ucl_object_tostring(v) : "");
+}
+
+/*
+ * sdwan stamp: arcana-stamp's state, a line a target: how it is
+ * measured, the round trip, the delay each way (one way, or about half
+ * the round trip), the loss each way, the DSCP sent, at the reflector
+ * and back (remarked said), the NAT, authenticated; the sender's clock
+ * and the reflector before them.
+ */
+static int
+sdwan_stamp_out(cbl_conn *conn)
+{
+	const ucl_object_t	*s, *c, *v;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*data;
+	char			 err[256];
+	int			 error;
+	int64_t			 sent, fwd, back;
+
+	error = ysdwan_stamp(conn, &data, err, sizeof(err));
+	ytold_end(true);
+	if (error != 0)
+		xo_errx(1, "sdwan stamp: %s", err[0] != '\0' ? err :
+		    strerror(error));
+	xo_open_container("stamp");
+	c = ucl_object_lookup(data, "sender");
+	xo_emit("{L:sender}: {Lw:port}{:port/%jd}, {Lw:clock}{:clock-source/%s}"
+	    ", {Lw:error}{:clock-error/%.3f} {U:ms}{d:/%s}\n", (intmax_t)
+	    ucl_object_toint(ucl_object_lookup(c, "port")), ostr(c,
+	    "clock_source"), ucl_object_todouble(ucl_object_lookup(c,
+	    "clock_error")), ucl_object_toboolean(ucl_object_lookup(c,
+	    "clock_synchronised")) ? ", synchronised" : ", not synchronised");
+	c = ucl_object_lookup(data, "reflector");
+	xo_emit("{L:reflector}: {L:stampd} {:installed/%s}{d:/%s}{:status/%s}\n",
+	    ucl_object_toboolean(ucl_object_lookup(c, "installed")) ?
+	    "installed" : "not installed", ostr(c, "status")[0] != '\0' ?
+	    "; " : "", ostr(c, "status"));
+	xo_open_list("session");
+	while ((s = ucl_object_iterate(ucl_object_lookup(data, "sessions"),
+	    &it, true)) != NULL) {
+		xo_open_instance("session");
+		xo_emit("{k:target/%s}{d:/%s}{e:jail/%s}{d:/%s}: {:method/%s} "
+		    "{e:kind/%s}", ostr(s, "target"), ostr(s, "jail")[0] !=
+		    '\0' ? "@" : "", ostr(s, "jail"), ostr(s, "jail"),
+		    ostr(s, "method"), ostr(s, "kind"));
+		xo_emit("({:mode/%s}{d:/%s}{d:/%s})", ostr(s, "mode"),
+		    strcmp(ostr(s, "kind"), "stamp") == 0 ? ", stamp alone" :
+		    "", ucl_object_toboolean(ucl_object_lookup(s,
+		    "authenticated")) ? ", authenticated" : "");
+		if (ostr(s, "reason")[0] != '\0')
+			xo_emit(" {Lw:because}{:reason/%s}", ostr(s, "reason"));
+		if ((v = ucl_object_lookup(s, "rtt")) != NULL) {
+			xo_emit(", {Lw:rtt}{:rtt/%.3f} {U:ms}",
+			    ucl_object_todouble(v));
+			if (strcmp(ostr(s, "one_way"), "measured") == 0)
+				xo_emit(", {Lw:one way}{:delay-forward/%.3f}/"
+				    "{:delay-backward/%.3f} {U:ms}",
+				    ucl_object_todouble(ucl_object_lookup(s,
+				    "delay_forward")), ucl_object_todouble(
+				    ucl_object_lookup(s, "delay_backward")));
+			else
+				xo_emit(", {L:estimated: half the rtt each way}"
+				    "{e:one-way/estimated}");
+		}
+		c = ucl_object_lookup(s, "counters");
+		sent = ucl_object_toint(ucl_object_lookup(c, "sent"));
+		fwd = ucl_object_toint(ucl_object_lookup(c, "lost_forward"));
+		back = ucl_object_toint(ucl_object_lookup(c, "lost_backward"));
+		xo_emit(", {Lw:lost forward}{:lost-forward/%jd}, {Lw:backward}"
+		    "{:lost-backward/%jd}{Lw:/ of}{:sent/%jd}", (intmax_t)fwd,
+		    (intmax_t)back, (intmax_t)sent);
+		if ((v = ucl_object_lookup(s, "dscp_forward")) != NULL)
+			xo_emit(", {Lw:dscp}{:dscp-sent/%jd}>{:dscp-forward/%jd}"
+			    ">{:dscp-backward/%jd}{d:/%s}", (intmax_t)
+			    ucl_object_toint(ucl_object_lookup(s, "dscp_sent")),
+			    (intmax_t)ucl_object_toint(v), (intmax_t)
+			    ucl_object_toint(ucl_object_lookup(s,
+			    "dscp_backward")), ucl_object_toint(v) !=
+			    ucl_object_toint(ucl_object_lookup(s, "dscp_sent")) ||
+			    ucl_object_toint(ucl_object_lookup(s,
+			    "dscp_backward")) != ucl_object_toint(
+			    ucl_object_lookup(s, "dscp_sent")) ? " (remarked)" :
+			    "");
+		if (ostr(s, "nat")[0] != '\0')
+			xo_emit(", {Lw:NAT}{:nat/%s}", ostr(s, "nat"));
+		xo_emit("{d:/%s}\n", ucl_object_toboolean(ucl_object_lookup(s,
+		    "authenticated")) ? ", auth yes" : ", auth no");
+		xo_close_instance("session");
+	}
+	xo_close_list("session");
+	xo_close_container("stamp");
+	ucl_object_unref(data);
+	return (0);
+}
+
 
 /*
  * sdwan: what the edge is doing and what the probes have seen,
  * arcana-sdwan's and arcana-probe's state as the sdwan operation had
- * them; sdwan probes json: an edge's targets and links, arcana-probe's;
+ * them, each target's STAMP session (arcana-stamp's) in it; sdwan
+ * stamp: those sessions, a line each; sdwan probes json: an edge's
+ * targets and links, arcana-probe's;
  * sdwan rules|steer|bird|dhcp|dns|proxy|ids json: that part of an
  * edge, arcana-sdwan's, as its operation took it.  Each committed.
  */
@@ -3935,6 +4042,11 @@ cmd_sdwan(cbl_conn *conn, int argc, char **argv)
 		error = ysdwan_read(conn, false, 0, &data, err,
 		    sizeof(err));
 		return (ydata_out("sdwan", error, data, err));
+	}
+	/* arcana-stamp's sessions, a line each. */
+	if (argc == 2 && strcmp(argv[1], "stamp") == 0) {
+		ytold_begin(conn);
+		return (sdwan_stamp_out(conn));
 	}
 	if (argc != 3)
 		usage();

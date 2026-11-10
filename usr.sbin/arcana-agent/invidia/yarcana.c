@@ -46,11 +46,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <time.h>
 
 #include <cblink.h>
 
 #include "agent.h"
 #include "collect.h"
+#include "stamp.h"
 #include "yjson.h"
 #include "zprog.h"
 
@@ -2898,6 +2900,78 @@ arcana_probe_probes_read_action(cbl_req *req, const struct cbl_bytes *target,
 	out->time = st.time;
 	out->target.n = st.target.n;
 	out->target.v = st.target.v;
+	return (0);
+}
+
+/*
+ * arcana-stamp: the Session-Sender's settings (the command line's, the
+ * clock as packets say it), stampd as gula/stampd.c sets it, and a
+ * session of each target the probes' read has measured by STAMP, or
+ * that may be (probe.c's target_json(), gula/yprobe.c).
+ */
+int
+arcana_stamp_stamp_get(cbl_req *req, struct arcana_stamp *data, cbl_yarena *a)
+{
+	struct arcana_stamp_stamp		*o;
+	struct arcana_stamp_stamp_sender	*sn;
+	struct arcana_stamp_stamp_reflector	*rf;
+	struct stamp_clock			 clk;
+	struct json_rsp				 r;
+	struct work				*w;
+	const char				*kf;
+	char					 fibs[256], said[512], *p, *f;
+	uint16_t				*fv;
+	size_t					 nf;
+	int					 nk, error;
+	bool					 inst;
+
+	(void)req;
+	if ((w = ywork(a)) == NULL || (o = cbl_yarena_alloc(a,
+	    sizeof(*o))) == NULL || (sn = cbl_yarena_alloc(a,
+	    sizeof(*sn))) == NULL || (rf = cbl_yarena_alloc(a,
+	    sizeof(*rf))) == NULL || (fv = cbl_yarena_alloc(a, 64 *
+	    sizeof(*fv))) == NULL)
+		return (ENOMEM);
+	memset(o, 0, sizeof(*o));
+	memset(sn, 0, sizeof(*sn));
+	memset(rf, 0, sizeof(*rf));
+	sn->has_port = true;
+	sn->port = (uint16_t)opts.stamp_port;
+	stamp_clock_get(&clk);
+	sn->has_clock_source = true;
+	sn->clock_source = clk.sync >= STAMP_SYNC_NTP && clk.sync <=
+	    STAMP_SYNC_LOCAL ? (enum arcana_stamp_stamp_sender_clock_source)
+	    (clk.sync - STAMP_SYNC_NTP) :
+	    ARCANA_STAMP_STAMP_SENDER_CLOCK_SOURCE_UNKNOWN;
+	sn->has_clock_error = true;
+	sn->clock_error = (int64_t)(stamp_ee_seconds(clk.ee) * 1e6 + 0.5);
+	sn->has_clock_synchronised = true;
+	sn->clock_synchronised = (clk.ee & STAMP_EE_S) != 0;
+	sn->clock_set = opts.stamp_clock;
+	o->sender = sn;
+	stampd_state(&inst, fibs, sizeof(fibs), &kf, &nk, said, sizeof(said));
+	rf->has_installed = true;
+	rf->installed = inst;
+	nf = 0;
+	for (p = fibs; nf < 64 && (f = strsep(&p, " ")) != NULL; )
+		if (*f != '\0')
+			fv[nf++] = (uint16_t)strtoul(f, NULL, 10);
+	rf->fib.n = nf;
+	rf->fib.v = fv;
+	if ((rf->key_file = wstrdup(w, kf)) == NULL)
+		return (ENOMEM);
+	rf->has_keys = true;
+	rf->keys = (uint32_t)nk;
+	if (said[0] != '\0' && (rf->status = wstrdup(w, said)) == NULL)
+		return (ENOMEM);
+	o->reflector = rf;
+	data->stamp = o;
+	memset(&r, 0, sizeof(r));
+	(void)do_probes_read(w, (uint64_t)time(NULL), &r);
+	if (!r.ok)
+		return (failed("probes", r.error));
+	if ((error = ystamp_sessions_from_json(r.json, a, o)) != 0)
+		return (error);
 	return (0);
 }
 

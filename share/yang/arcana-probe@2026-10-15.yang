@@ -23,8 +23,9 @@ module arcana-probe {
     "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
   description
     "The tunnels a FreeBSD host measures as an SD-WAN edge does
-     (Mplify 119 §11.4): each target an ICMP echo on a raw socket
-     (root), at its interval, with its size and DSCP, down after so
+     (Mplify 119 §11.4): each target by STAMP (RFC 8762, its sessions
+     arcana-stamp's) or an ICMP echo on a raw socket (root), as its
+     kind says, at its interval, with its size and DSCP, down after so
      many misses in a row and up again after so many answers; a
      sample every evaluation interval of the one-way delay (half the
      mean round trip), the delay variation, the loss ratio, the least
@@ -97,6 +98,45 @@ module arcana-probe {
       type uint32;
       description
         "Answered.";
+    }
+    leaf lost-forward {
+      type uint32;
+      description
+        "By STAMP, of the probes lost, those that never reached a
+         stateful reflector (its counter tells them); none when not
+         told.";
+    }
+    leaf lost-backward {
+      type uint32;
+      description
+        "Those it reflected whose reply did not come back.";
+    }
+    leaf delay-forward {
+      type ms;
+      description
+        "By STAMP, the mean delay out to the reflector: one way, or
+         half the round trip (one-way says which).";
+    }
+    leaf delay-backward {
+      type ms;
+      description
+        "The mean delay back from it.";
+    }
+    leaf one-way {
+      type enumeration {
+        enum measured {
+          description
+            "Every reply of the interval measured each way by the
+             clocks (arcana-stamp's delay one-way).";
+        }
+        enum estimated {
+          description
+            "Half the round trip each way, an estimate.";
+        }
+      }
+      description
+        "How delay-forward and delay-backward were had; none when the
+         interval was not measured by STAMP.";
     }
   }
 
@@ -236,6 +276,34 @@ module arcana-probe {
         mandatory true;
         description
           "Its far end, which answers the echo.";
+      }
+      leaf kind {
+        type enumeration {
+          enum auto {
+            description
+              "The agent's choice: STAMP to an SD-WAN target of the
+               host's edge (Arcana's far end, whose stampd answers),
+               ICMP its fallback while the reflector does not answer
+               (port refused, as many probes unanswered as down, no
+               key yet), STAMP tried again every 10 s; ICMP at a
+               jail's edge, which has no STAMP yet.";
+          }
+          enum stamp {
+            description
+              "STAMP alone (RFC 8762): no fallback, the target down
+               while the reflector does not answer, why in
+               arcana-stamp's session; refused at a jail's edge.";
+          }
+          enum icmp {
+            description
+              "ICMP echo alone: a host that is not Arcana's, a
+               breakout's beacon.";
+          }
+        }
+        default "auto";
+        description
+          "How it is measured; arcana-stamp's session has what STAMP
+           sees of it.";
       }
       leaf stamp-interface {
         type string {

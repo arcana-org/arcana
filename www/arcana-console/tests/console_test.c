@@ -15025,6 +15025,9 @@ ATF_TC_BODY(sdwan_breakout, tc)
 	    "\"192.0.2.254\",\"fib\":2") != NULL && strstr(r.body, "\"id\":"
 	    "\"bo:a-wg\",\"address\":\"198.51.100.1\",\"fib\":2") != NULL, "%s",
 	    r.body);
+	/* A beacon is no Arcana host: pinged alone (arcana-probe's kind). */
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"icmp\"}") != NULL, "%s",
+	    r.body);
 	ATF_CHECK_MSG(strstr(r.body, "\"routes\":[{\"fib\":2,\"destination\":"
 	    "\"0.0.0.0/0\",\"candidates\":[{\"id\":\"bo:a-inet\",\"via\":"
 	    "\"192.0.2.254\"},{\"id\":\"bo:a-wg\",\"via\":\"203.0.113.254\"}]}]")
@@ -16279,6 +16282,17 @@ ATF_TC_BODY(sdwan_apply, tc)
 	    r.body);
 	ATF_CHECK_MSG(jstr(&r, "arcana-probe:state.target.0.state") != NULL,
 	    "%s", r.body);
+	resp_free(&r);
+	/* What STAMP sees of them (arcana-stamp, PLAN-SDN-YANG 5.1.8): a
+	 * session each tunnel's far end, kind auto, the sender's port. */
+	snprintf(body, sizeof(body), FLEET "%s/arcana-stamp:stamp", sa);
+	rc_get(body, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"target\":\"acme/a-inet-b-inet\"") !=
+	    NULL && strstr(r.body, "\"kind\":\"auto\"") != NULL && jstr(&r,
+	    "arcana-stamp:stamp.sender.port") != NULL && jstr(&r,
+	    "arcana-stamp:stamp.session.0.reflector-udp-port") != NULL, "%s",
+	    r.body);
 	resp_free(&r);
 	snprintf(body, sizeof(body), FLEET "%s/arcana-sdwan:sdwan/state", sa);
 	rc_get(body, &r);

@@ -58,6 +58,7 @@ ARC_YMODS=	ietf-interfaces@2018-02-20 arcana-interfaces@2026-10-14 \
 		arcana-suricata@2026-10-29 arcana-smtpd@2026-10-29 \
 		arcana-speeder@2026-10-29 arcana-stream@2026-10-29 \
 		arcana-network@2026-10-29 arcana-steer@2026-11-04 \
+		arcana-stamp@2026-11-10 \
 		ietf-vpn-common@2022-02-11 ietf-network@2018-02-26 \
 		ietf-network-topology@2018-02-26 ietf-sap-ntw@2023-06-20
 # Modules only imported whose identities are used: their .sid files

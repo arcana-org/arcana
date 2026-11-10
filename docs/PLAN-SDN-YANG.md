@@ -221,7 +221,7 @@ for open sets.
 | `ietf-alarms` (RFC 8632) | shelving as the control's configuration; `purge-alarms` and `compress-alarms` actions | |
 | `ietf-network`, `ietf-network-topology`, `ietf-sap-ntw` (RFC 8345, RFC 9408) | state alone: the host a node of network `arcana-sap`, its interfaces (the vnet jails' with them) termination points, a SAP each that can attach a service (Ethernet, epair, lagg, vlan, bridge; not a lagg's port or a bridge's member, nor a tunnel), `sap-status` from the interface's oper-status, on-change with the interfaces | no configuration (an edit refused); `service-status` the console's; ietf-vpn-common implemented for its identities, features dot1q, qinq, lag-interface |
 | `ietf-yang-library`, `ietf-yang-schema-mount`, `ietf-netconf-acm`, `ietf-subscribed-notifications`, `ietf-yang-push` | per-mount libraries; NACM groups from the certificate's subject or the socket's uid, rule-lists, enforcement at rpc, data-node and notification; on-change by netlink(4) and EVFILT_JAIL events; subtree filters; replay from the event number for job traces and events | `on-change-unsupported` for counters; NACM replaces the per-op `auth` flag (`default-deny-all` on privileged rpcs) |
-| Arcana modules still to write | `arcana-steer` (the CAL, 3.5), `arcana-stamp` (5.1.8), `arcana-dummynet` (the NRP, 7.1), `arcana-cats` (7.4), `arcana-acp` (7.5), `arcana-intent` (7.8) | the served Arcana modules' configuration written through `EDIT`; their arcana.yaml operations retired, the JSON blobs typed (Y-3) |
+| Arcana modules still to write | `arcana-steer` (the CAL, 3.5), `arcana-dummynet` (the NRP, 7.1), `arcana-cats` (7.4), `arcana-acp` (7.5), `arcana-intent` (7.8) | the served Arcana modules' configuration written through `EDIT`; their arcana.yaml operations retired, the JSON blobs typed (Y-3) |
 
 ## The console as controller
 
@@ -3031,6 +3031,84 @@ whose first part is served.
 - 5.1.8 A: `arcana-stamp` module (sessions, config, counters) and
   `kind` in `arcana-probe` (stamp, icmp); check: both kinds in one
   service.
+  Done (agent 0.270.0, console 0.419.0).  `arcana-stamp` is Arcana's
+  own, at 92 600: draft-ietf-ippm-stamp-yang (`ietf-stamp`, in
+  YangModels' extracted drafts, expired in 2021, never an RFC) was
+  weighed and not used, its sessions an operator's configuration keyed
+  by an index and ports Arcana does not choose, with a key chain where
+  Arcana derives each key and SSID from the tunnel's pair, its results
+  percentiles of a measurement interval (5.2); its names are kept where
+  they fit (the reflector's mode, address and UDP port, the SSID, the
+  DSCP), the figures RFC 9375's (milliseconds, counts).  State alone:
+  the targets are arcana-probe's configuration and the sender's
+  settings the agent's command line.  `sender`: the port
+  (`--stamp-port`), the clock as its packets say it (source, Error
+  Estimate, S, `--stamp-clock` as given); `reflector`: stampd as
+  gula/stampd.c sets it (installed, the FIBs written last, the key
+  file, the plain tunnels' keys in it, the last thing said); a
+  `session` each target STAMP measures or may (keyless, its target and
+  jail as arcana-probe's state has them): kind, the method now and why
+  not STAMP (`reason`: no reply in so many probes, its port refused, no
+  key), the reflector's address, port and FIB, the SSID, the
+  reflector's mode, authenticated and why no key yet, the last reply's
+  delay (round trip, forward, backward, one-way measured|estimated, both
+  clocks' error), the reflector's Timestamp Information, the DSCP sent,
+  forward, backward and refused, the location (the addresses and ports
+  the reflector saw, the NAT none|source|destination|both), and the
+  counters all along, across senders made again and falls back (sent,
+  received, lost, lost forward, backward and not told by the sequence,
+  forward and backward by the Direct Measurement counters, late,
+  failing authentication, refused, falls back).  stampd(8) keeps its
+  own drops (over the rate limits, failing authentication, not
+  authenticated) to its log alone: none readable, so none in the
+  module; a stats file stampd writes for the agent is left for later.
+  arcana-probe's target gained `kind` (`auto` the default, `stamp`,
+  `icmp`; its SIDs numbered again in path order) and its samples, by
+  STAMP, the loss and the delay each way and how (`lost-forward`,
+  `lost-backward`, `delay-forward`, `delay-backward`, `one-way`), the
+  agent's extra columns.  The kind replaces 5.1.3's implicit rule: `icmp`
+  is an echo alone (the console's breakout beacons now say so, the
+  agent no longer reading `bo:` ids); `auto` is STAMP to an SD-WAN
+  target of the host's edge with 5.1.3's fallback to ICMP, ICMP at a
+  jail's edge and for monitors (which have no kind); `stamp` is STAMP
+  alone, no fallback: a silent, refusing or unkeyed reflector makes the
+  target's probes misses and it goes down, the reason in its session
+  (said once in the log), and it needs no raw socket, so no root
+  either; refused at a jail's edge (no STAMP there yet).  A kind changed
+  makes the target anew.  The console's tunnel targets stay `auto`
+  (both ends are Arcana's; the fallback keeps a tunnel up while its
+  far stampd restarts).  The agent serves arcana-stamp from the
+  probes' read it already makes (probe.c's target JSON gained the
+  kind, the reason, the reflector's port, the SSID, the split
+  location and the counters; gula/yprobe.c; invidia/yarcana.c), and
+  the console's `ysdwan.c` puts each session in the sdwan read beside
+  its target (`"stamp"`), so `arcanactl sdwan` has it; `arcanactl sdwan
+  stamp` prints a line a target (method, reflector mode, rtt, one way
+  or "estimated: half the rtt each way", loss forward and backward of
+  those sent, DSCP sent>forward>backward with "(remarked)", NAT, auth).
+  The console's SD-WAN Paths tab reads arcana-stamp through the fleet
+  mount after arcana-steer (an agent without it read as before) and
+  draws "How each end measures": a row an end of each tunnel, its
+  method (and why not STAMP), round trip, forward and backward delay or
+  "≈ half RTT", loss each way, DSCP each way with remarking marked, the
+  NAT and what the far end saw, authenticated; sorted and filtered as
+  every table (tbl.c).  yang-ops' `sdwan-stamp` gives the read its { }
+  Schema (www/arcana-ui/yang/arcana-stamp.tree, arcana-probe's
+  regenerated).  Checked: agent_test:yang_sdwan (the kind through
+  arcana-probe and back, the samples' STAMP figures, the sessions of a
+  read through YANG-CBOR and back), agent_test:stamp_kind (stampd
+  unprivileged on the loopback: kind stamp measured without root, its
+  session and line, kind icmp none, the kind read back from running;
+  stampd killed: down, no fallback, why; a jail's kind stamp and an
+  unknown kind refused); agent_root_test:stamp_kinds (the plan's
+  check: stampd in a vnet jail, one service's three targets: kind
+  stamp by STAMP, stateful, DSCP 46 each way, no NAT; kind icmp never
+  STAMP, no session; auto to a refused port fallen back, why, counters;
+  all up; STAMP to the first denied: down though it answers echoes,
+  the others up); agent_root_test:stamp_loss with its beacon of kind
+  icmp; console_test:sdwan_apply (arcana-stamp through the fleet
+  mount) and sdwan_breakout (the beacons' kind icmp);
+  pwa_test:pwa_flows_sdwan (the table's columns and rows, a sort).
 - 5.1.9 L: interoperation with one open-source STAMP implementation
   and a TWAMP Light reflector; written to TODO's verified list.
 - 5.2.1 A: raw samples per measurement interval; three percentiles;

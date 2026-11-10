@@ -1,0 +1,336 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-stamp",
+    "module-revision": "2026-11-10",
+    "sid-file-version": 0,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 92 600, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "cblink-gen",
+        "module-revision": "2026-10-22"
+      },
+      {
+        "module-name": "ietf-inet-types",
+        "module-revision": "2025-12-22"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "92600",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-stamp",
+        "sid": "92600"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp",
+        "sid": "92601"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector",
+        "sid": "92602"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector/fib",
+        "sid": "92603"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector/installed",
+        "sid": "92604"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector/key-file",
+        "sid": "92605"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector/keys",
+        "sid": "92606"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/reflector/status",
+        "sid": "92607"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender",
+        "sid": "92608"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender/clock-error",
+        "sid": "92609"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender/clock-set",
+        "sid": "92610"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender/clock-source",
+        "sid": "92611"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender/clock-synchronised",
+        "sid": "92612"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/sender/port",
+        "sid": "92613"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session",
+        "sid": "92614"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/authenticated",
+        "sid": "92615"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters",
+        "sid": "92616"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/auth-failed",
+        "sid": "92617"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/dm-lost-backward",
+        "sid": "92618"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/dm-lost-forward",
+        "sid": "92619"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/fallbacks",
+        "sid": "92620"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/late",
+        "sid": "92621"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/lost",
+        "sid": "92622"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/lost-backward",
+        "sid": "92623"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/lost-forward",
+        "sid": "92624"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/lost-unknown",
+        "sid": "92625"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/received",
+        "sid": "92626"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/refused",
+        "sid": "92627"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/counters/sent",
+        "sid": "92628"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay",
+        "sid": "92629"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay/backward",
+        "sid": "92630"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay/clock-error",
+        "sid": "92631"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay/forward",
+        "sid": "92632"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay/one-way",
+        "sid": "92633"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/delay/rtt",
+        "sid": "92634"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/dscp",
+        "sid": "92635"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/dscp/backward",
+        "sid": "92636"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/dscp/forward",
+        "sid": "92637"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/dscp/refused",
+        "sid": "92638"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/dscp/sent",
+        "sid": "92639"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/fib",
+        "sid": "92640"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/jail",
+        "sid": "92641"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/key-error",
+        "sid": "92642"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/kind",
+        "sid": "92643"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location",
+        "sid": "92644"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location/destination-address",
+        "sid": "92645"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location/destination-port",
+        "sid": "92646"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location/nat",
+        "sid": "92647"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location/source-address",
+        "sid": "92648"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/location/source-port",
+        "sid": "92649"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/method",
+        "sid": "92650"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/reason",
+        "sid": "92651"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/reflector-address",
+        "sid": "92652"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/reflector-mode",
+        "sid": "92653"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/reflector-udp-port",
+        "sid": "92654"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/ssid",
+        "sid": "92655"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/target",
+        "sid": "92656"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/timestamp-info",
+        "sid": "92657"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/timestamp-info/sync-in",
+        "sid": "92658"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/timestamp-info/sync-out",
+        "sid": "92659"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/timestamp-info/timestamp-in",
+        "sid": "92660"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stamp:stamp/session/timestamp-info/timestamp-out",
+        "sid": "92661"
+      }
+    ]
+  }
+}

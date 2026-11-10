@@ -1,0 +1,513 @@
+module arcana-stamp {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-stamp";
+  prefix arcstamp;
+
+  import cblink-gen {
+    prefix cg;
+  }
+  import ietf-inet-types {
+    prefix inet;
+    reference
+      "RFC 9911: Common YANG Data Types";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "STAMP (RFC 8762, RFC 8972) as a FreeBSD host measures with it:
+     the Session-Sender of each arcana-probe target measured so (its
+     kind, arcana-probe's, and the agent's choice under auto), the
+     settings the agent runs it with, and the Session-Reflector its
+     host runs, stampd(8) of the stamp repository, as the agent sets
+     it (its FIBs, its key file).
+
+     Of each session: the far reflector (address, port, FIB), the SSID,
+     the reflector's mode told by its replies, the authenticated mode
+     (RFC 8762 section 4.4) a plain tunnel's STAMP has, the last
+     reply's delay each way (one way when both clocks' Error
+     Estimates allow it, else half the round trip, an estimate), the
+     reflector's Timestamp Information (RFC 8972 section 4.3), the
+     DSCP each way (its Class of Service TLV, 4.4), the addresses the
+     reflector saw (its Location TLV, 4.2) and the NAT they tell, and
+     its counters all along: the loss each way by the sequence and by
+     the Direct Measurement TLV's counters (4.5), replies failing
+     authentication, refusals, falls back to ICMP.
+
+     draft-ietf-ippm-stamp-yang (ietf-stamp, expired in 2021, never an
+     RFC) was weighed and not used: its sessions are configured by the
+     operator, keyed by an index and ports Arcana does not choose, with
+     a key chain where Arcana derives each key and SSID from the
+     tunnel's own pair, and its results are percentiles of a
+     measurement interval (5.2 to come); its names are kept where they
+     fit (the reflector's mode, its address and UDP port, the SSID,
+     the DSCP).  The figures follow RFC 9375's: delay in milliseconds,
+     loss as counts.  Read-only: the targets are arcana-probe's
+     configuration, the agent's STAMP settings its command line's.";
+
+  revision 2026-11-10 {
+    description
+      "Initial revision.";
+  }
+
+  typedef ms {
+    type decimal64 {
+      fraction-digits 3;
+    }
+    units "milliseconds";
+    description
+      "Milliseconds.";
+  }
+
+  typedef clock-source {
+    type enumeration {
+      enum ntp {
+        description
+          "Synchronised by NTP.";
+      }
+      enum ptp {
+        description
+          "Synchronised by PTP.";
+      }
+      enum ssu {
+        description
+          "Synchronised by a synchronisation supply unit.";
+      }
+      enum gnss {
+        description
+          "Synchronised by GNSS.";
+      }
+      enum local {
+        description
+          "Free-running.";
+      }
+      enum unknown {
+        description
+          "Not said.";
+      }
+    }
+    description
+      "A clock's source, as RFC 8972 section 4.3's Sync Source
+       registry names them.";
+  }
+
+  typedef timestamp-method {
+    type enumeration {
+      enum hw {
+        description
+          "Taken by the hardware.";
+      }
+      enum sw {
+        description
+          "Taken by the software (the kernel or the process).";
+      }
+      enum control {
+        description
+          "Taken by the control plane.";
+      }
+      enum unknown {
+        description
+          "Not said.";
+      }
+    }
+    description
+      "How a timestamp was taken, RFC 8972 section 4.3's Timestamp
+       Method registry.";
+  }
+
+  typedef kind {
+    type enumeration {
+      enum auto {
+        description
+          "The agent's choice: STAMP to an SD-WAN target of the
+           host's edge, ICMP its fallback while the reflector does
+           not answer; ICMP at a jail's edge.";
+      }
+      enum stamp {
+        description
+          "STAMP alone: no fallback; the target is down while the
+           reflector does not answer.";
+      }
+      enum icmp {
+        description
+          "ICMP echo alone.";
+      }
+    }
+    description
+      "How a target is to be measured, arcana-probe's kind.";
+  }
+
+  container stamp {
+    config false;
+    description
+      "The host's STAMP: its settings, its Session-Reflector, and a
+       session a target that is measured by STAMP, or may be.";
+    container sender {
+      description
+        "How the agent's Session-Sender runs (its command line).";
+      leaf port {
+        type inet:port-number;
+        description
+          "The UDP port the far reflectors answer on (--stamp-port);
+           0, STAMP used for no target.";
+      }
+      leaf clock-source {
+        type clock-source;
+        description
+          "The host's clock as its packets say it: the kernel's
+           (ntp_gettime) or --stamp-clock's.";
+      }
+      leaf clock-error {
+        type ms;
+        description
+          "Its Error Estimate.";
+      }
+      leaf clock-synchronised {
+        type boolean;
+        description
+          "Its Error Estimate's S bit: whether it says it is
+           synchronised to UTC.";
+      }
+      leaf clock-set {
+        type string;
+        description
+          "--stamp-clock, when given: source[:error].";
+      }
+    }
+    container reflector {
+      description
+        "stampd(8) as the agent sets it: one instance a FIB, by its rc
+         script's stampd_fibs, the plain tunnels' keys in its key
+         file.  stampd keeps its drops (over the rate limits, failing
+         authentication, not authenticated) to its own log alone.";
+      leaf installed {
+        type boolean;
+        description
+          "Its rc script is in the host's rc.d directories.";
+      }
+      leaf-list fib {
+        type uint16;
+        description
+          "The FIBs it is set to answer in, as written last.";
+      }
+      leaf key-file {
+        type string;
+        description
+          "Its key file (--stampd-keys).";
+      }
+      leaf keys {
+        type uint32;
+        description
+          "The plain tunnels' keys the agent keeps in it.";
+      }
+      leaf status {
+        type string;
+        description
+          "What the agent said of it last: set, refused, not
+           installed.";
+      }
+    }
+    list session {
+      cg:struct "session";
+      description
+        "A target's Session-Sender: each of arcana-probe's SD-WAN
+         targets whose kind is stamp, or auto at the host's edge.";
+      leaf target {
+        type string;
+        description
+          "The arcana-probe target, its id.";
+      }
+      leaf jail {
+        type string;
+        description
+          "Its edge's jail; none, the host.";
+      }
+      leaf kind {
+        type kind;
+        description
+          "As the target says it.";
+      }
+      leaf method {
+        type enumeration {
+          enum stamp {
+            description
+              "By STAMP.";
+          }
+          enum icmp {
+            description
+              "By ICMP echo, fallen back (auto).";
+          }
+        }
+        description
+          "How it is measured now.";
+      }
+      leaf reason {
+        type string;
+        description
+          "Why not by STAMP now, or why the reflector does not answer
+           (no reply in so many probes, its port refused, no key).";
+      }
+      leaf reflector-address {
+        type inet:ip-address-no-zone;
+        description
+          "The far Session-Reflector.";
+      }
+      leaf reflector-udp-port {
+        type inet:port-number;
+        description
+          "Its UDP port.";
+      }
+      leaf fib {
+        type uint16;
+        description
+          "The FIB it is reached through.";
+      }
+      leaf ssid {
+        type uint16;
+        description
+          "The session's SSID (RFC 8972 section 3): random, or with a
+           key, derived with it.";
+      }
+      leaf reflector-mode {
+        type enumeration {
+          enum unknown {
+            description
+              "No reply yet.";
+          }
+          enum stateless {
+            description
+              "It copies the sender's sequence number: no loss each
+               way.";
+          }
+          enum stateful {
+            description
+              "Its own counter: the loss told each way.";
+          }
+        }
+        description
+          "The reflector's mode, told by its replies (RFC 8762
+           section 4.3).";
+      }
+      leaf authenticated {
+        type boolean;
+        description
+          "Its packets are the authenticated mode's, HMAC-SHA-256-128
+           under the key both ends derive from the tunnel's pairs.";
+      }
+      leaf key-error {
+        type string;
+        description
+          "Why the key could not be derived yet.";
+      }
+      container delay {
+        description
+          "The last reply's.";
+        leaf rtt {
+          type ms;
+          description
+            "The round trip, the reflector's time taken out.";
+        }
+        leaf forward {
+          type ms;
+          description
+            "Out to the reflector (T2 - T1), or half the round trip.";
+        }
+        leaf backward {
+          type ms;
+          description
+            "Back from it (T4 - T3), or half the round trip.";
+        }
+        leaf one-way {
+          type enumeration {
+            enum measured {
+              description
+                "Each way by the clocks: both Error Estimates
+                 synchronised, their errors together within a tenth of
+                 half the round trip.";
+            }
+            enum estimated {
+              description
+                "Half the round trip each way.";
+            }
+          }
+          description
+            "How forward and backward were had.";
+        }
+        leaf clock-error {
+          type ms;
+          description
+            "Both ends' Error Estimates together.";
+        }
+      }
+      container timestamp-info {
+        description
+          "The reflector's Timestamp Information TLV (RFC 8972
+           section 4.3), its last.";
+        leaf sync-in {
+          type clock-source;
+          description
+            "Its clock's source when it received.";
+        }
+        leaf timestamp-in {
+          type timestamp-method;
+          description
+            "How it took the receive timestamp.";
+        }
+        leaf sync-out {
+          type clock-source;
+          description
+            "Its clock's source when it sent.";
+        }
+        leaf timestamp-out {
+          type timestamp-method;
+          description
+            "How it took the send timestamp.";
+        }
+      }
+      container dscp {
+        description
+          "The DSCP each way, the Class of Service TLV's (RFC 8972
+           section 4.4), the last reply's.";
+        leaf sent {
+          type inet:dscp;
+          description
+            "The probes', and the one the reply is asked to carry.";
+        }
+        leaf forward {
+          type inet:dscp;
+          description
+            "The probe's as it reached the reflector.";
+        }
+        leaf backward {
+          type inet:dscp;
+          description
+            "The reply's as it came back.";
+        }
+        leaf refused {
+          type boolean;
+          description
+            "The reflector refused to reply with it (RP).";
+        }
+      }
+      container location {
+        description
+          "The addresses and ports the probe reached the reflector
+           from and to, its Location TLV (RFC 8972 section 4.2), the
+           last reply's.";
+        leaf source-address {
+          type inet:ip-address-no-zone;
+          description
+            "From.";
+        }
+        leaf source-port {
+          type inet:port-number;
+          description
+            "Its port.";
+        }
+        leaf destination-address {
+          type inet:ip-address-no-zone;
+          description
+            "To.";
+        }
+        leaf destination-port {
+          type inet:port-number;
+          description
+            "Its port.";
+        }
+        leaf nat {
+          type enumeration {
+            enum none {
+              description
+                "Neither rewritten.";
+            }
+            enum source {
+              description
+                "The source, not the sender's own.";
+            }
+            enum destination {
+              description
+                "The destination, not the target's.";
+            }
+            enum both {
+              description
+                "Both.";
+            }
+          }
+          description
+            "What a NAT on the way rewrote.";
+        }
+      }
+      container counters {
+        description
+          "All along the target, across fallbacks and senders made
+           again.";
+        leaf sent {
+          type uint64;
+          description
+            "STAMP probes sent.";
+        }
+        leaf received {
+          type uint64;
+          description
+            "Replies taken.";
+        }
+        leaf lost {
+          type uint64;
+          description
+            "Probes not answered within the timeout.";
+        }
+        leaf lost-forward {
+          type uint64;
+          description
+            "Of them, by a stateful reflector's sequence: never
+             reached it.";
+        }
+        leaf lost-backward {
+          type uint64;
+          description
+            "Reached it, the reply not back.";
+        }
+        leaf lost-unknown {
+          type uint64;
+          description
+            "Not told apart (a stateless reflector, the first reply,
+             a counter gone back).";
+        }
+        leaf dm-lost-forward {
+          type uint64;
+          description
+            "Lost forward by the Direct Measurement TLV's counters:
+             sent less what the reflector's session received.";
+        }
+        leaf dm-lost-backward {
+          type uint64;
+          description
+            "Lost backward by them: what the reflector sent less what
+             came back.";
+        }
+        leaf late {
+          type uint64;
+          description
+            "Replies after their timeout, or twice.";
+        }
+        leaf auth-failed {
+          type uint64;
+          description
+            "Replies failing authentication, passed over.";
+        }
+        leaf refused {
+          type uint64;
+          description
+            "Times its port was refused (ICMP port unreachable).";
+        }
+        leaf fallbacks {
+          type uint64;
+          description
+            "Times it fell back to ICMP (auto).";
+        }
+      }
+    }
+  }
+}

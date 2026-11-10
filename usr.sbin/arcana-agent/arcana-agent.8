@@ -993,8 +993,23 @@ a kind at a time, kept beside the history file for the next start
 .Pq Pa sdwan-probes.json , monitors.json , No and their Pa @ Ns Ar jail No files ;
 a monitor without an address, on the host, probes its interface's far
 end through the interface's FIB.
-A target that is Arcana's far end (an SD-WAN target of the host's that
-is a tunnel's, not a breakout's beacon) is measured by STAMP (RFC 8762)
+How a target is measured is its kind, arcana-probe's:
+.Cm icmp ,
+pinged alone (the console's breakout beacons);
+.Cm stamp ,
+by STAMP alone, with no fallback and no raw socket (so without root
+too): a reflector silent, refusing or unkeyed makes it down, why told
+in its session; refused at a jail's edge;
+.Cm auto ,
+the default, by STAMP when it is Arcana's far end (an SD-WAN target of
+the host's), ICMP its fallback.
+What STAMP sees of each is arcana-stamp's state, a session a target
+(the reflector and its mode, the last reply's delay each way, the DSCP
+each way, the NAT, authenticated, the counters all along), with the
+sender's settings and
+.Xr stampd 8
+as the agent sets it.
+A target measured by STAMP is measured
 through
 .Xr libstamp 3 Ns 's
 sender, a UDP socket in the target's FIB
@@ -1021,7 +1036,9 @@ the way back, by its sequence numbers and by the Direct Measurement
 TLV's counters (the packets sent, those the reflector received and
 sent back); the others, the monitors and a jail edge's targets are pinged
 .Pq ICMP echo .
-A far end whose STAMP port is refused, or that answers none of as many
+Under
+.Cm auto ,
+a far end whose STAMP port is refused, or that answers none of as many
 STAMP probes as would make the target down, is pinged instead, the
 first echo deciding whether the tunnel is down; STAMP is tried every
 ten seconds and taken up again when it answers.

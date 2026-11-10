@@ -51,18 +51,23 @@
  * the probe is one UDP flow both ends own and count, so a count rule
  * would see the same packets (bar the kernel's drops before ipfw) at
  * the price of rules in the admin's ruleset; ipfw's counters belong to
- * the service's own traffic (alternate marking, 5.5).  Arcana's
- * far end, until arcana-probe says a target's kind (PLAN-SDN-YANG
- * 5.1.8), is an SD-WAN target of the host's that is a tunnel's: not a
- * monitor (the admin's, on any tunnel), not a breakout's beacon (the
- * console's ids "bo:..."), not at a jail's edge (no socket of its
- * network yet); --stamp-port 0 measures none so.  ICMP stays the
+ * the service's own traffic (alternate marking, 5.5).  How a target is
+ * measured is its kind (arcana-probe's, PLAN-SDN-YANG 5.1.8): icmp, an
+ * echo alone (the console's breakout beacons, hosts not Arcana's);
+ * stamp, STAMP alone; auto, the default, STAMP when the target is an
+ * SD-WAN target of the host's (Arcana's far end: not a monitor, the
+ * admin's on any tunnel, not at a jail's edge, which has no socket of
+ * its network yet), --stamp-port 0 measuring none so, and ICMP its
  * fallback: a reflector that refuses (port unreachable), or as many
  * STAMP probes unanswered in a row as make the target down, and the
  * target is pinged instead, its misses left one short of down, so
  * that the first echo decides whether the tunnel is down or its
  * reflector alone; one STAMP probe every STAMP_RETRY seconds, not
- * counted, and an answer brings STAMP back.
+ * counted, and an answer brings STAMP back.  Kind stamp has no
+ * fallback: the reflector silent, refusing or unkeyed, its probes are
+ * misses and the target goes down, why kept (stamp_why), as for auto's
+ * falls back.  What STAMP sees of a target is arcana-stamp's session
+ * (gula/yprobe.c, from target_json()).
  *
  * A plain tunnel's target (GRE, gif, geneve without IPsec: nothing on
  * the way authenticates its packets) says its end's interface and the
@@ -129,7 +134,6 @@
 #define	OUT_MAX		64	/* probes in the air, each */
 #define	SAMPLES_MAX	100000
 #define	PKT_MAX		10000
-#define	BREAKOUT	"bo:"	/* a breakout beacon's id, the console's */
 #define	STAMP_RETRY	10.0	/* s: STAMP tried again, fallen back */
 #define	STAMP_WINDOW	4096	/* STAMP probes in the air, at most */
 #define	STAMP_SALT	"arcana stamp v1"	/* HKDF's, the key's */
@@ -137,6 +141,10 @@
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
+/* A target's kind, arcana-probe's: the agent's choice, STAMP alone, ICMP
+ * alone. */
+enum { KIND_AUTO, KIND_STAMP, KIND_ICMP };
+static const char *const kind_names[] = { "auto", "stamp", "icmp" };
 static const char *const state_names[] = { "unknown", "up", "down", "ended",
     "error" };
 
@@ -166,8 +174,15 @@ struct target {
 	int			 damping, tca_over[3], tca_under[3];
 	bool			 tca_on[3];
 	int			 sock;
-	/* STAMP to Arcana's far end, ICMP the fallback. */
+	/* STAMP to Arcana's far end, ICMP the fallback; kind, as the target
+	 * says (KIND_*); why STAMP does not answer, said once. */
+	int			 kind;
 	bool			 arcana, by_stamp;
+	char			 stamp_why[160];
+	/* STAMP's counts all along: of senders given up (their stats
+	 * added as each goes), refusals and falls back to ICMP. */
+	uint64_t		 st_sent, st_recv, st_lost, st_unknown, st_late;
+	uint64_t		 refused, fallbacks;
 	int			 usock;		/* UDP, connected */
 	uint16_t		 ssid;
 	struct stamp_sender	*ss;
@@ -312,14 +327,17 @@ is_monitor(const struct target *t)
 	return (strcmp(t->owner, OWN_MONITOR) == 0);
 }
 
-/* Arcana's far end, measured by STAMP: an SD-WAN target of the host's
- * that is a tunnel's, not a breakout's beacon. */
+/* Measured by STAMP: kind stamp; under auto, an SD-WAN target of the
+ * host's (Arcana's far end, the console's tunnels); never kind icmp. */
 static bool
 is_arcana(const struct target *t)
 {
 
-	return (opts.stamp_port != 0 && !is_monitor(t) && t->jail[0] == '\0' &&
-	    strncmp(t->id, BREAKOUT, strlen(BREAKOUT)) != 0);
+	if (t->kind == KIND_ICMP)
+		return (false);
+	if (t->kind == KIND_STAMP)
+		return (true);
+	return (opts.stamp_port != 0 && !is_monitor(t) && t->jail[0] == '\0');
 }
 
 /* The file of an owner's targets at an edge: the host's, or jail's. */
@@ -356,6 +374,19 @@ stamp_drop(struct target *t)
 	if (t->ss != NULL) {
 		stamp_sender_stats(t->ss, &st);
 		t->auth_failed += st.auth_failed;
+		t->st_sent += st.sent;
+		t->st_recv += st.received;
+		t->st_lost += st.lost;
+		t->st_unknown += st.unknown_lost;
+		t->st_late += st.late;
+		/* The loss each way not yet taken by a window's end. */
+		t->fwd_lost += st.fwd_lost - t->tk_fwd;
+		t->back_lost += st.back_lost - t->tk_back;
+		if (st.dm_told) {
+			t->dm_fwd_lost += st.dm_fwd_lost - t->tk_dmf;
+			t->dm_back_lost += st.dm_back_lost - t->tk_dmb;
+			t->dm_told = true;
+		}
 	}
 	stamp_sender_free(t->ss);
 	t->ss = NULL;
@@ -447,6 +478,12 @@ target_open(struct target *t)
 {
 	int	v, jid;
 
+	/* Kind stamp: no echo, so no raw socket (nor root) needed; its UDP
+	 * socket is made as it sends (stamp_open()). */
+	if (t->kind == KIND_STAMP) {
+		t->error[0] = '\0';
+		return (true);
+	}
 	if (t->jail[0] != '\0') {
 		/* A jail's: its socket made in its network by the helper,
 		 * so that its routing tables carry the probes. */
@@ -627,6 +664,22 @@ addr_port(const struct sockaddr_storage *ss, char *buf, size_t len)
 		    sockaddr *)ss, a, sizeof(a)), stamp_sa_port((const struct
 		    sockaddr *)ss));
 	return (buf);
+}
+
+/* An address and its port as o's key_addr and key_port. */
+static void
+loc_put(ucl_object_t *o, const char *key, const struct sockaddr_storage *ss)
+{
+	char	a[INET6_ADDRSTRLEN], k[48];
+
+	if (ss->ss_family == 0)
+		return;
+	snprintf(k, sizeof(k), "%s_addr", key);
+	ucl_object_insert_key(o, ucl_object_fromstring(stamp_sa_ntop((const
+	    struct sockaddr *)ss, a, sizeof(a))), k, 0, true);
+	snprintf(k, sizeof(k), "%s_port", key);
+	ucl_object_insert_key(o, ucl_object_fromint(stamp_sa_port((const struct
+	    sockaddr *)ss)), k, 0, true);
 }
 
 static void
@@ -865,6 +918,11 @@ stamp_open(struct target *t)
 	int				v;
 	bool				ok;
 
+	/* --stamp-port 0: no reflector to send to (kind stamp's). */
+	if (opts.stamp_port == 0) {
+		errno = EDESTADDRREQ;
+		return (false);
+	}
 	/* A plain tunnel's: its key first, derived now if not yet. */
 	if (t->stamp_peer[0] != '\0' && !t->keyed) {
 		work_init(&w);
@@ -928,11 +986,22 @@ stamp_fallback(struct target *t, double now, const char *why)
 {
 	char	name[200];
 
+	/* Kind stamp: no fallback, its probes misses; why said once. */
+	if (t->kind == KIND_STAMP) {
+		if (strcmp(t->stamp_why, why) != 0)
+			logmsg(LOG_NOTICE, "probe: %s (%s): %s: STAMP alone, "
+			    "no fallback", target_name(t, name, sizeof(name)),
+			    t->address, why);
+		snprintf(t->stamp_why, sizeof(t->stamp_why), "%s", why);
+		return;
+	}
 	stamp_drop(t);
 	t->stamp_retry = now + STAMP_RETRY;
 	if (!t->by_stamp)
 		return;
 	t->by_stamp = false;
+	t->fallbacks++;
+	snprintf(t->stamp_why, sizeof(t->stamp_why), "%s", why);
 	logmsg(LOG_NOTICE, "probe: %s (%s): %s: pinged until STAMP answers",
 	    target_name(t, name, sizeof(name)), t->address, why);
 }
@@ -946,13 +1015,16 @@ stamp_lost(struct target *t, double now)
 	struct stamp_sender_stats	st;
 	char				why[128];
 
-	if (t->misses + 1 < t->down) {
+	/* Kind stamp: a miss whatever, down at down in a row. */
+	if (t->misses + 1 < t->down || t->kind == KIND_STAMP) {
 		miss(t);
-		return;
+		if (t->misses < t->down)
+			return;
+	} else {
+		t->w_sent++;
+		t->hits = 0;
+		t->misses = t->down - 1;
 	}
-	t->w_sent++;
-	t->hits = 0;
-	t->misses = t->down - 1;
 	if (t->ss != NULL)
 		stamp_sender_stats(t->ss, &st);
 	/* Replies that came and did not authenticate: said so. */
@@ -964,7 +1036,8 @@ stamp_lost(struct target *t, double now)
 		snprintf(why, sizeof(why), "no STAMP reply in %d probes",
 		    t->down);
 	stamp_fallback(t, now, why);
-	t->next_send = now;
+	if (t->kind != KIND_STAMP)
+		t->next_send = now;
 }
 
 /* A STAMP probe: one of the target's (counted), or a fallen-back
@@ -980,6 +1053,16 @@ stamp_send_one(struct target *t, bool counted)
 	int			rc;
 
 	now = now_s();
+	/* Kind stamp without its key: tried again every STAMP_RETRY
+	 * seconds, not every probe; the probes between misses. */
+	if (t->kind == KIND_STAMP && t->stamp_peer[0] != '\0' && !t->keyed &&
+	    now < t->stamp_retry) {
+		if (counted) {
+			t->sent++;
+			miss(t);
+		}
+		return (false);
+	}
 	if (!stamp_open(t)) {
 		if (counted && t->stamp_peer[0] != '\0' && !t->keyed) {
 			char	why[200];
@@ -987,8 +1070,14 @@ stamp_send_one(struct target *t, bool counted)
 			snprintf(why, sizeof(why), "no STAMP key: %s",
 			    t->key_err);
 			stamp_fallback(t, now, why);
+			t->stamp_retry = now + STAMP_RETRY;
 		} else if (counted)
 			stamp_fallback(t, now, strerror(errno));
+		/* Kind stamp: a probe that could not go is a miss. */
+		if (counted && t->kind == KIND_STAMP) {
+			t->sent++;
+			miss(t);
+		}
 		return (false);
 	}
 	/* The base, the Timestamp Information TLV, the rest padding. */
@@ -1009,6 +1098,7 @@ stamp_send_one(struct target *t, bool counted)
 	if (send(t->usock, pkt, len, 0) == -1) {
 		/* Port unreachable: no reflector there. */
 		if (errno == ECONNREFUSED) {
+			t->refused++;
 			if (counted)
 				stamp_fallback(t, now, "its STAMP port refused");
 			return (false);
@@ -1102,6 +1192,7 @@ stamp_recv_all(struct target *t)
 	for (;;) {
 		if ((n = stamp_recv(t->usock, in, sizeof(in), &ri)) == -1) {
 			if (errno == ECONNREFUSED) {
+				t->refused++;
 				if (t->by_stamp)
 					stamp_fallback(t, now_s(), "its STAMP port "
 					    "refused");
@@ -1116,6 +1207,12 @@ stamp_recv_all(struct target *t)
 		    &sm) != 1)
 			continue;
 		if (t->by_stamp) {
+			/* Answered: no reason against STAMP now. */
+			if (t->stamp_why[0] != '\0' && t->kind == KIND_STAMP)
+				logmsg(LOG_NOTICE, "probe: %s (%s): STAMP answers "
+				    "again", target_name(t, name, sizeof(name)),
+				    t->address);
+			t->stamp_why[0] = '\0';
 			hit(t, sm.rtt * 1000);
 			stamp_delay(t, &sm);
 			stamp_dscp(t, &sm, ri.tos);
@@ -1125,6 +1222,7 @@ stamp_recv_all(struct target *t)
 		/* Measured by STAMP again, by a sender of its own: the try's
 		 * counts are none of the target's; no echo in the air. */
 		t->by_stamp = true;
+		t->stamp_why[0] = '\0';
 		stamp_drop(t);
 		for (int i = 0; i < OUT_MAX; i++)
 			t->out[i].live = false;
@@ -1447,6 +1545,25 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		    ucl_object_tostring(v)) < sizeof(t->ifname))
 			snprintf(t->ifname, sizeof(t->ifname), "%s",
 			    ucl_object_tostring(v));
+		/* How it is measured: auto, stamp or icmp. */
+		t->kind = KIND_AUTO;
+		if ((v = ucl_object_lookup(o, "kind")) != NULL) {
+			for (k = 0; k < (int)nitems(kind_names); k++)
+				if (ucl_object_type(v) == UCL_STRING && strcmp(
+				    ucl_object_tostring(v), kind_names[k]) == 0)
+					break;
+			if (k == (int)nitems(kind_names)) {
+				*errp = wfmt(w, "target %s: kind is auto, stamp or "
+				    "icmp", id);
+				goto bad;
+			}
+			t->kind = k;
+		}
+		if (t->kind == KIND_STAMP && jail[0] != '\0') {
+			*errp = wfmt(w, "target %s: kind stamp: a jail's edge "
+			    "has no STAMP yet (auto or icmp)", id);
+			goto bad;
+		}
 		t->arcana = t->by_stamp = is_arcana(t);
 		/* A plain tunnel's: its STAMP authenticated, its key derived
 		 * now when its pair is there (else when STAMP is tried). */
@@ -1542,7 +1659,7 @@ bad:
 
 /*
  * The new targets in the place of the old ones of their edge (jail, ""
- * the host): one that is the same target (address, fib, dscp, size)
+ * the host): one that is the same target (address, fib, dscp, size, kind)
  * keeps its socket, state and samples; the other edges' stay as they
  * are, after them.  False, with nothing changed, when all of them are
  * more than TARGETS_MAX (new has room for that many).
@@ -1575,7 +1692,8 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			    strcmp(o->owner, owner) == 0 &&
 			    strcmp(o->id, t->id) == 0 &&
 			    strcmp(o->address, t->address) == 0 && o->fib ==
-			    t->fib && o->dscp == t->dscp && o->size == t->size)
+			    t->fib && o->dscp == t->dscp && o->size == t->size &&
+			    o->kind == t->kind)
 				break;
 		}
 		if (k < nold) {
@@ -2124,20 +2242,71 @@ target_json(const struct target *t, double now, uint64_t after)
 	    0, false);
 	ucl_object_insert_key(o, ucl_object_fromdouble(t->last_rtt),
 	    "last_rtt", 0, false);
-	/* How it is measured: STAMP to Arcana's far end, with the loss
-	 * each way all along (arcana-stamp's to carry, 5.1.8). */
+	/* How it is measured: its kind, and now STAMP to Arcana's far end
+	 * or an echo; of STAMP, arcana-stamp's session (gula/yprobe.c). */
+	ucl_object_insert_key(o, ucl_object_fromstring(kind_names[t->kind]),
+	    "kind", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromstring(t->by_stamp ? "stamp" :
 	    "icmp"), "method", 0, false);
 	if (t->arcana) {
 		struct stamp_sender_stats	st;
 		uint64_t			af = t->auth_failed;
+		uint64_t			fl = t->fwd_lost, bl = t->back_lost;
+		uint64_t			dmf = t->dm_fwd_lost;
+		uint64_t			dmb = t->dm_back_lost;
+		bool				dm = t->dm_told;
 
+		memset(&st, 0, sizeof(st));
 		if (t->ss != NULL) {
 			stamp_sender_stats(t->ss, &st);
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    stamp_mode_name(st.mode)), "reflector", 0, false);
 			af += st.auth_failed;
+			/* What the sender has that no window took yet. */
+			fl += st.fwd_lost - t->tk_fwd;
+			bl += st.back_lost - t->tk_back;
+			if (st.dm_told) {
+				dmf += st.dm_fwd_lost - t->tk_dmf;
+				dmb += st.dm_back_lost - t->tk_dmb;
+				dm = true;
+			}
 		}
+		if (t->stamp_why[0] != '\0')
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->stamp_why), "reason", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint(opts.stamp_port),
+		    "reflector_port", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint(t->keyed ?
+		    (int64_t)t->key.ssid : (int64_t)t->ssid), "ssid", 0, false);
+		/* Its counts all along, every sender's. */
+		cur = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    (t->st_sent + st.sent)), "sent", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    (t->st_recv + st.received)), "received", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    (t->st_lost + st.lost)), "lost", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)fl),
+		    "lost_forward", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)bl),
+		    "lost_backward", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    (t->st_unknown + st.unknown_lost)), "lost_unknown", 0, false);
+		if (dm) {
+			ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+			    dmf), "dm_lost_forward", 0, false);
+			ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+			    dmb), "dm_lost_backward", 0, false);
+		}
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    (t->st_late + st.late)), "late", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)af),
+		    "auth_failed", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    t->refused), "refused", 0, false);
+		ucl_object_insert_key(cur, ucl_object_fromint((int64_t)
+		    t->fallbacks), "fallbacks", 0, false);
+		ucl_object_insert_key(o, cur, "stamp_counters", 0, false);
 		/* A plain tunnel's: authenticated, its replies that were
 		 * not, why there is no key yet. */
 		ucl_object_insert_key(o, ucl_object_frombool(t->keyed),
@@ -2149,10 +2318,10 @@ target_json(const struct target *t, double now, uint64_t after)
 				ucl_object_insert_key(o, ucl_object_fromstring(
 				    t->key_err), "key_error", 0, false);
 		}
-		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
-		    t->fwd_lost), "forward_lost", 0, false);
-		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
-		    t->back_lost), "backward_lost", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)fl),
+		    "forward_lost", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)bl),
+		    "backward_lost", 0, false);
 		/* The last reply's delay each way: one way, or half its
 		 * round trip ("estimated"); the reflector's clock. */
 		if (t->by_stamp && t->has_delay) {
@@ -2187,17 +2356,20 @@ target_json(const struct target *t, double now, uint64_t after)
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    addr_port(&t->loc.dst, ap, sizeof(ap))),
 			    "seen_destination", 0, true);
+			/* The same apart, arcana-stamp's location. */
+			loc_put(o, "seen_source", &t->loc.src);
+			loc_put(o, "seen_destination", &t->loc.dst);
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    t->nat == 0 ? "none" : t->nat == STAMP_NAT_SRC ?
 			    "source" : t->nat == STAMP_NAT_DST ? "destination" :
 			    "both"), "nat", 0, false);
 		}
 		/* The loss each way by the counters, all along. */
-		if (t->dm_told) {
+		if (dm) {
 			ucl_object_insert_key(o, ucl_object_fromint((int64_t)
-			    t->dm_fwd_lost), "dm_forward_lost", 0, false);
+			    dmf), "dm_forward_lost", 0, false);
 			ucl_object_insert_key(o, ucl_object_fromint((int64_t)
-			    t->dm_back_lost), "dm_backward_lost", 0, false);
+			    dmb), "dm_backward_lost", 0, false);
 		}
 		if (t->has_ti) {
 			cur = ucl_object_typed_new(UCL_OBJECT);
@@ -2432,6 +2604,9 @@ target_conf(const struct target *t)
 	if (t->ifname[0] != '\0')
 		ucl_object_insert_key(o, ucl_object_fromstring(t->ifname),
 		    "interface", 0, false);
+	if (t->kind != KIND_AUTO)
+		ucl_object_insert_key(o, ucl_object_fromstring(
+		    kind_names[t->kind]), "kind", 0, false);
 	if (t->stamp_peer[0] != '\0') {
 		ucl_object_insert_key(o, ucl_object_fromstring(t->stamp_if),
 		    "stamp_interface", 0, false);

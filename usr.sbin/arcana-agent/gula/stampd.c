@@ -529,6 +529,29 @@ next:
 	return (NULL);
 }
 
+/*
+ * stampd as it is set, arcana-stamp's reflector: its rc script there,
+ * the FIBs written last (words), its key file and the plain tunnels'
+ * keys kept in it, the last thing said of it.
+ */
+void
+stampd_state(bool *inst, char *fibs, size_t flen, const char **kfile,
+    int *nkeys, char *status, size_t slen)
+{
+	struct stamp_key	*k;
+
+	*inst = installed();
+	*kfile = keys_file();
+	(void)strlcpy(fibs, known ? applied : "", flen);
+	(void)strlcpy(status, said, slen);
+	*nkeys = 0;
+	if ((k = calloc(KEYS_MAX, sizeof(*k))) != NULL) {
+		*nkeys = probe_stamp_keys(k, KEYS_MAX);
+		explicit_bzero(k, KEYS_MAX * sizeof(*k));
+		free(k);
+	}
+}
+
 /* At the start, once the probes and the steering are back: looked at
  * once, then on each change. */
 void

@@ -925,6 +925,20 @@ target_obj(const struct arcana_probe_target_state *t,
 		ucl_array_append(row, dec(s->max, 3));
 		ucl_array_append(row, ucl_object_fromint(s->sent));
 		ucl_array_append(row, ucl_object_fromint(s->received));
+		/* By STAMP, as probe.c's rows: the loss each way, a
+		 * fraction of those sent (-1 not told), the delay each way
+		 * and how (1 one way, 0 half the round trip, -1 not by
+		 * STAMP: -1 each). */
+		ucl_array_append(row, ucl_object_fromdouble(s->has_lost_forward &&
+		    s->sent > 0 ? (double)s->lost_forward / s->sent : -1));
+		ucl_array_append(row, ucl_object_fromdouble(s->has_lost_backward &&
+		    s->sent > 0 ? (double)s->lost_backward / s->sent : -1));
+		ucl_array_append(row, s->has_one_way ? dec(s->delay_forward, 3) :
+		    ucl_object_fromdouble(-1));
+		ucl_array_append(row, s->has_one_way ? dec(s->delay_backward, 3) :
+		    ucl_object_fromdouble(-1));
+		ucl_array_append(row, ucl_object_fromint(!s->has_one_way ? -1 :
+		    s->one_way == ARCANA_PROBE_SAMPLE_ONE_WAY_MEASURED ? 1 : 0));
 		ucl_array_append(arr, row);
 	}
 	put(o, "samples", arr);
@@ -1614,6 +1628,205 @@ steer_why(cbl_conn *conn, ucl_object_t *top, cbl_yarena *a)
 }
 
 
+/* ---- arcana-stamp: what STAMP sees of each target ------------------ */
+
+static const char *const stamp_kinds[] = { "auto", "stamp", "icmp" };
+static const char *const stamp_modes[] = { "unknown", "stateless",
+    "stateful" };
+static const char *const stamp_clocks[] = { "ntp", "ptp", "ssu", "gnss",
+    "local", "unknown" };
+static const char *const stamp_tsms[] = { "hw", "sw", "control",
+    "unknown" };
+static const char *const stamp_nats[] = { "none", "source", "destination",
+    "both" };
+
+#define	PUT_NAME(o, key, y, f, names) do {				\
+	if ((y)->has_##f && (size_t)(y)->f < nitems(names))		\
+		put_str((o), (key), (names)[(y)->f]);			\
+} while (0)
+
+/* A session of arcana-stamp's as the read's JSON: the target's
+ * "stamp". */
+static ucl_object_t *
+stamp_obj(const struct arcana_stamp_session *s)
+{
+	const struct arcana_stamp_session_counters	*c;
+	ucl_object_t					*o, *co;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put_str(o, "target", s->target);
+	put_str(o, "jail", s->jail);
+	PUT_NAME(o, "kind", s, kind, stamp_kinds);
+	if (s->has_method)
+		put_str(o, "method", s->method ==
+		    ARCANA_STAMP_SESSION_METHOD_STAMP ? "stamp" : "icmp");
+	put_str(o, "reason", s->reason);
+	if (s->has_reflector_address)
+		put_str(o, "reflector", s->reflector_address.v.m0);
+	PUT_INT(o, "port", s, reflector_udp_port);
+	PUT_INT(o, "fib", s, fib);
+	PUT_INT(o, "ssid", s, ssid);
+	PUT_NAME(o, "mode", s, reflector_mode, stamp_modes);
+	PUT_YES(o, "authenticated", s, authenticated);
+	put_str(o, "key_error", s->key_error);
+	if (s->delay != NULL) {
+		if (s->delay->has_rtt)
+			put(o, "rtt", dec(s->delay->rtt, 3));
+		if (s->delay->has_forward)
+			put(o, "delay_forward", dec(s->delay->forward, 3));
+		if (s->delay->has_backward)
+			put(o, "delay_backward", dec(s->delay->backward, 3));
+		if (s->delay->has_one_way)
+			put_str(o, "one_way", s->delay->one_way ==
+			    ARCANA_STAMP_SESSION_DELAY_ONE_WAY_MEASURED ?
+			    "measured" : "estimated");
+		if (s->delay->has_clock_error)
+			put(o, "clock_error", dec(s->delay->clock_error, 3));
+	}
+	if (s->timestamp_info != NULL) {
+		PUT_NAME(o, "sync_in", s->timestamp_info, sync_in, stamp_clocks);
+		PUT_NAME(o, "timestamp_in", s->timestamp_info, timestamp_in,
+		    stamp_tsms);
+		PUT_NAME(o, "sync_out", s->timestamp_info, sync_out,
+		    stamp_clocks);
+		PUT_NAME(o, "timestamp_out", s->timestamp_info, timestamp_out,
+		    stamp_tsms);
+	}
+	if (s->dscp != NULL) {
+		PUT_INT(o, "dscp_sent", s->dscp, sent);
+		PUT_INT(o, "dscp_forward", s->dscp, forward);
+		PUT_INT(o, "dscp_backward", s->dscp, backward);
+		PUT_YES(o, "dscp_refused", s->dscp, refused);
+	}
+	if (s->location != NULL) {
+		PUT_NAME(o, "nat", s->location, nat, stamp_nats);
+		if (s->location->has_source_address)
+			put_str(o, "seen_source",
+			    s->location->source_address.v.m0);
+		PUT_INT(o, "seen_source_port", s->location, source_port);
+		if (s->location->has_destination_address)
+			put_str(o, "seen_destination",
+			    s->location->destination_address.v.m0);
+		PUT_INT(o, "seen_destination_port", s->location,
+		    destination_port);
+	}
+	if ((c = s->counters) != NULL) {
+		co = ucl_object_typed_new(UCL_OBJECT);
+		PUT_INT(co, "sent", c, sent);
+		PUT_INT(co, "received", c, received);
+		PUT_INT(co, "lost", c, lost);
+		PUT_INT(co, "lost_forward", c, lost_forward);
+		PUT_INT(co, "lost_backward", c, lost_backward);
+		PUT_INT(co, "lost_unknown", c, lost_unknown);
+		PUT_INT(co, "dm_lost_forward", c, dm_lost_forward);
+		PUT_INT(co, "dm_lost_backward", c, dm_lost_backward);
+		PUT_INT(co, "late", c, late);
+		PUT_INT(co, "auth_failed", c, auth_failed);
+		PUT_INT(co, "refused", c, refused);
+		PUT_INT(co, "fallbacks", c, fallbacks);
+		put(o, "counters", co);
+	}
+	return (o);
+}
+
+/* arcana-stamp's state, into d (a's); false when the agent has none. */
+static bool
+stamp_get(cbl_conn *conn, struct arcana_stamp *d, cbl_yarena *a, char *err,
+    size_t errlen)
+{
+	const struct cbl_ynode	*n;
+
+	memset(d, 0, sizeof(*d));
+	if ((n = yq_top("arcana-stamp", "stamp")) == NULL) {
+		snprintf(err, errlen, "arcana-stamp is not in the tables");
+		return (false);
+	}
+	return (yq_get(conn, n, CBL_YDS_OPERATIONAL, d, a, err, errlen) ==
+	    0 && d->stamp != NULL);
+}
+
+/*
+ * arcana-stamp's sessions into the read's targets, each its "stamp"
+ * (a target measured by ICMP alone has none); an agent without the
+ * module is read as before.
+ */
+static void
+stamp_facts(cbl_conn *conn, ucl_object_t *top, cbl_yarena *a)
+{
+	const struct arcana_stamp_session	*s;
+	struct arcana_stamp			 d;
+	ucl_object_t				*e;
+	ucl_object_iter_t			 it;
+	char					 err[128];
+
+	if (!stamp_get(conn, &d, a, err, sizeof(err)))
+		return;
+	for (size_t i = 0; i < d.stamp->session.n; i++) {
+		s = &d.stamp->session.v[i];
+		it = NULL;
+		while ((e = (ucl_object_t *)(uintptr_t)ucl_object_iterate(
+		    ucl_object_lookup(top, "targets"), &it, true)) != NULL) {
+			if (str(e, "id") == NULL || s->target == NULL ||
+			    strcmp(str(e, "id"), s->target) != 0 ||
+			    (str(e, "jail") != NULL) != (s->jail != NULL) ||
+			    (s->jail != NULL && strcmp(str(e, "jail"),
+			    s->jail) != 0))
+				continue;
+			put(e, "stamp", stamp_obj(s));
+			break;
+		}
+	}
+}
+
+int
+ysdwan_stamp(cbl_conn *conn, ucl_object_t **data, char *err, size_t errlen)
+{
+	const struct arcana_stamp_stamp_sender		*sn;
+	const struct arcana_stamp_stamp_reflector	*rf;
+	struct arcana_stamp				 d;
+	ucl_object_t					*top, *o, *arr;
+	cbl_yarena					*a;
+
+	*data = NULL;
+	err[0] = '\0';
+	if ((a = cbl_yarena_new()) == NULL)
+		return (ENOMEM);
+	if (!stamp_get(conn, &d, a, err, errlen)) {
+		cbl_yarena_free(a);
+		return (err[0] != '\0' ? EIO : ENOENT);
+	}
+	top = ucl_object_typed_new(UCL_OBJECT);
+	if ((sn = d.stamp->sender) != NULL) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		PUT_INT(o, "port", sn, port);
+		PUT_NAME(o, "clock_source", sn, clock_source, stamp_clocks);
+		if (sn->has_clock_error)
+			put(o, "clock_error", dec(sn->clock_error, 3));
+		PUT_YES(o, "clock_synchronised", sn, clock_synchronised);
+		put_str(o, "clock_set", sn->clock_set);
+		put(top, "sender", o);
+	}
+	if ((rf = d.stamp->reflector) != NULL) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		PUT_YES(o, "installed", rf, installed);
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < rf->fib.n; i++)
+			ucl_array_append(arr, ucl_object_fromint(rf->fib.v[i]));
+		put(o, "fibs", arr);
+		put_str(o, "key_file", rf->key_file);
+		PUT_INT(o, "keys", rf, keys);
+		put_str(o, "status", rf->status);
+		put(top, "reflector", o);
+	}
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t i = 0; i < d.stamp->session.n; i++)
+		ucl_array_append(arr, stamp_obj(&d.stamp->session.v[i]));
+	put(top, "sessions", arr);
+	*data = top;
+	cbl_yarena_free(a);
+	return (0);
+}
+
 int
 ysdwan_read(cbl_conn *conn, bool has_after, uint64_t after,
     ucl_object_t **data, char *err, size_t errlen)
@@ -1655,6 +1868,7 @@ ysdwan_read(cbl_conn *conn, bool has_after, uint64_t after,
 	    CBL_YDS_OPERATIONAL, &sd, a, err, errlen)) == 0) {
 		*data = read_json(sd.sdwan, pr.probes, &rd);
 		steer_why(conn, *data, a);
+		stamp_facts(conn, *data, a);
 	}
 	cbl_yarena_free(a);
 	return (error);

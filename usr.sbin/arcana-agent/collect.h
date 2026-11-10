@@ -636,6 +636,12 @@ char	*yprobe_monitors_json(const char *jail, size_t n,
 	    const struct arcana_probe_monitor *v);
 int	yprobe_state_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_probe_probes_state *out);
+/*
+ * arcana-stamp (gula/yprobe.c): a session for each target of the
+ * probes' read (do_probes_read()) that is measured by STAMP, or may be.
+ */
+int	ystamp_sessions_from_json(const char *json, cbl_yarena *a,
+	    struct arcana_stamp_stamp *out);
 
 /*
  * arcana-sdwan (invidia/ysd.c): what the setters keep (an edge's rules

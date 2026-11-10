@@ -2130,14 +2130,15 @@ yang_sdwan_body()
 	# Each edge's targets, links and monitors, as the agent keeps them,
 	# and back as its setters take them.
 	cat > targets.json <<'EOT'
-{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
+{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
 EOT
 	cat > want <<'EOT'
 target tvc-1 10.202.0.2 fib=1 interval=100 size=64 count=0 dscp=46 down=3 up=3 timeout=1000 eval=1000 history=3600 report=5 tca delay=50000 ipdv=10000 loss=10000 damping=2
-target tvc-2 fd00:5a::2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0
+target tvc-2 fd00:5a::2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=icmp
+target tvc-3 10.203.0.2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=stamp
 link uni-1 em1 uni
 monitor ov-gre0 gre0 10.255.0.2 fib=2 eval=10000
-set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
+set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
 set {"jail":"","targets":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]}
 jail gateway
 target tvc-1 10.202.0.1 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0
@@ -2148,7 +2149,7 @@ EOT
 	sed '$d' got > got2
 	atf_check -o file:want cat got2
 	cat > probes.json <<'EOT'
-{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9]],"kept":2},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
+{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10,0,0,0.3,0.317,1],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9,0.1,0,0.7,0.7,0]],"kept":2},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
 EOT
 	cat > want <<'EOT'
 probing=yes time=2026-10-14T16:25:10Z
@@ -2156,10 +2157,32 @@ target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interva
   now sent=5 received=5 delay=600 ipdv=50 loss=0 age=512300
   sample 2026-10-14T16:25:00Z delay=617 ipdv=52 loss=0 min=500 max=900 sent=10 received=10
   sample 2026-10-14T16:25:01Z delay=700 ipdv=100 loss=100000 min=500 max=1200 sent=10 received=9
+  stamp 2026-10-14T16:25:00Z lost=0/0 delay=300/317 measured
+  stamp 2026-10-14T16:25:01Z lost=1/0 delay=700/700 estimated
 target tvc-2 fd00:5a::2 ipv6 fib=0 error error=no route since=2026-10-14T16:23:20Z interval=100 size=64 eval=1000 dscp=0 sent=0 received=0 misses=0 last-rtt=0 kept=0
-yang-cbor 356 bytes, the same back
+yang-cbor 396 bytes, the same back
 EOT
 	atf_check -o file:want "$y" probes probes.json
+	# arcana-stamp: a session a target STAMP measures or may (its
+	# reflector's port said), what it saw; one pinged alone has none.
+	cat > stamp.json <<'EOT'
+{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","dscp":46,"last_rtt":1.25,"kind":"auto","method":"stamp","reflector":"stateful","reflector_port":862,"ssid":4242,"stamp_counters":{"sent":600,"received":590,"lost":10,"lost_forward":6,"lost_backward":3,"lost_unknown":1,"dm_lost_forward":6,"dm_lost_backward":3,"late":2,"auth_failed":0,"refused":0,"fallbacks":1},"authenticated":true,"auth_failed":0,"forward_lost":6,"backward_lost":3,"forward_delay":0.5,"backward_delay":0.75,"one_way":"measured","clock_error":0.001,"dscp_forward":0,"dscp_refused":false,"dscp_backward":46,"seen_source":"192.0.2.9 port 40000","seen_source_addr":"192.0.2.9","seen_source_port":40000,"seen_destination":"10.202.0.2 port 862","seen_destination_addr":"10.202.0.2","seen_destination_port":862,"nat":"source","timestamp_info":{"sync_in":"ptp","timestamp_in":"sw","sync_out":"ptp","timestamp_out":"sw"},"samples":[]},{"id":"bo:a-inet","address":"192.0.2.254","family":"inet","fib":2,"state":"up","kind":"icmp","method":"icmp","samples":[]},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"up","dscp":0,"kind":"auto","method":"icmp","reason":"its STAMP port refused","reflector_port":862,"ssid":7,"stamp_counters":{"sent":3,"received":0,"lost":0,"lost_forward":0,"lost_backward":0,"lost_unknown":0,"late":0,"auth_failed":0,"refused":3,"fallbacks":1},"authenticated":false,"forward_lost":0,"backward_lost":0,"samples":[]}],"time":1791995110,"probing":true}
+EOT
+	cat > want <<'EOT'
+session tvc-1 10.202.0.2 kind=auto method=stamp reason=- port=862 fib=1 ssid=4242 mode=stateful auth=yes
+  delay rtt=1250 forward=500 backward=750 measured error=1
+  timestamps 1/1 1/1
+  dscp sent=46 forward=0 backward=46 refused=no
+  location 192.0.2.9 40000 -> 10.202.0.2 862 nat=source
+  counters sent=600 received=590 lost=10 fwd=6 back=3 unknown=1 dm=6/3 late=2 auth-failed=0 refused=0 fallbacks=1
+session tvc-2 fd00:5a::2 kind=auto method=icmp reason=its STAMP port refused port=862 fib=0 ssid=7 mode=unknown auth=no
+  dscp sent=0 forward=-0 backward=-0 refused=no
+  counters sent=3 received=0 lost=0 fwd=0 back=0 unknown=0 dm=0/0 late=0 auth-failed=0 refused=3 fallbacks=1
+EOT
+	atf_check -o save:got "$y" stamp stamp.json
+	atf_check -o match:'yang-cbor [0-9]+ bytes, the same back' cat got
+	sed '$d' got > got2
+	atf_check -o file:want cat got2
 	# The rules as sdwan.c keeps them, each in its place (ipfw lets
 	# rules share a number), and back as its setter takes them.
 	cat > rules.json <<'EOT'
@@ -7600,6 +7623,109 @@ stampd_refused_body()
 stampd_refused_cleanup()
 {
 	stop_daemon
+}
+
+# stampd(8) of the submodule stamp/: its objects beside Arcana's
+# (MAKEOBJDIRPREFIX) or in its own obj/, else installed.
+stamp_programs()
+{
+	local s=$(atf_get_srcdir) d
+
+	SD=
+	for d in "$s/../../../stamp" "$s/../../../../stamp/obj"; do
+		[ -x "$d/usr.sbin/stampd/stampd" ] || continue
+		SD=$d/usr.sbin/stampd/stampd
+		break
+	done
+	[ -n "$SD" ] || SD=/usr/local/sbin/stampd
+	[ -x "$SD" ] || atf_skip "no stampd (the submodule stamp/)"
+}
+
+atf_test_case stamp_kind cleanup
+stamp_kind_head()
+{
+	atf_set "descr" "arcana-probe's kind (PLAN-SDN-YANG 5.1.8): a target" \
+	    "of kind stamp measured by STAMP alone, no raw socket needed," \
+	    "its session in arcana-stamp (the round trip, the delay each way," \
+	    "the reflector's mode, the DSCP each way, no NAT, the counters)" \
+	    "and on arcanactl sdwan stamp's line; one of kind icmp pinged," \
+	    "no session; the kind kept and read back; the reflector gone, the" \
+	    "stamp one down, no fallback, why said; kind stamp at a jail's" \
+	    "edge and a kind not known refused"
+	atf_set "timeout" "90"
+}
+stamp_kind_body()
+{
+	local P i
+
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	atf_check -s exit:1 -e match:'kind' -o ignore "$JGC" -c "$SOCK" \
+	    sdwan probes '[{"id":"x","address":"127.0.0.1","kind":"twamp"}]'
+	atf_check -s exit:1 -e match:"kind stamp: a jail's edge has no STAMP yet" \
+	    -o ignore "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw","targets":[{"id":"x","address":"127.0.0.1","kind":"stamp"}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"s","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3,"dscp":46},{"id":"i","address":"127.0.0.1","kind":"icmp"}]'
+	wait_match '^s: stamp \(stateful, stamp alone\), rtt ' \
+	    "$JGC" -c "$SOCK" sdwan stamp || atf_fail "$("$JGC" -c "$SOCK" \
+	    sdwan stamp; cat daemon.out)"
+	sleep 1
+	# A line a session: STAMP, the round trip and the delay each way
+	# (one way, or half the round trip as the clocks allow), the loss
+	# each way, the DSCP sent, at the reflector and back, no NAT.
+	atf_check -o save:st.txt "$JGC" -c "$SOCK" sdwan stamp
+	atf_check -o match:"^sender: port $P, clock " \
+	    -o match:'^s: stamp \(stateful, stamp alone\), rtt [0-9.]+ ms, (one way [0-9.]+/[0-9.]+ ms|estimated: half the rtt each way), lost forward 0, backward 0 of [0-9]+, dscp 46>46>46, NAT none, auth no$' \
+	    -o not-match:'^i: ' cat st.txt
+	# The same in arcana-stamp, and in the sdwan read beside the target.
+	atf_check -o save:st.json "$JGC" -c "$SOCK" get stamp
+	atf_check -o match:'"target":"s"' -o match:'"kind":"stamp"' \
+	    -o match:'"method":"stamp"' -o match:'"reflector-mode":"stateful"' \
+	    -o match:"\"reflector-udp-port\":$P" \
+	    -o match:'"reflector-address":"127.0.0.1"' \
+	    -o match:'"dscp":\{"backward":46,"forward":46,"refused":false,"sent":46\}' \
+	    -o match:'"nat":"none"' -o match:'"source-address":"127.0.0.1"' \
+	    -o match:'"one-way":"(measured|estimated)"' \
+	    -o match:'"lost":"0","lost-backward":"0","lost-forward":"0"' \
+	    -o match:'"received":"[1-9][0-9]*","refused":"0","sent":"[1-9][0-9]*"' \
+	    -o not-match:'"target":"i"' cat st.json
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"id":"s","address":"127\.0\.0\.1","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"stamp":\{"target":"s","kind":"stamp","method":"stamp"' \
+	    cat sd.json
+	if [ "$(id -u)" != 0 ]; then
+		atf_check -o match:'"id":"i","address":"127\.0\.0\.1","family":"inet","fib":0,"state":"error","error":"socket: [^"]*needs root' \
+		    cat sd.json
+	fi
+	# The kind is configuration: read back as arcana-probe has it.
+	atf_check -o match:'"history":3600,"id":"s","interval":50,"kind":"stamp"' \
+	    -o match:'"history":3600,"id":"i","interval":100,"kind":"icmp"' \
+	    "$JGC" -c "$SOCK" get -d running probes
+	# The reflector gone: down at three in a row, still STAMP, why said.
+	kill "$(cat sd.spid)"
+	wait_match '"id":"s","address":"127\.0\.0\.1","family":"inet","fib":0,"state":"down"' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "$("$JGC" -c "$SOCK" sdwan)"
+	wait_match '^s: stamp .* because (its STAMP port refused|no STAMP reply in 3 probes)' \
+	    "$JGC" -c "$SOCK" sdwan stamp || atf_fail "$("$JGC" -c "$SOCK" \
+	    sdwan stamp)"
+	atf_check -o match:'probe: s \(127\.0\.0\.1\): (its STAMP port refused|no STAMP reply in 3 probes): STAMP alone, no fallback' \
+	    -o not-match:'probe: s .*pinged until STAMP answers' cat daemon.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_kind_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
 }
 
 atf_test_case sdwan_rules cleanup
@@ -15374,6 +15500,7 @@ atf_init_test_cases()
 	atf_add_test_case stampd_conf
 	atf_add_test_case stampd_keys
 	atf_add_test_case stampd_refused
+	atf_add_test_case stamp_kind
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog
