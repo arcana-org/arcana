@@ -6,6 +6,9 @@ module: arcana-probe
      |  +--rw kind?                      enumeration
      |  +--rw stamp-interface?           string
      |  +--rw stamp-peer?                string
+     |  +--rw class* [name]
+     |  |  +--rw name    string
+     |  |  +--rw dscp    uint8
      |  +--rw count?                     uint32
      |  +--rw report?                    uint16
      |  +--rw fib?                       uint16
@@ -25,6 +28,7 @@ module: arcana-probe
      |  +--rw low-percentile?            percentile
      |  +--rw intermediate-percentile?   percentile
      |  +--rw high-percentile?           percentile
+     |  +--rw measurement-interval?      uint32
      +--rw link* [id]
      |  +--rw id           string
      |  +--rw interface    string
@@ -50,6 +54,7 @@ module: arcana-probe
      |  +--rw low-percentile?            percentile
      |  +--rw intermediate-percentile?   percentile
      |  +--rw high-percentile?           percentile
+     |  +--rw measurement-interval?      uint32
      +--rw jail* [name]
      |  +--rw name    string
      |  +--rw target* [id]
@@ -58,6 +63,9 @@ module: arcana-probe
      |  |  +--rw kind?                      enumeration
      |  |  +--rw stamp-interface?           string
      |  |  +--rw stamp-peer?                string
+     |  |  +--rw class* [name]
+     |  |  |  +--rw name    string
+     |  |  |  +--rw dscp    uint8
      |  |  +--rw count?                     uint32
      |  |  +--rw report?                    uint16
      |  |  +--rw fib?                       uint16
@@ -77,6 +85,7 @@ module: arcana-probe
      |  |  +--rw low-percentile?            percentile
      |  |  +--rw intermediate-percentile?   percentile
      |  |  +--rw high-percentile?           percentile
+     |  |  +--rw measurement-interval?      uint32
      |  +--rw link* [id]
      |  |  +--rw id           string
      |  |  +--rw interface    string
@@ -102,6 +111,7 @@ module: arcana-probe
      |     +--rw low-percentile?            percentile
      |     +--rw intermediate-percentile?   percentile
      |     +--rw high-percentile?           percentile
+     |     +--rw measurement-interval?      uint32
      +--ro state
      |  +--ro probing?   boolean
      |  +--ro time?      yang:date-and-time
@@ -143,7 +153,9 @@ module: arcana-probe
      |     |  +--ro delay-forward?    ms
      |     |  +--ro delay-backward?   ms
      |     |  +--ro one-way?          enumeration
+     |     +--ro class?      string
      |     +--ro pm
+     |     |  +--ro measurement-interval?      uint32
      |     |  +--ro low-percentile?            percentile
      |     |  +--ro intermediate-percentile?   percentile
      |     |  +--ro high-percentile?           percentile
@@ -264,7 +276,9 @@ module: arcana-probe
               |  +--ro delay-forward?    ms
               |  +--ro delay-backward?   ms
               |  +--ro one-way?          enumeration
+              +--ro class?      string
               +--ro pm
+              |  +--ro measurement-interval?      uint32
               |  +--ro low-percentile?            percentile
               |  +--ro intermediate-percentile?   percentile
               |  +--ro high-percentile?           percentile

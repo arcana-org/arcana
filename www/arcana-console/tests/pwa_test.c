@@ -6894,14 +6894,16 @@ part_flows_sdwan(void)
 	    "data/l3nm.json && grep -q '\"2h\"' data/l3nm.json") == 0);
 	/* The measurement intervals' percentiles, the service's (RFC
 	 * 9375's perf-mon): kept in its L3NM, the form showing them again;
-	 * the intermediate one left empty, the agent's 50. */
+	 * the intermediate one left empty, the agent's 50.  Its intervals of
+	 * 30 s, and a class of service its tunnels are measured in too. */
 	usleep(1500000);
 	run("document.querySelector('button[data-act=sd-swvc-edit]').click()");
 	wait_js("document.querySelector('form[data-form=sd-swvc] input[name="
 	    "pb_low_percentile]')", 5);
 	run("const f = document.querySelector('form[data-form=sd-swvc]'); "
 	    "f.pb_low_percentile.value = '25'; f.pb_high_percentile.value = "
-	    "'99.9'; f.requestSubmit();");
+	    "'99.9'; f.pb_measurement_interval.value = '30'; f.pb_classes."
+	    "value = 'voice=46'; f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
 	/* Kept once the save is answered, which the form's closing does not
 	 * wait for. */
@@ -6912,7 +6914,10 @@ part_flows_sdwan(void)
 			if ((ok = system("grep -Eq '\"low-percentile\": *\"?25' "
 			    "data/l3nm.json && grep -Eq '\"high-percentile\": "
 			    "*\"?99.9' data/l3nm.json && ! grep -q "
-			    "intermediate-percentile data/l3nm.json")) != 0)
+			    "intermediate-percentile data/l3nm.json && grep -Eq "
+			    "'\"measurement-interval\": *30' data/l3nm.json && "
+			    "grep -Eq '\"name\": *\"voice\"' data/l3nm.json")) !=
+			    0)
 				usleep(100000);
 		}
 		ATF_CHECK(ok == 0);
@@ -6922,7 +6927,11 @@ part_flows_sdwan(void)
 	    "pb_low_percentile]')?.value === '25' && document.querySelector("
 	    "'form[data-form=sd-swvc] input[name=pb_high_percentile]').value "
 	    "=== '99.9' && document.querySelector('form[data-form=sd-swvc] "
-	    "input[name=pb_intermediate_percentile]').value === ''", 10);
+	    "input[name=pb_intermediate_percentile]').value === '' && "
+	    "document.querySelector('form[data-form=sd-swvc] input[name="
+	    "pb_measurement_interval]').value === '30' && document."
+	    "querySelector('form[data-form=sd-swvc] input[name=pb_classes]')"
+	    ".value === 'voice=46'", 10);
 	run("document.querySelector('.modal button[data-act=close]').click()");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 10);
 	/*
@@ -7040,17 +7049,20 @@ part_flows_sdwan(void)
 	    "\"3\"]').click()");
 	wait_js("document.querySelector('.sd-stamp th[data-value=\"3\"]')"
 	    ".classList.contains('asc')", 5);
-	/* The measurement intervals (arcana-probe's pm): a row an end, the
-	 * round trip's percentiles named as the service's form set them
-	 * (25, the agent's 50, 99.9: through the apply to the agents and
-	 * back), the jitter's, the loss; sorted by a column picked. */
-	wait_js("document.querySelectorAll('.sd-pm tbody tr').length >= 2 && "
+	/* The measurement intervals (arcana-probe's pm): a row an end and
+	 * a class of service, the service's voice (DSCP 46) beside the
+	 * probes' own, through the apply to the agents and back; the round
+	 * trip's percentiles named as the service's form set them (25, the
+	 * agent's 50, 99.9), the jitter's, the loss; sorted by a column. */
+	wait_js("document.querySelectorAll('.sd-pm tbody tr').length >= 4 && "
 	    "[...document.querySelectorAll('.sd-pm th.sortable')].map(t => "
-	    "t.textContent).join('|') === 'From|Tunnel|Ended|RTT p25|RTT p50|"
-	    "RTT p99.9|Jitter p50|Loss %|Lost'", 20);
+	    "t.textContent).join('|') === 'From|Tunnel|Class|DSCP|Ended|RTT p25|"
+	    "RTT p50|RTT p99.9|Jitter p50|Loss %|Lost' && [...document."
+	    "querySelectorAll('.sd-pm tbody tr')].some(r => r.textContent."
+	    "includes('voice') && r.textContent.includes('46'))", 20);
 	run("document.querySelector('.sd-pm th[data-act=t-sort][data-value="
-	    "\"4\"]').click()");
-	wait_js("document.querySelector('.sd-pm th[data-value=\"4\"]')"
+	    "\"6\"]').click()");
+	wait_js("document.querySelector('.sd-pm th[data-value=\"6\"]')"
 	    ".classList.contains('asc')", 5);
 	shot("9-sdwan-paths");
 	/* Security: the policies, and the record of what their deny rules

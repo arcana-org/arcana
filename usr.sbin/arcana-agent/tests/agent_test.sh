@@ -2130,15 +2130,15 @@ yang_sdwan_body()
 	# Each edge's targets, links and monitors, as the agent keeps them,
 	# and back as its setters take them.
 	cat > targets.json <<'EOT'
-{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"low_percentile":25,"high_percentile":99.9,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
+{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"low_percentile":25,"high_percentile":99.9,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp","measurement_interval":10,"classes":[{"name":"voice","dscp":46}]}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
 EOT
 	cat > want <<'EOT'
 target tvc-1 10.202.0.2 fib=1 interval=100 size=64 count=0 dscp=46 down=3 up=3 timeout=1000 eval=1000 history=3600 report=5 percentiles=25000/0/99900 tca delay=50000 ipdv=10000 loss=10000 damping=2
 target tvc-2 fd00:5a::2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=icmp
-target tvc-3 10.203.0.2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=stamp
+target tvc-3 10.203.0.2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=stamp measurement-interval=10 class=voice/46
 link uni-1 em1 uni
 monitor ov-gre0 gre0 10.255.0.2 fib=2 eval=10000
-set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"low_percentile":25.0,"high_percentile":99.900000,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
+set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"low_percentile":25.0,"high_percentile":99.900000,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp","measurement_interval":10,"classes":[{"name":"voice","dscp":46}]}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
 set {"jail":"","targets":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]}
 jail gateway
 target tvc-1 10.202.0.1 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0
@@ -2149,7 +2149,7 @@ EOT
 	sed '$d' got > got2
 	atf_check -o file:want cat got2
 	cat > probes.json <<'EOT'
-{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10,0,0,0.3,0.317,1],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9,0.1,0,0.7,0.7,0]],"kept":2,"pm":{"low":10,"intermediate":50,"high":90,"length":60,"intervals":[{"start":1791995040,"end":1791995100,"complete":true,"sent":600,"received":597,"kept":597,"lost_forward":2,"lost_backward":1,"rtt":{"count":597,"min":500,"max":2500,"mean":800,"low":550,"intermediate":750,"high":1200},"forward":{"count":597,"min":200,"max":1000,"mean":300,"low":220,"intermediate":280,"high":500},"jitter_rtt":{"count":596,"min":0,"max":900,"mean":60,"low":5,"intermediate":40,"high":150},"raw":{"rtt":[500,750],"forward":[200],"backward":[],"jitter_rtt":[250],"jitter_forward":[],"jitter_backward":[]}},{"start":1791995100,"end":1791995160,"complete":false,"sent":100,"received":100,"kept":100}]}},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
+{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10,0,0,0.3,0.317,1],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9,0.1,0,0.7,0.7,0]],"kept":2,"pm":{"low":10,"intermediate":50,"high":90,"length":60,"intervals":[{"start":1791995040,"end":1791995100,"complete":true,"sent":600,"received":597,"kept":597,"lost_forward":2,"lost_backward":1,"rtt":{"count":597,"min":500,"max":2500,"mean":800,"low":550,"intermediate":750,"high":1200},"forward":{"count":597,"min":200,"max":1000,"mean":300,"low":220,"intermediate":280,"high":500},"jitter_rtt":{"count":596,"min":0,"max":900,"mean":60,"low":5,"intermediate":40,"high":150},"raw":{"rtt":[500,750],"forward":[200],"backward":[],"jitter_rtt":[250],"jitter_forward":[],"jitter_backward":[]}},{"start":1791995100,"end":1791995160,"complete":false,"sent":100,"received":100,"kept":100}]}},{"id":"tvc-1","class":"voice","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"dscp":46,"samples":[],"kept":0},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
 EOT
 	cat > want <<'EOT'
 probing=yes time=2026-10-14T16:25:10Z
@@ -2159,15 +2159,17 @@ target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interva
   sample 2026-10-14T16:25:01Z delay=700 ipdv=100 loss=100000 min=500 max=1200 sent=10 received=9
   stamp 2026-10-14T16:25:00Z lost=0/0 delay=300/317 measured
   stamp 2026-10-14T16:25:01Z lost=1/0 delay=700/700 estimated
-  pm 10000/50000/90000
+  pm 60s 10000/50000/90000
   interval 2026-10-14T16:24:00Z 2026-10-14T16:25:00Z complete sent=600 received=597 kept=597 lost=3/50000 fwd=2/33333 back=1/16667
     rtt n=597 min=500 max=2500 mean=800 p=550/750/1200
     fwd n=597 min=200 max=1000 mean=300 p=220/280/500
     jrtt n=596 min=0 max=900 mean=60 p=5/40/150
     raw rtt=2 fwd=1 jrtt=1
   interval 2026-10-14T16:25:00Z 2026-10-14T16:26:00Z running sent=100 received=100 kept=100 lost=0/0
+target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interval=0 size=0 eval=0 dscp=46 sent=0 received=0 misses=0 last-rtt=0 kept=0
+  class voice
 target tvc-2 fd00:5a::2 ipv6 fib=0 error error=no route since=2026-10-14T16:23:20Z interval=100 size=64 eval=1000 dscp=0 sent=0 received=0 misses=0 last-rtt=0 kept=0
-yang-cbor 746 bytes, the same back
+yang-cbor 783 bytes, the same back
 EOT
 	atf_check -o file:want "$y" probes probes.json
 	# arcana-stamp: a session a target STAMP measures or may (its
@@ -7737,7 +7739,7 @@ stamp_kind_cleanup()
 
 # The measurement intervals' check: each figure of a target's last
 # completed interval against its raw samples, sorted (pmcheck.py read.json
-# target low intermediate high [length]).
+# target[/class] low intermediate high [length]).
 pm_check_tool()
 {
 	command -v python3 > /dev/null || atf_skip "no python3"
@@ -7751,7 +7753,9 @@ d = json.load(open(sys.argv[1]))
 tid = sys.argv[2]
 pct = [float(p) for p in sys.argv[3:6]]
 out = d.get("arcana-probe:output", d)
-ts = [t for t in out["target"] if t["id"] == tid]
+tid, _, cls = tid.partition("/")
+ts = [t for t in out["target"] if t["id"] == tid and
+    t.get("class", "") == cls]
 if not ts:
     sys.exit("no target %s" % tid)
 pm = ts[0]["pm"]
@@ -7891,6 +7895,80 @@ sdwan_pm_body()
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
 }
 sdwan_pm_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
+}
+
+atf_test_case sdwan_classes cleanup
+sdwan_classes_head()
+{
+	atf_set "descr" "Measurement intervals and classes (PLAN-SDN-YANG" \
+	    "5.2.2): an interval of 2 s, its start and end on the clock's" \
+	    "multiples of it; a target in two classes of service, a session" \
+	    "each with its own SSID and DSCP (46 and 10 at the reflector), its" \
+	    "own intervals, each against the sorted dump; the classes read" \
+	    "back as the target's, not as targets; a class of the target's" \
+	    "DSCP, twice or of a monitor refused"
+	atf_set "timeout" "120"
+}
+sdwan_classes_body()
+{
+	local P i c
+
+	stamp_programs
+	pm_check_tool
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	atf_check -s exit:1 -e match:"dscp 0 is the target's own" -o ignore \
+	    "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"x","address":"127.0.0.1","kind":"stamp","classes":[{"name":"be","dscp":0}]}]'
+	atf_check -s exit:1 -e match:"another class's" -o ignore \
+	    "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"x","address":"127.0.0.1","kind":"stamp","classes":[{"name":"a","dscp":46},{"name":"b","dscp":46}]}]'
+	atf_check -s exit:1 -e match:'measurement' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"x","address":"127.0.0.1","measurement_interval":0}]'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"s","address":"127.0.0.1","kind":"stamp","interval":20,"timeout":300,"measurement_interval":2,"classes":[{"name":"voice","dscp":46},{"name":"bulk","dscp":10}]}]'
+	# The classes are the target's configuration, not targets.
+	atf_check -o match:'"class":\[\{"dscp":46,"name":"voice"\},\{"dscp":10,"name":"bulk"\}\]' \
+	    -o match:'"measurement-interval":2' \
+	    -o not-match:'"id":"s".*"id":"s"' \
+	    "$JGC" -c "$SOCK" get -d running probes
+	# Three sessions of STAMP: the target's DSCP and each class's, each
+	# its own SSID, the reflector seeing each DSCP.
+	wait_match '^s/bulk: stamp \(stateful' "$JGC" -c "$SOCK" sdwan stamp ||
+	    atf_fail "$("$JGC" -c "$SOCK" sdwan stamp)"
+	atf_check -o save:st.json "$JGC" -c "$SOCK" get stamp
+	for c in voice:46 bulk:10; do
+		atf_check -o match:"\"class\":\"${c%:*}\".*\"dscp\":\\{\"backward\":${c#*:},\"forward\":${c#*:},\"refused\":false,\"sent\":${c#*:}\\}" \
+		    cat st.json
+	done
+	atf_check -o match:'^3$' sh -c "grep -o '\"ssid\":[0-9]*' st.json | sort -u | wc -l | tr -d ' '"
+	# Each session's intervals, of 2 s on the clock, against its raw
+	# samples, sorted.
+	pm_wait 20 || atf_fail "no interval ended"
+	sleep 3
+	atf_check -o save:read.json "$JGC" -c "$SOCK" action probes read raw=true
+	for c in s s/voice s/bulk; do
+		atf_check -o match:'^ok round-trip [0-9]+' \
+		    python3 pmcheck.py read.json $c 10 50 90 2
+	done
+	# A line a session.
+	atf_check -o match:'^s: .*rtt p50' -o match:'^s/voice: .*rtt p50' \
+	    -o match:'^s/bulk: .*rtt p50' "$JGC" -c "$SOCK" sdwan intervals
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+sdwan_classes_cleanup()
 {
 	stop_daemon
 	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
@@ -15671,6 +15749,7 @@ atf_init_test_cases()
 	atf_add_test_case stampd_refused
 	atf_add_test_case stamp_kind
 	atf_add_test_case sdwan_pm
+	atf_add_test_case sdwan_classes
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog

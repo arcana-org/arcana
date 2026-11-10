@@ -2635,7 +2635,11 @@ With
 the same as structured output.
 .It Cm sdwan intervals
 Each target's last completed measurement interval, arcana-probe's
-(intervals of 60 s aligned to the clock), a line a target: when it
+(intervals of 60 s unless the service says another, aligned to the
+clock), a line a target and one each class of service it is measured
+in too
+.Pq Ar id Ns / Ns Ar class :
+when it
 began and ended, the round trip's intermediate and high percentiles
 (p50 and p90 unless the service's probe settings say others), and the
 loss, a count of the probes sent and a percentage; where none has ended
@@ -2646,7 +2650,10 @@ the same as structured output.
 .It Cm sdwan probes Ar json
 The targets the agent is to measure from now on, a JSON array as the
 console's SD-WAN apply makes them: each an id and an address, and maybe
-kind (auto, stamp or icmp), fib, interval, size, count, dscp, down, up,
+kind (auto, stamp or icmp), classes (each a name and a dscp, measured
+in a session of its own), measurement_interval (seconds),
+low_percentile, intermediate_percentile and high_percentile, fib,
+interval, size, count, dscp, down, up,
 timeout, eval, history, report and tca, put in arcana-probe's
 .Ic target
 list by a commit, the edge's links and monitors and the other edges'

@@ -117,7 +117,7 @@ on the wire.
 | 71 600 | 100 | `arcana-host` | `share/yang/arcana-host@2026-10-15.sid` (100 used, 34 obsolete: the host's certificates, a read-certificates action's output now; its rest at 82 000 and 83 000) |
 | 71 700 | 200 | `arcana-agent` | `share/yang/arcana-agent@2026-10-15.sid` (200 used, 1 obsolete: the certificate's chain as subjects, its intermediate certificates now; its rest at 82 100 and 83 100) |
 | 71 900 | 100 | `arcana-jail-files` | `share/yang/arcana-jail-files@2026-10-15.sid` (25 used, 11 obsolete: the jails' files as state, the read-files action's output now) |
-| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, numbered again in path order with a target's measurement intervals and their percentiles; its rest at 80 300, 85 100 and 92 700) |
+| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, numbered again in path order with a target's measurement intervals, their percentiles and length and its classes of service; its rest at 80 300, 85 100 and 92 700) |
 | 72 100 | 200 | `arcana-sdwan` | `share/yang/arcana-sdwan@2026-10-15.sid` (200 used, 3 obsolete: the rules' and the steer's jail, the jail list's now, and a proxy's deny, which its form says; its rest at 81 000) |
 | 72 300 | 100 | `arcana-sshd` | `share/yang/arcana-sshd@2026-10-15.sid` (69 used, 35 obsolete: the jail augment, the read action's jail input in its place, and user-ca, the user-ca-key list now; its rest at 85 000) |
 | 72 400 | 200 | `arcana-builder` | `share/yang/arcana-builder@2026-10-17.sid` (98 used) |
@@ -170,7 +170,7 @@ on the wire.
 | 86 400 | 800 | `ietf-l3vpn-ntw@2022-02-14`, RFC 9182 (no IETF range): the services as the console stores them | `share/yang/ietf-l3vpn-ntw@2022-02-14.sid` (622 used) |
 | 87 200 | 100 | `ietf-key-chain@2017-06-15`, RFC 8177 (no IETF range; imported by `ietf-l3vpn-ntw`, its identities used) | `share/yang/ietf-key-chain@2017-06-15.sid` (56 used) |
 | 87 300 | 100 | `ietf-tcp@2024-10-10`, RFC 9648 (no IETF range; its identities derive from `ietf-key-chain`'s) | `share/yang/ietf-tcp@2024-10-10.sid` (44 used) |
-| 87 400 | 600 | `arcana-l3nm`, the SD-WAN's augments of L3NM and of its SAPs, the console's | `share/yang/arcana-l3nm@2026-11-05.sid` (360 used, numbered again in path order with the probes' percentiles) |
+| 87 400 | 600 | `arcana-l3nm`, the SD-WAN's augments of L3NM and of its SAPs, the console's | `share/yang/arcana-l3nm@2026-11-05.sid` (364 used, numbered again in path order with the probes' percentiles, measurement interval and classes) |
 | 88 000 | 100 | `arcana-firewall`, its third range (listed first in its file, so that new items go there): the threat feeds' tables, the feed-load and feed-drop actions | `share/yang/arcana-firewall@2026-10-15.sid` (38 used) |
 | 88 100 | 100 | `ietf-network@2018-02-26`, RFC 8345 (no IETF range): the agent's SAP network | `share/yang/ietf-network@2018-02-26.sid` (12 used) |
 | 88 200 | 100 | `ietf-network-topology@2018-02-26`, RFC 8345 (no IETF range): its termination points | `share/yang/ietf-network-topology@2018-02-26.sid` (18 used) |
@@ -182,8 +182,8 @@ on the wire.
 | 91 800 | 300 | `arcana-console`, the console's own configuration and state (settings, tokens, users, roles, groups, enrolment, workflows, runs, then the first of the parts below) | `share/yang/arcana-console@2026-11-05.sid` (300 used) |
 | 92 100 | 200 | `arcana-console`, its second range, for what did not fit the first: the settings' test actions, the templates, interface labels, prefix lists, threat feeds, transfers, Web Push subscriptions, the hosts and the first of the SD-WAN's verbs | `share/yang/arcana-console@2026-11-05.sid` (200 used) |
 | 92 300 | 300 | `arcana-console`, its third range: the SD-WAN's verbs (their first in the second), the console's update, notes, cluster, CA, plugins, security keys, the path finder and the WireGuard key pair | `share/yang/arcana-console@2026-11-05.sid` (138 used) |
-| 92 600 | 100 | `arcana-stamp`, STAMP's sessions, the sender's settings and stampd as the agent sets it | `share/yang/arcana-stamp@2026-11-10.sid` (62 used) |
-| 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2) | `share/yang/arcana-probe@2026-10-15.sid` (41 used) |
+| 92 600 | 100 | `arcana-stamp`, STAMP's sessions, the sender's settings and stampd as the agent sets it | `share/yang/arcana-stamp@2026-11-10.sid` (63 used, numbered again in path order with a session's class) |
+| 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2) | `share/yang/arcana-probe@2026-10-15.sid` (55 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

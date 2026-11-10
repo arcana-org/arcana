@@ -219,6 +219,12 @@ module arcana-stamp {
         description
           "The arcana-probe target, its id.";
       }
+      leaf class {
+        type string;
+        description
+          "The class of service the session measures (arcana-probe's
+           target's class); none, the target's own DSCP.";
+      }
       leaf jail {
         type string;
         description

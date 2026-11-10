@@ -82,6 +82,12 @@ main(int argc, char **argv)
 					    t->low_percentile, (intmax_t)
 					    t->intermediate_percentile, (intmax_t)
 					    t->high_percentile);
+				if (t->has_measurement_interval)
+					printf(" measurement-interval=%u",
+					    t->measurement_interval);
+				for (size_t k = 0; k < t->class.n; k++)
+					printf(" class=%s/%u", t->class.v[k].name,
+					    t->class.v[k].dscp);
 				if (t->tca != NULL)
 					printf(" tca delay=%jd ipdv=%jd loss=%jd "
 					    "damping=%u", (intmax_t)t->tca->delay,
@@ -142,6 +148,8 @@ main(int argc, char **argv)
 			    (intmax_t)t->last_rtt, t->kept);
 			if (t->jail != NULL)
 				printf("  jail %s\n", t->jail);
+			if (t->class != NULL)
+				printf("  class %s\n", t->class);
 			if (t->now != NULL)
 				printf("  now sent=%u received=%u delay=%jd ipdv=%jd "
 				    "loss=%jd age=%jd\n", t->now->sent,
@@ -178,7 +186,8 @@ main(int argc, char **argv)
 				const struct arcana_probe_target_state_pm *pm =
 				    t->pm;
 
-				printf("  pm %jd/%jd/%jd\n", (intmax_t)
+				printf("  pm %us %jd/%jd/%jd\n",
+				    pm->measurement_interval, (intmax_t)
 				    pm->low_percentile, (intmax_t)
 				    pm->intermediate_percentile, (intmax_t)
 				    pm->high_percentile);

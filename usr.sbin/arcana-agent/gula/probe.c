@@ -141,7 +141,8 @@
 #define	PUB_B64		44	/* an X25519 public half, base64 */
 #define	PM_RAW_MAX	4096	/* raw samples an interval keeps, a target */
 #define	PM_KEPT		60	/* completed measurement intervals kept */
-#define	PM_LEN		60	/* s: a measurement interval */
+#define	PM_LEN		60	/* s: a measurement interval, by default */
+#define	CLASSES_MAX	8	/* classes of service a target, at most */
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
@@ -196,6 +197,11 @@ struct pm {
 
 struct target {
 	char			 id[128];
+	/* A class of service the target is measured in too: a session of
+	 * its own after the target's, its name and place (1 on) in the
+	 * target's list; "" and 0, the target itself. */
+	char			 cls[33];
+	int			 cls_idx;
 	char			 address[64];
 	char			 jail[64];	/* its network's; "" the host's */
 	char			 owner[8];	/* sdwan, monitor */
@@ -509,6 +515,9 @@ stamp_key_get(struct work *w, struct target *t)
 	memcpy(t->key.key, okm, 32);
 	t->key.len = 32;
 	t->key.ssid = okm[32] << 8 | okm[33];
+	/* A class's session: an SSID of its own, the same at both ends
+	 * (both have the service's classes in the same order). */
+	t->key.ssid = (t->key.ssid + t->cls_idx) & 0xffff;
 	if (t->key.ssid == 0)
 		t->key.ssid = 1;
 	explicit_bzero(okm, sizeof(okm));
@@ -608,6 +617,9 @@ target_name(const struct target *t, char *buf, size_t len)
 		snprintf(buf, len, "%s@%s", t->id, t->jail);
 	else
 		snprintf(buf, len, "%s", t->id);
+	/* A class's session: id/class. */
+	if (t->cls[0] != '\0')
+		snprintf(buf + strlen(buf), len - strlen(buf), "/%s", t->cls);
 	return (buf);
 }
 
@@ -621,6 +633,10 @@ state_set(struct target *t, int state)
 		return;
 	t->state = state;
 	t->since = time(NULL);
+	/* A class's session: its state its own, no event, fault nor
+	 * steering (the target's DSCP's state is the target's). */
+	if (t->cls[0] != '\0')
+		return;
 	changed = true;
 	if (state != ST_UP && state != ST_DOWN)
 		return;
@@ -1197,7 +1213,7 @@ window_end(struct target *t, double now)
 		    t->dscp_refused ? " (the reflector refused it)" : "", src,
 		    dst, nat, dm);
 	}
-	if (t->w_sent > 0)
+	if (t->w_sent > 0 && t->cls[0] == '\0')
 		tca_check(t, s);
 reset:
 	t->w_sent = t->w_recv = t->w_ipdv_n = 0;
@@ -2052,7 +2068,8 @@ targets_parse(struct work *w, const char *json, struct target *new,
 				t->pct[k] = ucl_object_todouble(v);
 			}
 		}
-		t->pm_len = PM_LEN;
+		t->pm_len = (int)num(o, "measurement_interval", PM_LEN, 1, 3600,
+		    &bad);
 		t->pm_prev[0] = t->pm_prev[1] = t->pm_prev[2] = -1;
 		/* Thresholds: delay and ipdv in ms, loss a fraction. */
 		{
@@ -2075,10 +2092,74 @@ targets_parse(struct work *w, const char *json, struct target *new,
 			    "size (8-%d), count, dscp (0-63), down and up "
 			    "(1-100), timeout (10-60000 ms), eval (100 ms or "
 			    "more), history (0-%d) and report (1-1000) are "
-			    "numbers in those bounds", id, PKT_MAX, SAMPLES_MAX);
+			    "numbers in those bounds; measurement_interval 1 to "
+			    "3600 s", id, PKT_MAX, SAMPLES_MAX);
 			goto bad;
 		}
 		n++;
+		/* Its classes of service: a session each after it, with the
+		 * class's DSCP, its own STAMP SSID or echo id, its own
+		 * intervals. */
+		if ((v = ucl_object_lookup(o, "classes")) != NULL) {
+			const ucl_object_t	*c, *cn, *cd;
+			ucl_object_iter_t	 cit = NULL;
+			struct target		*x;
+			const char		*nm;
+			int			 pi = n - 1, ci = 0, d;
+
+			if (ucl_object_type(v) != UCL_ARRAY || strcmp(owner,
+			    OWN_SDWAN) != 0) {
+				*errp = wfmt(w, "target %s: classes are an array "
+				    "of {name, dscp}, a target's alone", id);
+				goto bad;
+			}
+			while ((c = ucl_object_iterate(v, &cit, true)) != NULL) {
+				cn = ucl_object_lookup(c, "name");
+				cd = ucl_object_lookup(c, "dscp");
+				nm = cn != NULL && ucl_object_type(cn) == UCL_STRING ?
+				    ucl_object_tostring(cn) : NULL;
+				d = cd != NULL && ucl_object_type(cd) == UCL_INT ?
+				    (int)ucl_object_toint(cd) : -1;
+				if (nm == NULL || nm[0] == '\0' || strlen(nm) >=
+				    sizeof(t->cls) || strspn(nm, "ABCDEFGHIJKLMNOPQR"
+				    "STUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+				    != strlen(nm) || d < 0 || d > 63) {
+					*errp = wfmt(w, "target %s: a class is a name "
+					    "(letters, digits, _ . -, 32 at most) and a "
+					    "dscp (0-63)", id);
+					goto bad;
+				}
+				if (d == new[pi].dscp) {
+					*errp = wfmt(w, "target %s: class %s: dscp %d "
+					    "is the target's own", id, nm, d);
+					goto bad;
+				}
+				for (k = pi + 1; k < n; k++)
+					if (strcmp(new[k].cls, nm) == 0 ||
+					    new[k].dscp == d) {
+						*errp = wfmt(w, "target %s: class %s: its "
+						    "name or dscp is another class's", id,
+						    nm);
+						goto bad;
+					}
+				if (++ci > CLASSES_MAX || n == TARGETS_MAX) {
+					*errp = wfmt(w, "target %s: %d classes at "
+					    "most, %d targets and classes in all", id,
+					    CLASSES_MAX, TARGETS_MAX);
+					goto bad;
+				}
+				x = &new[n++];
+				*x = new[pi];
+				snprintf(x->cls, sizeof(x->cls), "%s", nm);
+				x->cls_idx = ci;
+				x->dscp = d;
+				/* Its key's SSID its own: derived anew. */
+				explicit_bzero(&x->key, sizeof(x->key));
+				x->keyed = false;
+				if (x->stamp_peer[0] != '\0' && x->arcana)
+					(void)stamp_key_get(w, x);
+			}
+		}
 	}
 	ucl_object_unref(top);
 	return (n);
@@ -2123,7 +2204,7 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			    strcmp(o->id, t->id) == 0 &&
 			    strcmp(o->address, t->address) == 0 && o->fib ==
 			    t->fib && o->dscp == t->dscp && o->size == t->size &&
-			    o->kind == t->kind)
+			    o->kind == t->kind && strcmp(o->cls, t->cls) == 0)
 				break;
 		}
 		if (k < nold) {
@@ -2599,8 +2680,9 @@ probe_state_of(const char *jail, const char *id)
 	st = PROBE_NONE;
 	pthread_mutex_lock(&lock);
 	for (i = 0; i < ntargets; i++)
-		if (!is_monitor(&targets[i]) && strcmp(targets[i].jail, jail) ==
-		    0 && strcmp(targets[i].id, id) == 0) {
+		if (!is_monitor(&targets[i]) && targets[i].cls[0] == '\0' &&
+		    strcmp(targets[i].jail, jail) == 0 && strcmp(targets[i].id,
+		    id) == 0) {
 			st = targets[i].state;
 			break;
 		}
@@ -2622,8 +2704,8 @@ probe_sample_of(const char *jail, const char *id, double *delay,
 	pthread_mutex_lock(&lock);
 	for (i = 0; i < ntargets; i++) {
 		t = &targets[i];
-		if (is_monitor(t) || strcmp(t->jail, jail) != 0 || strcmp(t->id,
-		    id) != 0)
+		if (is_monitor(t) || t->cls[0] != '\0' || strcmp(t->jail, jail) !=
+		    0 || strcmp(t->id, id) != 0)
 			continue;
 		if (t->nsamples > 0 && t->samples != NULL) {
 			s = &t->samples[(t->head + t->nsamples - 1) % t->history];
@@ -2655,6 +2737,9 @@ target_json(const struct target *t, double now, uint64_t after, bool raw)
 	    "address", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromstring(t->af == AF_INET ?
 	    "inet" : "inet6"), "family", 0, false);
+	if (t->cls[0] != '\0')
+		ucl_object_insert_key(o, ucl_object_fromstring(t->cls), "class",
+		    0, false);
 	if (t->jail[0] != '\0')
 		ucl_object_insert_key(o, ucl_object_fromstring(t->jail),
 		    "jail", 0, false);
@@ -3076,6 +3161,9 @@ target_conf(const struct target *t)
 	ucl_object_insert_key(o, ucl_object_fromint(t->eval), "eval", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint(t->history), "history", 0,
 	    false);
+	if (t->pm_len != PM_LEN)
+		ucl_object_insert_key(o, ucl_object_fromint(t->pm_len),
+		    "measurement_interval", 0, false);
 	/* Its measurement intervals' percentiles, where not the defaults. */
 	{
 		static const char *const pk[] = { "low_percentile",
@@ -3431,8 +3519,10 @@ probe_conf_json(void)
 	ucl_object_insert_key(edges, e, "", 0, true);
 	pthread_mutex_lock(&lock);
 	for (k = 0; k < ntargets + nlinks; k++) {
-		/* A target's place left empty is none. */
-		if (k < ntargets && targets[k].id[0] == '\0')
+		/* A target's place left empty is none; a class's session is
+		 * its target's classes. */
+		if (k < ntargets && (targets[k].id[0] == '\0' ||
+		    targets[k].cls[0] != '\0'))
 			continue;
 		jail = k < ntargets ? targets[k].jail : links[k - ntargets].jail;
 		if ((o = ucl_object_lookup(edges, jail)) == NULL) {
@@ -3447,9 +3537,25 @@ probe_conf_json(void)
 			ucl_object_insert_key(e, l, key, 0, true);
 		} else
 			l = (ucl_object_t *)(uintptr_t)o;
-		if (k < ntargets)
-			ucl_array_append(l, target_conf(&targets[k]));
-		else {
+		if (k < ntargets) {
+			ucl_object_t	*tc, *cl = NULL, *c;
+
+			tc = target_conf(&targets[k]);
+			for (int j = k + 1; j < ntargets && targets[j].cls[0] !=
+			    '\0'; j++) {
+				if (cl == NULL)
+					cl = ucl_object_typed_new(UCL_ARRAY);
+				c = ucl_object_typed_new(UCL_OBJECT);
+				ucl_object_insert_key(c, ucl_object_fromstring(
+				    targets[j].cls), "name", 0, false);
+				ucl_object_insert_key(c, ucl_object_fromint(
+				    targets[j].dscp), "dscp", 0, false);
+				ucl_array_append(cl, c);
+			}
+			if (cl != NULL)
+				ucl_object_insert_key(tc, cl, "classes", 0, false);
+			ucl_array_append(l, tc);
+		} else {
 			o = ucl_object_typed_new(UCL_OBJECT);
 			ucl_object_insert_key((ucl_object_t *)(uintptr_t)o,
 			    ucl_object_fromstring(links[k - ntargets].id), "id",

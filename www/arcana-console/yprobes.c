@@ -91,6 +91,13 @@ target_of(const ucl_object_t *t)
 		if ((v = ucl_object_lookup(t, ints[i])) != NULL)
 			ucl_object_insert_key(o, ucl_object_copy(v), ints[i], 0,
 			    true);
+	/* Its measurement intervals' length; its classes of service. */
+	if ((v = ucl_object_lookup(t, "measurement_interval")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v),
+		    "measurement-interval", 0, true);
+	if ((v = ucl_object_lookup(t, "classes")) != NULL &&
+	    ucl_array_size(v) > 0)
+		ucl_object_insert_key(o, ucl_object_copy(v), "class", 0, true);
 	/* Its measurement intervals' percentiles (decimal64, 3 digits). */
 	for (size_t i = 0; i < nitems(pcts); i++)
 		if ((v = ucl_object_lookup(t, pcts[i])) != NULL) {

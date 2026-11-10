@@ -3171,6 +3171,43 @@ whose first part is served.
   by them after the apply: RTT p25, p50, p99.9).
 - 5.2.2 A: measurement interval (default 60 s) with start and end as
   date-and-time; per-class sessions per DSCP; check: two classes.
+  Done (agent 0.272.0, console 0.421.0).  The interval's length is
+  set, RFC 9375's `measurement-interval`, 1 to 3600 s, 60 by default,
+  per target and monitor (`measurement_interval`) and per service
+  (arcana-l3nm's probe container, the service form): its intervals
+  begin where the wall clock is a multiple of it, start and end
+  `yang:date-and-time` (5.2.1's), a length or percentiles changed
+  beginning them again.  Classes of service, RFC 9375's
+  per-class statistics: a target's `class` list (arcana-probe; the
+  service's probe `classes`, {name, dscp} each, 8 at most, none of the
+  probes' own DSCP nor twice; the form's "voice=46, bulk=10") makes
+  the prober measure it in a session of its own each, after the
+  target's: a target of its own in the prober (gula/probe.c, the same
+  id, its `class`), so with its own socket and TOS or traffic class,
+  its own STAMP sender and SSID (an unkeyed one random; a plain
+  tunnel's derived key with its SSID moved by the class's place, so
+  the same at both ends, which both have the service's classes in the
+  same order, and each in stampd's key file), or its own echo id, its
+  own samples and intervals.  A class's session raises no event, fault
+  nor threshold and steers nothing: the target's own DSCP's state is
+  the tunnel's.  Kept as the target's configuration (`classes` read
+  back on it, never as targets).  arcana-probe's state and arcana-stamp's
+  session gained `class`; the read has a row a session.  arcanactl:
+  `sdwan intervals` and `sdwan stamp` a line a session (id/class).  The
+  Paths tab: "Measurement intervals" a row a session, Class and DSCP
+  columns; the stamp table and the charts the target's own row.  ICMP
+  per class needs root as ICMP does.  Checked:
+  agent_test:sdwan_classes (stampd unprivileged on the loopback, a
+  target of kind stamp in classes voice (46) and bulk (10), intervals
+  of 2 s: three sessions, three SSIDs, the reflector seeing 46 and 10
+  each way; each session's interval on the clock's multiples of 2 s
+  and its figures against its sorted raw dump; a class of the target's
+  own DSCP, two of one DSCP and an interval of 0 refused; the classes
+  read back on the target alone), agent_test:yang_sdwan (the length
+  and the classes through YANG-CBOR and back, a class's row),
+  pwa_test:pwa_flows_sdwan (the service form's interval of 30 s and
+  class voice=46 kept in L3NM and shown again; after the apply the
+  Paths table's voice rows, DSCP 46, beside each end's own).
 - 5.3.1 C: `ietf-network-vpn-pm`: one network per service and the
   underlay, two links per tunnel, `pm` entries from the agents'
   records; check: RFC 9375's examples' shape.

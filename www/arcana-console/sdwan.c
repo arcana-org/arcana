@@ -2362,6 +2362,56 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 		    !is_int(e, 1, 1000, &n))
 			return (fail(c, "probe: report is so many eval "
 			    "intervals, 1 to 1000"));
+		/* The measurement intervals' length (RFC 9375). */
+		if ((e = ucl_object_lookup(v, "measurement_interval")) != NULL &&
+		    !is_int(e, 1, 3600, NULL))
+			return (fail(c, "probe: measurement_interval is 1 to "
+			    "3600 s"));
+		/* The classes of service each tunnel is measured in too:
+		 * {name, dscp} each, 8 at most, none twice, none of the
+		 * probes' own DSCP. */
+		if ((e = ucl_object_lookup(v, "classes")) != NULL) {
+			const ucl_object_t	*cl, *x, *pd;
+			ucl_object_iter_t	 cit = NULL, xit;
+			const char		*nm;
+			int64_t			 d, own;
+			int			 nc = 0;
+
+			if (ucl_object_type(e) != UCL_ARRAY)
+				return (fail(c, "probe: classes are a list of "
+				    "{name, dscp}"));
+			own = (pd = ucl_object_lookup(v, "dscp")) != NULL ?
+			    ucl_object_toint(pd) : 0;
+			while ((cl = ucl_object_iterate(e, &cit, true)) != NULL) {
+				nm = ucl_object_tostring(ucl_object_lookup(cl,
+				    "name"));
+				if (ucl_object_type(cl) != UCL_OBJECT || nm == NULL ||
+				    nm[0] == '\0' || strlen(nm) > 32 || strspn(nm,
+				    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv"
+				    "wxyz0123456789_.-") != strlen(nm) ||
+				    !is_int(ucl_object_lookup(cl, "dscp"), 0, 63,
+				    NULL))
+					return (fail(c, "probe: a class is a name "
+					    "(letters, digits, _ . -, 32 at most) and a "
+					    "dscp, 0 to 63"));
+				d = ucl_object_toint(ucl_object_lookup(cl, "dscp"));
+				if (d == own)
+					return (fail(c, "probe: class %s: dscp %jd is "
+					    "the probes' own", nm, (intmax_t)d));
+				xit = NULL;
+				while ((x = ucl_object_iterate(e, &xit, true)) !=
+				    NULL && x != cl)
+					if (strcmp(nm, ucl_object_tostring(
+					    ucl_object_lookup(x, "name")) != NULL ?
+					    ucl_object_tostring(ucl_object_lookup(x,
+					    "name")) : "") == 0 || ucl_object_toint(
+					    ucl_object_lookup(x, "dscp")) == d)
+						return (fail(c, "probe: class %s: its "
+						    "name or dscp is another's", nm));
+				if (++nc > 8)
+					return (fail(c, "probe: 8 classes at most"));
+			}
+		}
 		/* The measurement intervals' percentiles (RFC 9375). */
 		for (size_t k = 0; k < nitems(pcts); k++) {
 			double	d;

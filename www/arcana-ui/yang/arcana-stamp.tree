@@ -14,6 +14,7 @@ module: arcana-stamp
      |  +--ro status?      string
      +--ro session*
         +--ro target?               string
+        +--ro class?                string
         +--ro jail?                 string
         +--ro kind?                 kind
         +--ro method?               enumeration

@@ -685,6 +685,7 @@ stamp_json(const ucl_object_t *s)
 	o = ucl_object_typed_new(UCL_OBJECT);
 	cp(o, "target", s, "target");
 	cp(o, "jail", s, "jail");
+	cp(o, "class", s, "class");
 	cp(o, "kind", s, "kind");
 	cp(o, "method", s, "method");
 	cp(o, "reason", s, "reason");
@@ -753,7 +754,10 @@ stamp_facts(ucl_object_t *top, const ucl_object_t *st)
 			    strcmp(jstr(e, "id"), jstr(s, "target")) != 0 ||
 			    (jstr(e, "jail") != NULL) != (jstr(s, "jail") !=
 			    NULL) || (jstr(s, "jail") != NULL && strcmp(jstr(e,
-			    "jail"), jstr(s, "jail")) != 0))
+			    "jail"), jstr(s, "jail")) != 0) || (jstr(e, "class") !=
+			    NULL) != (jstr(s, "class") != NULL) || (jstr(s,
+			    "class") != NULL && strcmp(jstr(e, "class"), jstr(s,
+			    "class")) != 0))
 				continue;
 			put(e, "stamp", stamp_json(s));
 			break;

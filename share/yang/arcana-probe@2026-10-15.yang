@@ -32,10 +32,12 @@ module arcana-probe {
      and the most, and the probes sent and answered; thresholds a
      metric over which is a fault (tca).  And measurement intervals
      as RFC 9375's perf-mon has them, for its pm entries: of 60 s,
-     aligned to the clock, each with the least, the most, the mean
+     aligned to the clock (of 1 to 3600 s as set), each with the
+     least, the most, the mean
      and three percentiles of the round trip, the delay each way and
      their IPDV in microseconds, and the loss as a count and a
-     percentage; the last 60 kept and the running one.  The targets are
+     percentage; the last 60 kept and the running one; and each class
+     of service a target names measured in a session of its own.  The targets are
      configuration, the host's and each vnet jail edge's, with the
      interfaces whose links are watched and the admin's own monitors
      on any tunnel: each edge's lists set together by a commit, kept
@@ -295,6 +297,17 @@ module arcana-probe {
     }
     uses tca;
     uses percentiles;
+    leaf measurement-interval {
+      type uint32 {
+        range "1..3600";
+      }
+      units "seconds";
+      default "60";
+      description
+        "A measurement interval's length, RFC 9375's
+         measurement-interval: the intervals begin where the wall
+         clock is a multiple of it.";
+    }
   }
 
   grouping percentiles {
@@ -609,6 +622,34 @@ module arcana-probe {
            same at both ends by HKDF-SHA256, never sent.  Both or
            neither.";
       }
+      list class {
+        key "name";
+        max-elements 8;
+        description
+          "A class of service it is measured in too (RFC 9375's
+           one-way-pm-statistics-per-class): a session of its own each,
+           STAMP with an SSID of its own or ICMP, with the class's DSCP
+           in the TOS or traffic class, its intervals apart; no fault
+           nor event of its own, the target's state being the target's
+           DSCP's.";
+        leaf name {
+          type string {
+            length "1..32";
+            pattern '[A-Za-z0-9_.-]+';
+          }
+          description
+            "The class, as the service names it.";
+        }
+        leaf dscp {
+          type uint8 {
+            range "0..63";
+          }
+          mandatory true;
+          description
+            "Its DSCP: another than the target's and the other
+             classes'.";
+        }
+      }
       leaf count {
         type uint32 {
           range "0..2147483647";
@@ -849,10 +890,23 @@ module arcana-probe {
         "The samples kept, oldest first.";
       uses sample;
     }
+    leaf class {
+      type string;
+      description
+        "The class of service this row measures (the target's class
+         list); none, the target's own DSCP.";
+    }
     container pm {
       description
         "Its measurement intervals (RFC 9375's perf-mon, as 5.3 maps
-         them): the percentiles they report, and the intervals.";
+         them): their length, the percentiles they report, and the
+         intervals.";
+      leaf measurement-interval {
+        type uint32;
+        units "seconds";
+        description
+          "Their length.";
+      }
       uses percentiles;
       uses interval;
     }

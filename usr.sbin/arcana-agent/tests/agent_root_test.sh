@@ -2710,6 +2710,15 @@ stn_last()
 {
 	grep "probe: $1: stamp (stateful reflector): " daemon.out | tail -1
 }
+# The stateful line of the round whose path line is the last: the two
+# written one after the other, read together so neither is a round on.
+stn_pair()
+{
+	awk -v s="probe: $1: stamp (stateful reflector): " \
+	    -v p="probe: $1: stamp path: " \
+	    'index($0, s) { l = $0 } index($0, p) { print l > "stn.pair.last"; print $0 > "stn.pair.path"; close("stn.pair.last"); close("stn.pair.path") }' \
+	    daemon.out
+}
 
 atf_test_case stamp_location cleanup
 stamp_location_head()
@@ -2806,17 +2815,20 @@ EOF
 	# Through the relay: from the relay's address and port, to stampd's.
 	atf_check -o match:"; seen from $STN_NET\.2 port [0-9]+ to $STN_NET\.2 port $P \(NAT: both rewritten\); " \
 	    cat stn.natted
-	# The loss forward by the counters, as by the stateful sequence
-	# (both trail by up to a timeout, read a moment apart); none back.
-	f=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\1/' stn.direct.last)
-	b=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\2/' stn.direct.last)
-	cf=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\1/' stn.direct)
-	cb=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\2/' stn.direct)
+	# The loss forward by the counters, as by the stateful sequence, of
+	# one round; none back.  The sequence counts a loss once every
+	# earlier probe is answered or timed out, the counters at a reply:
+	# they may differ by what is in flight, a timeout's probes (300 / 20).
+	stn_pair direct
+	f=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\1/' stn.pair.last)
+	b=$(sed -E 's/.*lost forward ([0-9]+), backward ([0-9]+) all along.*/\2/' stn.pair.last)
+	cf=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\1/' stn.pair.path)
+	cb=$(sed -E 's/.*lost by counters forward ([0-9]+), backward ([0-9]+) all along$/\2/' stn.pair.path)
 	echo "sequence $f/$b, counters $cf/$cb"
 	[ "$cf" -ge 30 ] || atf_fail "direct: $cf lost forward by counters of some 400"
 	[ "$cb" -le 2 ] || atf_fail "direct: $cb lost backward by counters, none dropped so"
 	d=$((cf - f))
-	[ "${d#-}" -le 3 ] || atf_fail "direct: $cf forward by counters, $f by the sequence"
+	[ "${d#-}" -le 15 ] || atf_fail "direct: $cf forward by counters, $f by the sequence"
 	atf_check -o match:'lost by counters forward 0, backward 0 all along$' \
 	    cat stn.natted
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'

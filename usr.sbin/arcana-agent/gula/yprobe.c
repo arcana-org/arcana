@@ -150,7 +150,29 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		YJ_NUM(o, "timeout", &t[n], timeout);
 		YJ_NUM(o, "eval", &t[n], eval);
 		YJ_NUM(o, "history", &t[n], history);
+		YJ_NUM(o, "measurement_interval", &t[n], measurement_interval);
 		PCT_OF(o, &t[n]);
+		/* Its classes of service. */
+		{
+			const ucl_object_t		*cl = ucl_object_lookup(o,
+						    "classes"), *c;
+			struct arcana_probe_target_class	*cv;
+			ucl_object_iter_t		 cit;
+			size_t				 nc = 0;
+
+			if ((cv = cbl_yarena_alloc(a, (yj_count(cl) + 1) *
+			    sizeof(*cv))) == NULL)
+				return (ENOMEM);
+			YJ_EACH(cl, cit, c) {
+				memset(&cv[nc], 0, sizeof(cv[nc]));
+				if ((cv[nc].name = yj_str(a, c, "name")) == NULL)
+					continue;
+				YJ_NUM(c, "dscp", &cv[nc], dscp);
+				nc++;
+			}
+			t[n].class.n = nc;
+			t[n].class.v = cv;
+		}
 		if ((error = tca_of(a, o, &t[n].tca)) != 0)
 			return (error);
 		n++;
@@ -197,6 +219,7 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		YJ_NUM(o, "timeout", &m[n], timeout);
 		YJ_NUM(o, "eval", &m[n], eval);
 		YJ_NUM(o, "history", &m[n], history);
+		YJ_NUM(o, "measurement_interval", &m[n], measurement_interval);
 		PCT_OF(o, &m[n]);
 		if ((error = tca_of(a, o, &m[n].tca)) != 0)
 			return (error);
@@ -348,7 +371,21 @@ yprobe_edge_json(const char *jail, size_t nt,
 		PUT_INT(o, "timeout", t, timeout);
 		PUT_INT(o, "eval", t, eval);
 		PUT_INT(o, "history", t, history);
+		PUT_INT(o, "measurement_interval", t, measurement_interval);
 		PUT_PCT(o, t);
+		if (t->class.n > 0) {
+			ucl_object_t	*cl, *c;
+
+			cl = ucl_object_typed_new(UCL_ARRAY);
+			for (size_t k = 0; k < t->class.n; k++) {
+				c = ucl_object_typed_new(UCL_OBJECT);
+				ucl_object_insert_key(c, ucl_object_fromstring(
+				    t->class.v[k].name), "name", 0, true);
+				PUT_INT(c, "dscp", &t->class.v[k], dscp);
+				ucl_array_append(cl, c);
+			}
+			ucl_object_insert_key(o, cl, "classes", 0, true);
+		}
 		put_tca(o, t->tca);
 		ucl_array_append(arr, o);
 	}
@@ -401,6 +438,7 @@ yprobe_monitors_json(const char *jail, size_t n,
 		PUT_INT(o, "timeout", m, timeout);
 		PUT_INT(o, "eval", m, eval);
 		PUT_INT(o, "history", m, history);
+		PUT_INT(o, "measurement_interval", m, measurement_interval);
 		PUT_PCT(o, m);
 		put_tca(o, m->tca);
 		ucl_array_append(arr, o);
@@ -558,6 +596,7 @@ pm_of(cbl_yarena *a, const ucl_object_t *pm,
 	if ((p = cbl_yarena_alloc(a, sizeof(*p))) == NULL)
 		return (ENOMEM);
 	memset(p, 0, sizeof(*p));
+	YJ_NUM(pm, "length", p, measurement_interval);
 	p->has_low_percentile = dec(pm, "low", 3, &p->low_percentile);
 	p->has_intermediate_percentile = dec(pm, "intermediate", 3,
 	    &p->intermediate_percentile);
@@ -672,6 +711,7 @@ yprobe_state_from_json(const char *json, cbl_yarena *a,
 		if ((v[k].id = yj_str(a, e, "id")) == NULL)
 			continue;
 		v[k].jail = yj_str(a, e, "jail");
+		v[k].class = yj_str(a, e, "class");
 		v[k].has_address = addr_union(a, e, "address", &v[k].address);
 		if ((s = yj_str(a, e, "family")) != NULL) {
 			v[k].has_family = true;
@@ -778,6 +818,7 @@ session_of(cbl_yarena *a, const ucl_object_t *e, struct arcana_stamp_session *s)
 
 	s->target = yj_str(a, e, "id");
 	s->jail = yj_str(a, e, "jail");
+	s->class = yj_str(a, e, "class");
 	if ((v = yj_str(a, e, "kind")) != NULL) {
 		s->has_kind = true;
 		s->kind = strcmp(v, "stamp") == 0 ?

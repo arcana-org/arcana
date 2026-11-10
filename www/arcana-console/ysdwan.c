@@ -897,6 +897,7 @@ pm_obj(const struct arcana_probe_target_state_pm *p)
 	ucl_object_t				*o, *arr, *e;
 
 	o = ucl_object_typed_new(UCL_OBJECT);
+	PUT_INT(o, "length", p, measurement_interval);
 	put(o, "low", dec(p->low_percentile, 3));
 	put(o, "intermediate", dec(p->intermediate_percentile, 3));
 	put(o, "high", dec(p->high_percentile, 3));
@@ -951,6 +952,7 @@ target_obj(const struct arcana_probe_target_state *t,
 	put_str(o, "family", t->has_family && t->family ==
 	    ARCANA_PROBE_TARGET_STATE_FAMILY_IPV6 ? "inet6" : "inet");
 	put_str(o, "jail", t->jail);
+	put_str(o, "class", t->class);
 	PUT_INT(o, "fib", t, fib);
 	put_str(o, "state", t->has_state && t->state < nitems(states) ?
 	    states[t->state] : "unknown");
@@ -1721,6 +1723,7 @@ stamp_obj(const struct arcana_stamp_session *s)
 	o = ucl_object_typed_new(UCL_OBJECT);
 	put_str(o, "target", s->target);
 	put_str(o, "jail", s->jail);
+	put_str(o, "class", s->class);
 	PUT_NAME(o, "kind", s, kind, stamp_kinds);
 	if (s->has_method)
 		put_str(o, "method", s->method ==
@@ -1835,7 +1838,9 @@ stamp_facts(cbl_conn *conn, ucl_object_t *top, cbl_yarena *a)
 			    strcmp(str(e, "id"), s->target) != 0 ||
 			    (str(e, "jail") != NULL) != (s->jail != NULL) ||
 			    (s->jail != NULL && strcmp(str(e, "jail"),
-			    s->jail) != 0))
+			    s->jail) != 0) || (str(e, "class") != NULL) !=
+			    (s->class != NULL) || (s->class != NULL &&
+			    strcmp(str(e, "class"), s->class) != 0))
 				continue;
 			put(e, "stamp", stamp_obj(s));
 			break;

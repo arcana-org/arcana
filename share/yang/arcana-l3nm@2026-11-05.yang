@@ -1362,6 +1362,35 @@ module arcana-l3nm {
           description
             "Their high percentile; 90 when none.";
         }
+        leaf measurement-interval {
+          type uint32 {
+            range "1..3600";
+          }
+          units "seconds";
+          description
+            "Their length; 60 when none.";
+        }
+        list class {
+          key "name";
+          max-elements 8;
+          description
+            "A class of service each tunnel is measured in too, a
+             session of its own with its DSCP.";
+          leaf name {
+            type string {
+              length "1..32";
+              pattern '[A-Za-z0-9_.-]+';
+            }
+            description
+              "The class.";
+          }
+          leaf dscp {
+            type inet:dscp;
+            mandatory true;
+            description
+              "Its DSCP.";
+          }
+        }
       }
       list rate-limiter {
         key "name";

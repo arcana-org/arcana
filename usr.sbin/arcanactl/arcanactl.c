@@ -3958,10 +3958,11 @@ sdwan_stamp_out(cbl_conn *conn)
 	while ((s = ucl_object_iterate(ucl_object_lookup(data, "sessions"),
 	    &it, true)) != NULL) {
 		xo_open_instance("session");
-		xo_emit("{k:target/%s}{d:/%s}{e:jail/%s}{d:/%s}: {:method/%s} "
-		    "{e:kind/%s}", ostr(s, "target"), ostr(s, "jail")[0] !=
-		    '\0' ? "@" : "", ostr(s, "jail"), ostr(s, "jail"),
-		    ostr(s, "method"), ostr(s, "kind"));
+		xo_emit("{k:target/%s}{d:/%s}{e:jail/%s}{d:/%s}{d:/%s}{k:class/%s}: "
+		    "{:method/%s} {e:kind/%s}", ostr(s, "target"), ostr(s,
+		    "jail")[0] != '\0' ? "@" : "", ostr(s, "jail"), ostr(s,
+		    "jail"), ostr(s, "class")[0] != '\0' ? "/" : "", ostr(s,
+		    "class"), ostr(s, "method"), ostr(s, "kind"));
 		xo_emit("({:mode/%s}{d:/%s}{d:/%s})", ostr(s, "mode"),
 		    strcmp(ostr(s, "kind"), "stamp") == 0 ? ", stamp alone" :
 		    "", ucl_object_toboolean(ucl_object_lookup(s,
@@ -4050,9 +4051,10 @@ sdwan_intervals_out(cbl_conn *conn)
 				run = v;
 		}
 		xo_open_instance("target");
-		xo_emit("{k:id/%s}{d:/%s}{e:jail/%s}{d:/%s}: ", ostr(t, "id"),
-		    ostr(t, "jail")[0] != '\0' ? "@" : "", ostr(t, "jail"),
-		    ostr(t, "jail"));
+		xo_emit("{k:id/%s}{d:/%s}{e:jail/%s}{d:/%s}{d:/%s}{k:class/%s}: ",
+		    ostr(t, "id"), ostr(t, "jail")[0] != '\0' ? "@" : "",
+		    ostr(t, "jail"), ostr(t, "jail"), ostr(t, "class")[0] !=
+		    '\0' ? "/" : "", ostr(t, "class"));
 		if (last == NULL) {
 			xo_emit("{L:no interval ended yet}");
 			if (run != NULL)

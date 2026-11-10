@@ -1056,6 +1056,8 @@ pm_json(const ucl_object_t *pm)
 	ucl_object_t		*o, *arr, *e;
 
 	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "length", ucl_object_fromint(jint(pm, "measurement-interval",
+	    60)));
 	put(o, "low", ucl_object_fromdouble(jnum(pm, "low-percentile", 0)));
 	put(o, "intermediate", ucl_object_fromdouble(jnum(pm,
 	    "intermediate-percentile", 0)));
@@ -1110,6 +1112,7 @@ probe_target(const ucl_object_t *t, const ucl_object_t *c, bool monitor)
 	put(o, "family", ucl_object_fromstring(jstr(t, "family") != NULL &&
 	    strcmp(jstr(t, "family"), "ipv6") == 0 ? "inet6" : "inet"));
 	cp(o, "jail", t, "jail");
+	cp(o, "class", t, "class");
 	put(o, "state", ucl_object_fromstring(jstr(t, "state") != NULL ?
 	    jstr(t, "state") : "unknown"));
 	cp(o, "error", t, "error");

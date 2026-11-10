@@ -767,6 +767,9 @@ static const struct fm tca_m[] = {
 	F("delay", "delay", N), F("ipdv", "ipdv", N), F("loss", "loss", N),
 	F("damping", "damping", C), FEND
 };
+static const struct fm pclassm[] = {
+	F("name", "name", C), F("dscp", "dscp", C), FEND
+};
 static const struct fm probe_m[] = {
 	F("interval", "interval", C), F("size", "size", C),
 	F("count", "count", C), F("dscp", "dscp", C), F("down", "down", C),
@@ -774,7 +777,9 @@ static const struct fm probe_m[] = {
 	F("history", "history", C), F("report", "report", C),
 	F("low_percentile", "low-percentile", N),
 	F("intermediate_percentile", "intermediate-percentile", N),
-	F("high_percentile", "high-percentile", N), FEND
+	F("high_percentile", "high-percentile", N),
+	F("measurement_interval", "measurement-interval", C),
+	FS("classes", "class", L, pclassm), FEND
 };
 static const struct fm rl_m[] = {
 	F("name", "name", C), F("commit", "commit", N),
