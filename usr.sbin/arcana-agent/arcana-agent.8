@@ -69,6 +69,7 @@
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -stamp-port Ar port
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
+.Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
 .Op Fl -telegram-api Ar url
 .Op Fl -poudriere Ar poudriere
@@ -711,6 +712,12 @@ in seconds, as
 .Fl C ,
 which the admin gives the host's reflectors by
 .Va stampd_flags .
+.It Fl -stampd-keys Ar file
+.Xr stampd 8 Ns 's
+key file, where the plain tunnels' STAMP keys are written; default
+.Pa /usr/local/etc/stampd.keys
+(under
+.Fl -root ) .
 .It Fl I Ar ifconfig , Fl n Ar ngctl , Fl k Ar wg , Fl b Ar birdc
 The
 .Xr ifconfig 8 ,
@@ -1018,6 +1025,22 @@ A far end whose STAMP port is refused, or that answers none of as many
 STAMP probes as would make the target down, is pinged instead, the
 first echo deciding whether the tunnel is down; STAMP is tried every
 ten seconds and taken up again when it answers.
+A plain tunnel's target (GRE, gif or geneve that neither IPsec nor
+WireGuard protects) is measured in STAMP's authenticated mode (RFC 8762
+section 4.4, HMAC-SHA-256 truncated to 128 bits): the console names
+this end's tunnel and the far end's public half of its pair, and the
+key and SSID are derived from the tunnel's X25519 pair
+.Pq Ql ipsec-sa key
+and that half by HKDF-SHA256, the same at both ends, never sent nor
+known to the console; a reply that does not authenticate is no reply,
+so a far end of another key, or a probe tampered with on the way,
+falls back to ICMP as an unanswered reflector does.
+Each such key is written, in place and 0600, after Arcana's marker in
+.Xr stampd 8 Ns 's
+key file
+.Pq Fl -stampd-keys ,
+the admin's lines before it kept, and stampd told (restarted when the
+file is new to it); no key is logged.
 The far end of a measurement is
 .Xr stampd 8 ,
 the STAMP reflector Arcana installs, one a FIB: the agent sets

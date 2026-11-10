@@ -48,7 +48,10 @@
  * SPIs of both directions come from the agreement with the far public
  * half by HKDF-SHA256 (NIST SP 800-56A, R54), the same on both ends:
  * the end whose public half sorts lower is A, the other B, and the
- * material is laid out A to B first.
+ * material is laid out A to B first.  A plain tunnel's end (gre, gif,
+ * geneve) has a pair too, made by the same key verb: its STAMP key is
+ * derived from it the same way, salted apart (tunnel_key_derive(),
+ * gula/probe.c).
  */
 #define	KEY_FILE	"sdwan-key-%s.pem"
 #define	NEXT_FILE	"sdwan-key-%s-next.pem"	/* the pair to come (R110) */
@@ -191,8 +194,8 @@ key_make(struct work *w, const char *ifname, bool next, char *pub,
  */
 static int
 key_derive(struct work *w, const char *ifname, const char *peer_b64,
-    uint32_t epoch, bool next, unsigned char *okm, size_t okmlen,
-    bool *lower, const char **errp)
+    const char *salt, uint32_t epoch, bool next, unsigned char *okm,
+    size_t okmlen, bool *lower, const char **errp)
 {
 	EVP_PKEY	*me, *far = NULL;
 	EVP_PKEY_CTX	*ctx = NULL;
@@ -248,7 +251,7 @@ key_derive(struct work *w, const char *ifname, const char *peer_b64,
 	params[1] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, shared,
 	    sizeof(shared));
 	params[2] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
-	    (char *)(uintptr_t)HKDF_SALT, strlen(HKDF_SALT));
+	    (char *)(uintptr_t)salt, strlen(salt));
 	params[3] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, info,
 	    68);
 	params[4] = OSSL_PARAM_construct_end();
@@ -619,6 +622,31 @@ sa_parse(const struct arc_job_spec *sp, struct sa_words *w, bool derive)
 	return (NULL);
 }
 
+/* An interface named prefix and a unit, as ipsec0. */
+static bool
+unit_of(const char *ifn, const char *prefix)
+{
+	size_t	n = strlen(prefix);
+
+	return (ifn != NULL && strncmp(ifn, prefix, n) == 0 && ifn[n] != '\0' &&
+	    ifn[n + strspn(ifn + n, "0123456789")] == '\0');
+}
+
+/*
+ * The STAMP key of a plain tunnel's end (PLAN-SDN-YANG 5.1.7): from its
+ * pair and the far end's public half (peer_b64) as the SAs' material
+ * is, salted salt, okmlen octets into okm.  0, or -1 and why.
+ */
+int
+tunnel_key_derive(struct work *w, const char *ifname, const char *peer_b64,
+    const char *salt, unsigned char *okm, size_t okmlen, const char **errp)
+{
+	bool	lower;
+
+	return (key_derive(w, ifname, peer_b64, salt, 0, false, okm, okmlen,
+	    &lower, errp));
+}
+
 /* What is wrong with the job, or NULL. */
 const char *
 sa_check(const struct arc_job_spec *sp)
@@ -630,10 +658,14 @@ sa_check(const struct arc_job_spec *sp)
 	    sp->verb, "clear") != 0 && strcmp(sp->verb, "key") != 0 && strcmp(
 	    sp->verb, "derive") != 0 && strcmp(sp->verb, "commit") != 0))
 		return ("ipsec-sa: say key, set, derive, commit or clear");
-	if (sp->interface == NULL || strncmp(sp->interface, "ipsec", 5) != 0 ||
-	    sp->interface[5 + strspn(sp->interface + 5, "0123456789")] != '\0'
-	    || sp->interface[5] == '\0')
-		return ("ipsec-sa: the interface is an ipsec(4) one, ipsec0");
+	/* A pair for a plain tunnel's end too: its STAMP key's. */
+	if (sp->verb != NULL && strcmp(sp->verb, "key") == 0 && (unit_of(
+	    sp->interface, "gre") || unit_of(sp->interface, "gif") ||
+	    unit_of(sp->interface, "geneve")))
+		return (NULL);
+	if (!unit_of(sp->interface, "ipsec"))
+		return ("ipsec-sa: the interface is an ipsec(4) one, ipsec0 (a "
+		    "key pair, a gre, gif or geneve one's too)");
 	if (strcmp(sp->verb, "key") == 0) {
 		for (size_t i = 0; i < sp->names.n; i++)
 			if (strcmp(sp->names.v[i], "next") != 0)
@@ -864,7 +896,8 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		enclen = strcmp(sw.enc, "aes-gcm-16") == 0 ? 36 : 32;
 		authlen = sw.auth == NULL ? 0 : strcmp(sw.auth, "hmac-sha1") == 0
 		    ? 20 : strcmp(sw.auth, "hmac-sha2-256") == 0 ? 32 : 64;
-		if (key_derive(w, sp->interface, sw.peer, sw.epoch, sw.next, okm,
+		if (key_derive(w, sp->interface, sw.peer, HKDF_SALT, sw.epoch,
+		    sw.next, okm,
 		    2 * (enclen + authlen) + 8, &lower, errp) != 0) {
 			ucl_object_unref(stt);
 			return (-1);

@@ -1033,6 +1033,35 @@ ts_of(const char *kind)
 	    strcmp(kind, "geneve") == 0 ? "dynamic[udp]" : "dynamic[gre]");
 }
 
+/*
+ * Is a tunnel's STAMP the authenticated mode (PLAN-SDN-YANG 5.1.7)?  By
+ * default on a plain tunnel: GRE, gif or geneve without IPsec, nothing
+ * on the way authenticating its packets; a wg or uswe tunnel, or one
+ * IPsec protects, is authenticated already and its STAMP not.  Both its
+ * ends hosts' (a vnet jail's edge has no STAMP of its own yet): each
+ * end's agent derives the key from its pair and the far end's public
+ * half, the same at both, never at the console.
+ */
+static bool
+stamp_auth(const ucl_object_t *t)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	const char		*kind = str(t, "kind");
+
+	if (kind == NULL || strcmp(kind, "wg") == 0 || strcmp(kind, "uswe") ==
+	    0 || ucl_flag(t, "ipsec") || ucl_array_size(ucl_object_lookup(t,
+	    "ends")) != 2)
+		return (false);
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(t, "ends"), &it,
+	    true)) != NULL)
+		if (str(e, "edge") == NULL || str(e, "ifname") == NULL ||
+		    edge_jailed(str(e, "edge")))
+			return (false);
+	return (true);
+}
+
 /* FNV-1a of a text, as 16 hex digits. */
 static char *
 digest_text(const char *s, char *buf, size_t len)
@@ -7281,6 +7310,23 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 		}
 		tvc_end(pl, t, 0);
 		tvc_end(pl, t, 1);
+		/* A plain tunnel's ends: each its pair, its STAMP key's. */
+		if (stamp_auth(t)) {
+			it2 = NULL;
+			while ((e = ucl_object_iterate(ucl_object_lookup(t,
+			    "ends"), &it2, true)) != NULL) {
+				char	k2[64];
+
+				snprintf(k2, sizeof(k2), "stampkey:%s", str(e,
+				    "ifname"));
+				if ((o = object(pl, str(e, "edge"), k2, PH_IPSEC,
+				    "%s: its key pair, X25519, kept by the agent: "
+				    "its authenticated STAMP's key", str(e,
+				    "ifname"))) != NULL)
+					make(o, job("ipsec-sa", "verb", S("key"),
+					    "interface", S(str(e, "ifname")), NULL));
+			}
+		}
 	}
 	/* Each edge's loopback in a service whose iBGP is between them. */
 	it = NULL;
@@ -7352,6 +7398,16 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 			if ((po = ucl_object_lookup(swo, "tca")) != NULL &&
 			    ucl_object_type(po) == UCL_OBJECT)
 				put(tg, "tca", ucl_object_copy(po));
+			/* A plain tunnel's: its STAMP authenticated, the key
+			 * from this end's pair and the far end's half. */
+			if (stamp_auth(t)) {
+				char	ref[160];
+
+				put(tg, "stamp_interface", S(str(a, "ifname")));
+				snprintf(ref, sizeof(ref), "${stamp:%s:%s}", str(b,
+				    "edge"), str(b, "ifname"));
+				put(tg, "stamp_peer", S(ref));
+			}
 			ucl_array_append(targets, tg);
 		}
 	}
@@ -7982,7 +8038,9 @@ at_path(const ucl_object_t *o, const char *a, const char *b)
 
 /*
  * ${wg:SID:IF}, the public key of that host's wg interface; ${ipsec:SID},
- * that host's IPsec key: read once, kept for the rest of the run.
+ * that host's IPsec key; ${uswe:SID:IF} and ${stamp:SID:IF}, the public
+ * half of that host's tunnel end's pair (a uswe tunnel's SAs, a plain
+ * tunnel's STAMP key): read once, kept for the rest of the run.
  */
 static char *
 resolve(struct run *r, const char *ref, char *why, size_t wlen)
@@ -7998,10 +8056,12 @@ resolve(struct run *r, const char *ref, char *why, size_t wlen)
 	if ((v = ucl_object_lookup(r->keys, ref)) != NULL)
 		return (strdup(ucl_object_tostring(v)));
 	wg = strncmp(ref, "${wg:", 5) == 0;
-	uswe = strncmp(ref, "${uswe:", 7) == 0;
+	uswe = strncmp(ref, "${uswe:", 7) == 0 || strncmp(ref, "${stamp:", 8) ==
+	    0;
 	ifn[0] = '\0';
 	if (wg ? sscanf(ref, "${wg:%95[^:]:%31[^}]}", sid, ifn) != 2 : uswe ?
-	    sscanf(ref, "${uswe:%95[^:]:%31[^}]}", sid, ifn) != 2 :
+	    sscanf(ref, ref[2] == 'u' ? "${uswe:%95[^:]:%31[^}]}" :
+	    "${stamp:%95[^:]:%31[^}]}", sid, ifn) != 2 :
 	    sscanf(ref, "${ipsec:%95[^}]}", sid) != 1) {
 		snprintf(why, wlen, "%s is not a reference", ref);
 		return (NULL);
@@ -8072,6 +8132,34 @@ job_ready(struct run *r, const ucl_object_t *j, char *why, size_t wlen)
 			    ucl_object_key(v));
 			ait = NULL;
 			while ((e = ucl_object_iterate(v, &ait, true)) != NULL) {
+				/* An object of the list (a probe target): its
+				 * own references, a level down. */
+				if (ucl_object_type(e) == UCL_OBJECT) {
+					const ucl_object_t	*f;
+					ucl_object_iter_t	 fit;
+					ucl_object_t		*eo;
+
+					eo = (ucl_object_t *)(uintptr_t)
+					    ucl_array_find_index(list, k);
+					fit = NULL;
+					while ((f = ucl_object_iterate(e, &fit,
+					    true)) != NULL) {
+						if (ucl_object_type(f) != UCL_STRING ||
+						    strncmp(ucl_object_tostring(f),
+						    "${", 2) != 0)
+							continue;
+						if ((val = resolve(r,
+						    ucl_object_tostring(f), why,
+						    wlen)) == NULL) {
+							ucl_object_unref(c);
+							return (NULL);
+						}
+						put(eo, ucl_object_key(f), S(val));
+						free(val);
+					}
+					k++;
+					continue;
+				}
 				if (ucl_object_type(e) == UCL_STRING && strncmp(
 				    ucl_object_tostring(e), "${", 2) == 0) {
 					if ((val = resolve(r, ucl_object_tostring(e),

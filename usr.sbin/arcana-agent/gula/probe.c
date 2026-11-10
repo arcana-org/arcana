@@ -64,6 +64,21 @@
  * reflector alone; one STAMP probe every STAMP_RETRY seconds, not
  * counted, and an answer brings STAMP back.
  *
+ * A plain tunnel's target (GRE, gif, geneve without IPsec: nothing on
+ * the way authenticates its packets) says its end's interface and the
+ * far end's public half (stamp_interface, stamp_peer, the console's
+ * ${uswe:...} of the far end's pair): its STAMP is the authenticated
+ * mode (RFC 8762 4.4, HMAC-SHA-256-128), its key and SSID derived from
+ * the interface's X25519 pair (invidia/sa.c, the key verb) and that
+ * half by HKDF-SHA256, salted apart from the SAs' ("arcana stamp v1"):
+ * the same at both ends, never on the wire nor at the console.  The
+ * key is kept in memory; stampd(8)'s key file holds the reflector's
+ * copy (gula/stampd.c).  A reply that does not authenticate is no reply
+ * (counted, auth_failed), so a far end of another key, or a packet
+ * tampered with on the way, falls back to ICMP as an unanswered
+ * reflector does; until the key is derived (the pair not made yet),
+ * the target is pinged and the key tried again with STAMP.
+ *
  * The same prober measures tunnels outside SD-WAN too: the monitors an
  * admin puts on any tunnel interface (the monitor job), each target's
  * owner "monitor" rather than "sdwan".  An owner's list is replaced by
@@ -96,6 +111,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -116,6 +132,8 @@
 #define	BREAKOUT	"bo:"	/* a breakout beacon's id, the console's */
 #define	STAMP_RETRY	10.0	/* s: STAMP tried again, fallen back */
 #define	STAMP_WINDOW	4096	/* STAMP probes in the air, at most */
+#define	STAMP_SALT	"arcana stamp v1"	/* HKDF's, the key's */
+#define	PUB_B64		44	/* an X25519 public half, base64 */
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
@@ -153,6 +171,16 @@ struct target {
 	int			 usock;		/* UDP, connected */
 	uint16_t		 ssid;
 	struct stamp_sender	*ss;
+	/* A plain tunnel's STAMP key: this end's interface, whose pair it
+	 * comes from, and the far end's public half; keyed once derived,
+	 * why not when it could not be; replies that did not
+	 * authenticate, of senders given up. */
+	char			 stamp_if[IFNAMSIZ];
+	char			 stamp_peer[PUB_B64 + 1];
+	bool			 keyed;
+	struct stamp_key	 key;
+	char			 key_err[160];
+	uint64_t		 auth_failed;
 	uint64_t		 tk_fwd, tk_back;	/* of ss's, taken */
 	uint64_t		 fwd_lost, back_lost;	/* all along */
 	double			 stamp_retry;
@@ -323,7 +351,12 @@ conf_path(char *buf, size_t len, const char *jail, const char *owner)
 static void
 stamp_drop(struct target *t)
 {
+	struct stamp_sender_stats	st;
 
+	if (t->ss != NULL) {
+		stamp_sender_stats(t->ss, &st);
+		t->auth_failed += st.auth_failed;
+	}
 	stamp_sender_free(t->ss);
 	t->ss = NULL;
 	t->tk_fwd = t->tk_back = 0;
@@ -350,6 +383,45 @@ target_free(struct target *t)
 	target_close(t);
 	free(t->samples);
 	t->samples = NULL;
+	explicit_bzero(&t->key, sizeof(t->key));
+	t->keyed = false;
+}
+
+/*
+ * A plain tunnel's STAMP key: HKDF-SHA256 of the agreement of its
+ * interface's pair with the far end's public half, 32 octets of key and
+ * 2 of SSID (0 taken as 1), the same at both ends.  True, keyed; false
+ * and why in key_err (said once).
+ */
+static bool
+stamp_key_get(struct work *w, struct target *t)
+{
+	unsigned char	 okm[34];
+	const char	*e = NULL;
+	char		 was[sizeof(t->key_err)];
+
+	if (t->stamp_peer[0] == '\0' || t->keyed)
+		return (t->keyed);
+	snprintf(was, sizeof(was), "%s", t->key_err);
+	if (tunnel_key_derive(w, t->stamp_if, t->stamp_peer, STAMP_SALT, okm,
+	    sizeof(okm), &e) != 0) {
+		snprintf(t->key_err, sizeof(t->key_err), "%s", e != NULL ? e :
+		    "not derived");
+		if (strcmp(was, t->key_err) != 0)
+			logmsg(LOG_WARNING, "probe: %s (%s): no STAMP key: %s",
+			    t->id, t->address, t->key_err);
+		return (false);
+	}
+	memset(&t->key, 0, sizeof(t->key));
+	memcpy(t->key.key, okm, 32);
+	t->key.len = 32;
+	t->key.ssid = okm[32] << 8 | okm[33];
+	if (t->key.ssid == 0)
+		t->key.ssid = 1;
+	explicit_bzero(okm, sizeof(okm));
+	t->keyed = true;
+	t->key_err[0] = '\0';
+	return (true);
 }
 
 static uint16_t
@@ -639,6 +711,12 @@ window_end(struct target *t, double now)
 		    t->w_recv, (uintmax_t)t->fwd_lost, (uintmax_t)t->back_lost,
 		    s->dfwd, s->dback, s->owd == 1 ? "one way" : s->owd == 0 ?
 		    "estimated: half the round trip" : "no reply", ti);
+		/* A plain tunnel's: authenticated, the replies that were not. */
+		if (t->keyed)
+			logmsg(LOG_DEBUG, "probe: %s: stamp authenticated (SSID "
+			    "%d); replies failing authentication %ju all along",
+			    target_name(t, name, sizeof(name)), t->key.ssid,
+			    (uintmax_t)(t->auth_failed + st.auth_failed));
 		/* The path as the last reply saw it: the DSCP each way. */
 		if (t->has_cos)
 			snprintf(dsf, sizeof(dsf), "%d", t->dscp_fwd);
@@ -783,8 +861,22 @@ stamp_open(struct target *t)
 {
 	struct stamp_sender_conf	c;
 	struct sockaddr_storage		to;
+	struct work			w;
 	int				v;
+	bool				ok;
 
+	/* A plain tunnel's: its key first, derived now if not yet. */
+	if (t->stamp_peer[0] != '\0' && !t->keyed) {
+		work_init(&w);
+		ok = stamp_key_get(&w, t);
+		work_free(&w);
+		if (!ok) {
+			errno = ENOENT;
+			return (false);
+		}
+		/* The reflector's copy, stampd's. */
+		stampd_nudge();
+	}
 	if (t->usock == -1) {
 		if ((t->usock = stamp_socket_fib(t->af, 0, STAMP_SOCK_MONOTONIC,
 		    t->fib)) == -1)
@@ -811,7 +903,8 @@ stamp_open(struct target *t)
 	}
 	if (t->ss == NULL) {
 		memset(&c, 0, sizeof(c));
-		c.ssid = t->ssid;
+		c.ssid = t->keyed ? (uint16_t)t->key.ssid : t->ssid;
+		c.key = t->keyed ? &t->key : NULL;
 		c.tsinfo = true;
 		c.cos = true;
 		c.dscp = (uint8_t)t->dscp;
@@ -850,7 +943,8 @@ stamp_fallback(struct target *t, double now, const char *why)
 static void
 stamp_lost(struct target *t, double now)
 {
-	char	why[64];
+	struct stamp_sender_stats	st;
+	char				why[128];
 
 	if (t->misses + 1 < t->down) {
 		miss(t);
@@ -859,7 +953,16 @@ stamp_lost(struct target *t, double now)
 	t->w_sent++;
 	t->hits = 0;
 	t->misses = t->down - 1;
-	snprintf(why, sizeof(why), "no STAMP reply in %d probes", t->down);
+	if (t->ss != NULL)
+		stamp_sender_stats(t->ss, &st);
+	/* Replies that came and did not authenticate: said so. */
+	if (t->keyed && t->ss != NULL && st.auth_failed > 0)
+		snprintf(why, sizeof(why), "no authenticated STAMP reply in %d "
+		    "probes, %ju failing authentication", t->down,
+		    (uintmax_t)st.auth_failed);
+	else
+		snprintf(why, sizeof(why), "no STAMP reply in %d probes",
+		    t->down);
 	stamp_fallback(t, now, why);
 	t->next_send = now;
 }
@@ -878,7 +981,13 @@ stamp_send_one(struct target *t, bool counted)
 
 	now = now_s();
 	if (!stamp_open(t)) {
-		if (counted)
+		if (counted && t->stamp_peer[0] != '\0' && !t->keyed) {
+			char	why[200];
+
+			snprintf(why, sizeof(why), "no STAMP key: %s",
+			    t->key_err);
+			stamp_fallback(t, now, why);
+		} else if (counted)
 			stamp_fallback(t, now, strerror(errno));
 		return (false);
 	}
@@ -1339,6 +1448,38 @@ targets_parse(struct work *w, const char *json, struct target *new,
 			snprintf(t->ifname, sizeof(t->ifname), "%s",
 			    ucl_object_tostring(v));
 		t->arcana = t->by_stamp = is_arcana(t);
+		/* A plain tunnel's: its STAMP authenticated, its key derived
+		 * now when its pair is there (else when STAMP is tried). */
+		{
+			const ucl_object_t	*si, *sp;
+			const char		*pv;
+
+			si = ucl_object_lookup(o, "stamp_interface");
+			sp = ucl_object_lookup(o, "stamp_peer");
+			pv = sp != NULL && ucl_object_type(sp) == UCL_STRING ?
+			    ucl_object_tostring(sp) : NULL;
+			if ((si != NULL || sp != NULL) && (si == NULL || sp ==
+			    NULL || ucl_object_type(si) != UCL_STRING ||
+			    !valid_ifname(ucl_object_tostring(si)) || strlen(
+			    ucl_object_tostring(si)) >= sizeof(t->stamp_if) ||
+			    pv == NULL || strlen(pv) != PUB_B64 || strspn(pv,
+			    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+			    "0123456789+/=") != PUB_B64)) {
+				*errp = wfmt(w, "target %s: stamp_interface is "
+				    "this end's tunnel and stamp_peer the far "
+				    "end's public half (%d characters of base64), "
+				    "both or neither", id, PUB_B64);
+				goto bad;
+			}
+			if (si != NULL) {
+				snprintf(t->stamp_if, sizeof(t->stamp_if), "%s",
+				    ucl_object_tostring(si));
+				snprintf(t->stamp_peer, sizeof(t->stamp_peer),
+				    "%s", pv);
+				if (t->arcana)
+					(void)stamp_key_get(w, t);
+			}
+		}
 		s4 = (struct sockaddr_in *)&t->sa;
 		s6 = (struct sockaddr_in6 *)&t->sa;
 		if (inet_pton(AF_INET, addr, &s4->sin_addr) == 1) {
@@ -1441,9 +1582,15 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			int	iv = t->interval, cnt = t->count, dn = t->down;
 			int	up = t->up, to = t->timeout, ev = t->eval;
 			int	hi = t->history, rp = t->report, dm = t->damping;
-			char	ifn[IFNAMSIZ];
+			char	ifn[IFNAMSIZ], sif[IFNAMSIZ], spe[PUB_B64 + 1];
+			char	kerr[sizeof(t->key_err)];
+			struct stamp_key nk = t->key;
+			bool	kd = t->keyed;
 
 			snprintf(ifn, sizeof(ifn), "%s", t->ifname);
+			snprintf(sif, sizeof(sif), "%s", t->stamp_if);
+			snprintf(spe, sizeof(spe), "%s", t->stamp_peer);
+			snprintf(kerr, sizeof(kerr), "%s", t->key_err);
 			double	tc[3] = { t->tca[0], t->tca[1], t->tca[2] };
 
 			/* As it was, with what may change under it; its STAMP
@@ -1464,6 +1611,18 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			t->eval = ev;
 			t->report = rp;
 			snprintf(t->ifname, sizeof(t->ifname), "%s", ifn);
+			/* Its STAMP key as the new one says: its sender made
+			 * again under another, or none. */
+			if (kd != t->keyed || strcmp(sif, t->stamp_if) != 0 ||
+			    strcmp(spe, t->stamp_peer) != 0 || (kd &&
+			    memcmp(&nk, &t->key, sizeof(nk)) != 0))
+				stamp_drop(t);
+			t->key = nk;
+			t->keyed = kd;
+			snprintf(t->stamp_if, sizeof(t->stamp_if), "%s", sif);
+			snprintf(t->stamp_peer, sizeof(t->stamp_peer), "%s", spe);
+			snprintf(t->key_err, sizeof(t->key_err), "%s", kerr);
+			explicit_bzero(&nk, sizeof(nk));
 			if (t->history != hi) {
 				free(t->samples);
 				t->samples = NULL;
@@ -1828,6 +1987,29 @@ probe_start(void)
 		logmsg(LOG_ERR, "sdwan probes: no thread: %s", strerror(errno));
 }
 
+/* The STAMP keys of the host's plain tunnels' targets, each once, into
+ * v (max of them): the reflector's copies, stampd's key file
+ * (gula/stampd.c).  The caller zeroes them. */
+int
+probe_stamp_keys(struct stamp_key *v, int max)
+{
+	int	i, k, n;
+
+	n = 0;
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ntargets && n < max; i++) {
+		if (targets[i].jail[0] != '\0' || !targets[i].keyed)
+			continue;
+		for (k = 0; k < n && memcmp(&v[k], &targets[i].key,
+		    sizeof(v[k])) != 0; k++)
+			;
+		if (k == n)
+			v[n++] = targets[i].key;
+	}
+	pthread_mutex_unlock(&lock);
+	return (n);
+}
+
 /* The FIBs the host's targets are probed in, each once, into v (max
  * of them): stampd answers there (gula/stampd.c). */
 int
@@ -1948,11 +2130,24 @@ target_json(const struct target *t, double now, uint64_t after)
 	    "icmp"), "method", 0, false);
 	if (t->arcana) {
 		struct stamp_sender_stats	st;
+		uint64_t			af = t->auth_failed;
 
 		if (t->ss != NULL) {
 			stamp_sender_stats(t->ss, &st);
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    stamp_mode_name(st.mode)), "reflector", 0, false);
+			af += st.auth_failed;
+		}
+		/* A plain tunnel's: authenticated, its replies that were
+		 * not, why there is no key yet. */
+		ucl_object_insert_key(o, ucl_object_frombool(t->keyed),
+		    "authenticated", 0, false);
+		if (t->stamp_peer[0] != '\0') {
+			ucl_object_insert_key(o, ucl_object_fromint((int64_t)af),
+			    "auth_failed", 0, false);
+			if (!t->keyed && t->key_err[0] != '\0')
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    t->key_err), "key_error", 0, false);
 		}
 		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
 		    t->fwd_lost), "forward_lost", 0, false);
@@ -2237,6 +2432,12 @@ target_conf(const struct target *t)
 	if (t->ifname[0] != '\0')
 		ucl_object_insert_key(o, ucl_object_fromstring(t->ifname),
 		    "interface", 0, false);
+	if (t->stamp_peer[0] != '\0') {
+		ucl_object_insert_key(o, ucl_object_fromstring(t->stamp_if),
+		    "stamp_interface", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromstring(t->stamp_peer),
+		    "stamp_peer", 0, false);
+	}
 	ucl_object_insert_key(o, ucl_object_fromint(t->fib), "fib", 0, false);
 	if (!is_monitor(t)) {
 		ucl_object_insert_key(o, ucl_object_fromint(t->count), "count",

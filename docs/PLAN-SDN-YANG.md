@@ -2967,6 +2967,67 @@ whose first part is served.
 - 5.1.7 A: authenticated mode (HMAC-SHA-256-128, libcrypto), keys over
   cblink, on by default on plain tunnels; check: a tampered packet
   refused.
+  Done (agent 0.269.0, console 0.418.0, stamp's auth commit): libstamp
+  has RFC 8762 4.4's mode (stamp_auth.c): the 112-octet layout, the SSID
+  at 26, an HMAC of the first 96 octets, HMAC-SHA-256 truncated to 128
+  bits by libcrypto's EVP_MAC, compared by CRYPTO_memcmp; RFC 8972
+  4.8's HMAC TLV after the other TLVs (Extra Padding aside) over the
+  Sequence Number and them.  Both cores keep the 44-octet layout, a
+  packet narrowed to it and the reply widened back.  Fail closed:
+  after an authenticated base come nothing or well-formed TLVs to its
+  end (the walk the cores take), the HMAC TLV among them unless they are
+  Extra Padding alone; trailing octets, a header cut short, a length
+  overlong or a TLV of type 0 drop the request, and a reply's base alone
+  is used.  A key is a session's, by its SSID or any; the reflector
+  answers under the first that verifies, drops and counts the rest
+  (never answering), answers a wrong HMAC TLV with the TLVs flagged I;
+  `auth_only` drops what is not authenticated.  stampd `-K`
+  (stampd.keys beside stampd.conf by default), a file root alone reads,
+  read before root is given up and kept open, read again through that
+  descriptor on SIGHUP (so rewritten in place; a replaced file said, its
+  keys kept until a restart), `-A`/`auth required`, the drops logged;
+  stamp(1) `-K`.  The keys over cblink are public halves only, the
+  pattern of the uswe tunnels' SAs: each end of a plain tunnel has an
+  X25519 pair (`ipsec-sa key` on a gre, gif or geneve interface too,
+  the console's `stampkey:IF` object, phase 2), the console puts in
+  each end's probe target its interface and the far end's half
+  (`stamp_interface`, `stamp_peer` = `${stamp:SID:IF}`, read from that
+  end's sdwan read when the apply runs; arcana-probe's target gained
+  `stamp-interface` and `stamp-peer`, the module's SIDs numbered again),
+  and each agent derives the same key and SSID by HKDF-SHA256 of the
+  agreement, salted "arcana stamp v1" apart from the SAs': never on the
+  wire, never at the console.  The rule: authenticated by default on a
+  plain tunnel (GRE, gif, geneve without IPsec), not on wg, uswe or
+  IPsec-protected ones, whose packets are authenticated already; both
+  ends hosts (a jail's edge has no STAMP yet).  The prober's sender
+  takes only authenticated replies (a reply failing counted, the target
+  falling back to ICMP after `down` probes as for a silent reflector,
+  STAMP tried every 10 s; until the key can be derived, the target is
+  pinged and the key tried again); gula/stampd.c writes the keys after
+  Arcana's marker in stampd's key file (`--stampd-keys`), 0600 and
+  root's, in place, the admin's lines before it kept, and reloads
+  stampd (restarts it when the file is new to it); keys never logged,
+  only their digest compared.  The `-d` line says `stamp authenticated
+  (SSID n); replies failing authentication m all along`.  Not yet in
+  arcana-probe's state (5.1.8): authenticated, auth_failed, key_error
+  are in the target's JSON alone.  Checked: stamp's suite
+  (libstamp_test: auth_layout, auth_hmac by RFC 4231, auth_round_trip,
+  auth_tamper (every octet of the base flipped: dropped; a TLV's:
+  flagged I; a reply's: no reply), auth_tlv_strict (trailing octets, a
+  header cut short, type 0, a length overlong, TLVs without the HMAC
+  TLV), auth_keys, auth_keyfile; stampd_test:auth (another key, a relay
+  flipping the timestamp: dropped and counted; -A) and auth_keys (mode,
+  rewritten and reread, replaced, any SSID, a wrong line));
+  agent_test:stampd_keys (the key file written in place after the
+  marker, 0600, the admin's line kept, rewritten for another far end,
+  no pair said, a half that is none refused, the keys taken out);
+  console_test:sdwan_apply_plan (the gif's target and pairs, not the
+  IPsec gre's) and sdwan_apply_change; agent_root_test:stamp_auth
+  (stampd in a vnet jail under the key the test derives as a far agent
+  would, the same line in the agent's key file: answered, by STAMP; a
+  relay flipping one octet of each probe: 50 dropped by stampd as
+  failing authentication, the target pinged and up; a far end of
+  another key the same; no key in a log).
 - 5.1.8 A: `arcana-stamp` module (sessions, config, counters) and
   `kind` in `arcana-probe` (stamp, icmp); check: both kinds in one
   service.

@@ -7445,6 +7445,82 @@ stampd_conf_cleanup()
 	stop_daemon
 }
 
+atf_test_case stampd_keys cleanup
+stampd_keys_head()
+{
+	atf_set "descr" "A plain tunnel's target authenticates its STAMP: its" \
+	    "key derived from its end's pair (ipsec-sa key) and the far" \
+	    "end's public half, written after Arcana's marker in stampd's" \
+	    "key file, 0600, in place (the admin's lines kept), stampd told;" \
+	    "another far end, rewritten; no pair yet, said; a half that is" \
+	    "none refused; the targets gone, Arcana's keys taken out"
+	atf_set "timeout" "120"
+}
+stampd_keys_body()
+{
+	local A F1 F2 k ino
+
+	command -v openssl >/dev/null || atf_skip "no openssl(1) for the far end"
+	umask 077
+	stampd_root
+	stampd_script
+	start_daemon
+	k=root/usr/local/etc/stampd.keys
+	printf '# the admin'"'"'s\n42 %s\n' "$(openssl rand -hex 16)" > $k
+	ino=$(stat -f %i $k)
+	atf_check -o save:key.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	atf_check -o match:'public [A-Za-z0-9+/]{43}=' cat key.out
+	openssl genpkey -algorithm X25519 -out far1.pem 2>/dev/null
+	openssl genpkey -algorithm X25519 -out far2.pem 2>/dev/null
+	F1=$(openssl pkey -in far1.pem -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A)
+	F2=$(openssl pkey -in far2.pem -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A)
+	# A half that is none: refused (its YANG type), nothing changed.
+	atf_check -s exit:1 -e match:'stamp-peer: 5 characters' \
+	    -o ignore "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","stamp_interface":"gre9","stamp_peer":"short"}]'
+	atf_check -s exit:1 -e match:'both or neither' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","stamp_interface":"gre9"}]'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"t1\",\"address\":\"127.0.0.1\",\"fib\":1,\"stamp_interface\":\"gre9\",\"stamp_peer\":\"$F1\"},{\"id\":\"t2\",\"address\":\"::1\",\"stamp_interface\":\"gre7\",\"stamp_peer\":\"$F1\"}]"
+	wait_match '^# arcana-agent: ' cat $k || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'^42 [0-9a-f]{32}$' -o match:'^# the admin' cat $k
+	atf_check -o inline:'1\n' grep -cE '^[0-9]+ [0-9a-f]{64}$' $k
+	atf_check -o inline:'-rw-------\n' stat -f %Sp $k
+	atf_check_equal "$ino" "$(stat -f %i $k)"
+	l1=$(grep -E '^[0-9]+ [0-9a-f]{64}$' $k)
+	wait_match '^stampd reload$' cat service.log ||
+	    atf_fail "not told: $(cat service.log)"
+	# gre7 has no pair: said (its target pinged until there is one).
+	atf_check -o match:'probe: t2 \(::1\): no STAMP key: gre7 has no key pair yet: ipsec-sa key first' \
+	    cat daemon.out
+	# Another far end: another key, in place, told again.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"t1\",\"address\":\"127.0.0.1\",\"fib\":1,\"stamp_interface\":\"gre9\",\"stamp_peer\":\"$F2\"}]"
+	wait_match '^stampd reload$' tail -1 service.log
+	for i in $(seq 1 50); do
+		[ "$(grep -E '^[0-9]+ [0-9a-f]{64}$' $k)" != "$l1" ] && break
+		sleep 0.1
+	done
+	atf_check -o inline:'1\n' grep -cE '^[0-9]+ [0-9a-f]{64}$' $k
+	atf_check -s exit:1 grep -qxF -e "$l1" $k
+	atf_check_equal "$ino" "$(stat -f %i $k)"
+	# No key in the log.
+	atf_check -s exit:1 grep -F -e "${l1#* }" daemon.out
+	# None: Arcana's lines out, the admin's kept.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	wait_match '^stampd onestop$' cat service.log ||
+	    atf_fail "not stopped: $(cat service.log)"
+	atf_check -s exit:1 -o inline:'0\n' grep -cE '[0-9a-f]{64}|arcana-agent' $k
+	atf_check -o match:'^42 [0-9a-f]{32}$' cat $k
+}
+stampd_keys_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case stampd_refused cleanup
 stampd_refused_head()
 {
@@ -15296,6 +15372,7 @@ atf_init_test_cases()
 	atf_add_test_case observe_history
 	atf_add_test_case sdwan_probes
 	atf_add_test_case stampd_conf
+	atf_add_test_case stampd_keys
 	atf_add_test_case stampd_refused
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log

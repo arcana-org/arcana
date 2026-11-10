@@ -117,7 +117,7 @@ on the wire.
 | 71 600 | 100 | `arcana-host` | `share/yang/arcana-host@2026-10-15.sid` (100 used, 34 obsolete: the host's certificates, a read-certificates action's output now; its rest at 82 000 and 83 000) |
 | 71 700 | 200 | `arcana-agent` | `share/yang/arcana-agent@2026-10-15.sid` (200 used, 1 obsolete: the certificate's chain as subjects, its intermediate certificates now; its rest at 82 100 and 83 100) |
 | 71 900 | 100 | `arcana-jail-files` | `share/yang/arcana-jail-files@2026-10-15.sid` (25 used, 11 obsolete: the jails' files as state, the read-files action's output now) |
-| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, 1 obsolete: a target's jail, the jail list's now; its rest at 80 300) |
+| 72 000 | 100 | `arcana-probe` | `share/yang/arcana-probe@2026-10-15.sid` (100 used, numbered again in path order with a target's stamp-interface and stamp-peer; its rest at 80 300) |
 | 72 100 | 200 | `arcana-sdwan` | `share/yang/arcana-sdwan@2026-10-15.sid` (200 used, 3 obsolete: the rules' and the steer's jail, the jail list's now, and a proxy's deny, which its form says; its rest at 81 000) |
 | 72 300 | 100 | `arcana-sshd` | `share/yang/arcana-sshd@2026-10-15.sid` (69 used, 35 obsolete: the jail augment, the read action's jail input in its place, and user-ca, the user-ca-key list now; its rest at 85 000) |
 | 72 400 | 200 | `arcana-builder` | `share/yang/arcana-builder@2026-10-17.sid` (98 used) |
@@ -146,7 +146,7 @@ on the wire.
 | 79 600 | 200 | `arcana-storage`, its second range: the read action's output, create-encrypted | `share/yang/arcana-storage@2026-10-14.sid` (76 used) |
 | 80 000 | 100 | `arcana-history`, its second range: the read action's settings and totals | `share/yang/arcana-history@2026-10-15.sid` (3 used) |
 | 80 100 | 100 | `arcana-events`, its second range: a route's nexthop and paths, a neighbour's family, a tunnel's jail, undo-failed's data, the read's kept, a job's user | `share/yang/arcana-events@2026-10-15.sid` (25 used) |
-| 80 300 | 100 | `arcana-probe`, its second range: the links, the monitors, the jails' edges, the read action's whole targets | `share/yang/arcana-probe@2026-10-15.sid` (64 used) |
+| 80 300 | 100 | `arcana-probe`, its second range | `share/yang/arcana-probe@2026-10-15.sid` (68 used) |
 | 80 400 | 300 | `arcana-bird`, its second range: the read, ospf and check actions, a protocol's detail, the jails' configuration | `share/yang/arcana-bird@2026-10-15.sid` (153 used) |
 | 81 000 | 200 | `arcana-sdwan`, its second range: the forms (spec, host), the jails' edges, the breakout's routes, a rule's place, the IDS' and the proxies' settings, the apply action, the state's routes, bfd, ClamAV and the IDS' build, host, ruleset, statistics and captures | `share/yang/arcana-sdwan@2026-10-15.sid` (122 used) |
 | 82 000 | 100 | `arcana-host`, its second range: the read-certificates action, the plugins poudriere, smtpd and speederv2 | `share/yang/arcana-host@2026-10-15.sid` (17 used) |
@@ -157,7 +157,7 @@ on the wire.
 | 84 000 | 700 | `arcana-network`: the network tables' read actions (routes, nexthops, nexthop groups, connections, sockets, interfaces, bridges, geneve, neighbours, multicast, kept routes, IPsec, a jail's firewall, the route lookup), the network-part structure, a jail's address action | `share/yang/arcana-network@2026-10-29.sid` (641 used) |
 | 84 700 | 100 | `arcana-firewall`, its second range (listed first in its file, so that new items go there): a kept rule's norm, the pipes' lines, the vnet jails' kept rules, the check and from-rc actions, the state's tunables, modules and a table's set | `share/yang/arcana-firewall@2026-10-15.sid` (60 used) |
 | 85 000 | 100 | `arcana-sshd`, its second range: the read action, the user CAs' keys and text, sshd_config's path, a certificate's serial | `share/yang/arcana-sshd@2026-10-15.sid` (54 used) |
-| 85 100 | 100 | `arcana-probe`, its third range: the read action's monitors | `share/yang/arcana-probe@2026-10-15.sid` (1 used) |
+| 85 100 | 100 | `arcana-probe`, its third range | `share/yang/arcana-probe@2026-10-15.sid` (none used since it was numbered again) |
 | 85 200 | 100 | `arcana-crashes` | `share/yang/arcana-crashes@2026-10-29.sid` (22 used) |
 | 85 300 | 100 | `arcana-system` | `share/yang/arcana-system@2026-10-29.sid` (58 used) |
 | 85 400 | 100 | `arcana-netstore` | `share/yang/arcana-netstore@2026-10-29.sid` (48 used) |

@@ -27,11 +27,24 @@
  * script is not in the host's rc.d directories (its package not
  * installed).  A jail's edges are not looked at: an agent in a vnet
  * jail runs its own.
+ *
+ * The reflector's keys (PLAN-SDN-YANG 5.1.7): the plain tunnels' STAMP
+ * keys, each derived by the prober from the tunnel's pair and the far
+ * end's public half (probe_stamp_keys(), gula/probe.c), written to
+ * stampd's key file (--stampd-keys, stampd.keys beside stampd.conf),
+ * root's alone, 0600, in place, as stampd(8) wants it: it keeps the
+ * file open from its start and reads it again on SIGHUP.  The lines
+ * after Arcana's marker are Arcana's, rewritten; those before it, an
+ * admin's, kept.  A file made while stampd runs is one it never
+ * opened: then it is restarted rather than told.  The keys are never
+ * logged; what is compared from one look to the next is their digest.
  */
 
 #include <sys/param.h>
+#include <sys/stat.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -42,14 +55,21 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <openssl/evp.h>
+
 #include "agent.h"
 #include "collect.h"
+#include "stamp.h"
 #include "varconf.h"
 
 #define	STAMPD		"stampd"
 #define	FIBS_MAX	64
 #define	RECHECK_S	60
 #define	SETTLE_MS	500	/* after a nudge, for those that follow it */
+#define	STAMPD_KEYS	"/usr/local/etc/stampd.keys"	/* main.c's */
+#define	KEYS_MAX	256	/* as many as the prober has targets */
+#define	KEYS_MARK	"# arcana-agent: the lines below are its own, the " \
+			"plain tunnels' STAMP keys (rewritten)\n"
 
 static pthread_mutex_t	 mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t	 cv = PTHREAD_COND_INITIALIZER;
@@ -57,6 +77,8 @@ static bool		 nudged;
 static char		 applied[FIBS_MAX * 4];	/* the FIBs written last */
 static bool		 known;
 static char		 said[512];		/* the last thing said */
+static unsigned char	 kdig[32];		/* the keys written last */
+static bool		 kknown;
 
 /* The FIBs of the services changed: looked at again, soon. */
 void
@@ -150,6 +172,170 @@ yes(const char *v)
 	    "TRUE") == 0 || strcasecmp(v, "ON") == 0 || strcmp(v, "1") == 0));
 }
 
+static int
+cmp_key(const void *a, const void *b)
+{
+	const struct stamp_key	*x = a, *y = b;
+
+	if (x->ssid != y->ssid)
+		return (x->ssid < y->ssid ? -1 : 1);
+	return (memcmp(x->key, y->key, sizeof(x->key)));
+}
+
+/*
+ * The keys as Arcana's lines of stampd's key file, "ssid key" each,
+ * sorted, into a buffer of the caller's to zero and free (*lenp its
+ * length; NULL with none); their digest into dig.
+ */
+static char *
+keys_text(size_t *lenp, unsigned char *dig)
+{
+	struct stamp_key	*k;
+	char			*buf;
+	size_t			 off = 0, cap;
+	unsigned int		 dl = 32;
+	int			 n, i;
+
+	*lenp = 0;
+	memset(dig, 0, 32);
+	if ((k = calloc(KEYS_MAX, sizeof(*k))) == NULL)
+		return (NULL);
+	n = probe_stamp_keys(k, KEYS_MAX);
+	qsort(k, (size_t)n, sizeof(*k), cmp_key);
+	cap = (size_t)n * (8 + 2 * STAMP_KEY_MAX + 2) + 1;
+	if (n == 0 || (buf = malloc(cap)) == NULL) {
+		explicit_bzero(k, KEYS_MAX * sizeof(*k));
+		free(k);
+		return (NULL);
+	}
+	for (i = 0; i < n; i++) {
+		off += (size_t)snprintf(buf + off, cap - off, "%d ", k[i].ssid);
+		for (size_t j = 0; j < k[i].len; j++)
+			off += (size_t)snprintf(buf + off, cap - off, "%02x",
+			    k[i].key[j]);
+		off += (size_t)snprintf(buf + off, cap - off, "\n");
+	}
+	explicit_bzero(k, KEYS_MAX * sizeof(*k));
+	free(k);
+	(void)EVP_Digest(buf, off, dig, &dl, EVP_sha256(), NULL);
+	*lenp = off;
+	return (buf);
+}
+
+/* stampd's key file: --stampd-keys, the default under --root. */
+static const char *
+keys_file(void)
+{
+	static char	buf[MAXPATHLEN];
+
+	if (opts.root == NULL || strcmp(opts.stampd_keys, STAMPD_KEYS) != 0)
+		return (opts.stampd_keys);
+	(void)snprintf(buf, sizeof(buf), "%s%s", opts.root, opts.stampd_keys);
+	return (buf);
+}
+
+/*
+ * stampd's key file made to hold the admin's lines (those before
+ * Arcana's marker) and Arcana's (text, len octets; none: the marker and
+ * its lines taken out), rewritten in place, root's and 0600; *made when
+ * there was no file (one is made only for keys), *changed when it was
+ * written.  0, or -1 and why.
+ */
+static int
+keys_write(const char *text, size_t len, bool *made, bool *changed,
+    char *err, size_t errlen)
+{
+	struct stat	 st;
+	char		*old = NULL, *nw = NULL, *m;
+	size_t		 olen = 0, keep, nlen = 0;
+	ssize_t		 r;
+	const char	*path;
+	int		 fd, rc = -1;
+
+	*made = *changed = false;
+	path = keys_file();
+	if ((fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)) ==
+	    -1) {
+		if (errno != ENOENT) {
+			(void)snprintf(err, errlen, "%s: %s", path,
+			    strerror(errno));
+			return (-1);
+		}
+		if (len == 0)
+			return (0);
+		if ((fd = open(path, O_RDWR | O_CREAT | O_EXCL |
+		    O_NOFOLLOW | O_CLOEXEC, 0600)) == -1) {
+			(void)snprintf(err, errlen, "%s: %s", path,
+			    strerror(errno));
+			return (-1);
+		}
+		*made = true;
+	}
+	if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode) || st.st_size >
+	    1024 * 1024) {
+		(void)snprintf(err, errlen, "%s: not a regular file of a size "
+		    "stampd reads", path);
+		goto out;
+	}
+	/* stampd's terms: its owner's alone, root's. */
+	if ((geteuid() == 0 && (st.st_uid != 0 || st.st_gid != 0) &&
+	    fchown(fd, 0, 0) == -1) || ((st.st_mode & 07777) != 0600 &&
+	    fchmod(fd, 0600) == -1)) {
+		(void)snprintf(err, errlen, "%s: %s", path,
+		    strerror(errno));
+		goto out;
+	}
+	if ((old = malloc((size_t)st.st_size + 1)) == NULL)
+		goto nomem;
+	while (olen < (size_t)st.st_size && (r = pread(fd, old + olen,
+	    (size_t)st.st_size - olen, (off_t)olen)) > 0)
+		olen += (size_t)r;
+	old[olen] = '\0';
+	/* The admin's: everything before Arcana's marker. */
+	m = strstr(old, KEYS_MARK);
+	keep = m != NULL ? (size_t)(m - old) : olen;
+	nlen = keep + (len > 0 ? strlen(KEYS_MARK) + len : 0) + 1;
+	if ((nw = malloc(nlen)) == NULL)
+		goto nomem;
+	memcpy(nw, old, keep);
+	nlen = keep;
+	if (len > 0 && keep > 0 && nw[keep - 1] != '\n')
+		nw[nlen++] = '\n';
+	if (len > 0) {
+		memcpy(nw + nlen, KEYS_MARK, strlen(KEYS_MARK));
+		nlen += strlen(KEYS_MARK);
+		memcpy(nw + nlen, text, len);
+		nlen += len;
+	}
+	if (nlen == olen && memcmp(nw, old, olen) == 0) {
+		rc = 0;
+		goto out;
+	}
+	/* In place: stampd reads it through the descriptor it kept. */
+	if (ftruncate(fd, 0) == -1 || pwrite(fd, nw, nlen, 0) != (ssize_t)nlen
+	    || fsync(fd) == -1) {
+		(void)snprintf(err, errlen, "%s: %s", path,
+		    strerror(errno));
+		goto out;
+	}
+	*changed = true;
+	rc = 0;
+	goto out;
+nomem:
+	(void)snprintf(err, errlen, "%s", strerror(errno));
+out:
+	if (old != NULL) {
+		explicit_bzero(old, olen);
+		free(old);
+	}
+	if (nw != NULL) {
+		explicit_bzero(nw, nlen);
+		free(nw);
+	}
+	close(fd);
+	return (rc);
+}
+
 /* "service stampd verb": 0, or -1 with why in err. */
 static int
 service(struct work *w, const char *verb, char *err, size_t errlen)
@@ -200,12 +386,13 @@ said_already(struct rca *x, const char *fb, const char *want)
  * change_lock.
  */
 static void
-apply(struct work *w, const char *want, int n)
+apply(struct work *w, const char *want, int n, const char *keys,
+    size_t klen, const unsigned char *dig)
 {
 	struct rca	 x;
-	const char	*en, *fb;
+	const char	*en, *fb, *verb;
 	char		 err[1024];
-	bool		 ours;
+	bool		 ours, made = false, kchanged = false;
 
 	if (rca_open(&x, STAMPD, err, sizeof(err)) != 0) {
 		tell(LOG_WARNING, "stampd: rc.conf: %s", err);
@@ -220,10 +407,29 @@ apply(struct work *w, const char *want, int n)
 		/* Nothing of Arcana's: the admin's stampd, if any, theirs. */
 		(void)strlcpy(applied, want, sizeof(applied));
 		known = true;
+		memcpy(kdig, dig, sizeof(kdig));
+		kknown = true;
 		rca_close(&x);
 		return;
 	}
+	/* The keys before stampd is told: a new instance reads them. */
+	if (keys_write(n > 0 ? keys : NULL, n > 0 ? klen : 0, &made, &kchanged,
+	    err, sizeof(err)) != 0) {
+		tell(LOG_WARNING, "stampd: its keys not written: %s", err);
+		rca_close(&x);
+		return;
+	}
+	memcpy(kdig, dig, sizeof(kdig));
+	kknown = true;
+	/* A file stampd never opened: started again to open it. */
+	verb = made ? "restart" : "reload";
 	if (n > 0 && yes(en) && fb != NULL && said_already(&x, fb, want)) {
+		if (kchanged && service(w, verb, err, sizeof(err)) != 0)
+			tell(LOG_WARNING, "stampd: its keys written to %s, but "
+			    "%s", keys_file(), err);
+		else if (kchanged)
+			tell(LOG_INFO, "stampd: its keys rewritten in %s, stampd "
+			    "told (%s)", keys_file(), verb);
 		(void)strlcpy(applied, want, sizeof(applied));
 		known = true;
 		rca_close(&x);
@@ -256,7 +462,7 @@ apply(struct work *w, const char *want, int n)
 			rca_close(&x);
 			return;
 		}
-		if (service(w, "reload", err, sizeof(err)) != 0) {
+		if (service(w, verb, err, sizeof(err)) != 0) {
 			/* Written: rc(8) starts it at boot; said, and tried
 			 * again with the next change. */
 			tell(LOG_WARNING, "stampd: stampd_fibs=\"%s\" in %s, but "
@@ -277,7 +483,9 @@ watch(void *arg __unused)
 {
 	struct work	 w;
 	struct timespec	 ts, settle = { 0, SETTLE_MS * 1000000L };
-	char		 want[sizeof(applied)];
+	char		 want[sizeof(applied)], *keys;
+	unsigned char	 dig[32];
+	size_t		 klen;
 	int		 n;
 
 	for (;;) {
@@ -291,25 +499,32 @@ watch(void *arg __unused)
 		pthread_mutex_unlock(&mtx);
 		(void)nanosleep(&settle, NULL);
 		n = wanted(want, sizeof(want));
-		if (known && strcmp(want, applied) == 0)
-			continue;
+		keys = keys_text(&klen, dig);
+		if (known && strcmp(want, applied) == 0 && kknown && memcmp(dig,
+		    kdig, sizeof(dig)) == 0)
+			goto next;
 		if (!installed()) {
 			if (n > 0)
 				tell(LOG_WARNING, "stampd: not installed (no rc "
 				    "script in %s): FIB%s %s not reflected",
 				    opts.rc_dirs, n > 1 ? "s" : "", want);
-			continue;
+			goto next;
 		}
 		pthread_mutex_lock(&change_lock);
 		if (!change_note("stampd: FIBs %s", n > 0 ? want : "none")) {
 			pthread_mutex_unlock(&change_lock);
-			continue;
+			goto next;
 		}
 		work_init(&w);
-		apply(&w, want, n);
+		apply(&w, want, n, keys, klen, dig);
 		work_free(&w);
 		(void)change_note(NULL);
 		pthread_mutex_unlock(&change_lock);
+next:
+		if (keys != NULL) {
+			explicit_bzero(keys, klen);
+			free(keys);
+		}
 	}
 	return (NULL);
 }

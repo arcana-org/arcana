@@ -2836,6 +2836,216 @@ stamp_location_cleanup()
 	true
 }
 
+# STAMP's authenticated mode (PLAN-SDN-YANG 5.1.7): stampd in a vnet
+# jail behind an epair under the key a plain tunnel's two ends derive,
+# the far end's made here as its agent would make it.
+STA_J=arc-tsa
+STA_NET=198.18.66
+
+# The STAMP key of a tunnel end whose pair is $1 (a PEM file) and whose
+# far end's public half is $2: "ssid key", as the agent derives it (an
+# X25519 agreement, HKDF-SHA256 salted "arcana stamp v1", both halves
+# in order and a zero epoch the info; 32 octets of key, 2 of SSID).
+sta_derive()
+{
+	cat > derive.py <<'EOF'
+import base64, hashlib, hmac, os, subprocess, sys, tempfile
+pem, peer = sys.argv[1], base64.b64decode(sys.argv[2])
+der = subprocess.run(["openssl", "pkey", "-in", pem, "-pubout", "-outform",
+    "DER"], check=True, capture_output=True).stdout
+mine = der[-32:]
+spki = bytes.fromhex("302a300506032b656e032100") + peer
+fd, path = tempfile.mkstemp(dir=".")
+os.write(fd, b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(spki) +
+    b"-----END PUBLIC KEY-----\n")
+os.close(fd)
+shared = subprocess.run(["openssl", "pkeyutl", "-derive", "-inkey", pem,
+    "-peerkey", path], check=True, capture_output=True).stdout
+os.unlink(path)
+info = min(mine, peer) + max(mine, peer) + bytes(4)
+prk = hmac.new(b"arcana stamp v1", shared, hashlib.sha256).digest()
+okm, t, i = b"", b"", 1
+while len(okm) < 34:
+    t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+    okm += t
+    i += 1
+ssid = okm[32] << 8 | okm[33]
+print("%d %s" % (ssid or 1, okm[:32].hex()))
+EOF
+	python3 -I derive.py "$1" "$2"
+}
+
+# A pair made as the far end's agent would: its PEM and its public half.
+sta_pair()
+{
+	(umask 077; openssl genpkey -algorithm X25519 -out "$1.pem" 2>/dev/null)
+	openssl pkey -in "$1.pem" -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A > "$1.pub"
+}
+
+atf_test_case stamp_auth cleanup
+stamp_auth_head()
+{
+	atf_set "descr" "A plain tunnel's STAMP authenticated: the agent's key" \
+	    "and SSID derived from its tunnel end's pair and the far end's" \
+	    "public half, the same as the far end derives, its stampd key" \
+	    "file 0600 with it; stampd in a vnet jail under that key" \
+	    "answers; through a relay flipping one octet of each probe" \
+	    "nothing is answered, stampd counting the failures, and the" \
+	    "agent falls back to ICMP; a far end of another key is refused" \
+	    "the same; no key in a log"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_auth_body()
+{
+	local ep i P t A K far1 far2 k
+
+	command -v python3 >/dev/null || atf_skip "no python3 for the relay"
+	command -v openssl >/dev/null || atf_skip "no openssl(1) for the far end"
+	jls -j $STA_J >/dev/null 2>&1 && atf_skip "a jail $STA_J exists"
+	umask 077
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	atf_check jail -c name=$STA_J vnet persist path=/ host.hostname=$STA_J
+	ep=$(epair_create)
+	echo "$ep" > sta.epair
+	atf_check ifconfig "$ep" inet $STA_NET.1/29 up
+	atf_check ifconfig "${ep%a}b" vnet $STA_J
+	atf_check jexec $STA_J ifconfig "${ep%a}b" inet $STA_NET.2/29 up
+	for i in 3 4; do
+		atf_check jexec $STA_J ifconfig "${ep%a}b" inet $STA_NET.$i/32 \
+		    alias
+	done
+	# The agent: stampd's script in its rc.d, service(8) a log, a root
+	# whose rc.conf reads Arcana's file; its stampd key file there.
+	mkdir -p root/etc/defaults root/usr/local/etc rc.d
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
+	    > root/etc/rc.conf
+	printf '#!/bin/sh\n' > rc.d/stampd
+	chmod +x rc.d/stampd
+	printf '#!/bin/sh\necho "$*" >> %s/service.log\n' "$(pwd)" \
+	    > fake-service
+	chmod +x fake-service
+	DAEMON_ARGS="-d --stamp-port $P --root $(pwd)/root -R $(pwd)/rc.d -s $(pwd)/fake-service" \
+	    start_daemon
+	# This end's pair, as the console has it made (ipsec-sa key).
+	atf_check -o save:sta.key "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	A=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' sta.key | head -1)
+	[ -n "$A" ] || atf_fail "no public half: $(cat sta.key)"
+	# Two far ends: the jail's, and another.
+	sta_pair far1
+	sta_pair far2
+	far1=$(cat far1.pub)
+	far2=$(cat far2.pub)
+	K=$(sta_derive far1.pem "$A")
+	printf '%s\n' "$K" > sta.keys
+	jexec $STA_J "$SD" -d -u nobody -r 0 -R 0 -p $P -K "$(pwd)/sta.keys" \
+	    > sta.d.out 2>&1 &
+	echo $! > sta.spid
+	for i in $(seq 1 100); do
+		grep -q started sta.d.out && break
+		sleep 0.05
+	done
+	grep -q 'started: .*, 1 key, ' sta.d.out || atf_fail "stampd: $(cat sta.d.out)"
+	# The relay on .3's port: on to stampd at .2, the 21st octet of each
+	# probe flipped (its timestamp), the replies back as they are.
+	cat > relay.py <<'EOF'
+import select, socket, sys
+la, port, ra = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+i = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+i.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+i.bind((la, port))
+o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+o.connect((ra, port))
+print("ready", flush=True)
+peer = None
+while True:
+    r, _, _ = select.select([i, o], [], [])
+    if i in r:
+        d, peer = i.recvfrom(9000)
+        d = bytearray(d)
+        if len(d) > 20:
+            d[20] ^= 0x01
+        try:
+            o.send(bytes(d))
+        except OSError:
+            pass
+    if o in r:
+        try:
+            d = o.recv(9000)
+        except OSError:
+            continue
+        if peer is not None:
+            i.sendto(d, peer)
+EOF
+	jexec $STA_J python3 -I "$(pwd)/relay.py" $STA_NET.3 $P $STA_NET.2 \
+	    > sta.r.out 2>&1 &
+	echo $! > sta.rpid
+	for i in $(seq 1 100); do
+		grep -q ready sta.r.out && break
+		sleep 0.05
+	done
+	grep -q ready sta.r.out || atf_fail "relay: $(cat sta.r.out)"
+	t='"interval":20,"eval":1000,"timeout":300,"down":10,"stamp_interface":"gre9"'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"good\",\"address\":\"$STA_NET.2\",$t,\"stamp_peer\":\"$far1\"},{\"id\":\"flip\",\"address\":\"$STA_NET.3\",$t,\"stamp_peer\":\"$far1\"},{\"id\":\"wrong\",\"address\":\"$STA_NET.4\",$t,\"stamp_peer\":\"$far2\"}]"
+	sleep 8
+	atf_check -o save:sta.json "$JGC" -c "$SOCK" sdwan
+	# Authenticated, answered: measured by STAMP.
+	grep "probe: good: stamp (stateful reflector): " daemon.out | tail -1 \
+	    > sta.good
+	[ -s sta.good ] || atf_fail "good not measured by STAMP: $(cat daemon.out)"
+	cat sta.good
+	atf_check -o match:"probe: good: stamp authenticated \(SSID ${K%% *}\); replies failing authentication 0 all along" \
+	    cat daemon.out
+	atf_check -o match:'"id":"good","address":"198\.18\.66\.2","family":"inet","fib":0,"state":"up"' \
+	    cat sta.json
+	# Flipped on the way: never answered, counted by stampd; pinged.
+	atf_check -o match:'probe: flip \(198\.18\.66\.3\): no STAMP reply in 10 probes: pinged until STAMP answers' \
+	    -o match:'probe: wrong \(198\.18\.66\.4\): no STAMP reply in 10 probes: pinged until STAMP answers' \
+	    cat daemon.out
+	atf_check -o match:'"id":"flip","address":"198\.18\.66\.3","family":"inet","fib":0,"state":"up"' \
+	    -o match:'"id":"wrong","address":"198\.18\.66\.4","family":"inet","fib":0,"state":"up"' \
+	    cat sta.json
+	atf_check -o not-match:'probe: (flip|wrong): stamp \(' cat daemon.out
+	n=$(sed -nE 's/.* ([0-9]+) requests failing authentication dropped/\1/p' \
+	    sta.d.out | tail -1)
+	echo "stampd: ${n:-no} requests failing authentication dropped"
+	[ "${n:-0}" -ge 20 ] || atf_fail "stampd counted ${n:-none}: $(cat sta.d.out)"
+	# The agent's stampd key file: root's, 0600, the jail's key in it
+	# (both ends derived the same), the other far end's beside it.
+	k=root/usr/local/etc/stampd.keys
+	wait_for "grep -Eq '^stampd (restart|reload)\$' service.log"
+	atf_check -o match:'^stampd (restart|reload)$' cat service.log
+	atf_check -o inline:'-rw------- root\n' stat -f '%Sp %Su' $k
+	atf_check -o match:"^$K\$" cat $k
+	atf_check -o match:'^# arcana-agent: ' cat $k
+	atf_check -o inline:'2\n' grep -c '^[0-9]* [0-9a-f]\{64\}$' $k
+	# No key in a log.
+	atf_check -s exit:1 grep -F -e "${K#* }" daemon.out sta.d.out sta.json
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	# Its targets gone: Arcana's keys taken out of the file.
+	wait_for "grep -q '^stampd onestop\$' service.log"
+	atf_check -o match:'^stampd onestop$' cat service.log
+	atf_check -s exit:1 -o inline:'0\n' grep -c '[0-9a-f]\{64\}' $k
+}
+stamp_auth_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f sta.spid ] && kill "$(cat sta.spid)" 2>/dev/null
+	[ -f sta.rpid ] && kill "$(cat sta.rpid)" 2>/dev/null
+	# The epair's end brought home before the jail goes.
+	if [ -f sta.epair ]; then
+		ep=$(cat sta.epair)
+		ifconfig "${ep%a}b" -vnet $STA_J 2>/dev/null
+		ifconfig "$ep" destroy 2>/dev/null
+	fi
+	jail -r $STA_J >/dev/null 2>&1
+	true
+}
+
 atf_test_case monitors_qos cleanup
 monitors_qos_head()
 {
@@ -4413,6 +4623,7 @@ atf_init_test_cases()
 	atf_add_test_case stamp_delay
 	atf_add_test_case stamp_cos
 	atf_add_test_case stamp_location
+	atf_add_test_case stamp_auth
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live
 	atf_add_test_case jail_dying_namesake

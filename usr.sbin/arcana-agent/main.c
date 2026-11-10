@@ -106,6 +106,7 @@ struct opts opts = {
 	.bird_watch_s = 15,
 	.smtpd_watch_s = 60,
 	.stamp_port = 862,
+	.stampd_keys = "/usr/local/etc/stampd.keys",
 	.pkg_idle_s = PKG_IDLE_SEC,
 	.pkg_lanes = PKG_LANES,
 	.bird_bin = PATH_BIRD_BIN,
@@ -134,7 +135,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
-    OPT_STAMP_CLOCK };
+    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -159,6 +160,9 @@ static const struct option longopts[] = {
 	/* This host's clock as STAMP tells it, for one ntp_gettime(2)
 	 * does not know is synchronised: source[:error]. */
 	{ "stamp-clock", required_argument, NULL, OPT_STAMP_CLOCK },
+	/* stampd(8)'s key file, the plain tunnels' STAMP keys: a test's
+	 * own. */
+	{ "stampd-keys", required_argument, NULL, OPT_STAMPD_KEYS },
 	/* More addresses each SCTP listener is bound to (sctp_bindx(3)),
 	 * separated by spaces: an association with the console over
 	 * several paths. */
@@ -224,7 +228,7 @@ usage(void)
 	    "                 [--exports file] [--ctl-conf file] [--hast-conf file]\n"
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
-	    "                 [--stamp-clock source[:error]]\n"
+	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file]\n"
 	    "                 [--subscriptions file] [--features list]\n");
@@ -496,6 +500,9 @@ main(int argc, char *argv[])
 			opts.stamp_port = (int)strtonum(optarg, 0, 65535, &errstr);
 			if (errstr != NULL)
 				errx(1, "--stamp-port %s: %s", optarg, errstr);
+			break;
+		case OPT_STAMPD_KEYS:
+			opts.stampd_keys = optarg;
 			break;
 		case OPT_STAMP_CLOCK:
 			if (stamp_clock_set(optarg) == -1)

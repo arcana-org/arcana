@@ -15688,6 +15688,20 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	    "\"id\":\"acme/a-inet-b-inet\",\"address\":\"100.64.0.1\",\"fib\":1,"
 	    "\"eval\":1000,\"tca\":{\"delay\":30,\"loss\":0.050000,\"damping\":2}}")
 	    != NULL, "%s", r.body);
+	/*
+	 * The gif, plain (no IPsec): its STAMP authenticated by default
+	 * (PLAN-SDN-YANG 5.1.7), the key derived by each end from its
+	 * pair, made first, and the far end's public half, which the apply
+	 * reads from that end; the gre under IPsec's not (above).
+	 */
+	snprintf(t2, sizeof(t2), "\"stamp_interface\":\"gif102\","
+	    "\"stamp_peer\":\"${stamp:%s:gif103}\"", sb);
+	ATF_CHECK_MSG(strstr(r.body, t2) != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"stampkey:gif102\",\"phase\":2,"
+	    "\"title\":\"gif102: its key pair, X25519, kept by the agent: its "
+	    "authenticated STAMP's key\",\"make\":[{\"kind\":\"ipsec-sa\","
+	    "\"verb\":\"key\",\"interface\":\"gif102\"}]") != NULL, "%s",
+	    r.body);
 	/* The rules: the UNI's packets to their zone's block, each flow
 	 * with its policy's table, the rest dropped; and the steering. */
 	ATF_CHECK_MSG(strstr(r.body, "\"10 skipto tablearg ip from table("
@@ -16665,7 +16679,11 @@ ATF_TC_BODY(sdwan_apply_change, tc)
 	resp_free(&r);
 	r4_read("plan", &r);
 	EXPECT(&r, 200);
-	ATF_CHECK_EQ_MSG(2, changes_of(&r, "unmake"), "%s", r.body);
+	/* Its two ends, and the pairs of its authenticated STAMP (a plain
+	 * gif's, PLAN-SDN-YANG 5.1.7). */
+	ATF_CHECK_EQ_MSG(4, changes_of(&r, "unmake"), "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"stampkey:") != NULL, "%s",
+	    r.body);
 	ATF_CHECK_EQ(2, (int)ucl_array_size(ucl_object_lookup(r.json,
 	    "tunnels")));
 	resp_free(&r);

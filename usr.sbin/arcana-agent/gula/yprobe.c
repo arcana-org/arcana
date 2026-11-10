@@ -115,6 +115,8 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		if ((t[n].id = yj_str(a, o, "id")) == NULL)
 			continue;
 		t[n].has_address = addr_union(a, o, "address", &t[n].address);
+		t[n].stamp_interface = yj_str(a, o, "stamp_interface");
+		t[n].stamp_peer = yj_str(a, o, "stamp_peer");
 		YJ_NUM(o, "count", &t[n], count);
 		YJ_NUM(o, "report", &t[n], report);
 		YJ_NUM(o, "fib", &t[n], fib);
@@ -288,6 +290,13 @@ yprobe_edge_json(const char *jail, size_t nt,
 		if (t->has_address)
 			ucl_object_insert_key(o, ucl_object_fromstring(
 			    t->address.v.m0), "address", 0, true);
+		/* A plain tunnel's: what its STAMP key comes from. */
+		if (t->stamp_interface != NULL)
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->stamp_interface), "stamp_interface", 0, true);
+		if (t->stamp_peer != NULL)
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    t->stamp_peer), "stamp_peer", 0, true);
 		PUT_INT(o, "count", t, count);
 		PUT_INT(o, "report", t, report);
 		PUT_INT(o, "fib", t, fib);

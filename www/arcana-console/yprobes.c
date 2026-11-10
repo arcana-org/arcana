@@ -74,6 +74,13 @@ target_of(const ucl_object_t *t)
 		ucl_object_insert_key(o, ucl_object_copy(v), "id", 0, true);
 	if ((v = ucl_object_lookup(t, "address")) != NULL)
 		ucl_object_insert_key(o, ucl_object_copy(v), "address", 0, true);
+	/* A plain tunnel's: what its STAMP key is derived from. */
+	if ((v = ucl_object_lookup(t, "stamp_interface")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v), "stamp-interface", 0,
+		    true);
+	if ((v = ucl_object_lookup(t, "stamp_peer")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v), "stamp-peer", 0,
+		    true);
 	for (size_t i = 0; i < nitems(ints); i++)
 		if ((v = ucl_object_lookup(t, ints[i])) != NULL)
 			ucl_object_insert_key(o, ucl_object_copy(v), ints[i], 0,

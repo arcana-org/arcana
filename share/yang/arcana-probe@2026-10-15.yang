@@ -237,6 +237,27 @@ module arcana-probe {
         description
           "Its far end, which answers the echo.";
       }
+      leaf stamp-interface {
+        type string {
+          length "1..15";
+        }
+        description
+          "A plain tunnel's (no IPsec, no WireGuard): this end's tunnel
+           interface, whose X25519 key pair its STAMP key is derived
+           from with the far end's public half; its STAMP then the
+           authenticated mode (RFC 8762 section 4.4).";
+      }
+      leaf stamp-peer {
+        type string {
+          length "44";
+          pattern '[A-Za-z0-9+/]{43}=';
+        }
+        description
+          "The far end's public half of its tunnel's key pair, 32 bytes
+           as base64: with stamp-interface, the STAMP key, derived the
+           same at both ends by HKDF-SHA256, never sent.  Both or
+           neither.";
+      }
       leaf count {
         type uint32 {
           range "0..2147483647";

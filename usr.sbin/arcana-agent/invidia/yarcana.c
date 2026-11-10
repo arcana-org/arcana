@@ -2822,8 +2822,11 @@ arcana_probe_probes_edit(cbl_req *req, const struct arcana_probe *before,
 	}
 	change_end();
 	step_end(&w, root, rc == 0, NULL);
+	/* Said before the work goes: why may be of its arena. */
+	if (rc != 0)
+		rc = said(req, why);
 	work_free(&w);
-	return (rc == 0 ? 0 : said(req, why));
+	return (rc);
 }
 
 int

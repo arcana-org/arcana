@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.268.0"
+#define	ARCANA_AGENT_VERSION	"0.269.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -176,6 +176,7 @@ struct opts {
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
 	int		 stamp_port;	/* --stamp-port: far ends' STAMP; 0 none */
+	const char	*stampd_keys;	/* --stampd-keys: stampd(8)'s key file */
 	int		 pkg_idle_s;	/* --pkg-idle: a silent pkg, stopped after */
 	int		 pkg_lanes;	/* jobs of pkg in jails at once, at start */
 	const char	*jobs_conf;	/* where lanes is kept */
@@ -905,6 +906,8 @@ int		 probe_fibs(int *, int);
  * set in rc.conf to answer in each FIB the host's services use. */
 void		 stampd_start(void);
 void		 stampd_nudge(void);
+struct stamp_key;
+int		 probe_stamp_keys(struct stamp_key *, int);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);
@@ -1092,6 +1095,8 @@ const char	*sa_undo_check(struct work *, const struct arc_job_spec *);
 int		 sa_undo(struct work *, const struct arc_job_spec *,
 		    const char **);
 void		 sa_keys_json(struct work *, struct ucl_object_s *);
+int		 tunnel_key_derive(struct work *, const char *, const char *,
+		    const char *, unsigned char *, size_t, const char **);
 bool		 rtadvd_prefix_ok(const char *);
 int		 sdwan_bfd_state(const char *);
 const char	*sdwan_tunnel_by_via(const char *);
