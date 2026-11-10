@@ -15474,7 +15474,7 @@ ATF_TC_BODY(sdwan_lists, tc)
  * SD-WAN's console for the apply: the hosts' events read each second (the
  * SENs come by them), hosts a and b on the one agent (their ids into sa
  * and sb), SENs mailed to soc; the lists the security policy names, one
- * pasted, one a feed from a file, one dead, fetched; sdwan_good with its
+ * pasted, one a feed over HTTP, one dead, fetched; sdwan_good with its
  * underlays addressed and its UNIs on lo0 kept, into doc.  b-mpls's
  * interface into lifn if it is the host's (empty if not), its address
  * into laddr.
@@ -15485,32 +15485,31 @@ sdwan_apply_start(const atf_tc_t *tc, struct authn *a, char *sa, char *sb,
     char *laddr, size_t alen)
 {
 	struct resp	r;
-	char		cwd[1024], body[400], t1[8192], t2[300];
+	char		body[400], t1[8192], t2[300];
 	size_t		i;
-	FILE		*fp;
+	int		port;
 
 	lifn[0] = '\0';
+	/* The feeds' stand-in, its 127.0.0.1 let through below. */
+	port = feeds_server(tc);
 	/* The hosts' events read each second: the SENs come by them. */
 	snprintf(harness_webconf, sizeof(harness_webconf), "mail_tick = 1;\n");
 	start(tc, 0, NULL);
 	enrol(a);
-	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
 	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
-	    "\"mail-sen\":\"soc@example.org\"}}", &r);
+	    "\"mail-sen\":\"soc@example.org\",\"feeds-allow-private\":"
+	    "\"127.0.0.1/32\"}}", &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
 	r4_hosts(sa, sb, len);
-	/* The lists the security policy names: one pasted, one a
-	 * feed from a file the console's host reads with libfetch; each
-	 * kept with a version, a failed feed with its error. */
-	snprintf(t2, sizeof(t2), "%s/feed.txt", cwd);
-	ATF_REQUIRE((fp = fopen(t2, "w")) != NULL);
-	fprintf(fp, "# a feed\n203.0.113.0/24 ; evil\n\nbad-feed.example\n");
-	fclose(fp);
+	/* The lists the security policy names: one pasted, one a feed
+	 * served over HTTP (tests/feeds/sdwan-list.txt), one dead (a 404);
+	 * each kept with a version, a failed feed with its error. */
 	snprintf(body, sizeof(body), "{\"arcana-console:lists\":{\"interval\":"
 	    "2,\"feeds\":[{\"name\":\"blocked\",\"text\":\"198.51.100.0/24\\n"
-	    "bad.example\\n\"},{\"name\":\"feedlist\",\"url\":\"file://%s\"},"
-	    "{\"name\":\"dead\",\"url\":\"file://%s/none.txt\"}]}}", t2, cwd);
+	    "bad.example\\n\"},{\"name\":\"feedlist\",\"url\":\"http://"
+	    "127.0.0.1:%d/sdwan-list.txt\"},{\"name\":\"dead\",\"url\":"
+	    "\"http://127.0.0.1:%d/none.txt\"}]}}", port, port);
 	http("PUT", CC "sdwan/lists", body, &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
@@ -19213,7 +19212,8 @@ ATF_TC_BODY(feeds_redirect, tc)
 
 CONSOLE_TC(sdwan_list_urls, "SD-WAN's lists fetched as threat feeds are: "
     "a URL resolving to private space refused unless Settings let it "
-    "through, a redirect to a cloud's metadata too")
+    "through, a redirect to a cloud's metadata too; http(s) alone, a "
+    "file: URL refused when kept and not read when fetched")
 ATF_TC_BODY(sdwan_list_urls, tc)
 {
 	struct authn	a;
@@ -19242,6 +19242,27 @@ ATF_TC_BODY(sdwan_list_urls, tc)
 		}
 	}
 	ATF_CHECK(system("grep -q oracle.txt feedsrv.log") != 0);
+	/* A file on the console's host, or any scheme but http(s): refused
+	 * when kept, by the list's name. */
+	{
+		static const char *const other[] = { "file:///etc/passwd",
+		    "ftp://192.0.2.1/list.txt" };
+
+		for (i = 0; i < 2; i++) {
+			snprintf(body, sizeof(body), "{\"arcana-console:lists\":"
+			    "{\"feeds\":[{\"name\":\"local\",\"url\":\"%s\"}]}}",
+			    other[i]);
+			http("PUT", CC "sdwan/lists", body, &r);
+			ATF_CHECK_MSG(r.status == 400 && strstr(r.body,
+			    "list local: only http(s) URLs are accepted") != NULL,
+			    "%s: %d %s", other[i], r.status, r.body);
+			resp_free(&r);
+		}
+		r4_read("lists", &r);
+		ATF_CHECK_MSG(jstr(&r, "lists.local.count") == NULL, "%s",
+		    r.body);
+		resp_free(&r);
+	}
 
 	/* The stand-in's 127.0.0.1 let through: its list fetched; one
 	 * redirected to a cloud's metadata not, its error kept. */
@@ -19268,6 +19289,23 @@ ATF_TC_BODY(sdwan_list_urls, tc)
 	    0, "%s", r.body);
 	resp_free(&r);
 	ATF_CHECK(system("grep -q 'GET /oracle.txt 200' feedsrv.log") == 0);
+
+	/* A file: URL kept from before (written into the store by hand):
+	 * not read when fetched, the list's error, its last entries kept. */
+	ATF_REQUIRE(system("sed -i '' 's|http://127.0.0.1:[0-9]*/oracle.txt|"
+	    "file:///etc/passwd|' data/sdwan-lists.json && grep -q "
+	    "'file:///etc/passwd' data/sdwan-lists.json") == 0);
+	http("POST", CC "sdwan/fetch-lists", "{\"arcana-console:input\":{"
+	    "\"name\":\"in\"}}", &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	r4_read("lists", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "lists.in.error") != NULL && strstr(jstr(&r,
+	    "lists.in.error"), "only http(s) URLs are accepted") != NULL &&
+	    strcmp(jstr(&r, "lists.in.count"), "4") == 0 && strstr(r.body,
+	    "root:") == NULL, "%s", r.body);
+	resp_free(&r);
 }
 
 CONSOLE_TC(feeds_operator, "Threat feeds an operator of some hosts may "

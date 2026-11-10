@@ -72,7 +72,6 @@
 #include <syslog.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <fetch.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
@@ -8995,46 +8994,35 @@ list_keep(ucl_object_t *kept, const char *name, ucl_object_t *entries,
 	put(all, name, l);
 }
 
+/* Is a list's url one the console fetches: http or https alone? */
+static bool
+list_url_ok(const char *url)
+{
+
+	return (strncmp(url, "https://", 8) == 0 ||
+	    strncmp(url, "http://", 7) == 0);
+}
+
 /*
- * A feed's text (malloc'd), or NULL and why.  http and https fetched as
- * the threat feeds are (feeds_get(): what resolves to private space
- * refused but for Settings' feeds_allow_private, each redirect's target
- * too, at most 8 MB in 30 s); file, the console's host's own, read with
- * the base system's libfetch.
+ * A feed's text (malloc'd), or NULL and why.  http and https alone,
+ * fetched as the threat feeds are (feeds_get(): what resolves to
+ * private space refused but for Settings' feeds_allow_private, each
+ * redirect's target too, at most 8 MB in 30 s); any other scheme, one
+ * kept from before, the list's error.
  */
 static char *
 list_get(const char *url, char *why, size_t wlen)
 {
-	FILE	*fp;
 	char	*buf;
-	size_t	 len, n;
+	size_t	 len;
 
-	if (strncmp(url, "file:", 5) != 0) {
-		if (feeds_get(url, LIST_MAX_BYTES - 1, 30, &buf, &len, why,
-		    wlen) != 0)
-			return (NULL);
-		return (buf);
-	}
-	fetchTimeout = 30;
-	if ((fp = fetchGetURL(url, "")) == NULL) {
-		snprintf(why, wlen, "%s", fetchLastErrString);
+	if (!list_url_ok(url)) {
+		snprintf(why, wlen, "only http(s) URLs are accepted");
 		return (NULL);
 	}
-	if ((buf = malloc(LIST_MAX_BYTES)) == NULL) {
-		fclose(fp);
-		snprintf(why, wlen, "out of memory");
+	if (feeds_get(url, LIST_MAX_BYTES - 1, 30, &buf, &len, why,
+	    wlen) != 0)
 		return (NULL);
-	}
-	for (len = 0; len < LIST_MAX_BYTES - 1; len += n)
-		if ((n = fread(buf + len, 1, LIST_MAX_BYTES - 1 - len, fp)) == 0)
-			break;
-	buf[len] = '\0';
-	fclose(fp);
-	if (len >= LIST_MAX_BYTES - 1) {
-		free(buf);
-		snprintf(why, wlen, "more than 8 MB");
-		return (NULL);
-	}
 	return (buf);
 }
 
@@ -9172,7 +9160,7 @@ api_sdwan_lists(struct http_request *req)
 	ucl_object_t		*kept, *body, *out, *feeds, *f2, *ls, *entries;
 	const ucl_object_t	*f, *l;
 	ucl_object_iter_t	 it;
-	char			 why[200];
+	char			 why[200], name[33];
 	bool			 fetch;
 
 	fetch = path_is(req, "sdwan/fetch-lists");
@@ -9246,25 +9234,26 @@ api_sdwan_lists(struct http_request *req)
 			    "of letters, digits, - and _ (32 at most, once) and a "
 			    "url, or text pasted; 64 at most"));
 		}
-		if (str(f, "url") != NULL && (strlen(str(f, "url")) > 500 || (
-		    strncmp(str(f, "url"), "https://", 8) != 0 && strncmp(str(f,
-		    "url"), "http://", 7) != 0 && strncmp(str(f, "url"),
-		    "file:///", 8) != 0))) {
+		/* The name kept apart: body is freed before a refusal. */
+		snprintf(name, sizeof(name), "%s", str(f, "name"));
+		if (str(f, "url") != NULL && (strlen(str(f, "url")) > 500 ||
+		    !list_url_ok(str(f, "url")))) {
 			ucl_object_unref(feeds);
 			ucl_object_unref(body);
 			ucl_object_unref(kept);
-			return (reply_error(req, 400, "feeds", "a feed's url is "
-			    "https, http or file"));
+			return (reply_error(req, 400, "feeds", "list %s: only "
+			    "http(s) URLs are accepted (500 characters at most)",
+			    name));
 		}
 		/* From the internet, as a threat feed is: what resolves to
 		 * private space refused unless Settings let it through. */
-		if (str(f, "url") != NULL && strncmp(str(f, "url"), "file:",
-		    5) != 0 && !feeds_url_ok(str(f, "url"), why, sizeof(why))) {
+		if (str(f, "url") != NULL && !feeds_url_ok(str(f, "url"), why,
+		    sizeof(why))) {
 			ucl_object_unref(feeds);
 			ucl_object_unref(body);
 			ucl_object_unref(kept);
 			return (reply_error(req, 400, "feeds", "list %s: %s",
-			    str(f, "name"), why));
+			    name, why));
 		}
 		f2 = ucl_object_typed_new(UCL_OBJECT);
 		put(f2, "name", S(str(f, "name")));
@@ -9279,7 +9268,7 @@ api_sdwan_lists(struct http_request *req)
 				ucl_object_unref(body);
 				ucl_object_unref(kept);
 				return (reply_error(req, 400, "feeds", "list %s: %s",
-				    str(f, "name"), why));
+				    name, why));
 			}
 			put(f2, "entries", entries);
 		}
