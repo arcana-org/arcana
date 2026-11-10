@@ -19211,6 +19211,65 @@ ATF_TC_BODY(feeds_redirect, tc)
 	resp_free(&r);
 }
 
+CONSOLE_TC(sdwan_list_urls, "SD-WAN's lists fetched as threat feeds are: "
+    "a URL resolving to private space refused unless Settings let it "
+    "through, a redirect to a cloud's metadata too")
+ATF_TC_BODY(sdwan_list_urls, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		body[512];
+	int		port, i;
+
+	port = feeds_server(tc);
+	start(tc, 0, NULL);
+	enrol(&a);
+	/* Loopback, private space, a cloud's metadata: refused when kept,
+	 * nothing fetched from them. */
+	{
+		static const char *const priv[] = { "127.0.0.1", "10.0.0.1",
+		    "169.254.169.254", "[::1]" };
+
+		for (i = 0; i < 4; i++) {
+			snprintf(body, sizeof(body), "{\"arcana-console:lists\":"
+			    "{\"feeds\":[{\"name\":\"in\",\"url\":\"http://%s:%d/"
+			    "oracle.txt\"}]}}", priv[i], port);
+			http("PUT", CC "sdwan/lists", body, &r);
+			ATF_CHECK_MSG(r.status == 400 && strstr(r.body,
+			    "is a private or reserved address") != NULL, "%s: %d "
+			    "%s", priv[i], r.status, r.body);
+			resp_free(&r);
+		}
+	}
+	ATF_CHECK(system("grep -q oracle.txt feedsrv.log") != 0);
+
+	/* The stand-in's 127.0.0.1 let through: its list fetched; one
+	 * redirected to a cloud's metadata not, its error kept. */
+	feeds_allow();
+	snprintf(body, sizeof(body), "{\"arcana-console:lists\":{\"feeds\":["
+	    "{\"name\":\"in\",\"url\":\"http://127.0.0.1:%d/oracle.txt\"},"
+	    "{\"name\":\"meta\",\"url\":\"http://127.0.0.1:%d/"
+	    "redirect-private\"}]}}", port, port);
+	http("PUT", CC "sdwan/lists", body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	http("POST", CC "sdwan/fetch-lists", "{\"arcana-console:input\":{}}",
+	    &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	r4_read("lists", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "lists.in.count") != NULL && strcmp(jstr(&r,
+	    "lists.in.count"), "4") == 0 && jstr(&r, "lists.in.error") == NULL,
+	    "%s", r.body);
+	ATF_CHECK_MSG(jstr(&r, "lists.meta.error") != NULL && strstr(jstr(&r,
+	    "lists.meta.error"), "169.254.169.254 is a private or reserved "
+	    "address") != NULL && strcmp(jstr(&r, "lists.meta.count"), "0") ==
+	    0, "%s", r.body);
+	resp_free(&r);
+	ATF_CHECK(system("grep -q 'GET /oracle.txt 200' feedsrv.log") == 0);
+}
+
 CONSOLE_TC(feeds_operator, "Threat feeds an operator of some hosts may "
     "not take away nor change, nor read beyond them; members may not")
 ATF_TC_BODY(feeds_operator, tc)
@@ -21692,6 +21751,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_uswe);
 	ATF_TP_ADD_TC(tp, feeds_alarm);
 	ATF_TP_ADD_TC(tp, feeds_redirect);
+	ATF_TP_ADD_TC(tp, sdwan_list_urls);
 	ATF_TP_ADD_TC(tp, notify_cooldown_mute);
 	ATF_TP_ADD_TC(tp, workflows_every);
 	ATF_TP_ADD_TC(tp, fleet_stream_rejoin);

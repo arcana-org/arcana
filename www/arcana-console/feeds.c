@@ -630,6 +630,40 @@ fetch_url(const char *url, time_t ims, char **bodyp, size_t *lenp,
 	return (rc);
 }
 
+/*
+ * Another part's URL (SD-WAN's lists) held to what a feed's is: may it
+ * be fetched now?  Why not in err.
+ */
+bool
+feeds_url_ok(const char *url, char *err, size_t errlen)
+{
+
+	return (url_allowed(url, err, errlen));
+}
+
+/*
+ * Another part's document fetched as a feed is (ipf_fetch(3)): what
+ * resolves to private space refused but for feeds_allow_private, each
+ * redirect's target held to the same, at most max bytes within timeout
+ * seconds.  0 and *bodyp (malloc'd, NUL-terminated), -1 and err.
+ */
+int
+feeds_get(const char *url, size_t max, int timeout, char **bodyp,
+    size_t *lenp, char *err, size_t errlen)
+{
+	struct ipf_fetch	f;
+	struct ipf_list		allow;
+	char			ua[64];
+	int			rc;
+
+	fetch_init(&f, &allow, ua, sizeof(ua));
+	f.max_bytes = max;
+	f.timeout = timeout;
+	rc = ipf_fetch(&f, url, bodyp, lenp, err, errlen);
+	ipf_list_free(&allow);
+	return (rc == 0 ? 0 : -1);
+}
+
 /* ---- Delivery ------------------------------------------------------ */
 
 /* A table on a host: loaded (dry, a preview), what came back in o. */

@@ -8996,10 +8996,52 @@ list_keep(ucl_object_t *kept, const char *name, ucl_object_t *entries,
 }
 
 /*
- * Every feed fetched by the console's host with the base system's
- * libfetch (file, http and https), each pasted list taken as it is;
- * what is kept written.  Run by the manager at the interval, and on
- * request.
+ * A feed's text (malloc'd), or NULL and why.  http and https fetched as
+ * the threat feeds are (feeds_get(): what resolves to private space
+ * refused but for Settings' feeds_allow_private, each redirect's target
+ * too, at most 8 MB in 30 s); file, the console's host's own, read with
+ * the base system's libfetch.
+ */
+static char *
+list_get(const char *url, char *why, size_t wlen)
+{
+	FILE	*fp;
+	char	*buf;
+	size_t	 len, n;
+
+	if (strncmp(url, "file:", 5) != 0) {
+		if (feeds_get(url, LIST_MAX_BYTES - 1, 30, &buf, &len, why,
+		    wlen) != 0)
+			return (NULL);
+		return (buf);
+	}
+	fetchTimeout = 30;
+	if ((fp = fetchGetURL(url, "")) == NULL) {
+		snprintf(why, wlen, "%s", fetchLastErrString);
+		return (NULL);
+	}
+	if ((buf = malloc(LIST_MAX_BYTES)) == NULL) {
+		fclose(fp);
+		snprintf(why, wlen, "out of memory");
+		return (NULL);
+	}
+	for (len = 0; len < LIST_MAX_BYTES - 1; len += n)
+		if ((n = fread(buf + len, 1, LIST_MAX_BYTES - 1 - len, fp)) == 0)
+			break;
+	buf[len] = '\0';
+	fclose(fp);
+	if (len >= LIST_MAX_BYTES - 1) {
+		free(buf);
+		snprintf(why, wlen, "more than 8 MB");
+		return (NULL);
+	}
+	return (buf);
+}
+
+/*
+ * Every feed fetched by the console (list_get()), each pasted list
+ * taken as it is; what is kept written.  Run by the manager at the
+ * interval, and on request.
  */
 static void
 lists_fetch(ucl_object_t *kept, const char *only)
@@ -9007,9 +9049,7 @@ lists_fetch(ucl_object_t *kept, const char *only)
 	const ucl_object_t	*f;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*entries;
-	FILE			*fp;
 	char			*buf, why[200];
-	size_t			 len, n;
 
 	it = NULL;
 	while ((f = ucl_object_iterate(ucl_object_lookup(kept, "feeds"), &it,
@@ -9028,31 +9068,11 @@ lists_fetch(ucl_object_t *kept, const char *only)
 			list_keep(kept, str(f, "name"), entries, NULL);
 			continue;
 		}
-		fetchTimeout = 30;
-		if ((fp = fetchGetURL(str(f, "url"), "")) == NULL) {
+		if ((buf = list_get(str(f, "url"), why, sizeof(why))) == NULL) {
 			ucl_object_unref(entries);
-			list_keep(kept, str(f, "name"), NULL, fetchLastErrString);
+			list_keep(kept, str(f, "name"), NULL, why);
 			thread_log(LOG_WARNING, "sdwan: list %s not fetched from "
-			    "%s: %s", str(f, "name"), str(f, "url"),
-			    fetchLastErrString);
-			continue;
-		}
-		if ((buf = malloc(LIST_MAX_BYTES)) == NULL) {
-			fclose(fp);
-			ucl_object_unref(entries);
-			list_keep(kept, str(f, "name"), NULL, "out of memory");
-			continue;
-		}
-		for (len = 0; len < LIST_MAX_BYTES - 1; len += n)
-			if ((n = fread(buf + len, 1, LIST_MAX_BYTES - 1 - len, fp))
-			    == 0)
-				break;
-		buf[len] = '\0';
-		fclose(fp);
-		if (len >= LIST_MAX_BYTES - 1) {
-			free(buf);
-			ucl_object_unref(entries);
-			list_keep(kept, str(f, "name"), NULL, "more than 8 MB");
+			    "%s: %s", str(f, "name"), str(f, "url"), why);
 			continue;
 		}
 		if (!list_parse(buf, entries, why, sizeof(why))) {
@@ -9235,6 +9255,16 @@ api_sdwan_lists(struct http_request *req)
 			ucl_object_unref(kept);
 			return (reply_error(req, 400, "feeds", "a feed's url is "
 			    "https, http or file"));
+		}
+		/* From the internet, as a threat feed is: what resolves to
+		 * private space refused unless Settings let it through. */
+		if (str(f, "url") != NULL && strncmp(str(f, "url"), "file:",
+		    5) != 0 && !feeds_url_ok(str(f, "url"), why, sizeof(why))) {
+			ucl_object_unref(feeds);
+			ucl_object_unref(body);
+			ucl_object_unref(kept);
+			return (reply_error(req, 400, "feeds", "list %s: %s",
+			    str(f, "name"), why));
 		}
 		f2 = ucl_object_typed_new(UCL_OBJECT);
 		put(f2, "name", S(str(f, "name")));
