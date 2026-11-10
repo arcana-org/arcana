@@ -3114,6 +3114,61 @@ whose first part is served.
 - 5.2.1 A: raw samples per measurement interval; three percentiles;
   loss as count and decimal percentage; microseconds; check: the
   numbers against a sorted dump.
+  Done (agent 0.271.0, console 0.420.0), in RFC 9375's terms so that
+  5.3.1 maps them as they are.  The prober (gula/probe.c) keeps, per
+  target and monitor, measurement intervals of 60 s aligned to the wall
+  clock (one begins at a minute's start; the first is the rest of the
+  minute the target began in), a probe counted in the interval its
+  answer or loss is known in, as the samples count it.  Of each answer
+  a raw sample: the round trip, by STAMP the delay each way when the
+  reply was measured one way (an estimated one has none), and the IPDV
+  of each against the answer before (RFC 3393, an absolute value,
+  consecutive answers whatever was lost between).  Bounded: 4096 raw
+  samples an interval a target, beyond them a uniform sample of all
+  (reservoir sampling, arc4random): 24 octets each, 192 KB a target at
+  most for the running interval and the last completed one (kept for
+  checking), and 23 KB for the figures of the last 60 completed; an
+  interval of the default probes (100 ms) keeps its 600.  Of every value (not only those
+  kept) the least, the most and the mean; of those kept three
+  percentiles by the nearest rank (the least that p percent are less
+  than or equal to, RFC 9375's definition), low, intermediate and high
+  10/50/90 by default (RFC 9375's high default is 95; Arcana's 90, the
+  tables' p10/p50/p90), 0 for none, set per target (`low_percentile`
+  and so on) and per service (the service form's probes, arcana-l3nm's
+  probe container, copied to each tunnel's targets).  The loss a count
+  and a percentage of those sent (decimal64 of 5 digits, RFC 9375's
+  `percentage`), and by STAMP to a stateful reflector each way, by the
+  sequence (the counter's tell, which trails by up to a timeout).
+  arcana-probe: `low-percentile`, `intermediate-percentile` and
+  `high-percentile` in the probing settings; each target's state a
+  `pm` container (the percentiles reported, a list `interval` keyed by
+  start: start, end, complete, sent, received, kept, loss (count,
+  ratio, forward and backward), round-trip, forward, backward and
+  jitter's three, each count, min, max, mean and the three percentiles
+  in microseconds (`yang:gauge64`), and `raw`, the last completed
+  interval's raw samples, which the read action gives with `raw`
+  alone); the read gives the intervals ended after its time, the last
+  completed and the running one always; numbered again in path order,
+  a fourth range at 92 700.  arcanactl `sdwan intervals`: a line a
+  target, the last interval's p50 and p90 of the round trip and the
+  loss of those sent.  The Paths tab: "Measurement intervals", a row
+  an end of each tunnel, the round trip's three percentiles (named by
+  the service's), the jitter's intermediate one, the loss percentage
+  and count, sorted and filtered (tbl.c); arcana-probe's { } Schema
+  regenerated.  The service form kept its underlays as ticked (a
+  checkbox comes as true, not its value, so an edit emptied them).
+  Checked: agent_test:sdwan_pm (stampd unprivileged on
+  the loopback, probes every 20 ms with a low percentile of 25: each
+  figure of the first completed interval, the round trip's and its
+  IPDV's, equal to the sorted dump of the read's raw samples (count,
+  least, most, mean, 25/50/90 by the nearest rank), the loss a count
+  and its percentage, start and end on the minute, the percentiles
+  read back from running, a percentile over 100 refused, arcanactl's
+  line), agent_test:yang_sdwan (the percentiles and an interval through
+  YANG-CBOR and back), console_test:sdwan_apply (the state's pm through
+  the fleet mount), pwa_test:pwa_flows_sdwan (the service form's
+  percentiles kept in L3NM and shown again; the table's columns named
+  by them after the apply: RTT p25, p50, p99.9).
 - 5.2.2 A: measurement interval (default 60 s) with start and end as
   date-and-time; per-class sessions per DSCP; check: two classes.
 - 5.3.1 C: `ietf-network-vpn-pm`: one network per service and the

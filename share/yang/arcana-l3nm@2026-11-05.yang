@@ -1337,6 +1337,31 @@ module arcana-l3nm {
           description
             "Intervals between two reports.";
         }
+        leaf low-percentile {
+          type decimal64 {
+            fraction-digits 3;
+            range "0..100";
+          }
+          description
+            "The measurement intervals' low percentile (arcana-probe's,
+             RFC 9375's perf-mon); 10 when none, 0 for none reported.";
+        }
+        leaf intermediate-percentile {
+          type decimal64 {
+            fraction-digits 3;
+            range "0..100";
+          }
+          description
+            "Their intermediate percentile; 50 when none.";
+        }
+        leaf high-percentile {
+          type decimal64 {
+            fraction-digits 3;
+            range "0..100";
+          }
+          description
+            "Their high percentile; 90 when none.";
+        }
       }
       list rate-limiter {
         key "name";

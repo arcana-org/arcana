@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.270.0"
+#define	ARCANA_AGENT_VERSION	"0.271.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -887,7 +887,7 @@ enum { PROBE_NONE = -1, PROBE_UNKNOWN, PROBE_UP, PROBE_DOWN, PROBE_ENDED,
     PROBE_ERROR };
 void		 probe_start(void);
 int		 do_probes_set(struct work *, const char *, const char **);
-int		 do_probes_read(struct work *, uint64_t, struct json_rsp *);
+int		 do_probes_read(struct work *, uint64_t, bool, struct json_rsp *);
 int		 do_sdwan_state(struct work *, struct json_rsp *);
 /* ... and the admin's own monitors on any tunnel, by the same prober. */
 int		 do_monitors(struct work *, uint64_t, struct json_rsp *);

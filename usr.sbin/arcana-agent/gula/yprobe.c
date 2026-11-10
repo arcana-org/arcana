@@ -94,6 +94,17 @@ tca_of(cbl_yarena *a, const ucl_object_t *o, const struct arcana_probe_tca **tp)
 	return (0);
 }
 
+/* The three percentiles of o's (low_percentile...), where it says them,
+ * into y's. */
+#define	PCT_OF(o, y) do {						\
+	(y)->has_low_percentile = dec((o), "low_percentile", 3,		\
+	    &(y)->low_percentile);					\
+	(y)->has_intermediate_percentile = dec((o),			\
+	    "intermediate_percentile", 3, &(y)->intermediate_percentile);	\
+	(y)->has_high_percentile = dec((o), "high_percentile", 3,	\
+	    &(y)->high_percentile);					\
+} while (0)
+
 /* An edge's lists, e's ("targets", "links", "monitors"), into its. */
 static int
 edge_of(cbl_yarena *a, const ucl_object_t *e,
@@ -139,6 +150,7 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		YJ_NUM(o, "timeout", &t[n], timeout);
 		YJ_NUM(o, "eval", &t[n], eval);
 		YJ_NUM(o, "history", &t[n], history);
+		PCT_OF(o, &t[n]);
 		if ((error = tca_of(a, o, &t[n].tca)) != 0)
 			return (error);
 		n++;
@@ -185,6 +197,7 @@ edge_of(cbl_yarena *a, const ucl_object_t *e,
 		YJ_NUM(o, "timeout", &m[n], timeout);
 		YJ_NUM(o, "eval", &m[n], eval);
 		YJ_NUM(o, "history", &m[n], history);
+		PCT_OF(o, &m[n]);
 		if ((error = tca_of(a, o, &m[n].tca)) != 0)
 			return (error);
 		n++;
@@ -253,6 +266,17 @@ put_dec(ucl_object_t *o, const char *key, bool has, int64_t v, int d)
 	if ((y)->has_##f)						\
 		ucl_object_insert_key((o), ucl_object_fromint((int64_t)	\
 		    (y)->f), (key), 0, true);				\
+} while (0)
+
+/* The three percentiles y says, as o's numbers. */
+#define	PUT_PCT(o, y) do {						\
+	put_dec((o), "low_percentile", (y)->has_low_percentile,		\
+	    (y)->low_percentile, 3);					\
+	put_dec((o), "intermediate_percentile",				\
+	    (y)->has_intermediate_percentile,				\
+	    (y)->intermediate_percentile, 3);				\
+	put_dec((o), "high_percentile", (y)->has_high_percentile,	\
+	    (y)->high_percentile, 3);					\
 } while (0)
 
 static void
@@ -324,6 +348,7 @@ yprobe_edge_json(const char *jail, size_t nt,
 		PUT_INT(o, "timeout", t, timeout);
 		PUT_INT(o, "eval", t, eval);
 		PUT_INT(o, "history", t, history);
+		PUT_PCT(o, t);
 		put_tca(o, t->tca);
 		ucl_array_append(arr, o);
 	}
@@ -376,6 +401,7 @@ yprobe_monitors_json(const char *jail, size_t n,
 		PUT_INT(o, "timeout", m, timeout);
 		PUT_INT(o, "eval", m, eval);
 		PUT_INT(o, "history", m, history);
+		PUT_PCT(o, m);
 		put_tca(o, m->tca);
 		ucl_array_append(arr, o);
 	}
@@ -457,6 +483,162 @@ samples_of(cbl_yarena *a, const ucl_object_t *arr, size_t *np,
 	return (0);
 }
 
+/* One metric's statistics of an interval's JSON, NULL with none. */
+static int
+stats_of(cbl_yarena *a, const ucl_object_t *o, const char *key,
+    const struct arcana_probe_stats **sp)
+{
+	struct arcana_probe_stats	*s;
+	const ucl_object_t		*e;
+
+	*sp = NULL;
+	if ((e = ucl_object_lookup(o, key)) == NULL)
+		return (0);
+	if ((s = cbl_yarena_alloc(a, sizeof(*s))) == NULL)
+		return (ENOMEM);
+	memset(s, 0, sizeof(*s));
+	YJ_NUM(e, "count", s, count);
+	YJ_NUM(e, "min", s, min);
+	YJ_NUM(e, "max", s, max);
+	YJ_NUM(e, "mean", s, mean);
+	YJ_NUM(e, "low", s, low_percentile);
+	YJ_NUM(e, "intermediate", s, intermediate_percentile);
+	YJ_NUM(e, "high", s, high_percentile);
+	*sp = s;
+	return (0);
+}
+
+/* A count of n as RFC 9375's percentage, 5 fraction digits. */
+static int64_t
+pct5(int64_t lost, int64_t n)
+{
+
+	return (n > 0 ? (lost * 10000000 + n / 2) / n : 0);
+}
+
+/* A list of numbers of r's, key, as a leaf-list's. */
+static int
+u32s_of(cbl_yarena *a, const ucl_object_t *r, const char *key, size_t *np,
+    const uint32_t **vp)
+{
+	const ucl_object_t	*l, *e;
+	ucl_object_iter_t	 it;
+	uint32_t		*v;
+	size_t			 n = 0;
+
+	l = ucl_object_lookup(r, key);
+	if ((v = cbl_yarena_alloc(a, (yj_count(l) + 1) * sizeof(*v))) == NULL)
+		return (ENOMEM);
+	YJ_EACH(l, it, e)
+		v[n++] = (uint32_t)ucl_object_toint(e);
+	*np = n;
+	*vp = v;
+	return (0);
+}
+
+/* A target's measurement intervals (probe.c's pm_target_json()). */
+static int
+pm_of(cbl_yarena *a, const ucl_object_t *pm,
+    const struct arcana_probe_target_state_pm **out)
+{
+	struct arcana_probe_target_state_pm	*p;
+	struct arcana_probe_interval		*v;
+	struct arcana_probe_interval_loss	*l;
+	struct arcana_probe_interval_jitter	*j;
+	struct arcana_probe_interval_raw	*r;
+	const ucl_object_t			*e, *list, *ro;
+	ucl_object_iter_t			 it;
+	int64_t					 t, sent, lost;
+	size_t					 n = 0;
+	int					 error = 0;
+
+	*out = NULL;
+	if (pm == NULL)
+		return (0);
+	if ((p = cbl_yarena_alloc(a, sizeof(*p))) == NULL)
+		return (ENOMEM);
+	memset(p, 0, sizeof(*p));
+	p->has_low_percentile = dec(pm, "low", 3, &p->low_percentile);
+	p->has_intermediate_percentile = dec(pm, "intermediate", 3,
+	    &p->intermediate_percentile);
+	p->has_high_percentile = dec(pm, "high", 3, &p->high_percentile);
+	list = ucl_object_lookup(pm, "intervals");
+	if ((v = cbl_yarena_alloc(a, (yj_count(list) + 1) * sizeof(*v))) ==
+	    NULL)
+		return (ENOMEM);
+	YJ_EACH(list, it, e) {
+		memset(&v[n], 0, sizeof(v[n]));
+		if (!yj_num(e, "start", &t) || (v[n].start = datetime(a, t)) ==
+		    NULL)
+			continue;
+		if (yj_num(e, "end", &t))
+			v[n].end = datetime(a, t);
+		v[n].complete = yj_yes(e, "complete", &v[n].has_complete);
+		YJ_NUM(e, "sent", &v[n], sent);
+		YJ_NUM(e, "received", &v[n], received);
+		YJ_NUM(e, "kept", &v[n], kept);
+		/* The loss, a count and a percentage of those sent; each
+		 * way, where a stateful reflector told it. */
+		if ((l = cbl_yarena_alloc(a, sizeof(*l))) == NULL)
+			return (ENOMEM);
+		memset(l, 0, sizeof(*l));
+		sent = v[n].sent;
+		lost = sent - v[n].received;
+		l->has_count = l->has_ratio = true;
+		l->count = (uint32_t)lost;
+		l->ratio = pct5(lost, sent);
+		if (yj_num(e, "lost_forward", &lost)) {
+			l->has_forward_count = l->has_forward_ratio = true;
+			l->forward_count = (uint32_t)lost;
+			l->forward_ratio = pct5(lost, sent);
+		}
+		if (yj_num(e, "lost_backward", &lost)) {
+			l->has_backward_count = l->has_backward_ratio = true;
+			l->backward_count = (uint32_t)lost;
+			l->backward_ratio = pct5(lost, sent);
+		}
+		v[n].loss = l;
+		if ((j = cbl_yarena_alloc(a, sizeof(*j))) == NULL)
+			return (ENOMEM);
+		memset(j, 0, sizeof(*j));
+		if ((error = stats_of(a, e, "rtt", &v[n].round_trip)) != 0 ||
+		    (error = stats_of(a, e, "forward", &v[n].forward)) != 0 ||
+		    (error = stats_of(a, e, "backward", &v[n].backward)) != 0 ||
+		    (error = stats_of(a, e, "jitter_rtt", &j->round_trip)) != 0 ||
+		    (error = stats_of(a, e, "jitter_forward", &j->forward)) !=
+		    0 || (error = stats_of(a, e, "jitter_backward",
+		    &j->backward)) != 0)
+			return (error);
+		if (j->round_trip != NULL || j->forward != NULL ||
+		    j->backward != NULL)
+			v[n].jitter = j;
+		/* The last completed one's raw samples, when asked. */
+		if ((ro = ucl_object_lookup(e, "raw")) != NULL) {
+			if ((r = cbl_yarena_alloc(a, sizeof(*r))) == NULL)
+				return (ENOMEM);
+			memset(r, 0, sizeof(*r));
+			if ((error = u32s_of(a, ro, "rtt", &r->round_trip.n,
+			    &r->round_trip.v)) != 0 || (error = u32s_of(a, ro,
+			    "forward", &r->forward.n, &r->forward.v)) != 0 ||
+			    (error = u32s_of(a, ro, "backward", &r->backward.n,
+			    &r->backward.v)) != 0 || (error = u32s_of(a, ro,
+			    "jitter_rtt", &r->jitter_round_trip.n,
+			    &r->jitter_round_trip.v)) != 0 || (error = u32s_of(a,
+			    ro, "jitter_forward", &r->jitter_forward.n,
+			    &r->jitter_forward.v)) != 0 || (error = u32s_of(a, ro,
+			    "jitter_backward", &r->jitter_backward.n,
+			    &r->jitter_backward.v)) != 0)
+				return (error);
+			v[n].raw = r;
+		}
+		n++;
+	}
+	p->interval.n = n;
+	p->interval.v = v;
+	*out = p;
+	return (0);
+}
+
 int
 yprobe_state_from_json(const char *json, cbl_yarena *a,
     struct arcana_probe_probes_state *out)
@@ -531,7 +713,9 @@ yprobe_state_from_json(const char *json, cbl_yarena *a,
 		}
 		YJ_NUM(e, "kept", &v[k], kept);
 		if ((error = samples_of(a, ucl_object_lookup(e, "samples"),
-		    &v[k].sample.n, &v[k].sample.v)) != 0) {
+		    &v[k].sample.n, &v[k].sample.v)) != 0 ||
+		    (error = pm_of(a, ucl_object_lookup(e, "pm"), &v[k].pm)) !=
+		    0) {
 			ucl_object_unref(top);
 			return (error);
 		}

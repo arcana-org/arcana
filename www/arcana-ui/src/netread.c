@@ -1026,6 +1026,73 @@ put_dec(ucl_object_t *o, const char *key, const ucl_object_t *from,
 	put(o, key, ucl_object_fromdouble(jnum(from, path, 0)));
 }
 
+/* One metric's statistics of an interval (RFC 7951's 64-bit strings)
+ * as the agent's numbers, microseconds. */
+static void
+pm_stats(ucl_object_t *o, const char *key, const ucl_object_t *s)
+{
+	static const char *const from[] = { "count", "min", "max", "mean",
+	    "low-percentile", "intermediate-percentile", "high-percentile" };
+	static const char *const to[] = { "count", "min", "max", "mean",
+	    "low", "intermediate", "high" };
+	ucl_object_t	*c;
+
+	if (s == NULL)
+		return;
+	c = ucl_object_typed_new(UCL_OBJECT);
+	for (size_t i = 0; i < nitems(from); i++)
+		if (jget(s, from[i]) != NULL)
+			put(c, to[i], ucl_object_fromint(jint(s, from[i], 0)));
+	put(o, key, c);
+}
+
+/* A target's measurement intervals (arcana-probe's pm) as the agent's
+ * JSON has them, the loss's percentage beside its count. */
+static ucl_object_t *
+pm_json(const ucl_object_t *pm)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*o, *arr, *e;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "low", ucl_object_fromdouble(jnum(pm, "low-percentile", 0)));
+	put(o, "intermediate", ucl_object_fromdouble(jnum(pm,
+	    "intermediate-percentile", 0)));
+	put(o, "high", ucl_object_fromdouble(jnum(pm, "high-percentile", 0)));
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	while ((v = ucl_object_iterate(jget(pm, "interval"), &it, true)) !=
+	    NULL) {
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put(e, "start", ucl_object_fromint(rc_time(jstr(v, "start"))));
+		if (jstr(v, "end") != NULL)
+			put(e, "end", ucl_object_fromint(rc_time(jstr(v,
+			    "end"))));
+		put(e, "complete", ucl_object_frombool(jbool(v, "complete")));
+		put(e, "sent", ucl_object_fromint(jint(v, "sent", 0)));
+		put(e, "received", ucl_object_fromint(jint(v, "received", 0)));
+		put(e, "kept", ucl_object_fromint(jint(v, "kept", 0)));
+		put(e, "lost", ucl_object_fromint(jint(v, "loss.count", 0)));
+		put(e, "loss_pct", ucl_object_fromdouble(jnum(v, "loss.ratio",
+		    0)));
+		if (jget(v, "loss.forward-count") != NULL) {
+			put(e, "lost_forward", ucl_object_fromint(jint(v,
+			    "loss.forward-count", 0)));
+			put(e, "lost_backward", ucl_object_fromint(jint(v,
+			    "loss.backward-count", 0)));
+		}
+		pm_stats(e, "rtt", jget(v, "round-trip"));
+		pm_stats(e, "forward", jget(v, "forward"));
+		pm_stats(e, "backward", jget(v, "backward"));
+		pm_stats(e, "jitter_rtt", jget(v, "jitter.round-trip"));
+		pm_stats(e, "jitter_forward", jget(v, "jitter.forward"));
+		pm_stats(e, "jitter_backward", jget(v, "jitter.backward"));
+		ucl_array_append(arr, e);
+	}
+	put(o, "intervals", arr);
+	return (o);
+}
+
 /* A probed target as the tabs draw it, c its configuration (a
  * monitor's with its interface). */
 ucl_object_t *
@@ -1101,6 +1168,8 @@ probe_target(const ucl_object_t *t, const ucl_object_t *c, bool monitor)
 	}
 	put(o, "samples", arr);
 	put_num(o, "kept", t, "kept");
+	if (jget(t, "pm") != NULL)
+		put(o, "pm", pm_json(jget(t, "pm")));
 	if (c != NULL && monitor)
 		cp(o, "interface", c, "interface");
 	/* The settings its edge's configuration has, the prober's own

@@ -869,6 +869,69 @@ struct probe_conf {
 	(pc)->up = (c)->up;						\
 } while (0)
 
+/* One metric's statistics of an interval, as probe.c's (microseconds). */
+static void
+pm_stats(ucl_object_t *o, const char *key, const struct arcana_probe_stats *s)
+{
+	ucl_object_t	*c;
+
+	if (s == NULL)
+		return;
+	c = ucl_object_typed_new(UCL_OBJECT);
+	PUT_INT(c, "count", s, count);
+	PUT_INT(c, "min", s, min);
+	PUT_INT(c, "max", s, max);
+	PUT_INT(c, "mean", s, mean);
+	PUT_INT(c, "low", s, low_percentile);
+	PUT_INT(c, "intermediate", s, intermediate_percentile);
+	PUT_INT(c, "high", s, high_percentile);
+	put(o, key, c);
+}
+
+/* A target's measurement intervals as probe.c's pm_target_json() put
+ * them, with the loss as a percentage too (RFC 9375's). */
+static ucl_object_t *
+pm_obj(const struct arcana_probe_target_state_pm *p)
+{
+	const struct arcana_probe_interval	*v;
+	ucl_object_t				*o, *arr, *e;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "low", dec(p->low_percentile, 3));
+	put(o, "intermediate", dec(p->intermediate_percentile, 3));
+	put(o, "high", dec(p->high_percentile, 3));
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t i = 0; i < p->interval.n; i++) {
+		v = &p->interval.v[i];
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put(e, "start", ucl_object_fromint(epoch(v->start)));
+		put(e, "end", ucl_object_fromint(epoch(v->end)));
+		put(e, "complete", ucl_object_frombool(v->complete));
+		PUT_INT(e, "sent", v, sent);
+		PUT_INT(e, "received", v, received);
+		PUT_INT(e, "kept", v, kept);
+		if (v->loss != NULL) {
+			PUT_INT(e, "lost", v->loss, count);
+			if (v->loss->has_ratio)
+				put(e, "loss_pct", ucl_object_fromdouble((double)
+				    v->loss->ratio / 100000.0));
+			PUT_INT(e, "lost_forward", v->loss, forward_count);
+			PUT_INT(e, "lost_backward", v->loss, backward_count);
+		}
+		pm_stats(e, "rtt", v->round_trip);
+		pm_stats(e, "forward", v->forward);
+		pm_stats(e, "backward", v->backward);
+		if (v->jitter != NULL) {
+			pm_stats(e, "jitter_rtt", v->jitter->round_trip);
+			pm_stats(e, "jitter_forward", v->jitter->forward);
+			pm_stats(e, "jitter_backward", v->jitter->backward);
+		}
+		ucl_array_append(arr, e);
+	}
+	put(o, "intervals", arr);
+	return (o);
+}
+
 /*
  * A target as probe.c's target_json() put it, the settings of its
  * configuration, c (NULL: none, the prober's own).
@@ -943,6 +1006,8 @@ target_obj(const struct arcana_probe_target_state *t,
 	}
 	put(o, "samples", arr);
 	PUT_INT(o, "kept", t, kept);
+	if (t->pm != NULL)
+		put(o, "pm", pm_obj(t->pm));
 	if (c != NULL)
 		put_str(o, "interface", c->interface);
 	/* The settings its edge's configuration has, the prober's own

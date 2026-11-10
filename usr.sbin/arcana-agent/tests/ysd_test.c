@@ -75,6 +75,13 @@ main(int argc, char **argv)
 				    t->eval, t->history, t->report);
 				if (t->has_kind)
 					printf(" kind=%s", kinds[t->kind]);
+				if (t->has_low_percentile ||
+				    t->has_intermediate_percentile ||
+				    t->has_high_percentile)
+					printf(" percentiles=%jd/%jd/%jd", (intmax_t)
+					    t->low_percentile, (intmax_t)
+					    t->intermediate_percentile, (intmax_t)
+					    t->high_percentile);
 				if (t->tca != NULL)
 					printf(" tca delay=%jd ipdv=%jd loss=%jd "
 					    "damping=%u", (intmax_t)t->tca->delay,
@@ -165,6 +172,66 @@ main(int argc, char **argv)
 					    !t->sample.v[k].has_one_way ? "-" :
 					    t->sample.v[k].one_way == 0 ? "measured" :
 					    "estimated");
+			/* The measurement intervals: the percentiles, each
+			 * interval's counts, loss and figures. */
+			if (t->pm != NULL) {
+				const struct arcana_probe_target_state_pm *pm =
+				    t->pm;
+
+				printf("  pm %jd/%jd/%jd\n", (intmax_t)
+				    pm->low_percentile, (intmax_t)
+				    pm->intermediate_percentile, (intmax_t)
+				    pm->high_percentile);
+				for (size_t k = 0; k < pm->interval.n; k++) {
+					const struct arcana_probe_interval *v =
+					    &pm->interval.v[k];
+					const struct arcana_probe_stats *st[6] = {
+					    v->round_trip, v->forward, v->backward,
+					    v->jitter != NULL ? v->jitter->round_trip :
+					    NULL, v->jitter != NULL ?
+					    v->jitter->forward : NULL, v->jitter !=
+					    NULL ? v->jitter->backward : NULL };
+					static const char *const sn[6] = { "rtt",
+					    "fwd", "back", "jrtt", "jfwd", "jback" };
+
+					printf("  interval %s %s %s sent=%u "
+					    "received=%u kept=%u", v->start,
+					    str(v->end), v->complete ? "complete" :
+					    "running", v->sent, v->received, v->kept);
+					if (v->loss != NULL) {
+						printf(" lost=%u/%jd", v->loss->count,
+						    (intmax_t)v->loss->ratio);
+						if (v->loss->has_forward_count)
+							printf(" fwd=%u/%jd back=%u/%jd",
+							    v->loss->forward_count,
+							    (intmax_t)
+							    v->loss->forward_ratio,
+							    v->loss->backward_count,
+							    (intmax_t)
+							    v->loss->backward_ratio);
+					}
+					printf("\n");
+					for (int m = 0; m < 6; m++)
+						if (st[m] != NULL)
+							printf("    %s n=%u min=%ju max=%ju "
+							    "mean=%ju p=%ju/%ju/%ju\n",
+							    sn[m], st[m]->count,
+							    (uintmax_t)st[m]->min,
+							    (uintmax_t)st[m]->max,
+							    (uintmax_t)st[m]->mean,
+							    (uintmax_t)
+							    st[m]->low_percentile,
+							    (uintmax_t)
+							    st[m]->intermediate_percentile,
+							    (uintmax_t)
+							    st[m]->high_percentile);
+					if (v->raw != NULL)
+						printf("    raw rtt=%zu fwd=%zu "
+						    "jrtt=%zu\n", v->raw->round_trip.n,
+						    v->raw->forward.n,
+						    v->raw->jitter_round_trip.n);
+				}
+			}
 		}
 		same((void *)arcana_probe_probes_state_encode, (void *)
 		    arcana_probe_probes_state_decode, &s, &back, a);

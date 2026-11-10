@@ -209,8 +209,8 @@ usage(void)
 	    "    route get address\n"
 	    "    traceroute address\n"
 	    "    reboot\n"
-	    "    sdwan [stamp | probes | rules | steer | bird | dhcp | dns | proxy |\n"
-	    "        ids json]\n"
+	    "    sdwan [stamp | intervals | probes | rules | steer | bird |\n"
+	    "        dhcp | dns | proxy | ids json]\n"
 	    "    ng mkpeer | connect | rmhook | shutdown | name argument "
 	    "...\n"
 	    "    wg interface init [port]\n"
@@ -4012,12 +4012,99 @@ sdwan_stamp_out(cbl_conn *conn)
 	return (0);
 }
 
+/*
+ * sdwan intervals: each target's last completed measurement interval
+ * (arcana-probe's, PLAN-SDN-YANG 5.2), a line each: when it ran, the
+ * round trip's intermediate and high percentiles (p50 and p90 unless
+ * the service says others), the loss as a count of those sent and a
+ * percentage; the running one's counts where none has ended yet.
+ */
+static int
+sdwan_intervals_out(cbl_conn *conn)
+{
+	const ucl_object_t	*t, *pm, *v, *last, *run;
+	ucl_object_iter_t	 it = NULL, vit;
+	ucl_object_t		*data;
+	struct tm		 tm;
+	time_t			 at;
+	char			 err[512], from[32], to[32], pn[16];
+	int			 error;
+
+	error = ysdwan_read(conn, false, 0, &data, err, sizeof(err));
+	ytold_end(true);
+	if (error != 0)
+		xo_errx(1, "sdwan intervals: %s", err[0] != '\0' ? err :
+		    strerror(error));
+	xo_open_list("target");
+	while ((t = ucl_object_iterate(ucl_object_lookup(data, "targets"), &it,
+	    true)) != NULL) {
+		pm = ucl_object_lookup(t, "pm");
+		last = run = NULL;
+		vit = NULL;
+		while ((v = ucl_object_iterate(ucl_object_lookup(pm,
+		    "intervals"), &vit, true)) != NULL) {
+			if (ucl_object_toboolean(ucl_object_lookup(v,
+			    "complete")))
+				last = v;
+			else
+				run = v;
+		}
+		xo_open_instance("target");
+		xo_emit("{k:id/%s}{d:/%s}{e:jail/%s}{d:/%s}: ", ostr(t, "id"),
+		    ostr(t, "jail")[0] != '\0' ? "@" : "", ostr(t, "jail"),
+		    ostr(t, "jail"));
+		if (last == NULL) {
+			xo_emit("{L:no interval ended yet}");
+			if (run != NULL)
+				xo_emit("{d:/, }{Lw:running}{:sent/%jd} {L:sent}",
+				    (intmax_t)ucl_object_toint(ucl_object_lookup(run,
+				    "sent")));
+			xo_emit("\n");
+			xo_close_instance("target");
+			continue;
+		}
+		at = (time_t)ucl_object_toint(ucl_object_lookup(last, "start"));
+		gmtime_r(&at, &tm);
+		strftime(from, sizeof(from), "%Y-%m-%dT%H:%M:%SZ", &tm);
+		at = (time_t)ucl_object_toint(ucl_object_lookup(last, "end"));
+		gmtime_r(&at, &tm);
+		strftime(to, sizeof(to), "%H:%M:%SZ", &tm);
+		xo_emit("{:start/%s} {L:to} {:end/%s}", from, to);
+		v = ucl_object_lookup(last, "rtt");
+		if (v != NULL && ucl_object_lookup(v, "intermediate") != NULL) {
+			snprintf(pn, sizeof(pn), "p%g", ucl_object_todouble(
+			    ucl_object_lookup(pm, "intermediate")));
+			xo_emit(", {Lw:rtt}{Lw:/%s}{:rtt-intermediate/%.3f} {U:ms}",
+			    pn, ucl_object_toint(ucl_object_lookup(v,
+			    "intermediate")) / 1000.0);
+		}
+		if (v != NULL && ucl_object_lookup(v, "high") != NULL) {
+			snprintf(pn, sizeof(pn), "p%g", ucl_object_todouble(
+			    ucl_object_lookup(pm, "high")));
+			xo_emit(", {Lw:/%s}{:rtt-high/%.3f} {U:ms}", pn,
+			    ucl_object_toint(ucl_object_lookup(v, "high")) /
+			    1000.0);
+		}
+		if (v == NULL)
+			xo_emit(", {L:no answer}");
+		xo_emit(", {Lw:lost}{:lost/%jd} {L:of} {:sent/%jd} "
+		    "({:loss-percent/%.3f}%)\n", (intmax_t)ucl_object_toint(
+		    ucl_object_lookup(last, "lost")), (intmax_t)
+		    ucl_object_toint(ucl_object_lookup(last, "sent")),
+		    ucl_object_todouble(ucl_object_lookup(last, "loss_pct")));
+		xo_close_instance("target");
+	}
+	xo_close_list("target");
+	ucl_object_unref(data);
+	return (0);
+}
 
 /*
  * sdwan: what the edge is doing and what the probes have seen,
  * arcana-sdwan's and arcana-probe's state as the sdwan operation had
  * them, each target's STAMP session (arcana-stamp's) in it; sdwan
- * stamp: those sessions, a line each; sdwan probes json: an edge's
+ * stamp: those sessions, a line each; sdwan intervals: each target's
+ * last measurement interval, a line each; sdwan probes json: an edge's
  * targets and links, arcana-probe's;
  * sdwan rules|steer|bird|dhcp|dns|proxy|ids json: that part of an
  * edge, arcana-sdwan's, as its operation took it.  Each committed.
@@ -4047,6 +4134,11 @@ cmd_sdwan(cbl_conn *conn, int argc, char **argv)
 	if (argc == 2 && strcmp(argv[1], "stamp") == 0) {
 		ytold_begin(conn);
 		return (sdwan_stamp_out(conn));
+	}
+	/* Each target's last measurement interval, a line each. */
+	if (argc == 2 && strcmp(argv[1], "intervals") == 0) {
+		ytold_begin(conn);
+		return (sdwan_intervals_out(conn));
 	}
 	if (argc != 3)
 		usage();

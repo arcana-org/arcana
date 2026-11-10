@@ -111,6 +111,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jail.h>
+#include <math.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -138,6 +139,9 @@
 #define	STAMP_WINDOW	4096	/* STAMP probes in the air, at most */
 #define	STAMP_SALT	"arcana stamp v1"	/* HKDF's, the key's */
 #define	PUB_B64		44	/* an X25519 public half, base64 */
+#define	PM_RAW_MAX	4096	/* raw samples an interval keeps, a target */
+#define	PM_KEPT		60	/* completed measurement intervals kept */
+#define	PM_LEN		60	/* s: a measurement interval */
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
@@ -156,6 +160,38 @@ struct sample {
 	 * the round trip when 0 (an estimate); -1 each when not told. */
 	double	dfwd, dback;
 	int	owd;
+};
+
+/*
+ * A measurement interval's (PLAN-SDN-YANG 5.2, RFC 9375's perf-mon): the
+ * metrics of each answer, in microseconds, -1 for none: the round trip,
+ * the delay out and back (by STAMP, measured one way), and the IPDV of
+ * each (RFC 3393, as an absolute value: against the answer before).
+ */
+enum { PM_RTT, PM_FWD, PM_BACK, PM_JRTT, PM_JFWD, PM_JBACK, PM_NM };
+static const char *const pm_names[] = { "rtt", "forward", "backward",
+    "jitter_rtt", "jitter_forward", "jitter_backward" };
+
+struct pm_raw {
+	int32_t		v[PM_NM];
+};
+
+/* Of every value of the interval, not only those kept. */
+struct pm_acc {
+	uint64_t	sum;
+	uint32_t	n, min, max;
+};
+
+struct pm_stats {
+	uint32_t	n;		/* 0: none */
+	uint64_t	min, max, mean, p[3];
+};
+
+struct pm {
+	time_t		start, end;
+	uint32_t	sent, recv, kept;
+	int64_t		lost_fwd, lost_back;	/* -1 not told */
+	struct pm_stats	st[PM_NM];
 };
 
 struct target {
@@ -240,6 +276,27 @@ struct target {
 	bool			 w_has_prev;
 	struct sample		*samples;
 	int			 nsamples, head;
+	/*
+	 * Its measurement intervals, aligned to the wall clock: the three
+	 * percentiles reported and the length (s); the running one's
+	 * start, counts, every value's least, most and sum, and its raw
+	 * samples (PM_RAW_MAX at most, a uniform sample beyond: pm_seen
+	 * the answers so far); the last answer's metrics, which the next
+	 * one's IPDV is against; the loss each way all along when it
+	 * began; the last completed one's raw samples, kept for a read
+	 * that asks (raw); and the last PM_KEPT completed ones' figures.
+	 */
+	double			 pct[3];
+	int			 pm_len;
+	time_t			 pm_start;
+	uint32_t		 pm_sent, pm_recv, pm_seen;
+	struct pm_acc		 pm_acc[PM_NM];
+	int32_t			 pm_prev[3];
+	uint64_t		 pm_fwd0, pm_back0;
+	struct pm_raw		*pm_raw, *pm_last;
+	int			 pm_nraw, pm_cap, pm_nlast, pm_lastcap;
+	struct pm		*pm_done;
+	int			 pm_ndone, pm_head;
 };
 
 static pthread_mutex_t	 lock = PTHREAD_MUTEX_INITIALIZER;
@@ -414,6 +471,11 @@ target_free(struct target *t)
 	target_close(t);
 	free(t->samples);
 	t->samples = NULL;
+	free(t->pm_raw);
+	free(t->pm_last);
+	free(t->pm_done);
+	t->pm_raw = t->pm_last = NULL;
+	t->pm_done = NULL;
 	explicit_bzero(&t->key, sizeof(t->key));
 	t->keyed = false;
 }
@@ -682,6 +744,340 @@ loc_put(ucl_object_t *o, const char *key, const struct sockaddr_storage *ss)
 	    sockaddr *)ss)), k, 0, true);
 }
 
+/* ---- Measurement intervals (PLAN-SDN-YANG 5.2) ---------------------- */
+
+static time_t
+wall_s(void)
+{
+
+	return (time(NULL));
+}
+
+/* Milliseconds as whole microseconds, 0 to INT32_MAX. */
+static int32_t
+pm_us(double ms)
+{
+	double	v = ms * 1000 + 0.5;
+
+	return (v < 0 ? 0 : v > INT32_MAX ? INT32_MAX : (int32_t)v);
+}
+
+/* The loss each way the target's STAMP has told, all along. */
+static void
+pm_lost(const struct target *t, uint64_t *fwd, uint64_t *back)
+{
+	struct stamp_sender_stats	st;
+
+	*fwd = t->fwd_lost;
+	*back = t->back_lost;
+	if (t->ss != NULL) {
+		stamp_sender_stats(t->ss, &st);
+		*fwd += st.fwd_lost - t->tk_fwd;
+		*back += st.back_lost - t->tk_back;
+	}
+}
+
+/* A new interval from the boundary at or before now; the counts from 0. */
+static void
+pm_begin(struct target *t, time_t now)
+{
+
+	t->pm_start = now - now % t->pm_len;
+	t->pm_sent = t->pm_recv = t->pm_seen = 0;
+	t->pm_nraw = 0;
+	memset(t->pm_acc, 0, sizeof(t->pm_acc));
+	pm_lost(t, &t->pm_fwd0, &t->pm_back0);
+}
+
+/* The intervals forgotten: another length or other percentiles. */
+static void
+pm_forget(struct target *t)
+{
+
+	t->pm_ndone = t->pm_head = 0;
+	t->pm_nlast = 0;
+	t->pm_start = 0;
+}
+
+/* An answer's metrics: the round trip, and by STAMP (sm) the delay
+ * each way when it was measured one way; each one's IPDV against the
+ * answer before. */
+static void
+pm_hit(struct target *t, double rtt_ms, const struct stamp_sample *sm)
+{
+	struct pm_raw	 r, *nr;
+	struct pm_acc	*a;
+	uint32_t	 j;
+	int		 i, cap;
+
+	r.v[PM_RTT] = pm_us(rtt_ms);
+	r.v[PM_FWD] = r.v[PM_BACK] = -1;
+	if (sm != NULL && sm->owd) {
+		r.v[PM_FWD] = pm_us(sm->fwd * 1000);
+		r.v[PM_BACK] = pm_us(sm->back * 1000);
+	}
+	for (i = 0; i < 3; i++) {
+		r.v[PM_JRTT + i] = -1;
+		if (r.v[i] < 0)
+			continue;
+		if (t->pm_prev[i] >= 0)
+			r.v[PM_JRTT + i] = r.v[i] > t->pm_prev[i] ? r.v[i] -
+			    t->pm_prev[i] : t->pm_prev[i] - r.v[i];
+		t->pm_prev[i] = r.v[i];
+	}
+	for (i = 0; i < PM_NM; i++) {
+		if (r.v[i] < 0)
+			continue;
+		a = &t->pm_acc[i];
+		if (a->n == 0 || (uint32_t)r.v[i] < a->min)
+			a->min = (uint32_t)r.v[i];
+		if (a->n == 0 || (uint32_t)r.v[i] > a->max)
+			a->max = (uint32_t)r.v[i];
+		a->sum += (uint32_t)r.v[i];
+		a->n++;
+	}
+	/* Kept: all of them up to PM_RAW_MAX, then each in its place with
+	 * a chance that keeps a uniform sample (reservoir sampling). */
+	t->pm_seen++;
+	if (t->pm_nraw < PM_RAW_MAX) {
+		if (t->pm_nraw == t->pm_cap) {
+			cap = t->pm_cap == 0 ? 64 : t->pm_cap * 2;
+			if (cap > PM_RAW_MAX)
+				cap = PM_RAW_MAX;
+			if ((nr = reallocarray(t->pm_raw, (size_t)cap,
+			    sizeof(*nr))) == NULL)
+				return;
+			t->pm_raw = nr;
+			t->pm_cap = cap;
+		}
+		t->pm_raw[t->pm_nraw++] = r;
+	} else if ((j = arc4random_uniform(t->pm_seen)) < PM_RAW_MAX)
+		t->pm_raw[j] = r;
+}
+
+static int
+pm_cmp(const void *a, const void *b)
+{
+	int32_t	x = *(const int32_t *)a, y = *(const int32_t *)b;
+
+	return (x < y ? -1 : x > y);
+}
+
+/* A percentile of n sorted values, the nearest rank: the least that p
+ * percent of them are less than or equal to. */
+static uint64_t
+pm_rank(const int32_t *v, int n, double p)
+{
+	int	k;
+
+	k = (int)ceil(p * n / 100.0 - 1e-9);
+	if (k < 1)
+		k = 1;
+	if (k > n)
+		k = n;
+	return ((uint64_t)v[k - 1]);
+}
+
+/* The figures of raw samples (n of them) and of every value (acc). */
+static void
+pm_figures(const struct target *t, const struct pm_raw *raw, int n,
+    const struct pm_acc *acc, struct pm_stats *st)
+{
+	int32_t	*v;
+	int	 i, k, m;
+
+	memset(st, 0, PM_NM * sizeof(*st));
+	v = n > 0 ? calloc((size_t)n, sizeof(*v)) : NULL;
+	for (m = 0; m < PM_NM; m++) {
+		if (acc[m].n == 0)
+			continue;
+		st[m].n = acc[m].n;
+		st[m].min = acc[m].min;
+		st[m].max = acc[m].max;
+		st[m].mean = (acc[m].sum + acc[m].n / 2) / acc[m].n;
+		if (v == NULL)
+			continue;
+		for (i = k = 0; i < n; i++)
+			if (raw[i].v[m] >= 0)
+				v[k++] = raw[i].v[m];
+		if (k == 0)
+			continue;
+		qsort(v, (size_t)k, sizeof(*v), pm_cmp);
+		for (i = 0; i < 3; i++)
+			if (t->pct[i] > 0)
+				st[m].p[i] = pm_rank(v, k, t->pct[i]);
+	}
+	free(v);
+}
+
+/* The running interval as it would end now, into p. */
+static void
+pm_now(const struct target *t, struct pm *p)
+{
+	struct stamp_sender_stats	st;
+	uint64_t			f, b;
+
+	p->start = t->pm_start;
+	p->end = t->pm_start + t->pm_len;
+	p->sent = t->pm_sent;
+	p->recv = t->pm_recv;
+	p->kept = (uint32_t)t->pm_nraw;
+	p->lost_fwd = p->lost_back = -1;
+	/* The loss each way, a stateful reflector's to tell. */
+	if (t->by_stamp && t->ss != NULL) {
+		stamp_sender_stats(t->ss, &st);
+		if (st.mode == STAMP_MODE_STATEFUL) {
+			pm_lost(t, &f, &b);
+			p->lost_fwd = (int64_t)(f - t->pm_fwd0);
+			p->lost_back = (int64_t)(b - t->pm_back0);
+		}
+	}
+	pm_figures(t, t->pm_raw, t->pm_nraw, t->pm_acc, p->st);
+}
+
+/* The running interval ended: its figures kept, its raw samples the
+ * last completed one's, a new one begun at the boundary of now. */
+static void
+pm_end(struct target *t, time_t now)
+{
+	struct pm_raw	*r;
+	struct pm	*p;
+	int		 c;
+
+	if (t->pm_done == NULL && (t->pm_done = calloc(PM_KEPT,
+	    sizeof(*t->pm_done))) == NULL) {
+		pm_begin(t, now);
+		return;
+	}
+	p = &t->pm_done[(t->pm_head + t->pm_ndone) % PM_KEPT];
+	if (t->pm_ndone == PM_KEPT)
+		t->pm_head = (t->pm_head + 1) % PM_KEPT;
+	else
+		t->pm_ndone++;
+	pm_now(t, p);
+	r = t->pm_last;
+	c = t->pm_lastcap;
+	t->pm_last = t->pm_raw;
+	t->pm_lastcap = t->pm_cap;
+	t->pm_nlast = t->pm_nraw;
+	t->pm_raw = r;
+	t->pm_cap = c;
+	pm_begin(t, now);
+}
+
+/* Its intervals' clock: begun, or ended at its boundary. */
+static void
+pm_timers(struct target *t)
+{
+	time_t	now = wall_s();
+
+	if (t->pm_start == 0)
+		pm_begin(t, now);
+	else if (now >= t->pm_start + t->pm_len)
+		pm_end(t, now);
+}
+
+static void
+pm_put_stats(ucl_object_t *o, const char *key, const struct target *t,
+    const struct pm_stats *s)
+{
+	static const char *const pn[] = { "low", "intermediate", "high" };
+	ucl_object_t	*c;
+
+	if (s->n == 0)
+		return;
+	c = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(c, ucl_object_fromint(s->n), "count", 0, false);
+	ucl_object_insert_key(c, ucl_object_fromint((int64_t)s->min), "min", 0,
+	    false);
+	ucl_object_insert_key(c, ucl_object_fromint((int64_t)s->max), "max", 0,
+	    false);
+	ucl_object_insert_key(c, ucl_object_fromint((int64_t)s->mean), "mean",
+	    0, false);
+	for (int i = 0; i < 3; i++)
+		if (t->pct[i] > 0)
+			ucl_object_insert_key(c, ucl_object_fromint((int64_t)
+			    s->p[i]), pn[i], 0, false);
+	ucl_object_insert_key(o, c, key, 0, false);
+}
+
+/* An interval as JSON; with raw (n of them), its raw samples too. */
+static ucl_object_t *
+pm_json(const struct target *t, const struct pm *p, bool complete,
+    const struct pm_raw *raw, int n)
+{
+	ucl_object_t	*o, *r, *l;
+	int		 i, m;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(o, ucl_object_fromint(p->start), "start", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromint(p->end), "end", 0, false);
+	ucl_object_insert_key(o, ucl_object_frombool(complete), "complete", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromint(p->sent), "sent", 0, false);
+	ucl_object_insert_key(o, ucl_object_fromint(p->recv), "received", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromint(p->kept), "kept", 0, false);
+	if (p->lost_fwd >= 0) {
+		ucl_object_insert_key(o, ucl_object_fromint(p->lost_fwd),
+		    "lost_forward", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint(p->lost_back),
+		    "lost_backward", 0, false);
+	}
+	for (m = 0; m < PM_NM; m++)
+		pm_put_stats(o, pm_names[m], t, &p->st[m]);
+	if (raw != NULL) {
+		r = ucl_object_typed_new(UCL_OBJECT);
+		for (m = 0; m < PM_NM; m++) {
+			l = ucl_object_typed_new(UCL_ARRAY);
+			for (i = 0; i < n; i++)
+				if (raw[i].v[m] >= 0)
+					ucl_array_append(l, ucl_object_fromint(
+					    raw[i].v[m]));
+			ucl_object_insert_key(r, l, pm_names[m], 0, false);
+		}
+		ucl_object_insert_key(o, r, "raw", 0, false);
+	}
+	return (o);
+}
+
+/* Its measurement intervals as JSON: the percentiles, the length, the
+ * completed ones ended after the time after (the last always, with its
+ * raw samples when raw), the running one after them. */
+static ucl_object_t *
+pm_target_json(const struct target *t, uint64_t after, bool raw)
+{
+	ucl_object_t	*o, *arr;
+	struct pm	 now;
+	const struct pm	*p;
+	int		 k;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(o, ucl_object_fromdouble(t->pct[0]), "low", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromdouble(t->pct[1]),
+	    "intermediate", 0, false);
+	ucl_object_insert_key(o, ucl_object_fromdouble(t->pct[2]), "high", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromint(t->pm_len), "length", 0,
+	    false);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (k = 0; k < t->pm_ndone; k++) {
+		p = &t->pm_done[(t->pm_head + k) % PM_KEPT];
+		if ((uint64_t)p->end <= after && k != t->pm_ndone - 1)
+			continue;
+		ucl_array_append(arr, pm_json(t, p, true, raw && k ==
+		    t->pm_ndone - 1 ? t->pm_last : NULL, t->pm_nlast));
+	}
+	if (t->pm_start != 0) {
+		pm_now(t, &now);
+		ucl_array_append(arr, pm_json(t, &now, false, NULL, 0));
+	}
+	ucl_object_insert_key(o, arr, "intervals", 0, false);
+	return (o);
+}
+
 static void
 window_end(struct target *t, double now)
 {
@@ -817,6 +1213,7 @@ miss(struct target *t)
 {
 
 	t->w_sent++;
+	t->pm_sent++;
 	t->hits = 0;
 	if (++t->misses >= t->down && t->state != ST_DOWN)
 		state_set(t, ST_DOWN);
@@ -828,6 +1225,8 @@ hit(struct target *t, double rtt_ms)
 
 	t->w_sent++;
 	t->w_recv++;
+	t->pm_sent++;
+	t->pm_recv++;
 	t->received++;
 	t->last_rtt = rtt_ms;
 	t->w_sum += rtt_ms;
@@ -1022,6 +1421,7 @@ stamp_lost(struct target *t, double now)
 			return;
 	} else {
 		t->w_sent++;
+		t->pm_sent++;
 		t->hits = 0;
 		t->misses = t->down - 1;
 	}
@@ -1214,6 +1614,7 @@ stamp_recv_all(struct target *t)
 				    t->address);
 			t->stamp_why[0] = '\0';
 			hit(t, sm.rtt * 1000);
+			pm_hit(t, sm.rtt * 1000, &sm);
 			stamp_delay(t, &sm);
 			stamp_dscp(t, &sm, ri.tos);
 			stamp_where(t, &sm);
@@ -1306,6 +1707,7 @@ sock_recv(int sock, int af, struct target *t, double now)
 			if (x->out[i].live && x->out[i].seq == seq) {
 				x->out[i].live = false;
 				hit(x, (now - x->out[i].sent) * 1000);
+				pm_hit(x, (now - x->out[i].sent) * 1000, NULL);
 				break;
 			}
 	}
@@ -1330,6 +1732,7 @@ target_timers(struct target *t, double now)
 			stamp_lost(t, now);
 	if (now - t->win_start >= t->eval / 1000.0)
 		window_end(t, now);
+	pm_timers(t);
 	if (t->next_send < 0 && t->state != ST_ENDED && t->state != ST_ERROR) {
 		bool	air = t->by_stamp && t->ss != NULL &&
 			    stamp_sender_next(t->ss) > 0;
@@ -1384,6 +1787,9 @@ prober(void *arg __unused)
 			if (t->next_send >= 0 && (d = t->next_send - now) < wait)
 				wait = d;
 			if ((d = t->win_start + t->eval / 1000.0 - now) < wait)
+				wait = d;
+			if (t->pm_start != 0 && (d = (double)(t->pm_start +
+			    t->pm_len - wall_s())) < wait)
 				wait = d;
 			pfd[n].fd = t->sock;
 			pfd[n].events = POLLIN;
@@ -1624,6 +2030,30 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		t->eval = (int)num(o, "eval", 1000, 100, 86400000, &bad);
 		t->history = (int)num(o, "history", 3600, 0, SAMPLES_MAX, &bad);
 		t->report = (int)num(o, "report", 1, 1, 1000, &bad);
+		/* Its measurement intervals' three percentiles (RFC 9375's
+		 * perf-mon; 0 for none). */
+		{
+			static const char *const pk[] = { "low_percentile",
+			    "intermediate_percentile", "high_percentile" };
+			static const double pd[] = { 10, 50, 90 };
+
+			for (k = 0; k < 3; k++) {
+				t->pct[k] = pd[k];
+				if ((v = ucl_object_lookup(o, pk[k])) == NULL)
+					continue;
+				if ((ucl_object_type(v) != UCL_INT &&
+				    ucl_object_type(v) != UCL_FLOAT) ||
+				    ucl_object_todouble(v) < 0 ||
+				    ucl_object_todouble(v) > 100) {
+					*errp = wfmt(w, "target %s: %s is 0 to 100 "
+					    "(0 for none)", id, pk[k]);
+					goto bad;
+				}
+				t->pct[k] = ucl_object_todouble(v);
+			}
+		}
+		t->pm_len = PM_LEN;
+		t->pm_prev[0] = t->pm_prev[1] = t->pm_prev[2] = -1;
 		/* Thresholds: delay and ipdv in ms, loss a fraction. */
 		{
 			const ucl_object_t	*tc = ucl_object_lookup(o, "tca");
@@ -1700,6 +2130,8 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			int	iv = t->interval, cnt = t->count, dn = t->down;
 			int	up = t->up, to = t->timeout, ev = t->eval;
 			int	hi = t->history, rp = t->report, dm = t->damping;
+			int	pl = t->pm_len;
+			double	pc[3] = { t->pct[0], t->pct[1], t->pct[2] };
 			char	ifn[IFNAMSIZ], sif[IFNAMSIZ], spe[PUB_B64 + 1];
 			char	kerr[sizeof(t->key_err)];
 			struct stamp_key nk = t->key;
@@ -1741,6 +2173,14 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			snprintf(t->stamp_peer, sizeof(t->stamp_peer), "%s", spe);
 			snprintf(t->key_err, sizeof(t->key_err), "%s", kerr);
 			explicit_bzero(&nk, sizeof(nk));
+			/* Other percentiles or another length: the intervals
+			 * begun again. */
+			if (t->pm_len != pl || memcmp(t->pct, pc, sizeof(pc)) !=
+			    0) {
+				pm_forget(t);
+				t->pm_len = pl;
+				memcpy(t->pct, pc, sizeof(pc));
+			}
 			if (t->history != hi) {
 				free(t->samples);
 				t->samples = NULL;
@@ -2199,9 +2639,10 @@ probe_sample_of(const char *jail, const char *id, double *delay,
 }
 
 /* A target as JSON: what it is, its state, the sample in progress and
- * those kept after the time after.  The lock is held. */
+ * those kept after the time after, its measurement intervals (with raw,
+ * the last completed one's raw samples).  The lock is held. */
 static ucl_object_t *
-target_json(const struct target *t, double now, uint64_t after)
+target_json(const struct target *t, double now, uint64_t after, bool raw)
 {
 	ucl_object_t	*o, *s, *row, *cur;
 	struct sample	*sm;
@@ -2435,6 +2876,8 @@ target_json(const struct target *t, double now, uint64_t after)
 	ucl_object_insert_key(o, s, "samples", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint(t->nsamples),
 	    "kept", 0, false);
+	ucl_object_insert_key(o, pm_target_json(t, after, raw), "pm", 0,
+	    false);
 	if (t->ifname[0] != '\0')
 		ucl_object_insert_key(o, ucl_object_fromstring(t->ifname),
 		    "interface", 0, false);
@@ -2478,11 +2921,12 @@ json_reply(struct work *w, ucl_object_t *top, struct json_rsp *rsp)
 
 /*
  * What the probes have seen, as JSON, arcana-probe's state: the SD-WAN
- * targets (with after, only the samples after that time), when, and
- * whether the prober runs.
+ * targets (with after, only the samples and the measurement intervals
+ * after that time; with raw, each one's last completed interval's raw
+ * samples), when, and whether the prober runs.
  */
 int
-do_probes_read(struct work *w, uint64_t after, struct json_rsp *rsp)
+do_probes_read(struct work *w, uint64_t after, bool raw, struct json_rsp *rsp)
 {
 	ucl_object_t	*top, *arr;
 	double		 now;
@@ -2496,7 +2940,8 @@ do_probes_read(struct work *w, uint64_t after, struct json_rsp *rsp)
 		/* The admin's monitors are read apart (do_monitors). */
 		if (is_monitor(&targets[i]))
 			continue;
-		ucl_array_append(arr, target_json(&targets[i], now, after));
+		ucl_array_append(arr, target_json(&targets[i], now, after,
+		    raw));
 	}
 	pthread_mutex_unlock(&lock);
 	ucl_object_insert_key(top, arr, "targets", 0, false);
@@ -2547,7 +2992,7 @@ do_monitors(struct work *w, uint64_t after, struct json_rsp *rsp)
 	for (i = 0; i < ntargets; i++)
 		if (is_monitor(&targets[i]))
 			ucl_array_append(arr, target_json(&targets[i], now,
-			    after));
+			    after, false));
 	pthread_mutex_unlock(&lock);
 	ucl_object_insert_key(top, arr, "monitors", 0, false);
 	ucl_object_insert_key(top, ucl_object_fromint(time(NULL)), "time", 0,
@@ -2631,6 +3076,17 @@ target_conf(const struct target *t)
 	ucl_object_insert_key(o, ucl_object_fromint(t->eval), "eval", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint(t->history), "history", 0,
 	    false);
+	/* Its measurement intervals' percentiles, where not the defaults. */
+	{
+		static const char *const pk[] = { "low_percentile",
+		    "intermediate_percentile", "high_percentile" };
+		static const double pd[] = { 10, 50, 90 };
+
+		for (int k = 0; k < 3; k++)
+			if (t->pct[k] != pd[k])
+				ucl_object_insert_key(o, ucl_object_fromdouble(
+				    t->pct[k]), pk[k], 0, false);
+	}
 	if (t->tca[0] > 0 || t->tca[1] > 0 || t->tca[2] > 0) {
 		tc = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(tc, ucl_object_fromdouble(t->tca[0]),

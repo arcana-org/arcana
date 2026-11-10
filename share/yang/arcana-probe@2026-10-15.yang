@@ -30,7 +30,12 @@ module arcana-probe {
      sample every evaluation interval of the one-way delay (half the
      mean round trip), the delay variation, the loss ratio, the least
      and the most, and the probes sent and answered; thresholds a
-     metric over which is a fault (tca).  The targets are
+     metric over which is a fault (tca).  And measurement intervals
+     as RFC 9375's perf-mon has them, for its pm entries: of 60 s,
+     aligned to the clock, each with the least, the most, the mean
+     and three percentiles of the round trip, the delay each way and
+     their IPDV in microseconds, and the loss as a count and a
+     percentage; the last 60 kept and the running one.  The targets are
      configuration, the host's and each vnet jail edge's, with the
      interfaces whose links are watched and the admin's own monitors
      on any tunnel: each edge's lists set together by a commit, kept
@@ -51,6 +56,39 @@ module arcana-probe {
     units "milliseconds";
     description
       "Milliseconds.";
+  }
+
+  typedef us {
+    type yang:gauge64;
+    units "microseconds";
+    description
+      "Microseconds, a measurement interval's figures' unit (RFC
+       9375's delay and jitter statistics with lime:microseconds as
+       their unit-value).";
+  }
+
+  typedef percentile {
+    type decimal64 {
+      fraction-digits 3;
+      range "0..100";
+    }
+    description
+      "A percentile, 0 to 100 to 3 decimal places, as RFC 9375's
+       percentile: of a measurement interval's values, the least that
+       so many percent of them are less than or equal to (the nearest
+       rank); 0.000 for none reported.";
+    reference
+      "RFC 9375: A YANG Data Model for Network and VPN Service
+       Performance Monitoring";
+  }
+
+  typedef percentage {
+    type decimal64 {
+      fraction-digits 5;
+      range "0..100";
+    }
+    description
+      "A percentage to 5 decimal places, as RFC 9375's.";
   }
 
   grouping sample {
@@ -256,6 +294,251 @@ module arcana-probe {
         "Samples kept.";
     }
     uses tca;
+    uses percentiles;
+  }
+
+  grouping percentiles {
+    description
+      "The three percentiles of a measurement interval reported, as
+       RFC 9375's perf-mon has them (its default high percentile is
+       95.000; Arcana's 90.000, the console's SD-WAN tables'
+       p10/p50/p90).";
+    leaf low-percentile {
+      type percentile;
+      default "10.000";
+      description
+        "The low percentile; 0.000 for none.";
+    }
+    leaf intermediate-percentile {
+      type percentile;
+      default "50.000";
+      description
+        "The intermediate percentile; 0.000 for none.";
+    }
+    leaf high-percentile {
+      type percentile;
+      default "90.000";
+      description
+        "The high percentile; 0.000 for none.";
+    }
+  }
+
+  grouping stats {
+    description
+      "One metric's statistics over a measurement interval, in
+       microseconds, as RFC 9375's delay and jitter statistics: the
+       least, the most and the mean of every value, and the three
+       percentiles of the raw values kept (all of them unless more
+       came than the agent keeps an interval, then a uniform sample
+       of them).";
+    leaf count {
+      type uint32;
+      description
+        "Values of the interval.";
+    }
+    leaf min {
+      type us;
+      description
+        "The least.";
+    }
+    leaf max {
+      type us;
+      description
+        "The most.";
+    }
+    leaf mean {
+      type us;
+      description
+        "The mean.";
+    }
+    leaf low-percentile {
+      type us;
+      description
+        "The low percentile's value; none when it is 0.000.";
+    }
+    leaf intermediate-percentile {
+      type us;
+      description
+        "The intermediate percentile's value.";
+    }
+    leaf high-percentile {
+      type us;
+      description
+        "The high percentile's value.";
+    }
+  }
+
+  grouping interval {
+    description
+      "A target's measurement intervals: aligned to the wall clock (an
+       interval of 60 s begins at a minute's start), the last
+       completed ones kept, the running one after them.";
+    list interval {
+      cg:struct "interval";
+      key "start";
+      description
+        "A measurement interval, its probes counted in the interval
+         their answer or loss is known in.";
+      leaf start {
+        type yang:date-and-time;
+        description
+          "When it began.";
+      }
+      leaf end {
+        type yang:date-and-time;
+        description
+          "When it ended, or is to end while running.";
+      }
+      leaf complete {
+        type boolean;
+        description
+          "Ended; false for the running one.";
+      }
+      leaf sent {
+        type uint32;
+        description
+          "Probes whose answer or loss came in it.";
+      }
+      leaf received {
+        type uint32;
+        description
+          "Answered.";
+      }
+      leaf kept {
+        type uint32;
+        description
+          "The raw samples kept, which the percentiles are of: every
+           answer's, 4096 at most (a uniform sample of them beyond).";
+      }
+      container loss {
+        description
+          "The loss, as RFC 9375's loss statistics: a count and a
+           percentage of the probes sent; by STAMP to a stateful
+           reflector, each way too.";
+        leaf count {
+          type uint32;
+          description
+            "Probes lost.";
+        }
+        leaf ratio {
+          type percentage;
+          description
+            "Of those sent, a percentage.";
+        }
+        leaf forward-count {
+          type uint32;
+          description
+            "Lost on the way out (the reflector's counter tells
+             them).";
+        }
+        leaf forward-ratio {
+          type percentage;
+          description
+            "Of those sent.";
+        }
+        leaf backward-count {
+          type uint32;
+          description
+            "Reflected and lost on the way back.";
+        }
+        leaf backward-ratio {
+          type percentage;
+          description
+            "Of those sent.";
+        }
+      }
+      container round-trip {
+        cg:struct "stats";
+        description
+          "The two-way delay: the round trip, the reflector's time
+           taken out by STAMP.";
+        uses stats;
+      }
+      container forward {
+        cg:struct "stats";
+        description
+          "By STAMP, the one-way delay out, of the answers measured
+           one way by both clocks (none estimated).";
+        uses stats;
+      }
+      container backward {
+        cg:struct "stats";
+        description
+          "The one-way delay back.";
+        uses stats;
+      }
+      container jitter {
+        description
+          "The delay variation, RFC 3393's IPDV between an answer and
+           the one before it, as an absolute value.";
+        container round-trip {
+          cg:struct "stats";
+          description
+            "Of the round trip.";
+          uses stats;
+        }
+        container forward {
+          cg:struct "stats";
+          description
+            "Of the one-way delay out.";
+          uses stats;
+        }
+        container backward {
+          cg:struct "stats";
+          description
+            "Of the one-way delay back.";
+          uses stats;
+        }
+      }
+      container raw {
+        description
+          "The raw samples kept of the last completed interval, in the
+           order they came, for checking the figures: the read action
+           with raw alone gives them.";
+        leaf-list round-trip {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "Round trips.";
+        }
+        leaf-list forward {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "One-way delays out.";
+        }
+        leaf-list backward {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "One-way delays back.";
+        }
+        leaf-list jitter-round-trip {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "The round trip's IPDV.";
+        }
+        leaf-list jitter-forward {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "The delay out's IPDV.";
+        }
+        leaf-list jitter-backward {
+          type uint32;
+          units "microseconds";
+          ordered-by user;
+          description
+            "The delay back's IPDV.";
+        }
+      }
+    }
   }
 
   grouping edge {
@@ -566,6 +849,13 @@ module arcana-probe {
         "The samples kept, oldest first.";
       uses sample;
     }
+    container pm {
+      description
+        "Its measurement intervals (RFC 9375's perf-mon, as 5.3 maps
+         them): the percentiles they report, and the intervals.";
+      uses percentiles;
+      uses interval;
+    }
     leaf jail {
       type string;
       description
@@ -615,8 +905,10 @@ module arcana-probe {
     action read {
       description
         "What the probes have seen after a time: each target as it
-         is, with the samples after the time, a page that has the ones
-         before asks for; when, and whether they run.";
+         is, with the samples and the measurement intervals ended
+         after the time (the last completed and the running one
+         always), a page that has the ones before asks for; when, and
+         whether they run.";
       input {
         leaf after {
           type yang:date-and-time;
@@ -630,6 +922,13 @@ module arcana-probe {
             "The admin's monitors (the monitor lists') instead of
              SD-WAN's targets, read apart as the monitors operation
              of arcana.yaml read them.";
+        }
+        leaf raw {
+          type boolean;
+          default "false";
+          description
+            "With each target's last completed measurement interval,
+             its raw samples, to check its figures by.";
         }
       }
       output {

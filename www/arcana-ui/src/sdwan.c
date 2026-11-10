@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <math.h>
 
@@ -3476,6 +3477,143 @@ view_stamp(struct html *h)
 	ucl_object_unref(all);
 }
 
+/*
+ * Each end's last measurement interval of each of its tunnels
+ * (arcana-probe's, PLAN-SDN-YANG 5.2, RFC 9375's perf-mon): when it
+ * ended, the round trip's three percentiles (p10, p50 and p90 unless
+ * the service's probe settings say others), the jitter's intermediate
+ * one, and the loss as a percentage and a count of those sent.  Sorted
+ * and filtered as every table is (tbl.c).
+ */
+static void
+view_pm(struct html *h)
+{
+	static char		 t_lo[24], t_mid[24], t_hi[24], t_jit[24];
+	static struct tcol	 cols[] = {
+		{ "From", "from", false }, { "Tunnel", "tunnel", false },
+		{ "Ended", "end", true }, { t_lo, "p_lo", true },
+		{ t_mid, "p_mid", true }, { t_hi, "p_hi", true },
+		{ t_jit, "j_mid", true }, { "Loss %", "loss", true },
+		{ "Lost", "lost", true },
+	};
+	const ucl_object_t	*t, *e, *tg, *pm, *v, *last, **rows, *r;
+	ucl_object_iter_t	 it, vit;
+	ucl_object_t		*all, *o;
+	double			 pc[3] = { 10, 50, 90 };
+	char			 b1[32], b2[32], b3[32], when[32];
+	struct tm		 tm;
+	time_t			 at;
+	int			 k, n;
+	bool			 seen = false;
+
+	all = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(jget(sd.plan, "tunnels"), &it, true)) !=
+	    NULL)
+		for (k = 0; k < 2; k++) {
+			e = ucl_array_find_index(jget(t, "ends"), (unsigned int)k);
+			if ((tg = target_of(jstr(e, "edge"), jstr(t, "id"))) ==
+			    NULL || (pm = jget(tg, "pm")) == NULL)
+				continue;
+			/* The percentiles the first target says name the
+			 * columns (one service's are all alike). */
+			if (!seen) {
+				pc[0] = jnum(pm, "low", 10);
+				pc[1] = jnum(pm, "intermediate", 50);
+				pc[2] = jnum(pm, "high", 90);
+				seen = true;
+			}
+			last = NULL;
+			vit = NULL;
+			while ((v = ucl_object_iterate(jget(pm, "intervals"), &vit,
+			    true)) != NULL)
+				if (jbool(v, "complete"))
+					last = v;
+			o = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(o, ucl_object_fromstring(host_name(
+			    jstr(e, "edge"))), "from", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(jstr(t,
+			    "id")), "tunnel", 0, true);
+			if (last != NULL) {
+				ucl_object_insert_key(o, ucl_object_fromint(jint(last,
+				    "end", 0)), "end", 0, true);
+				if (jget(last, "rtt.low") != NULL)
+					ucl_object_insert_key(o, ucl_object_fromdouble(
+					    jint(last, "rtt.low", 0) / 1000.0), "p_lo",
+					    0, true);
+				if (jget(last, "rtt.intermediate") != NULL)
+					ucl_object_insert_key(o, ucl_object_fromdouble(
+					    jint(last, "rtt.intermediate", 0) / 1000.0),
+					    "p_mid", 0, true);
+				if (jget(last, "rtt.high") != NULL)
+					ucl_object_insert_key(o, ucl_object_fromdouble(
+					    jint(last, "rtt.high", 0) / 1000.0), "p_hi",
+					    0, true);
+				if (jget(last, "jitter_rtt.intermediate") != NULL)
+					ucl_object_insert_key(o, ucl_object_fromdouble(
+					    jint(last, "jitter_rtt.intermediate", 0) /
+					    1000.0), "j_mid", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromdouble(jnum(
+				    last, "loss_pct", 0)), "loss", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromint(jint(last,
+				    "lost", 0)), "lost", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromint(jint(last,
+				    "sent", 0)), "sent", 0, true);
+			}
+			ucl_array_append(all, o);
+		}
+	snprintf(t_lo, sizeof(t_lo), "RTT p%g", pc[0]);
+	snprintf(t_mid, sizeof(t_mid), "RTT p%g", pc[1]);
+	snprintf(t_hi, sizeof(t_hi), "RTT p%g", pc[2]);
+	snprintf(t_jit, sizeof(t_jit), "Jitter p%g", pc[1]);
+	h_raw(h, "<div class=\"sd-block sd-pm\"><h3>Measurement intervals "
+	    "<small class=\"dim\">each end's last interval of a minute, "
+	    "aligned to the clock (RFC 9375's performance monitoring): the "
+	    "round trip's percentiles of every answer, the delay variation's "
+	    "median (RFC 3393's IPDV), the probes lost of those sent"
+	    "</small></h3><table class=\"net sd\">");
+	tbl_head(h, "sd-pm", cols, (int)nitems(cols), 0);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-pm", all, cols, (int)nitems(cols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		h_raw(h, "<tr><td><b>");
+		h_txt(h, jstr(r, "from"));
+		h_raw(h, "</b></td><td class=\"mono\">");
+		h_txt(h, jstr(r, "tunnel"));
+		h_raw(h, "</td>");
+		if (jget(r, "end") == NULL) {
+			h_raw(h, "<td class=\"dim\" colspan=\"7\">no interval "
+			    "ended yet</td></tr>");
+			continue;
+		}
+		at = (time_t)jint(r, "end", 0);
+		gmtime_r(&at, &tm);
+		strftime(when, sizeof(when), "%H:%M:%S", &tm);
+		h_fmt(h, "<td class=\"mono\">%s</td>", when);
+		if (jget(r, "p_mid") == NULL)
+			h_raw(h, "<td class=\"dim\" colspan=\"4\">no answer</td>");
+		else
+			h_fmt(h, "<td class=\"num\">%s</td><td class=\"num\">%s"
+			    "</td><td class=\"num\">%s</td><td class=\"num\">%s"
+			    "</td>", jget(r, "p_lo") != NULL ? ms(jnum(r, "p_lo",
+			    0), b1, sizeof(b1)) : "—", ms(jnum(r, "p_mid", 0), b2,
+			    sizeof(b2)), jget(r, "p_hi") != NULL ? ms(jnum(r,
+			    "p_hi", 0), b3, sizeof(b3)) : "—", jget(r, "j_mid") !=
+			    NULL ? ms(jnum(r, "j_mid", 0), (char[32]){ 0 }, 32) :
+			    "—");
+		h_fmt(h, "<td class=\"num%s\">%.3f %%</td><td class=\"num\">"
+		    "%lld <small class=\"dim\">of %lld</small></td></tr>",
+		    jnum(r, "loss", 0) > 0 ? " bad" : "", jnum(r, "loss", 0),
+		    (long long)jint(r, "lost", 0), (long long)jint(r, "sent", 0));
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"9\" class=\"dim\">Nothing measured "
+		    "yet, or nothing matches the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table></div>");
+	ucl_object_unref(all);
+}
+
 static void
 view_paths(struct html *h)
 {
@@ -3619,8 +3757,10 @@ view_paths(struct html *h)
 	    "tunnels")) == 0)
 		h_raw(h, "<p class=\"dim\">No tunnel: a service with end points "
 		    "on two edges or more has them.</p>");
-	else
+	else {
 		view_stamp(h);
+		view_pm(h);
+	}
 	/* The uswe tunnels' keys: each end's, when they were set and the
 	 * half-life they turn at; a rotation on its way; one by hand. */
 	n = 0;
@@ -6197,6 +6337,14 @@ sdwan_modal_service(struct html *h)
 				{ "history", "Samples kept", "3600", NULL },
 				{ "report", "Reported every so many intervals",
 				    "1", NULL },
+				{ "low_percentile", "Low percentile", "10",
+				    "Each measurement interval's: the round trip, "
+				    "the delay each way and their variation at it "
+				    "(RFC 9375); 0 for none." },
+				{ "intermediate_percentile", "Intermediate "
+				    "percentile", "50", NULL },
+				{ "high_percentile", "High percentile", "90",
+				    NULL },
 			};
 
 			h_raw(h, "<details class=\"sd-more\"><summary>Application "
@@ -6234,11 +6382,17 @@ sdwan_modal_service(struct html *h)
 			    "own; empty: as the agent has them</small></legend>"
 			    "<div class=\"two\">");
 			for (i = 0; i < (int)nitems(probes); i++) {
-				char	name[24];
+				char	name[32];
 
 				snprintf(name, sizeof(name), "pb_%s", probes[i].key);
-				snprintf(buf, sizeof(buf), "%lld", (long long)jint(pb,
-				    probes[i].key, 0));
+				/* A percentile to 3 decimal places, the rest
+				 * whole numbers. */
+				if (strstr(probes[i].key, "_percentile") != NULL)
+					snprintf(buf, sizeof(buf), "%g", jnum(pb,
+					    probes[i].key, 0));
+				else
+					snprintf(buf, sizeof(buf), "%lld", (long long)
+					    jint(pb, probes[i].key, 0));
 				text_field(h, probes[i].label, name, jget(pb,
 				    probes[i].key) != NULL ? buf : "", probes[i].ph,
 				    probes[i].help);
@@ -8471,11 +8625,23 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 			else
 				ucl_object_insert_key(o, dom, "domains", 0, false);
 		}
+		/* The underlays ticked, by their place in the document's
+		 * list: a checkbox comes as true, not as its value. */
 		arr = ucl_object_typed_new(UCL_ARRAY);
-		for (i = 0; i < 64; i++) {
-			snprintf(name, sizeof(name), "ucs_%d", i);
-			if ((v = jstr(f, name)) != NULL && v[0] != '\0')
-				ucl_array_append(arr, ucl_object_fromstring(v));
+		{
+			const ucl_object_t	*u;
+			ucl_object_iter_t	 uit = NULL;
+
+			i = 0;
+			while ((u = ucl_object_iterate(jget(sd.doc, "ucs"), &uit,
+			    true)) != NULL) {
+				snprintf(name, sizeof(name), "ucs_%d", i++);
+				if (jstr(u, "id") != NULL && (checked(f, name) ||
+				    ((v = jstr(f, name)) != NULL && strcmp(v,
+				    jstr(u, "id")) == 0)))
+					ucl_array_append(arr, ucl_object_fromstring(
+					    jstr(u, "id")));
+			}
 		}
 		ucl_object_insert_key(o, arr, "ucs", 0, false);
 		if (checked(f, "bfd")) {
@@ -8506,14 +8672,19 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 		}
 		{
 			static const char *const pk[] = { "interval", "size",
-			    "dscp", "timeout", "down", "up", "history", "report" };
-			char	 name[24];
+			    "dscp", "timeout", "down", "up", "history", "report",
+			    "low_percentile", "intermediate_percentile",
+			    "high_percentile" };
+			char	 name[32];
 			size_t	 k;
 
 			t = ucl_object_typed_new(UCL_OBJECT);
 			for (k = 0; k < nitems(pk); k++) {
 				snprintf(name, sizeof(name), "pb_%s", pk[k]);
-				put_int(t, pk[k], jstr(f, name));
+				if (strstr(pk[k], "_percentile") != NULL)
+					put_num(t, pk[k], jstr(f, name));
+				else
+					put_int(t, pk[k], jstr(f, name));
 			}
 			if (ucl_object_iterate(t, &(ucl_object_iter_t){ NULL },
 			    true) != NULL)

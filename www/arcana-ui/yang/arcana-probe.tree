@@ -1,95 +1,107 @@
 module: arcana-probe
   +--rw probes
      +--rw target* [id]
-     |  +--rw id                 string
-     |  +--rw address            inet:ip-address-no-zone
-     |  +--rw kind?              enumeration
-     |  +--rw stamp-interface?   string
-     |  +--rw stamp-peer?        string
-     |  +--rw count?             uint32
-     |  +--rw report?            uint16
-     |  +--rw fib?               uint16
-     |  +--rw interval?          uint32
-     |  +--rw size?              uint16
-     |  +--rw dscp?              uint8
-     |  +--rw down?              uint8
-     |  +--rw up?                uint8
-     |  +--rw timeout?           uint32
-     |  +--rw eval?              uint32
-     |  +--rw history?           uint32
+     |  +--rw id                         string
+     |  +--rw address                    inet:ip-address-no-zone
+     |  +--rw kind?                      enumeration
+     |  +--rw stamp-interface?           string
+     |  +--rw stamp-peer?                string
+     |  +--rw count?                     uint32
+     |  +--rw report?                    uint16
+     |  +--rw fib?                       uint16
+     |  +--rw interval?                  uint32
+     |  +--rw size?                      uint16
+     |  +--rw dscp?                      uint8
+     |  +--rw down?                      uint8
+     |  +--rw up?                        uint8
+     |  +--rw timeout?                   uint32
+     |  +--rw eval?                      uint32
+     |  +--rw history?                   uint32
      |  +--rw tca
-     |     +--rw delay?     ms
-     |     +--rw ipdv?      ms
-     |     +--rw loss?      decimal64
-     |     +--rw damping?   uint8
+     |  |  +--rw delay?     ms
+     |  |  +--rw ipdv?      ms
+     |  |  +--rw loss?      decimal64
+     |  |  +--rw damping?   uint8
+     |  +--rw low-percentile?            percentile
+     |  +--rw intermediate-percentile?   percentile
+     |  +--rw high-percentile?           percentile
      +--rw link* [id]
      |  +--rw id           string
      |  +--rw interface    string
      |  +--rw role?        enumeration
      +--rw monitor* [name]
-     |  +--rw name         string
-     |  +--rw interface?   string
-     |  +--rw address?     inet:ip-address-no-zone
-     |  +--rw fib?         uint16
-     |  +--rw interval?    uint32
-     |  +--rw size?        uint16
-     |  +--rw dscp?        uint8
-     |  +--rw down?        uint8
-     |  +--rw up?          uint8
-     |  +--rw timeout?     uint32
-     |  +--rw eval?        uint32
-     |  +--rw history?     uint32
+     |  +--rw name                       string
+     |  +--rw interface?                 string
+     |  +--rw address?                   inet:ip-address-no-zone
+     |  +--rw fib?                       uint16
+     |  +--rw interval?                  uint32
+     |  +--rw size?                      uint16
+     |  +--rw dscp?                      uint8
+     |  +--rw down?                      uint8
+     |  +--rw up?                        uint8
+     |  +--rw timeout?                   uint32
+     |  +--rw eval?                      uint32
+     |  +--rw history?                   uint32
      |  +--rw tca
-     |     +--rw delay?     ms
-     |     +--rw ipdv?      ms
-     |     +--rw loss?      decimal64
-     |     +--rw damping?   uint8
+     |  |  +--rw delay?     ms
+     |  |  +--rw ipdv?      ms
+     |  |  +--rw loss?      decimal64
+     |  |  +--rw damping?   uint8
+     |  +--rw low-percentile?            percentile
+     |  +--rw intermediate-percentile?   percentile
+     |  +--rw high-percentile?           percentile
      +--rw jail* [name]
      |  +--rw name    string
      |  +--rw target* [id]
-     |  |  +--rw id                 string
-     |  |  +--rw address            inet:ip-address-no-zone
-     |  |  +--rw kind?              enumeration
-     |  |  +--rw stamp-interface?   string
-     |  |  +--rw stamp-peer?        string
-     |  |  +--rw count?             uint32
-     |  |  +--rw report?            uint16
-     |  |  +--rw fib?               uint16
-     |  |  +--rw interval?          uint32
-     |  |  +--rw size?              uint16
-     |  |  +--rw dscp?              uint8
-     |  |  +--rw down?              uint8
-     |  |  +--rw up?                uint8
-     |  |  +--rw timeout?           uint32
-     |  |  +--rw eval?              uint32
-     |  |  +--rw history?           uint32
+     |  |  +--rw id                         string
+     |  |  +--rw address                    inet:ip-address-no-zone
+     |  |  +--rw kind?                      enumeration
+     |  |  +--rw stamp-interface?           string
+     |  |  +--rw stamp-peer?                string
+     |  |  +--rw count?                     uint32
+     |  |  +--rw report?                    uint16
+     |  |  +--rw fib?                       uint16
+     |  |  +--rw interval?                  uint32
+     |  |  +--rw size?                      uint16
+     |  |  +--rw dscp?                      uint8
+     |  |  +--rw down?                      uint8
+     |  |  +--rw up?                        uint8
+     |  |  +--rw timeout?                   uint32
+     |  |  +--rw eval?                      uint32
+     |  |  +--rw history?                   uint32
      |  |  +--rw tca
-     |  |     +--rw delay?     ms
-     |  |     +--rw ipdv?      ms
-     |  |     +--rw loss?      decimal64
-     |  |     +--rw damping?   uint8
+     |  |  |  +--rw delay?     ms
+     |  |  |  +--rw ipdv?      ms
+     |  |  |  +--rw loss?      decimal64
+     |  |  |  +--rw damping?   uint8
+     |  |  +--rw low-percentile?            percentile
+     |  |  +--rw intermediate-percentile?   percentile
+     |  |  +--rw high-percentile?           percentile
      |  +--rw link* [id]
      |  |  +--rw id           string
      |  |  +--rw interface    string
      |  |  +--rw role?        enumeration
      |  +--rw monitor* [name]
-     |     +--rw name         string
-     |     +--rw interface?   string
-     |     +--rw address?     inet:ip-address-no-zone
-     |     +--rw fib?         uint16
-     |     +--rw interval?    uint32
-     |     +--rw size?        uint16
-     |     +--rw dscp?        uint8
-     |     +--rw down?        uint8
-     |     +--rw up?          uint8
-     |     +--rw timeout?     uint32
-     |     +--rw eval?        uint32
-     |     +--rw history?     uint32
+     |     +--rw name                       string
+     |     +--rw interface?                 string
+     |     +--rw address?                   inet:ip-address-no-zone
+     |     +--rw fib?                       uint16
+     |     +--rw interval?                  uint32
+     |     +--rw size?                      uint16
+     |     +--rw dscp?                      uint8
+     |     +--rw down?                      uint8
+     |     +--rw up?                        uint8
+     |     +--rw timeout?                   uint32
+     |     +--rw eval?                      uint32
+     |     +--rw history?                   uint32
      |     +--rw tca
-     |        +--rw delay?     ms
-     |        +--rw ipdv?      ms
-     |        +--rw loss?      decimal64
-     |        +--rw damping?   uint8
+     |     |  +--rw delay?     ms
+     |     |  +--rw ipdv?      ms
+     |     |  +--rw loss?      decimal64
+     |     |  +--rw damping?   uint8
+     |     +--rw low-percentile?            percentile
+     |     +--rw intermediate-percentile?   percentile
+     |     +--rw high-percentile?           percentile
      +--ro state
      |  +--ro probing?   boolean
      |  +--ro time?      yang:date-and-time
@@ -131,11 +143,86 @@ module: arcana-probe
      |     |  +--ro delay-forward?    ms
      |     |  +--ro delay-backward?   ms
      |     |  +--ro one-way?          enumeration
+     |     +--ro pm
+     |     |  +--ro low-percentile?            percentile
+     |     |  +--ro intermediate-percentile?   percentile
+     |     |  +--ro high-percentile?           percentile
+     |     |  +--ro interval* [start]
+     |     |     +--ro start         yang:date-and-time
+     |     |     +--ro end?          yang:date-and-time
+     |     |     +--ro complete?     boolean
+     |     |     +--ro sent?         uint32
+     |     |     +--ro received?     uint32
+     |     |     +--ro kept?         uint32
+     |     |     +--ro loss
+     |     |     |  +--ro count?            uint32
+     |     |     |  +--ro ratio?            percentage
+     |     |     |  +--ro forward-count?    uint32
+     |     |     |  +--ro forward-ratio?    percentage
+     |     |     |  +--ro backward-count?   uint32
+     |     |     |  +--ro backward-ratio?   percentage
+     |     |     +--ro round-trip
+     |     |     |  +--ro count?                     uint32
+     |     |     |  +--ro min?                       us
+     |     |     |  +--ro max?                       us
+     |     |     |  +--ro mean?                      us
+     |     |     |  +--ro low-percentile?            us
+     |     |     |  +--ro intermediate-percentile?   us
+     |     |     |  +--ro high-percentile?           us
+     |     |     +--ro forward
+     |     |     |  +--ro count?                     uint32
+     |     |     |  +--ro min?                       us
+     |     |     |  +--ro max?                       us
+     |     |     |  +--ro mean?                      us
+     |     |     |  +--ro low-percentile?            us
+     |     |     |  +--ro intermediate-percentile?   us
+     |     |     |  +--ro high-percentile?           us
+     |     |     +--ro backward
+     |     |     |  +--ro count?                     uint32
+     |     |     |  +--ro min?                       us
+     |     |     |  +--ro max?                       us
+     |     |     |  +--ro mean?                      us
+     |     |     |  +--ro low-percentile?            us
+     |     |     |  +--ro intermediate-percentile?   us
+     |     |     |  +--ro high-percentile?           us
+     |     |     +--ro jitter
+     |     |     |  +--ro round-trip
+     |     |     |  |  +--ro count?                     uint32
+     |     |     |  |  +--ro min?                       us
+     |     |     |  |  +--ro max?                       us
+     |     |     |  |  +--ro mean?                      us
+     |     |     |  |  +--ro low-percentile?            us
+     |     |     |  |  +--ro intermediate-percentile?   us
+     |     |     |  |  +--ro high-percentile?           us
+     |     |     |  +--ro forward
+     |     |     |  |  +--ro count?                     uint32
+     |     |     |  |  +--ro min?                       us
+     |     |     |  |  +--ro max?                       us
+     |     |     |  |  +--ro mean?                      us
+     |     |     |  |  +--ro low-percentile?            us
+     |     |     |  |  +--ro intermediate-percentile?   us
+     |     |     |  |  +--ro high-percentile?           us
+     |     |     |  +--ro backward
+     |     |     |     +--ro count?                     uint32
+     |     |     |     +--ro min?                       us
+     |     |     |     +--ro max?                       us
+     |     |     |     +--ro mean?                      us
+     |     |     |     +--ro low-percentile?            us
+     |     |     |     +--ro intermediate-percentile?   us
+     |     |     |     +--ro high-percentile?           us
+     |     |     +--ro raw
+     |     |        +--ro round-trip*          uint32
+     |     |        +--ro forward*             uint32
+     |     |        +--ro backward*            uint32
+     |     |        +--ro jitter-round-trip*   uint32
+     |     |        +--ro jitter-forward*      uint32
+     |     |        +--ro jitter-backward*     uint32
      |     +--ro jail?       string
      +---x read
         +---w input
         |  +---w after?      yang:date-and-time
         |  +---w monitors?   boolean
+        |  +---w raw?        boolean
         +--ro output
            +--ro probing?   boolean
            +--ro time?      yang:date-and-time
@@ -177,4 +264,78 @@ module: arcana-probe
               |  +--ro delay-forward?    ms
               |  +--ro delay-backward?   ms
               |  +--ro one-way?          enumeration
+              +--ro pm
+              |  +--ro low-percentile?            percentile
+              |  +--ro intermediate-percentile?   percentile
+              |  +--ro high-percentile?           percentile
+              |  +--ro interval* [start]
+              |     +--ro start         yang:date-and-time
+              |     +--ro end?          yang:date-and-time
+              |     +--ro complete?     boolean
+              |     +--ro sent?         uint32
+              |     +--ro received?     uint32
+              |     +--ro kept?         uint32
+              |     +--ro loss
+              |     |  +--ro count?            uint32
+              |     |  +--ro ratio?            percentage
+              |     |  +--ro forward-count?    uint32
+              |     |  +--ro forward-ratio?    percentage
+              |     |  +--ro backward-count?   uint32
+              |     |  +--ro backward-ratio?   percentage
+              |     +--ro round-trip
+              |     |  +--ro count?                     uint32
+              |     |  +--ro min?                       us
+              |     |  +--ro max?                       us
+              |     |  +--ro mean?                      us
+              |     |  +--ro low-percentile?            us
+              |     |  +--ro intermediate-percentile?   us
+              |     |  +--ro high-percentile?           us
+              |     +--ro forward
+              |     |  +--ro count?                     uint32
+              |     |  +--ro min?                       us
+              |     |  +--ro max?                       us
+              |     |  +--ro mean?                      us
+              |     |  +--ro low-percentile?            us
+              |     |  +--ro intermediate-percentile?   us
+              |     |  +--ro high-percentile?           us
+              |     +--ro backward
+              |     |  +--ro count?                     uint32
+              |     |  +--ro min?                       us
+              |     |  +--ro max?                       us
+              |     |  +--ro mean?                      us
+              |     |  +--ro low-percentile?            us
+              |     |  +--ro intermediate-percentile?   us
+              |     |  +--ro high-percentile?           us
+              |     +--ro jitter
+              |     |  +--ro round-trip
+              |     |  |  +--ro count?                     uint32
+              |     |  |  +--ro min?                       us
+              |     |  |  +--ro max?                       us
+              |     |  |  +--ro mean?                      us
+              |     |  |  +--ro low-percentile?            us
+              |     |  |  +--ro intermediate-percentile?   us
+              |     |  |  +--ro high-percentile?           us
+              |     |  +--ro forward
+              |     |  |  +--ro count?                     uint32
+              |     |  |  +--ro min?                       us
+              |     |  |  +--ro max?                       us
+              |     |  |  +--ro mean?                      us
+              |     |  |  +--ro low-percentile?            us
+              |     |  |  +--ro intermediate-percentile?   us
+              |     |  |  +--ro high-percentile?           us
+              |     |  +--ro backward
+              |     |     +--ro count?                     uint32
+              |     |     +--ro min?                       us
+              |     |     +--ro max?                       us
+              |     |     +--ro mean?                      us
+              |     |     +--ro low-percentile?            us
+              |     |     +--ro intermediate-percentile?   us
+              |     |     +--ro high-percentile?           us
+              |     +--ro raw
+              |        +--ro round-trip*          uint32
+              |        +--ro forward*             uint32
+              |        +--ro backward*            uint32
+              |        +--ro jitter-round-trip*   uint32
+              |        +--ro jitter-forward*      uint32
+              |        +--ro jitter-backward*     uint32
               +--ro jail?       string

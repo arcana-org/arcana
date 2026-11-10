@@ -1704,6 +1704,8 @@ static bool
 swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
     ucl_object_t *seen_ep, ucl_object_t *seen_uni, ucl_object_t *seen_if)
 {
+	static const char *const pcts[] = { "low_percentile",
+	    "intermediate_percentile", "high_percentile" };
 	const ucl_object_t	*v, *e, *z, *zp, *t, *p, *ep, *m;
 	ucl_object_iter_t	 it, it2, it3;
 	struct pfx		 zones[LIST_MAX], res[LIST_MAX], q;
@@ -2360,6 +2362,15 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 		    !is_int(e, 1, 1000, &n))
 			return (fail(c, "probe: report is so many eval "
 			    "intervals, 1 to 1000"));
+		/* The measurement intervals' percentiles (RFC 9375). */
+		for (size_t k = 0; k < nitems(pcts); k++) {
+			double	d;
+
+			if ((e = ucl_object_lookup(v, pcts[k])) != NULL &&
+			    (!is_num(e, &d) || d < 0 || d > 100))
+				return (fail(c, "probe: %s is 0 to 100, 0 for "
+				    "none", pcts[k]));
+		}
 	}
 	return (true);
 }

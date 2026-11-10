@@ -2856,7 +2856,7 @@ arcana_probe_probes_get(cbl_req *req, struct arcana_probe *data, cbl_yarena *a)
 	if (cbl_req_ydatastore(req) != CBL_YDS_OPERATIONAL)
 		return (0);
 	memset(&r, 0, sizeof(r));
-	(void)do_probes_read(w, 0, &r);
+	(void)do_probes_read(w, 0, false, &r);
 	if (!r.ok)
 		return (failed("probes", r.error));
 	if ((st = cbl_yarena_alloc(a, sizeof(*st))) == NULL)
@@ -2888,7 +2888,8 @@ arcana_probe_probes_read_action(cbl_req *req, const struct cbl_bytes *target,
 	if (in->has_monitors && in->monitors)
 		(void)do_monitors(w, (uint64_t)after, &r);
 	else
-		(void)do_probes_read(w, (uint64_t)after, &r);
+		(void)do_probes_read(w, (uint64_t)after, in->has_raw && in->raw,
+		    &r);
 	if (!r.ok)
 		return (failed("probes", r.error));
 	memset(&st, 0, sizeof(st));
@@ -2967,7 +2968,7 @@ arcana_stamp_stamp_get(cbl_req *req, struct arcana_stamp *data, cbl_yarena *a)
 	o->reflector = rf;
 	data->stamp = o;
 	memset(&r, 0, sizeof(r));
-	(void)do_probes_read(w, (uint64_t)time(NULL), &r);
+	(void)do_probes_read(w, (uint64_t)time(NULL), false, &r);
 	if (!r.ok)
 		return (failed("probes", r.error));
 	if ((error = ystamp_sessions_from_json(r.json, a, o)) != 0)

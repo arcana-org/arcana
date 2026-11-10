@@ -62,6 +62,9 @@ put_dec(ucl_object_t *o, const ucl_object_t *from, const char *key, int d)
 	ucl_object_insert_key(o, ucl_object_fromstring(buf), key, 0, true);
 }
 
+static const char *const pcts[] = { "low_percentile",
+    "intermediate_percentile", "high_percentile" };
+
 /* A target as the operation had it, as arcana-probe's. */
 static ucl_object_t *
 target_of(const ucl_object_t *t)
@@ -88,6 +91,18 @@ target_of(const ucl_object_t *t)
 		if ((v = ucl_object_lookup(t, ints[i])) != NULL)
 			ucl_object_insert_key(o, ucl_object_copy(v), ints[i], 0,
 			    true);
+	/* Its measurement intervals' percentiles (decimal64, 3 digits). */
+	for (size_t i = 0; i < nitems(pcts); i++)
+		if ((v = ucl_object_lookup(t, pcts[i])) != NULL) {
+			char	buf[32], key[32], *p;
+
+			snprintf(buf, sizeof(buf), "%.3f", ucl_object_todouble(v));
+			snprintf(key, sizeof(key), "%s", pcts[i]);
+			if ((p = strchr(key, '_')) != NULL)
+				*p = '-';
+			ucl_object_insert_key(o, ucl_object_fromstring(buf), key, 0,
+			    true);
+		}
 	if ((c = ucl_object_lookup(t, "tca")) != NULL) {
 		tca = ucl_object_typed_new(UCL_OBJECT);
 		put_dec(tca, c, "delay", 3);

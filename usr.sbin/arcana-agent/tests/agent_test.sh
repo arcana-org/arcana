@@ -2130,15 +2130,15 @@ yang_sdwan_body()
 	# Each edge's targets, links and monitors, as the agent keeps them,
 	# and back as its setters take them.
 	cat > targets.json <<'EOT'
-{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
+{"edges":[{"jail":"","targets":[{"id":"tvc-1","address":"10.202.0.2","fib":1,"interval":100,"size":64,"count":0,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"report":5,"low_percentile":25,"high_percentile":99.9,"tca":{"delay":50,"ipdv":10,"loss":0.01,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}],"monitors":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]},{"jail":"gateway","targets":[{"id":"tvc-1","address":"10.202.0.1"}]}]}
 EOT
 	cat > want <<'EOT'
-target tvc-1 10.202.0.2 fib=1 interval=100 size=64 count=0 dscp=46 down=3 up=3 timeout=1000 eval=1000 history=3600 report=5 tca delay=50000 ipdv=10000 loss=10000 damping=2
+target tvc-1 10.202.0.2 fib=1 interval=100 size=64 count=0 dscp=46 down=3 up=3 timeout=1000 eval=1000 history=3600 report=5 percentiles=25000/0/99900 tca delay=50000 ipdv=10000 loss=10000 damping=2
 target tvc-2 fd00:5a::2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=icmp
 target tvc-3 10.203.0.2 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0 kind=stamp
 link uni-1 em1 uni
 monitor ov-gre0 gre0 10.255.0.2 fib=2 eval=10000
-set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
+set {"targets":[{"id":"tvc-1","address":"10.202.0.2","count":0,"report":5,"fib":1,"interval":100,"size":64,"dscp":46,"down":3,"up":3,"timeout":1000,"eval":1000,"history":3600,"low_percentile":25.0,"high_percentile":99.900000,"tca":{"delay":50.0,"ipdv":10.0,"loss":0.010000,"damping":2}},{"id":"tvc-2","address":"fd00:5a::2","kind":"icmp"},{"id":"tvc-3","address":"10.203.0.2","kind":"stamp"}],"links":[{"id":"uni-1","interface":"em1","role":"uni"}]}
 set {"jail":"","targets":[{"id":"ov-gre0","interface":"gre0","address":"10.255.0.2","fib":2,"eval":10000}]}
 jail gateway
 target tvc-1 10.202.0.1 fib=0 interval=0 size=0 count=0 dscp=0 down=0 up=0 timeout=0 eval=0 history=0 report=0
@@ -2149,7 +2149,7 @@ EOT
 	sed '$d' got > got2
 	atf_check -o file:want cat got2
 	cat > probes.json <<'EOT'
-{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10,0,0,0.3,0.317,1],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9,0.1,0,0.7,0.7,0]],"kept":2},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
+{"targets":[{"id":"tvc-1","address":"10.202.0.2","family":"inet","fib":1,"state":"up","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":46,"sent":12000,"received":11990,"misses":0,"last_rtt":1.234,"now":{"sent":5,"recv":5,"delay":0.6,"ipdv":0.05,"loss":0,"age":512.3},"samples":[[1791995100,0.617,0.052,0.0,0.5,0.9,10,10,0,0,0.3,0.317,1],[1791995101,0.7,0.1,0.1,0.5,1.2,10,9,0.1,0,0.7,0.7,0]],"kept":2,"pm":{"low":10,"intermediate":50,"high":90,"length":60,"intervals":[{"start":1791995040,"end":1791995100,"complete":true,"sent":600,"received":597,"kept":597,"lost_forward":2,"lost_backward":1,"rtt":{"count":597,"min":500,"max":2500,"mean":800,"low":550,"intermediate":750,"high":1200},"forward":{"count":597,"min":200,"max":1000,"mean":300,"low":220,"intermediate":280,"high":500},"jitter_rtt":{"count":596,"min":0,"max":900,"mean":60,"low":5,"intermediate":40,"high":150},"raw":{"rtt":[500,750],"forward":[200],"backward":[],"jitter_rtt":[250],"jitter_forward":[],"jitter_backward":[]}},{"start":1791995100,"end":1791995160,"complete":false,"sent":100,"received":100,"kept":100}]}},{"id":"tvc-2","address":"fd00:5a::2","family":"inet6","fib":0,"state":"error","error":"no route","since":1791995000,"interval":100,"size":64,"eval":1000,"dscp":0,"sent":0,"received":0,"misses":0,"last_rtt":0,"samples":[],"kept":0}],"time":1791995110,"probing":true}
 EOT
 	cat > want <<'EOT'
 probing=yes time=2026-10-14T16:25:10Z
@@ -2159,8 +2159,15 @@ target tvc-1 10.202.0.2 ipv4 fib=1 up error=- since=2026-10-14T16:23:20Z interva
   sample 2026-10-14T16:25:01Z delay=700 ipdv=100 loss=100000 min=500 max=1200 sent=10 received=9
   stamp 2026-10-14T16:25:00Z lost=0/0 delay=300/317 measured
   stamp 2026-10-14T16:25:01Z lost=1/0 delay=700/700 estimated
+  pm 10000/50000/90000
+  interval 2026-10-14T16:24:00Z 2026-10-14T16:25:00Z complete sent=600 received=597 kept=597 lost=3/50000 fwd=2/33333 back=1/16667
+    rtt n=597 min=500 max=2500 mean=800 p=550/750/1200
+    fwd n=597 min=200 max=1000 mean=300 p=220/280/500
+    jrtt n=596 min=0 max=900 mean=60 p=5/40/150
+    raw rtt=2 fwd=1 jrtt=1
+  interval 2026-10-14T16:25:00Z 2026-10-14T16:26:00Z running sent=100 received=100 kept=100 lost=0/0
 target tvc-2 fd00:5a::2 ipv6 fib=0 error error=no route since=2026-10-14T16:23:20Z interval=100 size=64 eval=1000 dscp=0 sent=0 received=0 misses=0 last-rtt=0 kept=0
-yang-cbor 396 bytes, the same back
+yang-cbor 746 bytes, the same back
 EOT
 	atf_check -o file:want "$y" probes probes.json
 	# arcana-stamp: a session a target STAMP measures or may (its
@@ -7722,6 +7729,168 @@ stamp_kind_body()
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
 }
 stamp_kind_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
+}
+
+# The measurement intervals' check: each figure of a target's last
+# completed interval against its raw samples, sorted (pmcheck.py read.json
+# target low intermediate high [length]).
+pm_check_tool()
+{
+	command -v python3 > /dev/null || atf_skip "no python3"
+	cat > pmcheck.py <<'EOS'
+import json, math, sys, calendar, time
+# pmcheck.py read.json target pct...: the target's last completed
+# measurement interval against its raw samples, sorted: the count, the
+# least, the most, the mean and the percentiles (the nearest rank), the
+# loss, the interval aligned to its length.
+d = json.load(open(sys.argv[1]))
+tid = sys.argv[2]
+pct = [float(p) for p in sys.argv[3:6]]
+out = d.get("arcana-probe:output", d)
+ts = [t for t in out["target"] if t["id"] == tid]
+if not ts:
+    sys.exit("no target %s" % tid)
+pm = ts[0]["pm"]
+for k, want in zip(("low-percentile", "intermediate-percentile",
+    "high-percentile"), pct):
+    if float(pm[k]) != want:
+        sys.exit("%s %s, not %s" % (k, pm[k], want))
+done = [v for v in pm["interval"] if v.get("complete")]
+if not done:
+    sys.exit("no interval completed")
+v = done[-1]
+raw = v.get("raw")
+if raw is None:
+    sys.exit("no raw samples")
+def secs(s):
+    return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+start, end = secs(v["start"]), secs(v["end"])
+length = int(sys.argv[6]) if len(sys.argv) > 6 else 60
+if start % length or end - start != length:
+    sys.exit("interval %s to %s not aligned to %d s" % (v["start"],
+        v["end"], length))
+def rank(xs, p):
+    k = math.ceil(p * len(xs) / 100.0 - 1e-9)
+    return xs[min(max(k, 1), len(xs)) - 1]
+checked = []
+pairs = [("round-trip", v.get("round-trip"), "round-trip"),
+    ("forward", v.get("forward"), "forward"),
+    ("backward", v.get("backward"), "backward"),
+    ("jitter-round-trip", v.get("jitter", {}).get("round-trip"),
+        "jitter round-trip"),
+    ("jitter-forward", v.get("jitter", {}).get("forward"), "jitter forward"),
+    ("jitter-backward", v.get("jitter", {}).get("backward"),
+        "jitter backward")]
+for key, st, name in pairs:
+    xs = sorted(int(x) for x in raw.get(key, []))
+    if not xs:
+        if st is not None:
+            sys.exit("%s: figures without raw samples" % name)
+        continue
+    if st is None:
+        sys.exit("%s: raw samples without figures" % name)
+    if int(st["count"]) != len(xs):
+        sys.exit("%s: count %s, %d raw" % (name, st["count"], len(xs)))
+    want = {"min": xs[0], "max": xs[-1],
+        "mean": (sum(xs) + len(xs) // 2) // len(xs),
+        "low-percentile": rank(xs, pct[0]),
+        "intermediate-percentile": rank(xs, pct[1]),
+        "high-percentile": rank(xs, pct[2])}
+    for k, w in want.items():
+        if int(st[k]) != w:
+            sys.exit("%s: %s %s, the sorted dump's %d" % (name, k, st[k], w))
+    checked.append("%s %d" % (name, len(xs)))
+sent, recv = int(v["sent"]), int(v["received"])
+lost = int(v["loss"]["count"])
+if lost != sent - recv:
+    sys.exit("lost %d, sent %d received %d" % (lost, sent, recv))
+ratio = v["loss"]["ratio"]
+w = "%.5f" % (100.0 * lost / sent if sent else 0)
+if ratio != w:
+    sys.exit("loss ratio %s, not %s" % (ratio, w))
+if int(v["kept"]) != len(raw.get("round-trip", [])):
+    sys.exit("kept %s" % v["kept"])
+print("ok %s; sent %d, lost %d (%s %%)" % (", ".join(checked), sent, lost,
+    ratio))
+EOS
+}
+
+# Waits until the target's first measurement interval has ended (the
+# read of the probes says one complete), up to secs seconds.
+pm_wait()
+{
+	local secs=$1 i
+
+	for i in $(seq 1 $((secs * 5))); do
+		"$JGC" -c "$SOCK" action probes read 2>/dev/null |
+		    grep -q '"complete":true' && return 0
+		sleep 0.2
+	done
+	return 1
+}
+
+atf_test_case sdwan_pm cleanup
+sdwan_pm_head()
+{
+	atf_set "descr" "Measurement intervals (PLAN-SDN-YANG 5.2.1): a" \
+	    "target's raw samples kept per interval of 60 s aligned to the" \
+	    "clock; the least, the most, the mean and three percentiles of the" \
+	    "round trip, the delay each way and their IPDV, in microseconds;" \
+	    "the loss as a count and a percentage; each figure equal to the" \
+	    "sorted dump's; the percentiles set and read back; arcanactl sdwan" \
+	    "intervals' line"
+	atf_set "timeout" "150"
+}
+sdwan_pm_body()
+{
+	local P i
+
+	stamp_programs
+	pm_check_tool
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	atf_check -s exit:1 -e match:'percentile' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"x","address":"127.0.0.1","low_percentile":101}]'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"s","address":"127.0.0.1","kind":"stamp","interval":20,"timeout":300,"low_percentile":25}]'
+	# The percentiles are configuration: read back as set, the others
+	# their defaults.
+	atf_check -o match:'"id":"s".*"low-percentile":"25(\.0+)?"' \
+	    -o not-match:'"intermediate-percentile"' \
+	    "$JGC" -c "$SOCK" get -d running probes
+	# The running interval from the start, its end the next boundary.
+	wait_match '"complete":false' "$JGC" -c "$SOCK" action probes read ||
+	    atf_fail "$("$JGC" -c "$SOCK" action probes read)"
+	pm_wait 75 || atf_fail "no interval ended: $("$JGC" -c "$SOCK" \
+	    action probes read)"
+	# Each figure of the last completed interval against its raw
+	# samples, sorted: the round trip's, the delay's each way (one
+	# way, the clocks' error allowing it, else none), the IPDV's.
+	atf_check -o save:read.json "$JGC" -c "$SOCK" action probes read raw=true
+	atf_check -o match:'^ok round-trip [0-9]+, .*jitter round-trip [0-9]+.*; sent [0-9]+, lost [0-9]+ \([0-9.]+ %\)$' \
+	    python3 pmcheck.py read.json s 25 50 90
+	# Without raw, none; the running interval after the last.
+	atf_check -o not-match:'"raw"' -o match:'"complete":true.*"complete":false' \
+	    "$JGC" -c "$SOCK" action probes read
+	# A line a target: the interval, the round trip's p50 and p90, the
+	# loss of those sent.
+	atf_check -o match:'^s: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z to [0-9:]{8}Z, rtt p50 [0-9.]+ ms, p90 [0-9.]+ ms, lost [0-9]+ of [1-9][0-9]* \([0-9.]+%\)$' \
+	    "$JGC" -c "$SOCK" sdwan intervals
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+sdwan_pm_cleanup()
 {
 	stop_daemon
 	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
@@ -15501,6 +15670,7 @@ atf_init_test_cases()
 	atf_add_test_case stampd_keys
 	atf_add_test_case stampd_refused
 	atf_add_test_case stamp_kind
+	atf_add_test_case sdwan_pm
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
 	atf_add_test_case datastores_syslog

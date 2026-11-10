@@ -6892,6 +6892,39 @@ part_flows_sdwan(void)
 	    "includes('DHCP'))", 20);
 	ATF_CHECK(system("grep -q dhcp data/l3nm.json && grep -q 10.10.0.0/28 "
 	    "data/l3nm.json && grep -q '\"2h\"' data/l3nm.json") == 0);
+	/* The measurement intervals' percentiles, the service's (RFC
+	 * 9375's perf-mon): kept in its L3NM, the form showing them again;
+	 * the intermediate one left empty, the agent's 50. */
+	usleep(1500000);
+	run("document.querySelector('button[data-act=sd-swvc-edit]').click()");
+	wait_js("document.querySelector('form[data-form=sd-swvc] input[name="
+	    "pb_low_percentile]')", 5);
+	run("const f = document.querySelector('form[data-form=sd-swvc]'); "
+	    "f.pb_low_percentile.value = '25'; f.pb_high_percentile.value = "
+	    "'99.9'; f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
+	/* Kept once the save is answered, which the form's closing does not
+	 * wait for. */
+	{
+		int	ok = -1;
+
+		for (int i = 0; i < 100 && ok != 0; i++) {
+			if ((ok = system("grep -Eq '\"low-percentile\": *\"?25' "
+			    "data/l3nm.json && grep -Eq '\"high-percentile\": "
+			    "*\"?99.9' data/l3nm.json && ! grep -q "
+			    "intermediate-percentile data/l3nm.json")) != 0)
+				usleep(100000);
+		}
+		ATF_CHECK(ok == 0);
+	}
+	run("document.querySelector('button[data-act=sd-swvc-edit]').click()");
+	wait_js("document.querySelector('form[data-form=sd-swvc] input[name="
+	    "pb_low_percentile]')?.value === '25' && document.querySelector("
+	    "'form[data-form=sd-swvc] input[name=pb_high_percentile]').value "
+	    "=== '99.9' && document.querySelector('form[data-form=sd-swvc] "
+	    "input[name=pb_intermediate_percentile]').value === ''", 10);
+	run("document.querySelector('.modal button[data-act=close]').click()");
+	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 10);
 	/*
 	 * What was JSON alone, by forms too: a rate limiter, a topology of
 	 * a root and a leaf; and a document read from a file into the box,
@@ -7006,6 +7039,18 @@ part_flows_sdwan(void)
 	run("document.querySelector('.sd-stamp th[data-act=t-sort][data-value="
 	    "\"3\"]').click()");
 	wait_js("document.querySelector('.sd-stamp th[data-value=\"3\"]')"
+	    ".classList.contains('asc')", 5);
+	/* The measurement intervals (arcana-probe's pm): a row an end, the
+	 * round trip's percentiles named as the service's form set them
+	 * (25, the agent's 50, 99.9: through the apply to the agents and
+	 * back), the jitter's, the loss; sorted by a column picked. */
+	wait_js("document.querySelectorAll('.sd-pm tbody tr').length >= 2 && "
+	    "[...document.querySelectorAll('.sd-pm th.sortable')].map(t => "
+	    "t.textContent).join('|') === 'From|Tunnel|Ended|RTT p25|RTT p50|"
+	    "RTT p99.9|Jitter p50|Loss %|Lost'", 20);
+	run("document.querySelector('.sd-pm th[data-act=t-sort][data-value="
+	    "\"4\"]').click()");
+	wait_js("document.querySelector('.sd-pm th[data-value=\"4\"]')"
 	    ".classList.contains('asc')", 5);
 	shot("9-sdwan-paths");
 	/* Security: the policies, and the record of what their deny rules

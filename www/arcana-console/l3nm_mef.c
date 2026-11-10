@@ -771,7 +771,10 @@ static const struct fm probe_m[] = {
 	F("interval", "interval", C), F("size", "size", C),
 	F("count", "count", C), F("dscp", "dscp", C), F("down", "down", C),
 	F("up", "up", C), F("timeout", "timeout", C),
-	F("history", "history", C), F("report", "report", C), FEND
+	F("history", "history", C), F("report", "report", C),
+	F("low_percentile", "low-percentile", N),
+	F("intermediate_percentile", "intermediate-percentile", N),
+	F("high_percentile", "high-percentile", N), FEND
 };
 static const struct fm rl_m[] = {
 	F("name", "name", C), F("commit", "commit", N),

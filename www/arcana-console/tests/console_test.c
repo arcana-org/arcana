@@ -16282,6 +16282,18 @@ ATF_TC_BODY(sdwan_apply, tc)
 	    r.body);
 	ATF_CHECK_MSG(jstr(&r, "arcana-probe:state.target.0.state") != NULL,
 	    "%s", r.body);
+	/* Their measurement intervals (PLAN-SDN-YANG 5.2): the percentiles
+	 * they report, the defaults (no interval runs while a target cannot
+	 * be probed: here, without root, none can). */
+	ATF_CHECK_MSG(jstr(&r, "arcana-probe:state.target.0.pm."
+	    "low-percentile") != NULL && strtod(jstr(&r, "arcana-probe:state."
+	    "target.0.pm.low-percentile"), NULL) == 10 && jstr(&r,
+	    "arcana-probe:state.target.0.pm.intermediate-percentile") != NULL &&
+	    strtod(jstr(&r, "arcana-probe:state.target.0.pm."
+	    "intermediate-percentile"), NULL) == 50 && jstr(&r, "arcana-probe:"
+	    "state.target.0.pm.high-percentile") != NULL && strtod(jstr(&r,
+	    "arcana-probe:state.target.0.pm.high-percentile"), NULL) == 90,
+	    "%s", r.body);
 	resp_free(&r);
 	/* What STAMP sees of them (arcana-stamp, PLAN-SDN-YANG 5.1.8): a
 	 * session each tunnel's far end, kind auto, the sender's port. */

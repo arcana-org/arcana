@@ -2633,6 +2633,16 @@ agent sets it before them.
 With
 .Fl -libxo
 the same as structured output.
+.It Cm sdwan intervals
+Each target's last completed measurement interval, arcana-probe's
+(intervals of 60 s aligned to the clock), a line a target: when it
+began and ended, the round trip's intermediate and high percentiles
+(p50 and p90 unless the service's probe settings say others), and the
+loss, a count of the probes sent and a percentage; where none has ended
+yet, what the running one has sent.
+With
+.Fl -libxo
+the same as structured output.
 .It Cm sdwan probes Ar json
 The targets the agent is to measure from now on, a JSON array as the
 console's SD-WAN apply makes them: each an id and an address, and maybe
