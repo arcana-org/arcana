@@ -8131,6 +8131,40 @@ sdwan_counters_cleanup()
 	stop_daemon
 }
 
+atf_test_case sdwan_routes_cache cleanup
+sdwan_routes_cache_head()
+{
+	atf_set "descr" "A FIB's routes counted for the probes' state are" \
+	    "dumped once a --routes-cache window: two reads within it one" \
+	    "dump, a read after it another, the count netstat -rn -F's"
+	atf_set "timeout" "60"
+}
+sdwan_routes_cache_body()
+{
+	local n
+
+	tp_check_tool
+	DAEMON_ARGS="-d --routes-cache 3" start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"targets":[{"id":"t","address":"127.0.0.1","interface":"lo0","kind":"icmp"}]}'
+	atf_check -o save:one.json "$JGC" -c "$SOCK" get probes
+	atf_check -o save:two.json "$JGC" -c "$SOCK" get probes
+	n=$(grep -c 'probe: routes dumped: edge "" FIBs 0$' daemon.out)
+	[ "$n" -eq 1 ] || atf_fail "$n dumps for two reads: $(cat daemon.out)"
+	atf_check -o match:"\"fib\":0,\"ipv4-routes\":$(nroutes 0 inet),\"ipv6-routes\":$(nroutes 0 inet6)" \
+	    cat two.json
+	sleep 3.5
+	atf_check -o save:three.json "$JGC" -c "$SOCK" get probes
+	n=$(grep -c 'probe: routes dumped: edge "" FIBs 0$' daemon.out)
+	[ "$n" -eq 2 ] || atf_fail "$n dumps for a read after the window"
+	atf_check -o match:"\"fib\":0,\"ipv4-routes\":$(nroutes 0 inet),\"ipv6-routes\":$(nroutes 0 inet6)" \
+	    cat three.json
+}
+sdwan_routes_cache_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sdwan_underlay cleanup
 sdwan_underlay_head()
 {
@@ -15983,6 +16017,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_pm
 	atf_add_test_case sdwan_classes
 	atf_add_test_case sdwan_counters
+	atf_add_test_case sdwan_routes_cache
 	atf_add_test_case sdwan_underlay
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log

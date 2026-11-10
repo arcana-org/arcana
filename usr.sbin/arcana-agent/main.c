@@ -104,6 +104,7 @@ struct opts opts = {
 	.swanctl_dir = PATH_SWANCTL_DIR,
 	.birdc_bin = PATH_BIRDC_BIN,
 	.bird_watch_s = 15,
+	.routes_cache_s = 30,
 	.smtpd_watch_s = 60,
 	.stamp_port = 862,
 	.stampd_keys = "/usr/local/etc/stampd.keys",
@@ -135,7 +136,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
-    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS };
+    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -154,6 +155,9 @@ static const struct option longopts[] = {
 	/* How often BIRD's sessions are looked at for faults; 0, never. */
 	{ "bird-watch", required_argument, NULL, OPT_BIRD_WATCH },
 	{ "smtpd-watch", required_argument, NULL, OPT_SMTPD_WATCH },
+	/* How long a FIB's count of routes is told again before it is
+	 * dumped anew; 0, every read. */
+	{ "routes-cache", required_argument, NULL, OPT_ROUTES_CACHE },
 	/* The UDP port Arcana's far ends reflect STAMP on (stampd(8)): a
 	 * test's own; 0, every target pinged. */
 	{ "stamp-port", required_argument, NULL, OPT_STAMP_PORT },
@@ -220,6 +224,7 @@ usage(void)
 	    "                 [-N netstat] [-W swapinfo] "
 	    "[-Z zpool] [-P pkg]\n"
 	    "                 [-X traceroute] [--bird-watch seconds]\n"
+	    "                 [--routes-cache seconds]\n"
 	    "                 [--sctp-also addresses] [--telegram-api url]\n"
 	    "                 [--poudriere poudriere] [--poudriere-etc directory]\n"
 	    "                 [--ifmcstat ifmcstat] [--rtadvctl rtadvctl]\n"
@@ -495,6 +500,12 @@ main(int argc, char *argv[])
 			opts.bird_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);
 			if (errstr != NULL)
 				errx(1, "--bird-watch %s: %s", optarg, errstr);
+			break;
+		case OPT_ROUTES_CACHE:
+			opts.routes_cache_s = (int)strtonum(optarg, 0, 3600,
+			    &errstr);
+			if (errstr != NULL)
+				errx(1, "--routes-cache %s: %s", optarg, errstr);
 			break;
 		case OPT_STAMP_PORT:
 			opts.stamp_port = (int)strtonum(optarg, 0, 65535, &errstr);

@@ -3284,7 +3284,10 @@ whose first part is served.
   and IPv6 routes as netlink(4) dumps them (RTM_GETROUTE with
   RTA_TABLE, the messages counted, as netstat -rn -F reads them; a
   FIB the kernel has not left out).  Counted at each read of the
-  probes' state, not kept.  arcana-probe numbered again.  The
+  probes' state, not kept; since agent 0.275.0 a count is kept a
+  while (--routes-cache, 30 s) by edge and FIB, one dump at a time,
+  since the base has no cheaper count (no sysctl, no netlink message
+  tells a table's size) and a full BGP table is a long dump.  arcana-probe numbered again.  The
   console's view (vpnpm.c) reads it with the targets (one read a host):
   each termination point's RFC 9375 pm-statistics, a service's
   (arcana:if:) its tunnel interface's at that end, the underlay's

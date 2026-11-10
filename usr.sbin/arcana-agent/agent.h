@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.274.0"
+#define	ARCANA_AGENT_VERSION	"0.275.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -174,6 +174,7 @@ struct opts {
 	const char	*build_conf;	/* this host's config.mk for it */
 	const char	*root;		/* --root: the system's files under it */
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
+	int		 routes_cache_s;	/* --routes-cache: a FIB's count kept */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
 	int		 stamp_port;	/* --stamp-port: far ends' STAMP; 0 none */
 	const char	*stampd_keys;	/* --stampd-keys: stampd(8)'s key file */

@@ -3641,11 +3641,140 @@ set_add(ucl_object_t *o, const char *k, const char *w)
 }
 
 /*
+ * The routes each edge's FIBs had when last dumped, and when: a FIB
+ * with a full BGP table is a long walk for netlink(4), and the base
+ * counts them no cheaper (no sysctl nor netlink message tells a
+ * table's size), so a count is told again for --routes-cache seconds.
+ * One edge's FIBs are dumped by one reader at a time, under rtc_lock:
+ * another waits for that dump and takes what it found.  ok false, a
+ * FIB the kernel has not.
+ */
+struct rtc {
+	char		 jail[64];
+	unsigned int	 fib, n4, n6;
+	bool		 ok;
+	double		 at;
+};
+
+static pthread_mutex_t	 rtc_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct rtc	*rtc;
+static size_t		 nrtc, rtc_cap;
+
+static struct rtc *
+rtc_find(const char *jail, unsigned int fib)
+{
+	struct rtc	*r;
+
+	for (size_t i = 0; i < nrtc; i++)
+		if (rtc[i].fib == fib && strcmp(rtc[i].jail, jail) == 0)
+			return (&rtc[i]);
+	if (nrtc == rtc_cap) {
+		if ((r = reallocarray(rtc, rtc_cap + 16, sizeof(*r))) == NULL)
+			return (NULL);
+		rtc = r;
+		rtc_cap += 16;
+	}
+	r = &rtc[nrtc++];
+	memset(r, 0, sizeof(*r));
+	strlcpy(r->jail, jail, sizeof(r->jail));
+	r->fib = fib;
+	r->at = -1;
+	return (r);
+}
+
+/*
+ * Edge jail's (w's) FIBs fibs, a comma-separated list, appended to l as
+ * {"fib", "ipv4", "ipv6"}: dumped again those older than the window.
+ */
+static void
+fib_counts(struct work *w, const char *jail, const char *fibs,
+    ucl_object_t *l)
+{
+	struct rtc	*r;
+	const char	*p, *txt, *line, *nl;
+	char		*e, stale[512];
+	unsigned long	 fib;
+	unsigned int	 f, n4, n6;
+	double		 now;
+	size_t		 i, len;
+	ucl_object_t	*o;
+
+	pthread_mutex_lock(&rtc_lock);
+	now = now_s();
+	/* An edge or FIB no longer asked about for long, forgotten. */
+	for (i = 0; i < nrtc; )
+		if (rtc[i].at < 0 || now - rtc[i].at > opts.routes_cache_s +
+		    600)
+			rtc[i] = rtc[--nrtc];
+		else
+			i++;
+	stale[0] = '\0';
+	len = 0;
+	for (p = fibs; *p != '\0'; p = *e == ',' ? e + 1 : e) {
+		fib = strtoul(p, &e, 10);
+		if (e == p || (*e != ',' && *e != '\0') || fib > 65535)
+			break;
+		if ((r = rtc_find(jail, (unsigned int)fib)) == NULL)
+			continue;
+		if (r->at >= 0 && now - r->at < opts.routes_cache_s)
+			continue;
+		len += (size_t)snprintf(stale + len, sizeof(stale) - len,
+		    "%s%lu", len > 0 ? "," : "", fib);
+		if (len >= sizeof(stale))
+			break;
+	}
+	if (len > 0 && len < sizeof(stale)) {
+		logmsg(LOG_DEBUG, "probe: routes dumped: edge \"%s\" FIBs %s",
+		    jail, stale);
+		if ((txt = fib_routes_text(w, stale)) != NULL) {
+			/* Each asked for, none until the dump tells it. */
+			for (p = stale; *p != '\0'; p = *e == ',' ? e + 1 : e) {
+				fib = strtoul(p, &e, 10);
+				if ((r = rtc_find(jail, (unsigned int)fib)) !=
+				    NULL) {
+					r->ok = false;
+					r->at = now;
+				}
+			}
+			for (line = txt; *line != '\0'; line = nl + 1) {
+				if ((nl = strchr(line, '\n')) == NULL)
+					break;
+				if (sscanf(line, "%u %u %u", &f, &n4, &n6) != 3 ||
+				    (r = rtc_find(jail, f)) == NULL)
+					continue;
+				r->n4 = n4;
+				r->n6 = n6;
+				r->ok = true;
+			}
+		}
+	}
+	/* As asked, each the kernel has (the last count, when the dump
+	 * failed). */
+	for (p = fibs; *p != '\0'; p = *e == ',' ? e + 1 : e) {
+		fib = strtoul(p, &e, 10);
+		if (e == p || (*e != ',' && *e != '\0') || fib > 65535)
+			break;
+		if ((r = rtc_find(jail, (unsigned int)fib)) == NULL || !r->ok)
+			continue;
+		o = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(o, ucl_object_fromint(r->fib), "fib", 0,
+		    true);
+		ucl_object_insert_key(o, ucl_object_fromint(r->n4), "ipv4", 0,
+		    true);
+		ucl_object_insert_key(o, ucl_object_fromint(r->n6), "ipv6", 0,
+		    true);
+		ucl_array_append(l, o);
+	}
+	pthread_mutex_unlock(&rtc_lock);
+}
+
+/*
  * Each edge's interfaces and routing tables as the kernel counts them
  * now (PLAN-SDN-YANG 5.3.2, RFC 9375's termination point statistics
  * and entry summary): the interfaces its targets are measured over
  * (their interface) and its links watch, from their if_data; the FIBs
- * its targets go by, and FIB 0, their routes as netlink(4) dumps them.
+ * its targets go by, and FIB 0, their routes as netlink(4) dumps them
+ * (fib_counts(): a dump told again for --routes-cache seconds).
  * A vnet jail's read in its own network by the helper, one question
  * for its interfaces and one for its FIBs.  As JSON {"edges": [{"jail",
  * "time", "interfaces": [{"name", "ibytes", ...}], "fibs": [{"fib",
@@ -3664,7 +3793,6 @@ probe_edges_json(void)
 	const char		*jail, *txt, *err, *line, *nl;
 	char			 name[IFNAMSIZ], fb[16], *json;
 	uintmax_t		 c[nitems(cn)];
-	unsigned int		 f, n4, n6;
 	int			 k;
 
 	/* What each edge has: its interfaces and FIBs, as words. */
@@ -3729,22 +3857,8 @@ probe_edges_json(void)
 			}
 		ucl_object_insert_key(e, l, "interfaces", 0, true);
 		l = ucl_object_typed_new(UCL_ARRAY);
-		if ((v = ucl_object_lookup(w, "fibs")) != NULL && (txt =
-		    fib_routes_text(&jw, ucl_object_tostring(v))) != NULL)
-			for (line = txt; *line != '\0'; line = nl + 1) {
-				if ((nl = strchr(line, '\n')) == NULL)
-					break;
-				if (sscanf(line, "%u %u %u", &f, &n4, &n6) != 3)
-					continue;
-				o = ucl_object_typed_new(UCL_OBJECT);
-				ucl_object_insert_key(o, ucl_object_fromint(f),
-				    "fib", 0, true);
-				ucl_object_insert_key(o, ucl_object_fromint(n4),
-				    "ipv4", 0, true);
-				ucl_object_insert_key(o, ucl_object_fromint(n6),
-				    "ipv6", 0, true);
-				ucl_array_append(l, o);
-			}
+		if ((v = ucl_object_lookup(w, "fibs")) != NULL)
+			fib_counts(&jw, jail, ucl_object_tostring(v), l);
 		ucl_object_insert_key(e, l, "fibs", 0, true);
 		work_free(&jw);
 		ucl_array_append(arr, e);

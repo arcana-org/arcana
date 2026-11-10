@@ -66,6 +66,7 @@
 .Op Fl -subscriptions Ar file
 .Op Fl -features Ar list
 .Op Fl -bird-watch Ar seconds
+.Op Fl -routes-cache Ar seconds
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -stamp-port Ar port
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
@@ -692,6 +693,14 @@ fault when it is enabled and not running, or when more are queued than
 the limit the tab set
 .Pq Pa watch.json No beside its tables .
 Default 60; 0 looks never.
+.It Fl -routes-cache Ar seconds
+How long the routes of a FIB, as the probes' state counts them for each
+edge (host or vnet jail), are told again before its tables are dumped anew
+through
+.Xr netlink 4 :
+a FIB with a full BGP table is a long walk, and the base keeps no count
+of a table's routes cheaper than the dump.
+Default 30; 0 dumps them at every read.
 .It Fl -stamp-port Ar port
 The UDP port the far ends'
 .Xr stampd 8
