@@ -569,6 +569,7 @@ struct app {
 	char		 version[32];	/* the console's, from /api/health */
 	double		 health_retry;	/* ms: ask for its health again then; 0 no */
 	char		 agent_build[65]; /* of the arcana-agent it sends */
+	bool		 no_cluster;	/* built without its cluster */
 	char		 agent_version[32]; /* and its version */
 	char		 agent_source[256]; /* repository a host builds it from */
 	ucl_object_t	*notes;		/* update-notes: what is new */

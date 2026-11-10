@@ -6,7 +6,7 @@ SRCS=		web.c keymgr.c routes.c api.c auth.c config.c hosts.c pki.c push.c server
 		stream.c watch.c tokens.c transfers.c workflows.c sdwan.c \
 		sdwan_edge.c \
 		store.c update.c audit.c sen.c mail.c templates.c ldap.c labels.c notif.c prefixlists.c feeds.c users.c \
-		craft.c nodes.c ytrans.c yjsonin.c restconf.c rcstream.c idsfiles.c drift.c \
+		ytrans.c yjsonin.c restconf.c rcstream.c idsfiles.c drift.c \
 		l3nm.c l3nm_mef.c l3nm_plan.c vn.c cyang.c \
 		ycache.c sapnet.c \
 		cplug.c
@@ -19,9 +19,16 @@ MAN=		arcana-console.8
 
 .include "${.CURDIR}/../../share/mk/arcana.mk"
 
-# The consoles of a cluster to each other: a family served and asked
-# both.
+# The consoles of a cluster to each other (nodes.c, its Raft craft.c):
+# a family served and asked both.  WITHOUT_CLUSTER leaves them out, and
+# nocluster.c answers as a console that is not one of a cluster.
+.if ${MK_CLUSTER} != "no"
+SRCS+=		craft.c nodes.c
+CFLAGS+=	-DARCANA_CLUSTER
 ARC_CLUSTER=	yes
+.else
+SRCS+=		nocluster.c
+.endif
 .include "${.CURDIR}/../../share/mk/arcana.wire.mk"
 # The standard models, asked of the agents by cblink's YANG family: the
 # Network tab's interfaces (ytrans.c), RESTCONF's reads (restconf.c);

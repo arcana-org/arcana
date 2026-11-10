@@ -17346,6 +17346,10 @@ cl_start(const atf_tc_t *tc, const char *cwd, struct authn *a)
 	char	nodes[1024];
 	int	i, n;
 
+#ifndef ARCANA_CLUSTER
+	atf_tc_skip("arcana-console built without clustering "
+	    "(WITHOUT_CLUSTER)");
+#endif
 	n = snprintf(nodes, sizeof(nodes), "nodes {");
 	for (i = 0; i < 3; i++)
 		n += snprintf(nodes + n, sizeof(nodes) - (size_t)n, " %s { uri "
@@ -21316,9 +21320,20 @@ ATF_TC_BODY(cyang_console, tc)
 	start(tc, 0, NULL);
 	enrol(&a);
 	cc_host("a", "jgd.sock", sa, sizeof(sa));
+#ifdef ARCANA_CLUSTER
 	cc_doc(CC "cluster", "cluster", &r);
 	ATF_CHECK_STREQ("false", jstr(&r, "on"));
 	resp_free(&r);
+	http("GET", "/api/health", NULL, &r);
+	ATF_CHECK_STREQ("true", jstr(&r, "cluster"));
+	resp_free(&r);
+#else
+	/* Built WITHOUT_CLUSTER: the cluster is not there, and says so. */
+	cc_want("GET", CC "cluster", NULL, 501, "built without clustering");
+	http("GET", "/api/health", NULL, &r);
+	ATF_CHECK_STREQ("false", jstr(&r, "cluster"));
+	resp_free(&r);
+#endif
 	cc_doc(CC "update", "update", &r);
 	ATF_CHECK(jstr(&r, "current") != NULL);
 	resp_free(&r);
@@ -21427,10 +21442,12 @@ ATF_TC_BODY(cyang_console, tc)
 	    NULL, &r);
 	EXPECT(&r, 403);
 	resp_free(&r);
+#ifdef ARCANA_CLUSTER
 	/* The cluster's state is any user's to read. */
 	cc_doc(CC "cluster", "cluster", &r);
 	ATF_CHECK_STREQ("false", jstr(&r, "on"));
 	resp_free(&r);
+#endif
 }
 
 CONSOLE_TC(cyang_plugins, "arcana-console's plugins: listed, enabled by "

@@ -91,7 +91,10 @@ What it needs:
   `www/chromium` (with chromedriver) for the browser test.
 
 `make WITHOUT_CONSOLE=yes` builds only what a host runs, without
-libwebsockets, emscripten or the libraries' sources. The port,
+libwebsockets, emscripten or the libraries' sources.
+`make WITHOUT_CLUSTER=yes` (the port's `CLUSTER` option, on by default)
+builds the console without its cluster, Raft and all: a console that
+stands alone, whose `arcana-console:cluster` answers 501. The port,
 `port/sysutils/arcana` (with a `CONSOLE` option), builds the same way;
 `devel/cblink` comes from cblink's own tree.
 

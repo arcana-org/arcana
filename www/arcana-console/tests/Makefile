@@ -3,13 +3,19 @@
 TESTSDIR=	${TESTSBASE}/arcana/console
 ATF_TESTS_C=	pwa_test \
 		console_test \
-		raft_test \
 		yaml_test
 
 # The page's YANG-CBOR reader, for the pass-through's case.
 SRCS.console_test=	console_test.c harness.c ycbor.c
 SRCS.pwa_test=		pwa_test.c harness.c
+# The cluster's Raft (craft.c), left out with the cluster: the cluster's
+# cases skip then, and arcana-console:cluster says the build has none.
+.if ${MK_CLUSTER} != "no"
+ATF_TESTS_C+=		raft_test
 SRCS.raft_test=		raft_test.c craft.c
+CFLAGS.console_test.c+=	-DARCANA_CLUSTER
+CFLAGS.pwa_test.c+=	-DARCANA_CLUSTER
+.endif
 # The panel's YAML, natively: base's libucl and libyaml.
 SRCS.yaml_test=		yaml_test.c yaml.c
 CFLAGS.yaml_test.c+=	-DDISTDIR='"${.OBJDIR}/../../arcana-ui/dist"'

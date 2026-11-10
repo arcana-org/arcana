@@ -274,6 +274,13 @@ and its host's name, and the nodes take each other by it.
 is a name every node's origin is under
 .Pq Li console.example No for Li https://a.console.example ,
 so that a security key registered on one signs in on every one.
+A console built with
+.Va WITHOUT_CLUSTER
+(the port's
+.Dv CLUSTER
+option off) has no cluster: it refuses to start with this block,
+.Pa /restconf/data/arcana-console:cluster
+answers 501, and Settings has no Cluster tab.
 .El
 .Pp
 The settings

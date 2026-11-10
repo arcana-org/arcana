@@ -7,7 +7,8 @@
 #	config.sh show		say each and how it is set
 #
 # Told by the environment (the top Makefile sets it): ARC_TOP, and
-# CONSOLE and WEBGPU (yes, no), each option as the build sees it now.
+# CONSOLE, CLUSTER and WEBGPU (yes, no), each option as the build sees
+# it now.
 # What config writes is a block of config.mk of its own, between the
 # two lines below; the rest of the file (LDFLAGS, LWS_*, EMDAWN, ...) is
 # kept as it is, but a WITH_ or WITHOUT_ line of these options outside
@@ -22,6 +23,7 @@ end="# make config: end"
 
 # An option: its name, its default, and what it is.
 options="CONSOLE yes The_web_console:_its_server_and_the_page
+CLUSTER yes The_console's_cluster_(Raft):_consoles_that_are_one
 WEBGPU no The_network_map_drawn_with_WebGPU_(Dawn's_emdawnwebgpu)"
 
 now()
@@ -41,7 +43,7 @@ fi
 
 if [ ! -t 0 ] || [ ! -t 1 ]; then
 	echo "make config needs a terminal; set the options in $conf:" >&2
-	echo "  WITHOUT_CONSOLE=yes, WITH_WEBGPU=yes" >&2
+	echo "  WITHOUT_CONSOLE=yes, WITHOUT_CLUSTER=yes, WITH_WEBGPU=yes" >&2
 	exit 1
 fi
 
@@ -76,7 +78,7 @@ trap 'rm -f "$tmp"' EXIT
 		    $0 == b { skip = 1; next }
 		    $0 == e { skip = 0; next }
 		    skip { next }
-		    /^[ \t]*WITH(OUT)?_(CONSOLE|WEBGPU)[ \t]*[?:!+]?=/ { next }
+		    /^[ \t]*WITH(OUT)?_(CONSOLE|CLUSTER|WEBGPU)[ \t]*[?:!+]?=/ { next }
 		    { print }' "$conf"
 	fi
 	echo "$begin"
@@ -93,6 +95,7 @@ trap - EXIT
 
 echo "make config: $conf"
 ARC_TOP=$ARC_TOP CONSOLE=$(on CONSOLE && echo yes || echo no) \
+    CLUSTER=$(on CLUSTER && echo yes || echo no) \
     WEBGPU=$(on WEBGPU && echo yes || echo no) sh "$0" show
 if on WEBGPU && on CONSOLE; then
 	echo "WEBGPU needs Dawn's emdawnwebgpu: make depends fetches it."

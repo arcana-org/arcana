@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.414.0"
+#define	ARCW_VERSION		"0.415.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -154,7 +154,16 @@ int		 store_write(const char *, const void *, size_t);
 int		 store_remove(const char *);
 void		 store_sweep(void);
 
-/* nodes.c: the consoles of a cluster. */
+/*
+ * nodes.c: the consoles of a cluster; nocluster.c in its place in a
+ * build without them (WITHOUT_CLUSTER), where no node is one of a
+ * cluster and arcana-console:cluster says the build has none.
+ */
+#ifdef ARCANA_CLUSTER
+#define	CLUSTER_BUILT	true
+#else
+#define	CLUSTER_BUILT	false
+#endif
 int		 cluster_config(const ucl_object_t *, const char *);
 int		 cluster_init(void);
 void		 cluster_started(void);

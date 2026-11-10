@@ -2371,11 +2371,13 @@ view_settings(struct html *h)
 		h_txt(h, app.agent_version);
 	}
 	h_raw(h, "</span></div><nav class=\"tabs\">");
+	/* No Cluster tab in a console built without its cluster. */
 	for (i = 0; i < sizeof(settabs) / sizeof(settabs[0]); i++)
-		h_fmt(h, "<button class=\"tab%s\" data-act=\"set-tab\" "
-		    "data-arg=\"%s\">%s</button>", app.settab ==
-		    settabs[i].tab ? " on" : "", settabs[i].arg,
-		    settabs[i].title);
+		if (settabs[i].tab != SET_CLUSTER || !app.no_cluster)
+			h_fmt(h, "<button class=\"tab%s\" data-act=\"set-tab\" "
+			    "data-arg=\"%s\">%s</button>", app.settab ==
+			    settabs[i].tab ? " on" : "", settabs[i].arg,
+			    settabs[i].title);
 	h_raw(h, "</nav><div class=\"set-body\">");
 	if (app.by_token)
 		h_fmt(h, "<div class=\"notice warn\">Signed in %s: the console's "
@@ -2418,7 +2420,13 @@ view_settings(struct html *h)
 		set_ca(h);
 		break;
 	case SET_CLUSTER:
-		set_cluster(h);
+		if (app.no_cluster)
+			h_raw(h, "<div class=\"empty\"><p>This console was built "
+			    "without clustering.</p><p class=\"dim\">Its build "
+			    "had WITHOUT_CLUSTER (the port's CLUSTER option "
+			    "off).</p></div>");
+		else
+			set_cluster(h);
 		break;
 	case SET_PLUGINS:
 		set_plugins(h);

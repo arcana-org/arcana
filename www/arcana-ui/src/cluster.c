@@ -63,7 +63,7 @@ cluster_tick(double now)
 {
 
 	if (app.node != NODE_SETTINGS || app.settab != SET_CLUSTER ||
-	    !app.visible)
+	    !app.visible || app.no_cluster)
 		return;
 	if (cl.o == NULL || now - cl.fetched > CL_POLL_MS)
 		cl_load();

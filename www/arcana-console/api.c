@@ -317,6 +317,10 @@ api_health(struct http_request *req)
 	    "version", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint(time(NULL)), "time", 0,
 	    false);
+	/* Whether this build has the cluster (WITHOUT_CLUSTER): the page
+	 * shows its Settings tab only then. */
+	ucl_object_insert_key(o, ucl_object_frombool(CLUSTER_BUILT),
+	    "cluster", 0, false);
 	/* The build of the arcana-agent this console hands to hosts. */
 	if ((build = agent_build()) != NULL)
 		ucl_object_insert_key(o, ucl_object_fromstring(build),

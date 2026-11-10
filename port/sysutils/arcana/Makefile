@@ -41,10 +41,11 @@ MAKE_ARGS=	LOCALBASE=${LOCALBASE} \
 MAKE_ENV=	WITHOUT_DEBUG_FILES=yes \
 		WITHOUT_TESTS=yes
 
-OPTIONS_DEFINE=		CONSOLE WEBGPU
-OPTIONS_DEFAULT=	CONSOLE
+OPTIONS_DEFINE=		CLUSTER CONSOLE WEBGPU
+OPTIONS_DEFAULT=	CLUSTER CONSOLE
 OPTIONS_SUB=		yes
 
+CLUSTER_DESC=	Console cluster replicated by Raft (no effect without CONSOLE)
 CONSOLE_DESC=	Web console: its server and the PWA (else only the jail host's programs)
 WEBGPU_DESC=	Network map drawn with WebGPU where the browser has it (else WebGL 2)
 WEBGPU_IMPLIES=	CONSOLE
@@ -65,6 +66,8 @@ CONSOLE_MAKE_ARGS=	LIBUCL_SRC=${WRKSRC_libucl} \
 			SSL_CFLAGS="-I${OPENSSLINC}" \
 			SSL_LDFLAGS="-L${OPENSSLLIB}"
 CONSOLE_MAKE_ENV_OFF=	WITHOUT_CONSOLE=yes
+# The console's cluster: nodes.c and its Raft, craft.c.
+CLUSTER_MAKE_ENV_OFF=	WITHOUT_CLUSTER=yes
 # The map's WebGPU is emscripten's emdawnwebgpu port, its package taken
 # here so that the build fetches nothing.
 EMDAWN_V=		v20260423.175430

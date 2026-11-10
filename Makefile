@@ -15,7 +15,8 @@
 # submodule stamp/, built and installed with the rest.  The console
 # needs net/libwebsockets and emcc(1); see config.mk.sample to point at
 # copies not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only
-# the jail host's programs; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
+# the jail host's programs; WITHOUT_CLUSTER=yes the console without its
+# cluster (Raft); WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
 # emdawnwebgpu package, which "make depends" fetches, not the build.  "make check" runs the tests in the build tree: those
 # that need root are skipped unless it runs as root, the browser test
 # unless Chromium and chromedriver are installed.
@@ -113,10 +114,11 @@ _DEPS_ENV=	CONSOLE=${MK_CONSOLE} WEBGPU=${MK_WEBGPU} LOCALBASE=${LOCALBASE} \
 		LWS_CFLAGS=${LWS_CFLAGS:Q} EMDAWN=${EMDAWN} \
 		EMDAWN_DEFAULT=${EMDAWN_DIR}/emdawnwebgpu_pkg/emdawnwebgpu.port.py \
 		EMDAWN_ZIP=${EMDAWN_DIR}/${EMDAWN_ZIP}
-# The build's options (CONSOLE, WEBGPU), as the ports' make config has
-# them: config chooses them with bsddialog(1) and keeps them in
-# config.mk, showconfig says how they are set.
-_CONFIG_ENV=	ARC_TOP=${ARC_TOP} CONSOLE=${MK_CONSOLE} WEBGPU=${MK_WEBGPU}
+# The build's options (CONSOLE, CLUSTER, WEBGPU), as the ports' make
+# config has them: config chooses them with bsddialog(1) and keeps them
+# in config.mk, showconfig says how they are set.
+_CONFIG_ENV=	ARC_TOP=${ARC_TOP} CONSOLE=${MK_CONSOLE} CLUSTER=${MK_CLUSTER} \
+		WEBGPU=${MK_WEBGPU}
 config: .PHONY
 	@env ${_CONFIG_ENV} sh ${.CURDIR}/share/mk/config.sh config
 showconfig: .PHONY

@@ -932,12 +932,19 @@ part_shell(void)
 	    "'.set-body .notice.bad')", 20);
 	shot("0b3-keys-token");
 	/* Settings' other tabs: the token's limit said once, no refusal of
-	 * what was not asked for; Cluster says this console is not one. */
+	 * what was not asked for; Cluster says this console is not one, or,
+	 * built WITHOUT_CLUSTER, is not there. */
+#ifdef ARCANA_CLUSTER
 	run("document.querySelector('button[data-act=set-tab][data-arg="
 	    "cluster]').click()");
 	wait_js("document.querySelector('.set-body')?.textContent.includes("
 	    "'not one of a cluster') && !document.querySelector("
 	    "'.set-body .notice.bad')", 20);
+#else
+	wait_js("document.querySelector('button[data-act=set-tab][data-arg="
+	    "aaa]') && !document.querySelector('button[data-act=set-tab]"
+	    "[data-arg=cluster]')", 20);
+#endif
 	/* Signed in with the password: the page offers it now, and the
 	 * session has the user's roles (web.conf's password_full, on unless
 	 * set off): the keys listed, one's own password offered. */

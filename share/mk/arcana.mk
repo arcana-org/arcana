@@ -33,7 +33,9 @@ __objdir!=	mkdir -p ${ARC_OBJDIR} && echo ${ARC_OBJDIR}
 # arcanactl), with no need for libwebsockets or emcc.  WITH_WEBGPU draws
 # the network map's moving layer with WebGPU where the browser has it,
 # with Dawn's emdawnwebgpu ("make depends"); without it, WebGL 2 alone.
-__DEFAULT_YES_OPTIONS=	CONSOLE
+# WITHOUT_CLUSTER builds the console without its cluster (nodes.c and
+# its Raft, craft.c): a console that is never one of several.
+__DEFAULT_YES_OPTIONS=	CLUSTER CONSOLE
 __DEFAULT_NO_OPTIONS=	WEBGPU
 .include <bsd.mkopt.mk>
 
