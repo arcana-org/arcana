@@ -3,7 +3,7 @@
 .\"
 .\" Copyright (c) 2026 Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>
 .\"
-.Dd November 10, 2026
+.Dd November 11, 2026
 .Dt ARCANA-AGENT 8
 .Os
 .Sh NAME
@@ -1061,6 +1061,16 @@ and that half by HKDF-SHA256, the same at both ends, never sent nor
 known to the console; a reply that does not authenticate is no reply,
 so a far end of another key, or a probe tampered with on the way,
 falls back to ICMP as an unanswered reflector does.
+Fallen back, such a target is measured by what nothing authenticates,
+which one on the path can force: it raises the alarm
+.Cm stamp-unauthenticated
+(Warning, saying why), cleared when authenticated STAMP answers again.
+A key that brings no authenticated answer is derived anew at each
+STAMP try (under
+.Cm stamp ,
+every ten seconds while the target is down), so a pair made again at
+this end is used without the console; the far end's new half comes
+only with the console's next apply.
 Each such key is written, in place and 0600, after Arcana's marker in
 .Xr stampd 8 Ns 's
 key file

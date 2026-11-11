@@ -3059,6 +3059,113 @@ stamp_auth_cleanup()
 	true
 }
 
+atf_test_case stamp_unauthenticated cleanup
+stamp_unauthenticated_head()
+{
+	atf_set "descr" "A plain tunnel's authenticated STAMP fallen back to" \
+	    "ICMP echo raises arcana-alarms' stamp-unauthenticated: stampd" \
+	    "on the loopback under the key both ends derive, stopped as one" \
+	    "on the path dropping the packets would make it; the target" \
+	    "pinged and up, the alarm Warning with why, its sdwan-fault" \
+	    "event, the session icmp with its key; stampd back, the next" \
+	    "try answered and the alarm cleared"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+stamp_unauthenticated_body()
+{
+	local i P A K far t
+
+	command -v python3 >/dev/null || atf_skip "no python3 for the far key"
+	command -v openssl >/dev/null || atf_skip "no openssl(1) for the far end"
+	umask 077
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	mkdir -p root/etc/defaults root/usr/local/etc rc.d
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'rc_conf_files="/etc/rc.conf /etc/rc.conf.local /usr/local/etc/rc.conf.d/arcana"\n' \
+	    > root/etc/rc.conf
+	printf '#!/bin/sh\n' > rc.d/stampd
+	chmod +x rc.d/stampd
+	printf '#!/bin/sh\necho "$*" >> %s/service.log\n' "$(pwd)" \
+	    > fake-service
+	chmod +x fake-service
+	DAEMON_ARGS="-d --stamp-port $P --root $(pwd)/root -R $(pwd)/rc.d -s $(pwd)/fake-service" \
+	    start_daemon
+	atf_check -o save:ua.key "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	A=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' ua.key | head -1)
+	[ -n "$A" ] || atf_fail "no public half: $(cat ua.key)"
+	sta_pair far
+	far=$(cat far.pub)
+	K=$(sta_derive far.pem "$A")
+	printf '%s\n' "$K" > ua.keys
+	"$SD" -d -u nobody -r 0 -R 0 -p $P -K "$(pwd)/ua.keys" > ua.d.out 2>&1 &
+	echo $! > ua.spid
+	for i in $(seq 1 100); do
+		grep -q started ua.d.out && break
+		sleep 0.05
+	done
+	grep -q 'started: .*, 1 key, ' ua.d.out || atf_fail "stampd: $(cat ua.d.out)"
+	t='"interval":20,"eval":1000,"timeout":300,"down":5,"stamp_interface":"gre9"'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"t\",\"address\":\"127.0.0.1\",$t,\"stamp_peer\":\"$far\"}]"
+	for i in $(seq 1 300); do
+		grep -q 'probe: t: stamp authenticated' daemon.out && break
+		sleep 0.1
+	done
+	atf_check -o match:'probe: t: stamp authenticated \(SSID [0-9]+\)' \
+	    cat daemon.out
+	atf_check -o not-match:'"alarm-text":"[^"]*","alarm-type-id":"arcana-alarms:stamp-unauthenticated"' \
+	    "$JGC" -c "$SOCK" get alarms
+	# Silent, as dropped on the way: pinged, measured unauthenticated.
+	kill -STOP "$(cat ua.spid)"
+	for i in $(seq 1 300); do
+		grep -q 'fault stamp-unauthenticated' daemon.out && break
+		sleep 0.1
+	done
+	atf_check -o match:'probe: t \(127\.0\.0\.1\): no STAMP reply in 5 probes: pinged until STAMP answers' \
+	    -o match:'fault stamp-unauthenticated \(Warning\) t: authenticated STAMP to 127\.0\.0\.1 in FIB 0 fell back to ICMP echo, unauthenticated: no STAMP reply in 5 probes' \
+	    cat daemon.out
+	atf_check -o save:ua.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"type":"stamp-unauthenticated","severity":"Warning","was":"Warning","object":"t","by":"probe","description":"authenticated STAMP to 127\.0\.0\.1 in FIB 0 fell back to ICMP echo, unauthenticated: no STAMP reply in 5 probes","cleared":false' \
+	    -o match:'"id":"t","address":"127\.0\.0\.1","family":"inet","fib":0,"state":"up"' \
+	    -o not-match:'"type":"tunnel"' cat ua.json
+	atf_check -o match:'"alarm-type-id":"arcana-alarms:stamp-unauthenticated"' \
+	    -o match:'"perceived-severity":"warning"' "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"kind":"sdwan-fault","data":\{"type":"stamp-unauthenticated","severity":"Warning"' \
+	    "$JGC" -c "$SOCK" events
+	# Its session: by ICMP, its key kept, why.
+	atf_check -o match:'"method":"icmp"' -o match:'"authenticated":true' \
+	    -o match:'"reason":"no STAMP reply in 5 probes"' \
+	    "$JGC" -c "$SOCK" get stamp
+	# stampd back: the next try (10 s at most) answered, cleared.
+	kill -CONT "$(cat ua.spid)"
+	for i in $(seq 1 300); do
+		grep -q 'fault stamp-unauthenticated t cleared' daemon.out && break
+		sleep 0.1
+	done
+	atf_check -o match:'probe: t \(127\.0\.0\.1\): STAMP answers again' \
+	    -o match:'fault stamp-unauthenticated t cleared: authenticated STAMP from 127\.0\.0\.1 answers again' \
+	    cat daemon.out
+	atf_check -o match:'"type":"stamp-unauthenticated","severity":"Cleared","was":"Warning","object":"t"[^}]*"cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"kind":"sdwan-fault","data":\{"type":"stamp-unauthenticated","severity":"Cleared"' \
+	    "$JGC" -c "$SOCK" events
+	atf_check -o match:'"method":"stamp"' "$JGC" -c "$SOCK" get stamp
+	# No key in a log.
+	atf_check -s exit:1 grep -F -e "${K#* }" daemon.out ua.d.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_unauthenticated_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	if [ -f ua.spid ]; then
+		kill -CONT "$(cat ua.spid)" 2>/dev/null
+		kill "$(cat ua.spid)" 2>/dev/null
+	fi
+	true
+}
+
 # Both kinds in one service (PLAN-SDN-YANG 5.1.8): stampd in a vnet jail
 # behind an epair, three addresses on its end, each a target of the same
 # service's table: one of kind stamp, one of kind icmp, one auto whose
@@ -4744,6 +4851,7 @@ atf_init_test_cases()
 	atf_add_test_case stamp_cos
 	atf_add_test_case stamp_location
 	atf_add_test_case stamp_auth
+	atf_add_test_case stamp_unauthenticated
 	atf_add_test_case stamp_kinds
 	atf_add_test_case monitors_qos
 	atf_add_test_case jail_allow_live

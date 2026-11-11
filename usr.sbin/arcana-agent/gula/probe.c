@@ -82,7 +82,16 @@
  * (counted, auth_failed), so a far end of another key, or a packet
  * tampered with on the way, falls back to ICMP as an unanswered
  * reflector does; until the key is derived (the pair not made yet),
- * the target is pinged and the key tried again with STAMP.
+ * the target is pinged and the key tried again with STAMP.  A key that
+ * brings no authenticated answer is derived anew, at each STAMP try of
+ * a fallen-back target and every STAMP_RETRY seconds of a kind stamp
+ * one that is down: a pair made again at this end is used without an
+ * apply, stampd's copy following.  The far end's half is the console's
+ * to bring (its apply); until then its pair made again keeps failing.
+ * A plain tunnel's target fallen back is measured unauthenticated,
+ * which one on the path can force: an alarm, arcana-alarms'
+ * stamp-unauthenticated, cleared when authenticated STAMP answers
+ * again.
  *
  * The same prober measures tunnels outside SD-WAN too: the monitors an
  * admin puts on any tunnel interface (the monitor job), each target's
@@ -241,6 +250,11 @@ struct target {
 	struct stamp_key	 key;
 	char			 key_err[160];
 	uint64_t		 auth_failed;
+	/* Kind stamp's key derived anew no sooner (stamp_rekey()); the
+	 * stamp-unauthenticated alarm maybe open, cleared by the next
+	 * authenticated answer. */
+	double			 rekey_at;
+	bool			 downgraded;
 	uint64_t		 tk_fwd, tk_back;	/* of ss's, taken */
 	uint64_t		 fwd_lost, back_lost;	/* all along */
 	double			 stamp_retry;
@@ -527,6 +541,38 @@ stamp_key_get(struct work *w, struct target *t)
 	t->keyed = true;
 	t->key_err[0] = '\0';
 	return (true);
+}
+
+/*
+ * A key that brought no authenticated answer given up, the sender under
+ * it with it, and derived anew from the interface's pair as it is now
+ * and the far end's half as the target has it: a pair made again at
+ * this end works without an apply.  Another key, or none, is stampd's
+ * to know (its key file follows probe_stamp_keys()).
+ */
+static void
+stamp_rekey(struct target *t)
+{
+	struct stamp_key	was;
+	struct work		w;
+
+	if (!t->keyed)
+		return;
+	was = t->key;
+	stamp_drop(t);
+	explicit_bzero(&t->key, sizeof(t->key));
+	t->keyed = false;
+	work_init(&w);
+	(void)stamp_key_get(&w, t);
+	work_free(&w);
+	if (!t->keyed || memcmp(&was, &t->key, sizeof(was)) != 0) {
+		if (t->keyed)
+			logmsg(LOG_NOTICE, "probe: %s (%s): STAMP key derived "
+			    "anew: %s's pair or the far end's half is another",
+			    t->id, t->address, t->stamp_if);
+		stampd_nudge();
+	}
+	explicit_bzero(&was, sizeof(was));
 }
 
 static uint16_t
@@ -1436,6 +1482,30 @@ stamp_fallback(struct target *t, double now, const char *why)
 	snprintf(t->stamp_why, sizeof(t->stamp_why), "%s", why);
 	logmsg(LOG_NOTICE, "probe: %s (%s): %s: pinged until STAMP answers",
 	    target_name(t, name, sizeof(name)), t->address, why);
+	/* A plain tunnel's: measured unauthenticated now, which one on the
+	 * path can force (its STAMP dropped or spoiled, a port unreachable
+	 * forged): an alarm, until authenticated STAMP answers again.  A
+	 * class's session raises none, as for its state. */
+	if (t->stamp_peer[0] != '\0' && t->cls[0] == '\0') {
+		t->downgraded = true;
+		fault_set("stamp-unauthenticated", "Warning", name, "probe",
+		    "authenticated STAMP to %s in FIB %d fell back to ICMP "
+		    "echo, unauthenticated: %s", t->address, t->fib, why);
+	}
+}
+
+/* Authenticated STAMP answers: the alarm of its fall back cleared. */
+static void
+stamp_auth_back(struct target *t)
+{
+	char	name[200];
+
+	if (!t->downgraded)
+		return;
+	t->downgraded = false;
+	fault_clear("stamp-unauthenticated", target_name(t, name,
+	    sizeof(name)), "authenticated STAMP from %s answers again",
+	    t->address);
 }
 
 /* A STAMP probe lost: a miss, unless it would make the target down,
@@ -1468,6 +1538,12 @@ stamp_lost(struct target *t, double now)
 	else
 		snprintf(why, sizeof(why), "no STAMP reply in %d probes",
 		    t->down);
+	/* Kind stamp, no try to come: its key derived anew here, every
+	 * STAMP_RETRY seconds while it is down (auto's at each try). */
+	if (t->kind == KIND_STAMP && t->keyed && now >= t->rekey_at) {
+		t->rekey_at = now + STAMP_RETRY;
+		stamp_rekey(t);
+	}
 	stamp_fallback(t, now, why);
 	if (t->kind != KIND_STAMP)
 		t->next_send = now;
@@ -1646,6 +1722,7 @@ stamp_recv_all(struct target *t)
 				    "again", target_name(t, name, sizeof(name)),
 				    t->address);
 			t->stamp_why[0] = '\0';
+			stamp_auth_back(t);
 			hit(t, sm.rtt * 1000);
 			pm_hit(t, sm.rtt * 1000, &sm);
 			stamp_delay(t, &sm);
@@ -1662,6 +1739,7 @@ stamp_recv_all(struct target *t)
 			t->out[i].live = false;
 		logmsg(LOG_NOTICE, "probe: %s (%s): STAMP answers again",
 		    target_name(t, name, sizeof(name)), t->address);
+		stamp_auth_back(t);
 	}
 }
 
@@ -1675,9 +1753,11 @@ target_send(struct target *t, double now)
 	/* Not by STAMP, or no longer: an echo. */
 	if (!t->by_stamp)
 		icmp_send(t, now);
-	/* Fallen back: STAMP tried now and then. */
+	/* Fallen back: STAMP tried now and then, a plain tunnel's under its
+	 * key derived anew each time (a pair made again at this end). */
 	if (t->arcana && !t->by_stamp && now >= t->stamp_retry) {
 		t->stamp_retry = now + STAMP_RETRY;
+		stamp_rekey(t);
 		(void)stamp_send_one(t, false);
 	}
 	if (t->count > 0 && t->sent >= (uint64_t)t->count)
@@ -2306,6 +2386,10 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 		t->since = time(NULL);
 		t->win_start = now;
 		t->next_send = now;
+		/* A fall back's alarm an agent before this one left open (the
+		 * faults are kept across a restart): cleared by its first
+		 * authenticated answer. */
+		t->downgraded = t->stamp_peer[0] != '\0' && t->cls[0] == '\0';
 		t->state = target_open(t) ? ST_UNKNOWN : ST_ERROR;
 	}
 	/* The other edges' and owners', moved over as they are; not those
@@ -2321,8 +2405,17 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 		}
 	targets = new;
 	ntargets = n;
-	for (k = 0; k < nold; k++)
+	for (k = 0; k < nold; k++) {
+		/* Gone: its fall back's alarm, if any, with it. */
+		if (old[k].downgraded) {
+			char	name[200];
+
+			fault_clear("stamp-unauthenticated", target_name(&old[k],
+			    name, sizeof(name)), "%s no longer measured",
+			    old[k].address);
+		}
 		target_free(&old[k]);
+	}
 	free(old);
 	pthread_mutex_unlock(&lock);
 	/* Their FIBs stampd's (gula/stampd.c). */

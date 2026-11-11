@@ -3010,7 +3010,18 @@ whose first part is served.
   only their digest compared.  The `-d` line says `stamp authenticated
   (SSID n); replies failing authentication m all along`.  Not yet in
   arcana-probe's state (5.1.8): authenticated, auth_failed, key_error
-  are in the target's JSON alone.  Checked: stamp's suite
+  are in the target's JSON alone.  Since agent 0.277.0 (stamp 43ea48a:
+  authenticated requests' own rate buckets and sessions, an IPv6 /64
+  one source, stampd's counters on SIGINFO): a key that brings no
+  authenticated answer is derived anew at each STAMP try of a
+  fallen-back target (kind stamp: every 10 s while down), so a pair
+  made again at this end needs no apply, stampd's key file following;
+  an authenticated target fallen back to ICMP is arcana-alarms'
+  stamp-unauthenticated (Warning, why), cleared when authenticated
+  STAMP answers again, its session's method icmp with its key telling
+  the measurement unauthenticated (agent_test:stamp_rekey,
+  agent_root_test:stamp_unauthenticated); the far end's new half still
+  comes by an apply alone (TODO).  Checked: stamp's suite
   (libstamp_test: auth_layout, auth_hmac by RFC 4231, auth_round_trip,
   auth_tamper (every octet of the base flipped: dropped; a TLV's:
   flagged I; a reply's: no reply), auth_tlv_strict (trailing octets, a

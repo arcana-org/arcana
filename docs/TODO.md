@@ -95,6 +95,19 @@
   BIRD's, dnsmasq's, unbound's and Squid's are forms now (spec), which
   the agent renders (luxuria/sdconf.c), as Suricata's already were.
   The module to say the form, or the text the agent rendered.
+- A plain tunnel's STAMP key when the FAR end's pair is made again
+  (agent 0.277.0): each end derives its key from its own pair and the
+  far end's public half, which the console puts in the target
+  (`stamp_peer`, `${stamp:SID:IF}` read from the far end's sdwan read
+  when the apply runs).  A pair made again at this end is used at the
+  next STAMP try without the console (the key derived anew when it
+  brings no authenticated answer), but the far end has this end's new
+  half only after an apply to it, and this end has the far end's new
+  half only after an apply to this end: until then the tunnel's STAMP
+  fails authentication, the target is pinged and arcana-alarms'
+  stamp-unauthenticated is raised.  Whether the console applies both
+  ends when it remakes a pair (or a pair's change is told to it and
+  answered by an apply) is open.
 - To decide (the user's): BIRD that stops answering while a safe
   change waits leaves the unconfirmed file in place, as bird.c says
   ("one that died is not undone after"), so BIRD's next start reads a

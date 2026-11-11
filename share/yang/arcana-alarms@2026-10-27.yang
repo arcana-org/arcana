@@ -44,6 +44,17 @@ module arcana-alarms {
        WAN address, outside the tunnels) did not answer its probes.";
   }
 
+  identity stamp-unauthenticated {
+    base arcana-fault;
+    description
+      "A plain tunnel's authenticated STAMP (RFC 8762 section 4.4)
+       fell back to ICMP echo, which nothing authenticates: no
+       authenticated reply in so many probes, its STAMP port refused,
+       or its key not derived.  One on the path can force it by
+       dropping or spoiling the STAMP packets; cleared when
+       authenticated STAMP answers again.";
+  }
+
   identity tca {
     base arcana-fault;
     description

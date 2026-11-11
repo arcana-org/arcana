@@ -7744,6 +7744,136 @@ stamp_kind_cleanup()
 	true
 }
 
+# The STAMP key of a tunnel end whose pair is $1 (a PEM file) and whose
+# far end's public half is $2: "ssid key", as the agent derives it (an
+# X25519 agreement, HKDF-SHA256 salted "arcana stamp v1", both halves
+# in order and a zero epoch the info; 32 octets of key, 2 of SSID).
+stamp_derive()
+{
+	cat > derive.py <<'EOF'
+import base64, hashlib, hmac, os, subprocess, sys, tempfile
+pem, peer = sys.argv[1], base64.b64decode(sys.argv[2])
+der = subprocess.run(["openssl", "pkey", "-in", pem, "-pubout", "-outform",
+    "DER"], check=True, capture_output=True).stdout
+mine = der[-32:]
+spki = bytes.fromhex("302a300506032b656e032100") + peer
+fd, path = tempfile.mkstemp(dir=".")
+os.write(fd, b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(spki) +
+    b"-----END PUBLIC KEY-----\n")
+os.close(fd)
+shared = subprocess.run(["openssl", "pkeyutl", "-derive", "-inkey", pem,
+    "-peerkey", path], check=True, capture_output=True).stdout
+os.unlink(path)
+info = min(mine, peer) + max(mine, peer) + bytes(4)
+prk = hmac.new(b"arcana stamp v1", shared, hashlib.sha256).digest()
+okm, t, i = b"", b"", 1
+while len(okm) < 34:
+    t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+    okm += t
+    i += 1
+ssid = okm[32] << 8 | okm[33]
+print("%d %s" % (ssid or 1, okm[:32].hex()))
+EOF
+	python3 -I derive.py "$1" "$2"
+}
+
+atf_test_case stamp_rekey cleanup
+stamp_rekey_head()
+{
+	atf_set "descr" "A plain tunnel's STAMP key derived anew when it brings" \
+	    "no authenticated answer: stampd unprivileged on the loopback as" \
+	    "the far end, under the key both ends derive; this end's pair" \
+	    "made again and the far end given its new half, the old key" \
+	    "fails and the target of kind stamp goes down; its key derived" \
+	    "from the new pair, with no apply, brings it up again, the" \
+	    "agent's stampd key file following; no key in a log"
+	atf_set "timeout" "120"
+}
+stamp_rekey_body()
+{
+	local P i A1 A2 F K1 K2 k f t
+
+	command -v python3 >/dev/null || atf_skip "no python3 for the far key"
+	command -v openssl >/dev/null || atf_skip "no openssl(1) for the far end"
+	umask 077
+	stamp_programs
+	stampd_root
+	stampd_script
+	P=$(jot -r 1 20000 59999)
+	DAEMON_ARGS="$DAEMON_ARGS --stamp-port $P" start_daemon
+	# This end's pair, as the console has it made; the far end's.
+	atf_check -o save:key1.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	A1=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' key1.out | head -1)
+	[ -n "$A1" ] || atf_fail "no public half: $(cat key1.out)"
+	openssl genpkey -algorithm X25519 -out far.pem 2>/dev/null
+	F=$(openssl pkey -in far.pem -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A)
+	K1=$(stamp_derive far.pem "$A1")
+	printf '%s\n' "$K1" > far.keys
+	"$SD" -d -r 0 -R 0 -p $P -K "$(pwd)/far.keys" \
+	    -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q 'started: .*, 1 key, ' sd.out || atf_fail "stampd: $(cat sd.out)"
+	t='"kind":"stamp","interval":50,"timeout":300,"down":3,"stamp_interface":"gre9"'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[{\"id\":\"s\",\"address\":\"127.0.0.1\",$t,\"stamp_peer\":\"$F\"}]"
+	wait_match '^s: stamp \(stateful, stamp alone, authenticated\), rtt .*, auth yes$' \
+	    "$JGC" -c "$SOCK" sdwan stamp || atf_fail "$("$JGC" -c "$SOCK" \
+	    sdwan stamp; cat daemon.out sd.out)"
+	# Both ends derived the same: the agent's key file has the far's.
+	k=root/usr/local/etc/stampd.keys
+	wait_match "^$K1\$" cat $k || atf_fail "$(cat $k)"
+	# This end's pair made again (lost, as a host reinstalled loses it);
+	# the far end given its new half, as the console's apply gives it,
+	# and its key under it read again; this end told nothing.
+	f=$(find . -name sdwan-key-gre9.pem)
+	[ -n "$f" ] || atf_fail "no pair of gre9's"
+	rm "$f"
+	atf_check -o save:key2.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	A2=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' key2.out | head -1)
+	[ -n "$A2" ] && [ "$A2" != "$A1" ] ||
+	    atf_fail "no new public half: $(cat key2.out)"
+	K2=$(stamp_derive far.pem "$A2")
+	printf '%s\n' "$K2" > far.keys
+	kill -HUP "$(cat sd.spid)"
+	# The old key fails: no authenticated reply, down; derived anew
+	# from the new pair, up again by STAMP.
+	wait_match 'probe: s \(127\.0\.0\.1\): STAMP key derived anew: gre9.s pair or the far end.s half is another' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'sdwan: s \(127\.0\.0\.1\) is down' cat daemon.out
+	wait_match '"id":"s","address":"127\.0\.0\.1","family":"inet","fib":0,"state":"up"' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "$("$JGC" -c "$SOCK" sdwan)"
+	wait_match '^s: stamp \(stateful, stamp alone, authenticated\), rtt .*, auth yes$' \
+	    "$JGC" -c "$SOCK" sdwan stamp || atf_fail "$("$JGC" -c "$SOCK" \
+	    sdwan stamp)"
+	# The probes under the old key dropped by the far end as failing
+	# authentication, never answered: its counters (SIGINFO) say so.
+	kill -INFO "$(cat sd.spid)"
+	wait_match 'answered=[0-9]+ dropped: .* auth=[1-9][0-9]* ' cat sd.out ||
+	    atf_fail "$(cat sd.out)"
+	# stampd's copy follows: the new key, the old one gone.
+	wait_match "^$K2\$" cat $k || atf_fail "$(cat $k)"
+	atf_check -s exit:1 grep -qxF -e "$K1" $k
+	atf_check -o inline:'1\n' grep -cE '^[0-9]+ [0-9a-f]{64}$' $k
+	# Kind stamp: no fall back, so no alarm of one (its type in the
+	# inventory alone).
+	atf_check -o not-match:'"alarm-text":"[^"]*","alarm-type-id":"arcana-alarms:stamp-unauthenticated"' \
+	    "$JGC" -c "$SOCK" get alarms
+	# No key in the log.
+	atf_check -s exit:1 grep -F -e "${K1#* }" -e "${K2#* }" daemon.out
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+stamp_rekey_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
+}
+
 # The measurement intervals' check: each figure of a target's last
 # completed interval against its raw samples, sorted (pmcheck.py read.json
 # target[/class] low intermediate high [length]).
@@ -16014,6 +16144,7 @@ atf_init_test_cases()
 	atf_add_test_case stampd_keys
 	atf_add_test_case stampd_refused
 	atf_add_test_case stamp_kind
+	atf_add_test_case stamp_rekey
 	atf_add_test_case sdwan_pm
 	atf_add_test_case sdwan_classes
 	atf_add_test_case sdwan_counters

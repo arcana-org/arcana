@@ -127,7 +127,7 @@ on the wire.
 | 77 200 | 100 | `ietf-yang-library@2019-01-04`, RFC 8525 (no IETF range) | `share/yang/ietf-yang-library@2019-01-04.sid` (51 used) |
 | 77 300 | 100 | `ietf-datastores@2018-02-14`, RFC 8342 (no IETF range; its identities used) | `share/yang/ietf-datastores@2018-02-14.sid` (9 used) |
 | 77 400 | 200 | `ietf-alarms@2019-09-11`, RFC 8632 (no IETF range) | `share/yang/ietf-alarms@2019-09-11.sid` (183 used) |
-| 77 600 | 100 | `arcana-alarms` | `share/yang/arcana-alarms@2026-10-27.sid` (18 used, numbered again with underlay) |
+| 77 600 | 100 | `arcana-alarms` | `share/yang/arcana-alarms@2026-10-27.sid` (19 used, numbered again with underlay, and with stamp-unauthenticated) |
 | 77 700 | 200 | `ietf-hardware@2018-03-13`, RFC 8348 (no IETF range) | `share/yang/ietf-hardware@2018-03-13.sid` (51 used) |
 | 77 900 | 100 | `iana-hardware@2018-03-13`, RFC 8348's classes (no IETF range) | `share/yang/iana-hardware@2018-03-13.sid` (16 used) |
 | 78 000 | 200 | `ietf-subscribed-notifications@2019-09-09`, RFC 8639 (no IETF range) | `share/yang/ietf-subscribed-notifications@2019-09-09.sid` (156 used) |

@@ -180,8 +180,11 @@ module arcana-stamp {
       description
         "stampd(8) as the agent sets it: one instance a FIB, by its rc
          script's stampd_fibs, the plain tunnels' keys in its key
-         file.  stampd keeps its drops (over the rate limits, failing
-         authentication, not authenticated) to its own log alone.";
+         file.  stampd keeps its counters (answered; dropped short,
+         from a port refused, over the rate limits, too long, failing
+         authentication, not authenticated, not authenticated while
+         its sessions are all authenticated ones) to its own log
+         alone, written on SIGINFO.";
       leaf installed {
         type boolean;
         description
@@ -247,7 +250,11 @@ module arcana-stamp {
           }
         }
         description
-          "How it is measured now.";
+          "How it is measured now.  icmp on a plain tunnel's session
+           (authenticated, or a key-error) is a measurement nothing
+           authenticates: arcana-alarms' stamp-unauthenticated is
+           raised for it, cleared when authenticated STAMP answers
+           again.";
       }
       leaf reason {
         type string;
@@ -299,8 +306,11 @@ module arcana-stamp {
       leaf authenticated {
         type boolean;
         description
-          "Its packets are the authenticated mode's, HMAC-SHA-256-128
-           under the key both ends derive from the tunnel's pairs.";
+          "Its STAMP packets are the authenticated mode's,
+           HMAC-SHA-256-128 under the key both ends derive from the
+           tunnel's pairs (a plain tunnel's), whatever the method now.
+           A key bringing no authenticated answer is derived anew at
+           each STAMP try.";
       }
       leaf key-error {
         type string;
