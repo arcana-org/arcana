@@ -545,9 +545,13 @@ int	yhw_from_json(const char *json, cbl_yarena *a,
 	    struct ietf_hardware *out);
 
 /* ietf-alarms (gula/yalarms.c): the faults' JSON (faults_json()) as
- * RFC 8632's alarms. */
+ * RFC 8632's alarms; the control as faults.c keeps it and back. */
 int	yalarms_from_json(const char *json, cbl_yarena *a,
 	    struct ietf_alarms *out);
+char	*yalarms_control_json(const struct ietf_alarms_alarms_control *c,
+	    cbl_yarena *a);
+int	yalarms_control_from_json(const char *json, cbl_yarena *a,
+	    const struct ietf_alarms_alarms_control **out);
 
 /* arcana-history (gula/yhist.c): the history operation's JSON. */
 int	yhist_from_json(const char *json, cbl_yarena *a,

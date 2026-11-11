@@ -1801,6 +1801,134 @@ ATF_TC_BODY(restconf_tag_data_exists, tc)
 	    "data-exists");
 }
 
+/*
+ * ietf-alarms (RFC 8632) through the fleet mount, PLAN-SDN-YANG 5.4.2:
+ * the lab host's alarms read, BIRD's BGP session that never came up
+ * among them; a shelf of its type put in the candidate's control and
+ * committed, read back from running, the alarm then shelved (not in the
+ * alarm list, shelves-active said); a shelf whose resource is no regular
+ * expression refused at the commit; the shelved list compressed and
+ * purged and the alarm list purged by their actions, their counts said;
+ * the shelf taken out, the alarm back in the list.
+ */
+CONSOLE_TC(alarms_shelving, "ietf-alarms through RESTCONF: a shelf "
+    "committed in running, the alarm shelved; refused; purge and "
+    "compress; unshelved")
+ATF_TC_BODY(alarms_shelving, tc)
+{
+	struct resp	 r;
+	char		 data[256], cand[256], run[300], path[400];
+	int		 i;
+
+	harness_bird_watch = true;
+	rc_lab(tc, data, cand, sizeof(cand));
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms", data);
+	snprintf(run, sizeof(run), "/restconf/ds/ietf-datastores:running%s",
+	    cand + strlen("/restconf/ds/ietf-datastores:candidate"));
+	for (i = 0; i < 100; i++) {
+		http("GET", path, NULL, &r);
+		if (r.status == 200 && jstr(&r, "ietf-alarms:alarms.alarm-list."
+		    "alarm.0.alarm-type-id") != NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(i < 100, "no alarm");
+	ATF_CHECK_STREQ("arcana-alarms:bgp-neighbor", jstr(&r,
+	    "ietf-alarms:alarms.alarm-list.alarm.0.alarm-type-id"));
+	ATF_CHECK_STREQ("minor", jstr(&r,
+	    "ietf-alarms:alarms.alarm-list.alarm.0.perceived-severity"));
+	ATF_CHECK_STREQ("0", jstr(&r,
+	    "ietf-alarms:alarms.shelved-alarms.number-of-shelved-alarms"));
+	resp_free(&r);
+	/* A shelf of BGP's alarms, of any resource: committed, in running. */
+	rc_expect("PATCH", cand, "/ietf-alarms:alarms/control/alarm-shelving",
+	    NULL, "{\"ietf-alarms:alarm-shelving\":{\"shelf\":[{\"name\":"
+	    "\"bgp\",\"alarm-type\":[{\"alarm-type-id\":\"arcana-alarms:"
+	    "bgp-neighbor\",\"alarm-type-qualifier-match\":\".*\"}],"
+	    "\"description\":\"the lab's\"}]}}", 204, NULL);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, "{}", 204, NULL);
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms/control", run);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("bgp", jstr(&r,
+	    "ietf-alarms:control.alarm-shelving.shelf.0.name"));
+	ATF_CHECK_STREQ("arcana-alarms:bgp-neighbor", jstr(&r, "ietf-alarms:"
+	    "control.alarm-shelving.shelf.0.alarm-type.0.alarm-type-id"));
+	resp_free(&r);
+	/* Shelved: not in the list, nor in the summary. */
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("bgp", jstr(&r, "ietf-alarms:alarms.shelved-alarms."
+	    "shelved-alarm.0.shelf-name"));
+	ATF_CHECK_STREQ("arcana-alarms:bgp-neighbor", jstr(&r, "ietf-alarms:"
+	    "alarms.shelved-alarms.shelved-alarm.0.alarm-type-id"));
+	ATF_CHECK_STREQ("1", jstr(&r,
+	    "ietf-alarms:alarms.shelved-alarms.number-of-shelved-alarms"));
+	ATF_CHECK_STREQ("0", jstr(&r,
+	    "ietf-alarms:alarms.alarm-list.number-of-alarms"));
+	ATF_CHECK_MSG(jstr(&r, "ietf-alarms:alarms.summary.shelves-active") !=
+	    NULL, "%s", r.body);
+	ATF_CHECK_STREQ("0", jstr(&r,
+	    "ietf-alarms:alarms.summary.alarm-summary.2.total"));
+	resp_free(&r);
+	/* A resource that is no regular expression: refused, running kept. */
+	rc_expect("PATCH", cand, "/ietf-alarms:alarms/control/alarm-shelving",
+	    NULL, "{\"ietf-alarms:alarm-shelving\":{\"shelf\":[{\"name\":"
+	    "\"bad\",\"resource\":[\"(\"]}]}}", 204, NULL);
+	snprintf(path, sizeof(path), "%s/ietf-netconf:commit", data);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "'(' is not a regular "
+	    "expression") != NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	rc_expect("POST", data, "/ietf-netconf:discard-changes", NULL, "{}",
+	    204, NULL);
+	/* The shelved list's actions: nothing cleared to compress; the
+	 * open one purged, raised again by BIRD's next look, shelved. */
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms/shelved-alarms/"
+	    "compress-shelved-alarms", data);
+	http("POST", path, "{\"ietf-alarms:input\":{}}", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("0", jstr(&r, "ietf-alarms:output.compressed-alarms"));
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms/shelved-alarms/"
+	    "purge-shelved-alarms", data);
+	http("POST", path, "{\"ietf-alarms:input\":{\"alarm-clearance-status\":"
+	    "\"not-cleared\"}}", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("1", jstr(&r, "ietf-alarms:output.purged-alarms"));
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms/alarm-list/"
+	    "purge-alarms", data);
+	http("POST", path, "{\"ietf-alarms:input\":{\"alarm-clearance-status\":"
+	    "\"any\"}}", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("0", jstr(&r, "ietf-alarms:output.purged-alarms"));
+	resp_free(&r);
+	/* The shelf taken out: the alarm in the list again. */
+	rc_expect("DELETE", cand, "/ietf-alarms:alarms/control/alarm-shelving/"
+	    "shelf=bgp", NULL, NULL, 204, NULL);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, "{}", 204, NULL);
+	snprintf(path, sizeof(path), "%s/ietf-alarms:alarms", data);
+	for (i = 0; i < 100; i++) {
+		http("GET", path, NULL, &r);
+		if (r.status == 200 && jstr(&r, "ietf-alarms:alarms.alarm-list."
+		    "alarm.0.alarm-type-id") != NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(i < 100, "the alarm not back");
+	ATF_CHECK_STREQ("arcana-alarms:bgp-neighbor", jstr(&r,
+	    "ietf-alarms:alarms.alarm-list.alarm.0.alarm-type-id"));
+	ATF_CHECK_STREQ("0", jstr(&r,
+	    "ietf-alarms:alarms.shelved-alarms.number-of-shelved-alarms"));
+	ATF_CHECK(jstr(&r, "ietf-alarms:alarms.summary.shelves-active") ==
+	    NULL);
+	resp_free(&r);
+}
+
 CONSOLE_TC(restconf_tag_data_missing, "data-missing: 409, a DELETE of "
     "what is not there")
 ATF_TC_BODY(restconf_tag_data_missing, tc)
@@ -22495,6 +22623,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, restconf_tag_operation_failed);
 	ATF_TP_ADD_TC(tp, restconf_tag_in_use);
 	ATF_TP_ADD_TC(tp, restconf_tag_data_exists);
+	ATF_TP_ADD_TC(tp, alarms_shelving);
 	ATF_TP_ADD_TC(tp, restconf_tag_data_missing);
 	ATF_TP_ADD_TC(tp, restconf_tag_missing_attribute);
 	ATF_TP_ADD_TC(tp, restconf_tag_bad_attribute);

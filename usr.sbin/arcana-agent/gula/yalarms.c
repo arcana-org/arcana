@@ -11,7 +11,11 @@
  * qualifier; raised once, cleared once, its history those two status
  * changes (alarm-history); its severity Warning, Minor, Major or
  * Critical.  The inventory is every kind the agent raises, with the
- * severities it raises it with; the summary counts by severity.
+ * severities it raises it with; the summary counts by severity.  A
+ * fault on a shelf of the control's (gula/faults.c) is a shelved alarm,
+ * in neither the list nor the summary; the control itself, running's,
+ * goes to and comes from faults.c as RFC 7951's JSON, its alarm types
+ * named.
  */
 
 #include <sys/param.h>
@@ -137,21 +141,112 @@ inventory(cbl_yarena *a, struct ietf_alarms_alarms *al)
 	return (0);
 }
 
+/* An alarm's history: raised, and cleared when it was; compressed, or
+ * cleared within the second it was raised (the change's time its key),
+ * the clearing alone; at most max of them (-1 any), the latest kept. */
+static int
+history(cbl_yarena *a, const ucl_object_t *e, yalarm *v, int sev, int64_t t,
+    int64_t cl, int64_t max)
+{
+	struct ietf_alarms_alarms_alarm_list_alarm_status_change *sc;
+	bool	has;
+
+	if ((sc = cbl_yarena_alloc(a, 2 * sizeof(*sc))) == NULL)
+		return (ENOMEM);
+	sc[0].time = v->last_raised;
+	sc[0].has_perceived_severity = true;
+	sc[0].perceived_severity.which = 1;
+	sc[0].perceived_severity.v.m1 = sev;
+	sc[0].alarm_text = v->alarm_text;
+	if (v->is_cleared && cl != 0) {
+		sc[1].time = v->last_changed;
+		sc[1].has_perceived_severity = true;
+		sc[1].perceived_severity.which = 0;
+		sc[1].perceived_severity.v.m0 =
+		    IETF_ALARMS_ALARMS_ALARM_LIST_ALARM_STATUS_CHANGE_PERCEIVED_SEVERITY_M0_CLEARED;
+		sc[1].alarm_text = v->alarm_text;
+	}
+	v->status_change.n = v->is_cleared && cl != 0 ? 2 : 1;
+	v->status_change.v = sc;
+	if (v->status_change.n == 2 && (yj_yes(e, "compressed", &has) ||
+	    cl == t)) {
+		v->status_change.n = 1;
+		v->status_change.v = &sc[1];
+	}
+	/* max-alarm-status-changes. */
+	if (max >= 0 && v->status_change.n > (size_t)max) {
+		v->status_change.v += v->status_change.n - (size_t)max;
+		v->status_change.n = (size_t)max;
+	}
+	return (0);
+}
+
+/* An alarm of the list as a shelved one, on shelf. */
+static int
+shelved(cbl_yarena *a, const yalarm *v, const char *shelf,
+    struct ietf_alarms_alarms_shelved_alarms_shelved_alarm *s)
+{
+	struct ietf_alarms_alarms_shelved_alarms_shelved_alarm_status_change *sc;
+	size_t	i;
+
+	memset(s, 0, sizeof(*s));
+	s->resource.which = 2;
+	s->resource.v.m2 = v->resource.v.m2;
+	s->alarm_type_id = v->alarm_type_id;
+	s->alarm_type_qualifier = v->alarm_type_qualifier;
+	s->shelf_name = shelf;
+	s->has_is_cleared = true;
+	s->is_cleared = v->is_cleared;
+	s->last_raised = v->last_raised;
+	s->last_changed = v->last_changed;
+	s->has_perceived_severity = true;
+	s->perceived_severity = (int)v->perceived_severity;
+	s->alarm_text = v->alarm_text;
+	if (v->status_change.n == 0)
+		return (0);
+	if ((sc = cbl_yarena_alloc(a, v->status_change.n * sizeof(*sc))) ==
+	    NULL)
+		return (ENOMEM);
+	for (i = 0; i < v->status_change.n; i++) {
+		sc[i].time = v->status_change.v[i].time;
+		sc[i].has_perceived_severity = true;
+		sc[i].perceived_severity.which =
+		    v->status_change.v[i].perceived_severity.which;
+		if (sc[i].perceived_severity.which == 0)
+			sc[i].perceived_severity.v.m0 =
+			    IETF_ALARMS_ALARMS_SHELVED_ALARMS_SHELVED_ALARM_STATUS_CHANGE_PERCEIVED_SEVERITY_M0_CLEARED;
+		else
+			sc[i].perceived_severity.v.m1 = (int)
+			    v->status_change.v[i].perceived_severity.v.m1;
+		sc[i].alarm_text = v->status_change.v[i].alarm_text;
+	}
+	s->status_change.n = v->status_change.n;
+	s->status_change.v = sc;
+	return (0);
+}
+
+/*
+ * The faults' JSON (faults_json(): the faults, the shelves' count, the
+ * history's length) as ietf-alarms' state: those of no shelf the alarm
+ * list and the summary, the others the shelved alarms.
+ */
 int
 yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 {
 	struct ietf_alarms_alarms			*al;
 	struct ietf_alarms_alarms_alarm_list		*list;
-	struct ietf_alarms_alarms_alarm_list_alarm_status_change *sc;
+	struct ietf_alarms_alarms_shelved_alarms	*shl;
+	struct ietf_alarms_alarms_shelved_alarms_shelved_alarm *sv2;
 	struct ietf_alarms_alarms_summary		*sum;
 	struct ietf_alarms_alarms_summary_alarm_summary	*sv;
 	const ucl_object_t				*arr, *e;
 	ucl_object_iter_t				 it;
 	ucl_object_t					*top;
-	yalarm						*v;
-	const char					*type, *last;
-	int64_t						 t, cl, lastt;
-	size_t						 n, i;
+	yalarm						*v, x;
+	const char					*type, *last, *slast, *sh;
+	int64_t						 t, cl, lastt, slastt, max;
+	int64_t						 nsh;
+	size_t						 n, ns, i;
 	bool						 has;
 	int						 sev, error;
 
@@ -160,81 +255,76 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 		return (EINVAL);
 	error = ENOMEM;
 	arr = ucl_object_lookup(top, "faults");
+	if (!yj_num(top, "max_changes", &max))
+		max = -1;
+	if (!yj_num(top, "shelves", &nsh))
+		nsh = 0;
 	if ((al = cbl_yarena_alloc(a, sizeof(*al))) == NULL ||
 	    (list = cbl_yarena_alloc(a, sizeof(*list))) == NULL ||
+	    (shl = cbl_yarena_alloc(a, sizeof(*shl))) == NULL ||
 	    (sum = cbl_yarena_alloc(a, sizeof(*sum))) == NULL ||
 	    (sv = cbl_yarena_alloc(a, 5 * sizeof(*sv))) == NULL ||
 	    (v = cbl_yarena_alloc(a, (yj_count(arr) + 1) * sizeof(*v))) ==
-	    NULL)
+	    NULL || (sv2 = cbl_yarena_alloc(a, (yj_count(arr) + 1) *
+	    sizeof(*sv2))) == NULL)
 		goto out;
 	if ((error = inventory(a, al)) != 0)
 		goto out;
-	/* The summary: each severity, those cleared and not. */
+	/* The summary: each severity, those cleared and not; the shelved
+	 * not in it. */
 	for (i = 0; i < 5; i++) {
 		sv[i].severity = (int)i + 2;
 		sv[i].has_total = sv[i].has_not_cleared = sv[i].has_cleared =
 		    true;
 	}
-	n = 0;
-	lastt = 0;
-	last = NULL;
+	n = ns = 0;
+	lastt = slastt = 0;
+	last = slast = NULL;
 	YJ_EACH(arr, it, e) {
 		if ((type = yj_str(a, e, "type")) == NULL ||
 		    !yj_num(e, "t", &t))
 			continue;
-		memset(&v[n], 0, sizeof(v[n]));
-		v[n].resource.which = 2;	/* its string member */
-		v[n].resource.v.m2 = yj_str(a, e, "object");
-		v[n].alarm_type_id = ident_sid("arcana-alarms", type);
-		v[n].alarm_type_qualifier = "";
-		v[n].time_created = v[n].last_raised = datetime(a, t);
-		v[n].has_is_cleared = true;
-		v[n].is_cleared = yj_yes(e, "cleared", &has);
+		memset(&x, 0, sizeof(x));
+		x.resource.which = 2;	/* its string member */
+		x.resource.v.m2 = yj_str(a, e, "object");
+		x.alarm_type_id = ident_sid("arcana-alarms", type);
+		x.alarm_type_qualifier = "";
+		x.time_created = x.last_raised = datetime(a, t);
+		x.has_is_cleared = true;
+		x.is_cleared = yj_yes(e, "cleared", &has);
 		cl = 0;
-		if (v[n].is_cleared && yj_num(e, "cleared_at", &cl))
-			v[n].last_changed = datetime(a, cl);
+		if (x.is_cleared && yj_num(e, "cleared_at", &cl))
+			x.last_changed = datetime(a, cl);
 		else
-			v[n].last_changed = v[n].last_raised;
+			x.last_changed = x.last_raised;
 		/* Its severity when raised: "was" keeps it once cleared. */
 		sev = severity(yj_str(a, e, "was"));
-		v[n].has_perceived_severity = true;
-		v[n].perceived_severity = sev;
-		v[n].alarm_text = yj_str(a, e, "description");
-		if (v[n].alarm_text == NULL)
-			v[n].alarm_text = "";
-		/* Its history: raised, and cleared when it was; compressed,
-		 * or cleared within the second it was raised (the change's
-		 * time its key), the clearing alone. */
-		if ((sc = cbl_yarena_alloc(a, 2 * sizeof(*sc))) == NULL)
-			goto nomem;
-		sc[0].time = v[n].last_raised;
-		sc[0].has_perceived_severity = true;
-		sc[0].perceived_severity.which = 1;
-		sc[0].perceived_severity.v.m1 = sev;
-		sc[0].alarm_text = v[n].alarm_text;
-		if (v[n].is_cleared && cl != 0) {
-			sc[1].time = v[n].last_changed;
-			sc[1].has_perceived_severity = true;
-			sc[1].perceived_severity.which = 0;
-			sc[1].perceived_severity.v.m0 =
-			    IETF_ALARMS_ALARMS_ALARM_LIST_ALARM_STATUS_CHANGE_PERCEIVED_SEVERITY_M0_CLEARED;
-			sc[1].alarm_text = v[n].alarm_text;
+		x.has_perceived_severity = true;
+		x.perceived_severity = sev;
+		x.alarm_text = yj_str(a, e, "description");
+		if (x.alarm_text == NULL)
+			x.alarm_text = "";
+		if ((error = history(a, e, &x, sev, t, cl, max)) != 0)
+			goto out;
+		if ((sh = yj_str(a, e, "shelf")) != NULL) {
+			if ((error = shelved(a, &x, sh, &sv2[ns])) != 0)
+				goto out;
+			ns++;
+			if ((cl != 0 ? cl : t) >= slastt) {
+				slastt = cl != 0 ? cl : t;
+				slast = x.last_changed;
+			}
+			continue;
 		}
-		v[n].status_change.n = v[n].is_cleared && cl != 0 ? 2 : 1;
-		v[n].status_change.v = sc;
-		if (v[n].status_change.n == 2 && (yj_yes(e, "compressed",
-		    &has) || cl == t)) {
-			v[n].status_change.n = 1;
-			v[n].status_change.v = &sc[1];
-		}
+		v[n] = x;
 		sv[sev - 2].total++;
-		if (v[n].is_cleared)
+		if (x.is_cleared)
 			sv[sev - 2].cleared++;
 		else
 			sv[sev - 2].not_cleared++;
 		if ((cl != 0 ? cl : t) >= lastt) {
 			lastt = cl != 0 ? cl : t;
-			last = v[n].last_changed;
+			last = x.last_changed;
 		}
 		n++;
 	}
@@ -243,15 +333,255 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 	list->last_changed = last;
 	list->alarm.n = n;
 	list->alarm.v = n > 0 ? v : NULL;
+	shl->has_number_of_shelved_alarms = true;
+	shl->number_of_shelved_alarms = (uint32_t)ns;
+	shl->shelved_alarms_last_changed = slast;
+	shl->shelved_alarm.n = ns;
+	shl->shelved_alarm.v = ns > 0 ? sv2 : NULL;
 	sum->alarm_summary.n = 5;
 	sum->alarm_summary.v = sv;
+	/* A hint that shelves are configured; there whenever one shelves
+	 * an alarm (RFC 8632). */
+	sum->shelves_active = nsh > 0 || ns > 0;
 	al->alarm_list = list;
+	al->shelved_alarms = shl;
 	al->summary = sum;
 	out->alarms = al;
 	error = 0;
-	goto out;
-nomem:
-	error = ENOMEM;
+out:
+	ucl_object_unref(top);
+	return (error);
+}
+
+/* s copied into the arena; NULL as it is. */
+static const char *
+copy(cbl_yarena *a, const char *s)
+{
+	char	*p;
+
+	if (s == NULL || (p = cbl_yarena_alloc(a, strlen(s) + 1)) == NULL)
+		return (NULL);
+	memcpy(p, s, strlen(s) + 1);
+	return (p);
+}
+
+/* An identity by its SID: "module:name"; NULL none. */
+static const char *
+ident_name(cbl_yarena *a, uint64_t sid)
+{
+	const struct cbl_yident	*id;
+	char			*p;
+	size_t			 len;
+	uint32_t		 i;
+
+	for (i = 0; i < ymodel_schema.nident; i++) {
+		id = &ymodel_schema.ident[i];
+		if (id->sid != sid)
+			continue;
+		len = strlen(id->module->name) + strlen(id->name) + 2;
+		if ((p = cbl_yarena_alloc(a, len)) != NULL)
+			snprintf(p, len, "%s:%s", id->module->name, id->name);
+		return (p);
+	}
+	return (NULL);
+}
+
+static const char *const notify_names[] = { "all-state-changes",
+    "raise-and-clear", "severity-level" };
+static const char *const level_names[] = { "indeterminate", "warning",
+    "minor", "major", "critical" };
+
+/* A resource-match's string, whichever member it came as. */
+static const char *
+match_str(const struct ietf_alarms_alarms_control_alarm_shelving_shelf_resource
+    *r)
+{
+
+	return (r->which == 0 ? r->v.m0 : r->which == 1 ? r->v.m1 : r->v.m2);
+}
+
+/*
+ * ietf-alarms' control, c, as RFC 7951's JSON (faults_control()), the
+ * alarm types by name; NULL with none, or a type no identity is.  The
+ * caller frees it.
+ */
+char *
+yalarms_control_json(const struct ietf_alarms_alarms_control *c,
+    cbl_yarena *a)
+{
+	const struct ietf_alarms_alarms_control_alarm_shelving_shelf *s;
+	ucl_object_t	*top, *arr, *o, *res, *tys, *ty;
+	const char	*id;
+	char		*json;
+	size_t		 i, k;
+
+	if (c == NULL)
+		return (NULL);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	if (c->has_max_alarm_status_changes)
+		ucl_object_insert_key(top, c->max_alarm_status_changes.which == 0 ?
+		    ucl_object_fromint(c->max_alarm_status_changes.v.m0) :
+		    ucl_object_fromstring("infinite"),
+		    "max-alarm-status-changes", 0, false);
+	if (c->has_notify_status_changes && (size_t)c->notify_status_changes <
+	    nitems(notify_names))
+		ucl_object_insert_key(top, ucl_object_fromstring(
+		    notify_names[c->notify_status_changes]),
+		    "notify-status-changes", 0, false);
+	if (c->has_notify_severity_level && c->notify_severity_level >= 2 &&
+	    c->notify_severity_level <= 6)
+		ucl_object_insert_key(top, ucl_object_fromstring(
+		    level_names[c->notify_severity_level - 2]),
+		    "notify-severity-level", 0, false);
+	if (c->alarm_shelving != NULL) {
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (i = 0; i < c->alarm_shelving->shelf.n; i++) {
+			s = &c->alarm_shelving->shelf.v[i];
+			o = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(o, ucl_object_fromstring(s->name),
+			    "name", 0, false);
+			res = ucl_object_typed_new(UCL_ARRAY);
+			for (k = 0; k < s->resource.n; k++)
+				ucl_array_append(res, ucl_object_fromstring(
+				    match_str(&s->resource.v[k])));
+			ucl_object_insert_key(o, res, "resource", 0, false);
+			tys = ucl_object_typed_new(UCL_ARRAY);
+			for (k = 0; k < s->alarm_type.n; k++) {
+				if ((id = ident_name(a,
+				    s->alarm_type.v[k].alarm_type_id)) == NULL) {
+					ucl_object_unref(o);
+					ucl_object_unref(tys);
+					ucl_object_unref(arr);
+					ucl_object_unref(top);
+					return (NULL);
+				}
+				ty = ucl_object_typed_new(UCL_OBJECT);
+				ucl_object_insert_key(ty, ucl_object_fromstring(id),
+				    "alarm-type-id", 0, false);
+				ucl_object_insert_key(ty, ucl_object_fromstring(
+				    s->alarm_type.v[k].alarm_type_qualifier_match),
+				    "alarm-type-qualifier-match", 0, false);
+				ucl_array_append(tys, ty);
+			}
+			ucl_object_insert_key(o, tys, "alarm-type", 0, false);
+			if (s->description != NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    s->description), "description", 0, false);
+			ucl_array_append(arr, o);
+		}
+		o = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(o, arr, "shelf", 0, false);
+		ucl_object_insert_key(top, o, "alarm-shelving", 0, false);
+	}
+	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(top);
+	return (json);
+}
+
+/* The control as kept (faults_control_json()) as ietf-alarms'; *out
+ * NULL with none. */
+int
+yalarms_control_from_json(const char *json, cbl_yarena *a,
+    const struct ietf_alarms_alarms_control **out)
+{
+	struct ietf_alarms_alarms_control			*c;
+	struct ietf_alarms_alarms_control_alarm_shelving		*sh;
+	struct ietf_alarms_alarms_control_alarm_shelving_shelf		*sv = NULL;
+	struct ietf_alarms_alarms_control_alarm_shelving_shelf_resource	*rv;
+	struct ietf_alarms_alarms_control_alarm_shelving_shelf_alarm_type *tv;
+	const ucl_object_t	*o, *s, *r, *t;
+	ucl_object_iter_t	 it, rit;
+	ucl_object_t		*top;
+	const char		*w, *id, *colon;
+	char			 mod[64];
+	int64_t			 m;
+	size_t			 n, i, k;
+	int			 error = ENOMEM;
+
+	*out = NULL;
+	if (json == NULL || json[0] == '\0')
+		return (0);
+	if ((top = yj_parse(json)) == NULL)
+		return (EINVAL);
+	if ((c = cbl_yarena_alloc(a, sizeof(*c))) == NULL)
+		goto out;
+	if ((o = ucl_object_lookup(top, "max-alarm-status-changes")) != NULL) {
+		c->has_max_alarm_status_changes = true;
+		if (yj_num(top, "max-alarm-status-changes", &m)) {
+			c->max_alarm_status_changes.which = 0;
+			c->max_alarm_status_changes.v.m0 = (uint16_t)m;
+		} else {
+			c->max_alarm_status_changes.which = 1;
+			c->max_alarm_status_changes.v.m1 =
+			    IETF_ALARMS_ALARMS_CONTROL_MAX_ALARM_STATUS_CHANGES_M1_INFINITE;
+		}
+	}
+	if ((w = yj_str(a, top, "notify-status-changes")) != NULL)
+		for (i = 0; i < nitems(notify_names); i++)
+			if (strcmp(w, notify_names[i]) == 0) {
+				c->has_notify_status_changes = true;
+				c->notify_status_changes = (int)i;
+			}
+	if ((w = yj_str(a, top, "notify-severity-level")) != NULL)
+		for (i = 0; i < nitems(level_names); i++)
+			if (strcmp(w, level_names[i]) == 0) {
+				c->has_notify_severity_level = true;
+				c->notify_severity_level = (int)i + 2;
+			}
+	if ((s = ucl_object_lookup(top, "alarm-shelving")) != NULL) {
+		if ((sh = cbl_yarena_alloc(a, sizeof(*sh))) == NULL)
+			goto out;
+		n = yj_count(ucl_object_lookup(s, "shelf"));
+		if (n > 0 && (sv = cbl_yarena_alloc(a, n * sizeof(*sv))) == NULL)
+			goto out;
+		i = 0;
+		YJ_EACH(ucl_object_lookup(s, "shelf"), it, o) {
+			sv[i].name = yj_str(a, o, "name");
+			sv[i].description = yj_str(a, o, "description");
+			r = ucl_object_lookup(o, "resource");
+			rv = NULL;
+			if (yj_count(r) > 0 && (rv = cbl_yarena_alloc(a,
+			    yj_count(r) * sizeof(*rv))) == NULL)
+				goto out;
+			k = 0;
+			YJ_EACH(r, rit, t) {
+				rv[k].which = 2;
+				rv[k].v.m2 = copy(a, ucl_object_tostring(t));
+				k++;
+			}
+			sv[i].resource.n = k;
+			sv[i].resource.v = k > 0 ? rv : NULL;
+			r = ucl_object_lookup(o, "alarm-type");
+			tv = NULL;
+			if (yj_count(r) > 0 && (tv = cbl_yarena_alloc(a,
+			    yj_count(r) * sizeof(*tv))) == NULL)
+				goto out;
+			k = 0;
+			YJ_EACH(r, rit, t) {
+				/* "module:name", a module's identity. */
+				if ((id = yj_str(a, t, "alarm-type-id")) == NULL ||
+				    (colon = strchr(id, ':')) == NULL ||
+				    (size_t)(colon - id) >= sizeof(mod))
+					continue;
+				snprintf(mod, sizeof(mod), "%.*s", (int)(colon - id),
+				    id);
+				tv[k].alarm_type_id = ident_sid(mod, colon + 1);
+				tv[k].alarm_type_qualifier_match = yj_str(a, t,
+				    "alarm-type-qualifier-match");
+				if (tv[k].alarm_type_qualifier_match == NULL)
+					tv[k].alarm_type_qualifier_match = "";
+				k++;
+			}
+			sv[i].alarm_type.n = k;
+			sv[i].alarm_type.v = k > 0 ? tv : NULL;
+			i++;
+		}
+		sh->shelf.n = i;
+		sh->shelf.v = i > 0 ? sv : NULL;
+		c->alarm_shelving = sh;
+	}
+	*out = c;
+	error = 0;
 out:
 	ucl_object_unref(top);
 	return (error);

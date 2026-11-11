@@ -2394,6 +2394,120 @@ EOF
 	atf_check -o inline:'2\n' sh -c "grep -c '^set' out"
 }
 
+atf_test_case alarm_shelving cleanup
+alarm_shelving_head()
+{
+	atf_set "descr" "ietf-alarms' control in running (PLAN-SDN-YANG" \
+	    "5.4.2): shelves set by the candidate and a commit, the first" \
+	    "that matches an alarm's resource and type shelving it (in" \
+	    "shelved-alarms, out of the list and the summary), a fault" \
+	    "raised on a shelf not told; a resource that is no expression" \
+	    "refused; max-alarm-status-changes; the shelves kept across a" \
+	    "restart; purge and compress of each list, their filters; a" \
+	    "shelf taken out, its alarm back"
+	atf_set "timeout" "120"
+}
+alarm_shelving_body()
+{
+	local now P
+
+	now=$(date +%s)
+	# The day's faults as an agent before this one kept them: a
+	# tunnel down, a threshold crossed and cleared, BGP never up.
+	cat > sdwan-faults.json <<EOF
+[{"t":$((now - 300)),"type":"tunnel","was":"Major","object":"acme/a-b","by":"probe","description":"no answer from 192.0.2.1 after 3 probes","cleared":false},{"t":$((now - 200)),"type":"tca","was":"Minor","object":"acme/a-b:delay","by":"probe","description":"delay 120 ms, under 100 ms again","cleared":true,"cleared_at":$((now - 150))},{"t":$((now - 100)),"type":"bgp-neighbor","was":"Minor","object":"host:bird bgp_edge","by":"bird","description":"BGP bgp_edge to 198.51.100.7 is Active, never established","cleared":false}]
+EOF
+	# A STAMP port nothing answers on, for a fault raised while shelved.
+	P=$(jot -r 1 20000 59999)
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	atf_check -o save:a0.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"number-of-alarms":3' \
+	    -o match:'"number-of-shelved-alarms":0' \
+	    -o not-match:'shelves-active' cat a0.json
+	# The history at most one change long: the cleared one's the
+	# clearing alone.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-alarms:alarms/control/max-alarm-status-changes 1
+	atf_check -o match:'"resource":"acme/a-b:delay","status-change":\[\{"alarm-text":"delay 120 ms, under 100 ms again","perceived-severity":"cleared","time":"[^"]*"\}\]' \
+	    "$JGC" -c "$SOCK" get alarms
+	# Two shelves, in order: the tunnels' of acme, then all of acme's.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-alarms:alarms/control/alarm-shelving/shelf=tunnels \
+	    '{"resource":["acme/.*"],"alarm-type":[{"alarm-type-id":"arcana-alarms:tunnel","alarm-type-qualifier-match":".*"}],"description":"acme is moving"}'
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-alarms:alarms/control/alarm-shelving/shelf=acme \
+	    '{"resource":["acme/a-b:.*","acme/x"],"alarm-type":[{"alarm-type-id":"arcana-alarms:arcana-fault","alarm-type-qualifier-match":""}]}'
+	atf_check -o match:'"shelf":\[\{"alarm-type":\[\{"alarm-type-id":"arcana-alarms:tunnel","alarm-type-qualifier-match":"\.\*"\}\],"description":"acme is moving","name":"tunnels","resource":\["acme/\.\*"\]\},\{[^]]*\],"name":"acme"' \
+	    "$JGC" -c "$SOCK" get -d running alarms
+	atf_check -o save:a1.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"resource":"acme/a-b","shelf-name":"tunnels"' \
+	    -o match:'"resource":"acme/a-b:delay","shelf-name":"acme"' \
+	    -o match:'"number-of-shelved-alarms":2' \
+	    -o match:'"number-of-alarms":1' \
+	    -o match:'"resource":"host:bird bgp_edge"' \
+	    -o match:'"shelves-active":\[null\]' \
+	    -o match:'"cleared":0,"not-cleared":1,"severity":"minor","total":1' \
+	    -o match:'"cleared":0,"not-cleared":0,"severity":"major","total":0' \
+	    cat a1.json
+	# A fault raised on a shelf: kept, shelved, not told.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"acme/x","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":200,"down":3}]'
+	wait_match 'fault tunnel \(Major\) acme/x: no answer from 127\.0\.0\.1 after 3 probes \(not told: shelved, or under the level\)' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -o match:'"resource":"acme/x","shelf-name":"tunnels"' \
+	    "$JGC" -c "$SOCK" get alarms
+	atf_check -o not-match:'"object":"acme/x"' "$JGC" -c "$SOCK" events
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	# A resource that is no regular expression: refused, running kept.
+	atf_check -s exit:1 -e match:"'\(' is not a regular expression" \
+	    -o ignore "$JGC" -c "$SOCK" set \
+	    /ietf-alarms:alarms/control/alarm-shelving/shelf=bad \
+	    '{"resource":["("]}'
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -o not-match:'"name":"bad"' "$JGC" -c "$SOCK" get -d running \
+	    alarms
+	# Kept: the same after a restart.
+	stop_daemon
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	atf_check -o match:'"name":"tunnels"' -o match:'"name":"acme"' \
+	    "$JGC" -c "$SOCK" get -d running alarms
+	atf_check -o match:'"resource":"acme/a-b","shelf-name":"tunnels"' \
+	    "$JGC" -c "$SOCK" get alarms
+	# Each list's actions on its own: the shelved cleared one
+	# compressed, then purged; the list's open one purged; nothing of
+	# the other list's touched.
+	atf_check -o inline:'{"compressed-alarms":0}\n' "$JGC" -c "$SOCK" \
+	    action alarms/alarm-list compress-alarms
+	atf_check -o inline:'{"compressed-alarms":1}\n' "$JGC" -c "$SOCK" \
+	    action alarms/shelved-alarms compress-shelved-alarms
+	atf_check -o inline:'{"purged-alarms":0}\n' "$JGC" -c "$SOCK" \
+	    action alarms/alarm-list purge-alarms alarm-clearance-status=cleared
+	atf_check -o inline:'{"purged-alarms":1}\n' "$JGC" -c "$SOCK" \
+	    action alarms/shelved-alarms purge-shelved-alarms \
+	    alarm-clearance-status=cleared
+	atf_check -o inline:'{"purged-alarms":1}\n' "$JGC" -c "$SOCK" \
+	    action alarms/alarm-list purge-alarms \
+	    alarm-clearance-status=not-cleared
+	atf_check -o save:a2.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"number-of-alarms":0' \
+	    -o match:'"number-of-shelved-alarms":2' -o not-match:'acme/a-b:delay' \
+	    cat a2.json
+	# The tunnels' shelf taken out: acme/a-b in the list again, not on
+	# acme's, whose resources it does not match.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-alarms:alarms/control/alarm-shelving/shelf=tunnels
+	atf_check -o save:a3.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"number-of-alarms":1' \
+	    -o match:'"number-of-shelved-alarms":1' \
+	    -o match:'"resource":"acme/a-b","status-change"' \
+	    -o match:'"resource":"acme/x","shelf-name":"acme"' cat a3.json
+	atf_check -o match:'alarm-control\.json' sh -c 'ls'
+}
+alarm_shelving_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case fw_walk
 fw_walk_head()
 {
@@ -16174,6 +16288,7 @@ atf_init_test_cases()
 	atf_add_test_case host_watch
 	atf_add_test_case fw_walk
 	atf_add_test_case crash_fault
+	atf_add_test_case alarm_shelving
 	atf_add_test_case firewall_aliases
 	atf_add_test_case firewall_long
 	atf_add_test_case config_bundle

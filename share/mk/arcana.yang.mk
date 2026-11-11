@@ -92,7 +92,8 @@ ARC_YFEATS=	-F ietf-interfaces:if-mib,arbitrary-names -F arcana-interfaces: \
 		-F arcana-jail-files: -F arcana-probe: -F arcana-sdwan: \
 		-F arcana-sshd: -F arcana-builder: -F arcana-notify: \
 		-F ietf-yang-library: -F ietf-datastores: \
-		-F ietf-alarms:alarm-summary,alarm-history -F arcana-alarms: \
+		-F ietf-alarms:alarm-summary,alarm-history,alarm-shelving \
+		-F arcana-alarms: \
 		-F iana-hardware: -F ietf-hardware:hardware-sensor \
 		-F ietf-subscribed-notifications:configured,xpath,replay,subtree \
 		-F ietf-yang-push:on-change \

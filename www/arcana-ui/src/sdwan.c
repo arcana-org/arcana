@@ -1264,7 +1264,7 @@ view_dashboard(struct html *h)
 	    true)) != NULL) {
 		eit = NULL;
 		while ((e = ucl_object_iterate(f, &eit, true)) != NULL)
-			if (!jbool(e, "cleared"))
+			if (!jbool(e, "cleared") && jstr(e, "shelf") == NULL)
 				nfaults++;
 	}
 	ap = jget(sd.applied, "apply");
@@ -3295,6 +3295,312 @@ monitor(struct html *h, const ucl_object_t *t)
 	h_raw(h, "</div>");
 }
 
+/* ---- the alarms (ietf-alarms, RFC 8632; PLAN-SDN-YANG 5.4.2) -------- */
+
+static void	alarm_saved(struct ycommit *, int);
+static struct ycommit alarm_yc = { .act = "sd-alarm-yc", .saved = "Saved: "
+    "the host's alarm shelves as asked.", .undone = "Undone: the shelves "
+    "are as they were.", .done = alarm_saved };
+
+/* A shelf made or taken out, or not: the paths read again. */
+static void
+alarm_saved(struct ycommit *yc, int how)
+{
+
+	(void)yc;
+	if (how == YC_SAVED)
+		paths_load();
+}
+
+/* s as an XML Schema regular expression matching s alone (RFC 8632's
+ * resource-match): its metacharacters escaped. */
+static void
+regex_quote(const char *s, char *buf, size_t len)
+{
+	size_t	n = 0;
+
+	for (; *s != '\0' && n + 3 < len; s++) {
+		if (strchr("\\.?*+{}()[]|^$-", *s) != NULL)
+			buf[n++] = '\\';
+		buf[n++] = *s;
+	}
+	buf[n] = '\0';
+}
+
+/*
+ * An alarm of host sid's shelved (RFC 8632's control/alarm-shelving in
+ * running): a shelf of its own, named by the alarm's type and resource,
+ * matching that resource and that type, added to the candidate and
+ * committed confirmed (ycommit.c).  what is "type-id\tresource".
+ */
+static void
+alarm_shelve(const char *sid, const char *what)
+{
+	ucl_object_t	*top, *sh, *f, *v, *ty;
+	char		 url[400], type[96], res[200], re[420], name[320];
+	char		*body;
+	const char	*tab;
+
+	if ((tab = strchr(what, '\t')) == NULL || (size_t)(tab - what) >=
+	    sizeof(type))
+		return;
+	snprintf(type, sizeof(type), "%.*s", (int)(tab - what), what);
+	snprintf(res, sizeof(res), "%s", tab + 1);
+	regex_quote(res, re, sizeof(re));
+	snprintf(name, sizeof(name), "%s %s", strchr(type, ':') != NULL ?
+	    strchr(type, ':') + 1 : type, res);
+	f = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(f, ucl_object_fromstring(name), "name", 0, true);
+	v = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(v, ucl_object_fromstring(re));
+	ucl_object_insert_key(f, v, "resource", 0, true);
+	ty = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(ty, ucl_object_fromstring(type), "alarm-type-id",
+	    0, true);
+	ucl_object_insert_key(ty, ucl_object_fromstring(".*"),
+	    "alarm-type-qualifier-match", 0, true);
+	v = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(v, ty);
+	ucl_object_insert_key(f, v, "alarm-type", 0, true);
+	ucl_object_insert_key(f, ucl_object_fromstring("shelved on the SD-WAN "
+	    "page's Paths tab"), "description", 0, true);
+	v = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(v, f);
+	sh = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(sh, v, "shelf", 0, true);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(top, sh, "ietf-alarms:alarm-shelving", 0, true);
+	body = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(top);
+	rc_ds(url, sizeof(url), "candidate", sid,
+	    "ietf-alarms:alarms/control/alarm-shelving");
+	if (body != NULL && !ycommit_save(&alarm_yc, sid, "PATCH", url, body))
+		toast(true, "%s: a change of the shelves is on its way already",
+		    host_name(sid));
+	free(body);
+}
+
+/* Host sid's shelf name taken out of running: what it shelved back in
+ * the alarm list. */
+static void
+alarm_unshelve(const char *sid, const char *name)
+{
+	char	url[400], path[300];
+
+	snprintf(path, sizeof(path), "ietf-alarms:alarms/control/"
+	    "alarm-shelving/shelf=%s", rc_key(name));
+	rc_ds(url, sizeof(url), "candidate", sid, path);
+	if (!ycommit_save(&alarm_yc, sid, "DELETE", url, NULL))
+		toast(true, "%s: a change of the shelves is on its way already",
+		    host_name(sid));
+}
+
+static void
+alarm_act_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	char	*sid = arg;
+	char	 why[256];
+
+	if (status != 200 && status != 204)
+		toast(true, "%s: %s", host_name(sid), rc_error(o, why,
+		    sizeof(why)) != NULL ? why : err != NULL ? err : "failed");
+	else
+		toast(false, "%s: %lld %s", host_name(sid), (long long)jint(o,
+		    jget(o, "purged-alarms") != NULL ? "purged-alarms" :
+		    "compressed-alarms", 0), jget(o, "purged-alarms") != NULL ?
+		    "cleared alarms purged" : "alarms' histories compressed");
+	free(sid);
+	paths_load();
+}
+
+/* Host sid's cleared alarms purged (purge-alarms), or every alarm's
+ * history left its last change (compress-alarms). */
+static void
+alarm_list_act(const char *sid, bool purge)
+{
+	char	url[400];
+
+	rc_h(url, sizeof(url), sid, "ietf-alarms:alarms/alarm-list/%s", purge ?
+	    "purge-alarms" : "compress-alarms");
+	rc_action(url, purge ? "{\"alarm-clearance-status\":\"cleared\"}" :
+	    "{}", NULL, alarm_act_cb, strdup(sid));
+}
+
+/* The path an alarm's resource is of: a tunnel's target, the underlay's
+ * (underlay:A,B), or none (the edge's own). */
+static const char *
+alarm_path(const char *sid, const char *res)
+{
+	const ucl_object_t	*t;
+	ucl_object_iter_t	 it;
+	size_t			 n;
+
+	if (res == NULL)
+		return (NULL);
+	if (strncmp(res, "underlay:", 9) == 0)
+		return (res);
+	it = NULL;
+	while ((t = ucl_object_iterate(jget(sd.plan, "tunnels"), &it, true)) !=
+	    NULL) {
+		if (jstr(t, "id") == NULL)
+			continue;
+		n = strlen(jstr(t, "id"));
+		/* Its target, a class of it (id/class), a metric (id:m). */
+		if (strncmp(res, jstr(t, "id"), n) == 0 && (res[n] == '\0' ||
+		    res[n] == '/' || res[n] == ':') && target_of(sid, jstr(t,
+		    "id")) != NULL)
+			return (jstr(t, "id"));
+	}
+	return (NULL);
+}
+
+/*
+ * The edges' alarms (ietf-alarms, RFC 8632, sdread.c): a row an alarm,
+ * the open first; each path's (a tunnel's or the underlay's) named, the
+ * edge's own besides; the shelved ones (alarm-shelving) said with their
+ * shelf.  An alarm shelved, or a shelf taken out, by the candidate and
+ * a confirmed commit; the cleared purged and the histories compressed
+ * by ietf-alarms' actions.  Sorted and filtered (tbl.c).
+ */
+static void
+view_alarms(struct html *h)
+{
+	static const struct tcol	cols[] = {
+		{ "Edge", "edge", false }, { "Path", "path", false },
+		{ "Severity", "rank", true }, { "Type", "type", false },
+		{ "Resource", "object", false }, { "Text", "description",
+		false }, { "Changed", "at", true }, { "Shelf", "shelf", false },
+	};
+	static const char *const sevs[] = { "Cleared", "Indeterminate",
+	    "Warning", "Minor", "Major", "Critical", NULL };
+	const ucl_object_t	*f, *e, **rows, *r;
+	ucl_object_iter_t	 it, fit;
+	ucl_object_t		*all, *o;
+	char			 age[32], what[320];
+	int			 n, rank;
+
+	all = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while (sd.faults != NULL && (f = ucl_object_iterate(sd.faults, &it,
+	    true)) != NULL) {
+		fit = NULL;
+		while ((e = ucl_object_iterate(f, &fit, true)) != NULL) {
+			o = ucl_object_copy(e);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    ucl_object_key(f)), "sid", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(host_name(
+			    ucl_object_key(f))), "edge", 0, true);
+			if (alarm_path(ucl_object_key(f), jstr(e, "object")) !=
+			    NULL)
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    alarm_path(ucl_object_key(f), jstr(e,
+				    "object"))), "path", 0, true);
+			/* Open above cleared, the worse above. */
+			for (rank = 0; sevs[rank] != NULL && (jstr(e,
+			    "severity") == NULL || strcmp(sevs[rank], jstr(e,
+			    "severity")) != 0); rank++)
+				;
+			ucl_object_insert_key(o, ucl_object_fromint(rank), "rank",
+			    0, true);
+			ucl_object_insert_key(o, ucl_object_fromint(jint(e,
+			    jbool(e, "cleared") ? "cleared_at" : "t", 0)), "at", 0,
+			    true);
+			ucl_array_append(all, o);
+		}
+	}
+	h_raw(h, "<div class=\"sd-block sd-alarms\"><h3>Alarms <small class="
+	    "\"dim\">each edge's, as RFC 8632's ietf-alarms has them: the "
+	    "paths' (a tunnel down, its underlay, a threshold crossed, its "
+	    "STAMP no longer authenticated) and the edge's own (BFD, BGP and "
+	    "OSPF neighbours, CPU, memory); an alarm shelved is kept and not "
+	    "notified, its shelf in the host's running configuration</small>"
+	    "</h3>");
+	ycommit_note(h, &alarm_yc);
+	h_raw(h, "<table class=\"net sd\">");
+	tbl_head(h, "sd-alarms", cols, (int)nitems(cols), 1);
+	h_raw(h, "<tbody>");
+	if (!tbl_sorted("sd-alarms"))
+		tbl_set("sd-alarms", 2, true);
+	rows = tbl_rows("sd-alarms", all, cols, (int)nitems(cols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		fmt_age(age, sizeof(age), (double)jint(r, "at", 0) * 1000);
+		h_fmt(h, "<tr class=\"sev-%s%s\"><td><b>", jstr(r, "severity") !=
+		    NULL ? jstr(r, "severity") : "", jstr(r, "shelf") != NULL ?
+		    " shelved" : "");
+		h_txt(h, jstr(r, "edge"));
+		h_raw(h, "</b></td><td class=\"mono\">");
+		h_txt(h, jstr(r, "path") != NULL ? jstr(r, "path") : "—");
+		h_fmt(h, "</td><td><span class=\"chip st-%s\">", jbool(r,
+		    "cleared") ? "up" : "down");
+		h_txt(h, jstr(r, "severity") != NULL ? jstr(r, "severity") : "");
+		if (jbool(r, "cleared") && jstr(r, "was") != NULL) {
+			h_raw(h, "</span> <small class=\"dim\">was ");
+			h_txt(h, jstr(r, "was"));
+			h_raw(h, "</small>");
+		} else
+			h_raw(h, "</span>");
+		h_raw(h, "</td><td class=\"dim\">");
+		h_txt(h, jstr(r, "type") != NULL ? jstr(r, "type") : "");
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "object") != NULL ? jstr(r, "object") : "");
+		h_raw(h, "</td><td>");
+		h_txt(h, jstr(r, "description") != NULL ? jstr(r, "description") :
+		    "");
+		h_raw(h, "</td><td class=\"dim\">");
+		h_txt(h, age);
+		h_raw(h, "</td><td>");
+		if (jstr(r, "shelf") != NULL)
+			h_txt(h, jstr(r, "shelf"));
+		h_raw(h, "</td><td class=\"right\">");
+		if (jstr(r, "shelf") != NULL) {
+			h_raw(h, "<button class=\"ghost small\" data-act=\""
+			    "sd-unshelve\"");
+			h_attr(h, "data-arg", jstr(r, "sid"));
+			h_attr(h, "data-value", jstr(r, "shelf"));
+			h_raw(h, " title=\"Its shelf taken out of the host's "
+			    "configuration: what it shelved back in the alarm "
+			    "list\">unshelve</button>");
+		} else if (jstr(r, "type_id") != NULL && jstr(r, "object") !=
+		    NULL) {
+			snprintf(what, sizeof(what), "%s\t%s", jstr(r, "type_id"),
+			    jstr(r, "object"));
+			h_raw(h, "<button class=\"ghost small\" data-act=\""
+			    "sd-shelve\"");
+			h_attr(h, "data-arg", jstr(r, "sid"));
+			h_attr(h, "data-value", what);
+			h_raw(h, " title=\"A shelf of its own in the host's "
+			    "configuration: kept, not notified\">shelve</button>");
+		}
+		h_raw(h, "</td></tr>");
+	}
+	if (n == 0)
+		h_fmt(h, "<tr><td colspan=\"%d\" class=\"dim\">None.</td></tr>",
+		    (int)nitems(cols) + 1);
+	free(rows);
+	h_raw(h, "</tbody></table>");
+	/* Each edge's: the cleared purged, the histories compressed. */
+	it = NULL;
+	n = 0;
+	while (sd.faults != NULL && (f = ucl_object_iterate(sd.faults, &it,
+	    true)) != NULL) {
+		h_raw(h, n++ == 0 ? "<p class=\"dim\">" : " · ");
+		h_txt(h, host_name(ucl_object_key(f)));
+		h_raw(h, ": <button class=\"ghost small\" data-act=\"sd-alarms-"
+		    "purge\"");
+		h_attr(h, "data-arg", ucl_object_key(f));
+		h_raw(h, " title=\"purge-alarms: the cleared taken out\">purge "
+		    "the cleared</button> <button class=\"ghost small\" data-act="
+		    "\"sd-alarms-compress\"");
+		h_attr(h, "data-arg", ucl_object_key(f));
+		h_raw(h, " title=\"compress-alarms: each history its last "
+		    "change\">compress</button>");
+	}
+	if (n > 0)
+		h_raw(h, "</p>");
+	h_raw(h, "</div>");
+	ucl_object_unref(all);
+}
+
 /*
  * How each end measures each of its tunnels: STAMP's facts per target,
  * arcana-stamp's session (sdread.c), one row an end: the method (and
@@ -3645,12 +3951,12 @@ view_pm(struct html *h)
 static void
 view_paths(struct html *h)
 {
-	const ucl_object_t	*t, *e, *tg, *now, *sm, *f, *d;
+	const ucl_object_t	*t, *e, *tg, *now, *sm, *f;
 	ucl_object_iter_t	 it, eit, fit;
 	const char		*st;
 	char			 b1[32], b2[32], b3[32], age[32];
 	unsigned int		 n;
-	int			 k, nf;
+	int			 k;
 
 	if (sd.plan == NULL) {
 		h_raw(h, sd.plan_error[0] != '\0' ? "<div class=\"notice bad\">" :
@@ -3966,56 +4272,7 @@ view_paths(struct html *h)
 		    "with a far prefix to reach has entries once applied.</td>"
 		    "</tr>");
 	h_raw(h, "</tbody></table></div>");
-	/* The faults of the day, as each edge keeps them (Mplify 119
-	 * §11.3): type, severity, what it is of, who saw it; the open
-	 * ones first, then the cleared. */
-	h_raw(h, "<div class=\"sd-block\"><h3>Faults <small class=\"dim\">of "
-	    "the day, as the edges keep them: tunnels and BFD, BGP "
-	    "neighbours, threshold crossings, CPU and memory; open first"
-	    "</small></h3><ul class=\"sd-faults\">");
-	nf = 0;
-	for (k = 0; k < 2; k++) {
-		it = NULL;
-		while (sd.faults != NULL && (f = ucl_object_iterate(sd.faults,
-		    &it, true)) != NULL) {
-			fit = NULL;
-			while ((e = ucl_object_iterate(f, &fit, true)) != NULL) {
-				if (jbool(e, "cleared") != (k == 1))
-					continue;
-				if (nf++ >= 60)
-					break;
-				fmt_age(age, sizeof(age), (double)jint(e, k == 1 ?
-				    "cleared_at" : "t", 0) * 1000);
-				h_fmt(h, "<li class=\"st-%s sev-%s\"><span class=\"led\">"
-				    "</span><span class=\"chip\">%s</span> <b>", k == 1
-				    ? "up" : "down", jstr(e, "severity") != NULL ?
-				    jstr(e, "severity") : "", jstr(e, "severity") !=
-				    NULL ? jstr(e, "severity") : "");
-				h_txt(h, host_name(ucl_object_key(f)));
-				h_raw(h, "</b> <span class=\"dim\">");
-				h_txt(h, jstr(e, "type") != NULL ? jstr(e, "type") :
-				    "");
-				h_raw(h, "</span> <span class=\"mono\">");
-				h_txt(h, jstr(e, "object") != NULL ? jstr(e, "object")
-				    : "");
-				h_raw(h, "</span> ");
-				h_txt(h, jstr(e, "description") != NULL ? jstr(e,
-				    "description") : "");
-				h_raw(h, " <span class=\"dim\">");
-				h_txt(h, age);
-				if (jstr(e, "by") != NULL) {
-					h_raw(h, " · by ");
-					h_txt(h, jstr(e, "by"));
-				}
-				h_raw(h, "</span></li>");
-			}
-		}
-	}
-	(void)eit;
-	(void)d;
-	if (nf == 0)
-		h_raw(h, "<li class=\"dim\">None.</li>");
-	h_raw(h, "</ul></div>");
+	view_alarms(h);
 	/* The hosts' addresses at the UNIs: each edge's dnsmasq instances,
 	 * a service each, and the leases they gave. */
 	h_raw(h, "<div class=\"sd-block\"><h3>Addresses given <small class=\"dim"
@@ -10116,6 +10373,16 @@ sdwan_action(const char *act, const char *arg, const char *value)
 			sd.error[0] = '\0';
 	} else if (strcmp(act, "sd-span") == 0)
 		sd.mon_span = atoi(arg);
+	else if (strcmp(act, "sd-shelve") == 0)
+		alarm_shelve(arg, value);
+	else if (strcmp(act, "sd-unshelve") == 0)
+		alarm_unshelve(arg, value);
+	else if (strcmp(act, "sd-alarms-purge") == 0)
+		alarm_list_act(arg, true);
+	else if (strcmp(act, "sd-alarms-compress") == 0)
+		alarm_list_act(arg, false);
+	else if (ycommit_action(&alarm_yc, act))
+		;
 	else if (strcmp(act, "sd-swvc") == 0) {
 		snprintf(sd.swvc, sizeof(sd.swvc), "%s", arg);
 		sd.tab = SD_SERVICES;
@@ -10294,6 +10561,7 @@ sdwan_tick(double now)
 {
 	static double	at;
 
+	ycommit_tick(&alarm_yc, now);
 	if (app.node == NODE_SDWAN && app.visible && ((sd.tab == SD_PATHS &&
 	    now - sd.paths_at > PATHS_EVERY_MS) || (sd.tab == SD_OVERVIEW &&
 	    now - sd.paths_at > DASH_EVERY_MS)))

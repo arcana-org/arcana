@@ -9,8 +9,10 @@
  * (PLAN-SDN-YANG 4.8.1).  The state: arcana-sdwan's sdwan (its state,
  * and the Security section's forms its proxy and IDS instances keep),
  * arcana-probe's targets as its read gives them with the settings
- * running keeps, and arcana-steer's why of each choice, made the JSON
- * the pages have always drawn.  The Security section's change: its
+ * running keeps, arcana-steer's why of each choice, arcana-stamp's
+ * sessions and ietf-alarms' alarms (RFC 8632: the alarm list and the
+ * shelved ones, the faults the pages draw, PLAN-SDN-YANG 5.4.2), made
+ * the JSON the pages have always drawn.  The Security section's change: its
  * forms checked as the console checked them, made the instances named
  * sec- of arcana-sdwan's lists (SD-WAN's own kept as they are), the
  * whole sdwan put into the candidate and committed confirmed, then
@@ -564,25 +566,8 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		ucl_array_append(arr, o);
 	}
 	put(top, "keys", arr);
-	arr = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((v = ucl_object_iterate(jget(st, "fault"), &it, true)) !=
-	    NULL) {
-		o = ucl_object_typed_new(UCL_OBJECT);
-		cp_time(o, "t", v, "time");
-		cp(o, "type", v, "type");
-		cp(o, "severity", v, "severity");
-		cp(o, "was", v, "was");
-		cp(o, "object", v, "object");
-		cp(o, "by", v, "by");
-		cp(o, "description", v, "description");
-		put(o, "cleared", ucl_object_frombool(jbool(v, "cleared")));
-		cp_time(o, "cleared_at", v, "cleared-at");
-		if (jbool(v, "compressed"))
-			put(o, "compressed", ucl_object_frombool(true));
-		ucl_array_append(arr, o);
-	}
-	put(top, "faults", arr);
+	/* The faults: ietf-alarms' (alarms_put()), not these. */
+	put(top, "faults", ucl_object_typed_new(UCL_ARRAY));
 	return (top);
 }
 
@@ -765,7 +750,68 @@ stamp_facts(ucl_object_t *top, const ucl_object_t *st)
 	}
 }
 
-/* ---- the read: four of the host's, one after another --------------- */
+/*
+ * An alarm of ietf-alarms' (RFC 8632), a, as the pages have a fault:
+ * its resource the object, its alarm type's identity the type (the
+ * module's prefix taken off; type_id whole), its text, its severity
+ * when raised (was) and Cleared once cleared, raised and cleared when;
+ * a shelved one's shelf.
+ */
+static ucl_object_t *
+alarm_json(const ucl_object_t *a, const char *shelf)
+{
+	ucl_object_t	*o;
+	const char	*ty, *sev;
+	char		 w[16];
+	bool		 cl;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	cp(o, "object", a, "resource");
+	if ((ty = jstr(a, "alarm-type-id")) != NULL) {
+		put_str(o, "type_id", ty);
+		put_str(o, "type", strchr(ty, ':') != NULL ? strchr(ty, ':') +
+		    1 : ty);
+	}
+	cp(o, "description", a, "alarm-text");
+	/* RFC 8632's words as the page's: Major, not major. */
+	sev = jstr(a, "perceived-severity");
+	snprintf(w, sizeof(w), "%s", sev != NULL ? sev : "indeterminate");
+	w[0] = (char)toupper((unsigned char)w[0]);
+	cl = jbool(a, "is-cleared");
+	put_str(o, "was", w);
+	put_str(o, "severity", cl ? "Cleared" : w);
+	put(o, "cleared", ucl_object_frombool(cl));
+	cp_time(o, "t", a, "last-raised");
+	if (cl)
+		cp_time(o, "cleared_at", a, "last-changed");
+	if (shelf != NULL)
+		put_str(o, "shelf", shelf);
+	return (o);
+}
+
+/* ietf-alarms' alarms, al, the read's faults: the alarm list's and the
+ * shelved ones'. */
+static void
+alarms_put(ucl_object_t *top, const ucl_object_t *al)
+{
+	const ucl_object_t	*a;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*arr;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((a = ucl_object_iterate(jget(al, "alarm-list.alarm"), &it,
+	    true)) != NULL)
+		ucl_array_append(arr, alarm_json(a, NULL));
+	it = NULL;
+	while ((a = ucl_object_iterate(jget(al,
+	    "shelved-alarms.shelved-alarm"), &it, true)) != NULL)
+		ucl_array_append(arr, alarm_json(a, jstr(a, "shelf-name") !=
+		    NULL ? jstr(a, "shelf-name") : ""));
+	put(top, "faults", arr);
+}
+
+/* ---- the read: five of the host's, one after another --------------- */
 
 struct sdr {
 	api_cb		*cb;
@@ -776,6 +822,7 @@ struct sdr {
 	ucl_object_t	*read;		/* the probes' read */
 	ucl_object_t	*sdwan;
 	ucl_object_t	*steer;		/* arcana-steer's, if any */
+	ucl_object_t	*stamp;		/* arcana-stamp's, if any */
 };
 
 static void
@@ -784,6 +831,8 @@ sdr_free(struct sdr *r)
 
 	if (r->steer != NULL)
 		ucl_object_unref(r->steer);
+	if (r->stamp != NULL)
+		ucl_object_unref(r->stamp);
 	if (r->probes != NULL)
 		ucl_object_unref(r->probes);
 	if (r->read != NULL)
@@ -801,10 +850,10 @@ sdr_fail(struct sdr *r, int status, const ucl_object_t *o, const char *err)
 	sdr_free(r);
 }
 
-/* arcana-stamp's sessions (an agent without the module read as
- * before), then the read made. */
+/* ietf-alarms' alarms, the faults (none when it cannot be read), then
+ * the read made. */
 static void
-sdr_stamp_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+sdr_alarms_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 	struct sdr	*r = arg;
 	ucl_object_t	*top, *d;
@@ -813,14 +862,31 @@ sdr_stamp_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	d = read_json(r->sdwan, r->probes, r->read);
 	if (r->steer != NULL)
 		steer_why(d, jget(r->steer, "state"));
+	if (r->stamp != NULL)
+		stamp_facts(d, r->stamp);
 	if (status == 200 && o != NULL)
-		stamp_facts(d, o);
+		alarms_put(d, o);
 	top = ucl_object_typed_new(UCL_OBJECT);
 	put(top, "ok", ucl_object_frombool(true));
 	put(top, "data", d);
 	r->cb(200, top, NULL, r->arg);
 	ucl_object_unref(top);
 	sdr_free(r);
+}
+
+/* arcana-stamp's sessions (an agent without the module read as
+ * before). */
+static void
+sdr_stamp_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	struct sdr	*r = arg;
+	char		 url[300];
+
+	(void)err;
+	if (status == 200 && o != NULL)
+		r->stamp = ucl_object_copy(o);
+	rc_get(rc_h(url, sizeof(url), r->sid, "ietf-alarms:alarms"), NULL,
+	    sdr_alarms_cb, r);
 }
 
 /* arcana-steer's (an agent without the module read as before). */

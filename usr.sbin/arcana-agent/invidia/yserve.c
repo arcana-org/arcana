@@ -1121,18 +1121,35 @@ ietf_hardware_hardware_edit(cbl_req *req, const struct ietf_hardware *before,
 	return (EOPNOTSUPP);
 }
 
-/* RFC 8632's alarms: the agent's faults (gula/yalarms.c). */
+/*
+ * RFC 8632's alarms: the agent's faults (gula/yalarms.c), and their
+ * control, running's configuration, kept by faults.c (PLAN-SDN-YANG
+ * 5.4.2): running and the candidate the control alone, the list being
+ * state, which a commit's reading of running has no use for.
+ */
 int
 ietf_alarms_alarms_get(cbl_req *req, struct ietf_alarms *data, cbl_yarena *a)
 {
-	ucl_object_t	*top;
-	char		*json;
-	int		 error;
+	const struct ietf_alarms_alarms_control	*c;
+	struct ietf_alarms_alarms		*al;
+	ucl_object_t				*top;
+	char					*json;
+	int					 error;
 
-	/* Running, the candidate: its control is not served, and the list
-	 * is state, which a commit's reading of running has no use for. */
-	if (cbl_req_ydatastore(req) != CBL_YDS_OPERATIONAL)
+	json = faults_control_json();
+	error = yalarms_control_from_json(json, a, &c);
+	free(json);
+	if (error != 0)
+		return (error);
+	if (cbl_req_ydatastore(req) != CBL_YDS_OPERATIONAL) {
+		if (c == NULL)
+			return (0);
+		if ((al = cbl_yarena_alloc(a, sizeof(*al))) == NULL)
+			return (ENOMEM);
+		al->control = c;
+		data->alarms = al;
 		return (0);
+	}
 	top = ucl_object_typed_new(UCL_OBJECT);
 	faults_json(top);
 	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
@@ -1141,20 +1158,45 @@ ietf_alarms_alarms_get(cbl_req *req, struct ietf_alarms *data, cbl_yarena *a)
 		return (ENOMEM);
 	error = yalarms_from_json(json, a, data);
 	free(json);
+	if (error == 0 && data->alarms != NULL)
+		((struct ietf_alarms_alarms *)(uintptr_t)data->alarms)->control =
+		    c;
 	return (error);
 }
 
-/* Its control is configuration, and purging and compressing operator
- * actions: neither served. */
+/* Its control, the shelves: checked (each expression compiled), then
+ * the faults'; the list's state and the operator actions are not
+ * configuration. */
 int
 ietf_alarms_alarms_edit(cbl_req *req, const struct ietf_alarms *before,
     const struct ietf_alarms *after)
 {
+	cbl_yarena	*a;
+	char		*json, err[256];
+	int		 rc;
 
-	(void)req;
 	(void)before;
-	(void)after;
-	return (EOPNOTSUPP);
+	if ((a = cbl_yarena_new()) == NULL)
+		return (ENOMEM);
+	json = NULL;
+	if (after != NULL && after->alarms != NULL &&
+	    after->alarms->control != NULL && (json = yalarms_control_json(
+	    after->alarms->control, a)) == NULL) {
+		cbl_yarena_free(a);
+		(void)cbl_req_set_yerr(req, "an alarm type is no identity the "
+		    "agent knows", 0);
+		return (EIO);
+	}
+	cbl_yarena_free(a);
+	err[0] = '\0';
+	if ((rc = faults_control(json, true, err, sizeof(err))) == 0)
+		rc = faults_control(json, false, err, sizeof(err));
+	free(json);
+	if (rc != 0) {
+		(void)cbl_req_set_yerr(req, err, 0);
+		return (EIO);
+	}
+	return (0);
 }
 
 /* An alarm type's name in arcana-alarms, by its SID; NULL: none. */
@@ -1173,79 +1215,68 @@ ident_name(uint64_t sid)
 	return (NULL);
 }
 
-/* purge-alarms on the faults: how many went in *np. */
-static int
-alarms_purge(const struct ietf_alarms_alarms_alarm_list_purge_alarms_input
-    *in, uint32_t *np)
-{
-	const struct ietf_alarms_alarms_alarm_list_purge_alarms_input_older_than
-	    *o = in->older_than;
-	const struct ietf_alarms_alarms_alarm_list_purge_alarms_input_severity
-	    *s = in->severity;
-	time_t	before = 0;
-	int	clearance = 0, sevop = 0, sev = 0;
+/*
+ * RFC 8632's filter-input, of either list's purge: clearance 0 any, 1
+ * cleared, 2 not cleared (the two inputs' enumerations have the same
+ * values); the age before which last changed; the severity below, is or
+ * above.
+ */
+#define	PURGE_FILTER(in, clearance, before, sevop, sev) do {		\
+	if ((in)->has_alarm_clearance_status)				\
+		(clearance) = (int)(in)->alarm_clearance_status ==	\
+		    (int)IETF_ALARMS_ALARMS_ALARM_LIST_PURGE_ALARMS_INPUT_ALARM_CLEARANCE_STATUS_CLEARED ? \
+		    1 : (int)(in)->alarm_clearance_status ==		\
+		    (int)IETF_ALARMS_ALARMS_ALARM_LIST_PURGE_ALARMS_INPUT_ALARM_CLEARANCE_STATUS_NOT_CLEARED ? \
+		    2 : 0;						\
+	if ((in)->older_than != NULL) {					\
+		/* In time_t: 25000 days of seconds are past an int. */	\
+		time_t	age_ = (in)->older_than->has_seconds ?		\
+		    (time_t)(in)->older_than->seconds :			\
+		    (in)->older_than->has_minutes ?			\
+		    (time_t)(in)->older_than->minutes * 60 :		\
+		    (in)->older_than->has_hours ?			\
+		    (time_t)(in)->older_than->hours * 3600 :		\
+		    (in)->older_than->has_days ?			\
+		    (time_t)(in)->older_than->days * 86400 :		\
+		    (in)->older_than->has_weeks ?			\
+		    (time_t)(in)->older_than->weeks * 7 * 86400 : 0;	\
+									\
+		(before) = time(NULL) - age_;				\
+	}								\
+	if ((in)->severity != NULL) {					\
+		/* The three are one enumeration, the same values. */	\
+		if ((in)->severity->has_below) {			\
+			(sevop) = -1;					\
+			(sev) = (int)(in)->severity->below;		\
+		} else if ((in)->severity->has_is)			\
+			(sev) = (int)(in)->severity->is;		\
+		else if ((in)->severity->has_above) {			\
+			(sevop) = 1;					\
+			(sev) = (int)(in)->severity->above;		\
+		}							\
+	}								\
+} while (0)
 
-	if (in->has_alarm_clearance_status)
-		clearance = in->alarm_clearance_status ==
-		    IETF_ALARMS_ALARMS_ALARM_LIST_PURGE_ALARMS_INPUT_ALARM_CLEARANCE_STATUS_CLEARED ?
-		    1 : in->alarm_clearance_status ==
-		    IETF_ALARMS_ALARMS_ALARM_LIST_PURGE_ALARMS_INPUT_ALARM_CLEARANCE_STATUS_NOT_CLEARED ?
-		    2 : 0;
-	if (o != NULL) {
-		/* In time_t: 25000 days of seconds are past an int. */
-		time_t	age = o->has_seconds ? (time_t)o->seconds :
-		    o->has_minutes ? (time_t)o->minutes * 60 : o->has_hours ?
-		    (time_t)o->hours * 3600 : o->has_days ? (time_t)o->days *
-		    86400 : o->has_weeks ? (time_t)o->weeks * 7 * 86400 : 0;
-
-		before = time(NULL) - age;
-	}
-	if (s != NULL) {
-		/* The three are one enumeration, the same values. */
-		if (s->has_below) {
-			sevop = -1;
-			sev = (int)s->below;
-		} else if (s->has_is)
-			sev = (int)s->is;
-		else if (s->has_above) {
-			sevop = 1;
-			sev = (int)s->above;
-		}
-	}
-	*np = (uint32_t)faults_purge(clearance, before, sevop, sev);
-	return (0);
-}
-
-/* compress-alarms on the faults: how many in *np. */
-static int
-alarms_compress(
-    const struct ietf_alarms_alarms_alarm_list_compress_alarms_input *in,
-    uint32_t *np)
-{
-	const char	*object = NULL, *type = NULL;
-
-	/* Only the string member is ever a fault's resource. */
-	if (in->has_resource) {
-		if (in->resource.which != 2) {
-			*np = 0;
-			return (0);
-		}
-		object = in->resource.v.m2;
-	}
-	if (in->has_alarm_type_id && (type = ident_name(in->alarm_type_id)) ==
-	    NULL) {
-		*np = 0;
-		return (0);
-	}
-	/* No fault has a qualifier: one asked for matches none. */
-	if (in->alarm_type_qualifier != NULL &&
-	    in->alarm_type_qualifier[0] != '\0') {
-		*np = 0;
-		return (0);
-	}
-	*np = (uint32_t)faults_compress(object, type);
-	return (0);
-}
+/*
+ * compress's filter, of either list's: the resource (only the string
+ * member is ever a fault's), the type, no qualifier (none of a fault's
+ * matches one asked for).  false: none can match.
+ */
+#define	COMPRESS_FILTER(in, object, type, ok) do {			\
+	(ok) = true;							\
+	if ((in)->has_resource) {					\
+		if ((in)->resource.which != 2)				\
+			(ok) = false;					\
+		else							\
+			(object) = (in)->resource.v.m2;			\
+	}								\
+	if ((in)->has_alarm_type_id && ((type) =			\
+	    ident_name((in)->alarm_type_id)) == NULL)			\
+		(ok) = false;						\
+	if ((in)->alarm_type_qualifier != NULL &&			\
+	    (in)->alarm_type_qualifier[0] != '\0')			\
+		(ok) = false;						\
+} while (0)
 
 int
 ietf_alarms_alarms_alarm_list_purge_alarms_action(cbl_req *req,
@@ -1254,12 +1285,17 @@ ietf_alarms_alarms_alarm_list_purge_alarms_action(cbl_req *req,
     struct ietf_alarms_alarms_alarm_list_purge_alarms_output *out,
     cbl_yarena *a)
 {
+	time_t	before = 0;
+	int	clearance = 0, sevop = 0, sev = 0;
 
 	(void)req;
 	(void)target;
 	(void)a;
+	PURGE_FILTER(in, clearance, before, sevop, sev);
 	out->has_purged_alarms = true;
-	return (alarms_purge(in, &out->purged_alarms));
+	out->purged_alarms = (uint32_t)faults_purge(false, clearance, before,
+	    sevop, sev);
+	return (0);
 }
 
 int
@@ -1269,12 +1305,59 @@ ietf_alarms_alarms_alarm_list_compress_alarms_action(cbl_req *req,
     struct ietf_alarms_alarms_alarm_list_compress_alarms_output *out,
     cbl_yarena *a)
 {
+	const char	*object = NULL, *type = NULL;
+	bool		 ok;
 
 	(void)req;
 	(void)target;
 	(void)a;
+	COMPRESS_FILTER(in, object, type, ok);
 	out->has_compressed_alarms = true;
-	return (alarms_compress(in, &out->compressed_alarms));
+	out->compressed_alarms = ok ? (uint32_t)faults_compress(false, object,
+	    type) : 0;
+	return (0);
+}
+
+int
+ietf_alarms_alarms_shelved_alarms_purge_shelved_alarms_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct ietf_alarms_alarms_shelved_alarms_purge_shelved_alarms_input
+    *in,
+    struct ietf_alarms_alarms_shelved_alarms_purge_shelved_alarms_output *out,
+    cbl_yarena *a)
+{
+	time_t	before = 0;
+	int	clearance = 0, sevop = 0, sev = 0;
+
+	(void)req;
+	(void)target;
+	(void)a;
+	PURGE_FILTER(in, clearance, before, sevop, sev);
+	out->has_purged_alarms = true;
+	out->purged_alarms = (uint32_t)faults_purge(true, clearance, before,
+	    sevop, sev);
+	return (0);
+}
+
+int
+ietf_alarms_alarms_shelved_alarms_compress_shelved_alarms_action(
+    cbl_req *req, const struct cbl_bytes *target,
+    const struct ietf_alarms_alarms_shelved_alarms_compress_shelved_alarms_input
+    *in,
+    struct ietf_alarms_alarms_shelved_alarms_compress_shelved_alarms_output
+    *out, cbl_yarena *a)
+{
+	const char	*object = NULL, *type = NULL;
+	bool		 ok;
+
+	(void)req;
+	(void)target;
+	(void)a;
+	COMPRESS_FILTER(in, object, type, ok);
+	out->has_compressed_alarms = true;
+	out->compressed_alarms = ok ? (uint32_t)faults_compress(true, object,
+	    type) : 0;
+	return (0);
 }
 
 /* The context the models are served on, for their notifications. */

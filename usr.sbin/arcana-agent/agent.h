@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.277.0"
+#define	ARCANA_AGENT_VERSION	"0.278.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1120,8 +1120,10 @@ bool		 fault_update(const char *, const char *, const char *, ...)
 void		 fault_clear_by(const char *, const char *);
 void		 faults_json(struct ucl_object_s *);
 void		 faults_start(void);
-int		 faults_purge(int, time_t, int, int);
-int		 faults_compress(const char *, const char *);
+int		 faults_purge(bool, int, time_t, int, int);
+int		 faults_compress(bool, const char *, const char *);
+int		 faults_control(const char *, bool, char *, size_t);
+char		*faults_control_json(void);
 /* gula/record.c: what the security rules logged, a day of it. */
 void		 record_start(void);
 void		 record_json(struct ucl_object_s *);

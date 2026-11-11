@@ -218,7 +218,7 @@ for open sets.
 | `ietf-i2nsf-ikeless` (RFC 9061) | PF_KEYv2 in-process (libipsec): SADB_ADD/UPDATE/DELETE/GET/DUMP, SADB_X_SPDADD/SPDDELETE/SPDDUMP, SADB_REGISTER for SADB_ACQUIRE, SADB_EXPIRE; selectors with single ports; ESN with an explicit window (`-r 128`), NAT-T; or the ipsec(4) interface's reqid for route-based policies (uswe) | notifications `sadb-acquire` and `sadb-expire` exact, `sadb-seq-overflow` synthesised, `sadb-bad-spi` absent (no kernel notification); refused: port ranges, `espintcp`, `pfp-flag`, `seq-overflow true`, `tfc-pad`, per-SA `df-bit`, `dscp-mapping`, IV, packet and idle lifetimes, selectors on the SA |
 | `ietf-i2nsf-ike` (RFC 9061) | strongSwan: files in conf.d as the persisted configuration, VICI for state (`list-sas`) and events; identities, PSK, EAP, signatures with the host's own key (private keys never pushed); lifetimes; proposals from IANA ids | refused: `id-null`, per-connection initial-contact, fragmentation MTU, half-open timers; `number-ike-sas/half-open-cookies` absent |
 | `ietf-ipsec-iptfs` (RFC 9348) | only `ipsec-stats` tx/rx packets and octets per SA from the lifetime counters | everything else refused: the kernel has no AGGFRAG/IP-TFS; the configuration augment is not feature-gated, so writes are refused with `operation-not-supported` and the console hides the subtree behind an Arcana capability |
-| `ietf-alarms` (RFC 8632) | shelving as the control's configuration; `purge-alarms` and `compress-alarms` actions | |
+| `ietf-alarms` (RFC 8632) | the faults (gula/faults.c) the alarm list; the control running's configuration, kept in alarm-control.json (5.4.2): shelving, `notify-status-changes` and its level (the sdwan-fault events), `max-alarm-status-changes`; `purge-alarms`, `compress-alarms` and the shelved list's | features alarm-summary, alarm-history, alarm-shelving; not operator-actions, alarm-profile; a resource or qualifier match an extended regex(3) of the whole string, not XML Schema's |
 | `ietf-network`, `ietf-network-topology`, `ietf-sap-ntw` (RFC 8345, RFC 9408) | state alone: the host a node of network `arcana-sap`, its interfaces (the vnet jails' with them) termination points, a SAP each that can attach a service (Ethernet, epair, lagg, vlan, bridge; not a lagg's port or a bridge's member, nor a tunnel), `sap-status` from the interface's oper-status, on-change with the interfaces | no configuration (an edit refused); `service-status` the console's; ietf-vpn-common implemented for its identities, features dot1q, qinq, lag-interface |
 | `ietf-yang-library`, `ietf-yang-schema-mount`, `ietf-netconf-acm`, `ietf-subscribed-notifications`, `ietf-yang-push` | per-mount libraries; NACM groups from the certificate's subject or the socket's uid, rule-lists, enforcement at rpc, data-node and notification; on-change by netlink(4) and EVFILT_JAIL events; subtree filters; replay from the event number for job traces and events | `on-change-unsupported` for counters; NACM replaces the per-op `auth` flag (`default-deny-all` on privileged rpcs) |
 | Arcana modules still to write | `arcana-steer` (the CAL, 3.5), `arcana-dummynet` (the NRP, 7.1), `arcana-cats` (7.4), `arcana-acp` (7.5), `arcana-intent` (7.8) | the served Arcana modules' configuration written through `EDIT`; their arcana.yaml operations retired, the JSON blobs typed (Y-3) |
@@ -3371,6 +3371,62 @@ whose first part is served.
 - 5.4.2 A, C: shelving (the alarms' control in `running`), the
   `purge-alarms` and `compress-alarms` actions; the Paths tab reads
   alarms; check: the browser test.
+  Done (agent 0.278.0, console 0.425.0).  The agent's ietf-alarms has
+  the feature alarm-shelving.  Its control is running's configuration,
+  edited through the candidate and a commit as the rest is, kept by
+  gula/faults.c in alarm-control.json beside the faults (RFC 7951's
+  JSON of the control, the alarm types by name) and read back at the
+  start; running and the candidate serve the control alone.  A shelf's
+  criteria ANDed, its resources and alarm types each ORed, none any;
+  the first shelf that matches a fault shelves it: in shelved-alarms
+  with its shelf-name, out of the alarm list and the summary
+  (shelves-active while a shelf is set or an alarm shelved), its state
+  followed, and no sdwan-fault event of its raise or clearing (RFC
+  8632's notifications; the console mails and pushes those events).
+  A resource and a qualifier match are taken as POSIX extended regular
+  expressions of the whole string (regex(3); XML Schema's \d, \p{} and
+  the like not), the empty one "" alone; an alarm type matches its own
+  identity, and ietf-alarms' alarm-type-id or arcana-alarms'
+  arcana-fault every fault's; another module's none.  An expression
+  that does not compile refuses the commit, said.
+  `notify-status-changes` severity-level tells no raise under
+  `notify-severity-level` (a clearing always); all-state-changes and
+  raise-and-clear are the same here (a fault's line said anew was never
+  an event); `max-alarm-status-changes` cuts each history to its latest
+  (1: the clearing alone).  purge-alarms and compress-alarms work on
+  the alarm list alone now, purge-shelved-alarms and
+  compress-shelved-alarms on the shelved ones, with RFC 8632's filters
+  (clearance, older-than, severity; resource, type, qualifier).  The
+  console passes them as any host's (the fleet mount, nothing of its
+  own).  The Paths tab: the SD-WAN read (sdread.c) takes the faults from
+  ietf-alarms (the alarm list and the shelved ones) in place of
+  arcana-sdwan's fault list, so the paths' bands of faults and the
+  Overview's count (the shelved left out) follow it too; "Faults" is now
+  "Alarms", a table of every edge's (tbl.c): edge, path (a tunnel's
+  target, a class of it or a threshold of it, the underlay's), severity,
+  type, resource, text, changed, shelf; a row's shelve puts a shelf of
+  its own (named by type and resource, the resource quoted as an
+  expression, the type exact) in the host's candidate and commits it
+  confirmed (ycommit.c), unshelve takes the shelf out the same way; each
+  edge's purge the cleared and compress beside it.  yang-ops' `alarms`
+  gives those requests' { } Schema ietf-alarms' tree
+  (www/arcana-ui/yang/ietf-alarms.tree).  Checked:
+  agent_test:alarm_shelving (faults kept by an agent before: two
+  shelves set by arcanactl set, in order, each alarm on the first that
+  matches, the list's and summary's counts; running's shelves; a tunnel
+  fault raised on a shelf not told as an event; "(" refused, running
+  kept; max-alarm-status-changes 1; kept across a restart; each list's
+  purge and compress counting its own alone; a shelf taken out, its
+  alarm back or on the next shelf), console_test:alarms_shelving
+  (through RESTCONF: BIRD's BGP alarm, a shelf PATCHed into the
+  candidate and committed, read back from running, the alarm shelved,
+  shelves-active, the summary without it; "(" refused at the commit;
+  compress-shelved-alarms, purge-shelved-alarms, purge-alarms; the shelf
+  DELETEd and committed, the alarm back), pwa_test:pwa_flows_sdwan (the
+  Paths tab's Alarms table, its columns, BIRD's BGP alarm with its
+  shelve button; shelved: the host's alarm-control.json has the shelf,
+  the row shelved with its shelf and an unshelve; unshelved: the shelf
+  gone from the host's file, the row back).
 - 5.5.1 A: `setdscp` colour pairs flipped on timer L per service,
   `count dscp` rules at the ends with the SD-WAN rules; check: the
   rules in `ipfw show`.

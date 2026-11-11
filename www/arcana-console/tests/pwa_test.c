@@ -99,6 +99,7 @@ static void	run(const char *);
 static int	busy_secs(int);
 static void	js_str(char *, size_t, const char *);
 static void	dock_closed(void);
+static bool	host_has(const char *);
 static void	queued_run(void);
 static void	moves_measure(void);
 static void	ptr_define(void);
@@ -7064,6 +7065,39 @@ part_flows_sdwan(void)
 	    "\"6\"]').click()");
 	wait_js("document.querySelector('.sd-pm th[data-value=\"6\"]')"
 	    ".classList.contains('asc')", 5);
+	/* The edges' alarms, ietf-alarms' (5.4.2): BIRD's BGP session that
+	 * never came up, an edge's own, a row with its severity and a
+	 * shelve button; shelved through the candidate and a confirmed
+	 * commit: the host keeps the shelf in its running configuration,
+	 * the row says the shelf and offers to unshelve, which takes the
+	 * shelf out of the host's again. */
+	wait_js("[...document.querySelectorAll('.sd-alarms th.sortable')].map("
+	    "t => t.textContent).join('|') === 'Edge|Path|Severity|Type|"
+	    "Resource|Text|Changed|Shelf' && [...document.querySelectorAll("
+	    "'.sd-alarms tbody tr')].some(r => r.textContent.includes("
+	    "'bgp-neighbor') && r.textContent.includes('Minor') && "
+	    "r.querySelector('button[data-act=sd-shelve]'))", 30);
+	ATF_CHECK(host_has("! grep -qs bgp-neighbor $(find . -name "
+	    "alarm-control.json) /dev/null"));
+	run("[...document.querySelectorAll('.sd-alarms tbody tr')].find(r => "
+	    "r.textContent.includes('bgp-neighbor') && r.querySelector("
+	    "'button[data-act=sd-shelve]')).querySelector('button[data-act="
+	    "sd-shelve]').click()");
+	ATF_CHECK_MSG(host_has("grep -qs '\"arcana-alarms:bgp-neighbor\"' "
+	    "$(find . -name alarm-control.json) /dev/null"),
+	    "the shelf not kept by the host");
+	wait_js("[...document.querySelectorAll('.sd-alarms tbody tr.shelved')]"
+	    ".some(r => r.textContent.includes('bgp-neighbor') && r.textContent"
+	    ".includes('bgp-neighbor host:') && r.querySelector('button"
+	    "[data-act=sd-unshelve]'))", 30);
+	shot("9-sdwan-paths-alarms");
+	run("document.querySelector('.sd-alarms tbody tr.shelved button"
+	    "[data-act=sd-unshelve]').click()");
+	ATF_CHECK_MSG(host_has("! grep -qs bgp-neighbor $(find . -name "
+	    "alarm-control.json) /dev/null"), "the shelf not taken out");
+	wait_js("![...document.querySelectorAll('.sd-alarms tbody tr')].some(r "
+	    "=> r.textContent.includes('bgp-neighbor') && r.querySelector("
+	    "'button[data-act=sd-unshelve]'))", 30);
 	shot("9-sdwan-paths");
 	/* Security: the policies, and the record of what their deny rules
 	 * logged, nothing yet; its filter and the CSV link. */
@@ -12128,6 +12162,9 @@ ATF_TC_BODY(pwa_flows_sdwan, tc)
 {
 
 	need_fibs(2);
+	/* BIRD watched: its BGP session that never came up an alarm for
+	 * the Paths tab to shelve. */
+	harness_bird_watch = true;
 	prologue(tc, 2);
 	part_flows_sdwan();
 }

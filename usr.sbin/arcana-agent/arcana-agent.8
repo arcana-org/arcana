@@ -662,7 +662,20 @@ a BIRD that answered and does not
 .Pq Ql bird-instance .
 Each is cleared when it is well again, and is an
 .Ql sdwan-fault
-event too.
+event too, unless shelved: the faults are RFC 8632's alarms
+.Pq Ql ietf-alarms ,
+whose control is running's configuration, kept in
+.Pa alarm-control.json
+beside
+.Fl 1 Ns 's
+file; a fault of a shelf's resources and alarm types (each resource
+and qualifier a regular expression,
+.Xr re_format 7 Ns 's
+extended, of the whole string) is a shelved alarm, kept and followed
+but told by no event, and
+.Ql notify-status-changes
+.Cm severity-level
+tells no raise under its level.
 Default 15; 0 reads them never.
 A program the kernel saw die of a signal that dumps core
 .Pq Va kern.logsigexit
