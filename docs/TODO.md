@@ -161,6 +161,31 @@ Written and tested with stand-ins only:
   version, a second plan making nothing.  Taken away by DELETE with
   If-Match: the jails' addresses, tunnels and routes as before, the
   SAP free again.
+- STAMP against two other implementations (PLAN-SDN-YANG 5.1.9;
+  2026-11-11, on the loopback, stamp d983c96, agent 0.276.0):
+  - teaparty (Rust, GPLv3, 7fb2bde), a full STAMP sender and
+    reflector.  Its sender to stampd: the base, an SSID, the
+    Timestamp Information, Class of Service, Location, Extra Padding
+    and HMAC TLVs each answered, as long as asked, every field as it
+    reads them; the authenticated mode verified under a shared key, a
+    wrong key dropped and counted.  stamp(1) to its reflector,
+    stateless and stateful (told so by the first reply): the base and
+    each TLV ours sends answered; its Direct Measurement not known
+    (none said, rightly).  Found and fixed in stamp: the TLV flags
+    (ours sent U 0 and the reflector left the sender's flags, which
+    cancelled out between two of ours; RFC 8972 4 wants a sender's U
+    1, a reflector's U, M and I 0 for what it knows), and a Location
+    port the reflector leaves 0 taken for NAT.  Theirs: our error
+    estimate (scale 32, multiplier 140: 140 s) read as 2.56 s; TLVs
+    in the authenticated mode sent without the HMAC TLV RFC 8972 4.8
+    asks for (ours marks them I, as the RFC says).
+  - twampy (Python, BSD-3-Clause, 885b986), TWAMP Light (RFC 5357
+    Appendix I).  Its sender to stampd at 44 octets, stateful: every
+    packet answered, delay each way; at its default 22 octets none,
+    the 44-octet floor against amplification.  stamp(1) to its
+    reflector, either mode asked: every packet answered (it pads the
+    reply to 46 octets of its own zeros and leaves the Sender TTL 0,
+    TWAMP Light's ways; ours takes them).
 
 ## Known limits
 

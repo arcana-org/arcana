@@ -3111,6 +3111,12 @@ whose first part is served.
   pwa_test:pwa_flows_sdwan (the table's columns and rows, a sort).
 - 5.1.9 L: interoperation with one open-source STAMP implementation
   and a TWAMP Light reflector; written to TODO's verified list.
+  Done (agent 0.276.0, stamp d983c96): teaparty (full STAMP, TLVs,
+  the authenticated mode) and twampy (TWAMP Light) each way on the
+  loopback, built in the lab apart from the tree.  Two of ours fixed
+  in stamp, each with its case (libstamp_test:tlv_flags, tlv_location):
+  the TLVs' U, M and I flags as RFC 8972 4 sets them, and a Location
+  port left 0 no longer NAT.  TODO's "Verified for real" has the rest.
 - 5.2.1 A: raw samples per measurement interval; three percentiles;
   loss as count and decimal percentage; microseconds; check: the
   numbers against a sorted dump.
