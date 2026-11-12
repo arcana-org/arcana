@@ -476,7 +476,7 @@ may(struct http_request *req, const char *path, bool mutate)
 	    token_readable(path)))
 		return (false);
 	return ((u = session_user(req)) == NULL ||
-	    user_path_ok(user_console(u), path, mutate));
+	    user_may_path(u, path, mutate));
 }
 
 /* Part p's value as its store has it, as the request may see it; run one
@@ -497,11 +497,11 @@ value_of(struct http_request *req, const struct part *p, uint32_t one)
 	if (strcmp(p->name, "groups") == 0)
 		return (groups_yang());
 	if (strcmp(p->name, "workflows") == 0)
-		return (workflows_yang());
+		return (workflows_yang(req));
 	if (strcmp(p->name, "runs") == 0)
-		return (runs_yang(one));
+		return (runs_yang(req, one));
 	if (strcmp(p->name, "templates") == 0)
-		return (templates_yang());
+		return (templates_yang(req));
 	if (strcmp(p->name, "labels") == 0)
 		return (labels_yang(req));
 	if (strcmp(p->name, "prefix-lists") == 0)
@@ -657,7 +657,7 @@ keep(struct http_request *req, const struct part *p, const ucl_object_t *was,
 		return (tokens_yang_set(ucl_object_lookup(was, "tokens"),
 		    ucl_object_lookup(now, "tokens"), why, len));
 	if (strcmp(p->name, "workflows") == 0)
-		return (workflows_yang_set(ucl_object_lookup(was,
+		return (workflows_yang_set(req, ucl_object_lookup(was,
 		    "workflows"), ucl_object_lookup(now, "workflows"), why,
 		    len));
 	if (p->trio)
@@ -809,7 +809,7 @@ action(struct http_request *req)
 		}
 	} else if (strcmp(req->path, CYANG_DATA "runs/clear") == 0) {
 		out = ucl_object_typed_new(UCL_OBJECT);
-		put(out, "cleared", ucl_object_fromint(runs_yang_clear(
+		put(out, "cleared", ucl_object_fromint(runs_yang_clear(req,
 		    ucl_str(in, "workflow"), session_user(req))));
 	} else if (action_at(req->path, "users", "user", "invite", key,
 	    sizeof(key))) {
@@ -850,9 +850,9 @@ action(struct http_request *req)
 			rc = 400;
 			snprintf(why, sizeof(why), "say the step");
 		} else
-			rc = runs_yang_mark(n, strstr(req->path, "/approve") !=
-			    NULL ? ucl_str(in, "step") : NULL, session_user(req),
-			    why, sizeof(why));
+			rc = runs_yang_mark(req, n, strstr(req->path,
+			    "/approve") != NULL ? ucl_str(in, "step") : NULL,
+			    session_user(req), why, sizeof(why));
 	}
 	ucl_object_unref(body);
 	if (rc != 0)

@@ -57,6 +57,19 @@
 static ucl_object_t	*udoc;
 
 static const char	*pw_of(const char *);
+static int		 users_save(void);
+
+/*
+ * What the threads judge a principal by (principal_reach()): the users,
+ * roles and groups, each server's tenant and where it is reached, and
+ * the tokens, as the loop last had them; made again whenever one
+ * changes and every second besides (acl_publish()).  The loop judges by
+ * its own.  Never changed once made: a thread reads it while it holds a
+ * reference, taken and given back under the lock.
+ */
+static pthread_mutex_t			 acl_lock = PTHREAD_MUTEX_INITIALIZER;
+static ucl_object_t			*acl;
+static _Thread_local const ucl_object_t	*acl_in;	/* judged by it */
 
 /* Base64url of bytes, without padding. */
 static void
@@ -95,7 +108,19 @@ static ucl_object_t *
 list_of(const char *key)
 {
 
-	return ((ucl_object_t *)(uintptr_t)ucl_object_lookup(udoc, key));
+	return ((ucl_object_t *)(uintptr_t)ucl_object_lookup(acl_in != NULL ?
+	    acl_in : udoc, key));
+}
+
+/* users.json written, and the threads told. */
+static int
+users_save(void)
+{
+	int	rc;
+
+	rc = store_save(USERS_FILE, udoc);
+	acl_publish();
+	return (rc);
 }
 
 static const ucl_object_t *
@@ -272,10 +297,8 @@ roles_of(const ucl_object_t *u, const ucl_object_t **v, int max)
 }
 
 /*
- * A user's role on the console: the most its roles allow.  NULL, a
- * session that carries no user (an API token's, a directory's user
- * the console has no record of), is an operator's: what a write token
- * may.
+ * A user's role on the console: the most its roles allow; none for no
+ * user (an API token's reach is tokens.c's, not a role).
  */
 enum crole
 user_console(const char *name)
@@ -285,7 +308,7 @@ user_console(const char *name)
 	int			 i, n;
 
 	if (name == NULL || name[0] == '\0')
-		return (CROLE_OPERATOR);
+		return (CROLE_NONE);
 	if ((u = by_name("users", name)) == NULL)
 		return (CROLE_NONE);
 	best = CROLE_NONE;
@@ -309,28 +332,49 @@ user_tenant(const char *name)
 	return (ucl_str(u, "tenant"));
 }
 
+/* Host sid's tenant into *tp ("" none): false when there is no such
+ * host.  The threads' as acl_publish() last had it. */
+static bool
+host_tenant(const char *sid, const char **tp)
+{
+	const struct server	*s;
+	const ucl_object_t	*v;
+
+	if (sid == NULL)
+		return (false);
+	if (acl_in != NULL) {
+		if ((v = ucl_object_lookup(ucl_object_lookup(acl_in,
+		    "tenants"), sid)) == NULL)
+			return (false);
+		*tp = ucl_object_tostring(v);
+		return (true);
+	}
+	if ((s = server_find(sid)) == NULL)
+		return (false);
+	*tp = s->tenant != NULL ? s->tenant : "";
+	return (true);
+}
+
 /*
  * A user's role on a host: the most its roles allow there; none on a
- * host of another tenant.  A session with no user has every host as
- * an admin.
+ * host of another tenant, and none for no user: who has no name has
+ * no role (a token's reach is principal_host()'s).
  */
 enum role
 user_host(const char *name, const char *sid)
 {
 	const ucl_object_t	*u, *v[ROLES_MAX];
-	const struct server	*s;
-	const char		*t;
+	const char		*t, *ht;
 	enum role		 best, h;
 	int			 i, n;
 
 	if (name == NULL || name[0] == '\0')
-		return (ROLE_ADMIN);
+		return (ROLE_NONE);
 	if ((u = by_name("users", name)) == NULL)
 		return (ROLE_NONE);
 	t = ucl_str(u, "tenant");
 	if (t != NULL && t[0] != '\0') {
-		if ((s = server_find(sid)) == NULL || s->tenant == NULL ||
-		    strcmp(s->tenant, t) != 0)
+		if (!host_tenant(sid, &ht) || strcmp(ht, t) != 0)
 			return (ROLE_NONE);
 	}
 	best = ROLE_NONE;
@@ -341,6 +385,272 @@ user_host(const char *name, const char *sid)
 			best = h;
 	}
 	return (best);
+}
+
+/* What the API token of id is now: TOKEN_NONE once deleted. */
+static int
+token_now(const char *id)
+{
+	const char	*k;
+
+	if (acl_in == NULL)
+		return (token_kind_of(id));
+	if ((k = ucl_str(ucl_object_lookup(acl_in, "tokens"), id)) == NULL)
+		return (TOKEN_NONE);
+	return (strcmp(k, "write") == 0 ? TOKEN_WRITE : TOKEN_READ);
+}
+
+/*
+ * A principal's role on host sid: a user's own (user_host()); an API
+ * token's its reach, a read token a viewer's and a write token an
+ * admin's of every host (tokens.c: an owner's tool, which the routes
+ * it may take keep to what they keep it to), none once deleted; the
+ * console's every host's; no one's none.
+ */
+enum role
+principal_host(const struct principal *p, const char *sid)
+{
+	const char	*t;
+	int		 k;
+
+	switch (p->kind) {
+	case P_USER:
+		return (user_host(p->name, sid));
+	case P_RTOKEN:
+	case P_WTOKEN:
+		if (!host_tenant(sid, &t))
+			return (ROLE_NONE);
+		if ((k = token_now(p->name)) == TOKEN_NONE)
+			return (ROLE_NONE);
+		return (p->kind == P_WTOKEN && k == TOKEN_WRITE ? ROLE_ADMIN :
+		    ROLE_VIEWER);
+	case P_CONSOLE:
+		return (ROLE_ADMIN);
+	default:
+		return (ROLE_NONE);
+	}
+}
+
+/* May p have need on host sid (ROLE_VIEWER: read it)? */
+bool
+principal_may(const struct principal *p, const char *sid, enum role need)
+{
+	enum role	r;
+
+	if (need < ROLE_VIEWER)
+		need = ROLE_VIEWER;
+	r = principal_host(p, sid);
+	return (r != ROLE_NONE && r >= need);
+}
+
+/* Who p is, for a log line or a refusal. */
+const char *
+principal_who(const struct principal *p, char *buf, size_t len)
+{
+
+	switch (p->kind) {
+	case P_USER:
+		snprintf(buf, len, "user %s", p->name);
+		break;
+	case P_RTOKEN:
+	case P_WTOKEN:
+		snprintf(buf, len, "API token %s", p->name);
+		break;
+	case P_CONSOLE:
+		snprintf(buf, len, "the console");
+		break;
+	default:
+		snprintf(buf, len, "no one");
+		break;
+	}
+	return (buf);
+}
+
+/* What acl_publish() last made, a reference taken; NULL while there
+ * is none yet.  acl_put() gives it back. */
+static const ucl_object_t *
+acl_get(void)
+{
+	const ucl_object_t	*snap;
+
+	pthread_mutex_lock(&acl_lock);
+	snap = acl != NULL ? ucl_object_ref(acl) : NULL;
+	pthread_mutex_unlock(&acl_lock);
+	return (snap);
+}
+
+static void
+acl_put(const ucl_object_t *snap)
+{
+
+	pthread_mutex_lock(&acl_lock);
+	ucl_object_unref((ucl_object_t *)(uintptr_t)snap);
+	pthread_mutex_unlock(&acl_lock);
+}
+
+/* The server reached at uri into sid, by snap: false, none has it. */
+static bool
+acl_sid(const ucl_object_t *snap, const char *uri, char *sid, size_t len)
+{
+	const ucl_object_t	*v;
+
+	if ((v = ucl_object_lookup(ucl_object_lookup(snap, "uris"), uri)) ==
+	    NULL || ucl_object_type(v) != UCL_STRING)
+		return (false);
+	snprintf(sid, len, "%s", ucl_object_tostring(v));
+	return (true);
+}
+
+/* From any thread: p's role on the host reached at uri, none where no
+ * server is. */
+enum role
+principal_host_at(const struct principal *p, const char *uri)
+{
+	const ucl_object_t	*snap;
+	enum role		 r;
+	char			 sid[16];
+
+	if (p->kind == P_CONSOLE)
+		return (ROLE_ADMIN);
+	if ((snap = acl_get()) == NULL)
+		return (ROLE_NONE);
+	acl_in = snap;
+	r = acl_sid(snap, uri, sid, sizeof(sid)) ? principal_host(p, sid) :
+	    ROLE_NONE;
+	acl_in = NULL;
+	acl_put(snap);
+	return (r);
+}
+
+/*
+ * From any thread: may p ask the agent at uri for what needs need, by
+ * what acl_publish() last made?  Why not into why.  A URI no server has
+ * is a host being added or moved, which its route let the user do;
+ * the host's access rules hold the user there.
+ */
+bool
+principal_reach(const struct principal *p, const char *uri, enum role need,
+    char *why, size_t len)
+{
+	const ucl_object_t	*snap;
+	enum role		 r;
+	char			 who[96], sid[16];
+	bool			 ok;
+
+	if (p->kind == P_CONSOLE)
+		return (true);
+	if (p->kind == P_NONE) {
+		snprintf(why, len, "asked for no one: what the console asks of "
+		    "a host is for a user, a token or the console itself");
+		return (false);
+	}
+	if ((int)need < p->need)
+		need = (enum role)p->need;
+	if (need < ROLE_VIEWER)
+		need = ROLE_VIEWER;
+	if ((snap = acl_get()) == NULL) {
+		snprintf(why, len, "the console is starting");
+		return (false);
+	}
+	acl_in = snap;
+	ok = true;
+	if (acl_sid(snap, uri, sid, sizeof(sid))) {
+		r = principal_host(p, sid);
+		if (r == ROLE_NONE || r < need) {
+			ok = false;
+			snprintf(why, len, "%s %s host %s%s", principal_who(p,
+			    who, sizeof(who)), r == ROLE_NONE ?
+			    "has no role on" : r == ROLE_VIEWER ?
+			    "is a viewer of" : "is an operator of", sid,
+			    r == ROLE_NONE ? "" : need == ROLE_ADMIN ?
+			    ": an admin of it alone may" :
+			    ": it may not change it");
+		}
+	}
+	acl_in = NULL;
+	acl_put(snap);
+	return (ok);
+}
+
+/* On the loop: what the threads judge by, made again. */
+void
+acl_publish(void)
+{
+	ucl_object_t		*n, *t, *u;
+	const struct server	*s;
+	const char		*k[] = { "users", "roles", "groups" };
+	int			 i;
+
+	n = ucl_object_typed_new(UCL_OBJECT);
+	for (i = 0; i < (int)nitems(k); i++)
+		put(n, k[i], list_of(k[i]) != NULL ? ucl_object_copy(
+		    list_of(k[i])) : ucl_object_typed_new(UCL_ARRAY));
+	t = ucl_object_typed_new(UCL_OBJECT);
+	u = ucl_object_typed_new(UCL_OBJECT);
+	for (i = 0; (s = server_at(i)) != NULL; i++) {
+		ucl_object_insert_key(t, ucl_object_fromstring(s->tenant !=
+		    NULL ? s->tenant : ""), s->id, 0, true);
+		ucl_object_insert_key(u, ucl_object_fromstring(s->id), s->uri,
+		    0, true);
+	}
+	put(n, "tenants", t);
+	put(n, "uris", u);
+	put(n, "tokens", tokens_acl());
+	pthread_mutex_lock(&acl_lock);
+	if (acl != NULL)
+		ucl_object_unref(acl);
+	acl = n;
+	pthread_mutex_unlock(&acl_lock);
+}
+
+static void
+acl_tick(void *arg __unused, uint64_t now __unused)
+{
+
+	acl_publish();
+}
+
+/* At the worker's start, once the servers are read. */
+void
+acl_init(void)
+{
+
+	acl_publish();
+	(void)timer_add(acl_tick, 1000, NULL, 0);
+}
+
+/*
+ * Is path the whole fleet's: the SD-WAN and its services (L3NM), the
+ * virtual networks made of them; one document each for every tenant's
+ * hosts, so not a tenant's to read or change (docs/TODO.md).
+ */
+bool
+path_fleet_wide(const char *path)
+{
+	static const char	*fleet[] = { CYANG_DATA "sdwan",
+				    "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw",
+				    "/restconf/data/ietf-vn:access-point",
+				    "/restconf/data/ietf-vn:virtual-network",
+				    "/restconf/operations/ietf-vn:vn-compute" };
+	size_t			 i, n;
+
+	for (i = 0; i < nitems(fleet); i++) {
+		n = strlen(fleet[i]);
+		if (strncmp(path, fleet[i], n) == 0 && (path[n] == '\0' ||
+		    path[n] == '/' || path[n] == '?'))
+			return (true);
+	}
+	return (false);
+}
+
+/* May user take path: their console role's (user_path_ok()), and what
+ * is the whole fleet's only when they are of no tenant. */
+bool
+user_may_path(const char *user, const char *path, bool mutate)
+{
+
+	return (user_path_ok(user_console(user), path, mutate) &&
+	    (user_tenant(user)[0] == '\0' || !path_fleet_wide(path)));
 }
 
 /*
@@ -442,16 +752,19 @@ invite_make(const char *user, char *token, size_t len)
 	put(inv, "user", ucl_object_fromstring(user));
 	put(inv, "expires", ucl_object_fromint(time(NULL) + INVITE_LIFE));
 	ucl_array_append(list_of("invites"), inv);
-	return (store_save(USERS_FILE, udoc) == 0);
+	return (users_save() == 0);
 }
 
-/* An invitation used: its user, and it is gone. */
+/*
+ * Is token an invitation of this console's, in time, of a user there
+ * is: its SHA-256 into h, the user into user.  Not spent: the key it
+ * lets the user register spends it (invite_spend()).
+ */
 bool
-invite_take(const char *token, char *user, size_t len)
+invite_check(const char *token, uint8_t *h, char *user, size_t len)
 {
 	const ucl_object_t	*inv;
 	ucl_object_iter_t	 it;
-	uint8_t			 h[32];
 	char			 hex[65];
 	unsigned int		 n;
 	time_t			 now;
@@ -459,21 +772,49 @@ invite_take(const char *token, char *user, size_t len)
 	if (token == NULL || strncmp(token, "inv_", 4) != 0)
 		return (false);
 	EVP_Digest(token, strlen(token), h, &n, EVP_sha256(), NULL);
-	hex_of(h, sizeof(h), hex);
+	hex_of(h, 32, hex);
 	now = time(NULL);
 	it = NULL;
 	while ((inv = ucl_object_iterate(list_of("invites"), &it, true)) !=
 	    NULL) {
-		if (ucl_str(inv, "hash") == NULL || strlen(ucl_str(inv, "hash"))
-		    != 64 || timingsafe_bcmp(ucl_str(inv, "hash"), hex, 64) != 0)
+		if (ucl_str(inv, "hash") == NULL || strlen(ucl_str(inv,
+		    "hash")) != 64 || timingsafe_bcmp(ucl_str(inv, "hash"), hex,
+		    64) != 0)
 			continue;
 		if (ucl_object_toint(ucl_object_lookup(inv, "expires")) < now ||
 		    !user_exists(ucl_str(inv, "user")))
 			break;
 		snprintf(user, len, "%s", ucl_str(inv, "user"));
+		return (true);
+	}
+	return (false);
+}
+
+/* The invitation whose SHA-256 is h, user's, spent: false when it is
+ * not there any more, or ran out. */
+bool
+invite_spend(const uint8_t *h, const char *user)
+{
+	const ucl_object_t	*inv;
+	ucl_object_iter_t	 it;
+	char			 hex[65];
+
+	hex_of(h, 32, hex);
+	it = NULL;
+	while ((inv = ucl_object_iterate(list_of("invites"), &it, true)) !=
+	    NULL) {
+		if (ucl_str(inv, "hash") == NULL || strlen(ucl_str(inv,
+		    "hash")) != 64 || timingsafe_bcmp(ucl_str(inv, "hash"), hex,
+		    64) != 0)
+			continue;
+		if (ucl_object_toint(ucl_object_lookup(inv, "expires")) <
+		    time(NULL) || ucl_str(inv, "user") == NULL ||
+		    strcmp(ucl_str(inv, "user"), user) != 0 ||
+		    !user_exists(user))
+			return (false);
 		ucl_object_unref(ucl_array_delete(list_of("invites"),
 		    (ucl_object_t *)(uintptr_t)inv));
-		(void)store_save(USERS_FILE, udoc);
+		(void)users_save();
 		return (true);
 	}
 	return (false);
@@ -618,7 +959,7 @@ users_init(void)
 		changed = true;
 	}
 	if (changed)
-		(void)store_save(USERS_FILE, udoc);
+		(void)users_save();
 }
 
 /* Whether a role names host sid itself, not by "*". */
@@ -784,7 +1125,7 @@ users_ldap_sync(const char *name, const char **roles, int nroles)
 		ucl_array_append(list_of("users"), u);
 	}
 	if (old != NULL || nroles > 0)
-		(void)store_save(USERS_FILE, udoc);
+		(void)users_save();
 }
 
 /* ---- Passwords ---------------------------------------------------- */
@@ -842,7 +1183,7 @@ user_has_password(const char *name)
 /*
  * Is pw the user's password?  One with none is compared all the same,
  * with a hash of nothing, so the time taken says not which users have
- * one.
+ * one.  From any thread (a sign-in's task): by what acl_publish() made.
  */
 bool
 user_password_ok(const char *name, const char *pw)
@@ -850,10 +1191,21 @@ user_password_ok(const char *name, const char *pw)
 	static const char	 none[] = "$2b$" BCRYPT_COST "$"
 	    "......................" "...............................";
 	struct crypt_data	 cd;
-	const char		*want, *got;
+	const ucl_object_t	*snap;
+	const char		*want, *got, *h;
+	char			 hash[128];
 	bool			 ok;
 
-	want = name != NULL ? pw_of(name) : NULL;
+	want = NULL;
+	if (name != NULL && (snap = acl_get()) != NULL) {
+		acl_in = snap;
+		if ((h = pw_of(name)) != NULL && strlen(h) < sizeof(hash)) {
+			snprintf(hash, sizeof(hash), "%s", h);
+			want = hash;
+		}
+		acl_in = NULL;
+		acl_put(snap);
+	}
 	if (pw == NULL || strlen(pw) > PASSWORD_MAX)
 		pw = "";
 	memset(&cd, 0, sizeof(cd));
@@ -861,6 +1213,7 @@ user_password_ok(const char *name, const char *pw)
 	ok = want != NULL && got != NULL && strlen(got) == strlen(want) &&
 	    timingsafe_bcmp(got, want, strlen(want)) == 0;
 	explicit_bzero(&cd, sizeof(cd));
+	explicit_bzero(hash, sizeof(hash));
 	return (ok);
 }
 
@@ -937,7 +1290,7 @@ user_password_set(const char *name, const char *pw)
 	ucl_object_unref(ucl_array_delete(list_of("users"), (ucl_object_t *)
 	    (uintptr_t)old));
 	ucl_array_append(list_of("users"), u);
-	if (store_save(USERS_FILE, udoc) != 0)
+	if (users_save() != 0)
 		return ("the users could not be written");
 	return (NULL);
 }
@@ -966,7 +1319,7 @@ user_owner_add(const char *name)
 	put(u, "roles", roles);
 	put(u, "created", ucl_object_fromint(time(NULL)));
 	ucl_array_append(list_of("users"), u);
-	if (store_save(USERS_FILE, udoc) != 0) {
+	if (users_save() != 0) {
 		ucl_object_unref(ucl_array_delete(list_of("users"), u));
 		return ("the users could not be written");
 	}
@@ -984,7 +1337,7 @@ user_owner_undo(const char *name)
 		return;
 	ucl_object_unref(ucl_array_delete(list_of("users"), (ucl_object_t *)
 	    (uintptr_t)u));
-	(void)store_save(USERS_FILE, udoc);
+	(void)users_save();
 }
 
 /* Is body a role that may be kept?  NULL, or what is wrong with it. */
@@ -1096,7 +1449,7 @@ static int
 keep(struct uerr *e, const char *what)
 {
 
-	if (store_save(USERS_FILE, udoc) != 0)
+	if (users_save() != 0)
 		return (refuse(e, 500, "store", "the %s could not be written",
 		    what));
 	cyang_changed("users");
@@ -1750,7 +2103,7 @@ users_yang_set(const ucl_object_t *was, const ucl_object_t *now,
 		snprintf(why, len, "%s", err.why);
 		ucl_object_unref(udoc);
 		udoc = saved;
-		(void)store_save(USERS_FILE, udoc);
+		(void)users_save();
 		return (err.status);
 	}
 	ucl_object_unref(saved);

@@ -336,14 +336,24 @@ placeholders(const ucl_object_t *t)
 	return (arr);
 }
 
+/* Is template t one of tenant's to see ("": every one's)?  One kept
+ * by a user of a tenant is that tenant's alone. */
+static bool
+seen_by(const ucl_object_t *t, const char *tenant)
+{
+
+	return (tenant[0] == '\0' || (str(t, "tenant") != NULL && strcmp(str(t,
+	    "tenant"), tenant) == 0));
+}
+
 /*
  * The template name made a host's bundle with values: config-apply's,
- * JSON, malloc(3)ed; NULL and why when there is no such template or a
- * placeholder has no value.
+ * JSON, malloc(3)ed; NULL and why when there is no such template of
+ * tenant's ("": any) or a placeholder has no value.
  */
 char *
-template_render(const char *name, const ucl_object_t *values, char *why,
-    size_t wlen)
+template_render(const char *name, const char *tenant,
+    const ucl_object_t *values, char *why, size_t wlen)
 {
 	ucl_object_t		*t, *b, *files, *nf;
 	const ucl_object_t	*f, *vars, *v;
@@ -351,7 +361,9 @@ template_render(const char *name, const ucl_object_t *values, char *why,
 	unsigned char		*json;
 	char			 missing[40], *text;
 
-	if ((t = template_get(name)) == NULL) {
+	if ((t = template_get(name)) == NULL || !seen_by(t, tenant)) {
+		if (t != NULL)
+			ucl_object_unref(t);
 		snprintf(why, wlen, "no template %s", name);
 		return (NULL);
 	}
@@ -509,20 +521,25 @@ each(const ucl_object_t *list, const char *const *keys)
 	return (a);
 }
 
-/* arcana-console:templates's value: each template whole. */
+/* arcana-console:templates's value: each template the request may see,
+ * whole. */
 ucl_object_t *
-templates_yang(void)
+templates_yang(struct http_request *req)
 {
 	ucl_object_t		*all, *arr, *e, *a, *x, *o;
 	const ucl_object_t	*t, *f, *v;
 	ucl_object_iter_t	 it, fit;
 	unsigned char		*json;
+	const char		*tenant;
 
+	tenant = req_tenant(req);
 	all = all_load();
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;
 	while ((t = ucl_object_iterate(ucl_object_lookup(all, "templates"),
 	    &it, true)) != NULL) {
+		if (!seen_by(t, tenant))
+			continue;
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put(e, "name", ucl_object_fromstring(ucl_object_key(t)));
 		if (str(t, "description") != NULL)
@@ -624,11 +641,12 @@ templates_yang_set(struct http_request *req, const ucl_object_t *was,
 {
 	const ucl_object_t	*t, *o;
 	ucl_object_iter_t	 it;
-	ucl_object_t		*b;
-	const char		*name;
+	ucl_object_t		*b, *old;
+	const char		*name, *tenant, *tk;
 	char			 w[300];
 	int			 rc, pass;
 
+	tenant = req_tenant(req);
 	for (pass = 0; pass < 2; pass++) {
 		it = NULL;
 		while ((t = ucl_object_iterate(ucl_object_lookup(now,
@@ -638,9 +656,29 @@ templates_yang_set(struct http_request *req, const ucl_object_t *was,
 			    "name", name);
 			if (o != NULL && cyang_same(o, t))
 				continue;
+			/* A name another tenant's template has is not
+			 * told, nor taken; one kept keeps its tenant. */
+			old = o == NULL ? template_get(name) : NULL;
+			if (old != NULL && !seen_by(old, tenant)) {
+				ucl_object_unref(old);
+				snprintf(why, len, "template %s: the name is "
+				    "taken: choose another", name);
+				return (409);
+			}
+			if (old != NULL)
+				ucl_object_unref(old);
 			if ((b = body_of(t, w, sizeof(w))) == NULL)
 				rc = 400;
 			else {
+				if (tenant[0] != '\0')
+					put(b, "tenant", ucl_object_fromstring(
+					    tenant));
+				else if ((old = template_get(name)) != NULL) {
+					if ((tk = str(old, "tenant")) != NULL)
+						put(b, "tenant",
+						    ucl_object_fromstring(tk));
+					ucl_object_unref(old);
+				}
 				rc = template_keep(name, b, session_who(req),
 				    pass == 0, w, sizeof(w));
 				ucl_object_unref(b);

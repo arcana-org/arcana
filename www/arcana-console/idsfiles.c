@@ -312,6 +312,7 @@ api_ids_pcap(struct http_request *req)
 	req->hdlr_extra = p;
 	task_create(&p->task, put_run);
 	task_bind_request(&p->task, req);
+	p->task.who.need = ROLE_OPERATOR;
 	task_run(&p->task);
 	return (WEB_RETRY);
 }
@@ -656,6 +657,7 @@ api_ids_pcap_log(struct http_request *req)
 	atomic_init(&d->ended, false);
 	pthread_mutex_init(&d->lock, NULL);
 	pthread_cond_init(&d->wake, NULL);
+	hosts_need(ROLE_OPERATOR);
 	if (hosts_thread(&d->thread, dl_run, d) != 0) {
 		pthread_mutex_destroy(&d->lock);
 		pthread_cond_destroy(&d->wake);

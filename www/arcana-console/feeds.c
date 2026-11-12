@@ -684,7 +684,6 @@ host_load(const char *sid, const char *table, const char *id,
 		return (false);
 	}
 	put(o, "name", S(name));
-	hosts_act_as(NULL);
 	if ((e = hosts_connect(uri, peer, &conn, &tls)) != NULL) {
 		put(o, "error", S(e));
 		return (false);
@@ -722,7 +721,6 @@ host_drop(const char *sid, const char *table, char *err, size_t errlen)
 	if (!host_ref(sid, uri, sizeof(uri), peer, sizeof(peer), name,
 	    sizeof(name)))
 		return (true);
-	hosts_act_as(NULL);
 	if ((e = hosts_connect(uri, peer, &conn, &tls)) != NULL) {
 		snprintf(err, errlen, "%s", e);
 		return (false);
@@ -1210,11 +1208,17 @@ feeds_tick(bool due)
 	pthread_mutex_unlock(&run_lock);
 }
 
+/*
+ * The console itself: the feeds are the fleet's, each host they go to
+ * chosen by one who may change it (feeds_yang_set()), and what goes is
+ * a table the agent swaps in, no rule.
+ */
 static void *
 feeds_main(void *arg __unused)
 {
 	unsigned int	n;
 
+	hosts_act_console();
 	for (n = 0;; n++) {
 		sleep(FEEDS_TICK);
 		/* Of a cluster, the leader's alone. */

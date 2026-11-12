@@ -262,7 +262,7 @@ label_change(struct http_request *req, ucl_object_t *set,
 	sid = ucl_str(e, "host");
 	if (!host_role_ok(req, sid, true, false)) {
 		snprintf(why, len, "host %s is not one you may change", sid);
-		return (user_host(session_user(req), sid) == ROLE_NONE ? 404 :
+		return (req_host_role(req, sid) == ROLE_NONE ? 404 :
 		    403);
 	}
 	snprintf(key, sizeof(key), "%s/%s", sid, ucl_str(e, "interface"));

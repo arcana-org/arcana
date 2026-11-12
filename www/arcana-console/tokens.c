@@ -203,6 +203,7 @@ tokens_save(void)
 		tokens_mtime = sb.st_mtim;
 	tokens_saved = time(NULL);
 	cyang_changed("tokens");
+	acl_publish();
 	return (rc);
 }
 
@@ -273,6 +274,51 @@ token_login(const char *v, char *id, size_t idlen)
 			return (tokens[i].name);
 		}
 	return (NULL);
+}
+
+/* What the token of id is: TOKEN_NONE when there is none. */
+int
+token_kind_of(const char *id)
+{
+	int	i;
+
+	tokens_load();
+	for (i = 0; i < ntokens; i++)
+		if (strcmp(tokens[i].id, id) == 0)
+			return (tokens[i].write ? TOKEN_WRITE : TOKEN_READ);
+	return (TOKEN_NONE);
+}
+
+/* The tokens as the threads judge by them (users.c): {id: kind}. */
+ucl_object_t *
+tokens_acl(void)
+{
+	ucl_object_t	*o;
+	int		 i;
+
+	tokens_load();
+	o = ucl_object_typed_new(UCL_OBJECT);
+	for (i = 0; i < ntokens; i++)
+		put(o, tokens[i].id, ucl_object_fromstring(tokens[i].write ?
+		    "write" : "read"));
+	return (o);
+}
+
+/*
+ * The request's bearer token as whom it acts for: P_RTOKEN or P_WTOKEN
+ * with its id; false when it carries none of ours.
+ */
+bool
+token_principal(struct http_request *req, struct principal *p)
+{
+	struct token	*t;
+
+	if ((t = token_of(req)) == NULL)
+		return (false);
+	memset(p, 0, sizeof(*p));
+	p->kind = t->write ? P_WTOKEN : P_RTOKEN;
+	snprintf(p->name, sizeof(p->name), "%s", t->id);
+	return (true);
 }
 
 /* Whether the write token of id is still there. */

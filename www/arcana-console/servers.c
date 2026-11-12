@@ -8,7 +8,11 @@
  * The arcana-agent instances the console knows: a name and a cblink URI,
  * "unix:/var/run/arcana-agent.sock" for this host or "tcp://host:4310" for
  * others, with the certificate name to expect when it differs from the
- * host.  Kept in servers.json in the data directory.
+ * host.  Kept in servers.json in the data directory.  An agent is
+ * registered once, however its URI is spelt (same_agent()); a user of a
+ * tenant adds the tenant's hosts; which agent a host is (its
+ * certificate's name, an agent on the console's own host) an owner
+ * says.
  */
 
 #include <sys/param.h>
@@ -17,8 +21,11 @@
 
 #include <openssl/evp.h>
 
+#include <netinet/in.h>
+
 #include <ctype.h>
 #include <errno.h>
+#include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +56,9 @@ static void	new_id(char *, size_t);
 static void	local_enrol(void);
 static const char *socket_path(const char *);
 static bool	same_socket(const char *, const char *);
+static bool	same_agent(const char *, const char *, const char *,
+		    const char *);
+static void	uri_host_of(const char *, char *, size_t);
 
 /*
  * The agent beside the console.  Arcana installs both, so the host the
@@ -377,7 +387,7 @@ servers_add(const char *name, const char *uri, const char *peer)
 	    nservers == MAX_SERVERS)
 		return (-1);
 	for (i = 0; i < nservers; i++)
-		if (strcmp(servers[i].uri, uri) == 0)
+		if (same_agent(servers[i].uri, servers[i].peer_name, uri, peer))
 			return (-1);
 	new_id(id, sizeof(id));
 	add(id, name, uri, peer, NULL);
@@ -406,7 +416,8 @@ servers_move(const char *id, const char *uri)
 	if (i == nservers)
 		return (-1);
 	for (k = 0; k < nservers; k++)
-		if (k != i && strcmp(servers[k].uri, uri) == 0)
+		if (k != i && same_agent(servers[k].uri, servers[k].peer_name,
+		    uri, servers[i].peer_name))
 			return (-1);
 	old = servers[i].uri;
 	pthread_mutex_lock(&table_lock);
@@ -425,6 +436,90 @@ servers_move(const char *id, const char *uri)
 	hosts_nacm_sync_moved(old, uri);
 	free(old);
 	return (0);
+}
+
+/* Strings alike, NULL as NULL. */
+static bool
+same_str(const char *a, const char *b)
+{
+
+	return (a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0);
+}
+
+/* The port of a tcp:// or sctp:// URI; 0 for another. */
+static int
+uri_port(const char *uri)
+{
+	const char	*p;
+
+	if (strncmp(uri, "unix:", 5) == 0 || (p = strrchr(uri, ':')) == NULL)
+		return (0);
+	return (atoi(p + 1));
+}
+
+/* Do hosts a and b, names or addresses, have an address in common? */
+static bool
+addrs_meet(const char *a, const char *b)
+{
+	struct addrinfo	 hints, *ra, *rb, *x, *y;
+	bool		 meet;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_socktype = SOCK_STREAM;
+	if (getaddrinfo(a, NULL, &hints, &ra) != 0)
+		return (false);
+	if (getaddrinfo(b, NULL, &hints, &rb) != 0) {
+		freeaddrinfo(ra);
+		return (false);
+	}
+	meet = false;
+	for (x = ra; x != NULL && !meet; x = x->ai_next)
+		for (y = rb; y != NULL && !meet; y = y->ai_next) {
+			if (x->ai_family != y->ai_family)
+				continue;
+			if (x->ai_family == AF_INET)
+				meet = memcmp(&((struct sockaddr_in *)
+				    (void *)x->ai_addr)->sin_addr,
+				    &((struct sockaddr_in *)(void *)
+				    y->ai_addr)->sin_addr,
+				    sizeof(struct in_addr)) == 0;
+			else if (x->ai_family == AF_INET6)
+				meet = memcmp(&((struct sockaddr_in6 *)
+				    (void *)x->ai_addr)->sin6_addr,
+				    &((struct sockaddr_in6 *)(void *)
+				    y->ai_addr)->sin6_addr,
+				    sizeof(struct in6_addr)) == 0;
+		}
+	freeaddrinfo(ra);
+	freeaddrinfo(rb);
+	return (meet);
+}
+
+/*
+ * Do URIs a and b, each with the certificate name expected of its agent
+ * (NULL: its host's), reach the same agent: the same socket; or the
+ * same port of an agent that says it is the same (the name its
+ * certificate is checked for), or of a host reached at an address both
+ * resolve to, whatever the transport.  Not the URI's text: another
+ * spelling of a registered agent's is that agent.
+ */
+static bool
+same_agent(const char *a, const char *pa, const char *b, const char *pb)
+{
+	char	ha[256], hb[256];
+
+	if (strncmp(a, "unix:", 5) == 0 || strncmp(b, "unix:", 5) == 0)
+		return (strcmp(a, b) == 0 || same_socket(a, b));
+	if (uri_port(a) != uri_port(b))
+		return (false);
+	uri_host_of(a, ha, sizeof(ha));
+	uri_host_of(b, hb, sizeof(hb));
+	if (ha[0] == '\0' || hb[0] == '\0')
+		return (strcmp(a, b) == 0);
+	if (strcasecmp(pa != NULL ? pa : ha, pb != NULL ? pb : hb) == 0 ||
+	    strcasecmp(ha, hb) == 0)
+		return (true);
+	return (addrs_meet(ha, hb));
 }
 
 /* The host of a tcp:// or sctp:// URI, without brackets; "" another. */
@@ -691,6 +786,7 @@ save(void)
 	rc = store_save(SERVERS, doc);
 	ucl_object_unref(doc);
 	cyang_changed("hosts");
+	acl_publish();
 	return (rc);
 }
 
@@ -871,6 +967,7 @@ mv_start(struct http_request *req, struct mv *m, int stage)
 	m->stage = stage;
 	task_create(&m->task, mv_run);
 	task_bind_request(&m->task, req);
+	m->task.who.need = ROLE_ADMIN;
 	task_run(&m->task);
 }
 
@@ -984,7 +1081,7 @@ servers_yang(struct http_request *req)
 	u = session_user(req);
 	list = ucl_object_typed_new(UCL_ARRAY);
 	for (i = 0; i < nservers; i++) {
-		if (u != NULL && user_host(u, servers[i].id) == ROLE_NONE)
+		if (req_host_role(req, servers[i].id) == ROLE_NONE)
 			continue;
 		e = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(e, ucl_object_fromstring(servers[i].id),
@@ -1031,7 +1128,8 @@ servers_yang(struct http_request *req)
 		    !servers[i].sampling_off), "sampled", 0, false);
 		if (u != NULL)
 			ucl_object_insert_key(e, ucl_object_fromstring(role_name(
-			    user_host(u, servers[i].id))), "role", 0, false);
+			    req_host_role(req, servers[i].id))), "role", 0,
+			    false);
 		ucl_array_append(list, e);
 	}
 	top = ucl_object_typed_new(UCL_OBJECT);
@@ -1117,13 +1215,16 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 {
 	const ucl_object_t	*wl, *nl, *e, *o;
 	ucl_object_iter_t	 it, it2;
-	const char		*id, *u, *w, *pn, *nu;
+	const char		*id, *u, *w, *pn, *nu, *rt, *t;
 	char			 oldhost[256], *old;
 	int			 i, nnew, ngone;
+	bool			 seen;
 
 	wl = ucl_object_lookup(was, "host");
 	nl = ucl_object_lookup(now, "host");
 	u = session_user(req);
+	/* A user of a tenant adds and keeps the tenant's hosts alone. */
+	rt = req_tenant(req);
 	nnew = ngone = 0;
 	it = NULL;
 	while ((e = ucl_object_iterate(nl, &it, true)) != NULL) {
@@ -1159,10 +1260,19 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 				    "id", id);
 				return (409);
 			}
+			/* Which agent it is, what its certificate says, a
+			 * console owner alone says. */
+			if (ucl_str(e, "peer-name") != NULL &&
+			    !owner_asks(req)) {
+				snprintf(why, len, "which agent host %s is, "
+				    "its certificate's name, a console owner "
+				    "alone says", id);
+				return (403);
+			}
 			nnew++;
 		} else if (!host_role_ok(req, id, true, true)) {
 			snprintf(why, len, "a %s of host %s may not administer "
-			    "it", role_name(user_host(u, id)), id);
+			    "it", role_name(req_host_role(req, id)), id);
 			return (403);
 		} else {
 			const struct server	*s = server_find(id);
@@ -1187,6 +1297,43 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 			snprintf(why, len, "host %s: %s", id, w);
 			return (400);
 		}
+		/* An agent on the console's own host is the console's
+		 * owner's to name, by however many spellings of its socket
+		 * (one agent may be two lab hosts). */
+		if (ucl_str(e, "uri") != NULL && strncmp(ucl_str(e, "uri"),
+		    "unix:", 5) == 0 && (o == NULL || strcmp(ucl_str(o, "uri"),
+		    ucl_str(e, "uri")) != 0) && !owner_asks(req)) {
+			snprintf(why, len, "host %s: an agent on the console's "
+			    "own host is added by a console owner", id);
+			return (403);
+		}
+		t = ucl_str(e, "tenant");
+		if (rt[0] != '\0' && t != NULL && strcmp(t, rt) != 0) {
+			snprintf(why, len, "host %s: a user of tenant %s keeps "
+			    "that tenant's hosts", id, rt);
+			return (403);
+		}
+		/* An agent registered already, however its URI is spelt,
+		 * is not registered again (one removed here aside). */
+		for (i = 0; i < nservers; i++) {
+			if (strcmp(servers[i].id, id) == 0 || (cyang_entry(wl,
+			    "id", servers[i].id) != NULL && cyang_entry(nl,
+			    "id", servers[i].id) == NULL))
+				continue;
+			if (o != NULL && strcmp(ucl_str(o, "uri"), ucl_str(e,
+			    "uri")) == 0 && same_str(ucl_str(o, "peer-name"),
+			    ucl_str(e, "peer-name")))
+				continue;
+			if (!same_agent(servers[i].uri, servers[i].peer_name,
+			    ucl_str(e, "uri"), ucl_str(e, "peer-name")))
+				continue;
+			/* Which host, to one who may read it alone. */
+			seen = req_host_role(req, servers[i].id) != ROLE_NONE;
+			snprintf(why, len, "host %s: its agent is registered "
+			    "already%s%s", id, seen ? ", as host " : "", seen ?
+			    servers[i].id : "");
+			return (409);
+		}
 	}
 	it = NULL;
 	while ((e = ucl_object_iterate(wl, &it, true)) != NULL) {
@@ -1195,7 +1342,7 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 			continue;
 		if (!host_role_ok(req, id, true, true)) {
 			snprintf(why, len, "a %s of host %s may not remove it",
-			    role_name(user_host(u, id)), id);
+			    role_name(req_host_role(req, id)), id);
 			return (403);
 		}
 		ngone++;
@@ -1217,7 +1364,9 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 		it2 = NULL;
 		while ((o = ucl_object_iterate(nl, &it2, true)) != NULL &&
 		    o != e)
-			if (strcmp(ucl_str(o, "uri"), ucl_str(e, "uri")) == 0) {
+			if (same_agent(ucl_str(o, "uri"), ucl_str(o,
+			    "peer-name"), ucl_str(e, "uri"), ucl_str(e,
+			    "peer-name"))) {
 				snprintf(why, len, "%s is already %s",
 				    ucl_str(e, "uri"), ucl_str(o, "name"));
 				return (409);
@@ -1239,9 +1388,10 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 		id = ucl_str(e, "id");
 		if ((o = cyang_entry(wl, "id", id)) != NULL && cyang_same(o, e))
 			continue;
+		t = rt[0] != '\0' ? rt : ucl_str(e, "tenant");
 		if (o == NULL) {
 			add(id, ucl_str(e, "name"), ucl_str(e, "uri"),
-			    ucl_str(e, "peer-name"), ucl_str(e, "tenant"));
+			    ucl_str(e, "peer-name"), t);
 			log_msg(LOG_NOTICE, "server %s added: %s", id,
 			    ucl_str(e, "uri"));
 		} else
@@ -1271,7 +1421,7 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 			servers[i].peer_name = dup_or_null(pn);
 		}
 		free(servers[i].tenant);
-		servers[i].tenant = dup_or_null(ucl_str(e, "tenant"));
+		servers[i].tenant = dup_or_null(t);
 		servers[i].safe_wait = (int)ucl_object_toint(ucl_object_lookup(e,
 		    "safe-wait"));
 		if (servers[i].pkg_repos != NULL)

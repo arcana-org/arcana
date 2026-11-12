@@ -25,9 +25,13 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <poll.h>
 #include <stdio.h>
@@ -174,7 +178,42 @@ endpoint_parse(const char *url, char *host, size_t hostlen, const char **path)
 	return (true);
 }
 
-/* A connection to host's port 443, made within the time allowed. */
+/* Is sa an address of this host's own? */
+static bool
+addr_ours(const struct sockaddr *sa)
+{
+	struct ifaddrs	*ifa, *i;
+	bool		 ours;
+
+	if (getifaddrs(&ifa) == -1)
+		return (true);
+	ours = false;
+	for (i = ifa; i != NULL && !ours; i = i->ifa_next) {
+		if (i->ifa_addr == NULL || i->ifa_addr->sa_family !=
+		    sa->sa_family)
+			continue;
+		if (sa->sa_family == AF_INET)
+			ours = memcmp(&((const struct sockaddr_in *)
+			    (const void *)sa)->sin_addr,
+			    &((struct sockaddr_in *)(void *)
+			    i->ifa_addr)->sin_addr,
+			    sizeof(struct in_addr)) == 0;
+		else if (sa->sa_family == AF_INET6)
+			ours = memcmp(&((const struct sockaddr_in6 *)
+			    (const void *)sa)->sin6_addr,
+			    &((struct sockaddr_in6 *)(void *)
+			    i->ifa_addr)->sin6_addr,
+			    sizeof(struct in6_addr)) == 0;
+	}
+	freeifaddrs(ifa);
+	return (ours);
+}
+
+/*
+ * A connection to host's port 443, made within the time allowed: to an
+ * address it resolves to that is on the internet and not this host's,
+ * the one checked the one connected to.
+ */
 static int
 connect_to(const char *host)
 {
@@ -190,8 +229,9 @@ connect_to(const char *host)
 		return (-1);
 	fd = -1;
 	for (ai = res; ai != NULL; ai = ai->ai_next) {
-		/* A push service is on the internet: nothing only we reach. */
-		if (!ipf_sockaddr_public(ai->ai_addr))
+		/* A push service is on the internet: nothing only we reach,
+		 * nor the console itself. */
+		if (!ipf_sockaddr_public(ai->ai_addr) || addr_ours(ai->ai_addr))
 			continue;
 		if ((fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC,
 		    ai->ai_protocol)) == -1)
@@ -443,14 +483,27 @@ sub_add(const char *user, const char *endpoint, const char *p256dh,
     const char *auth, const char *name, int64_t added, char *why,
     size_t len)
 {
-	ucl_object_t	*e;
-	const char	*bad, *path;
-	char		 host[256];
+	struct sockaddr_in	 sin;
+	ucl_object_t		*e;
+	const char		*bad, *path;
+	char			 host[256];
 
 	if (endpoint == NULL || strlen(endpoint) > 1024 ||
 	    !endpoint_parse(endpoint, host, sizeof(host), &path)) {
 		snprintf(why, len, "the address of a push service is "
 		    "https://host/path");
+		return (400);
+	}
+	/* An address said as one: on the internet, or not taken (a name is
+	 * resolved and held to the same when it is posted to). */
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_len = sizeof(sin);
+	if (inet_pton(AF_INET, host, &sin.sin_addr) == 1 &&
+	    (!ipf_sockaddr_public((struct sockaddr *)&sin) ||
+	    addr_ours((struct sockaddr *)&sin))) {
+		snprintf(why, len, "a push service is on the internet: %s is "
+		    "not", host);
 		return (400);
 	}
 	if ((bad = keys_bad(p256dh, auth)) != NULL) {

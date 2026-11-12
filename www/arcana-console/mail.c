@@ -547,6 +547,7 @@ tg_send(const struct mailconf *mc, const char *text, char *err,
     size_t errlen)
 {
 	struct ucl_parser	*p;
+	struct principal	 was;
 	ucl_object_t		*o;
 	const ucl_object_t	*e;
 	char			*uri, *peer, *name, *list, *rest, *chat, *ans;
@@ -559,6 +560,10 @@ tg_send(const struct mailconf *mc, const char *text, char *err,
 	}
 	if (tg_sender(mc, &uri, &peer, &name, err, errlen) != 0)
 		return (-1);
+	/* The console's own channel, Settings' sender, whoever's thread
+	 * says something: as the console, then as before. */
+	hosts_acting(&was);
+	hosts_act_console();
 	/* What does not fit one message is cut, and says so: between two
 	 * characters, the Bot API refusing what is not UTF-8. */
 	if (strlen(text) > 4000)
@@ -595,6 +600,7 @@ tg_send(const struct mailconf *mc, const char *text, char *err,
 			ucl_object_unref(o);
 		free(ans);
 	}
+	hosts_act(&was);
 	free(list);
 	free(uri);
 	free(peer);
@@ -1312,10 +1318,12 @@ done:
 	mail_flush();
 }
 
+/* The console itself: the hosts' events read for the alerts, no one's. */
 static void *
 watcher(void *arg __unused)
 {
 
+	hosts_act_console();
 	for (;;) {
 		sleep((unsigned int)cfg.mail_tick);
 		/* Of a cluster, the leader's alone: one mail, not one a

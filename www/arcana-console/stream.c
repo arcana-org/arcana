@@ -21,15 +21,16 @@
  * {"id": 7, "error": "why"} in its place.  {"id": 7, "stop": true} from
  * the page ends one early.
  *
- * Each request is a task in a thread of its own, which opens a stream
- * of the host's parts on the connection the console shares with it, and
- * writes each part to the task's channel as it comes; the worker passes
- * them on to the socket.  The host sends ahead only as far as the
- * stream's window, which a part gives back once it was written, so a
- * slow page slows the host down, nothing piles up between them, and
- * the other requests to the host go on beside it.  The sysctls come by
- * arcana-sysctl's read action instead (ytrans.c), a part asked for
- * once the one before was written.
+ * Each request is a task in a thread of its own, acting for whom the
+ * socket was opened by (a request's task acts for its request's), which
+ * opens a stream of the host's parts on the connection the console
+ * shares with it, and writes each part to the task's channel as it
+ * comes; the worker passes them on to the socket.  The host sends
+ * ahead only as far as the stream's window, which a part gives back
+ * once it was written, so a slow page slows the host down, nothing
+ * piles up between them, and the other requests to the host go on
+ * beside it.  The sysctls come by arcana-sysctl's read action instead
+ * (ytrans.c), a part asked for once the one before was written.
  *
  * And what is restconf: a read the page would make through the fleet
  * mount (PLAN-SDN-YANG 4.8.1), done here so that its steps reach the
@@ -105,6 +106,35 @@ say(struct task *t, const char *fmt, ...)
 	if (n == -1)
 		return;
 	task_channel_write(t, s, (u_int32_t)n);
+	free(s);
+}
+
+/* {"id": id, "error": why}, why whatever a host said: made by ucl, so
+ * that no text of the host's makes it another message. */
+static char *
+error_text(uint64_t id, const char *why)
+{
+	ucl_object_t	*o;
+	char		*s;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(o, ucl_object_fromint((int64_t)id), "id", 0,
+	    false);
+	ucl_object_insert_key(o, ucl_object_fromstring(why), "error", 0,
+	    false);
+	s = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(o);
+	return (s);
+}
+
+static void
+say_error(struct task *t, uint64_t id, const char *why)
+{
+	char	*s;
+
+	if ((s = error_text(id, why)) == NULL)
+		return;
+	task_channel_write(t, s, (u_int32_t)strlen(s));
 	free(s);
 }
 
@@ -336,8 +366,7 @@ sysctl_run(struct task *t)
 
 	s = (struct stream *)t;
 	if ((msg = hosts_shared(s->uri, s->peer, &conn)) != NULL) {
-		say(t, "{\"id\":%ju,\"error\":\"the host does not answer\"}",
-		    (uintmax_t)s->id);
+		say_error(t, s->id, msg);
 		log_msg(LOG_NOTICE, "stream %s: %s", s->sid, msg);
 		return (WEB_OK);
 	}
@@ -364,13 +393,8 @@ sysctl_run(struct task *t)
 	else if (error == 0)
 		say(t, "{\"id\":%ju,\"done\":true,\"total\":%ju}",
 		    (uintmax_t)s->id, (uintmax_t)sent);
-	else {
-		for (char *p = err; *p != '\0'; p++)
-			if (*p == '"' || *p == '\\')
-				*p = '\'';
-		say(t, "{\"id\":%ju,\"error\":\"%s\"}", (uintmax_t)s->id,
-		    err);
-	}
+	else
+		say_error(t, s->id, err);
 	return (WEB_OK);
 }
 
@@ -389,8 +413,7 @@ stream_run(struct task *t)
 
 	s = (struct stream *)t;
 	if ((msg = hosts_shared(s->uri, s->peer, &conn)) != NULL) {
-		say(t, "{\"id\":%ju,\"error\":\"the host does not answer\"}",
-		    (uintmax_t)s->id);
+		say_error(t, s->id, msg);
 		log_msg(LOG_NOTICE, "stream %s: %s", s->sid, msg);
 		return (WEB_OK);
 	}
@@ -439,8 +462,8 @@ stream_run(struct task *t)
 		say(t, "{\"id\":%ju,\"done\":true,\"total\":%ju}",
 		    (uintmax_t)s->id, (uintmax_t)r.total);
 	else
-		say(t, "{\"id\":%ju,\"error\":\"%s\"}", (uintmax_t)s->id,
-		    r.why[0] != '\0' ? r.why : "the host stopped answering");
+		say_error(t, s->id, r.why[0] != '\0' ? r.why :
+		    "the host stopped answering");
 	pthread_mutex_unlock(&r.lock);
 	/* Stopped, or what the host sent ended: the stream goes. */
 	if (!r.closed && good)
@@ -514,15 +537,16 @@ stream_connect(struct conn *c)
 }
 
 /*
- * The console user the socket was opened by (users.c), kept on the
- * connection by api_stream(); NULL for a session with none.  Each
- * host asked for is theirs to read, or refused as if it were not.
+ * Whom the socket was opened by (req_principal()), kept on the
+ * connection by api_stream(): each host asked for is theirs to read,
+ * or refused as if it were not, and each read asked of it as theirs.
  */
 static bool
 stream_host_ok(struct conn *c, const char *sid)
 {
 
-	return (user_host(c->hdlr_extra, sid) != ROLE_NONE);
+	return (c->hdlr_extra != NULL && principal_may(c->hdlr_extra, sid,
+	    ROLE_VIEWER));
 }
 
 /* The socket went: its requests stop, and end with nobody to tell. */
@@ -543,12 +567,12 @@ stream_disconnect(struct conn *c)
 static void
 refuse(struct conn *c, uint64_t id, const char *why)
 {
-	char	buf[256];
-	int	n;
+	char	*s;
 
-	n = snprintf(buf, sizeof(buf), "{\"id\":%ju,\"error\":\"%s\"}",
-	    (uintmax_t)id, why);
-	ws_send(c, WS_OP_TEXT, buf, (size_t)n);
+	if ((s = error_text(id, why)) == NULL)
+		return;
+	ws_send(c, WS_OP_TEXT, s, strlen(s));
+	free(s);
 }
 
 void
@@ -614,6 +638,7 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 			nstreams++;
 			task_create(&s->task, read_run);
 			task_bind_callback(&s->task, stream_ready);
+			task_bind_principal(&s->task, c->hdlr_extra);
 			task_run(&s->task);
 		}
 		ucl_object_unref(o);
@@ -673,6 +698,7 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 		nstreams++;
 		task_create(&s->task, kind == 255 ? sysctl_run : stream_run);
 		task_bind_callback(&s->task, stream_ready);
+		task_bind_principal(&s->task, c->hdlr_extra);
 		task_run(&s->task);
 	}
 	ucl_object_unref(o);
@@ -694,10 +720,10 @@ api_stream(struct http_request *req)
 	    cfg.origin) != 0 && !cluster_origin(v)))
 		return (reply_error(req, 403, "csrf", "not from the console's "
 		    "own page"));
-	/* Whose socket: the user's name stays with the connection. */
+	/* Whose socket: who it acts for stays with the connection. */
 	free(req->owner->hdlr_extra);
-	req->owner->hdlr_extra = session_user(req) != NULL ? xstrdup(
-	    session_user(req)) : NULL;
+	req->owner->hdlr_extra = xmalloc(sizeof(struct principal));
+	req_principal(req, req->owner->hdlr_extra);
 	ws_handshake(req, stream_connect, stream_message, stream_disconnect);
 	return (WEB_OK);
 }

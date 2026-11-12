@@ -3976,6 +3976,42 @@ sdwan_valid(const ucl_object_t *doc, char *why, size_t len)
 	return (false);
 }
 
+/*
+ * May the request change each edge whose entry goes from old to new
+ * (made, changed or taken away)?  Why not into why.  What an edge does
+ * by the services is held at the apply (sdwan_edge.c), each edge it
+ * changes the user's to change.
+ */
+static bool
+edges_changed_ok(struct http_request *req, const ucl_object_t *old,
+    const ucl_object_t *new, char *why, size_t len)
+{
+	const ucl_object_t	*e, *o, *pair[2] = { new, old };
+	ucl_object_iter_t	 it;
+	char			 sid[64], jail[64];
+	int			 k;
+
+	for (k = 0; k < 2; k++) {
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(pair[k],
+		    "edges"), &it, true)) != NULL) {
+			if (str(e, "server") == NULL || !sdwan_edge_split(str(e,
+			    "server"), sid, sizeof(sid), jail, sizeof(jail)))
+				continue;
+			o = by(ucl_object_lookup(pair[1 - k], "edges"),
+			    "server", str(e, "server"));
+			if (o != NULL && cyang_same(o, e))
+				continue;
+			if (!host_role_ok(req, sid, true, false)) {
+				snprintf(why, len, "edge %s: host %s is not "
+				    "yours to change", str(e, "server"), sid);
+				return (false);
+			}
+		}
+	}
+	return (true);
+}
+
 int
 api_sdwan(struct http_request *req)
 {
@@ -4008,6 +4044,11 @@ api_sdwan(struct http_request *req)
 	}
 	/* Kept as L3NM, if made from the version kept (l3nm.c). */
 	doc = l3nm_sdwan();
+	if (!edges_changed_ok(req, doc, body, why, sizeof(why))) {
+		ucl_object_unref(doc);
+		ucl_object_unref(body);
+		return (reply_error(req, 403, "role", "%s", why));
+	}
 	if ((st = l3nm_sdwan_put(body, ucl_object_toint(ucl_object_lookup(
 	    body, "version")), why, sizeof(why))) != 0) {
 		ucl_object_unref(doc);

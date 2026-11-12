@@ -612,7 +612,7 @@ host_ok(struct http_request *req, const char *sid, char *why, size_t len)
 
 	if (host_role_ok(req, sid, true, false))
 		return (0);
-	r = user_host(session_user(req), sid);
+	r = req_host_role(req, sid);
 	if (r == ROLE_NONE) {
 		snprintf(why, len, "no such server");
 		return (404);
@@ -702,6 +702,7 @@ transfers_yang_start(struct http_request *req, const ucl_object_t *in,
 	r->started = time(NULL);
 	xf_record(r, XF_RUNNING, NULL, 0, NULL);
 	*idp = r->id;
+	hosts_need(ROLE_OPERATOR);
 	if (hosts_thread(&tid, xf_run, r) != 0) {
 		xf_record(r, XF_FAILED, "no thread for it", time(NULL), NULL);
 		pthread_mutex_lock(&xf_lock);

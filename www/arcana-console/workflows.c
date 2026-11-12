@@ -59,6 +59,15 @@
  * then after a restart.  Threads never look at the servers themselves:
  * a timer of the worker's copies where each is reached into a table
  * they read.
+ *
+ * A workflow keeps who last saved it, its author (one saved before it
+ * did, the built-in owner's), and a run who started it, or for what
+ * runs by itself the author: the run acts for them on every host, as
+ * their role there allows (hosts_thread_as()), and a host they may no
+ * longer change fails with why.  Saved, run and approved by one who
+ * may change each of its hosts, an admin of each for a step of
+ * Arcana's own (of every host, for the agents updated); read by one
+ * who may read each.
  */
 
 #include <sys/param.h>
@@ -935,6 +944,160 @@ wf_find(const char *id)
 	return (w);
 }
 
+/*
+ * Whom a workflow acts for when it runs by itself: who last saved it
+ * (author, or author_token for an API token); one saved before it kept
+ * who, the built-in owner.
+ */
+static void
+wf_author(const ucl_object_t *w, struct principal *p)
+{
+
+	memset(p, 0, sizeof(*p));
+	if (ucl_str(w, "author_token") != NULL) {
+		p->kind = P_WTOKEN;
+		snprintf(p->name, sizeof(p->name), "%s", ucl_str(w,
+		    "author_token"));
+	} else {
+		p->kind = P_USER;
+		snprintf(p->name, sizeof(p->name), "%s", ucl_str(w, "author") !=
+		    NULL ? ucl_str(w, "author") : ADMIN_USER);
+	}
+}
+
+/* w's author made p. */
+static void
+wf_author_set(ucl_object_t *w, const struct principal *p)
+{
+
+	(void)ucl_object_delete_key(w, "author");
+	(void)ucl_object_delete_key(w, "author_token");
+	if (p->kind == P_RTOKEN || p->kind == P_WTOKEN)
+		put(w, "author_token", ucl_object_fromstring(p->name));
+	else if (p->kind == P_USER)
+		put(w, "author", ucl_object_fromstring(p->name));
+}
+
+/* Does w hold a step of Arcana's own (run_arcana()), or one that
+ * updates every host's agent? */
+static bool
+wf_arcana(const ucl_object_t *w, bool every)
+{
+	const ucl_object_t	*st;
+	ucl_object_iter_t	 it = NULL;
+
+	while ((st = ucl_object_iterate(ucl_object_lookup(w, "steps"), &it,
+	    true)) != NULL)
+		if (ucl_str(st, "arcana") != NULL && (!every || strcmp(ucl_str(
+		    st, "arcana"), "agents") == 0))
+			return (true);
+	return (false);
+}
+
+/* What a run of w needs on each host: an admin's with a step of
+ * Arcana's own, else an operator's. */
+static enum role
+wf_need(const ucl_object_t *w)
+{
+
+	return (wf_arcana(w, false) ? ROLE_ADMIN : ROLE_OPERATOR);
+}
+
+/*
+ * On the worker: may p run w on hosts (NULL or none: its own), each the
+ * role a run needs, and, for a step that updates every agent, as an
+ * admin of every host?  0, or the HTTP status and why.  At a save, at
+ * a run's start, at an approval.
+ */
+static int
+wf_may(const struct principal *p, const ucl_object_t *w,
+    const ucl_object_t *hosts, char *why, size_t len)
+{
+	const struct server	*s;
+	const ucl_object_t	*h;
+	ucl_object_iter_t	 it;
+	enum role		 need, r;
+	char			 who[96];
+	int			 i;
+
+	if (hosts == NULL || ucl_array_size(hosts) == 0)
+		hosts = ucl_object_lookup(w, "hosts");
+	need = wf_need(w);
+	it = NULL;
+	while ((h = ucl_object_iterate(hosts, &it, true)) != NULL) {
+		if (ucl_object_type(h) != UCL_STRING)
+			continue;
+		r = principal_host(p, ucl_object_tostring(h));
+		if (r == ROLE_NONE) {
+			snprintf(why, len, "no such server: %s",
+			    ucl_object_tostring(h));
+			return (404);
+		}
+		if (r < need) {
+			snprintf(why, len, "%s is a %s of host %s: a run needs "
+			    "an %s of each of its hosts", principal_who(p, who,
+			    sizeof(who)), role_name(r), ucl_object_tostring(h),
+			    role_name(need));
+			return (403);
+		}
+	}
+	if (!wf_arcana(w, true))
+		return (0);
+	for (i = 0; (s = server_at(i)) != NULL; i++)
+		if (principal_host(p, s->id) < ROLE_ADMIN) {
+			snprintf(why, len, "a step updates every host's agent: "
+			    "%s is no admin of every host", principal_who(p,
+			    who, sizeof(who)));
+			return (403);
+		}
+	return (0);
+}
+
+/*
+ * May p read w: each of its hosts; one that names none, its author,
+ * or one of no tenant.
+ */
+static bool
+wf_readable(const struct principal *p, const ucl_object_t *w)
+{
+	const ucl_object_t	*h;
+	struct principal	 a;
+	ucl_object_iter_t	 it = NULL;
+
+	if (ucl_array_size(ucl_object_lookup(w, "hosts")) == 0) {
+		wf_author(w, &a);
+		return (p->kind != P_USER || user_tenant(p->name)[0] == '\0' ||
+		    (a.kind == P_USER && strcmp(a.name, p->name) == 0));
+	}
+	while ((h = ucl_object_iterate(ucl_object_lookup(w, "hosts"), &it,
+	    true)) != NULL)
+		if (ucl_object_type(h) != UCL_STRING || principal_host(p,
+		    ucl_object_tostring(h)) == ROLE_NONE)
+			return (false);
+	return (true);
+}
+
+/* May p read run r, as runs.json has it (each of its hosts); with
+ * need more than a viewer's, act on it (stop it, approve a step). */
+static bool
+run_readable(const struct principal *p, const ucl_object_t *r,
+    enum role need)
+{
+	const ucl_object_t	*h;
+	ucl_object_iter_t	 it = NULL;
+
+	if (ucl_array_size(ucl_object_lookup(r, "hosts")) == 0)
+		return (p->kind != P_USER || user_tenant(p->name)[0] == '\0');
+	while ((h = ucl_object_iterate(ucl_object_lookup(r, "hosts"), &it,
+	    true)) != NULL)
+		if (ucl_str(h, "id") == NULL || !principal_may(p, ucl_str(h,
+		    "id"), need))
+			return (false);
+	return (true);
+}
+
+static const ucl_object_t *wf_entry(const ucl_object_t *, const char *);
+
 /* ---- The runs -------------------------------------------------------- */
 
 struct hoststep {
@@ -965,6 +1128,8 @@ struct run {
 	ucl_object_t	*event;		/* of what began it, or NULL */
 	char		 trigger[64];
 	char		 started_by[64];	/* the console user, or "" */
+	struct principal who;		/* whom it acts for: its starter, or
+					 * its workflow's author */
 	char		 state[12];
 	time_t		 started, ended;
 	double		 began;		/* started, to the millisecond */
@@ -1013,6 +1178,8 @@ run_object(struct run *r, bool traces)
 	put(o, "trigger", ucl_object_fromstring(r->trigger));
 	if (r->started_by[0] != '\0')
 		put(o, "started_by", ucl_object_fromstring(r->started_by));
+	if (r->who.kind == P_RTOKEN || r->who.kind == P_WTOKEN)
+		put(o, "started_by_token", ucl_object_fromstring(r->who.name));
 	put(o, "state", ucl_object_fromstring(r->state));
 	/* To the millisecond, as its steps' are, when it is known. */
 	put(o, "started", r->began > 0 ? ucl_object_fromdouble(floor(r->began *
@@ -1611,7 +1778,7 @@ run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 	const char	*what, *head, *updated, *agents;
 	char		 why[400];
 	char		 who[sizeof(((struct hoststep *)0)->error)];
-	int		 i, n, failed;
+	int		 i, m, n, failed;
 	bool		 na, nc;
 
 	what = ucl_str(step, "arcana");
@@ -1678,7 +1845,12 @@ run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 	list = ucl_object_typed_new(UCL_ARRAY);
 	failed = 0;
 	who[0] = '\0';
-	for (i = 0; i < n && !cancelled(hr->run); i++) {
+	for (i = 0, m = 0; i < n && !cancelled(hr->run); i++) {
+		/* Those whom it acts for knows of: each needs an admin of
+		 * it (call_need()), else it says why. */
+		if (principal_host_at(&hr->run->who, all[i].uri) == ROLE_NONE)
+			continue;
+		m++;
 		one = ucl_object_typed_new(UCL_OBJECT);
 		put(one, "host", ucl_object_fromstring(all[i].name));
 		if ((ans = arcana_call(&all[i], "agent-update", why,
@@ -1704,7 +1876,7 @@ run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 	step_answer(hr, k, step, ans);
 	if (failed > 0) {
 		step_set(hr, k, "failed", "%d of %d hosts did not take it "
-		    "(%s)", failed, n, who);
+		    "(%s)", failed, m, who);
 		return (false);
 	}
 	/* What they run now: what was built last. */
@@ -1753,12 +1925,22 @@ host_run(void *arg)
 	struct hostrun		*hr = arg;
 	const ucl_object_t	*steps, *step, *when;
 	const char		*of;
+	char			 why[300];
 	int			 k, j, n;
 	bool			 ok, stopped;
 
 	steps = ucl_object_lookup(hr->run->wf, "steps");
 	n = hr->run->nsteps;
 	stopped = false;
+	/* Whom it acts for may still, else it fails and says why. */
+	if (!principal_reach(&hr->run->who, hr->h.uri, (enum role)
+	    hr->run->who.need, why, sizeof(why))) {
+		step_set(hr, 0, "failed", "%s", why);
+		for (k = 1; k < n; k++)
+			step_set(hr, k, "not run", NULL);
+		stopped = true;
+		n = 0;
+	}
 	for (k = 0; k < n; k++) {
 		step = ucl_array_find_index(steps, (unsigned int)k);
 		if (stopped || cancelled(hr->run)) {
@@ -1901,13 +2083,14 @@ wf_running(const char *id)
 
 /*
  * A run of wf begun on its hosts, or on hosts when given; params over
- * the defaults; event what began it, by the console user who started
- * it (NULL: none did).  Its number, or 0 and why.
+ * the defaults; event what began it, for who (who started it, or the
+ * workflow's author), as whom it acts on every host.  Its number, or 0
+ * and why.
  */
 static uint32_t
 run_start(const ucl_object_t *wf, const ucl_object_t *hosts,
     const ucl_object_t *params, const ucl_object_t *event,
-    const char *trigger, const char *by, const char **whyp)
+    const char *trigger, const struct principal *who, const char **whyp)
 {
 	struct run		*r;
 	const ucl_object_t	*v, *p;
@@ -1941,8 +2124,10 @@ run_start(const ucl_object_t *wf, const ucl_object_t *hosts,
 	}
 	r->event = event != NULL ? ucl_object_copy(event) : NULL;
 	snprintf(r->trigger, sizeof(r->trigger), "%s", trigger);
-	snprintf(r->started_by, sizeof(r->started_by), "%s", by != NULL ? by :
-	    "");
+	r->who = *who;
+	r->who.need = (int)wf_need(wf);
+	snprintf(r->started_by, sizeof(r->started_by), "%s", who->kind ==
+	    P_USER ? who->name : "");
 	snprintf(r->state, sizeof(r->state), "running");
 	r->started = time(NULL);
 	{
@@ -1996,7 +2181,7 @@ run_start(const ucl_object_t *wf, const ucl_object_t *hosts,
 	pthread_mutex_unlock(&r->lock);
 	/* Taken before the thread runs: it frees r when it is done. */
 	id = r->id;
-	if (hosts_thread(&tid, run_main, r) != 0) {
+	if (hosts_thread_as(&tid, run_main, r, &r->who) != 0) {
 		*whyp = "no thread for it";
 		pthread_mutex_lock(&running_lock);
 		nrunning--;
@@ -2106,6 +2291,7 @@ fire(const ucl_object_t *wfs, const char *sid, const char *kind,
 	const ucl_object_t	*w, *on, *h;
 	ucl_object_iter_t	 it, oit, hit;
 	ucl_object_t		*hosts, *ev;
+	struct principal	 who;
 	const char		*why;
 	char			 trig[64];
 	bool			 mine;
@@ -2133,7 +2319,8 @@ fire(const ucl_object_t *wfs, const char *sid, const char *kind,
 			put(ev, "kind", ucl_object_fromstring(kind));
 			put(ev, "host", ucl_object_fromstring(sid));
 			snprintf(trig, sizeof(trig), "event %s", kind);
-			(void)run_start(w, hosts, NULL, ev, trig, NULL, &why);
+			wf_author(w, &who);
+			(void)run_start(w, hosts, NULL, ev, trig, &who, &why);
 			ucl_object_unref(hosts);
 			ucl_object_unref(ev);
 			break;
@@ -2294,6 +2481,9 @@ sub_run(void *arg)
 	cbl_sub			*sub;
 	int			 ev, ms;
 
+	/* The console itself: a host's events heard for what they begin,
+	 * no one's; each run begun acts for its workflow's author. */
+	hosts_act_console();
 	while (!atomic_load(&x->stop)) {
 		if (!ref_get(x->sid, &h)) {
 			sub_pause(x, SUB_RETRY_S);
@@ -2406,6 +2596,7 @@ scheduler(void *arg __unused)
 		time_t	last;
 	}			 due[WF_MAX];
 	struct watched		*x;
+	struct principal	 who;
 	int			 ndue, k;
 	time_t			 now, t;
 	const char		*why;
@@ -2450,8 +2641,9 @@ scheduler(void *arg __unused)
 				    !wf_running(ucl_str(w, "id"))) {
 					due[k].last = now;
 					every_ran(due[k].id, now);
+					wf_author(w, &who);
 					(void)run_start(w, NULL, NULL, NULL,
-					    "every", NULL, &why);
+					    "every", &who, &why);
 				}
 			}
 			/* The hosts whose events it waits for. */
@@ -2643,17 +2835,26 @@ wf_delete(const char *wid)
  * and why.
  */
 static int
-wf_keep(const ucl_object_t *in, ucl_object_t **kept, char *why, size_t len)
+wf_keep(const ucl_object_t *in, const struct principal *author,
+    ucl_object_t **kept, char *why, size_t len)
 {
 	ucl_object_t		*w, *top, *keep;
 	const ucl_object_t	*e;
 	ucl_object_iter_t	 it;
 	const char		*bad, *id;
 	bool			 found;
+	int			 rc;
 
 	if ((w = wf_check(in, &bad)) == NULL) {
 		snprintf(why, len, "%s", bad);
 		return (400);
+	}
+	/* Who saved it is whom it runs for by itself, and may: each of its
+	 * hosts theirs to change. */
+	wf_author_set(w, author);
+	if ((rc = wf_may(author, w, NULL, why, len)) != 0) {
+		ucl_object_unref(w);
+		return (rc);
 	}
 	/* In its place, or as the newest. */
 	pthread_mutex_lock(&wf_lock);
@@ -2693,8 +2894,8 @@ wf_keep(const ucl_object_t *in, ucl_object_t **kept, char *why, size_t len)
 }
 
 /*
- * Workflow wid run by hand on hosts (NULL: its own) with params, each
- * host's role the request's user's to change: *n its run; 0, or the
+ * Workflow wid run by hand on hosts (NULL: its own) with params, for
+ * the request's user, who may on each (wf_may()): *n its run; 0, or the
  * HTTP status and why.  Without a reply.
  */
 static int
@@ -2704,9 +2905,14 @@ wf_run(struct http_request *req, const char *wid, const ucl_object_t *hosts,
 	ucl_object_t		*w;
 	const ucl_object_t	*e;
 	ucl_object_iter_t	 it;
+	struct principal	 p;
 	const char		*bad;
+	int			 rc;
 
-	if ((w = wf_find(wid)) == NULL) {
+	req_principal(req, &p);
+	if ((w = wf_find(wid)) == NULL || !wf_readable(&p, w)) {
+		if (w != NULL)
+			ucl_object_unref(w);
 		snprintf(why, len, "no such workflow");
 		return (404);
 	}
@@ -2714,27 +2920,17 @@ wf_run(struct http_request *req, const char *wid, const ucl_object_t *hosts,
 	while ((e = ucl_object_iterate(hosts, &it, true)) != NULL) {
 		struct hostref	h;
 
-		if (!ref_get(ucl_object_tostring_forced(e), &h) ||
-		    user_host(session_user(req), ucl_object_tostring_forced(
-		    e)) == ROLE_NONE) {
+		if (!ref_get(ucl_object_tostring_forced(e), &h)) {
 			ucl_object_unref(w);
 			snprintf(why, len, "no such server");
 			return (404);
 		}
-		/* A change on each host: the user's role there, as a job
-		 * on it would ask. */
-		if (!host_role_ok(req, ucl_object_tostring_forced(e), true,
-		    false)) {
-			ucl_object_unref(w);
-			snprintf(why, len, "a %s of host %s may not change it",
-			    role_name(user_host(session_user(req),
-			    ucl_object_tostring_forced(e))),
-			    ucl_object_tostring_forced(e));
-			return (403);
-		}
 	}
-	*n = run_start(w, hosts, params, NULL, "hand", session_user(req),
-	    &bad);
+	if ((rc = wf_may(&p, w, hosts, why, len)) != 0) {
+		ucl_object_unref(w);
+		return (rc);
+	}
+	*n = run_start(w, hosts, params, NULL, "hand", &p, &bad);
 	ucl_object_unref(w);
 	if (*n == 0) {
 		snprintf(why, len, "%s", bad);
@@ -2750,7 +2946,7 @@ wf_run(struct http_request *req, const char *wid, const ucl_object_t *hosts,
  * threads writing it still.  How many.
  */
 static int
-runs_forget(const char *wid, const char *who)
+runs_forget(const struct principal *p, const char *wid, const char *who)
 {
 	ucl_object_t		*top, *keep;
 	const ucl_object_t	*e;
@@ -2767,7 +2963,8 @@ runs_forget(const char *wid, const char *who)
 	    true)) != NULL) {
 		if ((ucl_str(e, "state") != NULL && strcmp(ucl_str(e, "state"),
 		    "running") == 0) || (wid != NULL && (ucl_str(e, "workflow") ==
-		    NULL || strcmp(ucl_str(e, "workflow"), wid) != 0))) {
+		    NULL || strcmp(ucl_str(e, "workflow"), wid) != 0)) ||
+		    !run_readable(p, e, ROLE_OPERATOR)) {
 			ucl_array_append(keep, ucl_object_copy(e));
 			continue;
 		}
@@ -2794,14 +2991,18 @@ runs_forget(const char *wid, const char *who)
  * (when they write next).  0, or the HTTP status and why.
  */
 static int
-run_mark(uint32_t n, const char *id, const char *who, char *why, size_t len)
+run_mark(const struct principal *p, uint32_t n, const char *id,
+    const char *who, char *why, size_t len)
 {
-	ucl_object_t		*top, *one, *e, *a, *ap;
-	const ucl_object_t	*h, *st;
+	ucl_object_t		*top, *one, *e, *a, *ap, *wfs;
+	const ucl_object_t	*h, *st, *w;
 	ucl_object_iter_t	 it, hit, sit;
+	enum role		 need;
 	bool			 waits;
 
+	need = ROLE_OPERATOR;
 	pthread_mutex_lock(&wf_lock);
+	wfs = wf_load();
 	top = store_load(RUNS_FILE);
 	one = NULL;
 	it = NULL;
@@ -2810,12 +3011,26 @@ run_mark(uint32_t n, const char *id, const char *who, char *why, size_t len)
 	    NULL)
 		if ((uint32_t)ucl_object_toint(ucl_object_lookup(e, "id")) == n)
 			one = e;
-	if (one == NULL) {
+	if (one != NULL && ucl_str(one, "workflow") != NULL && (w =
+	    wf_entry(ucl_object_lookup(wfs, "workflows"), ucl_str(one,
+	    "workflow"))) != NULL)
+		need = wf_need(w);
+	ucl_object_unref(wfs);
+	if (one == NULL || !run_readable(p, one, ROLE_VIEWER)) {
 		pthread_mutex_unlock(&wf_lock);
 		if (top != NULL)
 			ucl_object_unref(top);
 		snprintf(why, len, "no such run");
 		return (404);
+	}
+	/* A stop or an approval is a change on each of its hosts, as its
+	 * run is (wf_need()). */
+	if (!run_readable(p, one, need)) {
+		pthread_mutex_unlock(&wf_lock);
+		ucl_object_unref(top);
+		snprintf(why, len, "a run is %s by an operator of each of its "
+		    "hosts", id == NULL ? "stopped" : "approved");
+		return (403);
 	}
 	if (id == NULL) {
 		if (strcmp(ucl_str(one, "state"), "running") != 0) {
@@ -3123,14 +3338,16 @@ wf_yang(const ucl_object_t *w)
 	return (o);
 }
 
-/* arcana-console:workflows's value. */
+/* arcana-console:workflows's value: those the request may read. */
 ucl_object_t *
-workflows_yang(void)
+workflows_yang(struct http_request *req)
 {
 	ucl_object_t		*top, *o, *l;
 	const ucl_object_t	*w;
 	ucl_object_iter_t	 it;
+	struct principal	 p;
 
+	req_principal(req, &p);
 	pthread_mutex_lock(&wf_lock);
 	top = wf_load();
 	pthread_mutex_unlock(&wf_lock);
@@ -3138,7 +3355,7 @@ workflows_yang(void)
 	it = NULL;
 	while ((w = ucl_object_iterate(ucl_object_lookup(top, "workflows"),
 	    &it, true)) != NULL)
-		if (ucl_str(w, "id") != NULL)
+		if (ucl_str(w, "id") != NULL && wf_readable(&p, w))
 			ucl_array_append(l, wf_yang(w));
 	ucl_object_unref(top);
 	o = ucl_object_typed_new(UCL_OBJECT);
@@ -3325,20 +3542,24 @@ wf_entry(const ucl_object_t *list, const char *id)
 
 /*
  * The workflows changed from was to now: each made or changed kept by
- * the workflows' check, each left out deleted.  All or nothing:
- * the workflows kept before put back on a refusal.  0, or the HTTP
- * status and why.
+ * the workflows' check, its author the request's, each left out
+ * deleted by one who may change each of its hosts.  Those the request
+ * may not read are in neither and stay.  All or nothing: the
+ * workflows kept before put back on a refusal.  0, or the HTTP status
+ * and why.
  */
 int
-workflows_yang_set(const ucl_object_t *was, const ucl_object_t *now,
-    char *why, size_t len)
+workflows_yang_set(struct http_request *req, const ucl_object_t *was,
+    const ucl_object_t *now, char *why, size_t len)
 {
-	ucl_object_t		*saved, *in, *a, *b, *kept;
+	ucl_object_t		*saved, *in, *a, *b, *kept, *w;
 	const ucl_object_t	*e, *o;
 	ucl_object_iter_t	 it;
+	struct principal	 p;
 	int			 rc = 0;
 	bool			 same;
 
+	req_principal(req, &p);
 	refs_copy();
 	pthread_mutex_lock(&wf_lock);
 	saved = wf_load();
@@ -3360,16 +3581,24 @@ workflows_yang_set(const ucl_object_t *was, const ucl_object_t *now,
 			rc = 400;
 			break;
 		}
-		if ((rc = wf_keep(in, &kept, why, len)) == 0)
+		if ((rc = wf_keep(in, &p, &kept, why, len)) == 0)
 			ucl_object_unref(kept);
 		ucl_object_unref(in);
 	}
 	it = NULL;
 	while (rc == 0 && (o = ucl_object_iterate(ucl_object_lookup(was,
-	    "workflow"), &it, true)) != NULL)
+	    "workflow"), &it, true)) != NULL) {
 		if (wf_entry(ucl_object_lookup(now, "workflow"), ucl_str(o,
-		    "id")) == NULL)
-			(void)wf_delete(ucl_str(o, "id"));
+		    "id")) != NULL)
+			continue;
+		if ((w = wf_find(ucl_str(o, "id"))) != NULL) {
+			rc = wf_may(&p, w, NULL, why, len);
+			ucl_object_unref(w);
+			if (rc != 0)
+				break;
+		}
+		(void)wf_delete(ucl_str(o, "id"));
+	}
 	if (rc != 0) {
 		pthread_mutex_lock(&wf_lock);
 		(void)store_save(WF_FILE, saved);
@@ -3518,15 +3747,17 @@ run_yang(const ucl_object_t *r)
 	return (o);
 }
 
-/* arcana-console:runs's value: the last runs; run one (unless 0) with
- * its traces. */
+/* arcana-console:runs's value: the last runs the request may read; run
+ * one (unless 0) with its traces. */
 ucl_object_t *
-runs_yang(uint32_t one)
+runs_yang(struct http_request *req, uint32_t one)
 {
 	ucl_object_t		*top, *o, *l, *full;
 	const ucl_object_t	*r;
 	ucl_object_iter_t	 it;
+	struct principal	 p;
 
+	req_principal(req, &p);
 	pthread_mutex_lock(&wf_lock);
 	top = store_load(RUNS_FILE);
 	pthread_mutex_unlock(&wf_lock);
@@ -3534,6 +3765,8 @@ runs_yang(uint32_t one)
 	it = NULL;
 	while (top != NULL && (r = ucl_object_iterate(ucl_object_lookup(top,
 	    "runs"), &it, true)) != NULL) {
+		if (!run_readable(&p, r, ROLE_VIEWER))
+			continue;
 		if (one != 0 && (uint32_t)ucl_object_toint(ucl_object_lookup(r,
 		    "id")) == one && (full = run_full(one)) != NULL) {
 			ucl_array_append(l, run_yang(full));
@@ -3548,20 +3781,26 @@ runs_yang(uint32_t one)
 	return (o);
 }
 
-/* The approve (step not NULL) and stop actions of run n. */
+/* The approve (step not NULL) and stop actions of run n, as the
+ * request's user. */
 int
-runs_yang_mark(uint32_t n, const char *step, const char *who, char *why,
-    size_t len)
+runs_yang_mark(struct http_request *req, uint32_t n, const char *step,
+    const char *who, char *why, size_t len)
 {
+	struct principal	p;
 
-	return (run_mark(n, step, step != NULL ? (who != NULL ? who : "?") :
+	req_principal(req, &p);
+	return (run_mark(&p, n, step, step != NULL ? (who != NULL ? who : "?") :
 	    NULL, why, len));
 }
 
-/* The clear action: how many forgotten. */
+/* The clear action: how many forgotten, of those the request may
+ * change each host of. */
 int
-runs_yang_clear(const char *wid, const char *who)
+runs_yang_clear(struct http_request *req, const char *wid, const char *who)
 {
+	struct principal	p;
 
-	return (runs_forget(wid, who));
+	req_principal(req, &p);
+	return (runs_forget(&p, wid, who));
 }

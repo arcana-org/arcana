@@ -942,7 +942,7 @@ api_sapnet(struct http_request *req)
 		snprintf(r->net, sizeof(r->net), "%s", p + 9);
 	}
 	u = session_user(req);
-	r->l3nm = u == NULL || user_path_ok(user_console(u), L3NM_PATH, false);
+	r->l3nm = u == NULL || user_may_path(u, L3NM_PATH, false);
 	hosts_of(req, r);
 	req->hdlr_extra = r;
 	task_create(&r->task, sapnet_run);
@@ -1035,6 +1035,7 @@ api_sapnet_attach(struct http_request *req)
 	req->hdlr_extra = r;
 	task_create(&r->task, attach_run);
 	task_bind_request(&r->task, req);
+	r->task.who.need = ROLE_OPERATOR;
 	task_run(&r->task);
 	return (WEB_RETRY);
 }

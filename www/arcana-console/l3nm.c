@@ -169,7 +169,7 @@ l3nm_into(struct http_request *req, ucl_object_t *top)
 	const ucl_object_t	*v;
 	const char		*u;
 
-	if ((u = session_user(req)) != NULL && !user_path_ok(user_console(u),
+	if ((u = session_user(req)) != NULL && !user_may_path(u,
 	    L3NM_PATH, false))
 		return;
 	pthread_mutex_lock(&l3nm_lock);

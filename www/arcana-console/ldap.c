@@ -17,8 +17,12 @@
  * Settings name) and its name, as the SMTP relay's is.  Every read and
  * write waits LDAP_WAIT_S at most.  An empty password is refused
  * first: a directory takes it as an anonymous bind and says yes.
- * Failures are counted, and after SIGNIN_TRIES in a minute every
- * sign-in waits for the minute to pass.
+ * Failures are counted by the name tried and where they come from
+ * (signin_failed()): after SIGNIN_TRIES in a minute of a name, or
+ * SIGNIN_TRIES_ADDR from an address, that one waits for the minute to
+ * pass, and after SIGNIN_TRIES_ALL of all, every one.  A sign-in runs
+ * in a task (auth.c), never on the loop, so what the directory takes
+ * waits for no one else.
  */
 
 #include <sys/param.h>
@@ -31,6 +35,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -681,33 +686,97 @@ search(struct lconn *c, const char *base, int scope, struct ber *f, char *dn,
 
 /* ---- Sign-in ------------------------------------------------------ */
 
-static time_t	fail_minute;		/* the minute the failures are of */
-static int	fails;
-
 /*
  * Failed sign-ins by password, the directory's and the console's own
- * (users.c) alike: after SIGNIN_TRIES in a minute, every one waits for
- * the minute to pass.
+ * (users.c) alike, this minute's: by address and by user name, in
+ * tables of SIGNIN_KEYS each (when one is full, the entry with the
+ * fewest failures makes room), and of all.  From any thread.
+ */
+#define	SIGNIN_KEYS	256
+
+struct fails {
+	char	key[72];
+	time_t	minute;
+	int	n;
+};
+
+static pthread_mutex_t	fail_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct fails	by_addr[SIGNIN_KEYS], by_user[SIGNIN_KEYS];
+static time_t		fail_minute;	/* the minute fails_all is of */
+static int		fails_all;
+
+/* key's entry in t, this minute's; NULL: none, unless made. */
+static struct fails *
+fails_of(struct fails *t, const char *key, time_t now, bool make)
+{
+	struct fails	*f, *room;
+	int		 i;
+
+	room = NULL;
+	for (i = 0; i < SIGNIN_KEYS; i++) {
+		f = &t[i];
+		if (f->minute != now)
+			f->n = 0;
+		if (f->n > 0 && strcmp(f->key, key) == 0)
+			return (f);
+		if (room == NULL || f->n < room->n)
+			room = f;
+	}
+	if (!make)
+		return (NULL);
+	snprintf(room->key, sizeof(room->key), "%s", key);
+	room->minute = now;
+	room->n = 0;
+	return (room);
+}
+
+/*
+ * Must a sign-in from addr as user wait: SIGNIN_TRIES failures this
+ * minute of that name, SIGNIN_TRIES_ADDR from that address (many users
+ * may be behind one), or SIGNIN_TRIES_ALL of all?  Either may be NULL
+ * or "".
  */
 bool
-signin_throttled(void)
+signin_throttled(const char *addr, const char *user)
+{
+	struct fails	*f;
+	time_t		 now;
+	bool		 wait;
+
+	now = time(NULL) / 60;
+	pthread_mutex_lock(&fail_lock);
+	if (now != fail_minute) {
+		fail_minute = now;
+		fails_all = 0;
+	}
+	wait = fails_all >= SIGNIN_TRIES_ALL;
+	if (!wait && addr != NULL && addr[0] != '\0' && (f = fails_of(by_addr,
+	    addr, now, false)) != NULL)
+		wait = f->n >= SIGNIN_TRIES_ADDR;
+	if (!wait && user != NULL && user[0] != '\0' && (f = fails_of(by_user,
+	    user, now, false)) != NULL)
+		wait = f->n >= SIGNIN_TRIES;
+	pthread_mutex_unlock(&fail_lock);
+	return (wait);
+}
+
+void
+signin_failed(const char *addr, const char *user)
 {
 	time_t	now;
 
 	now = time(NULL) / 60;
+	pthread_mutex_lock(&fail_lock);
 	if (now != fail_minute) {
 		fail_minute = now;
-		fails = 0;
+		fails_all = 0;
 	}
-	return (fails >= SIGNIN_TRIES);
-}
-
-void
-signin_failed(void)
-{
-
-	(void)signin_throttled();
-	fails++;
+	fails_all++;
+	if (addr != NULL && addr[0] != '\0')
+		fails_of(by_addr, addr, now, true)->n++;
+	if (user != NULL && user[0] != '\0')
+		fails_of(by_user, user, now, true)->n++;
+	pthread_mutex_unlock(&fail_lock);
 }
 
 /* The directory's URL into its parts: ldap or ldaps, a host, a port. */
@@ -761,16 +830,20 @@ ldap_enabled(void)
 
 /*
  * user and password tried against the directory Settings name: true,
- * and who the session is (the entry's DN), or false and why in err.
- * The why is for the log and the page alike: it names no entry that
- * is not the user's own.
+ * and who the session is (the entry's DN), the roles of rnames whose
+ * directory group of rgroups (nr of them, roles_ldap_groups()'s) has
+ * the user; or false and why in err, *failp set when it counts as a
+ * failed sign-in (not a directory that did not answer).  The why is
+ * for the log and the page alike: it names no entry that is not the
+ * user's own.  From any thread: what it reads of the console is given.
  */
 bool
-ldap_login(const char *user, const char *password, char *who, size_t wholen,
-    char *err, size_t errlen, const char **roles, int *nroles, int maxroles)
+ldap_login(const char *user, const char *password,
+    const char *const *rnames, const char *const *rgroups, int nr,
+    char *who, size_t wholen, char *err, size_t errlen, const char **roles,
+    int *nroles, int maxroles, bool *failp)
 {
-	const char	*rnames[ROLES_LDAP_MAX], *rgroups[ROLES_LDAP_MAX];
-	int		 nr, ri;
+	int		 ri;
 	struct lconn	 c;
 	struct ber	 f;
 	const char	*url, *base, *attr, *group, *bind_dn, *bind_pw, *cafile;
@@ -782,6 +855,7 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 
 	err[0] = '\0';
 	who[0] = '\0';
+	*failp = false;
 	if (!ldap_enabled()) {
 		snprintf(err, errlen, "sign-in by LDAP is not set up");
 		return (false);
@@ -799,11 +873,6 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 	if (password == NULL || password[0] == '\0' || strlen(password) > 256) {
 		snprintf(err, errlen, "a password is 1 to 256 characters: an "
 		    "empty one would be an anonymous bind");
-		return (false);
-	}
-	if (signin_throttled()) {
-		snprintf(err, errlen, "too many failed sign-ins: try again in "
-		    "a minute");
 		return (false);
 	}
 	url = settings_peek("ldap_url");
@@ -845,13 +914,13 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 		snprintf(err, errlen, "no such user, or a wrong password");
 		log_msg(LOG_NOTICE, "LDAP sign-in of %s refused: no entry with "
 		    "%s=%s under %s", user, attr, user, base);
-		signin_failed();
+		*failp = true;
 		goto out;
 	}
 	if (n > 1) {
 		snprintf(err, errlen, "more than one entry has %s=%s: the "
 		    "directory is ambiguous", attr, user);
-		signin_failed();
+		*failp = true;
 		goto out;
 	}
 	/* The user's own bind is what checks the password. */
@@ -864,7 +933,7 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 		} else
 			log_msg(LOG_NOTICE, "LDAP sign-in of %s failed: %s",
 			    user, err);
-		signin_failed();
+		*failp = true;
 		goto out;
 	}
 	if (group != NULL && group[0] != '\0') {
@@ -878,7 +947,7 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 		if (search(&c, group, 0, &f, gdn, sizeof(gdn), &n) != 0) {
 			log_msg(LOG_NOTICE, "LDAP sign-in of %s failed: %s",
 			    user, err);
-			signin_failed();
+			*failp = true;
 			goto out;
 		}
 		if (n == 0) {
@@ -886,14 +955,13 @@ ldap_login(const char *user, const char *password, char *who, size_t wholen,
 			    "console admits");
 			log_msg(LOG_NOTICE, "LDAP sign-in of %s refused: %s is "
 			    "not in %s", user, dn, group);
-			signin_failed();
+			*failp = true;
 			goto out;
 		}
 	}
 	/* The roles whose directory group has the user (users.c), by the
 	 * same ways a group names a member. */
 	*nroles = 0;
-	nr = roles_ldap_groups(rnames, rgroups, ROLES_LDAP_MAX);
 	for (ri = 0; ri < nr && *nroles < maxroles; ri++) {
 		memset(&f, 0, sizeof(f));
 		fmark = 0;

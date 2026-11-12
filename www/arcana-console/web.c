@@ -455,9 +455,9 @@ pool_thread(void *arg)
 		pthread_mutex_lock(&t->lock);
 		t->state = TASK_STATE_RUNNING;
 		pthread_mutex_unlock(&t->lock);
-		web_act_as(t->user);
+		web_act(&t->who);
 		rc = t->entry(t);
-		web_act_as(NULL);
+		web_act(NULL);
 		/*
 		 * Finished and on the loop's list in one step: the loop may
 		 * destroy and free t as soon as it sees it finished (a
@@ -492,12 +492,10 @@ task_create(struct task *t, task_fn *entry)
 void
 task_bind_request(struct task *t, struct http_request *req)
 {
-	const char	*u;
 
 	t->req = req;
 	LIST_INSERT_HEAD(&req->tasks, t, rlist);
-	u = web_user(req);
-	(void)snprintf(t->user, sizeof(t->user), "%s", u != NULL ? u : "");
+	web_principal(req, &t->who);
 }
 
 void
@@ -505,6 +503,14 @@ task_bind_callback(struct task *t, task_cb *cb)
 {
 
 	t->cb = cb;
+}
+
+/* A task not of a request acts for whom it is given; for no one else. */
+void
+task_bind_principal(struct task *t, const struct principal *p)
+{
+
+	t->who = *p;
 }
 
 void
@@ -1102,15 +1108,17 @@ route_find(const char *path, int method, bool *knownp)
 static void
 req_run(struct http_request *req)
 {
-	int	rc;
+	struct principal	p;
+	int			rc;
 
 	if (req->flags & F_DELETED)
 		return;
 	req->flags &= ~F_SLEEPING;
 	/* What it asks the hosts, and the threads it starts, its user's. */
-	web_act_as(web_user(req));
+	web_principal(req, &p);
+	web_act(&p);
 	rc = req->rt->handler(req);
-	web_act_as(NULL);
+	web_act(NULL);
 	if (req->status != 0 || (req->flags & F_UPGRADE))
 		return;
 	if (rc == WEB_RETRY) {
@@ -1606,6 +1614,7 @@ ws_filter(struct lws *wsi, struct pss *pss)
 {
 	struct http_request	*req;
 	struct conn		*c;
+	struct principal	 p;
 	char			 path[1024];
 	bool			 known;
 	int			 ok;
@@ -1628,9 +1637,10 @@ ws_filter(struct lws *wsi, struct pss *pss)
 	STAILQ_INIT(&c->out);
 	req->owner = c;
 	req->flags |= F_UPGRADE;	/* a refusal is not written */
-	web_act_as(web_user(req));
+	web_principal(req, &p);
+	web_act(&p);
 	(void)req->rt->handler(req);
-	web_act_as(NULL);
+	web_act(NULL);
 	ok = c->on_message != NULL && req->status == 0;
 	req->wsi = NULL;
 	req->owner = NULL;

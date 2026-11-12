@@ -352,3 +352,33 @@ Written and tested with stand-ins only:
   libfakejail.so into the agent they start, whose jail_getv answers a
   lookup by name or jid from a file of the test's; the list of every
   jail is still the host's.
+
+## Authorization (console 0.429.0), left
+
+- The SD-WAN document and the L3NM are one for the whole fleet, so a
+  user of a tenant is refused them (and the virtual networks made of
+  them) rather than shown a part.  Tenant-scoped services need a
+  design: a document a tenant (its SWVCs, end points and edges among
+  its hosts), the shared underlays and the provider's edges between
+  them, and who applies what of whose.
+- `login/begin` lists every key's id to anyone who asks (non-discoverable
+  keys need the list); a sign-in by user name first, or discoverable
+  keys alone, would give out none.
+- A follower's `cluster_save()` returns 0 once the leader committed,
+  whether or not this node applied it in time (`wait_applied()` timed
+  out): a read here right after may still see the old copy.
+- Each node of a cluster writes a setup token of its own while the
+  console is not set up; one, the leader's, would be enough.
+- The unix listener is 0666 (the console's own user connects to it):
+  its clients still need a session or a token, but all count as one
+  address to the sign-in throttle, and the threat feeds learn no
+  user's address from them (`feeds_signin()`).
+- Threat feeds are delivered as the console itself, each host chosen
+  by one who may change it when the feed was kept; one who lost the
+  role since still has the feed delivered there.  As workflows do, a
+  feed could keep its author and be delivered as them.
+- bcrypt runs on the loop still when a password is set (setup, Settings,
+  AAA): the sign-in, which anyone may ask, runs in a task.
+- Adding a host resolves its name on the loop to compare it with the
+  agents registered (`same_agent()`); a name that takes the resolver
+  long holds the loop that long.

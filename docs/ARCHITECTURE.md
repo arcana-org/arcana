@@ -147,7 +147,10 @@ Base system first; packages only where they remove real work.
 Users, each with one or more WebAuthn credentials (a security key and
 a spare), and roles that say what each may do on the console and on
 which hosts (`users.json` in the data directory).  A user may belong to
-a tenant, a fleet of its own, and then sees that tenant's hosts alone.
+a tenant, a fleet of its own, and then sees that tenant's hosts alone,
+adds hosts to it alone, and its workflows, runs and templates; the
+SD-WAN and its services (the L3NM, the virtual networks) are one
+document for the whole fleet, and so not a tenant's user's.
 
 * **Enrolment.**  Until the console is set up (a key stored, or a user
   with a password), the backend writes a random one-time setup token to
@@ -156,23 +159,45 @@ a tenant, a fleet of its own, and then sees that tenant's hosts alone.
   token, a user name and a password make that user an owner; an invited user
   registers with the invitation's token; adding a key needs a logged-in
   session.
-* **Ceremonies.**  32-byte single-use challenges, valid two minutes.  The
-  backend checks `clientDataJSON` (type, challenge, origin) and the
-  authenticator data (RP ID hash, flags, counter) and verifies the
-  signature with libcrypto.  ES256, EdDSA and RS256.
+* **Ceremonies.**  Single-use challenges, valid two minutes, kept
+  nowhere: each says when it ends and, a registration's, whose key it
+  is and by which invitation, under a MAC of the console's; noted used
+  once its ceremony succeeded, and an invitation spent only by the key
+  it registers.  The backend checks `clientDataJSON` (type, challenge,
+  origin) and the authenticator data (RP ID hash, flags, counter) and
+  verifies the signature with libcrypto.  ES256, EdDSA and RS256.
 * **Passwords.**  A user may also sign in with a password of the
   console's own (bcrypt) or, when **Settings** name a directory, by LDAP
   over TLS.  A session opened by the console's own password has the
   user's roles, unless `web.conf` says `password_full = false`; one
   opened by the directory's, and the console's own then, cannot change
   sign-ins, tokens, users, the CA, the settings or enrol hosts; that
-  takes a key.
+  takes a key.  A directory's user the directory gives no role on the
+  console is refused.  Failed sign-ins wait by the name tried (5 a
+  minute) and the address (20), and every one after 100; bcrypt and the
+  directory run in a task, never on the server's loop.
 * **Sessions.**  32 random bytes in a cookie; only its SHA-256 is kept.
-  Idle timeout 30 min, absolute 12 h.  One guard checks every protected
+  Idle timeout 30 min, absolute 12 h.  As many as are open, 4096 at
+  most; a user (or a token) has 16, their own oldest ending when they
+  open another.  The key, user, token or password a session was opened
+  by, removed, ends it.  One guard checks every protected
   route; state-changing requests also need the console's own `Origin`
   (a browser sends it), or `X-Arcana: 1` from a client that sends no
   `Origin`.  A GET changes nothing, so it needs neither, even where a
   read is kept to the roles that may change (a host's system files).
+* **Whom for.**  What the console asks of a host is asked for one
+  principal (`hosts.c`): a console user, held to the role it needs on
+  that host (`users.c`) and, there, to the host's access rules by
+  name; an API token, held to its own reach (a read token a viewer's,
+  a write token an admin's of every host, said to the host as the
+  console); or the console itself, which only the paths that act for
+  no one take (the subscriptions' connections, the notifier's and the
+  workflows' event reads, the SD-WAN manager, the threat feeds'
+  delivery, the alert channel, the hosts' roles synchronized).  A
+  thread starts acting for no one and asks no host anything until told
+  whom for; one started by `hosts_thread()` acts for its starter.  A
+  workflow runs for who started it, or, by itself, for who last saved
+  it, on each host as that user may, or fails and says why.
 * **Headers.**  Every reply, the page's and the API's: a
   Content-Security-Policy (only the console's own scripts, styles, images
   and connections; WebAssembly, by `'unsafe-eval'` for the browsers

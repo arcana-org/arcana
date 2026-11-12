@@ -808,10 +808,12 @@ ATF_TC_BODY(server_readdress, tc)
 }
 
 /*
- * What the console does for no one (a workflow at its interval) it asks
- * as NACM's user "console", never as the agent's recovery session, even
- * over the local socket as the agent's own user: with "console" out of
- * the agent's group admin, the run's change is refused.
+ * What the console asks for no user (an API token's request, as what
+ * it does by itself) it asks as NACM's user "console", never as the
+ * agent's recovery session, even over the local socket as the agent's
+ * own user: with "console" out of the agent's group admin, the token's
+ * change is refused.  A workflow at its interval is not the console's:
+ * it acts for its author, here the owner, whom the rules let.
  */
 ATF_TC_WITHOUT_HEAD(nacm_console);
 ATF_TC_BODY(nacm_console, tc)
@@ -825,6 +827,7 @@ ATF_TC_BODY(nacm_console, tc)
 	struct resp	 r;
 	char		 cwd[MAXPATHLEN], body[MAXPATHLEN + 512], id[16];
 	char		 wid[16], run[16], path[96], cmd[3 * MAXPATHLEN];
+	char		 tok[96];
 	const char	*ctl;
 	FILE		*fp;
 	int		 i;
@@ -842,6 +845,17 @@ ATF_TC_BODY(nacm_console, tc)
 	    "@rules.json && %s -c unix:%s/jgd.sock commit", ctl, cwd, ctl, cwd);
 	ATF_REQUIRE_EQ_MSG(0, system(cmd), "%s", cmd);
 	cc_host("lab", "jgd.sock", id, sizeof(id));
+	rc_act(CC "tokens/create", "\"name\":\"w\",\"kind\":\"write\"", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(jstr(&r, "token") != NULL);
+	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:submit", id);
+	http_bearer("POST", path, tok, "{\"arcana-jobs:input\":{\"change\":["
+	    R1_MONITOR "]}}", &r);
+	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
 	snprintf(wid, sizeof(wid), "0000a001");
 	snprintf(body, sizeof(body), "{\"arcana-console:workflow\":[{\"id\":"
 	    "\"%s\",\"name\":\"each minute\",\"host\":[\"%s\"],\"every\":60,"
@@ -870,8 +884,9 @@ ATF_TC_BODY(nacm_console, tc)
 	    "arcana-console:runs.run.0.id"));
 	resp_free(&r);
 	run_wait(run, &r);
-	ATF_CHECK_MSG(strstr(r.body, "access denied") !=
-	    NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "access denied") == NULL &&
+	    jstr(&r, "state") != NULL && strcmp(jstr(&r, "state"), "done") ==
+	    0, "%s", r.body);
 	resp_free(&r);
 }
 
@@ -6508,8 +6523,8 @@ ATF_TC_BODY(password, tc)
 }
 
 CONSOLE_TC(ldap, "Sign-in by LDAP over TLS: the user looked up and bound "
-    "as, a group's members alone, a role by a directory group, a session "
-    "limited as a token's without one; a wrong "
+    "as, a group's members alone, a role by a directory group, refused "
+    "without one; a wrong "
     "password, an unknown user, an empty password and an outsider refused; "
     "too many failures throttled; StartTLS on ldap://, ldaps:// too")
 ATF_TC_BODY(ldap, tc)
@@ -6617,9 +6632,9 @@ ATF_TC_BODY(ldap, tc)
 	http("POST", "/api/auth/logout", "{}", &r);
 	resp_free(&r);
 	cookie[0] = '\0';
-	/* Throttled: after the failures above and two more, a minute's
-	 * wait, even for the right password. */
-	for (i = 0; i < 3; i++) {
+	/* Throttled: after alice's failure above and four more, a minute's
+	 * wait for her name, even for the right password. */
+	for (i = 0; i < 4; i++) {
 		http("POST", "/api/auth/login/password", "{\"user\":\"alice\","
 		    "\"password\":\"wrong\"}", &r);
 		resp_free(&r);
@@ -6641,11 +6656,13 @@ ATF_TC_BODY(ldap, tc)
 	cookie[0] = '\0';
 	http("POST", "/api/auth/login/password", "{\"user\":\"bob\",\"password\":"
 	    "\"bobpw\"}", &r);
-	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
-	/* No group of his gives a role: no user is made for him, and the
-	 * session is limited as before. */
+	/* No group of his gives a role: no user is made for him, and he is
+	 * not let in, as no one. */
+	ATF_CHECK_MSG(r.status == 401 && strstr(r.body, "no role") != NULL,
+	    "%d %s", r.status, r.body);
 	ATF_CHECK(jstr(&r, "user") == NULL);
 	resp_free(&r);
+	ATF_CHECK(cookie[0] == '\0');
 	/* Alice's user is the directory's, its role her group's (the
 	 * page's chip); bob has none. */
 	snprintf(cookie, sizeof(cookie), "%s", keycookie);
@@ -10196,7 +10213,7 @@ ATF_TC_BODY(mtls, tc)
 {
 	struct authn	 a;
 	struct resp	 r;
-	char		 m[256], sid[16], wrong[16];
+	char		 sid[16];
 	int		 port;
 
 	mtls_start(tc, &a, &port, sid, sizeof(sid));
@@ -10221,12 +10238,13 @@ ATF_TC_BODY(mtls, tc)
 	ATF_CHECK(access("installed-agent2", X_OK) == 0);
 	resp_free(&r);
 
-	/* The certificate has to name the host the console expects. */
-	snprintf(m, sizeof(m), "\"name\":\"wrong\",\"uri\":"
-	    "\"tcp://localhost:%d\",\"peer-name\":\"elsewhere.example\"",
-	    port);
-	host_new(m, wrong, sizeof(wrong));
-	r3_read(wrong, "/arcana-jails:jails", &r);
+	/* The certificate has to name the host the console expects: the
+	 * agent said to be another (an agent is one host: not added again
+	 * by another URI, its name changed by the owner). */
+	r3_host_set(sid, "\"peer-name\":\"elsewhere.example\"", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	r3_read(sid, "/arcana-jails:jails", &r);
 	ATF_CHECK_MSG(r.status == 502 || r.status == 503, "%d %s", r.status,
 	    r.body);
 	resp_free(&r);
@@ -23099,6 +23117,723 @@ ATF_TC_BODY(yang_module, tc)
 	resp_free(&r);
 }
 
+/*
+ * Workflows hold whoever saves, runs and approves them to their roles on
+ * each host, and act for them there: a console operator with no role on
+ * a host (of another tenant here) saves nothing naming it, nor a step
+ * of Arcana's own without an admin's; another's runs and workflows are
+ * not shown to one who may not read each host; an approval is an
+ * operator's of each host; and what runs by itself acts for its author,
+ * so that one who lost the role since makes it fail and say why.
+ */
+CONSOLE_TC_LONG(authz_workflows, "Workflows and their runs as their users' "
+    "roles on each host allow, acting for their authors")
+ATF_TC_BODY(authz_workflows, tc)
+{
+	struct authn	a, c, d;
+	struct resp	r;
+	char		body[2048], sid[16], hb[16], run[32], wid[16], gid[16];
+	char		path[160], roles[96];
+	const char	*e;
+	int		i, na, nc;
+
+	wf_start(tc, &a, sid, sizeof(sid));
+	host_new("\"name\":\"b\",\"uri\":\"tcp://192.0.2.2:4310\",\"tenant\":"
+	    "\"acme\"", hb, sizeof(hb));
+	snprintf(roles, sizeof(roles), "{\"id\":\"%s\",\"role\":\"operator\"}",
+	    sid);
+	cc_role("lab-ops", "operator", roles);
+	cc_role("watcher", "operator", "");
+	/* The owner's: an approval between two reads, on lab. */
+	snprintf(body, sizeof(body), "\"name\":\"gated\",\"host\":[\"%s\"],"
+	    "\"step\":[{\"id\":\"r\",\"read\":\"hello\"},{\"id\":\"ok\","
+	    "\"approval\":{\"text\":\"go?\"}},{\"id\":\"s\",\"read\":"
+	    "\"services\"}]", sid);
+	r2_wf_new(body, gid, sizeof(gid));
+	snprintf(body, sizeof(body), "\"name\":\"acme's\",\"host\":[\"%s\"],"
+	    "\"step\":[{\"id\":\"r\",\"read\":\"hello\"}]", hb);
+	r2_wf_new(body, wid, sizeof(wid));
+	r2_run(gid, NULL, run, sizeof(run));
+	step_wait(run, 1, "waiting", &r);
+	resp_free(&r);
+	na = 0;
+	cc_user(&d, "dave", "\"role\":[\"watcher\"]", -7);
+	cookie[0] = '\0';
+	do_login(&a, ++na, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	cc_user(&c, "carl", "\"role\":[\"lab-ops\"]", -7);
+	nc = 0;
+
+	/* carl: nothing naming b, no step of Arcana's own on lab. */
+	snprintf(body, sizeof(body), "\"name\":\"mine\",\"host\":[\"%s\"],"
+	    "\"every\":60,\"step\":[{\"id\":\"r\",\"read\":\"hello\"}]", hb);
+	r2_wf(body, wid, sizeof(wid), &r);
+	ATF_CHECK_MSG(r.status == 404 || r.status == 403, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	snprintf(body, sizeof(body), "\"name\":\"mine\",\"host\":[\"%s\"],"
+	    "\"step\":[{\"id\":\"c\",\"arcana\":\"check\"}]", sid);
+	r2_wf(body, wid, sizeof(wid), &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "admin") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* What carl reads: the owner's on lab, not acme's. */
+	http("GET", CC "workflows", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK(strstr(r.body, "\"gated\"") != NULL);
+	ATF_CHECK_MSG(strstr(r.body, "acme's") == NULL, "%s", r.body);
+	resp_free(&r);
+	/* His own, begun by the host's events. */
+	snprintf(body, sizeof(body), "\"name\":\"on mem\",\"host\":[\"%s\"],"
+	    "\"on\":[{\"index\":0,\"event\":\"threshold\",\"match\":[{"
+	    "\"name\":\"what\",\"value\":\"mem\"},{\"name\":\"over\","
+	    "\"value\":\"true\"}]}],\"step\":[{\"id\":\"s\",\"read\":"
+	    "\"stats\"}]", sid);
+	r2_wf_new(body, wid, sizeof(wid));
+
+	/* dave, of no host: neither the run nor its approval. */
+	cookie[0] = '\0';
+	do_login(&d, 1, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	http("GET", CC "runs", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"gated\"") == NULL, "%s", r.body);
+	resp_free(&r);
+	http("GET", CC "workflows", NULL, &r);
+	ATF_CHECK_MSG(strstr(r.body, "\"gated\"") == NULL, "%s", r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "runs/run=%s/approve", run);
+	rc_act(path, "\"step\":\"ok\"", &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "runs/run=%s/stop", run);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "workflows/workflow=%s/run", gid);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+
+	/* carl, an operator of lab, approves; the run goes on as the
+	 * owner's. */
+	cookie[0] = '\0';
+	do_login(&c, ++nc, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "runs/run=%s/approve", run);
+	rc_act(path, "\"step\":\"ok\"", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	run_wait(run, &r);
+	ATF_CHECK_STREQ("done", jstr(&r, "state"));
+	ATF_CHECK_STREQ("carl", jstr(&r, "approved.0.by"));
+	resp_free(&r);
+
+	/* carl loses lab: the run his workflow begins fails, and says why;
+	 * it is not the console's to run for him. */
+	cookie[0] = '\0';
+	do_login(&a, ++na, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	r1_roles("carl", "watcher");
+	sleep(7);
+	r2_history(sid, 1, 10, 0, 90, 1, 90);
+	for (i = 0; i < 400; i++) {
+		http("GET", CC "runs", NULL, &r);
+		if (r.body != NULL && strstr(r.body, "\"event threshold\"") !=
+		    NULL && strstr(r.body, "\"running\"") == NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(i < 400, "no run begun by the threshold");
+	resp_free(&r);
+	http("GET", CC "runs", NULL, &r);
+	for (i = 0; i < 16; i++) {
+		snprintf(path, sizeof(path),
+		    "arcana-console:runs.run.%d.trigger", i);
+		if (jstr(&r, path) == NULL || strcmp(jstr(&r, path),
+		    "event threshold") == 0)
+			break;
+	}
+	snprintf(path, sizeof(path), "arcana-console:runs.run.%d.state", i);
+	ATF_CHECK_STREQ("failed", jstr(&r, path));
+	snprintf(path, sizeof(path),
+	    "arcana-console:runs.run.%d.host.0.step.0.error", i);
+	e = jstr(&r, path);
+	ATF_CHECK_MSG(e != NULL && strstr(e, "carl") != NULL &&
+	    strstr(e, "no role") != NULL, "%s", e != NULL ? e : r.body);
+	resp_free(&r);
+}
+
+/*
+ * A directory's user the directory gives no role on the console is
+ * refused, not let in as no one: a session with no user has no role,
+ * on no host.  One written before (no user, no token) opens nothing.
+ */
+CONSOLE_TC(authz_no_user, "A session of no user is refused, never every "
+    "host's admin")
+ATF_TC_BODY(authz_no_user, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sid[16], doc[600], hex[65], name[200];
+	uint8_t		h[32];
+	unsigned int	n;
+	time_t		now;
+	int		k;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", sid, sizeof(sid));
+	/* A session's document of no one, as a directory's user without
+	 * a role had one. */
+	now = time(NULL);
+	EVP_Digest("0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	    "abcdef", 64, h, &n, EVP_sha256(), NULL);
+	for (k = 0; k < 32; k++)
+		snprintf(hex + 2 * k, 3, "%02x", h[k]);
+	snprintf(doc, sizeof(doc), "{\"hash\":\"%s\",\"created\":%jd,"
+	    "\"last\":%jd,\"who\":\"LDAP user nobody\",\"ldap\":true}", hex,
+	    (intmax_t)now, (intmax_t)now);
+	ATF_REQUIRE(mkdir("data/sessions", 0700) == 0 || errno == EEXIST);
+	snprintf(name, sizeof(name), "data/sessions/%s.json", hex);
+	put(name, doc);
+	restart_console();
+	snprintf(cookie, sizeof(cookie), "arc_session=0123456789abcdef"
+	    "0123456789abcdef0123456789abcdef0123456789abcdef");
+	r1_submit(sid, R1_MONITOR, &r);
+	ATF_CHECK_MSG(r.status == 401, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(r.status == 401, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * What the console's socket reads of a host is asked as its user, held
+ * by the host's access rules: an operator of the console's, in no group
+ * of the host's, reads not the system's files over it, as he reads them
+ * not by a request (nacm_user).
+ */
+CONSOLE_TC(authz_stream, "The socket's reads asked of the host as its user")
+ATF_TC_BODY(authz_stream, tc)
+{
+	struct authn	a, b;
+	char		id[16], ask[400], *m;
+	int		ws, steps;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	r1_role("ops", "member", "operator");
+	cc_user(&b, "bob", "\"role\":[\"ops\"]", -8);
+	ws = ws_open("/api/stream");
+	/* The packages' read is nacm:default-deny-all: an admin's. */
+	snprintf(ask, sizeof(ask), "{\"id\":1,\"server\":\"%s\",\"what\":"
+	    "\"restconf\",\"path\":\"arcana-packages:packages/read\","
+	    "\"body\":{}}", id);
+	ws_send(ws, ask);
+	m = ws_answer(ws, 1, &steps);
+	ATF_REQUIRE(m != NULL);
+	ATF_CHECK_MSG(strstr(m, "\"status\":403") != NULL && strstr(m,
+	    "access denied") != NULL, "%s", m);
+	free(m);
+	/* A host bob has no role on is no host to him. */
+	snprintf(ask, sizeof(ask), "{\"id\":2,\"server\":\"0badc0de\","
+	    "\"what\":\"restconf\",\"path\":\"arcana-host:host\"}");
+	ws_send(ws, ask);
+	m = ws_answer(ws, 2, &steps);
+	ATF_REQUIRE(m != NULL);
+	ATF_CHECK_MSG(strstr(m, "no such server") != NULL, "%s", m);
+	free(m);
+	close(ws);
+}
+
+/*
+ * A host is one agent: another spelling of a registered agent's URI is
+ * refused, whoever adds it; a user of a tenant adds the tenant's hosts
+ * alone; which agent a host is (its certificate's name) an owner alone
+ * says.
+ */
+CONSOLE_TC(authz_hosts, "An agent added once, a tenant's user's hosts the "
+    "tenant's, the peer name an owner's")
+ATF_TC_BODY(authz_hosts, tc)
+{
+	struct authn	a, t;
+	struct resp	r;
+	char		ha[16], hx[16], body[400];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	host_add("a", "tcp://127.0.0.1:4399", ha, sizeof(ha));
+	/* The same agent by another name, or the other transport. */
+	host_try("\"name\":\"a2\",\"uri\":\"tcp://localhost:4399\"", hx,
+	    sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 409 && strstr(r.body, "registered "
+	    "already") != NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	host_try("\"name\":\"a3\",\"uri\":\"sctp://127.0.0.1:4399\"", hx,
+	    sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 409, "%d %s", r.status, r.body);
+	resp_free(&r);
+	host_try("\"name\":\"a4\",\"uri\":\"tcp://127.0.0.2:4399\","
+	    "\"peer-name\":\"127.0.0.1\"", hx, sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 409, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Another port is another agent. */
+	host_add("b", "tcp://127.0.0.1:4398", hx, sizeof(hx));
+	/* A user of tenant acme, an operator of the console, admin of the
+	 * tenant's hosts. */
+	cc_role("acme-admin", "operator", "{\"id\":\"*\",\"role\":\"admin\"}");
+	http("PUT", CC "users/user=tom", "{\"arcana-console:user\":[{\"name\":"
+	    "\"tom\",\"tenant\":\"acme\",\"role\":[\"acme-admin\"]}]}", &r);
+	EXPECT(&r, 201);
+	resp_free(&r);
+	{
+		char	inv[80];
+
+		http("POST", CC "users/user=tom/invite", NULL, &r);
+		EXPECT(&r, 200);
+		snprintf(inv, sizeof(inv), "%s", jstr(&r,
+		    "arcana-console:output.token"));
+		resp_free(&r);
+		cookie[0] = '\0';
+		authn_new(&t, -7);
+		do_register(&t, inv, &r);
+		EXPECT(&r, 200);
+		resp_free(&r);
+	}
+	/* Not another tenant's, not the owner's, not a's again. */
+	host_try("\"name\":\"c\",\"uri\":\"tcp://192.0.2.3:4310\",\"tenant\":"
+	    "\"other\"", hx, sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	host_try("\"name\":\"c\",\"uri\":\"tcp://192.0.2.3:4310\","
+	    "\"peer-name\":\"other.example\"", hx, sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	host_try("\"name\":\"c\",\"uri\":\"tcp://localhost:4399\"", hx,
+	    sizeof(hx), &r);
+	ATF_CHECK_MSG(r.status == 409 && strstr(r.body, ha) == NULL, "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
+	/* Its own: the tenant's, said or not. */
+	host_new("\"name\":\"c\",\"uri\":\"tcp://192.0.2.3:4310\"", hx,
+	    sizeof(hx));
+	http("GET", CC "hosts", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ(hx, jstr(&r, "arcana-console:hosts.host.0.id"));
+	ATF_CHECK_STREQ("acme", jstr(&r, "arcana-console:hosts.host.0.tenant"));
+	ATF_CHECK(jstr(&r, "arcana-console:hosts.host.1.id") == NULL);
+	resp_free(&r);
+	snprintf(body, sizeof(body), "{\"arcana-console:host\":[{\"id\":\"%s\","
+	    "\"name\":\"c\",\"uri\":\"tcp://192.0.2.3:4310\",\"tenant\":"
+	    "\"other\"}]}", hx);
+	{
+		char	path[96];
+
+		snprintf(path, sizeof(path), CC "hosts/host=%s", hx);
+		http("PUT", path, body, &r);
+		ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+		resp_free(&r);
+	}
+	/* The SD-WAN and its services are the whole fleet's: not a tenant
+	 * user's; templates are their tenant's. */
+	http("GET", CC "sdwan/document", NULL, &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw", NULL, &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("PUT", CC "templates/template=edge",
+	    "{\"arcana-console:template\":[{\"name\":\"edge\",\"file\":"
+	    "[{\"path\":\"/etc/motd\",\"mode\":"
+	    "\"0644\",\"owner\":\"root\",\"group\":\"wheel\",\"text\":"
+	    "\"acme\\n\"}]}]}", &r);
+	ATF_CHECK_MSG(r.status == 201, "%d %s", r.status, r.body);
+	resp_free(&r);
+	cookie[0] = '\0';
+	do_login(&a, 1, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	http("PUT", CC "templates/template=core",
+	    "{\"arcana-console:template\":[{\"name\":\"core\",\"file\":"
+	    "[{\"path\":\"/etc/motd\",\"mode\":"
+	    "\"0644\",\"owner\":\"root\",\"group\":\"wheel\",\"text\":"
+	    "\"core\\n\"}]}]}", &r);
+	ATF_CHECK_MSG(r.status == 201, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", CC "templates", NULL, &r);
+	ATF_CHECK(strstr(r.body, "\"edge\"") != NULL && strstr(r.body,
+	    "\"core\"") != NULL);
+	resp_free(&r);
+	cookie[0] = '\0';
+	do_login(&t, 1, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	http("GET", CC "templates", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"edge\"") != NULL && strstr(r.body,
+	    "\"core\"") == NULL, "%s", r.body);
+	resp_free(&r);
+	/* Nor its name taken over. */
+	http("PUT", CC "templates/template=core",
+	    "{\"arcana-console:template\":[{\"name\":\"core\",\"file\":"
+	    "[{\"path\":\"/etc/motd\",\"mode\":"
+	    "\"0644\",\"owner\":\"root\",\"group\":\"wheel\",\"text\":"
+	    "\"mine\\n\"}]}]}", &r);
+	ATF_CHECK_MSG(r.status == 409, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* A push service's address said as one is the internet's. */
+	http("POST", CC "push", "{\"arcana-console:subscription\":[{"
+	    "\"endpoint\":\"https://10.1.2.3/x\",\"p256dh\":\""
+	    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPj"
+	    "s7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\"}]}",
+	    &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * The SD-WAN's verbs change each edge they reach as the user may: a
+ * pin, a key turned, an edge in the document, by one who may change
+ * that host alone.
+ */
+CONSOLE_TC(authz_sdwan, "The SD-WAN's verbs as the user's roles on its "
+    "edges allow")
+ATF_TC_BODY(authz_sdwan, tc)
+{
+	struct authn	a, v;
+	struct resp	r;
+	char		sa[16], sb[16], body[600], doc[8192];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_ab(sa, sb, sizeof(sa));
+	sdwan_good_at(sa, sb, doc, sizeof(doc));
+	/* vic: an operator of the console, a viewer of the hosts. */
+	r1_role("look", "operator", "viewer");
+	cc_user(&v, "vic", "\"role\":[\"look\"]", -7);
+	/* The servers as the SD-WAN's threads see them, a tick on. */
+	usleep(2500000);
+	snprintf(body, sizeof(body), "\"edge\":\"%s\",\"table\":\"t\","
+	    "\"prefix\":\"192.0.2.0/24\",\"candidate\":\"x\"", sa);
+	rc_act(CC "sdwan/pin", body, &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "viewer") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Edges in the document: each its host's to change. */
+	r3_doc_put(doc, &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "not yours") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	r3_doc(&r);
+	ATF_CHECK_STREQ("0", jstr(&r, "version"));
+	resp_free(&r);
+}
+
+/*
+ * The sessions: a user who signs in again and again ends the oldest
+ * of their own alone, never another's.
+ */
+CONSOLE_TC(sessions_many, "Sessions of one user do not end another's")
+ATF_TC_BODY(sessions_many, tc)
+{
+	struct authn	a, b;
+	struct resp	r;
+	char		owner[160], first[160];
+	int		i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	r1_role("look", "member", "viewer");
+	cc_user(&b, "bob", "\"role\":[\"look\"]", -7);
+	snprintf(first, sizeof(first), "%s", cookie);
+	for (i = 1; i <= 20; i++) {
+		cookie[0] = '\0';
+		do_login(&b, i, ORIGIN, RP_ID, NULL, false, &r);
+		EXPECT(&r, 200);
+		resp_free(&r);
+	}
+	/* The owner's still open; bob's first, his oldest, ended. */
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	http("GET", CC "users", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", first);
+	http("GET", CC "hosts", NULL, &r);
+	EXPECT(&r, 401);
+	resp_free(&r);
+}
+
+/*
+ * Failed sign-ins wait by the name tried (and the address, over TCP):
+ * one who keeps trying another's name locks out no one else.
+ */
+CONSOLE_TC(signin_throttle, "Sign-ins by password throttled by the name "
+    "tried and the address, not for everyone")
+ATF_TC_BODY(signin_throttle, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		name[96];
+	int		i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	http("PUT", CC "users/user=bob", "{\"arcana-console:user\":[{"
+	    "\"name\":\"bob\",\"role\":[\"viewer\"]}]}", &r);
+	EXPECT(&r, 201);
+	resp_free(&r);
+	http("POST", "/api/auth/password", "{\"user\":\"bob\",\"password\":"
+	    "\"bob's own long password\"}", &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	cookie[0] = '\0';
+	for (i = 0; i < 6; i++) {
+		http("POST", "/api/auth/login/password", "{\"user\":\"admin\","
+		    "\"password\":\"not the password\"}", &r);
+		resp_free(&r);
+	}
+	http("POST", "/api/auth/login/password", "{\"user\":\"admin\","
+	    "\"password\":\"not the password\"}", &r);
+	ATF_CHECK_MSG(r.status == 429, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Bob, from the same address, signs in: it has not failed as often
+	 * as an address may. */
+	http("POST", "/api/auth/login/password", "{\"user\":\"bob\","
+	    "\"password\":\"bob's own long password\"}", &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* An address that fails for every name it tries waits, whatever
+	 * the name. */
+	cookie[0] = '\0';
+	for (i = 0; i < 24; i++) {
+		snprintf(name, sizeof(name), "{\"user\":\"u%d\",\"password\":"
+		    "\"not the password\"}", i);
+		http("POST", "/api/auth/login/password", name, &r);
+		resp_free(&r);
+	}
+	http("POST", "/api/auth/login/password", "{\"user\":\"bob\","
+	    "\"password\":\"bob's own long password\"}", &r);
+	ATF_CHECK_MSG(r.status == 429, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * A registration's state is its own ceremony's: two invited users
+ * registering at once both finish; an invitation is spent by the key
+ * it registers, not by a begin, so a ceremony that fails leaves it.
+ */
+CONSOLE_TC(register_ceremonies, "Registrations at once, each its own; an "
+    "invitation spent by its key alone")
+ATF_TC_BODY(register_ceremonies, tc)
+{
+	struct authn	a, b, c;
+	struct resp	r, rb, rc;
+	char		ib[80], ic[80], body[4096], owner[160];
+	char		*cd, *id64, *cd64, *ad64, *pk64;
+	uint8_t		ad[256], *spki;
+	size_t		adlen;
+	int		spkilen;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	r1_role("look", "member", "viewer");
+	cc_invite("bob", "look", ib, sizeof(ib));
+	cc_invite("cid", "look", ic, sizeof(ic));
+	cookie[0] = '\0';
+	/* A begin, and nothing after: the invitation is still there. */
+	snprintf(body, sizeof(body), "{\"invite\":\"%s\"}", ib);
+	http("POST", "/api/auth/register/begin", body, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	/* A finish of no ceremony's: refused, the invitation still. */
+	http("POST", "/api/auth/register/finish", "{\"id\":\"AAAA\","
+	    "\"clientDataJSON\":\"e30\",\"authenticatorData\":\"AAAA\","
+	    "\"publicKey\":\"AAAA\"}", &r);
+	ATF_CHECK(r.status >= 400);
+	resp_free(&r);
+	/* bob's and cid's begun, then cid's finished first, then bob's. */
+	snprintf(body, sizeof(body), "{\"invite\":\"%s\"}", ib);
+	http("POST", "/api/auth/register/begin", body, &rb);
+	EXPECT(&rb, 200);
+	snprintf(body, sizeof(body), "{\"invite\":\"%s\"}", ic);
+	http("POST", "/api/auth/register/begin", body, &rc);
+	EXPECT(&rc, 200);
+	authn_new(&c, -7);
+	cd = client_data("webauthn.create", jstr(&rc, "publicKey.challenge"),
+	    harness_origin);
+	adlen = auth_data(ad, RP_ID, 0x41, 0, &c);
+	spki = NULL;
+	ATF_REQUIRE((spkilen = i2d_PUBKEY(c.key, &spki)) > 0);
+	id64 = b64url(c.id, sizeof(c.id));
+	cd64 = b64url(cd, strlen(cd));
+	ad64 = b64url(ad, adlen);
+	pk64 = b64url(spki, (size_t)spkilen);
+	snprintf(body, sizeof(body), "{\"id\":\"%s\",\"clientDataJSON\":\"%s\","
+	    "\"authenticatorData\":\"%s\",\"publicKey\":\"%s\","
+	    "\"publicKeyAlgorithm\":-7}", id64, cd64, ad64, pk64);
+	http("POST", "/api/auth/register/finish", body, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_STREQ("cid", jstr(&r, "user"));
+	resp_free(&r);
+	free(cd);
+	free(id64);
+	free(cd64);
+	free(ad64);
+	free(pk64);
+	OPENSSL_free(spki);
+	cookie[0] = '\0';
+	authn_new(&b, -7);
+	cd = client_data("webauthn.create", jstr(&rb, "publicKey.challenge"),
+	    harness_origin);
+	adlen = auth_data(ad, RP_ID, 0x41, 0, &b);
+	spki = NULL;
+	ATF_REQUIRE((spkilen = i2d_PUBKEY(b.key, &spki)) > 0);
+	id64 = b64url(b.id, sizeof(b.id));
+	cd64 = b64url(cd, strlen(cd));
+	ad64 = b64url(ad, adlen);
+	pk64 = b64url(spki, (size_t)spkilen);
+	snprintf(body, sizeof(body), "{\"id\":\"%s\",\"clientDataJSON\":\"%s\","
+	    "\"authenticatorData\":\"%s\",\"publicKey\":\"%s\","
+	    "\"publicKeyAlgorithm\":-7}", id64, cd64, ad64, pk64);
+	http("POST", "/api/auth/register/finish", body, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_STREQ("bob", jstr(&r, "user"));
+	resp_free(&r);
+	/* Once: the same ceremony again is refused, the invitation gone. */
+	cookie[0] = '\0';
+	http("POST", "/api/auth/register/finish", body, &r);
+	ATF_CHECK_MSG(r.status >= 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(body, sizeof(body), "{\"invite\":\"%s\"}", ib);
+	http("POST", "/api/auth/register/begin", body, &r);
+	EXPECT(&r, 403);
+	resp_free(&r);
+	free(cd);
+	free(id64);
+	free(cd64);
+	free(ad64);
+	free(pk64);
+	OPENSSL_free(spki);
+	resp_free(&rb);
+	resp_free(&rc);
+}
+
+/*
+ * A key removed ends the sessions it opened at once, as a user, a
+ * token or a password removed end theirs.
+ */
+CONSOLE_TC(key_removed, "A security key removed ends its sessions")
+ATF_TC_BODY(key_removed, tc)
+{
+	struct authn	a, b;
+	struct resp	r;
+	char		owner[160], second[160], path[200], *id64;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	/* A spare key of the owner's, a session opened with it. */
+	authn_new(&b, -8);
+	do_register(&b, NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	snprintf(second, sizeof(second), "%s", cookie);
+	ATF_REQUIRE(strcmp(second, owner) != 0);
+	http("GET", CC "users", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	/* Removed from the first key's session. */
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	id64 = b64url(b.id, sizeof(b.id));
+	snprintf(path, sizeof(path), CC "credentials/credential=%s", id64);
+	free(id64);
+	http("DELETE", path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 204, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", second);
+	http("GET", CC "users", NULL, &r);
+	ATF_CHECK_MSG(r.status == 401, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	http("GET", CC "users", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+}
+
+/*
+ * The single owner, as before: a host added and read, a job, a
+ * workflow saved, run and approved, an SD-WAN apply asked, a read over
+ * the socket.
+ */
+CONSOLE_TC_LONG(owner_walk, "The built-in owner's main paths, as they were")
+ATF_TC_BODY(owner_walk, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sid[16], body[2048], wid[16], run[32], path[160];
+	char		ask[300], *m;
+	int		ws, steps;
+
+	wf_start(tc, &a, sid, sizeof(sid));
+	snprintf(path, sizeof(path), FLEET "%s/arcana-host:host", sid);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	r1_submit(sid, R1_MONITOR, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(body, sizeof(body), "\"name\":\"walk\",\"host\":[\"%s\"],"
+	    "\"step\":[{\"id\":\"r\",\"read\":\"hello\"},{\"id\":\"ok\","
+	    "\"approval\":{\"text\":\"go?\"}},{\"id\":\"s\",\"read\":"
+	    "\"services\"}]", sid);
+	r2_wf_new(body, wid, sizeof(wid));
+	r2_run(wid, NULL, run, sizeof(run));
+	step_wait(run, 1, "waiting", &r);
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "runs/run=%s/approve", run);
+	rc_act(path, "\"step\":\"ok\"", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	run_wait(run, &r);
+	ATF_CHECK_STREQ("done", jstr(&r, "state"));
+	ATF_CHECK_STREQ("done", jstr(&r, "host.0.step.2.state"));
+	resp_free(&r);
+	http("GET", CC "runs", NULL, &r);
+	ATF_CHECK(strstr(r.body, "\"walk\"") != NULL);
+	resp_free(&r);
+	/* The SD-WAN: its document read, an apply of it asked (nothing to
+	 * make, or what to make: not refused for a role). */
+	http("GET", CC "sdwan/document", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	http("POST", CC "sdwan/apply", "{}", &r);
+	ATF_CHECK_MSG(r.status != 403 && r.status != 401, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	ws = ws_open("/api/stream");
+	snprintf(ask, sizeof(ask), "{\"id\":1,\"server\":\"%s\",\"what\":"
+	    "\"restconf\",\"path\":\"arcana-packages:packages/read\","
+	    "\"body\":{}}", sid);
+	ws_send(ws, ask);
+	m = ws_answer(ws, 1, &steps);
+	ATF_REQUIRE(m != NULL);
+	ATF_CHECK_MSG(strstr(m, "\"status\":200") != NULL, "%s", m);
+	free(m);
+	close(ws);
+}
+
 ATF_TP_ADD_TCS(tp)
 {
 	/* The longest first: kyua starts them in this order. */
@@ -23276,5 +24011,15 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, cyang_console);
 	ATF_TP_ADD_TC(tp, cyang_plugins);
 	ATF_TP_ADD_TC(tp, yang_module);
+	ATF_TP_ADD_TC(tp, authz_workflows);
+	ATF_TP_ADD_TC(tp, owner_walk);
+	ATF_TP_ADD_TC(tp, authz_no_user);
+	ATF_TP_ADD_TC(tp, authz_stream);
+	ATF_TP_ADD_TC(tp, authz_hosts);
+	ATF_TP_ADD_TC(tp, authz_sdwan);
+	ATF_TP_ADD_TC(tp, sessions_many);
+	ATF_TP_ADD_TC(tp, signin_throttle);
+	ATF_TP_ADD_TC(tp, register_ceremonies);
+	ATF_TP_ADD_TC(tp, key_removed);
 	return (atf_no_error());
 }

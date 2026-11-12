@@ -817,7 +817,9 @@ watch_run(void *arg)
 	uint64_t	 now;
 	int		 error, ev, ms;
 
-	hosts_act_as(NULL);
+	/* The connection the console's own; each subscription on it its
+	 * asker's (watch_held(), whose host route checked them). */
+	hosts_act_console();
 	while (!atomic_load(&w->stop)) {
 		now = mono_us();
 		if (!watch_topics(w, now))

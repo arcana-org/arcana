@@ -692,7 +692,7 @@ vn_into(struct http_request *req, ucl_object_t *top)
 	ucl_object_iter_t	 it = NULL;
 	const char		*u;
 
-	if ((u = session_user(req)) != NULL && !user_path_ok(user_console(u),
+	if ((u = session_user(req)) != NULL && !user_may_path(u,
 	    VN_PREFIX VN_VN, false))
 		return;
 	y = l3nm_kept();

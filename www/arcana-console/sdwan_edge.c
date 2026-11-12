@@ -106,6 +106,7 @@ static int		 tunnel_mtu(const ucl_object_t *, const ucl_object_t *,
 		    const ucl_object_t *);
 static bool		 edge_ref(const char *, char *, size_t, char *, size_t,
 			    char *, size_t, char *, size_t);
+static bool		 edge_ok(const char *, char *, size_t);
 static ucl_object_t	*sdwan_read(const char *, char *, size_t, int *);
 static bool		 jail_kind_ok(const char *, char *, size_t);
 static const char	*symbol(const char *, char *, size_t);
@@ -9788,6 +9789,11 @@ api_sdwan_identities(struct http_request *req)
 			    "point %s in service %s", epid != NULL ? epid : "?", swvc
 			    != NULL ? swvc : "?"));
 		}
+		/* Its edge's to change, by whom this is. */
+		if (!edge_ok(str(ep, "edge"), why, sizeof(why))) {
+			ucl_object_unref(doc);
+			return (reply_error(req, 403, "role", "%s", why));
+		}
 		ids = (ucl_object_t *)(uintptr_t)ucl_object_lookup(r,
 		    "identities");
 		i = 0;
@@ -9866,6 +9872,11 @@ api_sdwan_identities(struct http_request *req)
 		return (reply_error(req, 404, "end_point", "no remote end point "
 		    "%s in service %s", epid != NULL ? epid : "?", swvc != NULL ?
 		    swvc : "?"));
+	}
+	if (!edge_ok(str(ep, "edge"), why, sizeof(why))) {
+		ucl_object_unref(doc);
+		ucl_object_unref(body);
+		return (reply_error(req, 403, "role", "%s", why));
 	}
 	/* In a group of the remote's, the zone is the group's. */
 	group = str(body, "group");
@@ -10778,7 +10789,7 @@ api_sdwan_rekey(struct http_request *req)
 	ucl_object_t	*st, *body, *e0, *e1;
 	pthread_t	 tid;
 	const char	*id;
-	char		 sid[2][40], *arg;
+	char		 sid[2][40], *arg, why[300];
 
 	if (req->method == HTTP_METHOD_GET) {
 		if (!guard(req, false))
@@ -10833,11 +10844,18 @@ api_sdwan_rekey(struct http_request *req)
 		return (WEB_OK);
 	}
 	host_refs();
+	/* Both ends theirs to change; the thread acts for them. */
+	if (!edge_ok(sid[0], why, sizeof(why)) || !edge_ok(sid[1], why,
+	    sizeof(why))) {
+		ucl_object_unref(body);
+		return (reply_error(req, 403, "role", "%s", why));
+	}
 	arg = strdup(id);
 	pthread_mutex_lock(&st_lock);
 	rekeying = true;
 	pthread_mutex_unlock(&st_lock);
-	if (pthread_create(&tid, NULL, rekey_main, arg) != 0) {
+	hosts_need(ROLE_OPERATOR);
+	if (hosts_thread(&tid, rekey_main, arg) != 0) {
 		pthread_mutex_lock(&st_lock);
 		rekeying = false;
 		pthread_mutex_unlock(&st_lock);
@@ -10852,10 +10870,17 @@ api_sdwan_rekey(struct http_request *req)
 	return (reply_json(req, 200, st));
 }
 
+/*
+ * The console itself: what is applied kept as it was applied (steering
+ * by the policies' order and the paths' health, identities whose time
+ * ran out taken away, keys turned when due), for no one; it changes no
+ * edge's policy but as the document kept says.
+ */
 static void *
 manager(void *arg __unused)
 {
 
+	hosts_act_console();
 	for (;;) {
 		sleep(MGR_TICK_S);
 		/* Of a cluster, the leader's alone. */
@@ -10920,6 +10945,21 @@ edge_ref(const char *edge, char *uri, size_t ulen, char *peer, size_t plen,
 	if (!sdwan_edge_split(edge, sid, sizeof(sid), jail, jlen))
 		return (false);
 	return (host_ref(sid, uri, ulen, peer, plen, name, nlen));
+}
+
+/* May whom this thread acts for change edge (one there is not is no
+ * one's to refuse)?  Why not into why. */
+static bool
+edge_ok(const char *edge, char *why, size_t wlen)
+{
+	struct principal	p;
+	char			uri[256], peer[256], name[128], jail[64];
+
+	if (edge == NULL || !edge_ref(edge, uri, sizeof(uri), peer,
+	    sizeof(peer), name, sizeof(name), jail, sizeof(jail)))
+		return (true);
+	hosts_acting(&p);
+	return (principal_reach(&p, uri, ROLE_OPERATOR, why, wlen));
 }
 
 /* A fault's or target's edge, by the jail its object names (id@jail,
@@ -11358,11 +11398,41 @@ accept_step(ucl_object_t *s, const ucl_object_t *acc)
 }
 
 /*
+ * May whom this thread acts for change each edge in edges, a list of
+ * objects whose key names one (an apply's changes, a tunnel's ends)?
+ * Why not into why.  From any thread (principal_reach()).
+ */
+static bool
+edges_ours(const ucl_object_t *edges, const char *key, char *why,
+    size_t wlen)
+{
+	struct principal	 p;
+	const ucl_object_t	*o;
+	ucl_object_iter_t	 it = NULL;
+	char			 uri[256], peer[256], name[128], jail[64];
+
+	hosts_acting(&p);
+	while ((o = ucl_object_iterate(edges, &it, true)) != NULL) {
+		if (str(o, "change") != NULL && strcmp(str(o, "change"),
+		    "keep") == 0)
+			continue;
+		if (str(o, key) == NULL || !edge_ref(str(o, key), uri,
+		    sizeof(uri), peer, sizeof(peer), name, sizeof(name), jail,
+		    sizeof(jail)))
+			continue;
+		if (!principal_reach(&p, uri, ROLE_OPERATOR, why, wlen))
+			return (false);
+	}
+	return (true);
+}
+
+/*
  * An apply begun from a plan built: the lock, the steps, the thread.
  * The plan, the changes and the state are consumed; acc, the warnings
  * the operator accepted (accept_ok()), is not.  Refused (-1, why, the
- * HTTP status) while one runs, or when no thread could be made; else
- * how many steps there are.
+ * HTTP status) to one who may not change each edge it changes, while
+ * one runs, or when no thread could be made; else how many steps
+ * there are.  Its thread acts for whom this one does.
  */
 static int
 apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
@@ -11376,6 +11446,13 @@ apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
 	char			 path[MAXPATHLEN];
 	int			 fd, nsteps, error;
 
+	if (!edges_ours(chg, "server", why, wlen)) {
+		ucl_object_unref(chg);
+		plan_free(plp);
+		ucl_object_unref(st);
+		*statusp = 403;
+		return (-1);
+	}
 	/* One apply at a time, in this worker and every other. */
 	pthread_mutex_lock(&st_lock);
 	snprintf(path, sizeof(path), "%s/%s", cfg.datadir, LOCK_FILE);
@@ -11457,6 +11534,7 @@ apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
 	plan_free(plp);
 	/* Counted before the thread runs: it frees r when it is done. */
 	nsteps = (int)ucl_array_size(r->steps);
+	hosts_need(ROLE_OPERATOR);
 	if ((error = hosts_thread(&tid, run_main, r)) != 0) {
 		snprintf(why, wlen, "%s", strerror(error));
 		close(fd);
@@ -11529,7 +11607,7 @@ steer_pin(struct http_request *req)
 	ucl_object_t		*body, *pin;
 	const ucl_object_t	*w;
 	char			 uri[256], peer[256], name[128], jail[64], *json;
-	char			*text;
+	char			*text, why[300];
 	const char		*edge, *table, *prefix, *cand;
 	int			 status;
 
@@ -11546,6 +11624,10 @@ steer_pin(struct http_request *req)
 	    sizeof(name), jail, sizeof(jail))) {
 		ucl_object_unref(body);
 		return (reply_error(req, 404, "unknown", "no such edge"));
+	}
+	if (!edge_ok(edge, why, sizeof(why))) {
+		ucl_object_unref(body);
+		return (reply_error(req, 403, "role", "%s", why));
 	}
 	pin = ucl_object_typed_new(UCL_OBJECT);
 	if (jail[0] != '\0')
@@ -11694,8 +11776,8 @@ api_sdwan_edges(struct http_request *req)
 		ucl_object_unref(acc);
 	ucl_object_unref(doc);
 	if (n < 0)
-		return (reply_error(req, status, status == 409 ? "busy" : "thread",
-		    "%s", why));
+		return (reply_error(req, status, status == 409 ? "busy" :
+		    status == 403 ? "role" : "thread", "%s", why));
 	/* The Policies sent to the Policy End Points, the edges. */
 	audit_add("policies-applied", "Administer", "the services' document",
 	    fresh ? "every job made again on the edges" : "the changes made on "

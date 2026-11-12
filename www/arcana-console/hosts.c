@@ -252,6 +252,7 @@ struct call {
 	char			*accept[8];	/* a commit's warnings accepted */
 	size_t			 naccept;
 	bool			 reads;		/* changes nothing: may be asked twice */
+	enum role		 need;		/* on the host, or its op's */
 	bool			 retry;		/* transport: try SCTP again */
 	char			*listen;	/* transport: listen there too */
 	char			*unlisten;	/* and close this one */
@@ -1010,50 +1011,97 @@ hosts_tally_log(void)
 }
 
 /*
- * The console user this thread acts for: each request it sends a host
- * says so, and the host's access rules (NACM, RFC 8341) hold it to them;
- * NULL or "": the console itself, which asks for nobody.  A thread
- * started with hosts_thread() acts for its starter's.
+ * Whom this thread acts for (console.h): what it asks a host is asked
+ * for them alone, held there to their role (hosts_may()) and, for a
+ * user, to the host's access rules (NACM, RFC 8341) by their name.  A
+ * thread starts acting for no one, and asks nothing until told whom
+ * for: a request's task its request's (web.c), one started with
+ * hosts_thread() its starter's, and a path that acts for no one the
+ * console itself, by saying so (hosts_act_console()).
  */
-static _Thread_local char	acting[64];
+static _Thread_local struct principal	acting;
+
+/* The user it acts for, as the agent knows it; "": none of them. */
+#define	ACTING_USER	(acting.kind == P_USER ? acting.name : "")
 
 void
-hosts_act_as(const char *user)
+hosts_act(const struct principal *p)
 {
 
-	(void)snprintf(acting, sizeof(acting), "%s", user != NULL ? user :
-	    "");
-	(void)cbl_thread_set_user(acting[0] != '\0' ? acting : NULL);
+	if (p != NULL)
+		acting = *p;
+	else
+		memset(&acting, 0, sizeof(acting));
+	(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ? ACTING_USER :
+	    NULL);
+}
+
+/*
+ * For no one: what the console does by itself (its own polls, the
+ * notifier's reads, the hosts' roles synchronized), every host's to do.
+ * Only such a path says so.
+ */
+void
+hosts_act_console(void)
+{
+	struct principal	p;
+
+	memset(&p, 0, sizeof(p));
+	p.kind = P_CONSOLE;
+	hosts_act(&p);
+}
+
+void
+hosts_acting(struct principal *p)
+{
+
+	*p = acting;
+}
+
+/* What it asks from now on needs at least need on each host. */
+void
+hosts_need(enum role need)
+{
+
+	if (acting.need < (int)need)
+		acting.need = (int)need;
+}
+
+/*
+ * May this thread ask the agent at uri for what needs need: NULL, or
+ * why not.
+ */
+static const char *
+hosts_may(const char *uri, enum role need)
+{
+	static _Thread_local char	why[256];
+
+	if (principal_reach(&acting, uri, need, why, sizeof(why)))
+		return (NULL);
+	return (why);
 }
 
 /*
  * Who the console is to an agent when it acts for no one (a poll, a
- * schedule): NACM's user "console", in group admin by the agent's
- * default rules.  Said on every connection, below a thread's acting
- * user; so the console is never the agent's recovery session, not even
- * as root over the local agent's unix socket.
+ * schedule), or for an API token: NACM's user "console", in group
+ * admin by the agent's default rules.  Said on every connection, below
+ * a thread's acting user; so the console is never the agent's recovery
+ * session, not even as root over the local agent's unix socket.
  */
 #define	CONSOLE_USER	"console"
 
-/* web.h's: a request's user, its session's; acting for one. */
-const char *
-web_user(struct http_request *req)
-{
-
-	return (session_user(req));
-}
-
+/* web.h's: this thread acting for one. */
 void
-web_act_as(const char *user)
+web_act(const struct principal *p)
 {
 
-	hosts_act_as(user);
+	hosts_act(p);
 }
 
 struct acting_start {
-	void	*(*fn)(void *);
-	void	*arg;
-	char	 user[64];
+	void			*(*fn)(void *);
+	void			*arg;
+	struct principal	 who;
 };
 
 static void *
@@ -1062,13 +1110,14 @@ acting_run(void *p)
 	struct acting_start	s = *(struct acting_start *)p;
 
 	free(p);
-	hosts_act_as(s.user);
+	hosts_act(&s.who);
 	return (s.fn(s.arg));
 }
 
-/* pthread_create(3) of a thread that acts for this one's user. */
+/* pthread_create(3) of a thread that acts for who. */
 int
-hosts_thread(pthread_t *tid, void *(*fn)(void *), void *arg)
+hosts_thread_as(pthread_t *tid, void *(*fn)(void *), void *arg,
+    const struct principal *who)
 {
 	struct acting_start	*s;
 	int			 error;
@@ -1077,10 +1126,18 @@ hosts_thread(pthread_t *tid, void *(*fn)(void *), void *arg)
 		return (ENOMEM);
 	s->fn = fn;
 	s->arg = arg;
-	(void)snprintf(s->user, sizeof(s->user), "%s", acting);
+	s->who = *who;
 	if ((error = pthread_create(tid, NULL, acting_run, s)) != 0)
 		free(s);
 	return (error);
+}
+
+/* The same, for whom this one acts for. */
+int
+hosts_thread(pthread_t *tid, void *(*fn)(void *), void *arg)
+{
+
+	return (hosts_thread_as(tid, fn, arg, &acting));
 }
 
 /*
@@ -1093,9 +1150,12 @@ hosts_connect(const char *uri, const char *peer, cbl_conn **connp,
     cbl_tls **tlsp)
 {
 	struct pooled	 kept;
+	const char	*msg;
 
 	*connp = NULL;
 	*tlsp = NULL;
+	if ((msg = hosts_may(uri, ROLE_VIEWER)) != NULL)
+		return (msg);
 	hosts_count(false);
 	/* Not a shared one: see above. */
 	if (pool_take_own(uri, peer, false, &kept)) {
@@ -1212,7 +1272,8 @@ pending_sync(const char *uri, cbl_conn *conn)
 		    "its access rules: %s: synchronize them from Settings, AAA, "
 		    "Roles", uri, err);
 	ucl_object_unref(out);
-	(void)cbl_thread_set_user(acting[0] != '\0' ? acting : NULL);
+	(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ? ACTING_USER :
+	    NULL);
 	pending_free(p);
 }
 
@@ -1295,6 +1356,8 @@ hosts_shared(const char *uri, const char *peer, cbl_conn **connp)
 	const char	*msg;
 
 	*connp = NULL;
+	if ((msg = hosts_may(uri, ROLE_VIEWER)) != NULL)
+		return (msg);
 	hosts_count(false);
 	if (shared_wait(uri, peer, &kept)) {
 		free(kept.uri);
@@ -1957,7 +2020,8 @@ jobcache_get(const struct call *c)
 	for (size_t i = 0; i < nitems(jobcache); i++) {
 		j = &jobcache[i];
 		if (j->json != NULL && j->id == c->jobid && strcmp(j->host,
-		    jobcache_host(c)) == 0 && strcmp(j->user, acting) == 0 &&
+		    jobcache_host(c)) == 0 && strcmp(j->user, ACTING_USER) ==
+		    0 &&
 		    (j->ended || now - j->at < JOBCACHE_US))
 			json = strdup(j->json);
 	}
@@ -1975,7 +2039,7 @@ jobcache_put(const struct call *c, const char *json, bool ended)
 	for (size_t i = 0; i < nitems(jobcache); i++) {
 		j = &jobcache[i];
 		if (j->id == c->jobid && strcmp(j->host, jobcache_host(c)) ==
-		    0 && strcmp(j->user, acting) == 0) {
+		    0 && strcmp(j->user, ACTING_USER) == 0) {
 			old = j;
 			break;
 		}
@@ -1985,7 +2049,7 @@ jobcache_put(const struct call *c, const char *json, bool ended)
 	free(old->json);
 	if ((old->json = strdup(json)) != NULL) {
 		snprintf(old->host, sizeof(old->host), "%s", jobcache_host(c));
-		snprintf(old->user, sizeof(old->user), "%s", acting);
+		snprintf(old->user, sizeof(old->user), "%s", ACTING_USER);
 		old->id = c->jobid;
 		old->at = now_us();
 		old->ended = ended;
@@ -2040,7 +2104,7 @@ held_answer(struct call *c, ucl_object_t *top, uint64_t t1, char *detail,
 	switch (c->op) {
 	case OP_STATS:
 		if ((h = watch_held(c->sid, c->uri, c->peer, WATCH_STATS,
-		    acting)) == NULL)
+		    ACTING_USER)) == NULL)
 			return (HELD_NO);
 		put(top, "stats", yh_stats_of(h->data));
 		break;
@@ -2048,20 +2112,20 @@ held_answer(struct call *c, ucl_object_t *top, uint64_t t1, char *detail,
 		/* The jails held; the host by its hello, asked each time
 		 * (what tools it has can change unannounced). */
 		c->jails = watch_held(c->sid, c->uri, c->peer, WATCH_JAILS,
-		    acting);
+		    ACTING_USER);
 		return (HELD_NO);
 	case OP_JOBS:
 	case OP_JOB:
 		if (c->op == OP_JOB && (c->json = jobcache_get(c)) != NULL) {
 			/* Kept the jobs' subscription asked for. */
 			held_rele(watch_held(c->sid, c->uri, c->peer,
-			    WATCH_JOBS, acting));
+			    WATCH_JOBS, ACTING_USER));
 			hosts_count(true);
 			c->status = 200;
 			return (HELD_JSON);
 		}
 		if ((h = watch_held(c->sid, c->uri, c->peer, WATCH_JOBS,
-		    acting)) == NULL || (ya = cbl_yarena_new()) == NULL)
+		    ACTING_USER)) == NULL || (ya = cbl_yarena_new()) == NULL)
 			break;
 		if (yq_list_of(h->data, ya, &yqj) != 0)
 			r = HELD_NO;
@@ -2096,6 +2160,23 @@ held_answer(struct call *c, ucl_object_t *top, uint64_t t1, char *detail,
 }
 
 /* In a task thread: one cblink request, its reply as JSON. */
+/*
+ * The role c needs on its host: its route's (call_open()), else its
+ * op's, an update's or a build's an admin's, a read a viewer's, the
+ * rest an operator's.
+ */
+static enum role
+call_need(const struct call *c)
+{
+
+	if (c->op == OP_AGENT_UPDATE || c->op == OP_AGENT_BUILD ||
+	    c->op == OP_CONSOLE_UPDATE)
+		return (ROLE_ADMIN);
+	if (c->need != ROLE_NONE)
+		return (c->need);
+	return (c->reads ? ROLE_VIEWER : ROLE_OPERATOR);
+}
+
 static int
 call_run(struct task *t)
 {
@@ -2152,6 +2233,16 @@ call_run(struct task *t)
 	jobkeep = jobended = false;
 	box = NULL;
 	t1 = now_us();
+	/* Asked only for one who may ask it there: not even what is held. */
+	if ((msg = hosts_may(c->uri, call_need(c))) != NULL) {
+		c->status = 403;
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put_str(e, "code", "access-denied");
+		put_str(e, "message", msg);
+		put(top, "error", e);
+		put(top, "trace", trace_object(c, NULL, 0, msg, false, 0));
+		goto done;
+	}
 	switch (held_answer(c, top, t1, detail, sizeof(detail))) {
 	case HELD_TOP:
 		put(top, "ok", ucl_object_frombool(true));
@@ -2924,7 +3015,8 @@ connected:
 		(void)cbl_thread_set_user(NULL);
 		ok = ytrans_nacm_sync(conn, c->names, c->nnames, c->others,
 		    c->nothers, c->ops, c->nops, &e, ywhy, sizeof(ywhy)) == 0;
-		(void)cbl_thread_set_user(acting[0] != '\0' ? acting : NULL);
+		(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ? ACTING_USER :
+	    NULL);
 		ysteps_end(conn, &ys, &steps, &nsteps);
 		if (!ok)
 			put_str(top, "error", ywhy);
@@ -3518,6 +3610,7 @@ call_open(struct http_request *req, enum op op, bool checked, bool mutate,
 	c = xcalloc(1, sizeof(*c));
 	c->op = op;
 	c->reads = req->method == HTTP_METHOD_GET;
+	c->need = admin ? ROLE_ADMIN : mutate ? ROLE_OPERATOR : ROLE_VIEWER;
 	c->t0 = t0;
 	c->auth_us = t1 - t0;
 	strlcpy(c->sid, s->id, sizeof(c->sid));
@@ -4038,8 +4131,8 @@ api_config_apply(struct http_request *req)
 		char	why[300], *json;
 
 		if (!template_name_ok(tn) || (json = template_render(tn,
-		    ucl_object_lookup(body, "values"), why, sizeof(why))) ==
-		    NULL) {
+		    req_tenant(req), ucl_object_lookup(body, "values"), why,
+		    sizeof(why))) == NULL) {
 			/* tn is the body's: the reply first. */
 			if (!template_name_ok(tn))
 				strlcpy(why, "a template's name", sizeof(why));

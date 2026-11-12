@@ -125,7 +125,8 @@ read_json(struct http_request *req)
 bool
 guard(struct http_request *req, bool mutate)
 {
-	const char	*v, *u;
+	struct principal	 p;
+	const char		*v, *u;
 
 	config_refresh();
 	if (!session_valid(req)) {
@@ -155,6 +156,14 @@ guard(struct http_request *req, bool mutate)
 			return (false);
 		}
 	}
+	/* One of no one, neither a user's nor a token's, opens nothing:
+	 * no name is no role, never every role. */
+	req_principal(req, &p);
+	if (p.kind == P_NONE) {
+		reply_error(req, 401, "unauthenticated", "a session of no "
+		    "user: sign in again");
+		return (false);
+	}
 	/* Opened with a write token, or by a password the console limits:
 	 * what a write token may, no more. */
 	if (session_by_token(req) && !(mutate ? token_writable(req->path) :
@@ -164,9 +173,16 @@ guard(struct http_request *req, bool mutate)
 		    "security key", mutate ? "change" : "read");
 		return (false);
 	}
+	/* A user of a tenant: not what is the whole fleet's. */
+	if ((u = session_user(req)) != NULL && user_tenant(u)[0] != '\0' &&
+	    path_fleet_wide(req->path)) {
+		reply_error(req, 403, "tenant", "the SD-WAN and its services "
+		    "are the whole fleet's: not a tenant's user's");
+		return (false);
+	}
 	/* A console user: what their role on the console allows
 	 * (users.c); the hosts' routes look at their role on the host. */
-	if ((u = session_user(req)) != NULL && !user_path_ok(user_console(u),
+	if (u != NULL && !user_path_ok(user_console(u),
 	    req->path, mutate)) {
 		reply_error(req, 403, "role", "%s of this console may not %s "
 		    "this", user_console(u) == CROLE_OPERATOR ? "an operator" :
@@ -450,6 +466,8 @@ arcw_init(void)
 	if (cluster_on())
 		(void)timer_add(cluster_tick, 500, NULL, 0);
 	servers_init();
+	/* What the threads judge whom they act for by. */
+	acl_init();
 	transfers_init();
 	workflows_init();
 	sdwan_init();

@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.428.0"
+#define	ARCW_VERSION		"0.429.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -56,7 +56,8 @@
 #define	SESSION_COOKIE		"arc_session"
 #define	SESSION_IDLE		(30 * 60)
 #define	SESSION_MAX		(12 * 60 * 60)
-#define	SESSIONS		8
+#define	SESSIONS_MAX		4096	/* open at once, of every user */
+#define	SESSIONS_USER		16	/* of one user, or one token */
 #define	SESSIONS_DIR		"sessions"	/* a document a session */
 #define	SESSION_SAVE		60	/* s, between writes of the time of use */
 #define	CHALLENGE_TTL		120
@@ -195,17 +196,25 @@ enum { TOKEN_NONE, TOKEN_READ, TOKEN_WRITE };
 int		 token_kind(struct http_request *);
 const char	*token_login(const char *, char *, size_t);
 bool		 token_alive(const char *);
+int		 token_kind_of(const char *);
+ucl_object_t	*tokens_acl(void);
+bool		 token_principal(struct http_request *, struct principal *);
 bool		 session_by_token(struct http_request *);
 
 /* ldap.c: sign-in by a directory, when Settings name one. */
 bool		 ldap_enabled(void);
-bool		 ldap_login(const char *, const char *, char *, size_t, char *,
-		    size_t, const char **, int *, int);
-#define	SIGNIN_TRIES	5		/* failures a minute before a wait */
-bool		 signin_throttled(void);
-void		 signin_failed(void);
+bool		 ldap_login(const char *, const char *, const char *const *,
+		    const char *const *, int, char *, size_t, char *, size_t,
+		    const char **, int *, int, bool *);
+#define	SIGNIN_TRIES	5		/* failures a minute of a name
+					 * before a wait */
+#define	SIGNIN_TRIES_ADDR 20		/* ... from an address */
+#define	SIGNIN_TRIES_ALL 100		/* ... of all, before every one */
+bool		 signin_throttled(const char *, const char *);
+void		 signin_failed(const char *, const char *);
 int		 api_login_token(struct http_request *);
 int		 api_login_password(struct http_request *);
+void		 api_login_password_free(struct http_request *);
 int		 api_setup_password(struct http_request *);
 int		 api_auth_password(struct http_request *);
 
@@ -256,6 +265,10 @@ bool		 capture_path(const char *, int, char *, size_t);
 const char	*ucl_str(const ucl_object_t *, const char *);
 bool		 ucl_flag(const ucl_object_t *, const char *);
 
+/* What a user may: on a host, and on the console (users.c). */
+enum role { ROLE_NONE, ROLE_VIEWER, ROLE_OPERATOR, ROLE_ADMIN };
+enum crole { CROLE_NONE, CROLE_MEMBER, CROLE_OPERATOR, CROLE_OWNER };
+
 /* auth.c: WebAuthn and sessions. */
 void		 auth_init(void);
 bool		 session_valid(struct http_request *);
@@ -263,6 +276,9 @@ const char	*session_who(struct http_request *);
 const char	*session_user(struct http_request *);
 bool		 host_allowed(struct http_request *, const char *, bool, bool);
 bool		 host_role_ok(struct http_request *, const char *, bool, bool);
+void		 req_principal(struct http_request *, struct principal *);
+enum role	 req_host_role(struct http_request *, const char *);
+const char	*req_tenant(struct http_request *);
 int		 cred_count_of(const char *);
 void		 creds_forget_user(const char *);
 void		 sessions_end_user(const char *);
@@ -270,20 +286,30 @@ void		 sessions_end_password(const char *);
 
 /* users.c: the console's users and their roles (RBAC). */
 #define	ADMIN_USER	"admin"
-enum role { ROLE_NONE, ROLE_VIEWER, ROLE_OPERATOR, ROLE_ADMIN };
-enum crole { CROLE_NONE, CROLE_MEMBER, CROLE_OPERATOR, CROLE_OWNER };
 void		 users_init(void);
 bool		 user_name_ok(const char *);
 bool		 user_exists(const char *);
 enum crole	 user_console(const char *);
 bool		 roles_name_host(const char *);
 enum role	 user_host(const char *, const char *);
+enum role	 principal_host(const struct principal *, const char *);
+bool		 principal_may(const struct principal *, const char *,
+		    enum role);
+const char	*principal_who(const struct principal *, char *, size_t);
+bool		 principal_reach(const struct principal *, const char *,
+		    enum role, char *, size_t);
+enum role	 principal_host_at(const struct principal *, const char *);
+void		 acl_publish(void);
+void		 acl_init(void);
 const char	*user_tenant(const char *);
 const char	*role_name(enum role);
 const char	*crole_name(enum crole);
 bool		 user_path_ok(enum crole, const char *, bool);
+bool		 user_may_path(const char *, const char *, bool);
+bool		 path_fleet_wide(const char *);
 void		 user_handle(const char *, char *, size_t);
-bool		 invite_take(const char *, char *, size_t);
+bool		 invite_check(const char *, uint8_t *, char *, size_t);
+bool		 invite_spend(const uint8_t *, const char *);
 #define	ROLES_LDAP_MAX	32
 int		 roles_ldap_groups(const char **, const char **, int);
 void		 users_ldap_sync(const char *, const char **, int);
@@ -416,8 +442,28 @@ const char	*hosts_connect(const char *, const char *, cbl_conn **,
 		    cbl_tls **);
 void		 hosts_release(const char *, const char *, cbl_conn *,
 		    cbl_tls *, bool);
-void		 hosts_act_as(const char *);
+/*
+ * Whom what a thread asks of a host is for (web.h's struct principal):
+ * nothing is asked for no one.  A console user is held on each host to
+ * the role the request needs there (need, or more), and the host's
+ * access rules (NACM) to its name; an API token to its own reach, a
+ * read token a viewer's of every host, a write token an admin's,
+ * said to the host as the console; the console itself is for what
+ * no one asks and only the paths that act for no one take it
+ * (hosts_act_console()).
+ */
+#define	P_NONE		0
+#define	P_USER		1	/* name the user's */
+#define	P_RTOKEN	2	/* name the token's id */
+#define	P_WTOKEN	3
+#define	P_CONSOLE	4
+void		 hosts_act(const struct principal *);
+void		 hosts_act_console(void);
+void		 hosts_acting(struct principal *);
+void		 hosts_need(enum role);
 int		 hosts_thread(pthread_t *, void *(*)(void *), void *);
+int		 hosts_thread_as(pthread_t *, void *(*)(void *), void *,
+		    const struct principal *);
 void		 hosts_count(bool);
 void		 hosts_tally(uint64_t *, uint64_t *, uint64_t *);
 
@@ -559,20 +605,21 @@ int		 users_yang_invite(const char *, const char *, char *, size_t,
 int		 enrol_token_new(const char *, const char *, int64_t,
 		    ucl_object_t **, char *, size_t);
 bool		 enrol_enabled(void);
-ucl_object_t	*workflows_yang(void);
-int		 workflows_yang_set(const ucl_object_t *, const ucl_object_t *,
-		    char *, size_t);
+ucl_object_t	*workflows_yang(struct http_request *);
+int		 workflows_yang_set(struct http_request *, const ucl_object_t *,
+		    const ucl_object_t *, char *, size_t);
 int		 workflows_yang_run(struct http_request *, const char *,
 		    const ucl_object_t *, uint32_t *, char *, size_t);
-ucl_object_t	*runs_yang(uint32_t);
-int		 runs_yang_mark(uint32_t, const char *, const char *, char *,
-		    size_t);
-int		 runs_yang_clear(const char *, const char *);
+ucl_object_t	*runs_yang(struct http_request *, uint32_t);
+int		 runs_yang_mark(struct http_request *, uint32_t, const char *,
+		    const char *, char *, size_t);
+int		 runs_yang_clear(struct http_request *, const char *,
+		    const char *);
 int		 cyang_output(struct http_request *, ucl_object_t *);
 const ucl_object_t *cyang_entry(const ucl_object_t *, const char *,
 		    const char *);
 bool		 cyang_same(const ucl_object_t *, const ucl_object_t *);
-ucl_object_t	*templates_yang(void);
+ucl_object_t	*templates_yang(struct http_request *);
 int		 templates_yang_set(struct http_request *, const ucl_object_t *,
 		    const ucl_object_t *, char *, size_t);
 ucl_object_t	*labels_yang(struct http_request *);
@@ -639,8 +686,8 @@ int		 api_config_apply(struct http_request *);
 /* templates.c: configuration templates, a host's setup by name. */
 bool		 template_name_ok(const char *);
 ucl_object_t	*template_get(const char *);
-char		*template_render(const char *, const ucl_object_t *, char *,
-		    size_t);
+char		*template_render(const char *, const char *,
+		    const ucl_object_t *, char *, size_t);
 int		 api_transport_switch(struct http_request *);
 int		 api_stream(struct http_request *);
 void		 stream_connect(struct conn *);

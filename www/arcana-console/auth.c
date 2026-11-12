@@ -17,8 +17,10 @@
  * name and their password, for a browser no key reaches.  It is set up
  * once a key is registered or a user has a password (setup_done()).
  *
- * The server runs the console in one worker, so challenges and sessions
- * live in that process; restarting the console logs you out.
+ * The server runs the console in one worker, so the sessions live in
+ * that process, and each in a document of its own, so that a restart
+ * keeps them; a challenge lives nowhere, what it is for said in it
+ * under the console's MAC.
  */
 
 #include <sys/param.h>
@@ -53,8 +55,9 @@
 #define	COSE_EDDSA	-8
 #define	COSE_RS256	-257
 
-struct challenge {
-	char		value[48];	/* base64url of 32 random bytes */
+/* A challenge used: SHA-256 of its value, until it would end. */
+struct used {
+	uint8_t		hash[32];
 	time_t		expires;
 };
 
@@ -64,6 +67,8 @@ struct session {
 	time_t		last;
 	bool		used;
 	char		who[64];	/* the key it was opened with */
+	char		cred[65];	/* SHA-256 of that key's id, hex; ""
+					 * opened by none */
 	char		tok[17];	/* the API token it was, its id; "" a key */
 	bool		ldap;		/* opened by a directory's user */
 	bool		pw;		/* ... by the console's own password */
@@ -73,33 +78,53 @@ struct session {
 
 static ucl_object_t	*creds;		/* the credentials document */
 static char		 setup_token[65];
-static struct challenge	 reg_chal;
-static char		 reg_user[64];	/* whose key is being registered */
-static bool		 reg_invited;	/* ... by an invitation: no session */
 static char		 last_user[64];	/* of the session just started: its
 					 * cookie is not on the request yet */
 
 /*
- * Login challenges are not kept.  Anyone may ask for one, and one kept
- * for each asker would let whoever asks most push the others' out.  A
- * challenge says when it ends and carries a MAC of the console's over
- * that; it is noted only once used, to be used once.
+ * Challenges are not kept, a login's nor a registration's.  Anyone may
+ * ask for a login's, and one kept for each asker would let whoever
+ * asks most push the others' out; a registration's kept once for all
+ * would let one ceremony end another's.  A challenge says when it ends
+ * and what it is for (a registration: whose key, how, by which
+ * invitation), with a MAC of the console's over all of it; it is noted
+ * once used, to be used once, and only once its ceremony succeeded,
+ * so that none but one who may can fill the notes.
  */
-#define	USED_CHALS	64
+#define	USED_CHALS	1024
+#define	CHAL_MAX	192		/* a challenge's text, with its NUL */
 static uint8_t		 chal_key[32];
 static bool		 chal_keyed;
-static struct challenge	 used_chals[USED_CHALS];
-static struct session	 sessions[SESSIONS];
+static struct used	 used_chals[USED_CHALS];
+
+/* What a registration's challenge carries. */
+#define	REG_SESSION	1	/* a signed-in user's key, or the owner's for
+				 * another */
+#define	REG_SETUP	2	/* the first key, by the setup token */
+#define	REG_INVITE	3	/* an invited user's, by the invitation */
+struct regchal {
+	uint8_t		mode;
+	uint8_t		inv[32];	/* REG_INVITE: its SHA-256 */
+	char		user[65];	/* whose key */
+};
+#define	REG_CARRY	(1 + 32 + 64)
+/*
+ * The sessions, as many as are open, SESSIONS_MAX at most: a user (or
+ * a token) has SESSIONS_USER of them, their own oldest ending when
+ * they open another, so that no one signing in again and again ends
+ * anyone else's; the least recently used of all only when the users
+ * together fill the table.
+ */
+static struct session	**sessions;
+static int		 nsessions;
 static time_t		 sessions_saved;	/* when the file was last written */
 
 static char	*b64url(const void *, size_t);
 static bool	 origin_ours(const char *);
 static uint8_t	*unb64url(const char *, size_t *);
 static void	 sha256(const void *, size_t, uint8_t *);
-static void	 challenge_new(struct challenge *);
-static bool	 challenge_take(struct challenge *, const char *);
 static const char *check_client_data(const uint8_t *, size_t, const char *,
-		    struct challenge *);
+		    char *, size_t);
 static const char *check_auth_data(const uint8_t *, size_t, uint8_t *,
 		    uint32_t *);
 static bool	 verify_sig(int, const uint8_t *, size_t, const uint8_t *,
@@ -108,11 +133,12 @@ static bool	 key_matches(int, const uint8_t *, size_t);
 static ucl_object_t *cred_list(void);
 static const ucl_object_t *cred_find(const char *);
 static struct session *session_start(struct http_request *, const char *,
-		    const char *, const char *);
+		    const char *, const char *, const char *);
 static void	 sessions_save(void);
 static void	 sessions_load(void);
 static void	 session_put(struct session *);
 static void	 session_end(struct session *);
+static bool	 cred_alive(const char *);
 static void	 setup_token_init(void);
 static bool	 setup_done(void);
 static bool	 setup_token_ok(const char *);
@@ -156,24 +182,14 @@ sha256(const void *data, size_t len, uint8_t *md)
 	EVP_Digest(data, len, md, &mdlen, EVP_sha256(), NULL);
 }
 
+/*
+ * A challenge: 12 random bytes, when it ends, what it carries (wlen
+ * bytes of what), and the console's MAC over them, base64url into out.
+ */
 static void
-challenge_new(struct challenge *c)
+chal_make(const uint8_t *what, size_t wlen, char *out, size_t len)
 {
-	uint8_t	 raw[32];
-	char	*s;
-
-	arc4random_buf(raw, sizeof(raw));
-	s = b64url(raw, sizeof(raw));
-	strlcpy(c->value, s, sizeof(c->value));
-	free(s);
-	c->expires = time(NULL) + CHALLENGE_TTL;
-}
-
-/* A login challenge: 12 random bytes, when it ends, and the MAC. */
-static void
-login_challenge(char *out, size_t len)
-{
-	uint8_t		 raw[32], mac[32];
+	uint8_t		 raw[16 + REG_CARRY + 16], mac[32];
 	unsigned int	 n;
 	char		*s;
 
@@ -183,63 +199,107 @@ login_challenge(char *out, size_t len)
 	}
 	arc4random_buf(raw, 12);
 	be32enc(raw + 12, (uint32_t)(time(NULL) + CHALLENGE_TTL));
-	HMAC(EVP_sha256(), chal_key, sizeof(chal_key), raw, 16, mac, &n);
-	memcpy(raw + 16, mac, 16);
-	s = b64url(raw, sizeof(raw));
+	if (wlen > 0)
+		memcpy(raw + 16, what, wlen);
+	HMAC(EVP_sha256(), chal_key, sizeof(chal_key), raw, 16 + wlen, mac,
+	    &n);
+	memcpy(raw + 16 + wlen, mac, 16);
+	s = b64url(raw, 16 + wlen + 16);
 	strlcpy(out, s, len);
 	free(s);
 }
 
-/* Is value a login challenge of ours, in time, and not used before? */
+/*
+ * Is value a challenge of ours, in time, carrying wlen bytes (into
+ * what), and not used yet?  When it ends into *expp.
+ */
 static bool
-login_challenge_take(const char *value)
+chal_check(const char *value, uint8_t *what, size_t wlen, time_t *expp)
 {
-	struct challenge	*slot;
-	uint8_t			*raw, mac[32];
-	size_t			 len;
-	unsigned int		 n;
-	time_t			 now, expires;
-	int			 i;
-	bool			 ok;
+	uint8_t		*raw, mac[32], h[32];
+	size_t		 len;
+	unsigned int	 n;
+	time_t		 now;
+	int		 i;
+	bool		 ok;
 
-	if (!chal_keyed || strlen(value) >= sizeof(slot->value) ||
+	if (!chal_keyed || strlen(value) >= CHAL_MAX ||
 	    (raw = unb64url(value, &len)) == NULL)
 		return (false);
-	ok = len == 32;
+	ok = len == 16 + wlen + 16;
 	if (ok) {
-		HMAC(EVP_sha256(), chal_key, sizeof(chal_key), raw, 16, mac,
-		    &n);
-		ok = CRYPTO_memcmp(mac, raw + 16, 16) == 0;
+		HMAC(EVP_sha256(), chal_key, sizeof(chal_key), raw, 16 + wlen,
+		    mac, &n);
+		ok = CRYPTO_memcmp(mac, raw + 16 + wlen, 16) == 0;
 	}
 	now = time(NULL);
-	expires = ok ? (time_t)be32dec(raw + 12) : 0;
+	*expp = ok ? (time_t)be32dec(raw + 12) : 0;
+	if (ok && wlen > 0)
+		memcpy(what, raw + 16, wlen);
 	free(raw);
-	if (!ok || now > expires)
+	if (!ok || now > *expp)
 		return (false);
-	/* Used once: noted until it would have ended anyway. */
+	sha256(value, strlen(value), h);
+	for (i = 0; i < USED_CHALS; i++)
+		if (used_chals[i].expires >= now && memcmp(used_chals[i].hash,
+		    h, sizeof(h)) == 0)
+			return (false);
+	return (true);
+}
+
+/* value noted used, until it would have ended: false when it was. */
+static bool
+chal_use(const char *value, time_t expires)
+{
+	struct used	*slot;
+	uint8_t		 h[32];
+	time_t		 now;
+	int		 i;
+
+	now = time(NULL);
+	sha256(value, strlen(value), h);
 	slot = &used_chals[0];
 	for (i = 0; i < USED_CHALS; i++) {
-		if (used_chals[i].expires >= now && strcmp(used_chals[i].value,
-		    value) == 0)
+		if (used_chals[i].expires >= now && memcmp(used_chals[i].hash,
+		    h, sizeof(h)) == 0)
 			return (false);
 		if (used_chals[i].expires < slot->expires)
 			slot = &used_chals[i];
 	}
-	strlcpy(slot->value, value, sizeof(slot->value));
+	memcpy(slot->hash, h, sizeof(h));
 	slot->expires = expires;
 	return (true);
 }
 
-/* Use the challenge up: it matches at most once. */
-static bool
-challenge_take(struct challenge *c, const char *value)
+/* A registration's challenge for rc, into out. */
+static void
+reg_challenge(const struct regchal *rc, char *out, size_t len)
 {
-	bool	ok;
+	uint8_t	what[REG_CARRY];
 
-	ok = c->value[0] != '\0' && time(NULL) <= c->expires &&
-	    strcmp(c->value, value) == 0;
-	memset(c, 0, sizeof(*c));
-	return (ok);
+	memset(what, 0, sizeof(what));
+	what[0] = rc->mode;
+	memcpy(what + 1, rc->inv, sizeof(rc->inv));
+	memcpy(what + 33, rc->user, strnlen(rc->user, 64));
+	chal_make(what, sizeof(what), out, len);
+}
+
+/* Is value a registration's challenge of ours: what it carries into
+ * rc, when it ends into *expp. */
+static bool
+reg_challenge_read(const char *value, struct regchal *rc, time_t *expp)
+{
+	uint8_t	what[REG_CARRY];
+
+	if (!chal_check(value, what, sizeof(what), expp))
+		return (false);
+	memset(rc, 0, sizeof(*rc));
+	rc->mode = what[0];
+	memcpy(rc->inv, what + 1, sizeof(rc->inv));
+	memcpy(rc->user, what + 33, 64);
+	rc->user[64] = '\0';
+	return (rc->mode >= REG_SESSION && rc->mode <= REG_INVITE &&
+	    rc->user[0] != '\0');
 }
 
 /*
@@ -274,7 +334,7 @@ origin_ours(const char *origin)
  */
 static const char *
 check_client_data(const uint8_t *cd, size_t len, const char *type,
-    struct challenge *chal)
+    char *chal, size_t chlen)
 {
 	struct ucl_parser	*p;
 	ucl_object_t		*o;
@@ -291,9 +351,8 @@ check_client_data(const uint8_t *cd, size_t len, const char *type,
 	err = NULL;
 	if ((s = ucl_str(o, "type")) == NULL || strcmp(s, type) != 0)
 		err = "wrong clientData type";
-	else if ((s = ucl_str(o, "challenge")) == NULL ||
-	    !(chal != NULL ? challenge_take(chal, s) :
-	    login_challenge_take(s)))
+	else if ((s = ucl_str(o, "challenge")) == NULL || strlcpy(chal, s,
+	    chlen) >= chlen)
 		err = "unknown or expired challenge";
 	else if ((s = ucl_str(o, "origin")) == NULL || !origin_ours(s))
 		err = "wrong origin";
@@ -553,6 +612,8 @@ session_put(struct session *s)
 	put(e, "created", ucl_object_fromint(s->created));
 	put(e, "last", ucl_object_fromint(s->last));
 	put(e, "who", ucl_object_fromstring(s->who));
+	if (s->cred[0] != '\0')
+		put(e, "cred", ucl_object_fromstring(s->cred));
 	if (s->tok[0] != '\0')
 		put(e, "token", ucl_object_fromstring(s->tok));
 	if (s->ldap)
@@ -567,17 +628,69 @@ session_put(struct session *s)
 	s->written = s->last;
 }
 
-/* A session ended: its document taken away, its slot free. */
+/* A session ended: its document taken away, it out of the table and
+ * freed. */
 static void
 session_end(struct session *s)
 {
 	char	name[128];
+	int	i;
 
 	if (s->used) {
 		session_doc(s, name, sizeof(name));
 		(void)store_remove(name);
 	}
-	memset(s, 0, sizeof(*s));
+	for (i = 0; i < nsessions; i++)
+		if (sessions[i] == s) {
+			sessions[i] = sessions[--nsessions];
+			break;
+		}
+	explicit_bzero(s, sizeof(*s));
+	free(s);
+}
+
+/* Every session, ended in memory alone (its document kept). */
+static void
+sessions_drop(void)
+{
+
+	while (nsessions > 0) {
+		explicit_bzero(sessions[nsessions - 1], sizeof(struct session));
+		free(sessions[--nsessions]);
+	}
+}
+
+/* A new slot, its session's owner's oldest ended when they have
+ * SESSIONS_USER, the least recently used when the table is full. */
+static struct session *
+session_slot(const char *user, const char *tok)
+{
+	struct session	*s, *mine, *lru;
+	int		 i, n;
+
+	mine = lru = NULL;
+	n = 0;
+	for (i = 0; i < nsessions; i++) {
+		s = sessions[i];
+		if (lru == NULL || s->last < lru->last)
+			lru = s;
+		if ((user[0] != '\0' && strcmp(s->user, user) == 0) ||
+		    (user[0] == '\0' && tok[0] != '\0' && s->user[0] == '\0' &&
+		    strcmp(s->tok, tok) == 0)) {
+			n++;
+			if (mine == NULL || s->last < mine->last)
+				mine = s;
+		}
+	}
+	if (n >= SESSIONS_USER)
+		session_end(mine);
+	else if (nsessions >= SESSIONS_MAX)
+		session_end(lru);
+	if (sessions == NULL)
+		sessions = xcalloc(SESSIONS_MAX, sizeof(*sessions));
+	s = xcalloc(1, sizeof(*s));
+	sessions[nsessions++] = s;
+	return (s);
 }
 
 /* The times of use not written yet, now and then. */
@@ -586,9 +699,10 @@ sessions_save(void)
 {
 	int	i;
 
-	for (i = 0; i < SESSIONS; i++)
-		if (sessions[i].used && sessions[i].last != sessions[i].written)
-			session_put(&sessions[i]);
+	for (i = 0; i < nsessions; i++)
+		if (sessions[i]->used && sessions[i]->last !=
+		    sessions[i]->written)
+			session_put(sessions[i]);
 	sessions_saved = time(NULL);
 }
 
@@ -607,13 +721,14 @@ sessions_load(void)
 	size_t			 len;
 	int			 n, k;
 
-	memset(sessions, 0, sizeof(sessions));
+	sessions_drop();
 	snprintf(path, sizeof(path), "%s/%s", cfg.datadir, SESSIONS_DIR);
 	if ((d = opendir(path)) == NULL)
 		return;
 	now = time(NULL);
 	n = 0;
-	while (n < SESSIONS && (de = readdir(d)) != NULL) {
+	s = NULL;
+	while (n < SESSIONS_MAX && (de = readdir(d)) != NULL) {
 		len = strlen(de->d_name);
 		if (de->d_type != DT_REG || len != 69 || strcmp(de->d_name +
 		    64, ".json") != 0)
@@ -621,7 +736,10 @@ sessions_load(void)
 		snprintf(name, sizeof(name), "%s/%s", SESSIONS_DIR, de->d_name);
 		if ((e = store_load(name)) == NULL)
 			continue;
-		s = &sessions[n];
+		if (s == NULL)
+			s = xcalloc(1, sizeof(*s));
+		else
+			memset(s, 0, sizeof(*s));
 		hex = ucl_object_lookup(e, "hash") != NULL ?
 		    ucl_object_tostring_forced(ucl_object_lookup(e, "hash")) :
 		    "";
@@ -639,21 +757,30 @@ sessions_load(void)
 		snprintf(s->tok, sizeof(s->tok), "%s", ucl_object_lookup(e,
 		    "token") != NULL ? ucl_object_tostring_forced(
 		    ucl_object_lookup(e, "token")) : "");
+		snprintf(s->cred, sizeof(s->cred), "%s", ucl_str(e, "cred") !=
+		    NULL ? ucl_str(e, "cred") : "");
 		s->ldap = ucl_object_toboolean(ucl_object_lookup(e, "ldap"));
 		s->pw = ucl_object_toboolean(ucl_object_lookup(e, "password"));
 		snprintf(s->user, sizeof(s->user), "%s", ucl_object_lookup(e,
 		    "user") != NULL ? ucl_object_tostring_forced(
 		    ucl_object_lookup(e, "user")) : "");
 		ucl_object_unref(e);
+		/* One of no one (neither a user's nor a token's) opens
+		 * nothing. */
 		if (k < 32 || s->created > now || now - s->last >
-		    cfg.session_idle || now - s->created > cfg.session_max) {
-			memset(s, 0, sizeof(*s));
+		    cfg.session_idle || now - s->created > cfg.session_max ||
+		    (s->user[0] == '\0' && s->tok[0] == '\0')) {
 			(void)store_remove(name);
 			continue;
 		}
 		s->used = true;
+		if (sessions == NULL)
+			sessions = xcalloc(SESSIONS_MAX, sizeof(*sessions));
+		sessions[nsessions++] = s;
+		s = NULL;
 		n++;
 	}
+	free(s);
 	closedir(d);
 }
 
@@ -669,10 +796,10 @@ session_of(struct http_request *req)
 	    strlen(cookie) != 64)
 		return (NULL);
 	sha256(cookie, strlen(cookie), h);
-	for (i = 0; i < SESSIONS; i++)
-		if (sessions[i].used && memcmp(sessions[i].hash, h,
+	for (i = 0; i < nsessions; i++)
+		if (sessions[i]->used && memcmp(sessions[i]->hash, h,
 		    sizeof(h)) == 0)
-			return (&sessions[i]);
+			return (sessions[i]);
 	return (NULL);
 }
 
@@ -714,10 +841,13 @@ session_valid(struct http_request *req)
 
 	now = time(NULL);
 	if ((s = session_of(req)) != NULL) {
-		/* Its token deleted, the session it opened ends with it. */
+		/* Its token deleted, its key removed, or its user, the
+		 * session it opened ends with it, on every node. */
 		if (now - s->last > cfg.session_idle ||
 		    now - s->created > cfg.session_max || (s->tok[0] != '\0' &&
-		    !token_alive(s->tok))) {
+		    !token_alive(s->tok)) || (s->cred[0] != '\0' &&
+		    !cred_alive(s->cred)) || (s->user[0] != '\0' &&
+		    !user_exists(s->user))) {
 			session_end(s);
 			return (false);
 		}
@@ -747,18 +877,17 @@ session_who(struct http_request *req)
 	    strlen(cookie) != 64)
 		return (token_who(req));
 	sha256(cookie, strlen(cookie), h);
-	for (i = 0; i < SESSIONS; i++)
-		if (sessions[i].used && memcmp(sessions[i].hash, h, sizeof(h))
+	for (i = 0; i < nsessions; i++)
+		if (sessions[i]->used && memcmp(sessions[i]->hash, h, sizeof(h))
 		    == 0)
-			return (sessions[i].who[0] != '\0' ? sessions[i].who :
+			return (sessions[i]->who[0] != '\0' ? sessions[i]->who :
 			    "a security key");
 	return (token_who(req));
 }
 
 /*
  * The console user a request's session is of (users.c): NULL for one
- * that carries none, an API token's or a directory's user the console
- * has no record of, which may what a write token may, on every host.
+ * that carries none, an API token's.
  */
 const char *
 session_user(struct http_request *req)
@@ -771,6 +900,57 @@ session_user(struct http_request *req)
 }
 
 /*
+ * Whom a request acts for: its session's user; the API token that
+ * opened its session, or its bearer token; no one else.  Its need the
+ * least, a viewer's: what it changes says more where it does.
+ */
+void
+req_principal(struct http_request *req, struct principal *p)
+{
+	struct session	*s;
+
+	memset(p, 0, sizeof(*p));
+	if ((s = session_of(req)) != NULL) {
+		if (s->user[0] != '\0') {
+			p->kind = P_USER;
+			snprintf(p->name, sizeof(p->name), "%s", s->user);
+		} else if (s->tok[0] != '\0') {
+			p->kind = P_WTOKEN;
+			snprintf(p->name, sizeof(p->name), "%s", s->tok);
+		}
+	} else
+		(void)token_principal(req, p);
+	p->need = ROLE_VIEWER;
+}
+
+/* The tenant of the request's user, "" for none (and for a token). */
+const char *
+req_tenant(struct http_request *req)
+{
+	const char	*u;
+
+	return ((u = session_user(req)) != NULL ? user_tenant(u) : "");
+}
+
+/* web.h's. */
+void
+web_principal(struct http_request *req, struct principal *p)
+{
+
+	req_principal(req, p);
+}
+
+/* The request's role on host sid (principal_host()). */
+enum role
+req_host_role(struct http_request *req, const char *sid)
+{
+	struct principal	p;
+
+	req_principal(req, &p);
+	return (principal_host(&p, sid));
+}
+
+/*
  * May the request's user do this on the host: a viewer reads, an
  * operator changes, an admin also what admin says (updating, moving,
  * removing it).  Without a reply; host_allowed() sends one.
@@ -779,16 +959,11 @@ bool
 host_role_ok(struct http_request *req, const char *sid, bool mutate,
     bool admin)
 {
-	enum role	r;
+	struct principal	p;
 
-	r = user_host(session_user(req), sid);
-	if (r == ROLE_NONE)
-		return (false);
-	if (mutate && r == ROLE_VIEWER)
-		return (false);
-	if (admin && r != ROLE_ADMIN)
-		return (false);
-	return (true);
+	req_principal(req, &p);
+	return (principal_may(&p, sid, admin ? ROLE_ADMIN : mutate ?
+	    ROLE_OPERATOR : ROLE_VIEWER));
 }
 
 bool
@@ -799,7 +974,7 @@ host_allowed(struct http_request *req, const char *sid, bool mutate,
 
 	if (host_role_ok(req, sid, mutate, admin))
 		return (true);
-	r = user_host(session_user(req), sid);
+	r = req_host_role(req, sid);
 	if (r == ROLE_NONE)
 		reply_error(req, 404, "not_found", "no such server");
 	else
@@ -814,9 +989,9 @@ sessions_end_user(const char *user)
 {
 	int	i;
 
-	for (i = 0; i < SESSIONS; i++)
-		if (sessions[i].used && strcmp(sessions[i].user, user) == 0)
-			session_end(&sessions[i]);
+	for (i = nsessions - 1; i >= 0; i--)
+		if (i < nsessions && strcmp(sessions[i]->user, user) == 0)
+			session_end(sessions[i]);
 }
 
 /* The user's sessions opened by their password: its change ends them. */
@@ -825,10 +1000,10 @@ sessions_end_password(const char *user)
 {
 	int	i;
 
-	for (i = 0; i < SESSIONS; i++)
-		if (sessions[i].used && sessions[i].pw && strcmp(
-		    sessions[i].user, user) == 0)
-			session_end(&sessions[i]);
+	for (i = nsessions - 1; i >= 0; i--)
+		if (i < nsessions && sessions[i]->pw && strcmp(
+		    sessions[i]->user, user) == 0)
+			session_end(sessions[i]);
 }
 
 /* The user a key belongs to: the built-in owner's when it says none. */
@@ -876,14 +1051,58 @@ creds_forget_user(const char *user)
 	(void)creds_save();
 }
 
-/* A new session in a cookie only the console can read, opened by the
- * key named who, or by the API token of id tok, for the console user
- * (NULL or "": none); its slot, for the caller to mark. */
-static struct session *
-session_start(struct http_request *req, const char *who, const char *tok,
-    const char *user)
+/* A key's id into hex, its SHA-256: what a session opened by it
+ * keeps. */
+static void
+cred_hash(const char *id, char *hex)
 {
-	struct session	*s, *old;
+	uint8_t	h[32];
+	int	k;
+
+	sha256(id, strlen(id), h);
+	for (k = 0; k < 32; k++)
+		snprintf(hex + 2 * k, 3, "%02x", h[k]);
+}
+
+/* Is the key whose id hashes to hex still there? */
+static bool
+cred_alive(const char *hex)
+{
+	const ucl_object_t	*c;
+	ucl_object_iter_t	 it = NULL;
+	char			 h[65];
+
+	while ((c = ucl_object_iterate(cred_list(), &it, true)) != NULL) {
+		if (ucl_str(c, "id") == NULL)
+			continue;
+		cred_hash(ucl_str(c, "id"), h);
+		if (strcmp(h, hex) == 0)
+			return (true);
+	}
+	return (false);
+}
+
+/* The sessions opened by the key of id, ended: it was removed. */
+static void
+sessions_end_cred(const char *id)
+{
+	char	hex[65];
+	int	i;
+
+	cred_hash(id, hex);
+	for (i = nsessions - 1; i >= 0; i--)
+		if (i < nsessions && strcmp(sessions[i]->cred, hex) == 0)
+			session_end(sessions[i]);
+}
+
+/* A new session in a cookie only the console can read, opened by the
+ * key named who of id cred, or by the API token of id tok, for the
+ * console user (NULL or "": none); its slot, for the caller to mark. */
+static struct session *
+session_start(struct http_request *req, const char *who, const char *cred,
+    const char *tok, const char *user)
+{
+	struct session	*s;
 	uint8_t		 raw[32];
 	char		 token[65], cookie[256];
 	int		 i;
@@ -891,23 +1110,13 @@ session_start(struct http_request *req, const char *who, const char *tok,
 	arc4random_buf(raw, sizeof(raw));
 	for (i = 0; i < 32; i++)
 		snprintf(token + i * 2, 3, "%02x", raw[i]);
-	/* Reuse a free slot, else the least recently used. */
-	old = &sessions[0];
-	for (i = 0; i < SESSIONS; i++) {
-		if (!sessions[i].used) {
-			old = &sessions[i];
-			break;
-		}
-		if (sessions[i].last < old->last)
-			old = &sessions[i];
-	}
-	s = old;
-	if (s->used)
-		session_end(s);
+	s = session_slot(user != NULL ? user : "", tok != NULL ? tok : "");
 	sha256(token, 64, s->hash);
 	s->created = s->last = time(NULL);
 	s->used = true;
 	snprintf(s->who, sizeof(s->who), "%s", who != NULL ? who : "");
+	if (cred != NULL)
+		cred_hash(cred, s->cred);
 	snprintf(s->tok, sizeof(s->tok), "%s", tok != NULL ? tok : "");
 	s->ldap = s->pw = false;
 	snprintf(s->user, sizeof(s->user), "%s", user != NULL ? user : "");
@@ -1002,24 +1211,30 @@ api_register_begin(struct http_request *req)
 	ucl_object_t		*body, *o, *pk, *rp, *user, *params, *p, *excl;
 	ucl_object_t		*sel, *e;
 	ucl_object_iter_t	 it;
+	struct regchal		 rc;
 	const char		*token;
 	static const int	 algs[] = { COSE_EDDSA, COSE_ES256,
 				    COSE_RS256 };
+	char			 chal[CHAL_MAX];
 	size_t			 i;
 
 	body = read_json(req);
-	/* Whose key: an invited user's, by their invitation (users.c);
-	 * the first key the built-in owner's, by the setup token; else
-	 * the signed-in user's own, or, for the owner, the one named. */
-	reg_invited = false;
+	/*
+	 * Whose key: an invited user's, by their invitation (users.c),
+	 * spent only when the key is registered; the first key the
+	 * built-in owner's, by the setup token; else the signed-in user's
+	 * own, or, for the owner, the one named.  Said in the challenge,
+	 * kept nowhere else: each ceremony is its own.
+	 */
+	memset(&rc, 0, sizeof(rc));
 	if (body != NULL && ucl_str(body, "invite") != NULL) {
-		if (!invite_take(ucl_str(body, "invite"), reg_user,
-		    sizeof(reg_user))) {
+		if (!invite_check(ucl_str(body, "invite"), rc.inv, rc.user,
+		    sizeof(rc.user))) {
 			ucl_object_unref(body);
 			return (reply_error(req, 403, "invite", "not an "
 			    "invitation of this console's, or one that ran out"));
 		}
-		reg_invited = true;
+		rc.mode = REG_INVITE;
 	} else if (!setup_done()) {
 		token = body != NULL ? ucl_str(body, "setup_token") : NULL;
 		if (!setup_token_ok(token)) {
@@ -1028,7 +1243,8 @@ api_register_begin(struct http_request *req)
 			    "the first key needs the setup token from %s/%s",
 			    cfg.datadir, SETUP_TOKEN));
 		}
-		snprintf(reg_user, sizeof(reg_user), "%s", ADMIN_USER);
+		rc.mode = REG_SETUP;
+		snprintf(rc.user, sizeof(rc.user), "%s", ADMIN_USER);
 	} else {
 		const char	*u, *forname;
 
@@ -1047,31 +1263,36 @@ api_register_begin(struct http_request *req)
 				    "another user is registered by the owner, for "
 				    "a user there is"));
 			}
-			snprintf(reg_user, sizeof(reg_user), "%s", forname);
-		} else
-			snprintf(reg_user, sizeof(reg_user), "%s", u != NULL ? u :
-			    ADMIN_USER);
+			snprintf(rc.user, sizeof(rc.user), "%s", forname);
+		} else if (u != NULL)
+			snprintf(rc.user, sizeof(rc.user), "%s", u);
+		else {
+			ucl_object_unref(body);
+			return (reply_error(req, 403, "role", "a key is a "
+			    "user's"));
+		}
+		rc.mode = REG_SESSION;
 	}
 	ucl_object_unref(body);
 
-	challenge_new(&reg_chal);
+	reg_challenge(&rc, chal, sizeof(chal));
 	pk = ucl_object_typed_new(UCL_OBJECT);
-	put(pk, "challenge", ucl_object_fromstring(reg_chal.value));
+	put(pk, "challenge", ucl_object_fromstring(chal));
 	rp = ucl_object_typed_new(UCL_OBJECT);
 	put(rp, "id", ucl_object_fromstring(cfg.rp_id));
 	put(rp, "name", ucl_object_fromstring(cfg.rp_name));
 	put(pk, "rp", rp);
 	user = ucl_object_typed_new(UCL_OBJECT);
-	if (strcmp(reg_user, ADMIN_USER) == 0)
+	if (strcmp(rc.user, ADMIN_USER) == 0)
 		put(user, "id", ucl_object_fromstring(ucl_str(creds, "user_id")));
 	else {
 		char	handle[40];
 
-		user_handle(reg_user, handle, sizeof(handle));
+		user_handle(rc.user, handle, sizeof(handle));
 		put(user, "id", ucl_object_fromstring(handle));
 	}
-	put(user, "name", ucl_object_fromstring(reg_user));
-	put(user, "displayName", ucl_object_fromstring(reg_user));
+	put(user, "name", ucl_object_fromstring(rc.user));
+	put(user, "displayName", ucl_object_fromstring(rc.user));
 	put(pk, "user", user);
 	params = ucl_object_typed_new(UCL_ARRAY);
 	for (i = 0; i < nitems(algs); i++) {
@@ -1113,20 +1334,19 @@ api_register_finish(struct http_request *req)
 	ucl_object_t		*body, *c, *tr;
 	const ucl_object_t	*v, *t;
 	ucl_object_iter_t	 it;
+	struct regchal		 rc;
 	uint8_t			*cd, *ad, *spki, *credid, flags;
-	const char		*id, *err, *name;
+	const char		*id, *err, *name, *u;
+	char			 chal[CHAL_MAX];
 	size_t			 cdlen, adlen, spkilen, idlen, l;
 	uint32_t		 count;
+	time_t			 exp;
 	int64_t			 alg;
 	int			 status;
 
 	cd = ad = spki = credid = NULL;
 	status = 400;
 	err = NULL;
-	/* An invited user's first key needs no session: the invitation,
-	 * taken at the start, was it; the challenge ties the two. */
-	if (setup_done() && !reg_invited && !guard(req, true))
-		return (WEB_OK);
 	if ((body = read_json(req)) == NULL)
 		return (reply_error(req, 400, "bad_request",
 		    "expected a JSON object"));
@@ -1142,9 +1362,40 @@ api_register_finish(struct http_request *req)
 		err = "missing or malformed fields";
 		goto out;
 	}
-	if ((err = check_client_data(cd, cdlen, "webauthn.create",
-	    &reg_chal)) != NULL ||
-	    (err = check_auth_data(ad, adlen, &flags, &count)) != NULL)
+	if ((err = check_client_data(cd, cdlen, "webauthn.create", chal,
+	    sizeof(chal))) != NULL)
+		goto out;
+	if (!reg_challenge_read(chal, &rc, &exp)) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
+	/*
+	 * How its challenge says it may be made: an invited user's first
+	 * key by the invitation alone, the first key by the setup token
+	 * while the console is not set up, any other by a session of the
+	 * user's own or the owner's.
+	 */
+	if (rc.mode == REG_SETUP && setup_done()) {
+		status = 403;
+		err = "this console is set up already: sign in";
+		goto out;
+	}
+	if (rc.mode == REG_SESSION) {
+		/* Refused, the reply sent. */
+		if (!guard(req, true)) {
+			status = 0;
+			goto out;
+		}
+		u = session_user(req);
+		if (u == NULL || (strcmp(u, rc.user) != 0 && (user_console(u) !=
+		    CROLE_OWNER || !user_exists(rc.user)))) {
+			status = 403;
+			err = "a key for another user is registered by the "
+			    "owner";
+			goto out;
+		}
+	}
+	if ((err = check_auth_data(ad, adlen, &flags, &count)) != NULL)
 		goto out;
 	/* Attested credential data: aaguid(16) idlen(2) id. */
 	if ((flags & AD_AT) == 0 || adlen < 55) {
@@ -1169,6 +1420,17 @@ api_register_finish(struct http_request *req)
 		err = "the key's name is at most 64 characters";
 		goto out;
 	}
+	/* Used once; an invitation spent only now, by the ceremony it
+	 * began. */
+	if (!chal_use(chal, exp)) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
+	if (rc.mode == REG_INVITE && !invite_spend(rc.inv, rc.user)) {
+		status = 403;
+		err = "the invitation was used, or ran out";
+		goto out;
+	}
 
 	c = ucl_object_typed_new(UCL_OBJECT);
 	put(c, "id", ucl_object_fromstring(id));
@@ -1188,8 +1450,8 @@ api_register_finish(struct http_request *req)
 			if (ucl_object_type(t) == UCL_STRING)
 				ucl_array_append(tr, ucl_object_copy(t));
 	put(c, "transports", tr);
-	if (reg_user[0] != '\0' && strcmp(reg_user, ADMIN_USER) != 0)
-		put(c, "user", ucl_object_fromstring(reg_user));
+	if (strcmp(rc.user, ADMIN_USER) != 0)
+		put(c, "user", ucl_object_fromstring(rc.user));
 	ucl_array_append(cred_list(), c);
 	if (creds_save() == -1) {
 		/* A key that would be gone after a restart is not one. */
@@ -1201,7 +1463,8 @@ api_register_finish(struct http_request *req)
 	log_msg(LOG_NOTICE, "registered security key \"%s\" of %s",
 	    ucl_str(c, "name"), cred_user(c));
 	setup_token_init();
-	session_start(req, ucl_str(c, "name"), NULL, cred_user(c));
+	session_start(req, ucl_str(c, "name"), ucl_str(c, "id"), NULL,
+	    cred_user(c));
 	status = 200;
 out:
 	free(cd);
@@ -1209,6 +1472,8 @@ out:
 	free(spki);
 	free(credid);
 	ucl_object_unref(body);
+	if (status == 0)
+		return (WEB_OK);
 	if (status != 200)
 		return (reply_error(req, status, "registration", "%s", err));
 	return (status_reply(req, true));
@@ -1225,7 +1490,7 @@ api_login_begin(struct http_request *req)
 	const ucl_object_t	*c, *t;
 	ucl_object_t		*o, *pk, *allow, *e, *body;
 	ucl_object_iter_t	 it;
-	char			 chal[48];
+	char			 chal[CHAL_MAX];
 	bool			 discoverable;
 
 	if (ucl_array_size(cred_list()) == 0)
@@ -1236,7 +1501,7 @@ api_login_begin(struct http_request *req)
 	body = read_json(req);
 	discoverable = body != NULL && ucl_flag(body, "discoverable");
 	ucl_object_unref(body);
-	login_challenge(chal, sizeof(chal));
+	chal_make(NULL, 0, chal, sizeof(chal));
 	pk = ucl_object_typed_new(UCL_OBJECT);
 	put(pk, "challenge", ucl_object_fromstring(chal));
 	put(pk, "rpId", ucl_object_fromstring(cfg.rp_id));
@@ -1269,8 +1534,10 @@ api_login_finish(struct http_request *req)
 	uint8_t			*cd, *ad, *sig, *spki, *msg, flags;
 	uint8_t			 cdhash[32];
 	const char		*id, *err;
+	char			 chal[CHAL_MAX];
 	size_t			 cdlen, adlen, siglen, spkilen;
 	uint32_t		 count, stored;
+	time_t			 exp;
 
 	cd = ad = sig = spki = msg = NULL;
 	err = NULL;
@@ -1291,10 +1558,14 @@ api_login_finish(struct http_request *req)
 		err = "missing or malformed fields";
 		goto out;
 	}
-	if ((err = check_client_data(cd, cdlen, "webauthn.get", NULL)) !=
-	    NULL ||
+	if ((err = check_client_data(cd, cdlen, "webauthn.get", chal,
+	    sizeof(chal))) != NULL ||
 	    (err = check_auth_data(ad, adlen, &flags, &count)) != NULL)
 		goto out;
+	if (!chal_check(chal, NULL, 0, &exp)) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
 	/* The signature covers authenticatorData || SHA-256(clientData). */
 	sha256(cd, cdlen, cdhash);
 	if ((msg = malloc(adlen + sizeof(cdhash))) == NULL) {
@@ -1317,12 +1588,18 @@ api_login_finish(struct http_request *req)
 		    "%u: possibly cloned", ucl_str(c, "name"), count, stored);
 		goto out;
 	}
+	/* Used once, noted only now: a signature of the key's it took. */
+	if (!chal_use(chal, exp)) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
 	ucl_object_replace_key((ucl_object_t *)(uintptr_t)c,
 	    ucl_object_fromint(count), "sign_count", 0, true);
 	ucl_object_replace_key((ucl_object_t *)(uintptr_t)c,
 	    ucl_object_fromint(time(NULL)), "last_used", 0, true);
 	(void)creds_save();
-	session_start(req, ucl_str(c, "name"), NULL, cred_user(c));
+	session_start(req, ucl_str(c, "name"), ucl_str(c, "id"), NULL,
+	    cred_user(c));
 	log_msg(LOG_NOTICE, "login with \"%s\" of %s", ucl_str(c, "name"),
 	    cred_user(c));
 out:
@@ -1368,7 +1645,7 @@ api_login_token(struct http_request *req)
 		    "deleted one opens nothing"));
 	}
 	snprintf(who, sizeof(who), "API token %s", name);
-	session_start(req, who, id, NULL);
+	session_start(req, who, NULL, id, NULL);
 	log_msg(LOG_NOTICE, "login with %s", who);
 	ucl_object_unref(body);
 	/* Its cookie is only on its way: said so here. */
@@ -1376,23 +1653,142 @@ api_login_token(struct http_request *req)
 }
 
 /*
+ * A sign-in by a password, in a task: bcrypt and the directory take
+ * their time, the loop none of it.  What it reads of the console is
+ * given it (the directory groups of the roles), or read by what
+ * acl_publish() made (the user's hash, user_password_ok()).
+ */
+struct pwlogin {
+	struct task	 task;		/* first */
+	/* The directory groups of the roles: roles_ldap_groups()'s. */
+	char		 user[72];
+	char		*password;	/* wiped and freed once tried */
+	char		 addr[64];
+	bool		 own;		/* the console's own password */
+	char		 rn[ROLES_LDAP_MAX][72];
+	char		 rg[ROLES_LDAP_MAX][512];
+	int		 nr;
+	bool		 ok, failed;
+	char		 who[96];
+	char		 err[300];
+	const char	*roles[ROLES_LDAP_MAX];	/* of rn */
+	int		 nroles;
+};
+
+static int
+pwlogin_run(struct task *t)
+{
+	struct pwlogin	*pl = (struct pwlogin *)t;
+	const char	*rn[ROLES_LDAP_MAX], *rg[ROLES_LDAP_MAX];
+	int		 i;
+
+	if (pl->own || !ldap_enabled()) {
+		/* Compared even for a user with none, the time the same. */
+		pl->ok = user_password_ok(pl->user, pl->password);
+		if (pl->ok)
+			snprintf(pl->who, sizeof(pl->who), "%s (password)",
+			    pl->user);
+		else {
+			pl->failed = true;
+			snprintf(pl->err, sizeof(pl->err), "the user name or "
+			    "the password is not right");
+		}
+	} else {
+		for (i = 0; i < pl->nr; i++) {
+			rn[i] = pl->rn[i];
+			rg[i] = pl->rg[i];
+		}
+		pl->ok = ldap_login(pl->user, pl->password, rn, rg, pl->nr,
+		    pl->who, sizeof(pl->who), pl->err, sizeof(pl->err),
+		    pl->roles, &pl->nroles, ROLES_LDAP_MAX, &pl->failed);
+	}
+	explicit_bzero(pl->password, strlen(pl->password));
+	free(pl->password);
+	pl->password = NULL;
+	if (pl->failed)
+		signin_failed(pl->addr, pl->user);
+	return (WEB_OK);
+}
+
+void
+api_login_password_free(struct http_request *req)
+{
+	struct pwlogin	*pl = req->hdlr_extra;
+
+	/* Asked while the task runs too: only once it is done. */
+	if (pl == NULL || !task_finished(&pl->task))
+		return;
+	task_destroy(&pl->task);
+	free(pl);
+	req->hdlr_extra = NULL;
+}
+
+/* The sign-in tried: a session, or why not. */
+static int
+pwlogin_done(struct http_request *req, struct pwlogin *pl)
+{
+	struct session	*s;
+	bool		 own;
+
+	own = pl->own;
+	if (pl->ok && !own) {
+		/* The directory's groups give the user's roles (users.c):
+		 * the user kept, or made, as the groups say, unless the
+		 * owner made it.  One the console then has no record of
+		 * has no role on it: refused, not let in as no one. */
+		users_ldap_sync(pl->user, pl->roles, pl->nroles);
+		if (!user_exists(pl->user)) {
+			pl->ok = false;
+			snprintf(pl->err, sizeof(pl->err), "the directory "
+			    "gives %s no role on this console: an owner maps a "
+			    "directory group to a role (Settings, AAA, Roles)",
+			    pl->user);
+		}
+	}
+	if (!pl->ok) {
+		log_msg(LOG_NOTICE, "login by password refused: %s", pl->err);
+		return (reply_error(req, strstr(pl->err, "too many") != NULL ?
+		    429 : strstr(pl->err, "not set") != NULL || strstr(pl->err,
+		    "characters") != NULL ? 400 : 401, "login", "%s",
+		    pl->err));
+	}
+	s = session_start(req, pl->who, NULL, "", pl->user);
+	if (own)
+		s->pw = true;
+	else
+		s->ldap = true;
+	session_put(s);
+	log_msg(LOG_NOTICE, "login by %s", pl->who);
+	return (status_reply_as(req, true, !own || !cfg.password_full, own ?
+	    BY_PASSWORD : BY_LDAP));
+}
+
+/*
  * POST {"user", "password"}: a sign-in by a password, limited as a
  * token's is.  A user with a password of the console's own (users.c)
  * is checked against it, and against nothing else; any other, by the
- * directory Settings name, when there is one.  The password is kept
- * nowhere: it is hashed, or goes to the directory, and is wiped.
- * Failures count towards one limit a minute, both ways alike.
+ * directory Settings name, when there is one, and let in only as a
+ * user the console then has (its groups give it a role).  The password
+ * is kept nowhere: it is hashed, or goes to the directory, and is
+ * wiped.  Failures count towards a limit a minute of the address they
+ * come from and of the name tried, both ways alike (ldap.c).
  */
 int
 api_login_password(struct http_request *req)
 {
-	struct session	*s;
+	struct pwlogin	*pl;
 	ucl_object_t	*body;
-	const char	*user, *password, *roles[ROLES_LDAP_MAX];
-	char		 who[96], err[300];
-	int		 nroles;
-	bool		 ok, own;
+	const char	*user, *password, *rn[ROLES_LDAP_MAX];
+	const char	*rg[ROLES_LDAP_MAX];
+	int		 i;
 
+	if ((pl = req->hdlr_extra) != NULL) {
+		if (task_state(&pl->task) != TASK_STATE_FINISHED) {
+			http_request_sleep(req);
+			return (WEB_RETRY);
+		}
+		return (pwlogin_done(req, pl));
+	}
 	if (req->method != HTTP_METHOD_POST)
 		return (reply_error(req, 405, "method", "POST"));
 	config_refresh();
@@ -1401,59 +1797,45 @@ api_login_password(struct http_request *req)
 		    "object"));
 	user = ucl_str(body, "user");
 	password = ucl_str(body, "password");
-	own = user != NULL && user_has_password(user);
-	if (!own && !ldap_enabled() && !users_any_password()) {
+	pl = xcalloc(1, sizeof(*pl));
+	pl->own = user != NULL && user_has_password(user);
+	if (!pl->own && !ldap_enabled() && !users_any_password()) {
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
 		ucl_object_unref(body);
+		free(pl);
 		return (reply_error(req, 404, "password", "no sign-in by "
 		    "password on this console: no user has one, and no "
 		    "directory is set up"));
 	}
-	nroles = 0;
-	err[0] = '\0';
-	if (signin_throttled()) {
-		snprintf(err, sizeof(err), "too many failed sign-ins: try "
-		    "again in a minute");
-		ok = false;
-	} else if (own || !ldap_enabled()) {
-		/* Compared even for a user with none, the time the same. */
-		ok = user_password_ok(user, password);
-		if (ok)
-			snprintf(who, sizeof(who), "%s (password)", user);
-		else {
-			signin_failed();
-			snprintf(err, sizeof(err), "the user name or the "
-			    "password is not right");
-		}
-	} else {
-		ok = ldap_login(user, password, who, sizeof(who), err,
-		    sizeof(err), roles, &nroles, ROLES_LDAP_MAX);
-		/* The directory's groups give the user's roles (users.c):
-		 * the user kept, or made, as the groups say, unless the
-		 * owner made it. */
-		if (ok)
-			users_ldap_sync(user, roles, nroles);
+	snprintf(pl->user, sizeof(pl->user), "%s", user != NULL ? user : "");
+	(void)web_peer(req, pl->addr, sizeof(pl->addr));
+	if (signin_throttled(pl->addr, pl->user)) {
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
+		ucl_object_unref(body);
+		free(pl);
+		log_msg(LOG_NOTICE, "login by password refused: too many "
+		    "failed sign-ins");
+		return (reply_error(req, 429, "login", "too many failed "
+		    "sign-ins: try again in a minute"));
 	}
+	pl->password = xstrdup(password != NULL ? password : "");
 	if (password != NULL)
 		explicit_bzero((char *)(uintptr_t)password, strlen(password));
-	if (!ok) {
-		log_msg(LOG_NOTICE, "login by password refused: %s", err);
-		ucl_object_unref(body);
-		return (reply_error(req, strstr(err, "too many") != NULL ? 429 :
-		    strstr(err, "not set") != NULL || strstr(err, "characters")
-		    != NULL ? 400 : 401, "login", "%s", err));
-	}
-	/* A user the console knows by that name has its roles; one it
-	 * does not is limited as a write token is. */
-	s = session_start(req, who, "", user_exists(user) ? user : NULL);
-	if (own)
-		s->pw = true;
-	else
-		s->ldap = true;
-	session_put(s);
-	log_msg(LOG_NOTICE, "login by %s", who);
 	ucl_object_unref(body);
-	return (status_reply_as(req, true, !own || !cfg.password_full, own ?
-	    BY_PASSWORD : BY_LDAP));
+	pl->nr = roles_ldap_groups(rn, rg, ROLES_LDAP_MAX);
+	for (i = 0; i < pl->nr; i++) {
+		snprintf(pl->rn[i], sizeof(pl->rn[i]), "%s", rn[i]);
+		snprintf(pl->rg[i], sizeof(pl->rg[i]), "%s", rg[i]);
+	}
+	req->hdlr_extra = pl;
+	task_create(&pl->task, pwlogin_run);
+	task_bind_request(&pl->task, req);
+	task_run(&pl->task);
+	return (WEB_RETRY);
 }
 
 /*
@@ -1470,7 +1852,7 @@ api_setup_password(struct http_request *req)
 	struct session	*s;
 	ucl_object_t	*body;
 	const char	*token, *user, *password, *e;
-	char		 name[72], who[96];
+	char		 name[72], who[96], addr[64];
 	bool		 made;
 
 	name[0] = '\0';
@@ -1490,10 +1872,11 @@ api_setup_password(struct http_request *req)
 	password = ucl_str(body, "password");
 	e = NULL;
 	made = false;
-	if (signin_throttled())
+	(void)web_peer(req, addr, sizeof(addr));
+	if (signin_throttled(addr, NULL))
 		e = "too many failed attempts: try again in a minute";
 	else if (!setup_token_ok(token)) {
-		signin_failed();
+		signin_failed(addr, NULL);
 		e = "not the setup token";
 	} else if ((e = user_password_check(password)) == NULL) {
 		snprintf(name, sizeof(name), "%s", user);
@@ -1517,7 +1900,7 @@ api_setup_password(struct http_request *req)
 	}
 	setup_token_init();
 	snprintf(who, sizeof(who), "%s (password)", name);
-	s = session_start(req, who, "", name);
+	s = session_start(req, who, NULL, "", name);
 	s->pw = true;
 	session_put(s);
 	log_msg(LOG_NOTICE, "console set up by password: owner %s", name);
@@ -1592,10 +1975,10 @@ api_logout(struct http_request *req)
 
 	if (http_request_cookie(req, SESSION_COOKIE, &cookie)) {
 		sha256(cookie, strlen(cookie), h);
-		for (i = 0; i < SESSIONS; i++)
-			if (sessions[i].used && memcmp(sessions[i].hash, h,
+		for (i = nsessions - 1; i >= 0; i--)
+			if (i < nsessions && memcmp(sessions[i]->hash, h,
 			    sizeof(h)) == 0)
-				session_end(&sessions[i]);
+				session_end(sessions[i]);
 	}
 	snprintf(clear, sizeof(clear), "%s=; Path=/; HttpOnly; "
 	    "SameSite=Strict; Max-Age=0", SESSION_COOKIE);
@@ -1722,6 +2105,9 @@ credentials_yang_set(struct http_request *req, const ucl_object_t *was,
 			log_msg(LOG_NOTICE, "key \"%s\" of %s removed",
 			    ucl_str(c, "name") != NULL ? ucl_str(c, "name") :
 			    "", cred_user(c));
+			/* What it opened ends with it. */
+			if (ucl_str(c, "id") != NULL)
+				sessions_end_cred(ucl_str(c, "id"));
 			ucl_object_unref(ucl_array_delete(cred_list(),
 			    (ucl_object_t *)(uintptr_t)c));
 		} else if (!cyang_same(o, e))

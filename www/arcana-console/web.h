@@ -213,6 +213,17 @@ struct task_msg;
 typedef int	task_fn(struct task *);
 typedef void	task_cb(struct task *);
 
+/*
+ * Who what a thread asks of the hosts is for: the program says (kind
+ * and need are its own, hosts.c's); a kind of 0 is no one, for whom
+ * nothing is asked.
+ */
+struct principal {
+	int	kind;
+	int	need;		/* the least role on each host reached */
+	char	name[64];
+};
+
 struct task {
 	task_fn			*entry;
 	task_cb			*cb;
@@ -225,15 +236,15 @@ struct task {
 	STAILQ_HEAD(, task_msg)	 chan;		/* from the task to the loop */
 	TAILQ_ENTRY(task)	 list;
 	LIST_ENTRY(task)	 rlist;		/* its request's */
-	/* The console user it acts for, its request's: what the hosts'
-	 * access rules hold it to (hosts_act_as()); "": the console. */
-	char			 user[64];
+	/* Whom it acts for, its request's or the one it was given: no
+	 * one, unless one of the two. */
+	struct principal	 who;
 };
 
-/* The program's: the user a request acts for (NULL: none); this thread
- * acting for a user (NULL: for nobody). */
-const char	*web_user(struct http_request *);
-void		 web_act_as(const char *);
+/* The program's: whom a request acts for; this thread acting for one
+ * (NULL: for no one). */
+void		 web_principal(struct http_request *, struct principal *);
+void		 web_act(const struct principal *);
 /* The program's: said as the worker stops; its writes let finish. */
 void		 hosts_tally_log(void);
 void		 store_quiesce(void);
@@ -241,6 +252,7 @@ void		 store_quiesce(void);
 void		 task_create(struct task *, task_fn *);
 void		 task_bind_request(struct task *, struct http_request *);
 void		 task_bind_callback(struct task *, task_cb *);
+void		 task_bind_principal(struct task *, const struct principal *);
 void		 task_run(struct task *);
 int		 task_state(struct task *);
 int		 task_finished(struct task *);
