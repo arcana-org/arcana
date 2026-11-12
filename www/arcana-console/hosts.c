@@ -1078,6 +1078,10 @@ hosts_may(const char *uri, enum role need)
 
 	if (principal_reach(&acting, uri, need, why, sizeof(why)))
 		return (NULL);
+	/* For no one: a path of the console's that names no principal, a
+	 * fault of ours, which is to be seen. */
+	if (acting.kind == P_NONE)
+		log_msg(LOG_ERR, "%s: %s", uri, why);
 	return (why);
 }
 
