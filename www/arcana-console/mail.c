@@ -25,8 +25,12 @@
  * read is read from its newest: what happened before is not mailed.
  * A change of one thing on one host told, those after it within the
  * cool-down are held and said in one line at its end (cool_pass()); a
+ * way's cases (mail_case, telegram_case) leave a fault's type, or the
+ * limits crossed, out of that way, or give it a cool-down of its own; a
  * host's mutes (servers.c) leave its utilization, its sessions or all
- * of it out, and one whose agent samples nothing its utilization.
+ * of it out, and one whose agent samples nothing its utilization.  What
+ * must go (a commit, or a job, that could not be undone) goes whatever
+ * these say.
  */
 
 #include <sys/param.h>
@@ -81,6 +85,17 @@ static struct cursor	cursors[MAIL_HOSTS];
 static size_t		ncursors;
 
 /*
+ * A case of the alerts on a way (mail_case, telegram_case): a fault's
+ * type, or threshold; whether it is told, and its own cool-down in
+ * minutes, -1 notify_cooldown's.
+ */
+struct acase {
+	char	type[24];
+	bool	include;
+	int	cooldown;
+};
+
+/*
  * The mail's settings as they are now, read for each use: the threads
  * here are not the worker's, which alone changes cfg.
  */
@@ -90,12 +105,58 @@ struct mailconf {
 	char	*tg_chats, *tg_token, *tg_via, *tg_faults, *tg_jobs, *tg_runs;
 	bool	 tg_limits;
 	char	*sen_to, *san_to, *tg_sen, *tg_san;	/* the notices' */
+	time_t	 cooldown;		/* notify_cooldown, in seconds */
+	struct acase	*cases[2];	/* CH_MAIL's, CH_TELEGRAM's */
+	size_t		 ncases[2];
 };
+
+/* A way's cases, from the JSON settings.c keeps (by type). */
+static void
+cases_load(struct mailconf *mc, int ch, const char *key)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*o;
+	const ucl_object_t	*c, *v;
+	ucl_object_iter_t	 it;
+	struct acase		*a;
+	char			*text;
+	size_t			 n;
+
+	mc->cases[ch] = NULL;
+	mc->ncases[ch] = 0;
+	text = settings_peek(key);
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
+	o = text[0] != '\0' && ucl_parser_add_string(p, text, 0) ?
+	    ucl_parser_get_object(p) : NULL;
+	ucl_parser_free(p);
+	free(text);
+	if (o == NULL)
+		return;
+	n = 0;
+	it = NULL;
+	while (ucl_object_type(o) == UCL_OBJECT && ucl_object_iterate(o, &it,
+	    true) != NULL)
+		n++;
+	mc->cases[ch] = xcalloc(n + 1, sizeof(*mc->cases[ch]));
+	it = NULL;
+	while (mc->ncases[ch] < n && (c = ucl_object_iterate(o, &it, true)) !=
+	    NULL) {
+		a = &mc->cases[ch][mc->ncases[ch]++];
+		snprintf(a->type, sizeof(a->type), "%s", ucl_object_key(c));
+		a->include = (v = ucl_object_lookup(c, "include")) == NULL ||
+		    ucl_object_toboolean(v);
+		a->cooldown = (v = ucl_object_lookup(c, "cooldown")) != NULL ?
+		    (int)ucl_object_toint(v) : -1;
+	}
+	ucl_object_unref(o);
+}
 
 static void
 mc_load(struct mailconf *mc)
 {
 	char	*l;
+	long	 n;
 
 	mc->to = settings_peek("mail_to");
 	mc->from = settings_peek("mail_from");
@@ -118,6 +179,14 @@ mc_load(struct mailconf *mc)
 	mc->san_to = settings_peek("mail_san");
 	mc->tg_sen = settings_peek("telegram_sen");
 	mc->tg_san = settings_peek("telegram_san");
+	l = settings_peek("notify_cooldown");
+	n = l[0] != '\0' ? strtol(l, NULL, 10) : 30;
+	free(l);
+	if (n < 0 || n > 1440)
+		n = 30;
+	mc->cooldown = (time_t)n * cfg.cooldown_unit;
+	cases_load(mc, CH_MAIL, "mail_case");
+	cases_load(mc, CH_TELEGRAM, "telegram_case");
 }
 
 static void
@@ -140,6 +209,30 @@ mc_free(struct mailconf *mc)
 	free(mc->san_to);
 	free(mc->tg_sen);
 	free(mc->tg_san);
+	free(mc->cases[CH_MAIL]);
+	free(mc->cases[CH_TELEGRAM]);
+}
+
+/*
+ * Whether way ch (CH_MAIL or CH_TELEGRAM) tells case type, and in cd
+ * its cool-down in seconds: the case's own, else notify_cooldown.  A
+ * type no entry names, a newer agent's, is told with notify_cooldown:
+ * never lost for want of a setting.
+ */
+static bool
+case_told(const struct mailconf *mc, int ch, const char *type, time_t *cd)
+{
+	size_t	i;
+
+	*cd = mc->cooldown;
+	for (i = 0; type != NULL && i < mc->ncases[ch]; i++)
+		if (strcmp(mc->cases[ch][i].type, type) == 0) {
+			if (mc->cases[ch][i].cooldown >= 0)
+				*cd = (time_t)mc->cases[ch][i].cooldown *
+				    cfg.cooldown_unit;
+			return (mc->cases[ch][i].include);
+		}
+	return (true);
 }
 
 /* Where a way goes: the addresses, or the chats. */
@@ -671,8 +764,11 @@ tg_job(const char *when, const char *host, const ucl_object_t *d,
  * first change is told at once, those after it within the cool-down
  * held and counted; at its end, one line says what happened, unless
  * it ended as it was last told.  A thing is a figure and its limit
- * (threshold: what, name) or a fault (its type and object).  The
- * worker's alone.
+ * (threshold: what, name) or a fault (its type and object).  How long
+ * is its case's (case_told()), looked up anew each time: a cool-down
+ * changed holds at once for those running, lengthened from when each
+ * began, shortened or 0 ending them at the next tick with their line;
+ * a case left out lets its own go untold.  The worker's alone.
  */
 #define	COOL_MAX	512
 
@@ -680,6 +776,7 @@ static struct cool {
 	bool	 used;
 	int	 ch;
 	char	 key[200];	/* host id, kind, what it is of */
+	char	 type[24];	/* its case */
 	char	 host[128];
 	char	 label[160];	/* "cpu", "ospf-neighbor em0@10.0.0.1" */
 	bool	 fault;		/* raised/cleared, else over/under */
@@ -690,32 +787,20 @@ static struct cool {
 	char	 nowtext[96];	/* "now under 85%" */
 } cools[COOL_MAX];
 
-/* The cool-down in seconds; 0, none. */
-static time_t
-cool_secs(void)
-{
-	char	*v;
-	long	 n;
-
-	v = settings_peek("notify_cooldown");
-	n = v[0] != '\0' ? strtol(v, NULL, 10) : 30;
-	free(v);
-	if (n < 0 || n > 1440)
-		n = 30;
-	return ((time_t)n * cfg.cooldown_unit);
-}
-
-/* Whether a change of key, now state, is told on way ch now. */
+/*
+ * Whether a change of key, now state, of case type is told on way ch
+ * now, cd its case's cool-down in seconds (0, none: told, but after
+ * what a cool-down still holds).
+ */
 static bool
-cool_pass(int ch, const char *key, const char *host, const char *label,
-    bool fault, bool state, const char *nowtext)
+cool_pass(int ch, const char *type, time_t cd, const char *key,
+    const char *host, const char *label, bool fault, bool state,
+    const char *nowtext)
 {
 	struct cool	*c, *free_one, *oldest;
-	time_t		 cd, t;
+	time_t		 t;
 	size_t		 i;
 
-	if ((cd = cool_secs()) == 0)
-		return (true);
 	t = time(NULL);
 	c = free_one = oldest = NULL;
 	for (i = 0; i < COOL_MAX; i++) {
@@ -737,12 +822,18 @@ cool_pass(int ch, const char *key, const char *host, const char *label,
 		snprintf(c->nowtext, sizeof(c->nowtext), "%s", nowtext);
 		return (false);
 	}
+	if (cd == 0) {
+		if (c != NULL)
+			c->used = false;
+		return (true);
+	}
 	if (c == NULL && (c = free_one) == NULL)
 		c = oldest;		/* full: the oldest goes */
 	memset(c, 0, sizeof(*c));
 	c->used = true;
 	c->ch = ch;
 	snprintf(c->key, sizeof(c->key), "%s", key);
+	snprintf(c->type, sizeof(c->type), "%s", type != NULL ? type : "");
 	snprintf(c->host, sizeof(c->host), "%s", host);
 	snprintf(c->label, sizeof(c->label), "%s", label);
 	c->fault = fault;
@@ -765,21 +856,27 @@ cool_span(time_t s, char *buf, size_t len)
 /*
  * The cool-downs that ended: what was held said in one line where it
  * did not end as last told, a new cool-down begun; one with nothing
- * held let go.
+ * held let go, and one whose case the way leaves out now.
  */
 static void
-cool_sweep(void)
+cool_sweep(const struct mailconf *mc)
 {
 	struct cool	*c;
 	time_t		 cd, t;
 	char		 span[32];
 	size_t		 i;
 
-	cd = cool_secs();
 	t = time(NULL);
 	for (i = 0; i < COOL_MAX; i++) {
 		c = &cools[i];
-		if (!c->used || (cd > 0 && t - c->start < cd))
+		if (!c->used)
+			continue;
+		if (!case_told(mc, c->ch, c->type[0] != '\0' ? c->type : NULL,
+		    &cd)) {
+			c->used = false;
+			continue;
+		}
+		if (cd > 0 && t - c->start < cd)
 			continue;
 		if (c->changes == 0) {
 			c->used = false;
@@ -820,10 +917,10 @@ event(const struct mailconf *mc, const char *id, const char *host,
     const ucl_object_t *e)
 {
 	const ucl_object_t	*d;
-	const char		*kind;
+	const char		*kind, *type;
 	char			 when[32], key[200], label[160], nowtext[96];
 	struct tm		 tm;
-	time_t			 t;
+	time_t			 t, cd;
 	unsigned int		 mute;
 	int			 min, ch;
 	bool			 state, must;
@@ -851,7 +948,10 @@ event(const struct mailconf *mc, const char *id, const char *host,
 	if ((mute & MUTE_SESSIONS) != 0 && strcmp(kind, "sdwan-fault") == 0 &&
 	    type_in(str(d, "type"), session_faults))
 		return;
-	/* What it is of, for the cool-down. */
+	/* Its case, each way's to tell or not (a fault's type, threshold);
+	 * what it is of, for the cool-down. */
+	type = strcmp(kind, "threshold") == 0 ? kind : strcmp(kind,
+	    "sdwan-fault") == 0 ? str(d, "type") : NULL;
 	state = false;
 	key[0] = '\0';
 	if (strcmp(kind, "sdwan-fault") == 0) {
@@ -903,14 +1003,17 @@ event(const struct mailconf *mc, const char *id, const char *host,
 		faults = ch == CH_MAIL ? mc->faults : mc->tg_faults;
 		jobs = ch == CH_MAIL ? mc->jobs : mc->tg_jobs;
 		limits = ch == CH_MAIL ? mc->limits : mc->tg_limits;
+		/* A case the way leaves out holds no cool-down. */
+		if (!case_told(mc, ch, type, &cd))
+			continue;
 		if (strcmp(kind, "sdwan-fault") == 0) {
 			min = severity_rank(faults);
 			if (min < 0)
 				continue;
 			/* Told at all, and not held by the cool-down. */
 			if ((state && severity_rank(str(d, "severity")) < min) ||
-			    !cool_pass(ch, key, host, label, true, state,
-			    nowtext))
+			    !cool_pass(ch, type, cd, key, host, label, true,
+			    state, nowtext))
 				continue;
 			if (ch == CH_TELEGRAM) {
 				tg_fault(when, host, d, min);
@@ -945,8 +1048,8 @@ event(const struct mailconf *mc, const char *id, const char *host,
 				    str(d, "report") != NULL ? str(d, "report") :
 				    "");
 		} else if (strcmp(kind, "threshold") == 0 && limits) {
-			if (!cool_pass(ch, key, host, label, false, state,
-			    nowtext))
+			if (!cool_pass(ch, type, cd, key, host, label, false,
+			    state, nowtext))
 				continue;
 			if (ch == CH_TELEGRAM) {
 				bool	over = ucl_object_toboolean(ucl_object_lookup(d,
@@ -1203,7 +1306,7 @@ done:
 		free(ans);		/* hosts_events() mallocs it */
 	}
 	sen_end();
-	cool_sweep();
+	cool_sweep(&mc);
 	free(all);
 	mc_free(&mc);
 	mail_flush();

@@ -1683,6 +1683,67 @@ mute_hosts(struct html *h)
 	h_raw(h, "</tbody></table>");
 }
 
+/* A way's cases (mail_case, telegram_case): a fault's type or the
+ * limits crossed, each told or not, with a cool-down of its own. */
+static const struct tcol	casecols[] = {
+	{ "Case", "label", false }, { "Type", "type", false },
+	{ "Told", "include", false }, { "Cool-down, minutes", "cooldown",
+	true },
+};
+
+static void
+case_table(struct html *h, int way)
+{
+	const char		 *key, *id;
+	const ucl_object_t	**rows, *r, *k;
+	ucl_object_t		 *arr;
+	ucl_object_iter_t	  it;
+	int			  i;
+
+	key = way == 0 ? "mail_case" : "telegram_case";
+	id = way == 0 ? "mailcases" : "tgcases";
+	it = NULL;
+	while ((k = ucl_object_iterate(jget(app.settings, "settings"), &it,
+	    true)) != NULL)
+		if (jstr(k, "key") != NULL && strcmp(jstr(k, "key"), key) == 0)
+			break;
+	if (k == NULL)
+		return;
+	h_raw(h, "<fieldset class=\"cases\"><legend>");
+	h_txt(h, jstr(k, "label"));
+	h_raw(h, "</legend><p class=\"dim\">");
+	h_txt(h, jstr(k, "help"));
+	h_raw(h, "</p><div class=\"toolbar\"><input class=\"filter\" "
+	    "data-input=\"case-filter\" placeholder=\"Filter\" autocomplete="
+	    "\"off\" spellcheck=\"false\"");
+	h_attr(h, "data-arg", way == 0 ? "mail" : "telegram");
+	h_attr(h, "value", app.case_filter[way]);
+	h_fmt(h, "></div><table class=\"net cases %s\">", id);
+	tbl_head(h, id, casecols, 4, 0);
+	h_raw(h, "<tbody>");
+	arr = alert_cases(key);
+	rows = tbl_rows(id, arr, casecols, 4, app.case_filter[way]);
+	for (i = 0; (r = rows[i]) != NULL; i++) {
+		h_raw(h, "<tr");
+		h_attr(h, "data-case", jstr(r, "type"));
+		h_raw(h, "><td><b>");
+		h_txt(h, jstr(r, "label"));
+		h_raw(h, "</b></td><td class=\"mono\">");
+		h_txt(h, jstr(r, "type"));
+		h_fmt(h, "</td><td><input type=\"checkbox\" name=\"case-in:%s\""
+		    " title=\"Told on this way\"%s></td><td><input "
+		    "inputmode=\"numeric\" size=\"5\" placeholder=\"the "
+		    "one for all\" autocomplete=\"off\"", jstr(r, "type"),
+		    strcmp(jstr(r, "include"), "yes") == 0 ? " checked" : "");
+		h_fmt(h, " name=\"case-cd:%s\"", jstr(r, "type"));
+		h_attr(h, "value", jstr(r, "cooldown"));
+		h_raw(h, "></td></tr>");
+	}
+	free(rows);
+	ucl_object_unref(arr);
+	h_raw(h, "</tbody></table></fieldset>");
+}
+
 static void
 set_notify(struct html *h)
 {
@@ -1736,6 +1797,7 @@ set_notify(struct html *h)
 	    "reads each host's events, and its host's <code>sendmail(8)</code> "
 	    "sends them, twenty mails an hour at most.</p>");
 	settings_fields(h, SETG_MAIL);
+	case_table(h, 0);
 	h_fmt(h, "<div class=\"actions\"><button class=\"primary\"%s>Save"
 	    "</button> <button type=\"button\" class=\"ghost\" data-act=\""
 	    "mail-test\"%s>Send a test mail</button></div></form>",
@@ -1752,6 +1814,7 @@ set_notify(struct html *h)
 	    "sends them to <code>api.telegram.org</code> over HTTPS, one that "
 	    "reaches the world outside; twenty an hour at most.</p>");
 	settings_fields(h, SETG_TELEGRAM);
+	case_table(h, 1);
 	h_fmt(h, "<div class=\"actions\"><button class=\"primary\"%s>Save"
 	    "</button> <button type=\"button\" class=\"ghost\" data-act=\""
 	    "telegram-test\"%s>Send a test message</button></div></form>",
@@ -2076,6 +2139,10 @@ settings_fields(struct html *h, int group)
 	    true)) != NULL) {
 		if (!jbool(k, "editable") || jstr(k, "key") == NULL ||
 		    setting_group(jstr(k, "key")) != group)
+			continue;
+		/* A way's cases: a table of their own (case_table()). */
+		if (jstr(k, "type") != NULL && strcmp(jstr(k, "type"),
+		    "cases") == 0)
 			continue;
 		/* What is told, chosen: a severity, which jobs and runs. */
 		{

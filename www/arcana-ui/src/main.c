@@ -2252,6 +2252,10 @@ dispatch(const char *act, const char *arg, const char *value)
 		}
 	} else if (strcmp(act, "input:filter") == 0) {
 		snprintf(app.filter, sizeof(app.filter), "%s", value);
+	} else if (strcmp(act, "input:case-filter") == 0) {
+		/* A way's cases, Settings' Notifications: its own filter. */
+		snprintf(app.case_filter[strcmp(arg, "mail") == 0 ? 0 : 1],
+		    sizeof(app.case_filter[0]), "%s", value);
 	} else if (strncmp(act, "submit:", 7) == 0) {
 		ucl_object_t *f = json_parse(value);
 

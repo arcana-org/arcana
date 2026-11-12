@@ -1117,6 +1117,9 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	put("fake-sysctl", "#!/bin/sh\necho \"sysctl $*\" >> kld.log\n"
 	    "[ \"$1\" = kern.nosuch=1 ] && { echo \"sysctl: unknown oid "
 	    "'kern.nosuch'\" >&2; exit 1; }\n"
+	    /* Every value refused while sysctl.fail is there. */
+	    "case \"$1\" in *=*) [ -f sysctl.fail ] && { echo \"sysctl: $1: "
+	    "Operation not permitted\" >&2; exit 1; } ;; esac\n"
 	    /* ipfw's that Apply needs: 1 unless fw.sysctl says otherwise;
 	     * tables_sets refused while tables-busy is there. */
 	    "[ \"$1\" = net.inet.ip.fw.tables_sets=1 ] && [ -f tables-busy ] && "

@@ -70,6 +70,25 @@ variables; the routing table, nexthops, connections and sockets; the
 packages that can be upgraded, on the host and in running jails; and
 CPU, memory and ZFS usage.
 Every call to a host is listed with a trace of what the host did.
+.Pp
+What happens on the hosts is told, whether or not a page is open, by
+mail through
+.Xr sendmail 8
+and to Telegram chats through a host's agent, as Settings,
+Notifications says of each way: the faults of a severity and above,
+the limits crossed, the jobs and the workflow runs, and of each case (a
+fault's type, as
+.Dq bfd
+or
+.Dq ospf-neighbor ,
+or a limit crossed) whether it is told and a cool-down of its own.
+A case no setting names, a newer agent's, is told with the cool-down
+for all,
+.Va notify_cooldown .
+A commit or a job that could not be undone is told whatever these say.
+They are kept in
+.Pa settings.json
+in the data directory, and are arcana-console's settings in RESTCONF.
 .Sh CONFIGURATION
 .Pa web.conf ,
 in UCL, configures it.

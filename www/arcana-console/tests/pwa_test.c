@@ -8760,6 +8760,107 @@ ATF_TC_CLEANUP(pwa_hosts, tc)
 }
 
 /*
+ * Settings, Notifications: each way's cases, a table that sorts and
+ * filters.  The mail's OSPF neighbour left out and a cool-down given
+ * the limits, saved by the mail's form and kept by the console; the
+ * neighbour down then not mailed, and its coming back mailed once it is
+ * let in again.
+ */
+ATF_TC_WITH_CLEANUP(pwa_notify_cases);
+ATF_TC_HEAD(pwa_notify_cases, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Each way's cases on Settings, Notifications: one left out of the mail and a cool-down given, saved, kept, and the case not mailed");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_notify_cases, tc)
+{
+	int	i;
+
+	harness_bird_watch = true;
+	snprintf(harness_webconf, sizeof(harness_webconf), "mail_tick = 1;\n"
+	    "cooldown_unit = 1;\n");
+	prologue(tc, 1);
+	run("document.querySelector('.rail-foot li[data-act=settings]')"
+	    ".click()");
+	click_when("button[data-act=set-tab][data-arg=notify]", 10);
+	wait_js("document.querySelector('form[data-form=settings-mail] "
+	    "table.mailcases tr[data-case=ospf-neighbor]') && document."
+	    "querySelector('form[data-form=settings-telegram] table.tgcases "
+	    "tr[data-case=bfd]')", 10);
+	/* A case a row, named; each told, with the cool-down for all. */
+	ATF_CHECK(js_true("document.querySelector('table.mailcases "
+	    "tr[data-case=ospf-neighbor]').textContent.includes('OSPF "
+	    "neighbour') && document.querySelector('table.tgcases "
+	    "tr[data-case=bfd]').textContent.includes('BFD session') && "
+	    "[...document.querySelectorAll('table.mailcases input[type="
+	    "checkbox]')].every(c => c.checked)"));
+	/* Filtered: the neighbour's row alone; sorted by the type. */
+	run("const i = document.querySelector('input[data-input=case-filter]"
+	    "[data-arg=mail]'); i.value = 'OSPF'; i.dispatchEvent(new Event("
+	    "'input', { bubbles: true }));");
+	wait_js("document.querySelectorAll('table.mailcases tbody tr').length "
+	    "=== 1 && document.querySelectorAll('table.tgcases tbody tr')."
+	    "length > 1", 10);
+	run("const i = document.querySelector('input[data-input=case-filter]"
+	    "[data-arg=mail]'); i.value = ''; i.dispatchEvent(new Event("
+	    "'input', { bubbles: true }));");
+	wait_js("document.querySelectorAll('table.mailcases tbody tr').length "
+	    "> 1", 10);
+	run("document.querySelector('table.mailcases th[data-act=t-sort]"
+	    "[data-value=\"1\"]').click()");
+	wait_js("document.querySelector('table.mailcases tbody tr')."
+	    "dataset.case === 'bfd'", 10);
+	run("document.querySelector('fieldset.cases').scrollIntoView()");
+	shot("0c-notify-cases");
+	/* The neighbour left out of the mail, the limits' cool-down five
+	 * minutes: saved, kept by type. */
+	run("const f = document.querySelector('form[data-form=settings-mail]');"
+	    " f.mail_to.value = 'ops@example.org'; f.mail_faults.value = "
+	    "'Major'; f.querySelector('input[name=\"case-in:ospf-neighbor\"]')"
+	    ".checked = false; f.querySelector('input[name=\"case-cd:"
+	    "threshold\"]').value = '5'; f.requestSubmit();");
+	for (i = 0; i < 100 && system("grep -q '\"ospf-neighbor\"' "
+	    "data/settings.json") != 0; i++)
+		usleep(100000);
+	ATF_CHECK(system("grep -q '\"mail_case\"' data/settings.json && "
+	    "grep -q '\"include\": *false' data/settings.json && "
+	    "grep -q '\"threshold\"' data/settings.json && "
+	    "grep -q '\"cooldown\": *5' data/settings.json && "
+	    "! grep -q '\"telegram_case\"' data/settings.json") == 0);
+	wait_js("document.querySelector('table.mailcases input[name=\"case-in:"
+	    "ospf-neighbor\"]') && !document.querySelector('table.mailcases "
+	    "input[name=\"case-in:ospf-neighbor\"]').checked && document."
+	    "querySelector('table.mailcases input[name=\"case-cd:threshold\"]')"
+	    ".value === '5'", 10);
+	/* The neighbour down: not mailed. */
+	sleep(3);
+	ATF_REQUIRE(system("touch ospf.down") == 0);
+	sleep(6);
+	ATF_CHECK(system("grep -qs 'ospf-neighbor' mail.out") != 0);
+	/* Let in again: its coming back mailed. */
+	run("const f = document.querySelector('form[data-form=settings-mail]');"
+	    " f.querySelector('input[name=\"case-in:ospf-neighbor\"]').checked "
+	    "= true; f.requestSubmit();");
+	for (i = 0; i < 100 && system("grep -q '\"ospf-neighbor\"' "
+	    "data/settings.json") == 0; i++)
+		usleep(100000);
+	ATF_CHECK(system("grep -q '\"ospf-neighbor\"' data/settings.json") !=
+	    0);
+	ATF_REQUIRE(unlink("ospf.down") == 0);
+	for (i = 0; i < 150 && system("grep -qs 'lab: cleared: ospf-neighbor' "
+	    "mail.out") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(system("grep -q 'lab: cleared: ospf-neighbor' "
+	    "mail.out") == 0, "the neighbour's coming back not mailed");
+}
+ATF_TC_CLEANUP(pwa_notify_cases, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A host's configuration files on its System tab: Arcana's own, then
  * switched to the system's.  The dry run's rows drawn, a word list's
  * Additive by default, a value both set waiting for a choice; the rows
@@ -13365,6 +13466,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_storage_relay);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netmap);
 	ATF_TP_ADD_TC(tp, pwa_hosts);
+	ATF_TP_ADD_TC(tp, pwa_notify_cases);
 	ATF_TP_ADD_TC(tp, pwa_route_late);
 	ATF_TP_ADD_TC(tp, pwa_flows_wf);
 	ATF_TP_ADD_TC(tp, pwa_nettab_ifaces);

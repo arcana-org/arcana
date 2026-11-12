@@ -4445,6 +4445,12 @@ settings_model(const ucl_object_t *rc)
 			kput(s, "type", ucl_object_fromstring("secret"));
 			kput(s, "value", ucl_object_fromstring(""));
 			kput(s, "set", ucl_object_frombool(jbool(rc, set)));
+		} else if (strlen(key) > 5 && strcmp(key + strlen(key) - 5,
+		    "_case") == 0) {
+			/* A way's cases: its list, as it is kept. */
+			kput(s, "type", ucl_object_fromstring("cases"));
+			kput(s, "cases", v != NULL ? ucl_object_copy(v) :
+			    ucl_object_typed_new(UCL_ARRAY));
 		} else {
 			kput(s, "type", ucl_object_fromstring(
 			    ucl_object_type(v) == UCL_BOOLEAN ? "bool" : "text"));
@@ -4568,6 +4574,90 @@ setting_group(const char *key)
 	    "notify_", 7) == 0 ? SETG_ALERTS : SETG_CONSOLE);
 }
 
+/* The cases the alerts know, named for the page: the agent's fault
+ * types (gula/yalarms.c's kinds), and a limit crossed. */
+static const struct {
+	const char	*type, *label;
+} known_cases[] = {
+	{ "threshold", "Limit crossed" }, { "cpu", "CPU" },
+	{ "memory", "Memory" }, { "storage", "Storage" },
+	{ "interface", "Interface link" }, { "tunnel", "SD-WAN tunnel" },
+	{ "underlay", "Underlay path" },
+	{ "stamp-unauthenticated", "STAMP unauthenticated" },
+	{ "tca", "Probe threshold (TCA)" }, { "bfd", "BFD session" },
+	{ "bgp-neighbor", "BGP neighbour" },
+	{ "ospf-neighbor", "OSPF neighbour" },
+	{ "bird-instance", "BIRD instance" }, { "ids", "Suricata" },
+	{ "key-rotation", "IPsec key rotation" }, { "crash", "Process crash" },
+	{ "mail", "Mail (smtpd)" }, { "undo", "Commit not undone" },
+};
+
+/* A row of the cases: type's, as kept says it, or the default. */
+static void
+case_row(ucl_object_t *a, const char *type, const char *label,
+    const ucl_object_t *kept)
+{
+	const ucl_object_t	*c, *k;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*o;
+	char			 cd[16];
+
+	k = NULL;
+	it = NULL;
+	while ((c = ucl_object_iterate(kept, &it, true)) != NULL)
+		if (jstr(c, "type") != NULL && strcmp(jstr(c, "type"), type) ==
+		    0)
+			k = c;
+	cd[0] = '\0';
+	if (k != NULL && ucl_object_lookup(k, "cooldown") != NULL)
+		snprintf(cd, sizeof(cd), "%jd", (intmax_t)jint(k, "cooldown",
+		    0));
+	o = ucl_object_typed_new(UCL_OBJECT);
+	kput(o, "type", ucl_object_fromstring(type));
+	kput(o, "label", ucl_object_fromstring(label));
+	kput(o, "include", ucl_object_fromstring(k == NULL ||
+	    ucl_object_lookup(k, "include") == NULL || jbool(k, "include") ?
+	    "yes" : "no"));
+	kput(o, "cooldown", ucl_object_fromstring(cd));
+	ucl_array_append(a, o);
+}
+
+/*
+ * Setting key's cases (mail_case, telegram_case) as its table has
+ * them: each case known, then each kept the page does not know (a newer
+ * agent's), {type, label, include "yes" or "no", cooldown "" for the
+ * one for all}.  To be freed.
+ */
+ucl_object_t *
+alert_cases(const char *key)
+{
+	const ucl_object_t	*e, *kept, *c;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*a;
+	size_t			 i;
+
+	kept = NULL;
+	it = NULL;
+	while ((e = ucl_object_iterate(jget(app.settings, "settings"), &it,
+	    true)) != NULL)
+		if (jstr(e, "key") != NULL && strcmp(jstr(e, "key"), key) == 0)
+			kept = jget(e, "cases");
+	a = ucl_object_typed_new(UCL_ARRAY);
+	for (i = 0; i < nitems(known_cases); i++)
+		case_row(a, known_cases[i].type, known_cases[i].label, kept);
+	it = NULL;
+	while ((c = ucl_object_iterate(kept, &it, true)) != NULL) {
+		if (jstr(c, "type") == NULL)
+			continue;
+		for (i = 0; i < nitems(known_cases); i++)
+			if (strcmp(known_cases[i].type, jstr(c, "type")) == 0)
+				break;
+		if (i == nitems(known_cases))
+			case_row(a, jstr(c, "type"), jstr(c, "type"), kept);
+	}
+	return (a);
+}
+
 void
 load_settings(void)
 {
@@ -4600,11 +4690,77 @@ settings_put_cb(int status, const ucl_object_t *o, const char *err,
 }
 
 /*
+ * The edits of setting key's cases (mail_case, telegram_case) the form
+ * f changed, after the n edits b has: a row the filter leaves out is
+ * not in f, and stays as it is; one told with the cool-down for all is
+ * the default, its entry removed; another replaced.  False, with why in
+ * the form, where a cool-down is not a number.
+ */
+static bool
+save_cases(struct html *b, const ucl_object_t *f, const char *key, int *n)
+{
+	const ucl_object_t	*e, *in, *cd;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*rows;
+	const char		*t, *c;
+	char			 field[64], name[64], *p;
+	bool			 on, ok;
+
+	snprintf(name, sizeof(name), "%s", key);
+	for (p = name; *p != '\0'; p++)
+		if (*p == '_')
+			*p = '-';
+	rows = alert_cases(key);
+	ok = true;
+	it = NULL;
+	while (ok && (e = ucl_object_iterate(rows, &it, true)) != NULL) {
+		t = jstr(e, "type");
+		snprintf(field, sizeof(field), "case-in:%s", t);
+		/* The fields' names hold a colon, not a dot: looked up as
+		 * they are, not as a path. */
+		if ((in = ucl_object_lookup(f, field)) == NULL)
+			continue;
+		snprintf(field, sizeof(field), "case-cd:%s", t);
+		c = (cd = ucl_object_lookup(f, field)) != NULL ?
+		    ucl_object_tostring_forced(cd) : "";
+		on = ucl_object_toboolean(in);
+		if (strspn(c, "0123456789") != strlen(c) || strlen(c) > 4) {
+			snprintf(app.modal_error, sizeof(app.modal_error),
+			    "%s: a cool-down is a number of minutes, 0 to "
+			    "1440, or empty for the one for all", jstr(e,
+			    "label"));
+			ok = false;
+			continue;
+		}
+		if (on == (strcmp(jstr(e, "include"), "yes") == 0) &&
+		    strcmp(c, jstr(e, "cooldown")) == 0)
+			continue;
+		(*n)++;
+		if (on && c[0] == '\0') {
+			h_fmt(b, "%s{\"edit-id\":\"%d\",\"operation\":"
+			    "\"remove\",\"target\":\"/%s=%s\"}", *n > 1 ? "," :
+			    "", *n, name, t);
+			continue;
+		}
+		h_fmt(b, "%s{\"edit-id\":\"%d\",\"operation\":\"replace\","
+		    "\"target\":\"/%s=%s\",\"value\":{\"arcana-console:%s\":[{"
+		    "\"type\":\"%s\",\"include\":%s", *n > 1 ? "," : "", *n,
+		    name, t, name, t, on ? "true" : "false");
+		if (c[0] != '\0')
+			h_fmt(b, ",\"cooldown\":%d", atoi(c));
+		h_raw(b, "}]}}");
+	}
+	ucl_object_unref(rows);
+	return (ok);
+}
+
+/*
  * Every setting of the form sent, one YANG Patch (RFC 8072): each leaf
  * merged; the console keeps what differs.  The mail's are a form of
- * their own, on the Notifications tab: each form sends its own.  A
- * secret left empty, or a leaf empty that was, is left out: as it is; a
- * number emptied is removed, web.conf's again.
+ * their own, on the Notifications tab: each form sends its own, with
+ * its way's cases (save_cases()).  A secret left empty, or a leaf empty
+ * that was, is left out: as it is; a number emptied is removed, web.conf's
+ * again.
  */
 void
 save_settings(const ucl_object_t *f, int group)
@@ -4620,6 +4776,12 @@ save_settings(const ucl_object_t *f, int group)
 	h_raw(&b, "{\"ietf-yang-patch:yang-patch\":{\"patch-id\":\"settings\","
 	    "\"edit\":[");
 	n = 0;
+	/* The way's cases first: a cool-down not a number sends nothing. */
+	if ((group == SETG_MAIL || group == SETG_TELEGRAM) && !save_cases(&b,
+	    f, group == SETG_MAIL ? "mail_case" : "telegram_case", &n)) {
+		free(b.s);
+		return;
+	}
 	it = NULL;
 	while ((e = ucl_object_iterate(jget(app.settings, "settings"), &it,
 	    true)) != NULL) {
@@ -4627,6 +4789,8 @@ save_settings(const ucl_object_t *f, int group)
 		    setting_group(key) != group)
 			continue;
 		type = jstr(e, "type") != NULL ? jstr(e, "type") : "text";
+		if (strcmp(type, "cases") == 0)
+			continue;
 		v = jstr(f, key) != NULL ? jstr(f, key) : "";
 		if (strcmp(type, "bool") != 0 && v[0] == '\0' &&
 		    (strcmp(type, "secret") == 0 || jstr(e, "value") == NULL ||

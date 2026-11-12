@@ -35,8 +35,10 @@
 
 #define	SETTINGS_FILE	"settings.json"
 
-/* K_SECRET: text kept, and never sent back: only whether it is set. */
-enum kind { K_TEXT, K_BOOL, K_SECRET };
+/* K_SECRET: text kept, and never sent back: only whether it is set.
+ * K_CASES: a way's cases, an object by type in settings.json and its
+ * JSON here, checked by cases_text(). */
+enum kind { K_TEXT, K_BOOL, K_SECRET, K_CASES };
 
 static const char	*v_name(const char *);
 static const char	*v_url(const char *);
@@ -63,6 +65,7 @@ static const char	*v_chats(const char *);
 static const char	*v_sender(const char *);
 static const char	*v_prefixes(const char *);
 static const char	*v_cooldown(const char *);
+static void		 put(ucl_object_t *, const char *, ucl_object_t *);
 
 static struct setting {
 	const char	*key;
@@ -129,6 +132,12 @@ static struct setting {
 	    "back under at 5 points below), or a rule of yours there for an "
 	    "interface, a disk or a jail (back under below nine tenths of "
 	    "it). Measured only while the host keeps history.", NULL, NULL, NULL },
+	{ "mail_case", K_CASES, "What is mailed, case by case",
+	    "Of each case, a fault's type or a limit crossed, whether it is "
+	    "mailed (of what the two above tell) and a cool-down of its own "
+	    "in minutes; empty, the one for all below. A case of a type not "
+	    "listed, a newer agent's, is mailed with that one.", NULL, NULL,
+	    NULL },
 	{ "telegram_chats", K_TEXT, "Telegram chats",
 	    "Where the bot writes: chat ids (a number; a group's is negative) "
 	    "or @channel names, a space between them; empty for none. Ask "
@@ -156,6 +165,12 @@ static struct setting {
 	    "back under at 5 points below), or a rule of yours there for an "
 	    "interface, a disk or a jail (back under below nine tenths of "
 	    "it). Measured only while the host keeps history.", NULL, NULL, NULL },
+	{ "telegram_case", K_CASES, "What is sent to Telegram, case by case",
+	    "Of each case, a fault's type or a limit crossed, whether it is "
+	    "sent (of what the two above tell) and a cool-down of its own "
+	    "in minutes; empty, the one for all below. A case of a type not "
+	    "listed, a newer agent's, is sent with that one.", NULL, NULL,
+	    NULL },
 	{ "mail_sen", K_TEXT, "Security Event Notifications mailed to",
 	    "MEF 138's SENs (what the SD-WAN services' security functions "
 	    "block and tell): addresses, a comma between them; empty for "
@@ -216,8 +231,9 @@ static struct setting {
 	    "neighbour), the first change is told at once; those after it "
 	    "within so long are held, and at its end one line says what "
 	    "happened (over and under 7 times, now under), or nothing when it "
-	    "ended as it was last told. By mail and Telegram alike; 0 tells "
-	    "every change. Jobs, runs and security notices are not held.",
+	    "ended as it was last told. By mail and Telegram alike, but for a "
+	    "case given a cool-down of its own there; 0 tells every change. "
+	    "Jobs, runs and security notices are not held.",
 	    v_cooldown, NULL, NULL },
 };
 
@@ -486,6 +502,87 @@ v_cooldown(const char *s)
 	    "1440" : NULL);
 }
 
+#define	CASES_MAX	64
+
+/*
+ * A way's cases, RFC 7951's list ([{"type", "include", "cooldown"}]) or
+ * settings.json's object by type, as settings.json keeps them: those
+ * that are not the default (told, with notify_cooldown) by type, as
+ * JSON.  NULL with *why NULL where none is left; NULL with why where one
+ * is not a case.  To be freed.
+ */
+static char *
+cases_text(const ucl_object_t *v, const char **why)
+{
+	ucl_object_t		*out, *e;
+	const ucl_object_t	*c, *in, *cd;
+	ucl_object_iter_t	 it;
+	const char		*type;
+	char			*r;
+	size_t			 n, kept;
+
+	*why = NULL;
+	if (v == NULL || (ucl_object_type(v) != UCL_ARRAY &&
+	    ucl_object_type(v) != UCL_OBJECT)) {
+		*why = "a list of cases";
+		return (NULL);
+	}
+	out = ucl_object_typed_new(UCL_OBJECT);
+	n = kept = 0;
+	it = NULL;
+	while (*why == NULL && (c = ucl_object_iterate(v, &it, true)) !=
+	    NULL) {
+		type = ucl_object_type(v) == UCL_OBJECT ? ucl_object_key(c) :
+		    ucl_object_tostring(ucl_object_lookup(c, "type"));
+		in = ucl_object_lookup(c, "include");
+		cd = ucl_object_lookup(c, "cooldown");
+		if (type == NULL || strlen(type) > 23 || !islower(
+		    (unsigned char)type[0]) || strspn(type, "abcdefghijklmnop"
+		    "qrstuvwxyz0123456789-") != strlen(type))
+			*why = "a case a fault's type (bfd, ospf-neighbor) or "
+			    "threshold";
+		else if (ucl_object_type(c) != UCL_OBJECT || (in != NULL &&
+		    ucl_object_type(in) != UCL_BOOLEAN))
+			*why = "a case told or not, true or false";
+		else if (cd != NULL && (ucl_object_type(cd) != UCL_INT ||
+		    ucl_object_toint(cd) < 0 || ucl_object_toint(cd) > 1440))
+			*why = "a case's cool-down a number of minutes, 0 to "
+			    "1440";
+		else if (ucl_object_lookup(out, type) != NULL ||
+		    ++n > CASES_MAX)
+			*why = "64 cases at most, each once";
+		if (*why != NULL || ((in == NULL || ucl_object_toboolean(in)) &&
+		    cd == NULL))
+			continue;
+		e = ucl_object_typed_new(UCL_OBJECT);
+		if (in != NULL && !ucl_object_toboolean(in))
+			put(e, "include", ucl_object_frombool(false));
+		if (cd != NULL)
+			put(e, "cooldown", ucl_object_fromint(
+			    ucl_object_toint(cd)));
+		ucl_object_insert_key(out, e, type, 0, true);
+		kept++;
+	}
+	r = *why == NULL && kept > 0 ? (char *)ucl_object_emit(out,
+	    UCL_EMIT_JSON_COMPACT) : NULL;
+	ucl_object_unref(out);
+	return (r);
+}
+
+/* A way's cases' JSON parsed; NULL, not JSON. */
+static ucl_object_t *
+cases_parse(const char *s)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*o;
+
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
+	o = ucl_parser_add_string(p, s, 0) ? ucl_parser_get_object(p) : NULL;
+	ucl_parser_free(p);
+	return (o);
+}
+
 static const char *
 v_minutes(const char *s)
 {
@@ -628,7 +725,7 @@ settings_peek(const char *key)
 	struct setting		*s;
 	ucl_object_t		*o;
 	const ucl_object_t	*v;
-	const char		*t;
+	const char		*t, *why;
 	char			 path[1024], *r;
 
 	if ((s = find(key)) == NULL)
@@ -639,7 +736,10 @@ settings_peek(const char *key)
 	    UCL_PARSER_DISABLE_MACRO);
 	if (access(path, R_OK) == 0 && ucl_parser_add_file(p, path) &&
 	    (o = ucl_parser_get_object(p)) != NULL) {
-		if ((v = ucl_object_lookup(o, key)) != NULL) {
+		if ((v = ucl_object_lookup(o, key)) != NULL && s->kind ==
+		    K_CASES)
+			r = cases_text(v, &why);
+		else if (v != NULL) {
 			t = s->kind == K_BOOL ? (ucl_object_toboolean(v) ?
 			    "true" : "false") : ucl_object_tostring_forced(v);
 			if (t[0] == '\0' || s->valid == NULL || s->valid(t) ==
@@ -695,6 +795,7 @@ load(void)
 	ucl_object_t		*o;
 	const ucl_object_t	*v;
 	struct stat		 sb;
+	const char		*why;
 	char			 path[1024];
 	size_t			 i;
 
@@ -708,6 +809,13 @@ load(void)
 		if (o == NULL || (v = ucl_object_lookup(o,
 		    settings[i].key)) == NULL)
 			continue;
+		if (settings[i].kind == K_CASES) {
+			if ((settings[i].over = cases_text(v, &why)) == NULL &&
+			    why != NULL)
+				log_msg(LOG_WARNING, "%s: %s: not %s; ignored",
+				    path, settings[i].key, why);
+			continue;
+		}
 		settings[i].over = xstrdup(settings[i].kind == K_BOOL ?
 		    (ucl_object_toboolean(v) ? "true" : "false") :
 		    ucl_object_tostring_forced(v));
@@ -814,6 +922,15 @@ settings_set(const ucl_object_t *set, char *why, size_t len)
 			next[i] = NULL;
 			continue;
 		}
+		/* The cases: those not the default, none an override. */
+		if (s->kind == K_CASES) {
+			if ((next[i] = cases_text(v, &bad)) == NULL && bad !=
+			    NULL) {
+				snprintf(why, len, "%s: not %s", s->label, bad);
+				return (400);
+			}
+			continue;
+		}
 		val = s->kind == K_BOOL ? (ucl_object_toboolean(v) ? "true" :
 		    "false") : ucl_object_tostring_forced(v);
 		/* A secret left empty is left as it is; null clears it. */
@@ -836,7 +953,8 @@ settings_set(const ucl_object_t *set, char *why, size_t len)
 		if (next[i] == NULL)
 			continue;
 		put(out, settings[i].key, settings[i].kind == K_BOOL ?
-		    ucl_object_frombool(truth(next[i])) :
+		    ucl_object_frombool(truth(next[i])) : settings[i].kind ==
+		    K_CASES ? cases_parse(next[i]) :
 		    ucl_object_fromstring(next[i]));
 	}
 	if (store_save(SETTINGS_FILE, out) == -1) {
@@ -903,6 +1021,32 @@ leaf_of(const struct setting *s, const char *v)
 	return (ucl_object_fromstring(v));
 }
 
+/* A way's cases (settings.json's JSON) as its list has them. */
+static ucl_object_t *
+cases_yang(const char *text)
+{
+	ucl_object_t		*o, *a, *e;
+	const ucl_object_t	*c, *v;
+	ucl_object_iter_t	 it;
+
+	a = ucl_object_typed_new(UCL_ARRAY);
+	if ((o = cases_parse(text)) == NULL)
+		return (a);
+	it = NULL;
+	while ((c = ucl_object_iterate(o, &it, true)) != NULL) {
+		e = ucl_object_typed_new(UCL_OBJECT);
+		yput(e, "type", ucl_object_fromstring(ucl_object_key(c)));
+		yput(e, "include", ucl_object_frombool((v = ucl_object_lookup(c,
+		    "include")) == NULL || ucl_object_toboolean(v)));
+		if ((v = ucl_object_lookup(c, "cooldown")) != NULL)
+			yput(e, "cooldown", ucl_object_fromint(
+			    ucl_object_toint(v)));
+		ucl_array_append(a, e);
+	}
+	ucl_object_unref(o);
+	return (a);
+}
+
 /* arcana-console:settings's value: what is in force, of a secret
  * whether it is set, where each comes from, what web.conf alone sets. */
 ucl_object_t *
@@ -920,6 +1064,10 @@ settings_yang(void)
 			snprintf(set, sizeof(set), "%s-set", name);
 			yput(o, set, ucl_object_frombool(value(
 			    settings[i].key)[0] != '\0'));
+		} else if (settings[i].kind == K_CASES) {
+			if (value(settings[i].key)[0] != '\0')
+				yput(o, name, cases_yang(value(
+				    settings[i].key)));
 		} else if ((x = leaf_of(&settings[i], value(settings[i].key))) !=
 		    NULL)
 			yput(o, name, x);
@@ -960,10 +1108,11 @@ settings_yang_set(const ucl_object_t *was, const ucl_object_t *now,
 {
 	ucl_object_t		*set;
 	const ucl_object_t	*a, *b;
-	char			 name[64];
+	const char		*bad;
+	char			 name[64], *ta, *tb;
 	size_t			 i;
 	int			 rc;
-	bool			 any;
+	bool			 any, same;
 
 	set = ucl_object_typed_new(UCL_OBJECT);
 	any = false;
@@ -971,6 +1120,23 @@ settings_yang_set(const ucl_object_t *was, const ucl_object_t *now,
 		yname(settings[i].key, name, sizeof(name));
 		a = ucl_object_lookup(was, name);
 		b = ucl_object_lookup(now, name);
+		/* A way's cases: changed if what is kept of them is. */
+		if (settings[i].kind == K_CASES) {
+			ta = a != NULL ? cases_text(a, &bad) : NULL;
+			tb = b != NULL ? cases_text(b, &bad) : NULL;
+			bad = b != NULL ? bad : NULL;
+			same = bad == NULL && (ta == NULL ? tb == NULL : tb !=
+			    NULL && strcmp(ta, tb) == 0);
+			free(ta);
+			free(tb);
+			if (same)
+				continue;
+			yput(set, settings[i].key, b == NULL ?
+			    ucl_object_typed_new(UCL_NULL) :
+			    ucl_object_copy(b));
+			any = true;
+			continue;
+		}
 		if (settings[i].kind == K_SECRET) {
 			if (b == NULL)
 				continue;

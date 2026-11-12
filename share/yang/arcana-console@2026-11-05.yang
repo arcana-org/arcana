@@ -67,6 +67,39 @@ module arcana-console {
       "Which jobs or runs are told: the failed ones, all, or none.";
   }
 
+  grouping alert-case {
+    description
+      "A case of the alerts on one way: whether it is told, and its
+       own cool-down.";
+    leaf type {
+      type string {
+        length "1..23";
+        pattern '[a-z][a-z0-9-]*';
+      }
+      description
+        "The case: a fault's type as the agent raises it (bfd,
+         ospf-neighbor, bgp-neighbor, tunnel, cpu and the others), or
+         threshold, a host's usage over a limit and back.";
+    }
+    leaf include {
+      type boolean;
+      default "true";
+      description
+        "Told on this way; false, left out, and held in no
+         cool-down.  What must go (a commit or a job that could not
+         be undone) goes all the same.";
+    }
+    leaf cooldown {
+      type uint16 {
+        range "0..1440";
+      }
+      units "minutes";
+      description
+        "The case's own cool-down, as notify-cooldown says of all;
+         0, every change told.  Left out, notify-cooldown's.";
+    }
+  }
+
   typedef host-id {
     type string {
       pattern '[0-9a-f]{8}';
@@ -203,6 +236,16 @@ module arcana-console {
         "A host's usage crossing a limit, and coming back under,
          mailed.";
     }
+    list mail-case {
+      key "type";
+      description
+        "Of each case, whether it is mailed and its own cool-down,
+         below mail-faults and mail-limits, which say what is told at
+         all.  A case no entry names is mailed with notify-cooldown,
+         one of a type the console does not know (a newer agent's)
+         too; an entry that says only that is not kept.";
+      uses alert-case;
+    }
     leaf telegram-chats {
       type string;
       description
@@ -245,6 +288,13 @@ module arcana-console {
       type boolean;
       description
         "A host's usage crossing a limit sent to Telegram.";
+    }
+    list telegram-case {
+      key "type";
+      description
+        "Of each case, whether it is sent to Telegram and its own
+         cool-down, as mail-case says of mail.";
+      uses alert-case;
     }
     leaf mail-sen {
       type string;
@@ -339,7 +389,9 @@ module arcana-console {
          and what it is of), the first change is told at once and
          those after it within so long held; at its end one line
          says what happened, unless it ended as it was last told.
-         Each way alike; 0, every change told.  30 unless set.";
+         Each way alike, but for a case with a cool-down of its own
+         (mail-case, telegram-case); 0, every change told.  30 unless
+         set.";
     }
     list source {
       key "name";

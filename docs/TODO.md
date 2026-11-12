@@ -34,6 +34,13 @@
 - A geneve tunnel's forwarding table: if_geneve keeps one and shows
   no way to read it from userland (no sysctl as vxlan has, no dump
   through netlink); once it does, shown as a bridge's addresses are.
+- The alerts' cases (Settings, Notifications; mail-case and
+  telegram-case) are named in the page (actions.c, known_cases) after
+  the agent's fault types (gula/yalarms.c, kinds[]), by hand: a type a
+  newer agent raises is told on every way, as the default says, and has
+  a row once a way keeps an entry for it, but none before it is named
+  there.  The console's own settings have no { } Schema panel: no
+  operation of share/arcana/yang-ops is arcana-console's.
 - The mesh: agents joined by SCTP associations, each to at least a
   configured number of others (2 unless set), so that the console
   reaches an agent it has lost through one it still has. SCTP only,

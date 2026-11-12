@@ -8496,6 +8496,208 @@ ATF_TC_BODY(notify_cooldown_sessions, tc)
 	resp_free(&r);
 }
 
+/* Waited for, ten times a second for at most tenths: n lines mailed
+ * that match re. */
+static void
+mailed_wait(const char *re, int n, int tenths)
+{
+	int	i;
+
+	for (i = 0; i < tenths && mailed(re) < n; i++)
+		usleep(100000);
+}
+
+CONSOLE_TC(notify_cases_ways, "A case left out of the mail is not mailed "
+    "and still sent to Telegram; each way's cases kept by type, an entry "
+    "of the default not kept, one not a case refused")
+ATF_TC_BODY(notify_cases_ways, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		id[16];
+	pid_t		sink;
+	int		port, i;
+
+	port = tg_sink(&sink);
+	snprintf(harness_telegram_api, sizeof(harness_telegram_api),
+	    "http://127.0.0.1:%d", port);
+	harness_bird_watch = true;
+	snprintf(harness_webconf, sizeof(harness_webconf), "mail_tick = 1;\n"
+	    "cooldown_unit = 1;\n");
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_host("here", "jgd.sock", id, sizeof(id));
+	/* Not a case, not a cool-down: refused. */
+	r3_settings("\"mail-case\":[{\"type\":\"OSPF neighbour\"}]", 400);
+	r3_settings("\"telegram-case\":[{\"type\":\"bfd\",\"cooldown\":1441}]",
+	    400);
+	r3_settings("\"mail-to\":\"ops@example.org\",\"mail-faults\":\"Major\","
+	    "\"mail-limits\":true,\"telegram-token\":\"123:abc_DEF\","
+	    "\"telegram-chats\":\"42\",\"telegram-via\":\"here\","
+	    "\"notify-cooldown\":0,\"mail-case\":[{\"type\":\"ospf-neighbor\","
+	    "\"include\":false},{\"type\":\"bfd\",\"include\":true}]", 204);
+	/* Kept by type; the entry that says the default is not. */
+	http("GET", CC "settings", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("ospf-neighbor", jstr(&r,
+	    "arcana-console:settings.mail-case.0.type"));
+	ATF_CHECK_STREQ("false", jstr(&r,
+	    "arcana-console:settings.mail-case.0.include"));
+	ATF_CHECK(jstr(&r, "arcana-console:settings.mail-case.1.type") ==
+	    NULL);
+	ATF_CHECK(jstr(&r, "arcana-console:settings.telegram-case.0.type") ==
+	    NULL);
+	resp_free(&r);
+	ATF_CHECK(system("grep -q '\"mail_case\"' data/settings.json && "
+	    "grep -q '\"ospf-neighbor\"' data/settings.json && "
+	    "! grep -q '\"bfd\"' data/settings.json") == 0);
+	/* The host's events read from here on. */
+	sleep(3);
+	ATF_REQUIRE(system("touch ospf.down") == 0);
+	for (i = 0; i < 150 && system("grep -qs 'ospf-neighbor of' tg.out") !=
+	    0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(system("grep -q '🟠 here · Major fault.nospf-neighbor "
+	    "of' tg.out") == 0, "the neighbour not sent to Telegram");
+	/* The mail tells what it was not told to leave out. */
+	mem_limit(id, 1);
+	mailed_wait("here: mem over its limit", 1, 100);
+	ATF_CHECK_EQ(1, mailed("here: mem over its limit"));
+	ATF_CHECK_EQ(0, mailed("ospf-neighbor"));
+	tg_end(sink);
+}
+
+CONSOLE_TC_LONG(notify_cases_cooldown, "A case's own cool-down, shorter "
+    "and longer than the one for all, honoured; changed, it holds at once")
+ATF_TC_BODY(notify_cases_cooldown, tc)
+{
+	struct authn	a;
+	char		id[16];
+
+	/* The one for all ten; the limits' 0: each change mailed. */
+	nc_start(tc, &a, id, sizeof(id));
+	r3_settings("\"mail-case\":[{\"type\":\"threshold\",\"cooldown\":0}]",
+	    204);
+	mem_limit(id, 1);
+	mailed_wait("here: mem over its limit", 1, 100);
+	ATF_CHECK_EQ(1, mailed("here: mem over its limit"));
+	mem_limit(id, 100);
+	mailed_wait("here: mem back under its limit", 1, 60);
+	ATF_CHECK_EQ(1, mailed("here: mem back under its limit"));
+	/* None for all now, the limits' eight: the next over mailed, the
+	 * under held and said at its end. */
+	r3_settings("\"notify-cooldown\":0,\"mail-case\":[{\"type\":"
+	    "\"threshold\",\"cooldown\":8}]", 204);
+	mem_limit(id, 1);
+	mailed_wait("here: mem over its limit", 2, 100);
+	ATF_CHECK_EQ(2, mailed("here: mem over its limit"));
+	mem_limit(id, 100);
+	sleep(3);
+	ATF_CHECK_EQ(1, mailed("here: mem back under its limit"));
+	mailed_wait("mem on here: over/under", 1, 150);
+	ATF_CHECK_MSG(mailed("mem on here: over/under 2 times in [0-9]* s, "
+	    "now under 95%$") == 1, "no line of what was held");
+}
+
+CONSOLE_TC(notify_cases_unknown, "A case of a type no entry names told "
+    "with the cool-down for all; one the console knows nothing of kept")
+ATF_TC_BODY(notify_cases_unknown, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		id[16];
+
+	nc_start(tc, &a, id, sizeof(id));
+	r3_settings("\"mail-case\":[{\"type\":\"future-fault\",\"include\":"
+	    "false},{\"type\":\"bfd\",\"include\":false,\"cooldown\":1}]",
+	    204);
+	http("GET", CC "settings/mail-case=future-fault", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("false", jstr(&r, "arcana-console:mail-case.0."
+	    "include"));
+	resp_free(&r);
+	/* The neighbour's case, of no entry: mailed, its clearing held by
+	 * the cool-down for all and said at its end. */
+	ATF_REQUIRE(system("touch ospf.down") == 0);
+	mailed_wait("here: fault, Major: ospf-neighbor", 1, 100);
+	ATF_CHECK_EQ(1, mailed("here: fault, Major: ospf-neighbor"));
+	ATF_REQUIRE(unlink("ospf.down") == 0);
+	sleep(3);
+	ATF_CHECK_EQ(0, mailed("here: cleared: ospf-neighbor"));
+	mailed_wait("on here: raised/cleared", 1, 150);
+	ATF_CHECK_MSG(mailed("ospf-neighbor .* on here: raised/cleared 2 "
+	    "times in [0-9]* s, now cleared$") == 1, "no line of what was "
+	    "held");
+}
+
+/* The cases the agent raises and the limits: what a way can leave out. */
+static const char *const nc_cases[] = { "threshold", "tunnel", "underlay",
+    "stamp-unauthenticated", "tca", "bfd", "bgp-neighbor", "ospf-neighbor",
+    "bird-instance", "interface", "ids", "key-rotation", "storage", "cpu",
+    "memory", "crash", "mail", "undo", NULL };
+
+CONSOLE_TC_LONG(notify_cases_must, "Every case left out of the mail: a "
+    "commit not confirmed whose undo failed is mailed all the same, its "
+    "fault not; set by the page's YANG Patch")
+ATF_TC_BODY(notify_cases_must, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		id[16], path[512], body[4096];
+	size_t		o;
+	int		i;
+
+	nc_start(tc, &a, id, sizeof(id));
+	/* Each case left out, an edit each, as the page sends them; one
+	 * of the default removed. */
+	o = (size_t)snprintf(body, sizeof(body), "{\"ietf-yang-patch:"
+	    "yang-patch\":{\"patch-id\":\"settings\",\"edit\":[");
+	for (i = 0; nc_cases[i] != NULL; i++)
+		o += (size_t)snprintf(body + o, sizeof(body) - o, "%s{\""
+		    "edit-id\":\"%d\",\"operation\":\"replace\",\"target\":\""
+		    "/mail-case=%s\",\"value\":{\"arcana-console:mail-case\":[{"
+		    "\"type\":\"%s\",\"include\":false}]}}", i > 0 ? "," : "",
+		    i + 1, nc_cases[i], nc_cases[i]);
+	snprintf(body + o, sizeof(body) - o, ",{\"edit-id\":\"x\",\""
+	    "operation\":\"remove\",\"target\":\"/mail-case=nosuch\"}]}}");
+	http_with("PATCH", CC "settings", YANG_PATCH, body, &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "settings", NULL, &r);
+	for (i = 0; nc_cases[i] != NULL; i++) {
+		snprintf(path, sizeof(path), "{\"include\":false,\"type\":"
+		    "\"%s\"}", nc_cases[i]);
+		ATF_CHECK_MSG(strstr(r.body, path) != NULL, "%s: %s",
+		    nc_cases[i], r.body);
+	}
+	resp_free(&r);
+	/* A sysctl kept by a confirmed commit, never confirmed; its undo
+	 * fails, sysctl(8) refusing the value back. */
+	snprintf(path, sizeof(path), "/restconf/ds/ietf-datastores:candidate/"
+	    "arcana-fleet:fleet/host=%s/arcana-sysctl:sysctl", id);
+	http("PATCH", path, "{\"arcana-sysctl:sysctl\":{\"kept\":[{\"name\":"
+	    "\"kern.ipc.somaxconn\",\"value\":\"2048\"}]}}", &r);
+	ATF_CHECK_MSG(r.status == 204, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/ietf-netconf:commit", id);
+	http("POST", path, "{\"ietf-netconf:input\":{\"confirmed\":[null],"
+	    "\"confirm-timeout\":2,\"persist\":\"u1\"}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	ATF_REQUIRE(system("touch sysctl.fail") == 0);
+	mailed_wait("ALERT: a commit not confirmed in time could not be "
+	    "undone", 1, 300);
+	ATF_CHECK_EQ(1, mailed("here: ALERT: a commit not confirmed in time "
+	    "could not be undone at arcana-sysctl"));
+	/* Its fault raised, a case left out: not mailed. */
+	sleep(2);
+	ATF_CHECK(system("grep -q 'fault undo (Critical)' arcana-agent.out") ==
+	    0);
+	ATF_CHECK_EQ(0, mailed("fault, Critical: undo"));
+	(void)unlink("sysctl.fail");
+}
+
 CONSOLE_TC(sampling_switch, "A host's sampling switched off through the "
     "console: said by its history, kept by the registry for the alerts; "
     "on again")
@@ -22574,6 +22776,10 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, fleet_stream_rejoin);
 	ATF_TP_ADD_TC(tp, workflows_events);
 	ATF_TP_ADD_TC(tp, notify_cooldown_sessions);
+	ATF_TP_ADD_TC(tp, notify_cases_ways);
+	ATF_TP_ADD_TC(tp, notify_cases_cooldown);
+	ATF_TP_ADD_TC(tp, notify_cases_unknown);
+	ATF_TP_ADD_TC(tp, notify_cases_must);
 	ATF_TP_ADD_TC(tp, cluster);
 	ATF_TP_ADD_TC(tp, mtls);
 	ATF_TP_ADD_TC(tp, mtls_move);

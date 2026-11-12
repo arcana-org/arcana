@@ -604,6 +604,7 @@ struct app {
 	int		 settab;	/* the Settings section's tab: SET_* */
 	char		 ipsec_auth[8];	/* the connection form: how the peer is known */
 	char		 filter[64];
+	char		 case_filter[2][64]; /* the cases': mail's, Telegram's */
 	int		 devtab;	/* Devices: 0 the hosts, 1 templates */
 	enum node	 node;		/* what the tree has selected */
 	enum tab	 tab;		/* of the selected server */
@@ -798,6 +799,7 @@ void		 token_del(const char *);
 enum { SETG_CONSOLE, SETG_MAIL, SETG_TELEGRAM, SETG_LDAP, SETG_ALERTS };
 int		 setting_group(const char *);
 void		 save_settings(const ucl_object_t *, int);
+ucl_object_t	*alert_cases(const char *);
 void		 mail_test(void);
 void		 telegram_test(void);
 void		 load_schema(void);
