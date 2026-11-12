@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.279.0"
+#define	ARCANA_AGENT_VERSION	"0.280.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -886,7 +886,11 @@ bool		 kmsg_lines(struct work *, uint64_t, const char *, uint32_t,
 		    struct kmsg_line **, size_t *, uint64_t *);
 bool		 kmsg_crash_line(const char *, time_t);
 void		 kmsg_crash_sweep(time_t);
+void		 kmsg_crash_adopt(void);
+const char	*kmsg_find(const char *, size_t, const char *, size_t, size_t,
+		    bool);
 void		 history_save(void);
+void		 history_look(void);
 /* gula/probe.c: the tunnels measured, STAMP to Arcana's far ends, ICMP echo
  * to the others, again and again. */
 enum { PROBE_NONE = -1, PROBE_UNKNOWN, PROBE_UP, PROBE_DOWN, PROBE_ENDED,
@@ -1112,14 +1116,31 @@ bool		 rtadvd_prefix_ok(const char *);
 int		 sdwan_bfd_state(const char *);
 const char	*sdwan_tunnel_by_via(const char *);
 
-/* gula/faults.c: the faults, kept a day. */
+/* gula/faults.c: the faults, kept a day; an object whole, so long at
+ * most with its NUL (a mount point's, MNAMELEN). */
+#define	FAULT_OBJECT_MAX	1024
 void		 fault_set(const char *, const char *, const char *, const char *,
 		    const char *, ...) __printflike(5, 6);
 void		 fault_clear(const char *, const char *, const char *, ...)
 		    __printflike(3, 4);
 bool		 fault_update(const char *, const char *, const char *, ...)
 		    __printflike(3, 4);
-void		 fault_clear_by(const char *, const char *);
+/* What an owner watches now (fault_reconcile()): an object of a type
+ * (NULL, the call's), whether its cause is gone (its fault cleared,
+ * with reason, NULL the call's line), and back whether a fault of it is
+ * still open. */
+struct fault_live {
+	const char	*type;
+	const char	*object;
+	const char	*reason;
+	bool		 well;
+	bool		 open;
+};
+int		 fault_reconcile(const char *, const char *, const char *const *,
+		    struct fault_live *, size_t, const char *);
+int		 faults_open(const char *, const char *,
+		    void (*)(const char *, time_t, void *), void *);
+void		 faults_save(void);
 void		 faults_json(struct ucl_object_s *);
 void		 faults_start(void);
 int		 faults_purge(bool, int, time_t, int, int);
@@ -1377,6 +1398,10 @@ struct ucl_object_s;
 struct ucl_object_s *swap_list(struct work *);
 void		 route_watch_start(void);
 void		 event_add(const char *, const char *, ...) __printflike(2, 3);
+/* A string as the inside of a JSON one, into a buffer (6 times its
+ * length and one is room for all of it): what every event's maker
+ * puts a string of the outside in with. */
+const char	*json_quote(const char *, char *, size_t);
 void		 events_told(bool);
 void		 events_replay(time_t, void (*)(const char *, time_t, void *),
 		    void (*)(void *), void *, time_t *, time_t *, bool *);

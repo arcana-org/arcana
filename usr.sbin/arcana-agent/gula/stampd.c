@@ -74,7 +74,9 @@
 static pthread_mutex_t	 mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t	 cv = PTHREAD_COND_INITIALIZER;
 static bool		 nudged;
-static char		 applied[FIBS_MAX * 4];	/* the FIBs written last */
+/* The FIBs written last: FIBS_MAX words of 5 digits at most, a space
+ * after each. */
+static char		 applied[FIBS_MAX * 6 + 1];
 static bool		 known;
 static char		 said[512];		/* the last thing said */
 static unsigned char	 kdig[32];		/* the keys written last */
@@ -118,30 +120,49 @@ cmp_int(const void *a, const void *b)
 	return ((x > y) - (x < y));
 }
 
-/* The FIBs the host's services use, ascending, as words into buf;
- * how many. */
+/*
+ * The FIBs the host's services use, ascending, as words into buf (of
+ * applied's size, room for FIBS_MAX of them); how many.  Those beyond
+ * FIBS_MAX are not reflected, and said.
+ */
 static int
 wanted(char *buf, size_t len)
 {
-	int	v[FIBS_MAX], got[FIBS_MAX], n, ng, i, k, pass;
+	int	v[FIBS_MAX], got[FIBS_MAX + 1], n, ng, i, k, pass, over;
 	size_t	off;
 
 	n = 0;
+	over = -1;
 	for (pass = 0; pass < 2; pass++) {
-		ng = pass == 0 ? probe_fibs(got, FIBS_MAX) :
-		    sdwan_fibs(got, FIBS_MAX);
-		for (i = 0; i < ng && n < FIBS_MAX; i++) {
+		ng = pass == 0 ? probe_fibs(got, FIBS_MAX + 1) :
+		    sdwan_fibs(got, FIBS_MAX + 1);
+		for (i = 0; i < ng; i++) {
 			for (k = 0; k < n && v[k] != got[i]; k++)
 				;
-			if (k == n && got[i] >= 0)
+			if (k < n || got[i] < 0)
+				continue;
+			if (n == FIBS_MAX)
+				over = got[i];
+			else
 				v[n++] = got[i];
 		}
 	}
+	if (over >= 0)
+		tell(LOG_WARNING, "stampd: more than %d FIBs used: FIB %d and "
+		    "those after it not reflected", FIBS_MAX, over);
 	qsort(v, (size_t)n, sizeof(v[0]), cmp_int);
 	buf[0] = '\0';
-	for (i = 0, off = 0; i < n && off < len; i++)
-		off += (size_t)snprintf(buf + off, len - off, "%s%d", i > 0 ?
-		    " " : "", v[i]);
+	for (i = 0, off = 0; i < n; i++) {
+		k = snprintf(buf + off, len - off, "%s%d", i > 0 ? " " : "",
+		    v[i]);
+		/* Never a number cut short, which would be another FIB. */
+		if (k < 0 || (size_t)k >= len - off) {
+			buf[off] = '\0';
+			n = i;
+			break;
+		}
+		off += (size_t)k;
+	}
 	return (n);
 }
 

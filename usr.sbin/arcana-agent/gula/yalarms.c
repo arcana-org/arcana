@@ -5,17 +5,19 @@
  */
 
 /*
- * Gula: the agent's faults (faults.c) as RFC 8632's alarms.  A
- * fault is an alarm: its object the
- * resource, as a string; its kind arcana-alarms' alarm type, no
- * qualifier; raised once, cleared once, its history those two status
- * changes (alarm-history); its severity Warning, Minor, Major or
- * Critical.  The inventory is every kind the agent raises, with the
- * severities it raises it with; the summary counts by severity.  A
- * fault on a shelf of the control's (gula/faults.c) is a shelved alarm,
- * in neither the list nor the summary; the control itself, running's,
- * goes to and comes from faults.c as RFC 7951's JSON, its alarm types
- * named.
+ * Gula: the agent's faults (faults.c) as RFC 8632's alarms.  An alarm
+ * is the faults of one object and kind, the list's key (resource,
+ * alarm-type-id, alarm-type-qualifier): its object the resource, as a
+ * string; its kind arcana-alarms' alarm type, no qualifier.  Each
+ * fault of it is a raise and a clearing, its status changes in their
+ * order (alarm-history); the alarm is as its last fault is (cleared or
+ * not, its severity Warning, Minor, Major or Critical, its text), made
+ * when its first was raised.  The inventory is every kind the agent
+ * raises, with the severities it raises it with; the summary counts
+ * the alarms by severity, each once.  An alarm on a shelf of the
+ * control's (gula/faults.c) is a shelved alarm, in neither the list nor
+ * the summary; the control itself, running's, goes to and comes from
+ * faults.c as RFC 7951's JSON, its alarm types named.
  */
 
 #include <sys/param.h>
@@ -56,6 +58,8 @@ static const struct kind {
 	{ "crash", { 5, 0 }, "a process died of a signal that dumps core" },
 	{ "mail", { 4, 5 }, "smtpd stopped, or too much queued" },
 	{ "undo", { 6, 0 }, "a confirmed commit could not be undone" },
+	{ "alarm-list-full", { 5, 0 }, "every place of the alarm list is an "
+	    "open alarm: new ones are refused" },
 };
 
 /* An identity's SID, by its module and name; 0: none. */
@@ -141,38 +145,59 @@ inventory(cbl_yarena *a, struct ietf_alarms_alarms *al)
 	return (0);
 }
 
-/* An alarm's history: raised, and cleared when it was; compressed, or
- * cleared within the second it was raised (the change's time its key),
- * the clearing alone; at most max of them (-1 any), the latest kept. */
+/* A fault of the faults' JSON: what an alarm is made of. */
+struct rec {
+	const char	*type, *object, *text, *shelf;
+	int64_t		 t, cl;		/* raised; cleared, 0 not */
+	int		 sev;
+	bool		 compressed;
+	int		 next;		/* the next of its alarm's, -1 none */
+};
+
+/* A fault's status changes into sc (from k): raised, and cleared when
+ * it was; compressed, or cleared within the second it was raised (the
+ * change's time its key), the clearing alone.  The next k. */
+static size_t
+changes(cbl_yarena *a, const struct rec *r,
+    struct ietf_alarms_alarms_alarm_list_alarm_status_change *sc, size_t k)
+{
+
+	if (r->cl == 0 || (!r->compressed && r->cl != r->t)) {
+		sc[k].time = datetime(a, r->t);
+		sc[k].has_perceived_severity = true;
+		sc[k].perceived_severity.which = 1;
+		sc[k].perceived_severity.v.m1 = r->sev;
+		sc[k++].alarm_text = r->text;
+	}
+	if (r->cl != 0) {
+		sc[k].time = datetime(a, r->cl);
+		sc[k].has_perceived_severity = true;
+		sc[k].perceived_severity.which = 0;
+		sc[k].perceived_severity.v.m0 =
+		    IETF_ALARMS_ALARMS_ALARM_LIST_ALARM_STATUS_CHANGE_PERCEIVED_SEVERITY_M0_CLEARED;
+		sc[k++].alarm_text = r->text;
+	}
+	return (k);
+}
+
+/* An alarm's history: each fault of it, from first (its others by
+ * next), in order; at most max changes (-1 any), the latest kept. */
 static int
-history(cbl_yarena *a, const ucl_object_t *e, yalarm *v, int sev, int64_t t,
-    int64_t cl, int64_t max)
+history(cbl_yarena *a, const struct rec *recs, int first, yalarm *v,
+    int64_t max)
 {
 	struct ietf_alarms_alarms_alarm_list_alarm_status_change *sc;
-	bool	has;
+	size_t	n;
+	int	i;
 
-	if ((sc = cbl_yarena_alloc(a, 2 * sizeof(*sc))) == NULL)
+	for (n = 0, i = first; i != -1; i = recs[i].next)
+		n += 2;
+	if ((sc = cbl_yarena_alloc(a, n * sizeof(*sc))) == NULL)
 		return (ENOMEM);
-	sc[0].time = v->last_raised;
-	sc[0].has_perceived_severity = true;
-	sc[0].perceived_severity.which = 1;
-	sc[0].perceived_severity.v.m1 = sev;
-	sc[0].alarm_text = v->alarm_text;
-	if (v->is_cleared && cl != 0) {
-		sc[1].time = v->last_changed;
-		sc[1].has_perceived_severity = true;
-		sc[1].perceived_severity.which = 0;
-		sc[1].perceived_severity.v.m0 =
-		    IETF_ALARMS_ALARMS_ALARM_LIST_ALARM_STATUS_CHANGE_PERCEIVED_SEVERITY_M0_CLEARED;
-		sc[1].alarm_text = v->alarm_text;
-	}
-	v->status_change.n = v->is_cleared && cl != 0 ? 2 : 1;
+	for (n = 0, i = first; i != -1; i = recs[i].next)
+		n = changes(a, &recs[i], sc, n);
+	v->status_change.n = n;
 	v->status_change.v = sc;
-	if (v->status_change.n == 2 && (yj_yes(e, "compressed", &has) ||
-	    cl == t)) {
-		v->status_change.n = 1;
-		v->status_change.v = &sc[1];
-	}
 	/* max-alarm-status-changes. */
 	if (max >= 0 && v->status_change.n > (size_t)max) {
 		v->status_change.v += v->status_change.n - (size_t)max;
@@ -227,8 +252,9 @@ shelved(cbl_yarena *a, const yalarm *v, const char *shelf,
 
 /*
  * The faults' JSON (faults_json(): the faults, the shelves' count, the
- * history's length) as ietf-alarms' state: those of no shelf the alarm
- * list and the summary, the others the shelved alarms.
+ * history's length) as ietf-alarms' state: the faults of one object and
+ * kind one alarm; those of no shelf the alarm list and the summary, the
+ * others the shelved alarms.
  */
 int
 yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
@@ -243,12 +269,14 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 	ucl_object_iter_t				 it;
 	ucl_object_t					*top;
 	yalarm						*v, x;
-	const char					*type, *last, *slast, *sh;
+	struct rec					*recs, *r;
+	const char					*last, *slast, *sh;
 	int64_t						 t, cl, lastt, slastt, max;
 	int64_t						 nsh;
-	size_t						 n, ns, i;
+	size_t						 n, ns, i, nr;
+	int						*first, *tail;
 	bool						 has;
-	int						 sev, error;
+	int						 sev, error, g, ng;
 
 	memset(out, 0, sizeof(*out));
 	if ((top = yj_parse(json)) == NULL)
@@ -266,7 +294,11 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 	    (sv = cbl_yarena_alloc(a, 5 * sizeof(*sv))) == NULL ||
 	    (v = cbl_yarena_alloc(a, (yj_count(arr) + 1) * sizeof(*v))) ==
 	    NULL || (sv2 = cbl_yarena_alloc(a, (yj_count(arr) + 1) *
-	    sizeof(*sv2))) == NULL)
+	    sizeof(*sv2))) == NULL || (recs = cbl_yarena_alloc(a,
+	    (yj_count(arr) + 1) * sizeof(*recs))) == NULL || (first =
+	    cbl_yarena_alloc(a, (yj_count(arr) + 1) * sizeof(*first))) ==
+	    NULL || (tail = cbl_yarena_alloc(a, (yj_count(arr) + 1) *
+	    sizeof(*tail))) == NULL)
 		goto out;
 	if ((error = inventory(a, al)) != 0)
 		goto out;
@@ -277,36 +309,68 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 		sv[i].has_total = sv[i].has_not_cleared = sv[i].has_cleared =
 		    true;
 	}
+	/* The faults, the oldest first, each with the next of its alarm's
+	 * (its object and kind): an alarm's first and last by first[] and
+	 * tail[], in the order each alarm was first raised. */
+	nr = 0;
+	ng = 0;
+	YJ_EACH(arr, it, e) {
+		if (nr == yj_count(arr))
+			break;
+		r = &recs[nr];
+		memset(r, 0, sizeof(*r));
+		if ((r->type = yj_str(a, e, "type")) == NULL ||
+		    (r->object = yj_str(a, e, "object")) == NULL ||
+		    !yj_num(e, "t", &r->t))
+			continue;
+		if (yj_yes(e, "cleared", &has) && !yj_num(e, "cleared_at",
+		    &r->cl))
+			r->cl = r->t;
+		/* Its severity when raised: "was" keeps it once cleared. */
+		r->sev = severity(yj_str(a, e, "was"));
+		if ((r->text = yj_str(a, e, "description")) == NULL)
+			r->text = "";
+		r->shelf = yj_str(a, e, "shelf");
+		r->compressed = yj_yes(e, "compressed", &has);
+		r->next = -1;
+		for (g = 0; g < ng && (strcmp(recs[first[g]].type, r->type) !=
+		    0 || strcmp(recs[first[g]].object, r->object) != 0); g++)
+			;
+		if (g == ng) {
+			first[ng] = tail[ng] = (int)nr;
+			ng++;
+		} else {
+			recs[tail[g]].next = (int)nr;
+			tail[g] = (int)nr;
+		}
+		nr++;
+	}
 	n = ns = 0;
 	lastt = slastt = 0;
 	last = slast = NULL;
-	YJ_EACH(arr, it, e) {
-		if ((type = yj_str(a, e, "type")) == NULL ||
-		    !yj_num(e, "t", &t))
-			continue;
+	for (g = 0; g < ng; g++) {
+		/* As its last fault is; made when its first was raised. */
+		r = &recs[tail[g]];
+		t = r->t;
+		cl = r->cl;
+		sev = r->sev;
 		memset(&x, 0, sizeof(x));
 		x.resource.which = 2;	/* its string member */
-		x.resource.v.m2 = yj_str(a, e, "object");
-		x.alarm_type_id = ident_sid("arcana-alarms", type);
+		x.resource.v.m2 = r->object;
+		x.alarm_type_id = ident_sid("arcana-alarms", r->type);
 		x.alarm_type_qualifier = "";
-		x.time_created = x.last_raised = datetime(a, t);
+		x.time_created = datetime(a, recs[first[g]].t);
+		x.last_raised = datetime(a, t);
 		x.has_is_cleared = true;
-		x.is_cleared = yj_yes(e, "cleared", &has);
-		cl = 0;
-		if (x.is_cleared && yj_num(e, "cleared_at", &cl))
-			x.last_changed = datetime(a, cl);
-		else
-			x.last_changed = x.last_raised;
-		/* Its severity when raised: "was" keeps it once cleared. */
-		sev = severity(yj_str(a, e, "was"));
+		x.is_cleared = cl != 0;
+		x.last_changed = cl != 0 ? datetime(a, cl) : x.last_raised;
 		x.has_perceived_severity = true;
 		x.perceived_severity = sev;
-		x.alarm_text = yj_str(a, e, "description");
-		if (x.alarm_text == NULL)
-			x.alarm_text = "";
-		if ((error = history(a, e, &x, sev, t, cl, max)) != 0)
+		x.alarm_text = r->text;
+		if ((error = history(a, recs, first[g], &x, max)) != 0)
 			goto out;
-		if ((sh = yj_str(a, e, "shelf")) != NULL) {
+		/* A shelf is of an object and kind: every fault's the same. */
+		if ((sh = r->shelf) != NULL) {
 			if ((error = shelved(a, &x, sh, &sv2[ns])) != 0)
 				goto out;
 			ns++;
@@ -535,7 +599,11 @@ yalarms_control_from_json(const char *json, cbl_yarena *a,
 		if (n > 0 && (sv = cbl_yarena_alloc(a, n * sizeof(*sv))) == NULL)
 			goto out;
 		i = 0;
+		/* Only what yj_count() sized: an array's members (faults.c
+		 * keeps no other). */
 		YJ_EACH(ucl_object_lookup(s, "shelf"), it, o) {
+			if (i == n)
+				break;
 			sv[i].name = yj_str(a, o, "name");
 			sv[i].description = yj_str(a, o, "description");
 			r = ucl_object_lookup(o, "resource");
@@ -545,6 +613,8 @@ yalarms_control_from_json(const char *json, cbl_yarena *a,
 				goto out;
 			k = 0;
 			YJ_EACH(r, rit, t) {
+				if (k == yj_count(r))
+					break;
 				rv[k].which = 2;
 				rv[k].v.m2 = copy(a, ucl_object_tostring(t));
 				k++;
@@ -558,6 +628,8 @@ yalarms_control_from_json(const char *json, cbl_yarena *a,
 				goto out;
 			k = 0;
 			YJ_EACH(r, rit, t) {
+				if (k == yj_count(r))
+					break;
 				/* "module:name", a module's identity. */
 				if ((id = yj_str(a, t, "alarm-type-id")) == NULL ||
 				    (colon = strchr(id, ':')) == NULL ||

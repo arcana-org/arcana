@@ -133,6 +133,22 @@ SRCS.kmsg=	kmsg_test.c kmsg.c
 CFLAGS.kmsg_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 CFLAGS.kmsg.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 LDADD.kmsg+=	${CBLINK_LIBS} -ljail -lpthread
+# faults: faults.c and events.c alone, the files and the YANG side
+# stood in for: objects whole, the list full, the writer, the control's
+# types, an owner's faults held to what it watches, events checked.
+PROGS+=		faults
+SRCS.faults=	faults_test.c faults.c events.c
+CFLAGS.faults_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+CFLAGS.faults.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+CFLAGS.events.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.faults+=	${CBLINK_LIBS} ${UCL_LIBS} -lpthread
+# hist: history.c's looks over interfaces that come and go (its places
+# given back, its totals of every one).
+PROGS+=		hist
+SRCS.hist=	hist_test.c history.c
+CFLAGS.hist_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+CFLAGS.history.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.hist+=	${CBLINK_LIBS} -ldevstat -ljail -lpthread
 # notifrecv: a stand-in HTTPS-notif receiver, for the configured
 # subscriptions of agent_tls_test.sh.
 PROGS+=		notifrecv

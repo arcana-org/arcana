@@ -84,6 +84,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Faults held to what is watched, agent 0.280.0
+
+At its first start, agent 0.280.0 clears the open faults an agent
+before it left of what it no longer watches: a probe's target or link
+gone, a threshold taken away, a file system gone, a session BIRD no
+longer has; each with its line ("...: no longer measured"). Those of
+what it still watches stay open, and are cleared when their cause is,
+as ones it raised itself. A kept `alarm-control.json` whose shelves
+are not the model's arrays (a hand's edit) is refused with why, and
+the agent starts with no shelves; set them again. A samples file whose
+head is cut short is put aside as `.bad`, and sampling starts anew.
+
 ### The console's role, agent 0.279.0
 
 From agent 0.279.0 on, a peer over TLS is the console only when its

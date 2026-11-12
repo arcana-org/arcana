@@ -2394,6 +2394,38 @@ EOF
 	atf_check -o inline:'2\n' sh -c "grep -c '^set' out"
 }
 
+atf_test_case kmsg_tail
+kmsg_tail_head()
+{
+	atf_set "descr" "the end of the last read of the kernel's messages" \
+	    "found where it must be when the buffer only grew, a line said" \
+	    "again after it new; when the ring wrapped, at the last place no" \
+	    "later than that; nowhere, all new.  The crash faults an agent" \
+	    "before left open taken up, cleared an hour after their last"
+}
+kmsg_tail_body()
+{
+	local f="$(atf_get_srcdir)/kmsg"
+
+	# "|" a line's end.  Read up to "a|b|" (4): the kernel said "b"
+	# again, twice, after it: those are new.  The ring wrapped ("x|x|"
+	# of "x|x|a|b|" gone): "b|" where it is now.
+	cat > lines <<'EOF'
+find 4 grew b| a|b|b|
+find 4 grew b| a|b|b|b|
+find 8 wrapped b| a|b|c|d|
+find 6 wrapped zz| a|b|c|
+open 1000 host:bird
+open 5000 jail:web/nginx
+adopt
+sweep 4000
+sweep 8700
+EOF
+	atf_check -o save:out "$f" < lines
+	atf_check -o inline:'found 4\nfound 4\nfound 4\nfound none\nclear crash host:bird: bird ran an hour without crashing\nclear crash jail:web/nginx: nginx ran an hour without crashing\n' \
+	    cat out
+}
+
 atf_test_case alarm_shelving cleanup
 alarm_shelving_head()
 {
@@ -2413,10 +2445,13 @@ alarm_shelving_body()
 
 	now=$(date +%s)
 	# The day's faults as an agent before this one kept them: a
-	# tunnel down, a threshold crossed and cleared, BGP never up.
+	# tunnel down, a threshold crossed and cleared, BGP never up.  The
+	# tunnel's target is still probed, so its fault is kept open.
 	cat > sdwan-faults.json <<EOF
 [{"t":$((now - 300)),"type":"tunnel","was":"Major","object":"acme/a-b","by":"probe","description":"no answer from 192.0.2.1 after 3 probes","cleared":false},{"t":$((now - 200)),"type":"tca","was":"Minor","object":"acme/a-b:delay","by":"probe","description":"delay 120 ms, under 100 ms again","cleared":true,"cleared_at":$((now - 150))},{"t":$((now - 100)),"type":"bgp-neighbor","was":"Minor","object":"host:bird bgp_edge","by":"bird","description":"BGP bgp_edge to 198.51.100.7 is Active, never established","cleared":false}]
 EOF
+	AB='{"id":"acme/a-b","address":"127.0.0.1","kind":"stamp","interval":1000,"timeout":200,"down":3}'
+	echo "[$AB]" > sdwan-probes.json
 	# A STAMP port nothing answers on, for a fault raised while shelved.
 	P=$(jot -r 1 20000 59999)
 	DAEMON_ARGS="--stamp-port $P" start_daemon
@@ -2449,15 +2484,15 @@ EOF
 	    -o match:'"cleared":0,"not-cleared":1,"severity":"minor","total":1' \
 	    -o match:'"cleared":0,"not-cleared":0,"severity":"major","total":0' \
 	    cat a1.json
-	# A fault raised on a shelf: kept, shelved, not told.
+	# A fault raised on a shelf: kept, shelved, not told.  Its target
+	# stays, so its fault is open to the end.
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
-	    '[{"id":"acme/x","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":200,"down":3}]'
+	    "[$AB,"'{"id":"acme/x","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":200,"down":3}]'
 	wait_match 'fault tunnel \(Major\) acme/x: no answer from 127\.0\.0\.1 after 3 probes \(not told: shelved, or under the level\)' \
 	    cat daemon.out || atf_fail "$(cat daemon.out)"
 	atf_check -o match:'"resource":"acme/x","shelf-name":"tunnels"' \
 	    "$JGC" -c "$SOCK" get alarms
 	atf_check -o not-match:'"object":"acme/x"' "$JGC" -c "$SOCK" events
-	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
 	# A resource that is no regular expression: refused, running kept.
 	atf_check -s exit:1 -e match:"'\(' is not a regular expression" \
 	    -o ignore "$JGC" -c "$SOCK" set \
@@ -2504,6 +2539,329 @@ EOF
 	atf_check -o match:'alarm-control\.json' sh -c 'ls'
 }
 alarm_shelving_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case faults_store
+faults_store_head()
+{
+	atf_set "descr" "faults.c and events.c alone (the faults harness):" \
+	    "an object longer than 127 characters set and cleared as it is;" \
+	    "the list full of open faults refuses a new one and says so" \
+	    "(alarm-list-full) until a clearing makes room, never dropping" \
+	    "an open one; the oldest cleared one makes room; a burst written" \
+	    "once, out of the set, and at the stop; a control of other types" \
+	    "than the model's refused, not written through; an owner's faults" \
+	    "held to what it watches; an event that is no JSON dropped"
+	atf_set "timeout" "60"
+}
+faults_store_body()
+{
+	local f="$(atf_get_srcdir)/faults"
+
+	atf_check -o save:obj.out "$f" object
+	atf_check -o match:'^set twice: 1 open, 0 cleared' \
+	    -o match:'^cleared: 0 open, 1 cleared' \
+	    -o match:'^set again: 1 open, 1 cleared' cat obj.out
+	atf_check -o save:full.out "$f" full
+	atf_check -o match:'^two more: 2048 open, 0 cleared, full 1$' \
+	    -o match:'^log faults: all 2047 places are open faults: tunnel of one-more refused' \
+	    -o match:'^log fault alarm-list-full faults cleared: room in the alarm list again: 2 refused while it was full$' \
+	    -o match:'^one more: 2047 open, 1 cleared, full 0$' \
+	    -o match:'^t1 open$' cat full.out
+	atf_check -o match:'^t0 open$' -o match:'^new open$' "$f" evict
+	atf_check -o match:'^written at once: 0$' \
+	    -o match:'^written within 3 s: yes, 1 time$' \
+	    -o match:'^at the stop: the clearing written$' "$f" burst
+	# The control's lists of other types than the model's: refused,
+	# not written through (the agent's start ran into them before).
+	printf '{"alarm-shelving":{"shelf":{"name":"x"}}}' > c1
+	printf '{"alarm-shelving":{"shelf":[{"name":"x","resource":"acme/.*"}]}}' > c2
+	printf '{"alarm-shelving":{"shelf":[{"name":"x","alarm-type":{"alarm-type-id":"arcana-alarms:tunnel"}}]}}' > c3
+	printf '{"alarm-shelving":{"shelf":[{"name":"x","resource":["acme/.*"],"alarm-type":[{"alarm-type-id":"arcana-alarms:tunnel","alarm-type-qualifier-match":""}]}]}}' > c4
+	atf_check -o inline:'refused: shelf is an array\n' "$f" control c1
+	atf_check -o inline:'refused: resource is an array\n' "$f" control c2
+	atf_check -o inline:'refused: alarm-type is an array\n' "$f" control c3
+	atf_check -o inline:'taken\n' "$f" control c4
+	atf_check -o save:rec.out "$f" reconcile
+	atf_check -o match:'^log fault tunnel b cleared: b: no longer measured$' \
+	    -o match:'^cleared 1$' -o match:'^a open, a/delay open$' \
+	    -o match:'^log fault tca a/delay cleared: under the threshold$' \
+	    -o match:'^after: 2 open, 2 cleared' -o not-match:'tunnel x cleared' \
+	    cat rec.out
+	atf_check -o save:ev.out "$f" events
+	atf_check -o match:'"data":\{"id":"a\\"b\\\\c\\td"\}' \
+	    -o match:'^log event probe dropped: not a JSON object: \{"id":"a"b"\}$' \
+	    -o match:'^log event probe dropped: not a JSON object: \{"id":"a"\}x$' \
+	    -o match:'"data":\{"n":1.5e3,' cat ev.out
+	atf_check -o inline:'2\n' sh -c 'grep -c "^told" ev.out'
+}
+
+atf_test_case faults_held cleanup
+faults_held_head()
+{
+	atf_set "descr" "each owner's faults held to what it watches" \
+	    "(fault_reconcile()): at the start, those an agent before left of" \
+	    "a target, a link, a file system gone cleared, those of what is" \
+	    "still watched taken up and cleared when their cause is (memory" \
+	    "under its limit, a crash an hour old); a target's taken away, a" \
+	    "threshold set back to none, clear theirs at once"
+	atf_set "timeout" "120"
+}
+faults_held_body()
+{
+	local now P
+
+	now=$(date +%s)
+	cat > sdwan-faults.json <<EOF
+[{"t":$((now - 600)),"type":"tunnel","was":"Major","object":"gone1","by":"probe","description":"no answer","cleared":false},{"t":$((now - 600)),"type":"tca","was":"Minor","object":"t1/delay","by":"probe","description":"delay over","cleared":false},{"t":$((now - 600)),"type":"interface","was":"Major","object":"a-gone","by":"link","description":"no link","cleared":false},{"t":$((now - 600)),"type":"memory","was":"Major","object":"mem","by":"sampler","description":"mem at 99%","cleared":false},{"t":$((now - 600)),"type":"storage","was":"Major","object":"/no/such/fs","by":"sampler","description":"full","cleared":false},{"t":$((now - 9000)),"changed":$((now - 7200)),"type":"crash","was":"Major","object":"host:sometool","by":"kernel","description":"sometool died of SIGSEGV","cleared":false},{"t":$((now - 600)),"type":"crash","was":"Major","object":"host:recent","by":"kernel","description":"recent died of SIGSEGV","cleared":false}]
+EOF
+	P=$(jot -r 1 20000 59999)
+	echo '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":100,"down":2,"eval":200}]' \
+	    > sdwan-probes.json
+	printf 'step=1\nkeep=20\nmem=100\nhold=0\n' > history.conf
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	# Of a target, a threshold, a link gone: cleared at once.
+	atf_check -o match:'"object":"gone1","by":"probe","description":"gone1: no longer measured","cleared":true' \
+	    -o match:'"object":"t1/delay","by":"probe","description":"t1/delay: no longer measured","cleared":true' \
+	    -o match:'"object":"a-gone","by":"link","description":"a-gone: watched no more","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The memory taken up, under its limit: cleared after the hold.
+	wait_match '"object":"mem","by":"sampler","description":"mem at [0-9]+%, under 100% again","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "$("$JGC" -c "$SOCK" sdwan)"
+	# A file system gone: at the first look at the storage.
+	wait_match '"object":"/no/such/fs","by":"sampler","description":"/no/such/fs: under its limit, or gone","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "the storage fault stayed"
+	# A crash two hours old cleared; one ten minutes old not yet.
+	wait_match '"object":"host:sometool","by":"kernel","description":"sometool ran an hour without crashing","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "the crash fault stayed"
+	atf_check -o match:'"object":"host:recent","by":"kernel","description":"recent died of SIGSEGV","cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan
+	# A threshold crossed (every probe lost), then taken away: its
+	# alert cleared at once.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":100,"down":2,"eval":200,"tca":{"loss":0.5}}]'
+	wait_match '"type":"tca","severity":"Minor","was":"Minor","object":"t1/loss","by":"probe",[^}]*"cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "no threshold alert"
+	wait_match '"type":"tunnel","severity":"Major","was":"Major","object":"t1","by":"probe",[^}]*"cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "no tunnel fault"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":100,"down":2,"eval":200}]'
+	atf_check -o match:'"object":"t1/loss","by":"probe","description":"t1/loss: no longer measured","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The target taken away: its tunnel's fault cleared.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+	atf_check -o match:'"object":"t1","by":"probe","description":"t1: no longer measured","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o not-match:'"by":"probe","description":"[^"]*","cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan
+}
+faults_held_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case alarms_by_key cleanup
+alarms_by_key_head()
+{
+	atf_set "descr" "RFC 8632's alarm list keyed by resource and alarm" \
+	    "type: a fault raised, cleared and raised again is one alarm" \
+	    "with its three status changes, counted once in the summary"
+}
+alarms_by_key_body()
+{
+	local now
+
+	now=$(date +%s)
+	cat > sdwan-faults.json <<EOF
+[{"t":$((now - 300)),"type":"bfd","was":"Major","object":"t9","by":"bfd","description":"BFD to 10.0.0.9 is up","cleared":true,"cleared_at":$((now - 200))},{"t":$((now - 100)),"type":"bfd","was":"Major","object":"t9","by":"bfd","description":"BFD to 10.0.0.9 is down","cleared":false}]
+EOF
+	start_daemon
+	atf_check -o save:al.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"number-of-alarms":1' \
+	    -o match:'"is-cleared":false' \
+	    -o match:'"cleared":0,"not-cleared":1,"severity":"major","total":1' \
+	    -o match:'"resource":"t9","status-change":\[\{[^]]*"perceived-severity":"major"[^]]*\},\{[^]]*"perceived-severity":"cleared"[^]]*\},\{[^]]*"perceived-severity":"major"[^]]*\}\]' \
+	    cat al.json
+}
+alarms_by_key_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case alarm_control_bad cleanup
+alarm_control_bad_head()
+{
+	atf_set "descr" "a kept alarms' control whose lists are not of the" \
+	    "model's types (a hand's edit) is refused with why: the agent" \
+	    "starts, with no shelves"
+}
+alarm_control_bad_body()
+{
+	printf '{"alarm-shelving":{"shelf":{"name":"x","resource":"y"}}}' \
+	    > alarm-control.json
+	start_daemon
+	atf_check -o match:'alarm-control\.json: shelf is an array: no shelves' \
+	    cat daemon.out
+	atf_check -o match:'"number-of-alarms":0' "$JGC" -c "$SOCK" get alarms
+	atf_check -o not-match:'"shelf"' "$JGC" -c "$SOCK" get -d running alarms
+}
+alarm_control_bad_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case history_samples_bad cleanup
+history_samples_bad_head()
+{
+	atf_set "descr" "a samples file cut short (its head a number alone)" \
+	    "is put aside as .bad and sampling starts anew; a row not whole" \
+	    "is left out"
+}
+history_samples_bad_body()
+{
+	local now
+
+	printf '# arcana-agent samples: step keep nets | disks | jails | relays\n5\n' \
+	    > history.conf.samples
+	printf 'step=1\nkeep=20\n' > history.conf
+	start_daemon
+	test -f history.conf.samples.bad || atf_fail "not put aside"
+	atf_check -o match:'history.conf.samples: its head has no step and number kept: put aside as' \
+	    cat daemon.out
+	wait_match '"samples":\[\[' "$JGC" -c "$SOCK" history ||
+	    atf_fail "no sampling"
+	stop_daemon
+	# A row cut short at its end: the others read.
+	now=$(date +%s)
+	{
+		printf '# arcana-agent samples: step keep nets | disks | jails | relays\n'
+		printf '1 20 | | |\n'
+		printf '%d 1 0.5 100 0 0 0 0 0\n' $((now - 3))
+		printf '%d 2 0.5 100 0 0 0\n' $((now - 2))
+	} > history.conf.samples
+	start_daemon
+	atf_check -o match:'history: 1 samples read from .*history.conf.samples, rows not whole left out' \
+	    cat daemon.out
+	test -f history.conf.samples.bad && rm history.conf.samples.bad
+	true
+}
+history_samples_bad_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case history_slots
+history_slots_head()
+{
+	atf_set "descr" "the sampler's places for interfaces (16) given back" \
+	    "by those away 12 looks, so an epair made after 16 others came" \
+	    "and went has its columns; the totals in and out of every" \
+	    "interface, one with no place too (the hist harness)"
+}
+history_slots_body()
+{
+	local f="$(atf_get_srcdir)/hist"
+
+	# Forty looks, an epair each, there for two: the last ones have
+	# their places, the first ones' given back.
+	atf_check -o save:out "$f" 40 "$(pwd)/h.conf"
+	atf_check -o match:'^nets em0 .* epair40a( |$)' \
+	    -o not-match:' epair2a( |$)' cat out
+	atf_check -o match:'^rx [1-9][0-9.]* tx [1-9][0-9.]*$' cat out
+	# Twenty at once, each moving as much: 15 have places beside em0,
+	# the totals are all twenty's, a third more than the placed ones'.
+	atf_check -o save:wide "$f" 5 "$(pwd)/hw.conf" wide
+	atf_check -o not-match:' epair20a( |$)' cat wide
+	rx=$(sed -n 's/^rx \([0-9]*\).*/\1/p' wide)
+	placed=$(sed -n 's/^placed rx \([0-9]*\)$/\1/p' wide)
+	[ "$placed" -gt 0 ] && [ $((rx * 5)) -gt $((placed * 6)) ] ||
+	    atf_fail "the totals $rx, the placed ones' $placed: $(cat wide)"
+}
+
+atf_test_case probe_echo_ids cleanup
+probe_echo_ids_head()
+{
+	atf_set "descr" "every target's echo id its own, the monitors' and" \
+	    "the SD-WAN's read at the same start among them"
+}
+probe_echo_ids_body()
+{
+	echo '[{"id":"m1","address":"127.0.0.1","kind":"icmp"},{"id":"m2","address":"127.0.0.1","kind":"icmp"}]' \
+	    > monitors.json
+	echo '[{"id":"s1","address":"127.0.0.1","kind":"icmp"},{"id":"s2","address":"127.0.0.1","kind":"icmp"}]' \
+	    > sdwan-probes.json
+	DAEMON_ARGS="-d" start_daemon
+	# Each one's id, as the agent says it when it makes the target.
+	grep -o ': echo id [0-9]*' daemon.out > ids
+	atf_check -o inline:'4\n' sh -c 'wc -l < ids | tr -d " "'
+	atf_check -o inline:'4\n' sh -c 'sort -u ids | wc -l | tr -d " "'
+}
+probe_echo_ids_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case probe_open_backoff cleanup
+probe_open_backoff_head()
+{
+	atf_set "descr" "a jail's target whose socket cannot be made is" \
+	    "tried again a second on, the wait doubling, not at every pass" \
+	    "of the prober"
+}
+probe_open_backoff_body()
+{
+	R=$(pwd)/jroot
+	mkdir -p "$R"
+	echo "gw 4 new $R" > jails
+	start_daemon
+	: > helper.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw","targets":[{"id":"t1","address":"100.64.0.1"}]}'
+	sleep 4
+	atf_check -o match:'"id":"t1","address":"100.64.0.1","family":"inet","jail":"gw","fib":0,"state":"error","error":"no socket in jail gw' \
+	    "$JGC" -c "$SOCK" sdwan
+	# At 0, 1 and 3 s: three, a fourth on a slow host; never one a
+	# pass (twenty in 4 s).
+	n=$(grep -c icmp-socket helper.log)
+	[ "$n" -ge 2 ] && [ "$n" -le 4 ] ||
+	    atf_fail "the helper asked $n times in 4 s"
+}
+probe_open_backoff_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case pm_clock_step cleanup
+pm_clock_step_head()
+{
+	atf_set "descr" "a measurement interval ends by the monotonic clock:" \
+	    "the wall clock stepped back an hour, intervals still end" \
+	    "each length"
+	atf_set "timeout" "60"
+}
+pm_clock_step_body()
+{
+	local P a b
+
+	P=$(jot -r 1 20000 59999)
+	echo 0 > step
+	echo '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":100,"timeout":100,"measurement_interval":1}]' \
+	    > sdwan-probes.json
+	# time(3) stepped by ./step's seconds (libfakejail).
+	export FAKETIME="$(pwd)/step"
+	DAEMON_ARGS="--stamp-port $P" start_daemon
+	sleep 3
+	a=$("$JGC" -c "$SOCK" sdwan | grep -o '"complete":true' | wc -l)
+	[ "$a" -ge 1 ] || atf_fail "no interval ended"
+	echo -3600 > step
+	sleep 4
+	b=$("$JGC" -c "$SOCK" sdwan | grep -o '"complete":true' | wc -l)
+	[ "$b" -ge $((a + 2)) ] ||
+	    atf_fail "the wall clock stepped back: $a intervals, then $b"
+}
+pm_clock_step_cleanup()
 {
 	stop_daemon
 }
@@ -8801,7 +9159,8 @@ sdwan_bird_body()
 	# A fault of the day, open; cleared when BFD is up again.
 	atf_check -o match:'"faults":\[[^]]*\{"t":[0-9]+,"type":"bfd","severity":"Major","was":"Major","object":"t1","by":"bfd","description":"BFD to 100.64.0.1 on gre100 is down","cleared":false\}' \
 	    "$JGC" -c "$SOCK" sdwan
-	test -f sdwan-faults.json || atf_fail "the faults are not kept"
+	# Written by the faults' writer, the changes of a second together.
+	wait_match . ls sdwan-faults.json || atf_fail "the faults are not kept"
 	rm -f bfd.down
 	for i in $(seq 1 30); do
 		"$JGC" -c "$SOCK" sdwan | grep -q '"chosen":0' && break
@@ -16509,7 +16868,17 @@ atf_init_test_cases()
 	atf_add_test_case host_watch
 	atf_add_test_case fw_walk
 	atf_add_test_case crash_fault
+	atf_add_test_case kmsg_tail
 	atf_add_test_case alarm_shelving
+	atf_add_test_case faults_store
+	atf_add_test_case faults_held
+	atf_add_test_case alarms_by_key
+	atf_add_test_case alarm_control_bad
+	atf_add_test_case history_samples_bad
+	atf_add_test_case history_slots
+	atf_add_test_case probe_echo_ids
+	atf_add_test_case probe_open_backoff
+	atf_add_test_case pm_clock_step
 	atf_add_test_case firewall_aliases
 	atf_add_test_case firewall_long
 	atf_add_test_case config_bundle

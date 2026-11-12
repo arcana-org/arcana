@@ -760,6 +760,42 @@ crash_event_cleanup()
 	true
 }
 
+atf_test_case probe_other_fib cleanup
+probe_other_fib_head()
+{
+	atf_set "descr" "a target in FIB 1 whose replies come in on lo0's FIB 0" \
+	    "(a tunnelfib's case) heard by the FIB's listener, and still" \
+	    "after the agent's restart"
+	atf_set "require.user" "root"
+	atf_set "is.exclusive" "true"
+}
+probe_other_fib_body()
+{
+	[ "$(sysctl -n net.fibs)" -ge 2 ] || atf_skip "net.fibs is 1"
+	setfib 1 route -n get 127.0.0.1 >/dev/null 2>&1 ||
+	    atf_skip "FIB 1 has no way to 127.0.0.1"
+	echo '[{"id":"lo1","address":"127.0.0.1","fib":1,"kind":"icmp","interval":50,"eval":300,"down":3,"up":2,"timeout":300}]' \
+	    > sdwan-probes.json
+	start_daemon
+	sleep 2
+	atf_check -o match:'"id":"lo1","address":"127.0.0.1","family":"inet","fib":1,"state":"up"' \
+	    "$JGC" -c "$SOCK" sdwan
+	# Started again from its file: its listeners opened before the
+	# prober's thread, kept.
+	kill "$(cat daemon.pid)"
+	while kill -0 "$(cat daemon.pid)" 2>/dev/null; do sleep 0.1; done
+	start_daemon
+	sleep 3
+	atf_check -o match:'"id":"lo1",[^}]*"state":"up"' \
+	    -o not-match:'"type":"tunnel"[^}]*"object":"lo1"[^}]*"cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan
+}
+probe_other_fib_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	true
+}
+
 atf_test_case sdwan_probe cleanup
 sdwan_probe_head()
 {
@@ -4875,6 +4911,7 @@ atf_init_test_cases()
 	atf_add_test_case fwmatch_kernel
 	atf_add_test_case path_check
 	atf_add_test_case crash_event
+	atf_add_test_case probe_other_fib
 	atf_add_test_case sdwan_probe
 	atf_add_test_case sdwan_control
 	atf_add_test_case sdwan_jail_edge

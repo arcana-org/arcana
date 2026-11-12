@@ -25,11 +25,18 @@
  * dies three times a night is what a page of faults and a mail are
  * for: the fault says the signal by name, how many times in the day,
  * and the kernel's reason; said anew at each crash, and cleared after
- * an hour without one.
+ * an hour without one.  The crash faults an agent before this one left
+ * open are taken up at the start (faults_open()), each cleared an hour
+ * after its last crash.
  *
- * A line not finished yet is left for the next read.  When the end of
- * the last read is no longer there (more was written in a second than
- * the ring holds, or it was cleared), all of it is taken as new.
+ * A line not finished yet is left for the next read.  The end of the
+ * last read is looked for where it must be if the buffer only grew (it
+ * begins as it did); when it did not, or that is not there (the ring
+ * wrapped, its oldest bytes gone), at the
+ * last place it is found at no later than that, never in what is new
+ * (a line the kernel says again is not taken as read).  When it is
+ * nowhere (more was written in a second than the ring holds, or it was
+ * cleared), all of it is taken as new.
  */
 
 #include <sys/param.h>
@@ -60,7 +67,7 @@
 
 /* A program's crashes of the day, by what the fault is of. */
 struct crashes {
-	char	object[128];		/* host:bird, jail:web/nginx */
+	char	object[FAULT_OBJECT_MAX];	/* host:bird, jail:web/nginx */
 	char	comm[MAXCOMLEN + 2];
 	time_t	times[CRASH_TIMES];	/* oldest first */
 	int	ntimes;
@@ -79,6 +86,9 @@ static size_t		km_first, km_count;
 static uint64_t		km_last;	/* the number of the newest */
 static char		km_tail[KMSG_TAIL];
 static size_t		km_taillen;
+static size_t		km_end;		/* where the last read ended */
+static char		km_head[KMSG_TAIL];	/* and how it began */
+static size_t		km_headlen;
 static bool		km_running;
 static bool		km_readable;	/* the last read was let */
 static struct crashes	cr[CRASH_MAX];	/* under km_lock */
@@ -114,18 +124,29 @@ msgbuf(size_t *lenp)
 	return (buf);
 }
 
-/* The last place the old tail is found at in buf, or NULL. */
-static const char *
-find_tail(const char *buf, size_t len)
+/*
+ * Where in buf (len bytes) the last read's tail (taillen bytes) ends, the
+ * last read having ended at was: just there when the buffer only grew
+ * (grew: it begins as it did); when it wrapped (its oldest bytes gone)
+ * earlier, never later, so the last place it is found at that ends no
+ * later than was.  NULL when it is nowhere.
+ */
+const char *
+kmsg_find(const char *buf, size_t len, const char *tail, size_t taillen,
+    size_t was, bool grew)
 {
-	const char	*p, *found;
+	const char	*p, *found, *lim;
 
-	if (km_taillen == 0 || km_taillen > len)
+	if (taillen == 0 || taillen > len)
 		return (NULL);
+	if (grew && was >= taillen && was <= len && memcmp(buf + was - taillen,
+	    tail, taillen) == 0)
+		return (buf + was);
+	lim = buf + (was < len ? was : len);
 	found = NULL;
-	for (p = buf; (p = memmem(p, (size_t)(buf + len - p), km_tail,
-	    km_taillen)) != NULL; p++)
-		found = p;
+	for (p = buf; p + taillen <= lim && (p = memmem(p, (size_t)(lim - p),
+	    tail, taillen)) != NULL; p++)
+		found = p + taillen;
 	return (found);
 }
 
@@ -196,8 +217,8 @@ kmsg_crash_line(const char *text, time_t now)
 {
 	struct crashes	*c;
 	const char	*p, *reason;
-	char		 comm[MAXCOMLEN + 2], *jname, object[128], sig_s[24],
-			 reason_s[160], descr[200];
+	char		 comm[MAXCOMLEN + 2], *jname, object[FAULT_OBJECT_MAX],
+			 sig_s[24], reason_s[160], descr[200];
 	int		 pid, jid, uid, sig, n;
 	bool		 core;
 
@@ -273,12 +294,53 @@ kmsg_crash_sweep(time_t now)
 	}
 }
 
+/* A crash fault an agent before this one left open, taken up: its
+ * program's record, its last crash when the fault was last said. */
+static void
+crash_adopt(const char *object, time_t changed, void *arg __unused)
+{
+	struct crashes	*c;
+	const char	*comm;
+	int		 i;
+
+	pthread_mutex_lock(&km_lock);
+	for (i = 0; i < ncr && strcmp(cr[i].object, object) != 0; i++)
+		;
+	if (i < ncr || ncr == CRASH_MAX || strlen(object) >=
+	    sizeof(cr[0].object)) {
+		pthread_mutex_unlock(&km_lock);
+		return;
+	}
+	c = &cr[ncr++];
+	memset(c, 0, sizeof(*c));
+	snprintf(c->object, sizeof(c->object), "%s", object);
+	/* host:bird, jail:web/nginx: the program's name last. */
+	if ((comm = strrchr(object, '/')) == NULL)
+		comm = strchr(object, ':');
+	snprintf(c->comm, sizeof(c->comm), "%s", comm != NULL ? comm + 1 :
+	    object);
+	c->times[0] = changed;
+	c->ntimes = 1;
+	/* How many in the day the fault said, not kept: "at least". */
+	c->beyond = true;
+	pthread_mutex_unlock(&km_lock);
+}
+
+/* The crash faults left open taken up (at the start), to be cleared an
+ * hour after their last crash. */
+void
+kmsg_crash_adopt(void)
+{
+
+	(void)faults_open("kernel", "crash", crash_adopt, NULL);
+}
+
 /* One line more: kept, numbered, and an event if events are wanted. */
 static void
 add_line(const char *s, size_t n, time_t t, int *events, int *more)
 {
 	struct kline	*k;
-	char		*text, *json, *q;
+	char		*text, *json;
 	size_t		 i;
 
 	if (n > KMSG_LINE)
@@ -310,19 +372,8 @@ add_line(const char *s, size_t n, time_t t, int *events, int *more)
 	/* The text as a JSON string. */
 	if ((json = malloc(strlen(text) * 6 + 1)) == NULL)
 		return;
-	for (q = json, i = 0; text[i] != '\0'; i++) {
-		if (text[i] == '"' || text[i] == '\\') {
-			*q++ = '\\';
-			*q++ = text[i];
-		} else if (text[i] == '\t') {
-			*q++ = '\\';
-			*q++ = 't';
-		} else
-			*q++ = text[i];
-	}
-	*q = '\0';
 	event_add("kmsg", "{\"seq\":%ju,\"text\":\"%s\"}", (uintmax_t)k->n,
-	    json);
+	    json_quote(text, json, strlen(text) * 6 + 1));
 	free(json);
 }
 
@@ -339,6 +390,7 @@ kmsg_read(bool first)
 	size_t		 len, keep;
 	time_t		 now;
 	int		 events, more;
+	bool		 grew;
 
 	if ((buf = msgbuf(&len)) == NULL) {
 		/* Not root, and not let read (unprivileged_read_msgbuf). */
@@ -353,8 +405,13 @@ kmsg_read(bool first)
 		end--;
 	pthread_mutex_lock(&km_lock);
 	km_readable = true;
-	from = find_tail(buf, (size_t)(end - buf));
-	from = from != NULL ? from + km_taillen : buf;
+	/* Only grown: it begins as it did. */
+	grew = km_headlen > 0 && (size_t)(end - buf) >= km_headlen &&
+	    memcmp(buf, km_head, km_headlen) == 0;
+	from = kmsg_find(buf, (size_t)(end - buf), km_tail, km_taillen, km_end,
+	    grew);
+	if (from == NULL)
+		from = buf;
 	now = time(NULL);
 	events = more = 0;
 	for (p = from; p < end; p = e + 1) {
@@ -374,6 +431,10 @@ kmsg_read(bool first)
 	if (keep > 0 || first) {
 		memcpy(km_tail, end - keep, keep);
 		km_taillen = keep;
+		km_end = (size_t)(end - buf);
+		/* And its beginning, to tell a buffer that only grew. */
+		memcpy(km_head, buf, keep);
+		km_headlen = keep;
 	}
 	pthread_mutex_unlock(&km_lock);
 	free(buf);
@@ -399,6 +460,7 @@ kmsg_start(void)
 	pthread_t	tid;
 	int		error;
 
+	kmsg_crash_adopt();
 	kmsg_read(true);
 	if ((error = pthread_create(&tid, NULL, reader, NULL)) != 0) {
 		logmsg(LOG_WARNING, "the kernel's messages are not followed: "

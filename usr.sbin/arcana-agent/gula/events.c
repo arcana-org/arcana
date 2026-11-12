@@ -12,6 +12,11 @@
  * who asks again with the number of the last one it has misses none,
  * unless more happened in between than are kept, which the reply's
  * "first" tells.
+ *
+ * What one is about is made by its maker as JSON text, each string of
+ * the outside in it by json_quote(), and checked here before it is
+ * kept: one that is no JSON object (RFC 8259, UTF-8) is dropped and
+ * said, so that it never spoils the list it would be read in.
  */
 
 #include <sys/types.h>
@@ -21,12 +26,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <time.h>
 
 #include "agent.h"
 
 #define	EVENTS_KEPT	512
-#define	EVENT_MAX	1024		/* bytes of what one is about */
+#define	EVENT_MAX	4096		/* bytes of what one is about */
+#define	JSON_DEPTH	32
 
 struct event {
 	uint64_t	 n;
@@ -92,6 +99,209 @@ name_ok(const char *s)
 	    "._-")] == '\0');
 }
 
+/* The length of the UTF-8 character s begins with, whole and the
+ * shortest form; 0 when it is none. */
+static size_t
+utf8_len(const unsigned char *s)
+{
+	size_t	n, i;
+	unsigned int	c;
+
+	if (s[0] < 0x80)
+		return (1);
+	if (s[0] >= 0xc2 && s[0] <= 0xdf)
+		n = 2;
+	else if (s[0] >= 0xe0 && s[0] <= 0xef)
+		n = 3;
+	else if (s[0] >= 0xf0 && s[0] <= 0xf4)
+		n = 4;
+	else
+		return (0);
+	for (i = 1; i < n; i++)
+		if ((s[i] & 0xc0) != 0x80)
+			return (0);
+	c = n == 3 ? (s[0] & 0x0fU) << 12 | (s[1] & 0x3fU) << 6 :
+	    n == 4 ? (s[0] & 0x07U) << 18 | (s[1] & 0x3fU) << 12 : 0x80;
+	/* Overlong, a surrogate, beyond U+10FFFF. */
+	if ((n == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) ||
+	    (n == 4 && (c < 0x10000 || c > 0x10ffff)))
+		return (0);
+	return (n);
+}
+
+/*
+ * s as the inside of a JSON string into buf, len bytes: '"' and '\'
+ * escaped, a control character as \u00XX, a byte that is no UTF-8 '?';
+ * cut short where the next would not fit, never inside one.  buf.
+ */
+const char *
+json_quote(const char *s, char *buf, size_t len)
+{
+	const unsigned char	*p;
+	size_t			 n, k;
+
+	if (len == 0)
+		return (buf);
+	for (p = (const unsigned char *)(s != NULL ? s : ""), n = 0; *p !=
+	    '\0'; p += k) {
+		if (*p == '"' || *p == '\\') {
+			if (n + 3 > len)
+				break;
+			buf[n++] = '\\';
+			buf[n++] = (char)*p;
+			k = 1;
+		} else if (*p < 0x20) {
+			if (n + 7 > len)
+				break;
+			if (*p == '\t' || *p == '\n' || *p == '\r') {
+				buf[n++] = '\\';
+				buf[n++] = *p == '\t' ? 't' : *p == '\n' ? 'n' :
+				    'r';
+			} else
+				n += (size_t)snprintf(buf + n, len - n,
+				    "\\u%04x", *p);
+			k = 1;
+		} else if ((k = utf8_len(p)) == 0) {
+			if (n + 2 > len)
+				break;
+			buf[n++] = '?';
+			k = 1;
+		} else {
+			if (n + k + 1 > len)
+				break;
+			memcpy(buf + n, p, k);
+			n += k;
+		}
+	}
+	buf[n] = '\0';
+	return (buf);
+}
+
+/* JSON's whitespace skipped. */
+static const char *
+ws(const char *s)
+{
+
+	while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
+		s++;
+	return (s);
+}
+
+static const char	*json_value(const char *, int);
+
+/* A JSON string at s ('"'): past it, or NULL. */
+static const char *
+json_string(const char *s)
+{
+	size_t	k;
+	int	i;
+
+	for (s++; *s != '"'; s += k) {
+		if ((unsigned char)*s < 0x20)
+			return (NULL);
+		k = 1;
+		if (*s == '\\') {
+			if (s[1] == 'u') {
+				for (i = 2; i < 6; i++)
+					if (strchr("0123456789abcdefABCDEF",
+					    s[i]) == NULL || s[i] == '\0')
+						return (NULL);
+				k = 6;
+			} else if (s[1] != '\0' && strchr("\"\\/bfnrt", s[1]) !=
+			    NULL)
+				k = 2;
+			else
+				return (NULL);
+		} else if ((k = utf8_len((const unsigned char *)s)) == 0)
+			return (NULL);
+	}
+	return (s + 1);
+}
+
+/* A JSON number at s: past it, or NULL. */
+static const char *
+json_number(const char *s)
+{
+
+	if (*s == '-')
+		s++;
+	if (*s == '0')
+		s++;
+	else if (*s >= '1' && *s <= '9')
+		while (*s >= '0' && *s <= '9')
+			s++;
+	else
+		return (NULL);
+	if (*s == '.') {
+		if (*++s < '0' || *s > '9')
+			return (NULL);
+		while (*s >= '0' && *s <= '9')
+			s++;
+	}
+	if (*s == 'e' || *s == 'E') {
+		if (*++s == '+' || *s == '-')
+			s++;
+		if (*s < '0' || *s > '9')
+			return (NULL);
+		while (*s >= '0' && *s <= '9')
+			s++;
+	}
+	return (s);
+}
+
+/* A JSON value at s (RFC 8259), depth deep at most: past it, or NULL. */
+static const char *
+json_value(const char *s, int depth)
+{
+	char	end;
+
+	s = ws(s);
+	switch (*s) {
+	case '{':
+	case '[':
+		if (depth == 0)
+			return (NULL);
+		end = *s == '{' ? '}' : ']';
+		if (*(s = ws(s + 1)) == end)
+			return (s + 1);
+		for (;;) {
+			if (end == '}') {
+				if (*s != '"' || (s = json_string(s)) == NULL ||
+				    *(s = ws(s)) != ':')
+					return (NULL);
+				s++;
+			}
+			if ((s = json_value(s, depth - 1)) == NULL)
+				return (NULL);
+			if (*(s = ws(s)) == end)
+				return (s + 1);
+			if (*s != ',')
+				return (NULL);
+			s = ws(s + 1);
+		}
+	case '"':
+		return (json_string(s));
+	case 't':
+		return (strncmp(s, "true", 4) == 0 ? s + 4 : NULL);
+	case 'f':
+		return (strncmp(s, "false", 5) == 0 ? s + 5 : NULL);
+	case 'n':
+		return (strncmp(s, "null", 4) == 0 ? s + 4 : NULL);
+	default:
+		return (json_number(s));
+	}
+}
+
+/* s is one JSON object, and nothing after it. */
+static bool
+json_object(const char *s)
+{
+
+	s = ws(s);
+	return (*s == '{' && (s = json_value(s, JSON_DEPTH)) != NULL &&
+	    *ws(s) == '\0');
+}
+
 static void
 event_vadd(const char *jail, const char *kind, const char *fmt, va_list ap)
 {
@@ -103,8 +313,17 @@ event_vadd(const char *jail, const char *kind, const char *fmt, va_list ap)
 	if (n == -1)
 		return;
 	jname = NULL;
-	if (n > EVENT_MAX || data[0] != '{' || (jail != NULL &&
-	    (!name_ok(jail) || (jname = strdup(jail)) == NULL))) {
+	/* Not JSON, or too long: dropped, and said, never kept to spoil
+	 * the list. */
+	if (n > EVENT_MAX || !json_object(data)) {
+		logmsg(LOG_WARNING, "event %s dropped: %s: %.200s", kind, n >
+		    EVENT_MAX ? "longer than an event may be" : "not a JSON "
+		    "object", data);
+		free(data);
+		return;
+	}
+	if (jail != NULL && (!name_ok(jail) || (jname = strdup(jail)) ==
+	    NULL)) {
 		free(data);
 		return;
 	}

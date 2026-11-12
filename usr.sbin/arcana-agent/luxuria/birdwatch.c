@@ -16,10 +16,20 @@
  * - bfd, a BFD session that was up and is down: Major;
  * - bird-instance, a BIRD that answered and answers no more: Critical.
  *
- * Each is cleared when it is well again.  Faults are events too, and so
- * reach the console's mail, its workflows' triggers and its faults.
- * What is read is what do_bird() reads for the console's tables; it is
- * read every --bird-watch seconds, 15 unless said, never with 0.
+ * Each is cleared when it is well again, and when what it is of is gone:
+ * a BGP session BIRD no longer lists, a BIRD no longer watched (its jail
+ * stopped, the plugin taken away), and with it the sessions it had (an
+ * OSPF neighbour or a BFD session gone from a BIRD still watched is its
+ * fault, open until it is back).  After each round what is watched
+ * is told to faults.c (fault_reconcile(), the objects of "host:" and
+ * "jail:", SD-WAN's instances' being sdbird.c's), which clears every
+ * other fault of the watcher's, one an agent before left open among
+ * them; a BIRD's that answers again is cleared then too.  Faults are
+ * events too, and so reach the console's mail, its workflows' triggers
+ * and its faults.  What is read is what do_bird() reads for the
+ * console's tables; it is read every --bird-watch seconds, 15 unless
+ * said, never with 0.  At most SEEN_MAX sessions are followed, the
+ * others said once.
  */
 
 #include <sys/param.h>
@@ -39,15 +49,18 @@
 
 enum { K_BIRD, K_BGP, K_OSPF, K_BFD };
 
-/* What was seen of a session: well once, and in the last round. */
+/* What was seen of a session: well once, and in the last round; one
+ * gone from the list while well (OSPF's, BFD's), its fault open. */
 static struct seen {
 	char	place[64];		/* the jail, "" the host */
 	int	kind;
 	char	key[200];		/* the fault's object */
 	bool	up;
 	bool	here;
+	bool	gone;
 } *seen;
 static int	nseen;
+static bool	full_said;
 
 static struct seen *
 seen_find(const char *place, int kind, const char *key)
@@ -58,12 +71,17 @@ seen_find(const char *place, int kind, const char *key)
 		if (seen[i].kind == kind && strcmp(seen[i].key, key) == 0 &&
 		    strcmp(seen[i].place, place) == 0)
 			return (&seen[i]);
-	if (nseen == SEEN_MAX)
+	if (nseen == SEEN_MAX) {
+		if (!full_said)
+			logmsg(LOG_WARNING, "BIRD's sessions: %d followed at "
+			    "most; %s and those after it not", SEEN_MAX, key);
+		full_said = true;
 		return (NULL);
+	}
+	memset(&seen[nseen], 0, sizeof(seen[0]));
 	snprintf(seen[nseen].place, sizeof(seen[0].place), "%s", place);
 	seen[nseen].kind = kind;
 	snprintf(seen[nseen].key, sizeof(seen[0].key), "%s", key);
-	seen[nseen].up = seen[nseen].here = false;
 	return (&seen[nseen++]);
 }
 
@@ -113,6 +131,7 @@ bgp(const char *place, const ucl_object_t *o)
 	object(obj, sizeof(obj), place, name, NULL);
 	if ((s = seen_find(place, K_BGP, obj)) == NULL)
 		return;
+	s->here = true;
 	st = str(o, "state");
 	/* Up, or turned off by hand: no fault of the session's. */
 	if (strcmp(st, "up") == 0 || strcmp(st, "down") == 0) {
@@ -145,6 +164,7 @@ ospf(const char *place, const ucl_object_t *o)
 	if ((s = seen_find(place, K_OSPF, obj)) == NULL)
 		return;
 	s->here = true;
+	s->gone = false;
 	st = str(o, "state");
 	if (strncmp(st, "Full", 4) == 0 || strncmp(st, "2-Way", 5) == 0) {
 		s->up = true;
@@ -169,6 +189,7 @@ bfd(const char *place, const ucl_object_t *o)
 	if ((s = seen_find(place, K_BFD, obj)) == NULL)
 		return;
 	s->here = true;
+	s->gone = false;
 	st = str(o, "state");
 	if (strcmp(st, "Up") == 0) {
 		s->up = true;
@@ -195,6 +216,9 @@ place_watch(struct work *w, const char *place)
 	memset(&rsp, 0, sizeof(rsp));
 	if ((s = seen_find(place, K_BIRD, "bird")) == NULL)
 		return;
+	/* Answered this round (here): its fault, if any, cleared after the
+	 * round, an agent's before this one too. */
+	s->here = false;
 	if (do_bird(w, &rsp) != 0 || !rsp.ok || rsp.json == NULL) {
 		if (s->up)
 			fault_set("bird-instance", "Critical", instance(inst,
@@ -219,6 +243,7 @@ place_watch(struct work *w, const char *place)
 	for (i = 0; i < nseen; i++)
 		if (strcmp(seen[i].place, place) == 0)
 			seen[i].here = false;
+	s->here = true;
 	it = NULL;
 	while ((o = ucl_object_iterate(ucl_object_lookup(top, "protocols"),
 	    &it, true)) != NULL)
@@ -246,14 +271,57 @@ place_watch(struct work *w, const char *place)
 			    "OSPF neighbour", seen[i].key + (strncmp(seen[i].key,
 			    "host:", 5) == 0 ? 5 : 0));
 			seen[i].up = false;
+			seen[i].gone = true;
 		}
-	/* Those gone and said: no longer looked for, room for others. */
+	/*
+	 * Those not listed and with no fault of their gone: no longer
+	 * looked for, room for others.  An OSPF neighbour or BFD session
+	 * gone is followed, its fault open, until it is back or its BIRD
+	 * is no longer watched.  A BGP session not listed is its protocol
+	 * gone.  The faults of those let go go with them, after the round.
+	 */
 	for (i = 0; i < nseen; )
 		if (strcmp(seen[i].place, place) == 0 && !seen[i].here &&
-		    !seen[i].up && seen[i].kind != K_BIRD)
+		    !seen[i].gone && seen[i].kind != K_BIRD)
 			seen[i] = seen[--nseen];
 		else
 			i++;
+}
+
+/*
+ * After a round: what is watched told to faults.c, each session seen
+ * (its fault kept, or cleared when its own look says so) and each BIRD
+ * watched (its fault cleared when it answered); every other open fault
+ * of the watcher's, of a session, a protocol or a place gone, cleared.
+ */
+static void
+seen_reconcile(void)
+{
+	static const char *const scope[] = { "host:", "jail:", NULL };
+	struct fault_live	*v;
+	char			(*inst)[80];
+	int			 i;
+
+	v = calloc((size_t)nseen + 1, sizeof(*v));
+	inst = calloc((size_t)nseen + 1, sizeof(*inst));
+	if (v == NULL || inst == NULL) {
+		free(v);
+		free(inst);
+		return;
+	}
+	for (i = 0; i < nseen; i++) {
+		v[i].type = seen[i].kind == K_BIRD ? "bird-instance" :
+		    seen[i].kind == K_BGP ? "bgp-neighbor" : seen[i].kind ==
+		    K_OSPF ? "ospf-neighbor" : "bfd";
+		v[i].object = seen[i].kind == K_BIRD ? instance(inst[i],
+		    sizeof(inst[i]), seen[i].place) : seen[i].key;
+		v[i].well = seen[i].kind == K_BIRD && seen[i].here;
+		v[i].reason = "BIRD answers";
+	}
+	(void)fault_reconcile("bird", NULL, scope, v, (size_t)nseen,
+	    "no longer in BIRD, or not watched");
+	free(v);
+	free(inst);
 }
 
 /* The places not watched this round (a jail gone) forgotten. */
@@ -315,6 +383,7 @@ watch(void *arg __unused)
 					    sizeof(places[0]), "%s", list[i].name);
 			}
 		places_prune(places, nplaces);
+		seen_reconcile();
 		work_free(&w);
 	}
 	return (NULL);

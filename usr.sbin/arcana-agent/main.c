@@ -305,6 +305,7 @@ stopper(void *arg __unused)
 		;
 	logmsg(LOG_NOTICE, "signal %d, stopping", sig);
 	history_save();
+	faults_save();
 	changes_stop(true);
 	jobs_wake();
 	cut = false;
@@ -879,6 +880,8 @@ main(int argc, char *argv[])
 	/* The listeners are transport.c's now: some closed, some added
 	 * while it ran. */
 	transport_fini();
+	/* What changed of the faults since the stop began, written. */
+	faults_save();
 	events_told(false);
 	cbl_loop_free(loop);
 	cbl_tls_free(tls);

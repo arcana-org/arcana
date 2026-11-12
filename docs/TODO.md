@@ -119,6 +119,30 @@
   err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
   root daemon when memory runs out, a change half done with it; a
   failure of one request's alone, said, is to come.
+- The cores' backtraces (gula/crashes.c): root runs lldb(1) and gdb(1)
+  on any `*.core` found in /, /root, /tmp, /var/tmp, the BIRD
+  directories and each /home/*, a file any local user can plant there.
+  To come: only a core the kernel wrote for a real crash (kern.corefile's
+  pattern, and a kmsg "exited on signal ... (core dumped)" record of
+  that pid and name), owned by the crashed process's uid, a regular
+  file, opened O_NOFOLLOW and passed by its descriptor where the
+  debugger takes one; the debugger run as the core's owner (or nobody),
+  with a time and a memory limit (rctl or setrlimit).
+- Faults whose owners are not held to what they watch yet (agent
+  0.280.0 holds the prober's, the links', the sampler's, the crashes'
+  and luxuria/birdwatch.c's by fault_reconcile()): sdbird.c's (bfd,
+  bird-instance, bgp-neighbor of SD-WAN's instances, its was_up() in
+  memory), sdids.c's, smtpd.c's, sa.c's key-rotation; each the same
+  way, at its start and when what it watches changes.
+- The kernel message buffer's end found by its contents
+  (gula/kmsg.c): when the ring wrapped and the kernel said the last
+  line read again, which of its places is the old one stays a guess (the
+  last no later than where the read before ended).  kern.msgbuf says no
+  sequence; a reader of /dev/klog, or a sysctl that tells the ring's
+  write sequence, would end the guessing.
+- The routing socket record.c reads carries every routing message:
+  FreeBSD has no ROUTE_MSGFILTER (OpenBSD's) to have the kernel send
+  RTM_IPFWLOG alone; the others are read and passed over.
 - arcana-enrol's -f pins the CA by the command the console shows; the
   token itself does not carry the fingerprint (it is 32 random bytes,
   looked up as they are): a token that does would let a host enrolled

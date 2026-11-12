@@ -137,6 +137,15 @@ module arcana-alarms {
        limit set: the host's, or a jail's.";
   }
 
+  identity alarm-list-full {
+    base arcana-fault;
+    description
+      "Every place the agent keeps for alarms holds one that is not
+       cleared: a new one is refused, how many said in this alarm's
+       text, until a clearing makes room (the oldest cleared alarm
+       gives its place).";
+  }
+
   identity undo {
     base arcana-fault;
     description

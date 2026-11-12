@@ -39,6 +39,10 @@
  * gethostname(3) and uname(3)'s node name answer kern.hostname's.  The
  * format, description and everything else are the kernel's; a write
  * goes to the kernel.
+ *
+ * And time(3) stepped by the seconds in the file FAKETIME names (read
+ * again a second on at most, by the monotonic clock), as a step of the
+ * wall clock would: the monotonic clock is the kernel's.
  */
 
 #include <sys/param.h>
@@ -58,6 +62,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* A line's fields: name, jid, vnet, path, osrelease, then key=value. */
@@ -760,4 +765,34 @@ __xuname(int namesize, void *namebuf)
 		/* Each field namesize bytes, the node name the second. */
 		(void)strlcpy((char *)namebuf + namesize, v, (size_t)namesize);
 	return (rc);
+}
+
+/* time(3), stepped by FAKETIME's file's seconds when it is set. */
+time_t
+time(time_t *tp)
+{
+	static time_t	 step, read_at = -1;
+	struct timespec	 ts, mono;
+	const char	*file;
+	char		 buf[32];
+	FILE		*fp;
+	time_t		 t;
+
+	(void)clock_gettime(CLOCK_REALTIME, &ts);
+	t = ts.tv_sec;
+	if ((file = getenv("FAKETIME")) != NULL) {
+		(void)clock_gettime(CLOCK_MONOTONIC, &mono);
+		if (read_at < 0 || mono.tv_sec != read_at) {
+			read_at = mono.tv_sec;
+			if ((fp = fopen(file, "re")) != NULL) {
+				if (fgets(buf, sizeof(buf), fp) != NULL)
+					step = (time_t)strtoll(buf, NULL, 10);
+				fclose(fp);
+			}
+		}
+		t += step;
+	}
+	if (tp != NULL)
+		*tp = t;
+	return (t);
 }

@@ -7,10 +7,13 @@
 /*
  * Gula, the tunnels: each target an address pinged again and again
  * (ICMP echo, as Mplify 119 §11.4 has an SD-WAN edge measure its
- * tunnels), from a thread of its own, through the routing table it
- * says.  Of each eval interval it keeps a sample: the one-way delay,
- * half the mean round trip (MEF 105 §7.2.4); the delay variation, the
- * mean difference between one round trip and the next; the loss; the
+ * tunnels), through the routing table it says, by one thread for them
+ * all, the prober, which polls every target's sockets (poll(2)) and
+ * sends each probe when it is due.  An echo's round trip is timed by
+ * the kernel (SO_TIMESTAMP, the monotonic clock), not by when the
+ * prober got to its reply.  Of each eval interval it keeps a sample:
+ * the one-way delay, half the mean round trip (MEF 105 §7.2.4); the
+ * delay variation, the mean difference between one round trip and the next; the loss; the
  * least and the most.  So many misses in a row and the target is down,
  * so many answers and it is up again, each an event (sdwan-tunnel).
  *
@@ -23,7 +26,11 @@
  * says its id and address, and may say its fib, interval (ms), size
  * (bytes), count (0: without end), dscp, down and up (misses and
  * answers), timeout (ms), eval (ms), history (samples kept) and report.
- * A raw socket needs root: without it the target says so.
+ * A raw socket needs root: without it the target says so, and its
+ * socket is tried again a second on, the wait doubling to a minute (a
+ * jail's made by the helper out of the prober's lock).  Each target's
+ * echo id is its own among the live targets of its family, from one
+ * counter that starts at random.
  *
  * A target that is Arcana's far end is measured by STAMP (RFC 8762)
  * instead, through libstamp's sender (the submodule stamp/): its UDP
@@ -100,6 +107,16 @@
  * kept in its own file (monitors.json, monitors@j.json).  A monitor's
  * state and thresholds are events (monitor, monitor-threshold), not
  * SD-WAN's faults.
+ *
+ * The faults the prober raises (tunnel, underlay, stamp-unauthenticated,
+ * tca; the links' interface) are held to its targets and links: once
+ * the kept ones are read at the start, and at each change of them,
+ * what it watches is told to faults.c (fault_reconcile()), which clears
+ * those of a target or link gone, or of a threshold taken away; a tca
+ * or stamp-unauthenticated fault an agent before left open is taken
+ * up, cleared when the figure is under the threshold again or STAMP
+ * authenticated answers.  A measurement interval ends by the monotonic
+ * clock, the wall clock only naming it.
  */
 
 #include <sys/param.h>
@@ -152,6 +169,13 @@
 #define	PM_KEPT		60	/* completed measurement intervals kept */
 #define	PM_LEN		60	/* s: a measurement interval, by default */
 #define	CLASSES_MAX	8	/* classes of service a target, at most */
+#define	OPEN_RETRY	1.0	/* s: a socket not made tried again, at first */
+#define	OPEN_RETRY_MAX	60.0
+#define	JOPEN_MAX	8	/* jails' sockets made out of the lock, a pass */
+/* A target's name (target_name(): id@jail/class) and a threshold's
+ * fault object (name/metric), whole. */
+#define	TNAME_MAX	(128 + 1 + 64 + 1 + 33)
+#define	TOBJ_MAX	(TNAME_MAX + 8)
 
 enum { ST_UNKNOWN = PROBE_UNKNOWN, ST_UP = PROBE_UP, ST_DOWN = PROBE_DOWN,
     ST_ENDED = PROBE_ENDED, ST_ERROR = PROBE_ERROR };
@@ -286,6 +310,10 @@ struct target {
 	}			 out[OUT_MAX];
 	int			 state;
 	char			 error[128];
+	/* Its echo socket not made: tried again at open_at, the wait
+	 * open_wait doubling; a jail's made out of the lock (opening). */
+	double			 open_at, open_wait;
+	bool			 opening;
 	int			 misses, hits;	/* in a row */
 	uint64_t		 sent, received;
 	double			 last_rtt;
@@ -311,7 +339,8 @@ struct target {
 	 */
 	double			 pct[3];
 	int			 pm_len;
-	time_t			 pm_start;
+	time_t			 pm_start;	/* its name, the wall clock's */
+	double			 pm_due;	/* when it ends, monotonic */
 	uint32_t		 pm_sent, pm_recv, pm_seen;
 	struct pm_acc		 pm_acc[PM_NM];
 	int32_t			 pm_prev[3];
@@ -331,11 +360,37 @@ static int		 ntargets;
  * interface it came in on: a probe sent in a tunnel's table (its
  * tunnelfib) over an uplink in another never hears its reply on its own
  * socket.  So replies are listened for on a socket a FIB, a family,
- * the host's, and told to the target by the echo's id.
+ * the host's, and told to the target by the echo's id.  None open (-1)
+ * until a target in another table than 0 asks, and then kept.
  */
 #define	RX_FIBS		16
 static int		 rx[2][RX_FIBS];
+static bool		 rx_ready;
 static int		 nfibs = -1;
+
+/* An echo socket's replies timed by the kernel, on the prober's
+ * clock (CLOCK_MONOTONIC, SCM_MONOTONIC). */
+static void
+icmp_timed(int fd)
+{
+	int	on = 1, v = SO_TS_MONOTONIC;
+
+	(void)setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &on, sizeof(on));
+	(void)setsockopt(fd, SOL_SOCKET, SO_TS_CLOCK, &v, sizeof(v));
+}
+
+/* With the lock held: the listeners none, once. */
+static void
+rx_init(void)
+{
+
+	if (rx_ready)
+		return;
+	for (int k = 0; k < 2; k++)
+		for (int fib = 0; fib < RX_FIBS; fib++)
+			rx[k][fib] = -1;
+	rx_ready = true;
+}
 
 static void
 rx_open(int af)
@@ -344,15 +399,17 @@ rx_open(int af)
 	size_t			len = sizeof(nfibs);
 	int			k = af == AF_INET6, v;
 
+	rx_init();
 	if (nfibs < 0 && (sysctlbyname("net.fibs", &nfibs, &len, NULL, 0) != 0 ||
 	    nfibs < 1))
 		nfibs = 1;
 	for (int fib = 0; fib < nfibs && fib < RX_FIBS; fib++) {
-		if (rx[k][fib] > 0)
+		if (rx[k][fib] != -1)
 			continue;
 		if ((v = socket(af, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK,
 		    af == AF_INET ? IPPROTO_ICMP : IPPROTO_ICMPV6)) == -1)
 			continue;
+		icmp_timed(v);
 		if (setsockopt(v, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) ==
 		    -1) {
 			close(v);
@@ -388,6 +445,8 @@ static int		 nlinks;
 static int	links_set(struct work *, const char *, const char *,
 		    const char **);
 static bool	has_links(const char *);
+static const char *link_name(const struct link *, char *, size_t);
+static void	probe_reconcile(void);
 static bool		 started;
 static bool		 changed;	/* a state did, since the steering looked */
 
@@ -593,10 +652,26 @@ cksum(const void *p, size_t len)
 	return ((uint16_t)~sum);
 }
 
+/* Its echo socket's next try, the wait doubling from OPEN_RETRY. */
+static void
+open_later(struct target *t, double now)
+{
+
+	t->open_wait = t->open_wait <= 0 ? OPEN_RETRY : t->open_wait * 2;
+	if (t->open_wait > OPEN_RETRY_MAX)
+		t->open_wait = OPEN_RETRY_MAX;
+	t->open_at = now + t->open_wait;
+}
+
+static bool	target_setup(struct target *);
+
+/*
+ * Its echo socket, the host's (a jail's is made by the helper, out of
+ * the lock: jail_socket()); false and why when it is not made.
+ */
 static bool
 target_open(struct target *t)
 {
-	int	v, jid;
 
 	/* Kind stamp: no echo, so no raw socket (nor root) needed; its UDP
 	 * socket is made as it sends (stamp_open()). */
@@ -604,22 +679,9 @@ target_open(struct target *t)
 		t->error[0] = '\0';
 		return (true);
 	}
-	if (t->jail[0] != '\0') {
-		/* A jail's: its socket made in its network by the helper,
-		 * so that its routing tables carry the probes. */
-		if ((jid = jail_getid(t->jail)) < 0) {
-			snprintf(t->error, sizeof(t->error), "jail %s is not "
-			    "running", t->jail);
-			return (false);
-		}
-		if ((t->sock = helper_icmp_socket(jid, t->af)) == -1) {
-			snprintf(t->error, sizeof(t->error), "no socket in jail "
-			    "%s (probing needs root)", t->jail);
-			return (false);
-		}
-		(void)fcntl(t->sock, F_SETFL, fcntl(t->sock, F_GETFL) |
-		    O_NONBLOCK);
-	} else if ((t->sock = socket(t->af, SOCK_RAW | SOCK_CLOEXEC |
+	if (t->jail[0] != '\0')
+		return (false);
+	if ((t->sock = socket(t->af, SOCK_RAW | SOCK_CLOEXEC |
 	    SOCK_NONBLOCK, t->af == AF_INET ? IPPROTO_ICMP :
 	    IPPROTO_ICMPV6)) == -1) {
 		snprintf(t->error, sizeof(t->error), "socket: %s%s",
@@ -627,6 +689,40 @@ target_open(struct target *t)
 		    " (probing needs root)" : "");
 		return (false);
 	}
+	return (target_setup(t));
+}
+
+/*
+ * A jail's echo socket, made in its network by the helper so that its
+ * routing tables carry the probes: a fork and an exec, so never under
+ * the lock.  The descriptor, or -1 and why in err.
+ */
+static int
+jail_socket(const char *jail, int af, char *err, size_t len)
+{
+	int	jid, s;
+
+	if ((jid = jail_getid(jail)) < 0) {
+		snprintf(err, len, "jail %s is not running", jail);
+		return (-1);
+	}
+	if ((s = helper_icmp_socket(jid, af)) == -1) {
+		snprintf(err, len, "no socket in jail %s (probing needs root)",
+		    jail);
+		return (-1);
+	}
+	(void)fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
+	return (s);
+}
+
+/* Its echo socket (t->sock) set: its table, its DSCP, the replies alone
+ * and timed; false and why when its table is refused. */
+static bool
+target_setup(struct target *t)
+{
+	int	v;
+
+	icmp_timed(t->sock);
 	v = t->fib;
 	if (setsockopt(t->sock, SOL_SOCKET, SO_SETFIB, &v, sizeof(v)) == -1) {
 		snprintf(t->error, sizeof(t->error), "fib %d: %s", t->fib,
@@ -675,8 +771,7 @@ target_name(const struct target *t, char *buf, size_t len)
 static void
 state_set(struct target *t, int state)
 {
-	char	id[300], *p;
-	size_t	i;
+	char	id[TNAME_MAX * 6], qa[6 * 64], qj[6 * 64], qi[6 * IFNAMSIZ];
 
 	if (t->state == state)
 		return;
@@ -689,13 +784,6 @@ state_set(struct target *t, int state)
 	changed = true;
 	if (state != ST_UP && state != ST_DOWN)
 		return;
-	/* Its id as JSON: a quote or a backslash in it escaped. */
-	for (i = 0, p = id; t->id[i] != '\0' && p < id + sizeof(id) - 3; i++) {
-		if (t->id[i] == '"' || t->id[i] == '\\')
-			*p++ = '\\';
-		*p++ = t->id[i];
-	}
-	*p = '\0';
 	/* An underlay path is no tunnel: its fault alone, no event. */
 	if (t->underlay) {
 		logmsg(state == ST_UP ? LOG_NOTICE : LOG_WARNING, "sdwan: "
@@ -710,12 +798,14 @@ state_set(struct target *t, int state)
 			    t->address);
 		return;
 	}
-	/* A jail's: said, its name a jail's (letters, digits, - _ .). */
+	/* Its id, address, jail and interface as JSON strings. */
 	event_add(is_monitor(t) ? "monitor" : "sdwan-tunnel", "{\"id\":\"%s\","
 	    "\"address\":\"%s\",\"state\":\"%s\",\"misses\":%d%s%s%s%s%s%s}",
-	    id, t->address, state_names[state], t->misses, t->jail[0] != '\0' ?
-	    ",\"jail\":\"" : "", t->jail, t->jail[0] != '\0' ? "\"" : "",
-	    t->ifname[0] != '\0' ? ",\"interface\":\"" : "", t->ifname,
+	    json_quote(t->id, id, sizeof(id)), json_quote(t->address, qa,
+	    sizeof(qa)), state_names[state], t->misses, t->jail[0] != '\0' ?
+	    ",\"jail\":\"" : "", json_quote(t->jail, qj, sizeof(qj)),
+	    t->jail[0] != '\0' ? "\"" : "", t->ifname[0] != '\0' ?
+	    ",\"interface\":\"" : "", json_quote(t->ifname, qi, sizeof(qi)),
 	    t->ifname[0] != '\0' ? "\"" : "");
 	logmsg(state == ST_UP ? LOG_NOTICE : LOG_WARNING, "%s: %s (%s) is "
 	    "%s", is_monitor(t) ? "monitor" : "sdwan", target_name(t, id,
@@ -734,15 +824,16 @@ state_set(struct target *t, int state)
 static void
 monitor_tca(const struct target *t, const char *metric, double v, bool over)
 {
-	char	name[200];
+	char	name[TNAME_MAX], qn[6 * TNAME_MAX], qi[6 * IFNAMSIZ];
 
+	target_name(t, name, sizeof(name));
 	event_add("monitor-threshold", "{\"id\":\"%s\",\"metric\":\"%s\","
 	    "\"value\":%.6g,\"threshold\":%.6g,\"over\":%s%s%s%s}",
-	    target_name(t, name, sizeof(name)), metric, v,
+	    json_quote(name, qn, sizeof(qn)), metric, v,
 	    t->tca[strcmp(metric, "delay") == 0 ? 0 : strcmp(metric, "ipdv") ==
 	    0 ? 1 : 2], over ? "true" : "false", t->ifname[0] != '\0' ?
-	    ",\"interface\":\"" : "", t->ifname, t->ifname[0] != '\0' ? "\"" :
-	    "");
+	    ",\"interface\":\"" : "", json_quote(t->ifname, qi, sizeof(qi)),
+	    t->ifname[0] != '\0' ? "\"" : "");
 	logmsg(over ? LOG_WARNING : LOG_NOTICE, "monitor: %s: %s %.3g %s the "
 	    "threshold", name, metric, v, over ? "over" : "under");
 }
@@ -754,17 +845,24 @@ tca_check(struct target *t, const struct sample *s)
 	static const char *const names[] = { "delay", "ipdv", "loss" };
 	static const char *const units[] = { " ms", " ms", "" };
 	double		v[3];
-	char		obj[260], name[200];
+	char		obj[TOBJ_MAX], name[TNAME_MAX];
 	int		i;
 
 	v[0] = s->delay;
 	v[1] = s->ipdv;
 	v[2] = s->loss;
 	for (i = 0; i < 3; i++) {
-		if (t->tca[i] <= 0)
-			continue;
 		snprintf(obj, sizeof(obj), "%s/%s", target_name(t, name,
 		    sizeof(name)), names[i]);
+		/* No threshold now: over it no more, its alert cleared. */
+		if (t->tca[i] <= 0) {
+			if (t->tca_on[i] && !is_monitor(t))
+				fault_clear("tca", obj, "%s: no threshold now",
+				    names[i]);
+			t->tca_on[i] = false;
+			t->tca_over[i] = t->tca_under[i] = 0;
+			continue;
+		}
 		if (v[i] > t->tca[i]) {
 			t->tca_under[i] = 0;
 			if (!t->tca_on[i] && ++t->tca_over[i] >= t->damping) {
@@ -856,12 +954,19 @@ pm_lost(const struct target *t, uint64_t *fwd, uint64_t *back)
 	}
 }
 
-/* A new interval from the boundary at or before now; the counts from 0. */
+/*
+ * A new interval from the wall clock's boundary at or before now, its
+ * name; it ends after what is left of it by the monotonic clock, so a
+ * step of the wall clock neither holds it open nor ends it early.  The
+ * counts from 0.
+ */
 static void
-pm_begin(struct target *t, time_t now)
+pm_begin(struct target *t)
 {
+	time_t	now = wall_s();
 
 	t->pm_start = now - now % t->pm_len;
+	t->pm_due = now_s() + (double)(t->pm_start + t->pm_len - now);
 	t->pm_sent = t->pm_recv = t->pm_seen = 0;
 	t->pm_nraw = 0;
 	memset(t->pm_acc, 0, sizeof(t->pm_acc));
@@ -1017,7 +1122,7 @@ pm_now(const struct target *t, struct pm *p)
 /* The running interval ended: its figures kept, its raw samples the
  * last completed one's, a new one begun at the boundary of now. */
 static void
-pm_end(struct target *t, time_t now)
+pm_end(struct target *t)
 {
 	struct pm_raw	*r;
 	struct pm	*p;
@@ -1025,7 +1130,7 @@ pm_end(struct target *t, time_t now)
 
 	if (t->pm_done == NULL && (t->pm_done = calloc(PM_KEPT,
 	    sizeof(*t->pm_done))) == NULL) {
-		pm_begin(t, now);
+		pm_begin(t);
 		return;
 	}
 	p = &t->pm_done[(t->pm_head + t->pm_ndone) % PM_KEPT];
@@ -1041,19 +1146,18 @@ pm_end(struct target *t, time_t now)
 	t->pm_nlast = t->pm_nraw;
 	t->pm_raw = r;
 	t->pm_cap = c;
-	pm_begin(t, now);
+	pm_begin(t);
 }
 
-/* Its intervals' clock: begun, or ended at its boundary. */
+/* Its intervals' clock: begun, or ended when it is due. */
 static void
-pm_timers(struct target *t)
+pm_timers(struct target *t, double now)
 {
-	time_t	now = wall_s();
 
 	if (t->pm_start == 0)
-		pm_begin(t, now);
-	else if (now >= t->pm_start + t->pm_len)
-		pm_end(t, now);
+		pm_begin(t);
+	else if (now >= t->pm_due)
+		pm_end(t);
 }
 
 static void
@@ -1199,7 +1303,7 @@ window_end(struct target *t, double now)
 	 * trail the samples by up to a timeout. */
 	if (t->by_stamp && t->ss != NULL) {
 		struct stamp_sender_stats	st;
-		char				name[200], ti[48];
+		char				name[TNAME_MAX], ti[48];
 		char				dsf[8], dsb[8], src[64], dst[64];
 		char				nat[48], dm[64];
 		uint64_t			df, db;
@@ -1325,9 +1429,9 @@ hit(struct target *t, double rtt_ms)
 		state_set(t, ST_UP);
 }
 
-/* An echo request. */
+/* An echo request, timed as it goes (not by the prober's pass). */
 static void
-icmp_send(struct target *t, double now)
+icmp_send(struct target *t)
 {
 	unsigned char	pkt[PKT_MAX];
 	size_t		len;
@@ -1370,7 +1474,7 @@ icmp_send(struct target *t, double now)
 		ic->icmp6_seq = htons(t->seq);
 	}
 	t->out[slot].seq = t->seq;
-	t->out[slot].sent = now;
+	t->out[slot].sent = now_s();
 	t->out[slot].live = true;
 	t->sent++;
 	if (sendto(t->sock, pkt, len, 0, (const struct sockaddr *)&t->sa,
@@ -1462,7 +1566,7 @@ stamp_open(struct target *t)
 static void
 stamp_fallback(struct target *t, double now, const char *why)
 {
-	char	name[200];
+	char	name[TNAME_MAX];
 
 	/* Kind stamp: no fallback, its probes misses; why said once. */
 	if (t->kind == KIND_STAMP) {
@@ -1498,7 +1602,7 @@ stamp_fallback(struct target *t, double now, const char *why)
 static void
 stamp_auth_back(struct target *t)
 {
-	char	name[200];
+	char	name[TNAME_MAX];
 
 	if (!t->downgraded)
 		return;
@@ -1694,7 +1798,7 @@ stamp_recv_all(struct target *t)
 	unsigned char		in[PKT_MAX + 64];
 	struct stamp_rxinfo	ri;
 	struct stamp_sample	sm;
-	char			name[200];
+	char			name[TNAME_MAX];
 	ssize_t			n;
 	double			at;
 
@@ -1752,7 +1856,7 @@ target_send(struct target *t, double now)
 		(void)stamp_send_one(t, true);
 	/* Not by STAMP, or no longer: an echo. */
 	if (!t->by_stamp)
-		icmp_send(t, now);
+		icmp_send(t);
 	/* Fallen back: STAMP tried now and then, a plain tunnel's under its
 	 * key derived anew each time (a pair made again at this end). */
 	if (t->arcana && !t->by_stamp && now >= t->stamp_retry) {
@@ -1767,25 +1871,61 @@ target_send(struct target *t, double now)
 }
 
 /*
+ * A reply read into pkt (len bytes), and when it came in (*at), as the
+ * kernel timed it (SCM_MONOTONIC), else now; its length, or -1.
+ */
+static ssize_t
+icmp_recv(int sock, unsigned char *pkt, size_t len, double now, double *at)
+{
+	struct sockaddr_storage	 from;
+	struct msghdr		 msg;
+	struct iovec		 iov;
+	struct cmsghdr		*cm;
+	struct timespec		 ts;
+	union {
+		struct cmsghdr	hdr;
+		char		buf[256];
+	}			 cin;
+	ssize_t			 n;
+
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = pkt;
+	iov.iov_len = len;
+	msg.msg_name = &from;
+	msg.msg_namelen = sizeof(from);
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = cin.buf;
+	msg.msg_controllen = sizeof(cin.buf);
+	if ((n = recvmsg(sock, &msg, 0)) <= 0)
+		return (-1);
+	*at = now;
+	for (cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm))
+		if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type ==
+		    SCM_MONOTONIC && cm->cmsg_len >= CMSG_LEN(sizeof(ts))) {
+			memcpy(&ts, CMSG_DATA(cm), sizeof(ts));
+			*at = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+		}
+	return (n);
+}
+
+/*
  * What a socket of family af has: each echo reply to the target t, or
- * with t NULL to the target of its id (a FIB's listener's).
+ * with t NULL to the target of its id (a FIB's listener's); its round
+ * trip from when it went to when the kernel took the reply in.
  */
 static void
 sock_recv(int sock, int af, struct target *t, double now)
 {
 	unsigned char		 pkt[PKT_MAX + 64];
-	struct sockaddr_storage	 from;
 	struct target		*x;
-	socklen_t		 flen;
 	ssize_t			 n;
+	double			 at;
 	uint16_t		 id, seq;
 	int			 i, hl;
 
 	for (;;) {
-		flen = sizeof(from);
-		n = recvfrom(sock, pkt, sizeof(pkt), 0, (struct sockaddr *)
-		    &from, &flen);
-		if (n <= 0)
+		if ((n = icmp_recv(sock, pkt, sizeof(pkt), now, &at)) <= 0)
 			return;
 		if (af == AF_INET) {
 			const struct ip		*ip = (const struct ip *)(void *)pkt;
@@ -1819,8 +1959,10 @@ sock_recv(int sock, int af, struct target *t, double now)
 		for (i = 0; i < OUT_MAX; i++)
 			if (x->out[i].live && x->out[i].seq == seq) {
 				x->out[i].live = false;
-				hit(x, (now - x->out[i].sent) * 1000);
-				pm_hit(x, (now - x->out[i].sent) * 1000, NULL);
+				if (at < x->out[i].sent)
+					at = x->out[i].sent;
+				hit(x, (at - x->out[i].sent) * 1000);
+				pm_hit(x, (at - x->out[i].sent) * 1000, NULL);
 				break;
 			}
 	}
@@ -1845,7 +1987,7 @@ target_timers(struct target *t, double now)
 			stamp_lost(t, now);
 	if (now - t->win_start >= t->eval / 1000.0)
 		window_end(t, now);
-	pm_timers(t);
+	pm_timers(t, now);
 	if (t->next_send < 0 && t->state != ST_ENDED && t->state != ST_ERROR) {
 		bool	air = t->by_stamp && t->ss != NULL &&
 			    stamp_sender_next(t->ss) > 0;
@@ -1859,13 +2001,75 @@ target_timers(struct target *t, double now)
 
 /* ---- The thread --------------------------------------------------- */
 
+/* A jail's echo socket asked for, made out of the lock, for the target
+ * that asked (by its edge, owner, id and class). */
+struct jopen {
+	char	jail[64], owner[8], id[128], cls[33];
+	char	err[128];
+	int	af, fd;
+};
+
+/* With the lock held: the target a jail's socket was made for, still
+ * waiting for it; NULL when it went meanwhile. */
+static struct target *
+jopen_target(const struct jopen *j)
+{
+	struct target	*t;
+	int		 i;
+
+	for (i = 0; i < ntargets; i++) {
+		t = &targets[i];
+		if (t->opening && t->sock == -1 && strcmp(t->jail, j->jail) ==
+		    0 && strcmp(t->owner, j->owner) == 0 && strcmp(t->id,
+		    j->id) == 0 && strcmp(t->cls, j->cls) == 0)
+			return (t);
+	}
+	return (NULL);
+}
+
+/* The jails' sockets asked for (n of them) made, out of the lock, and
+ * given to their targets. */
+static void
+jail_sockets(struct jopen *jo, int n)
+{
+	struct target	*t;
+	double		 now;
+	int		 k;
+
+	for (k = 0; k < n; k++)
+		jo[k].fd = jail_socket(jo[k].jail, jo[k].af, jo[k].err,
+		    sizeof(jo[k].err));
+	pthread_mutex_lock(&lock);
+	now = now_s();
+	for (k = 0; k < n; k++) {
+		if ((t = jopen_target(&jo[k])) == NULL) {
+			if (jo[k].fd != -1)
+				close(jo[k].fd);
+			continue;
+		}
+		t->opening = false;
+		if (jo[k].fd == -1)
+			snprintf(t->error, sizeof(t->error), "%s", jo[k].err);
+		else
+			t->sock = jo[k].fd;
+		if (jo[k].fd == -1 || !target_setup(t)) {
+			open_later(t, now);
+			state_set(t, ST_ERROR);
+			continue;
+		}
+		t->open_wait = 0;
+	}
+	pthread_mutex_unlock(&lock);
+}
+
 static void *
 prober(void *arg __unused)
 {
 	struct pollfd	*pfd;
 	struct target	*t;
+	struct jopen	 jo[JOPEN_MAX];
 	double		 now, wait, d;
-	int		 i, n, ms;
+	int		 i, n, ms, nj;
 	bool		 moved;
 
 	/* Each target's echo and STAMP sockets, then the FIBs'
@@ -1879,19 +2083,45 @@ prober(void *arg __unused)
 		logmsg(LOG_ERR, "sdwan probes: no memory");
 		return (NULL);
 	}
-	for (int k = 0; k < 2; k++)
-		for (int fib = 0; fib < RX_FIBS; fib++)
-			rx[k][fib] = -1;
 	for (;;) {
 		pthread_mutex_lock(&lock);
 		now = now_s();
 		wait = 0.2;
-		n = 0;
+		n = nj = 0;
 		for (i = 0; i < ntargets; i++) {
 			t = &targets[i];
-			if (t->state == ST_ERROR && t->sock == -1 &&
-			    !target_open(t))
-				continue;
+			/* An echo socket it needs and has not: tried when it
+			 * is due, a jail's out of the lock (jail_sockets()). */
+			if (t->kind != KIND_STAMP && t->sock == -1) {
+				if (t->opening)
+					continue;
+				if (now < t->open_at) {
+					if ((d = t->open_at - now) < wait)
+						wait = d;
+					continue;
+				}
+				if (t->jail[0] != '\0') {
+					if (nj == JOPEN_MAX)
+						continue;
+					snprintf(jo[nj].jail, sizeof(jo[nj].jail),
+					    "%s", t->jail);
+					snprintf(jo[nj].owner, sizeof(jo[nj].owner),
+					    "%s", t->owner);
+					snprintf(jo[nj].id, sizeof(jo[nj].id), "%s",
+					    t->id);
+					snprintf(jo[nj].cls, sizeof(jo[nj].cls), "%s",
+					    t->cls);
+					jo[nj++].af = t->af;
+					t->opening = true;
+					continue;
+				}
+				if (!target_open(t)) {
+					open_later(t, now);
+					state_set(t, ST_ERROR);
+					continue;
+				}
+				t->open_wait = 0;
+			}
 			if (t->state == ST_ERROR)
 				state_set(t, ST_UNKNOWN);
 			if (t->next_send >= 0 && t->next_send <= now)
@@ -1901,8 +2131,7 @@ prober(void *arg __unused)
 				wait = d;
 			if ((d = t->win_start + t->eval / 1000.0 - now) < wait)
 				wait = d;
-			if (t->pm_start != 0 && (d = (double)(t->pm_start +
-			    t->pm_len - wall_s())) < wait)
+			if (t->pm_start != 0 && (d = t->pm_due - now) < wait)
 				wait = d;
 			pfd[n].fd = t->sock;
 			pfd[n].events = POLLIN;
@@ -1917,7 +2146,7 @@ prober(void *arg __unused)
 				pk[n++] = 1;
 			}
 		}
-		for (int k = 0; k < 2; k++)
+		for (int k = 0; rx_ready && k < 2; k++)
 			for (int fib = 0; fib < RX_FIBS; fib++)
 				if (rx[k][fib] != -1) {
 					pfd[n].fd = rx[k][fib];
@@ -1933,6 +2162,11 @@ prober(void *arg __unused)
 		 * lock, as it asks the states back. */
 		if (moved)
 			sdwan_probe_changed();
+		/* Jails' sockets: made now, polled from the next pass. */
+		if (nj > 0) {
+			jail_sockets(jo, nj);
+			continue;
+		}
 		ms = wait > 0 ? (int)(wait * 1000) : 0;
 		if (poll(pfd, (nfds_t)n, ms < 1 ? 1 : ms) <= 0)
 			continue;
@@ -2059,11 +2293,18 @@ targets_parse(struct work *w, const char *json, struct target *new,
 		/* At an edge that is a vnet jail: probed from its network. */
 		snprintf(t->jail, sizeof(t->jail), "%s", jail);
 		snprintf(t->owner, sizeof(t->owner), "%s", owner);
-		if ((v = ucl_object_lookup(o, "interface")) != NULL &&
-		    ucl_object_type(v) == UCL_STRING && strlen(
-		    ucl_object_tostring(v)) < sizeof(t->ifname))
+		/* Its tunnel's, as events say it: a name ("" none). */
+		if ((v = ucl_object_lookup(o, "interface")) != NULL) {
+			if (ucl_object_type(v) != UCL_STRING ||
+			    (ucl_object_tostring(v)[0] != '\0' &&
+			    !valid_ifname(ucl_object_tostring(v)))) {
+				*errp = wfmt(w, "target %s: interface is an "
+				    "interface's name", id);
+				goto bad;
+			}
 			snprintf(t->ifname, sizeof(t->ifname), "%s",
 			    ucl_object_tostring(v));
+		}
 		/* The underlay's path, not a tunnel: SD-WAN's alone. */
 		if ((v = ucl_object_lookup(o, "underlay")) != NULL) {
 			if (ucl_object_type(v) != UCL_BOOLEAN ||
@@ -2272,21 +2513,150 @@ targets_parse(struct work *w, const char *json, struct target *new,
 	return (n);
 bad:
 	ucl_object_unref(top);
+	/* The keys derived so far not left in what the caller frees. */
+	explicit_bzero(new, TARGETS_MAX * sizeof(*new));
 	return (-1);
+}
+
+/* New targets (n of them) given up before they were probed: their keys
+ * zeroed, then freed. */
+static void
+targets_drop(struct target *new, int n)
+{
+
+	while (n-- > 0)
+		target_free(&new[n]);
+	explicit_bzero(new, TARGETS_MAX * sizeof(*new));
+	free(new);
+}
+
+/*
+ * With the lock held: an echo id that no target of v (n of them) of
+ * family af has, from one counter that starts at random; never 0, which
+ * marks a target that has none yet.
+ */
+static uint16_t
+ident_alloc(const struct target *v, int n, int af)
+{
+	static uint16_t	next;
+	static bool	seeded;
+	uint16_t	id;
+	int		i, tries;
+
+	if (!seeded) {
+		next = (uint16_t)arc4random();
+		seeded = true;
+	}
+	for (tries = 0; tries < 65536; tries++) {
+		if ((id = next++) == 0)
+			continue;
+		for (i = 0; i < n && (v[i].ident != id || v[i].af != af); i++)
+			;
+		if (i == n)
+			return (id);
+	}
+	/* Not reached: TARGETS_MAX are far fewer than the ids. */
+	return (next++);
+}
+
+/*
+ * With the lock held, once the kept targets are read (watching): what
+ * the prober watches told to faults.c (fault_reconcile()), each target's
+ * and each link's, so that the faults of one gone, or of a threshold
+ * taken away, are cleared; what of them is still open taken up, a
+ * threshold's alert and a fall back's alarm, to be cleared when its
+ * cause is.
+ */
+static bool	watching;
+
+static void
+probe_reconcile(void)
+{
+	static const char *const mn[] = { "delay", "ipdv", "loss" };
+	struct fault_live	*v;
+	struct target		*t;
+	char			*nm, name[TNAME_MAX];
+	int			*who, max, n, i, m;
+
+	if (!watching)
+		return;
+	max = ntargets * 5 + nlinks + 1;
+	v = calloc((size_t)max, sizeof(*v));
+	nm = calloc((size_t)max, TOBJ_MAX);
+	who = calloc((size_t)max, sizeof(*who));
+	if (v == NULL || nm == NULL || who == NULL) {
+		logmsg(LOG_WARNING, "probe: no memory to hold the faults to the "
+		    "targets");
+		goto out;
+	}
+	n = 0;
+	for (i = 0; i < ntargets; i++) {
+		t = &targets[i];
+		/* A class's session and a monitor raise none. */
+		if (t->id[0] == '\0' || t->cls[0] != '\0' || is_monitor(t))
+			continue;
+		target_name(t, name, sizeof(name));
+		snprintf(&nm[n * TOBJ_MAX], TOBJ_MAX, "%s", name);
+		v[n].type = t->underlay ? "underlay" : "tunnel";
+		v[n].object = &nm[n * TOBJ_MAX];
+		v[n].well = t->state == ST_UP;
+		v[n].reason = "it answers again";
+		who[n++] = i * 8;
+		if (t->arcana && t->stamp_peer[0] != '\0') {
+			snprintf(&nm[n * TOBJ_MAX], TOBJ_MAX, "%s", name);
+			v[n].type = "stamp-unauthenticated";
+			v[n].object = &nm[n * TOBJ_MAX];
+			who[n++] = i * 8 + 1;
+		}
+		for (m = 0; m < 3; m++) {
+			if (t->tca[m] <= 0)
+				continue;
+			snprintf(&nm[n * TOBJ_MAX], TOBJ_MAX, "%s/%s", name, mn[m]);
+			v[n].type = "tca";
+			v[n].object = &nm[n * TOBJ_MAX];
+			who[n++] = i * 8 + 2 + m;
+		}
+	}
+	(void)fault_reconcile("probe", NULL, NULL, v, (size_t)n,
+	    "no longer measured");
+	for (i = 0; i < n; i++) {
+		t = &targets[who[i] / 8];
+		if (who[i] % 8 == 1)
+			t->downgraded = v[i].open;
+		else if (who[i] % 8 >= 2)
+			t->tca_on[who[i] % 8 - 2] = v[i].open;
+	}
+	/* The links: a link's fault while it has none, cleared when it has
+	 * its link again or is watched no more. */
+	for (i = n = 0; i < nlinks; i++) {
+		link_name(&links[i], &nm[n * TOBJ_MAX], TOBJ_MAX);
+		v[n].type = "interface";
+		v[n].object = &nm[n * TOBJ_MAX];
+		v[n].reason = "it has its link again";
+		v[n++].well = links[i].state == 1;
+	}
+	(void)fault_reconcile("link", "interface", NULL, v, (size_t)n,
+	    "watched no more");
+out:
+	free(v);
+	free(nm);
+	free(who);
 }
 
 /*
  * The new targets in the place of the old ones of their edge (jail, ""
  * the host): one that is the same target (address, fib, dscp, size, kind)
- * keeps its socket, state and samples; the other edges' stay as they
- * are, after them.  False, with nothing changed, when all of them are
- * more than TARGETS_MAX (new has room for that many).
+ * keeps its socket, state, samples and echo id; the other edges' stay as
+ * they are, after them; a new one has an echo id of its own.  False,
+ * with nothing changed, when all of them are more than TARGETS_MAX (new
+ * has room for that many).
  */
 static bool
 targets_swap(struct target *new, int n, const char *jail, const char *owner)
 {
 	struct target	*old, *t, *o;
-	int		 nold, i, k, total;
+	bool		 fresh[TARGETS_MAX];
+	int		 nold, i, k, total, nnew;
 	double		 now;
 
 	pthread_mutex_lock(&lock);
@@ -2302,8 +2672,10 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 		return (false);
 	}
 	now = now_s();
+	nnew = n;
 	for (i = 0; i < n; i++) {
 		t = &new[i];
+		fresh[i] = false;
 		for (k = 0; k < nold; k++) {
 			o = &old[k];
 			if (o->id[0] != '\0' && strcmp(o->jail, jail) == 0 &&
@@ -2381,16 +2753,23 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			}
 			continue;
 		}
-		t->ident = (uint16_t)((getpid() + i * 7919 + (int)now) & 0xffff);
+		fresh[i] = true;
+		t->ident = 0;
 		t->ssid = (uint16_t)arc4random();
 		t->since = time(NULL);
 		t->win_start = now;
 		t->next_send = now;
 		/* A fall back's alarm an agent before this one left open (the
-		 * faults are kept across a restart): cleared by its first
-		 * authenticated answer. */
-		t->downgraded = t->stamp_peer[0] != '\0' && t->cls[0] == '\0';
-		t->state = target_open(t) ? ST_UNKNOWN : ST_ERROR;
+		 * faults are kept across a restart) is taken up by
+		 * probe_reconcile(), cleared by its first authenticated
+		 * answer. */
+		t->downgraded = false;
+		/* A jail's socket the prober makes, out of the lock. */
+		t->state = ST_UNKNOWN;
+		if (t->jail[0] == '\0' && !target_open(t)) {
+			t->state = ST_ERROR;
+			open_later(t, now);
+		}
 	}
 	/* The other edges' and owners', moved over as they are; not those
 	 * kept above, emptied (their id ""), which would come back as a
@@ -2403,20 +2782,23 @@ targets_swap(struct target *new, int n, const char *jail, const char *owner)
 			old[k].sock = -1;
 			old[k].usock = -1;
 		}
+	/* Each new one's echo id, its own among them all. */
+	for (i = 0; i < nnew; i++)
+		if (fresh[i]) {
+			char	name[TNAME_MAX];
+
+			new[i].ident = ident_alloc(new, n, new[i].af);
+			logmsg(LOG_DEBUG, "probe: %s (%s): echo id %u",
+			    target_name(&new[i], name, sizeof(name)),
+			    new[i].address, new[i].ident);
+		}
 	targets = new;
 	ntargets = n;
-	for (k = 0; k < nold; k++) {
-		/* Gone: its fall back's alarm, if any, with it. */
-		if (old[k].downgraded) {
-			char	name[200];
-
-			fault_clear("stamp-unauthenticated", target_name(&old[k],
-			    name, sizeof(name)), "%s no longer measured",
-			    old[k].address);
-		}
+	for (k = 0; k < nold; k++)
 		target_free(&old[k]);
-	}
 	free(old);
+	/* Those gone: their faults cleared; the rest's taken up. */
+	probe_reconcile();
 	pthread_mutex_unlock(&lock);
 	/* Their FIBs stampd's (gula/stampd.c). */
 	stampd_nudge();
@@ -2470,9 +2852,7 @@ do_probes_set(struct work *w, const char *json, const char **errp)
 	if (!targets_swap(new, n, jail, OWN_SDWAN)) {
 		*errp = wfmt(w, "%d targets at most, all edges' together",
 		    TARGETS_MAX);
-		for (n--; n >= 0; n--)
-			target_free(&new[n]);
-		free(new);
+		targets_drop(new, n);
 		return (-1);
 	}
 	if (links_set(w, json, jail, errp) != 0)
@@ -2538,7 +2918,7 @@ start_file(const char *path, const char *owner)
 			if (!targets_swap(new, n, jail, owner)) {
 				logmsg(LOG_WARNING, "%s: more than %d targets",
 				    path, TARGETS_MAX);
-				free(new);
+				targets_drop(new, n);
 			} else if (strcmp(owner, OWN_SDWAN) == 0 &&
 			    links_set(&w, json, jail, &e) != 0)
 				logmsg(LOG_WARNING, "%s: %s", path, e);
@@ -2569,7 +2949,7 @@ link_name(const struct link *l, char *buf, size_t len)
 static void
 link_state(struct link *l, int up)
 {
-	char	obj[200];
+	char	obj[TOBJ_MAX];
 
 	if (l->state == up)
 		return;
@@ -2599,7 +2979,6 @@ links_set(struct work *w, const char *json, const char *jail,
 	ucl_object_iter_t	 it;
 	struct link		 nl[LINKS_MAX], *l;
 	struct work		 jw;
-	char			 obj[200];
 	const char		*s, *e;
 	int			 n, k, i;
 	bool			 ok;
@@ -2655,19 +3034,6 @@ links_set(struct work *w, const char *json, const char *jail,
 			    0;
 	work_free(&jw);
 	pthread_mutex_lock(&lock);
-	/* Those of the edge no longer watched: their faults cleared. */
-	for (k = 0; k < nlinks; k++) {
-		if (strcmp(links[k].jail, jail) != 0)
-			continue;
-		for (i = 0; i < n; i++)
-			if (strcmp(nl[i].id, links[k].id) == 0 && strcmp(
-			    nl[i].ifname, links[k].ifname) == 0)
-				break;
-		if (i == n && links[k].state == 0)
-			fault_clear("interface", link_name(&links[k], obj,
-			    sizeof(obj)), "%s is watched no more",
-			    links[k].ifname);
-	}
 	/* The others' kept, the edge's new after them. */
 	for (i = k = 0; k < nlinks; k++)
 		if (strcmp(links[k].jail, jail) != 0)
@@ -2688,6 +3054,8 @@ links_set(struct work *w, const char *json, const char *jail,
 		i++;
 	}
 	nlinks = i;
+	/* Those no longer watched: their faults cleared. */
+	probe_reconcile();
 	pthread_mutex_unlock(&lock);
 	return (0);
 }
@@ -2718,6 +3086,9 @@ probe_start(void)
 	pthread_t	 tid;
 	char		 path[MAXPATHLEN], *slash;
 
+	pthread_mutex_lock(&lock);
+	rx_init();
+	pthread_mutex_unlock(&lock);
 	started = true;
 	/* The host's, and each jail's beside it; the monitors likewise. */
 	start_file(conf_path(path, sizeof(path), NULL, OWN_MONITOR),
@@ -2740,6 +3111,12 @@ probe_start(void)
 			}
 		closedir(d);
 	}
+	/* All of them read: the faults held to them from now on, those of
+	 * targets and links no longer kept cleared, the others taken up. */
+	pthread_mutex_lock(&lock);
+	watching = true;
+	probe_reconcile();
+	pthread_mutex_unlock(&lock);
 	if (pthread_create(&tid, NULL, prober, NULL) == 0)
 		(void)pthread_detach(tid);
 	else
@@ -3381,6 +3758,8 @@ monitor_check(const struct arc_job_spec *sp)
 			    "ipdv-max=, loss-max= and damping=");
 		/* The numbers' form here; their bounds where they are kept. */
 		v = strchr(sp->names.v[i], '=') + 1;
+		if (k == 1 && !valid_ifname(v))
+			return ("interface= is an interface's name");
 		if (k >= 12 && k <= 14) {
 			d = strtod(v, &end);
 			if (*v == '\0' || *end != '\0' || d < 0 || (k == 14 &&
@@ -3476,9 +3855,7 @@ monitors_put(struct work *w, ucl_object_t *arr, const char *jail,
 	if (!targets_swap(new, n, jail, OWN_MONITOR)) {
 		*errp = wfmt(w, "%d targets at most, monitors and SD-WAN's "
 		    "together", TARGETS_MAX);
-		for (n--; n >= 0; n--)
-			target_free(&new[n]);
-		free(new);
+		targets_drop(new, n);
 		free(json);
 		return (-1);
 	}
@@ -3551,7 +3928,7 @@ do_monitor_job(struct work *w, const struct arc_job_spec *sp,
 			if (arg_of(a, "name") != NULL)
 				continue;
 			if ((v = arg_of(a, "interface")) != NULL) {
-				if (*v == '\0' || strlen(v) >= IFNAMSIZ)
+				if (!valid_ifname(v))
 					e = "interface= is an interface's name";
 				ifname = v;
 				ucl_object_insert_key(o, ucl_object_fromstring(v),

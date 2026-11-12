@@ -26,13 +26,27 @@
  * hold (60 s unless set; 0, at once): a burst shorter makes nothing.
  * Sampling switched off takes no look and judges nothing; the faults
  * it raised are cleared once, and the samples kept stay to be read.
+ * Its faults (cpu, memory, storage) are held to what it judges: at its
+ * first judged look, and whenever the limits change, one of a figure
+ * with no limit now, or of a file system gone, is cleared, and one an
+ * agent before left open is taken up, cleared once the figure is under
+ * its limit again (fault_reconcile()).
  *
  * How often it looks and how many looks it keeps is set by whoever
  * manages the host, and kept in a file for the next start; when they
  * are all there, the older are thinned rather than dropped (thin()); with none
  * kept nothing is sampled and no memory is held.  A sample is a time
  * and a row of floats, as wide as there are interfaces and disks, so
- * what is held is known: it is said with the samples.
+ * what is held is known: it is said with the samples.  HIST_DEVS of
+ * each are told apart; one away HIST_GONE looks gives its place (its
+ * columns zeroed) to a new one, and the totals (rx, tx, read, write)
+ * are of every interface and disk, told apart or not.  Its cadence is
+ * the monotonic clock's, the wall clock only naming the samples.
+ *
+ * The samples written down (fsync(2) before the rename) are read back
+ * at the next start: a file whose head is not what it should be is put
+ * aside (.bad) and sampling starts anew; a row that is not whole is
+ * left out.
  */
 
 #include <sys/param.h>
@@ -68,6 +82,7 @@
 #define	HIST_HOLD_MAX	3600
 #define	HIST_KEEP_MAX	5000
 #define	HIST_DEVS	16		/* interfaces, and disks, told apart */
+#define	HIST_GONE	12		/* looks one is away before its place goes */
 #define	HIST_NAME	24
 #define	HIST_RULES	32
 #define	JAIL_NAME	HIST_NAME	/* a jail's column, named for it */
@@ -91,6 +106,15 @@ struct dev {
 	uint64_t	a, b;		/* its counters at the look before */
 	bool		was;		/* and whether it had any */
 	bool		now;
+	unsigned int	away;		/* looks it was not seen in, in a row */
+};
+
+/* Every interface's and disk's counters at the look before, told apart
+ * or not, for the totals. */
+struct ctr {
+	char		name[HIST_NAME];
+	uint64_t	a, b;
+	bool		seen;
 };
 
 static void	thresholds(const float *);
@@ -113,7 +137,9 @@ static struct rule	rules[HIST_RULES];
 static size_t		nrules;
 
 static pthread_mutex_t	hist_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t	hist_wake = PTHREAD_COND_INITIALIZER;
+/* Woken when how it samples changes; its waits by the monotonic clock
+ * (history_start()). */
+static pthread_cond_t	hist_wake;
 static unsigned int	hist_step = HIST_STEP;
 static unsigned int	hist_keep = HIST_KEEP;
 static unsigned int	hist_hold = HIST_HOLD;
@@ -123,6 +149,9 @@ static bool		off_told = true;	/* its faults cleared since off */
 static unsigned int	limits[4] = { 90, 90, 50, 90 };	/* + storage */
 static bool		over[3];
 static struct hold	over_hold[3];
+/* Its faults held to the limits at the next judged look (the first,
+ * and after a change). */
+static bool		recon = true;
 
 /*
  * Whether a crossing has lasted: want, the figure is on the other side
@@ -169,7 +198,7 @@ static struct {
 }			storage_over[STORAGE_MAX];
 static int		nstorage_over;
 static time_t		storage_at;
-static time_t		saved;		/* when the samples were last written */
+static time_t		saved;		/* written last, monotonic */
 #define	HIST_SAVE_EVERY	300
 static double		*times;		/* hist_keep of them, when any */
 static float		*rows;		/* hist_keep rows of width */
@@ -177,6 +206,9 @@ static size_t		 nrows, width = H_BASE;
 static struct dev	 nets[HIST_DEVS], disks[HIST_DEVS], jails[HIST_DEVS];
 static struct dev	 relays[HIST_DEVS];
 static size_t		 nnets, ndisks, njails, nrelays;
+/* The totals' counters: every interface's (0) and disk's (1). */
+static struct ctr	*ctrs[2];
+static size_t		 nctrs[2], capctrs[2];
 static bool		 racct;		/* the kernel accounts for jails */
 static uint64_t		 mem_total, swap_total;
 static long		 cp_was[CPUSTATES];
@@ -287,24 +319,65 @@ reshape(size_t keep, size_t nn, size_t nd, size_t nj, size_t nr)
 	hist_keep = (unsigned int)keep;
 }
 
-/* The place of the device named, made when there is room; or -1. */
-static int
-slot(struct dev *v, size_t *n, const char *given)
+/* A device's name as a column's: what a name needs alone (an interface
+ * can be given any name), so it needs no escaping. */
+static void
+dev_name(char *name, size_t len, const char *given)
 {
-	char	name[HIST_NAME];
 	size_t	i;
 
-	/* An interface can be given any name: only what a name needs. */
-	strlcpy(name, given, sizeof(name));
+	strlcpy(name, given, len);
 	for (i = 0; name[i] != '\0'; i++)
 		if (!isalnum((unsigned char)name[i]) && strchr("._-:",
 		    name[i]) == NULL)
 			name[i] = '_';
+}
+
+/* The first of the two columns of v's k-th, in a row. */
+static size_t
+col_first(const struct dev *v, size_t k)
+{
+	size_t	c = H_BASE;
+
+	if (v != nets) {
+		c += 2 * nnets;
+		if (v != disks) {
+			c += 2 * ndisks;
+			if (v != jails)
+				c += 2 * njails;
+		}
+	}
+	return (c + 2 * k);
+}
+
+/* The place of the device named, made when there is room, or given by
+ * one away HIST_GONE looks (the longest), its columns zeroed in every
+ * row; or -1.  Called with the lock held. */
+static int
+slot(struct dev *v, size_t *n, const char *given)
+{
+	char	name[HIST_NAME];
+	size_t	i, r, c;
+	int	best;
+
+	dev_name(name, sizeof(name), given);
 	for (i = 0; i < *n; i++)
 		if (strcmp(v[i].name, name) == 0)
 			return ((int)i);
-	if (*n == HIST_DEVS)
-		return (-1);
+	if (*n == HIST_DEVS) {
+		for (i = 0, best = -1; i < *n; i++)
+			if (v[i].away >= HIST_GONE && (best == -1 || v[i].away >
+			    v[best].away))
+				best = (int)i;
+		if (best == -1)
+			return (-1);
+		c = col_first(v, (size_t)best);
+		for (r = 0; rows != NULL && r < nrows; r++)
+			rows[r * width + c] = rows[r * width + c + 1] = 0;
+		memset(&v[best], 0, sizeof(v[best]));
+		strlcpy(v[best].name, name, sizeof(v[best].name));
+		return (best);
+	}
 	if (v == nets)
 		reshape(hist_keep, nnets + 1, ndisks, njails, nrelays);
 	else if (v == disks)
@@ -320,19 +393,84 @@ slot(struct dev *v, size_t *n, const char *given)
 
 /* What one device did since the look before, into its two columns. */
 static void
-moved(struct dev *d, float *col, uint64_t a, uint64_t b, double secs,
-    float *suma, float *sumb)
+moved(struct dev *d, float *col, uint64_t a, uint64_t b, double secs)
 {
 
 	if (d->was && a >= d->a && b >= d->b) {
 		col[0] = (float)((double)(a - d->a) / secs);
 		col[1] = (float)((double)(b - d->b) / secs);
-		*suma += col[0];
-		*sumb += col[1];
 	}
 	d->a = a;
 	d->b = b;
 	d->was = d->now = true;
+}
+
+/* What one interface (k 0) or disk (1) did since the look before, told
+ * apart or not, into the totals. */
+static void
+tally(int k, const char *given, uint64_t a, uint64_t b, double secs,
+    float *suma, float *sumb)
+{
+	struct ctr	*c, *nc;
+	char		 name[HIST_NAME];
+	size_t		 i;
+
+	dev_name(name, sizeof(name), given);
+	for (i = 0; i < nctrs[k] && strcmp(ctrs[k][i].name, name) != 0; i++)
+		;
+	if (i == nctrs[k]) {
+		if (nctrs[k] == capctrs[k]) {
+			if ((nc = reallocarray(ctrs[k], capctrs[k] + 32,
+			    sizeof(*nc))) == NULL)
+				return;
+			ctrs[k] = nc;
+			capctrs[k] += 32;
+		}
+		c = &ctrs[k][nctrs[k]++];
+		memset(c, 0, sizeof(*c));
+		strlcpy(c->name, name, sizeof(c->name));
+		c->a = a;
+		c->b = b;
+		c->seen = true;
+		return;
+	}
+	c = &ctrs[k][i];
+	if (a >= c->a && b >= c->b) {
+		*suma += (float)((double)(a - c->a) / secs);
+		*sumb += (float)((double)(b - c->b) / secs);
+	}
+	c->a = a;
+	c->b = b;
+	c->seen = true;
+}
+
+/* The totals' counters of those not seen this look dropped: one that
+ * comes back begins anew. */
+static void
+totals_seen(void)
+{
+	size_t	i, k, n;
+
+	for (k = 0; k < 2; k++) {
+		for (i = n = 0; i < nctrs[k]; i++)
+			if (ctrs[k][i].seen) {
+				ctrs[k][i].seen = false;
+				ctrs[k][n++] = ctrs[k][i];
+			}
+		nctrs[k] = n;
+	}
+}
+
+/* Those of v (n of them) not seen this look away one look more. */
+static void
+away(struct dev *v, size_t n)
+{
+	size_t	i;
+
+	for (i = 0; i < n; i++) {
+		v[i].away = v[i].now ? 0 : v[i].away + 1;
+		v[i].was = v[i].now;
+	}
 }
 
 /* One jail's figures: "pcpu=12,memoryuse=1048576,...". */
@@ -393,9 +531,10 @@ jail_figures(struct jfig *v, size_t max)
 	return (n);
 }
 
-/* One look: a row more, the oldest dropped when there is no room. */
-static void
-look(void)
+/* One look: a row more, the oldest dropped when there is no room.  The
+ * sampler's (and the tests' hist harness's). */
+void
+history_look(void)
 {
 	struct ifaddrs		*ifa0, *ifa;
 	const struct if_data	*ifd;
@@ -482,15 +621,23 @@ look(void)
 		nets[k].now = false;
 	for (k = 0; k < ndisks; k++)
 		disks[k].now = false;
+	for (k = 0; k < njails; k++)
+		jails[k].now = false;
+	for (k = 0; k < nrelays; k++)
+		relays[k].now = false;
+	/* Each interface and disk in the totals, told apart or not; its
+	 * columns where it has a place. */
 	for (ifa = ifa0; ifa != NULL; ifa = ifa->ifa_next) {
 		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family !=
 		    AF_LINK || ifa->ifa_data == NULL || (ifa->ifa_flags &
-		    IFF_LOOPBACK) != 0 || (s = slot(nets, &nnets,
-		    ifa->ifa_name)) == -1)
+		    IFF_LOOPBACK) != 0)
 			continue;
 		ifd = ifa->ifa_data;
-		moved(&nets[s], row + H_BASE + 2 * s, ifd->ifi_ibytes,
-		    ifd->ifi_obytes, secs, &row[H_RX], &row[H_TX]);
+		tally(0, ifa->ifa_name, ifd->ifi_ibytes, ifd->ifi_obytes, secs,
+		    &row[H_RX], &row[H_TX]);
+		if ((s = slot(nets, &nnets, ifa->ifa_name)) != -1)
+			moved(&nets[s], row + H_BASE + 2 * s, ifd->ifi_ibytes,
+			    ifd->ifi_obytes, secs);
 	}
 	for (i = 0; dstat_ok && i < dstat.dinfo->numdevs; i++) {
 		ds = &dstat.dinfo->devices[i];
@@ -498,16 +645,18 @@ look(void)
 			continue;
 		snprintf(name, sizeof(name), "%s%d", ds->device_name,
 		    ds->unit_number);
-		if ((s = slot(disks, &ndisks, name)) == -1)
-			continue;
-		moved(&disks[s], row + H_BASE + 2 * nnets + 2 * s,
-		    ds->bytes[DEVSTAT_READ], ds->bytes[DEVSTAT_WRITE], secs,
-		    &row[H_RD], &row[H_WR]);
+		tally(1, name, ds->bytes[DEVSTAT_READ], ds->bytes[DEVSTAT_WRITE],
+		    secs, &row[H_RD], &row[H_WR]);
+		if ((s = slot(disks, &ndisks, name)) != -1)
+			moved(&disks[s], row + H_BASE + 2 * nnets + 2 * s,
+			    ds->bytes[DEVSTAT_READ], ds->bytes[DEVSTAT_WRITE],
+			    secs);
 	}
 	/* A jail's figures are what they are now, not differences. */
 	for (k = 0; k < nj; k++) {
 		if ((s = slot(jails, &njails, jf[k].name)) == -1)
 			continue;
+		jails[s].now = true;
 		row[H_BASE + 2 * nnets + 2 * ndisks + 2 * s] = (float)jf[k].pcpu;
 		row[H_BASE + 2 * nnets + 2 * ndisks + 2 * s + 1] =
 		    (float)jf[k].mem;
@@ -516,16 +665,19 @@ look(void)
 	for (k = 0; k < nr; k++) {
 		if ((s = slot(relays, &nrelays, fr[k].tag)) == -1)
 			continue;
+		relays[s].now = true;
 		row[H_BASE + 2 * nnets + 2 * ndisks + 2 * njails + 2 * s] =
 		    (float)fr[k].plain;
 		row[H_BASE + 2 * nnets + 2 * ndisks + 2 * njails + 2 * s + 1] =
 		    (float)fr[k].added;
 	}
-	/* One that went away and comes back begins anew. */
-	for (k = 0; k < nnets; k++)
-		nets[k].was = nets[k].now;
-	for (k = 0; k < ndisks; k++)
-		disks[k].was = disks[k].now;
+	/* One that went away and comes back begins anew; one away long
+	 * enough gives its place. */
+	away(nets, nnets);
+	away(disks, ndisks);
+	away(jails, njails);
+	away(relays, nrelays);
+	totals_seen();
 	memcpy(cp_was, cp, sizeof(cp));
 	at_was = at;
 	have_was = true;
@@ -743,9 +895,37 @@ thresholds(const float *row)
 	v[0] = row[H_CPU];
 	v[1] = mem_total > 0 ? 100.0 * row[H_MEM] / (double)mem_total : 0;
 	v[2] = swap_total > 0 ? 100.0 * row[H_SWAP] / (double)swap_total : 0;
+	/* The first judged look, or the limits changed: the faults held to
+	 * them, one of a figure with no limit now cleared, one still open
+	 * (an agent's before this one) taken up. */
+	if (recon) {
+		struct fault_live	fl[3];
+		size_t			n, k;
+
+		recon = false;
+		for (k = 0; k < 2; k++) {
+			for (i = n = 0; i < 3; i++)
+				if ((i == 0) == (k == 0) && limits[i] != 0) {
+					memset(&fl[n], 0, sizeof(fl[n]));
+					fl[n].object = what[i];
+					fl[n++].reason = NULL;
+				}
+			(void)fault_reconcile("sampler", k == 0 ? "cpu" :
+			    "memory", NULL, fl, n, "no limit now");
+			for (i = n = 0; i < 3; i++)
+				if ((i == 0) == (k == 0) && limits[i] != 0) {
+					over[i] = fl[n++].open;
+					over_hold[i].pending = false;
+				}
+		}
+	}
 	for (i = 0; i < 3; i++) {
-		if (limits[i] == 0)
+		/* No limit: over it no more. */
+		if (limits[i] == 0) {
+			over[i] = false;
+			over_hold[i].pending = false;
 			continue;
+		}
 		if (!held(&over_hold[i], over[i] ? v[i] < (double)limits[i] -
 		    5 : v[i] > limits[i], now))
 			continue;
@@ -765,6 +945,45 @@ thresholds(const float *row)
 	rules_check(row, now);
 }
 
+/* The file systems of a pass that may be over the limit (its tenth
+ * below it or more): their faults kept, every other's cleared. */
+static char	**judged;
+static size_t	  njudged, capjudged;
+
+static void
+judged_add(const char *name)
+{
+	char	**nv;
+
+	if (njudged == capjudged) {
+		if ((nv = reallocarray(judged, capjudged + 16, sizeof(*nv))) ==
+		    NULL)
+			return;
+		judged = nv;
+		capjudged += 16;
+	}
+	if ((judged[njudged] = strdup(name)) != NULL)
+		njudged++;
+}
+
+/* A storage threshold event: name's share over its limit, or under it
+ * again (pct < 0: not said). */
+static void
+storage_event(const char *name, double pct, unsigned int limit, bool on)
+{
+	char	q[6 * MNAMELEN];
+
+	json_quote(name, q, sizeof(q));
+	if (pct < 0)
+		event_add("threshold", "{\"what\":\"storage\",\"name\":\"%s\","
+		    "\"limit\":%u,\"over\":%s}", q, limit, on ? "true" :
+		    "false");
+	else
+		event_add("threshold", "{\"what\":\"storage\",\"name\":\"%s\","
+		    "\"value\":%.0f,\"limit\":%u,\"over\":%s}", q, pct, limit,
+		    on ? "true" : "false");
+}
+
 /* A file system's share in use against the limit: a fault either way. */
 static void
 storage_one(const char *name, double pct, unsigned int limit)
@@ -772,6 +991,8 @@ storage_one(const char *name, double pct, unsigned int limit)
 	int	i;
 	bool	want;
 
+	if (limit != 0 && pct > (double)limit - 5)
+		judged_add(name);
 	for (i = 0; i < nstorage_over; i++)
 		if (strcmp(storage_over[i].name, name) == 0)
 			break;
@@ -795,18 +1016,59 @@ storage_one(const char *name, double pct, unsigned int limit)
 	}
 	if (storage_over[i].over) {
 		storage_over[i] = storage_over[--nstorage_over];
-		event_add("threshold", "{\"what\":\"storage\",\"name\":\"%s\","
-		    "\"value\":%.0f,\"limit\":%u,\"over\":false}", name, pct,
-		    limit);
+		storage_event(name, pct, limit, false);
 		fault_clear("storage", name, "%s at %.0f%%, under %u%% again",
 		    name, pct, limit);
 		return;
 	}
 	storage_over[i].over = true;
-	event_add("threshold", "{\"what\":\"storage\",\"name\":\"%s\","
-	    "\"value\":%.0f,\"limit\":%u,\"over\":true}", name, pct, limit);
+	storage_event(name, pct, limit, true);
 	fault_set("storage", "Major", name, "sampler", "%s %.0f%% full, over "
 	    "%u%%", name, pct, limit);
+}
+
+/*
+ * The storage faults held to the pass's file systems: one of a file
+ * system not judged near its limit (under it, gone, or no limit now)
+ * cleared; one still open (an agent's before this one) taken up, over
+ * until it is under the limit again.
+ */
+static void
+storage_reconcile(void)
+{
+	struct fault_live	*fl;
+	size_t			 k;
+	int			 i;
+
+	if ((fl = calloc(njudged + 1, sizeof(*fl))) == NULL)
+		goto out;
+	for (k = 0; k < njudged; k++)
+		fl[k].object = judged[k];
+	(void)fault_reconcile("sampler", "storage", NULL, fl, njudged,
+	    "under its limit, or gone");
+	for (k = 0; k < njudged; k++) {
+		if (!fl[k].open)
+			continue;
+		for (i = 0; i < nstorage_over && strcmp(storage_over[i].name,
+		    judged[k]) != 0; i++)
+			;
+		if (i == nstorage_over) {
+			if (nstorage_over == STORAGE_MAX)
+				continue;
+			memset(&storage_over[i], 0, sizeof(storage_over[i]));
+			snprintf(storage_over[i].name,
+			    sizeof(storage_over[i].name), "%s", judged[k]);
+			nstorage_over++;
+		}
+		storage_over[i].seen = true;
+		storage_over[i].over = true;
+		storage_over[i].h.pending = false;
+	}
+	free(fl);
+out:
+	for (k = 0; k < njudged; k++)
+		free(judged[k]);
+	njudged = 0;
 }
 
 /*
@@ -831,7 +1093,7 @@ storage_fullness(void)
 	time_t		 now;
 	int		 i, n;
 
-	now = time(NULL);
+	now = mono();
 	pthread_mutex_lock(&hist_lock);
 	limit = limits[3];
 	if (storage_at != 0 && now - storage_at < STORAGE_EVERY) {
@@ -890,12 +1152,13 @@ storage_fullness(void)
 			storage_over[i] = storage_over[--nstorage_over];
 			continue;
 		}
-		event_add("threshold", "{\"what\":\"storage\",\"name\":\"%s\","
-		    "\"limit\":%u,\"over\":false}", storage_over[i].name, limit);
+		storage_event(storage_over[i].name, -1, limit, false);
 		fault_clear("storage", storage_over[i].name, limit == 0 ?
 		    "%s: no storage limit now" : "%s is gone", storage_over[i].name);
 		storage_over[i] = storage_over[--nstorage_over];
 	}
+	/* And those an agent before this one left. */
+	storage_reconcile();
 }
 
 /*
@@ -938,80 +1201,150 @@ samples_write(void)
 			fprintf(fp, " %.2f", rows[i * width + k]);
 		fprintf(fp, "\n");
 	}
+	/* On the disk before it is the file: a power lost leaves the one
+	 * before, or this one whole. */
+	if (fflush(fp) == EOF || fsync(fileno(fp)) != 0) {
+		(void)fclose(fp);
+		(void)unlink(tmp);
+		return;
+	}
 	if (fclose(fp) != 0 || rename(tmp, path) == -1)
 		(void)unlink(tmp);
-	saved = time(NULL);
+	saved = mono();
 }
 
-/* What was written down by the agent that ran before: read, if it is
- * of the same devices, and not older than is kept. */
+/* A number of the samples' file, whole, lo to hi; false when it is
+ * none. */
+static bool
+field(const char *w, double lo, double hi, double *v)
+{
+	char	*end;
+
+	if (w == NULL || w[0] == '\0')
+		return (false);
+	errno = 0;
+	*v = strtod(w, &end);
+	return (errno == 0 && *end == '\0' && *v >= lo && *v <= hi);
+}
+
+/* The samples' file not what it should be (why): put aside as .bad,
+ * sampling begun anew. */
+static void
+samples_bad(const char *path, const char *why)
+{
+	char	bad[MAXPATHLEN];
+
+	snprintf(bad, sizeof(bad), "%s.bad", path);
+	if (rename(path, bad) == -1)
+		logmsg(LOG_WARNING, "history: %s: %s; not put aside: %s; "
+		    "sampling anew", path, why, strerror(errno));
+	else
+		logmsg(LOG_WARNING, "history: %s: %s: put aside as %s; "
+		    "sampling anew", path, why, bad);
+}
+
+/*
+ * What was written down by the agent that ran before: read, if it is
+ * of the same devices, and not older than is kept.  Every field is
+ * checked: a head that is not one (a file cut short, a name no device
+ * has) puts the file aside; a row that is not whole is left out.
+ */
 static void
 samples_read(void)
 {
-	char	path[MAXPATHLEN], *line, *p, *w;
-	FILE	*fp;
-	size_t	cap, k, n;
-	double	t;
-	unsigned int	step, keep;
+	struct dev	*v[4] = { nets, disks, jails, relays };
+	char		 path[MAXPATHLEN], name[HIST_NAME], *line, *p, *w;
+	char		 names[4][HIST_DEVS][HIST_NAME];
+	const char	*why;
+	FILE		*fp;
+	float		*row;
+	size_t		 cap, k, n[4] = { 0 }, s, w0, skipped;
+	double		 t, x;
+	bool		 rows_ok = true;
 
 	snprintf(path, sizeof(path), "%s.samples", opts.history_conf);
 	if ((fp = fopen(path, "re")) == NULL)
 		return;
 	line = NULL;
 	cap = 0;
-	if (getline(&line, &cap, fp) == -1 || getline(&line, &cap, fp) == -1) {
+	why = NULL;
+	if (getline(&line, &cap, fp) == -1 || line[0] != '#' ||
+	    getline(&line, &cap, fp) == -1)
+		why = "no head";
+	else {
+		line[strcspn(line, "\n")] = '\0';
+		p = line;
+		if (!field(strsep(&p, " "), 1, HIST_STEP_MAX, &x) ||
+		    !field(strsep(&p, " "), 0, HIST_KEEP_MAX, &x))
+			why = "its head has no step and number kept";
+		/* The devices, in the order the rows have them: four lists,
+		 * "|" between them, each name one a device can have. */
+		for (s = 0; why == NULL && s < 4; s++) {
+			n[s] = 0;
+			while ((w = strsep(&p, " ")) != NULL && strcmp(w, "|") !=
+			    0) {
+				if (w[0] == '\0')
+					continue;
+				dev_name(name, sizeof(name), w);
+				if (n[s] == HIST_DEVS || strcmp(name, w) != 0) {
+					why = "its head names a device no device "
+					    "is, or too many";
+					break;
+				}
+				strlcpy(names[s][n[s]++], w, HIST_NAME);
+			}
+			if (why == NULL && (s < 3) != (w != NULL))
+				why = "its head has not four lists of devices";
+		}
+	}
+	if (why != NULL) {
 		free(line);
 		fclose(fp);
+		samples_bad(path, why);
 		return;
 	}
-	p = line;
-	step = (unsigned int)strtoul(strsep(&p, " "), NULL, 10);
-	keep = (unsigned int)strtoul(strsep(&p, " "), NULL, 10);
-	(void)step;
-	(void)keep;
-	/* The devices, in the order the rows have them. */
-	n = 0;
-	while ((w = strsep(&p, " \n")) != NULL && strcmp(w, "|") != 0)
-		if (w[0] != '\0' && (int)n < HIST_DEVS)
-			strlcpy(nets[n++].name, w, sizeof(nets[0].name));
-	nnets = n;
-	n = 0;
-	while ((w = strsep(&p, " \n")) != NULL && strcmp(w, "|") != 0)
-		if (w[0] != '\0' && (int)n < HIST_DEVS)
-			strlcpy(disks[n++].name, w, sizeof(disks[0].name));
-	ndisks = n;
-	n = 0;
-	while ((w = strsep(&p, " \n")) != NULL && strcmp(w, "|") != 0)
-		if (w[0] != '\0' && (int)n < HIST_DEVS)
-			strlcpy(jails[n++].name, w, sizeof(jails[0].name));
-	njails = n;
-	n = 0;
-	while ((w = strsep(&p, " \n")) != NULL)
-		if (w[0] != '\0' && (int)n < HIST_DEVS)
-			strlcpy(relays[n++].name, w, sizeof(relays[0].name));
-	nrelays = n;
+	for (s = 0; s < 4; s++)
+		for (k = 0; k < n[s]; k++)
+			strlcpy(v[s][k].name, names[s][k], HIST_NAME);
+	nnets = n[0];
+	ndisks = n[1];
+	njails = n[2];
+	nrelays = n[3];
 	reshape(hist_keep, nnets, ndisks, njails, nrelays);
-	while (rows != NULL && getline(&line, &cap, fp) != -1) {
+	skipped = 0;
+	if ((row = calloc(width, sizeof(*row))) == NULL)
+		rows_ok = false;
+	while (rows != NULL && rows_ok && getline(&line, &cap, fp) != -1) {
+		line[strcspn(line, "\n")] = '\0';
 		p = line;
-		t = strtod(strsep(&p, " "), NULL);
-		if (t <= 0 || t < (double)time(NULL) - (double)hist_step *
-		    hist_keep)
+		if (!field(strsep(&p, " "), 1, 1e12, &t)) {
+			skipped++;
 			continue;
+		}
+		if (t < (double)time(NULL) - (double)hist_step * hist_keep)
+			continue;
+		/* Each figure a number, as many as a row is wide. */
+		for (w0 = 0; w0 < width && field(strsep(&p, " "), -1e30, 1e30,
+		    &x); w0++)
+			row[w0] = (float)x;
+		if (w0 < width || p != NULL) {
+			skipped++;
+			continue;
+		}
 		if (nrows == hist_keep) {
 			memmove(times, times + 1, (nrows - 1) * sizeof(*times));
 			memmove(rows, rows + width, (nrows - 1) * width *
 			    sizeof(*rows));
 			nrows--;
 		}
-		times[nrows] = t;
-		for (k = 0; k < width; k++)
-			rows[nrows * width + k] = (w = strsep(&p, " \n")) !=
-			    NULL ? (float)strtod(w, NULL) : 0;
-		nrows++;
+		memcpy(rows + nrows * width, row, width * sizeof(*row));
+		times[nrows++] = t;
 	}
+	free(row);
 	free(line);
 	fclose(fp);
-	logmsg(LOG_INFO, "history: %zu samples read from %s", nrows, path);
+	logmsg(LOG_INFO, "history: %zu samples read from %s%s", nrows, path,
+	    skipped > 0 ? ", rows not whole left out" : "");
 }
 
 /* Written down, for the next start: called when the agent stops. */
@@ -1040,9 +1373,12 @@ sampling_off(void)
 		rules[i].over = false;
 		memset(&rules[i].h, 0, sizeof(rules[i].h));
 	}
+	/* On again: the faults held to the limits anew. */
+	recon = true;
 	pthread_mutex_unlock(&hist_lock);
 	nstorage_over = 0;
-	fault_clear_by("sampler", "sampling switched off");
+	(void)fault_reconcile("sampler", NULL, NULL, NULL, 0,
+	    "sampling switched off");
 }
 
 static void *
@@ -1070,13 +1406,13 @@ sampler(void *arg __unused)
 			pthread_cond_wait(&hist_wake, &hist_lock);
 		}
 		pthread_mutex_unlock(&hist_lock);
-		look();
+		history_look();
 		pthread_mutex_lock(&hist_lock);
-		if (time(NULL) - saved >= HIST_SAVE_EVERY)
+		if (mono() - saved >= HIST_SAVE_EVERY)
 			samples_write();
 		/* The first after a second, for one to show soon. */
 		wait = nrows == 0 ? 1 : hist_step;
-		clock_gettime(CLOCK_REALTIME, &until);
+		clock_gettime(CLOCK_MONOTONIC, &until);
 		until.tv_sec += wait;
 		/* Woken early when how it samples was changed. */
 		(void)pthread_cond_timedwait(&hist_wake, &hist_lock, &until);
@@ -1158,14 +1494,24 @@ hconf_write(unsigned int step, unsigned int keep, unsigned int hold, bool on)
 void
 history_start(void)
 {
-	pthread_t	tid;
-	int		error;
+	pthread_condattr_t	ca;
+	pthread_t		tid;
+	int			error;
 
+	/* Its waits by the monotonic clock: a step of the wall clock
+	 * neither holds the sampler nor hurries it. */
+	if (pthread_condattr_init(&ca) != 0 ||
+	    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC) != 0 ||
+	    pthread_cond_init(&hist_wake, &ca) != 0) {
+		logmsg(LOG_WARNING, "no history is kept: its clock");
+		return;
+	}
+	(void)pthread_condattr_destroy(&ca);
 	hconf_read();
 	pthread_mutex_lock(&hist_lock);
 	reshape(hist_keep, 0, 0, 0, 0);
 	samples_read();
-	saved = time(NULL);
+	saved = mono();
 	pthread_mutex_unlock(&hist_lock);
 	if ((error = pthread_create(&tid, NULL, sampler, NULL)) != 0) {
 		logmsg(LOG_WARNING, "no history is kept: pthread_create: %s",
@@ -1261,6 +1607,8 @@ do_history(struct work *w, uint64_t after, bool set, uint32_t step,
 		if (hist_on && !on)
 			off_told = false;
 		hist_on = on;
+		/* The faults held to the limits as they are now. */
+		recon = true;
 		reshape(keep, nnets, ndisks, njails, nrelays);
 		pthread_cond_broadcast(&hist_wake);
 		pthread_mutex_unlock(&hist_lock);

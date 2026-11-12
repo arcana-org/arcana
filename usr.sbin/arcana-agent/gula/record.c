@@ -14,7 +14,11 @@
  * record, kept a day in memory and on disk beside the agent's files,
  * and an event (sdwan-security) as it comes, twenty a second at most.
  * When a rule nears its logamount, the agent resets its log so the
- * flow goes on.
+ * flow goes on.  The routing socket carries every routing message, and
+ * FreeBSD's has no filter by type (ROUTE_MSGFILTER is OpenBSD's): the
+ * others are read and passed over.  What the kernel dropped for want of
+ * room (ENOBUFS) is counted, said with the record (lost) and logged
+ * once a minute at most.
  */
 
 #include <sys/param.h>
@@ -63,22 +67,8 @@ static struct rec	*ring;
 static int		 first, count;
 static uint64_t		 seq;
 static uint64_t		 dropped;	/* events beyond the second's twenty */
+static uint64_t		 overflows;	/* the socket's, the kernel's drops */
 static bool		 dirty;
-
-/* A string as JSON's: quotes and backslashes escaped. */
-static const char *
-jq(const char *s, char *buf, size_t len)
-{
-	size_t	i, n;
-
-	for (i = 0, n = 0; s != NULL && s[i] != '\0' && n + 2 < len; i++) {
-		if (s[i] == '"' || s[i] == '\\')
-			buf[n++] = '\\';
-		buf[n++] = (unsigned char)s[i] < 0x20 ? ' ' : s[i];
-	}
-	buf[n] = '\0';
-	return (buf);
-}
 
 /* The entries of the day, as JSON, oldest first. */
 static char *
@@ -240,7 +230,8 @@ record_message(const struct rt_msghdr *rtm, size_t len)
 	struct sockaddr_in6		 sin6;
 	ipfwlog_rtsock_hdr_v2		 hdr;
 	struct rec			 r;
-	char				 jc[200], js[64], jd[64];
+	char				 jc[6 * 82], js[6 * 48], jd[6 * 48];
+	char				 ji[6 * IFNAMSIZ], ja[6 * 12];
 	size_t				 salen, n;
 	int				 i;
 	bool				 tell;
@@ -304,8 +295,10 @@ record_message(const struct rt_msghdr *rtm, size_t len)
 	if (tell)
 		event_add("sdwan-security", "{\"seq\":%ju,\"rule\":%u,\"action\":\"%s"
 		    "\",\"src\":\"%s\",\"dst\":\"%s\",\"iface\":\"%s\",\"comment\":\"%s\"}",
-		    (uintmax_t)seq, r.rule, r.action, jq(r.src, js, sizeof(js)), jq(
-		    r.dst, jd, sizeof(jd)), r.iface, jq(r.comment, jc, sizeof(jc)));
+		    (uintmax_t)seq, r.rule, json_quote(r.action, ja, sizeof(ja)),
+		    json_quote(r.src, js, sizeof(js)), json_quote(r.dst, jd,
+		    sizeof(jd)), json_quote(r.iface, ji, sizeof(ji)),
+		    json_quote(r.comment, jc, sizeof(jc)));
 	if (rtm->rtm_flags & RTF_PROTO1)
 		reset_log(r.rule);
 }
@@ -315,7 +308,7 @@ reader(void *arg __unused)
 {
 	char		 buf[4096];
 	ssize_t		 n;
-	time_t		 saved;
+	time_t		 saved, said;
 	int		 fd;
 
 	if ((fd = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC)) == -1) {
@@ -324,11 +317,27 @@ reader(void *arg __unused)
 		return (NULL);
 	}
 	saved = time(NULL);
+	said = 0;
 	for (;;) {
 		n = read(fd, buf, sizeof(buf));
 		if (n < 0) {
-			if (errno == EINTR || errno == ENOBUFS)
+			if (errno == EINTR)
 				continue;
+			/* Messages the kernel dropped, the socket full:
+			 * counted, said once a minute. */
+			if (errno == ENOBUFS) {
+				pthread_mutex_lock(&lock);
+				overflows++;
+				pthread_mutex_unlock(&lock);
+				if (time(NULL) - said >= 60) {
+					said = time(NULL);
+					logmsg(LOG_WARNING, "sdwan record: the "
+					    "routing socket overflowed (%ju times):"
+					    " logged packets lost",
+					    (uintmax_t)overflows);
+				}
+				continue;
+			}
 			break;
 		}
 		if (n >= (ssize_t)sizeof(struct rt_msghdr))
@@ -439,6 +448,9 @@ record_json(ucl_object_t *top)
 	    false);
 	ucl_object_insert_key(o, ucl_object_fromint((int64_t)dropped),
 	    "untold", 0, false);
+	if (overflows > 0)
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)overflows),
+		    "lost", 0, false);
 	pthread_mutex_unlock(&lock);
 	ucl_object_insert_key(o, arr, "last", 0, false);
 	ucl_object_insert_key(top, o, "record", 0, false);
