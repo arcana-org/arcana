@@ -248,7 +248,7 @@ icap_start(struct work *w, const struct instance *in, const char *text,
 	if (sdwan_conf_write(wfmt(w, "sdwan-icap-%s.conf", in->name), text,
 	    errp) != 0)
 		return (-1);
-	(void)mkdir("/var/log/c-icap", 0755);
+	(void)mkdir_mode("/var/log/c-icap", 0755);
 	icap_stop(w, in->name);
 	(void)unlink(icap_path(w, in->name, "ctl"));
 	k = 0;
@@ -461,8 +461,9 @@ lists_write(struct work *w, const char *name, const ucl_object_t *lists,
 	lists_clear(w, name);
 	it = NULL;
 	while ((l = ucl_object_iterate(lists, &it, true)) != NULL)
-		if (sdwan_conf_write(wfmt(w, "sdwan-proxy-%s.list-%s", name,
-		    ucl_object_key(l)), ucl_object_tostring(l), errp) != 0)
+		if (sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.list-%s",
+		    name, ucl_object_key(l)), ucl_object_tostring(l), "squid",
+		    errp) != 0)
 			return (false);
 	return (true);
 }
@@ -565,10 +566,10 @@ hashes_write(struct work *w, const ucl_object_t *h, const char **errp)
 	dir = wstrdup(w, clamav_db(w));
 	for (p = dir + 1; (p = strchr(p, '/')) != NULL; p++) {
 		*p = '\0';
-		(void)mkdir(dir, 0755);
+		(void)mkdir_mode(dir, 0755);
 		*p = '/';
 	}
-	(void)mkdir(dir, 0755);
+	(void)mkdir_mode(dir, 0755);
 	for (i = 0; i < nitems(sig_ext); i++) {
 		path = wfmt(w, "%s/arcana-sdwan.%s", clamav_db(w), sig_ext[i]);
 		if ((f = ucl_object_lookup(h, sig_ext[i])) == NULL) {
@@ -803,10 +804,12 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 			break;
 		}
 		inst_chown(w, inst_path(w, ni[k].name, "pem"), false);
-		if (sdwan_conf_write(wfmt(w, "sdwan-proxy-%s.deny", ni[k].name),
-		    denies[k], &e) != 0 || !lists_write(w, ni[k].name,
-		    ucl_object_lookup(in, "lists"), &e) || sdwan_conf_write(wfmt(w,
-		    "sdwan-proxy-%s.conf", ni[k].name), confs[k], &e) != 0) {
+		/* Read again by Squid as its user at a reconfigure. */
+		if (sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.deny",
+		    ni[k].name), denies[k], "squid", &e) != 0 || !lists_write(w,
+		    ni[k].name, ucl_object_lookup(in, "lists"), &e) ||
+		    sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.conf",
+		    ni[k].name), confs[k], "squid", &e) != 0) {
 			step_end(w, step, false, "%s", e);
 			*errp = wfmt(w, "%s: %s", ni[k].name, e);
 			ok = false;

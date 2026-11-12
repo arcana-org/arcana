@@ -153,6 +153,25 @@ geom_title(const struct arc_job_spec *sp)
 	return (t);
 }
 
+/*
+ * The subcommands that write a provider's metadata or wipe it, or its
+ * key (geli's init, onetime, kill, clear, restore, resize; the classes'
+ * label, clear, create, insert, add).
+ */
+static bool
+wipes(const char *v)
+{
+	static const char *const verbs[] = { "init", "onetime", "kill",
+	    "clear", "restore", "resize", "label", "create", "insert", "add",
+	    "setkey", "delkey" };
+	size_t	i;
+
+	for (i = 0; i < nitems(verbs); i++)
+		if (strcmp(v, verbs[i]) == 0)
+			return (true);
+	return (false);
+}
+
 int
 do_geom_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
@@ -171,6 +190,21 @@ do_geom_job(struct work *w, const struct arc_job_spec *sp,
 		*errp = "the host has no geom(8)";
 		return (-1);
 	}
+	/* What writes over or wipes a provider's metadata, or its key,
+	 * touches none of the system's (storage_protected()): each word
+	 * that is no flag and no value of one is looked at. */
+	if (wipes(sp->names.v[0]))
+		for (i = 1; i < sp->names.n; i++) {
+			const char	*why;
+
+			if (sp->names.v[i][0] == '-' || strchr(sp->names.v[i],
+			    '=') != NULL || (why = storage_protected(w,
+			    sp->names.v[i], true)) == NULL)
+				continue;
+			*errp = wfmt(w, "geom %s %s: %s: it is not touched from "
+			    "here", sp->verb, sp->names.v[0], why);
+			return (-1);
+		}
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)bin;
 	argv[n++] = (char *)(uintptr_t)sp->verb;

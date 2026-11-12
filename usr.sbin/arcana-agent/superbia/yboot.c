@@ -712,7 +712,7 @@ arcana_sysctl_boot_edit(cbl_req *req, const struct arcana_sysctl *before,
 		error = refuse(req, "loader-conf-conflict", err);
 		goto out;
 	}
-	if (mkdir(rooted(path, sizeof(path), BOOT_DIR), 0755) == -1 &&
+	if (mkdir_mode(rooted(path, sizeof(path), BOOT_DIR), 0755) == -1 &&
 	    errno != EEXIST) {
 		(void)snprintf(err, sizeof(err), "%s: %s", path,
 		    strerror(errno));

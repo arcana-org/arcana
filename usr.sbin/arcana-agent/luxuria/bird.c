@@ -15,8 +15,10 @@
 
 #include <ctype.h>
 #include <err.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <glob.h>
 #include <limits.h>
 #include <pthread.h>
@@ -1230,6 +1232,9 @@ bird_conf_settle(void)
 	pthread_mutex_unlock(&pend_lock);
 }
 
+static size_t	jail_glob(struct work *, const char *, const char **, size_t,
+		    size_t);
+
 /* The main file, and the files its include lines name; *np of them. */
 const char **
 bird_conf_files(struct work *w, size_t *np)
@@ -1237,7 +1242,7 @@ bird_conf_files(struct work *w, size_t *np)
 	const char	**v, *p, *q, *e;
 	char		*text, *pat;
 	glob_t		 g;
-	size_t		 len, n, i, skip;
+	size_t		 len, n, i;
 
 	v = wcalloc(w, 66, sizeof(*v));
 	n = 0;
@@ -1258,22 +1263,63 @@ bird_conf_files(struct work *w, size_t *np)
 				    opts.bird_conf) : 1, q != NULL ?
 				    opts.bird_conf : ".", pat);
 			}
-			/* In a jail the names are looked for under its root,
-			 * and told as the jail knows them. */
-			skip = w->jail != NULL ? strlen(w->jroot) : 0;
-			if (glob(skip > 0 ? wfmt(w, "%s%s", w->jroot, pat) :
-			    pat, 0, NULL, &g) != 0)
+			/* In a jail the names are looked for beneath its
+			 * root, never through its links, and told as the
+			 * jail knows them. */
+			if (w->jail != NULL) {
+				n = jail_glob(w, pat, v, n, 64);
+				continue;
+			}
+			if (glob(pat, 0, NULL, &g) != 0)
 				continue;
 			for (i = 0; i < g.gl_pathc && n < 64; i++)
-				if (strlen(g.gl_pathv[i]) > skip &&
-				    conf_file_ok(w, g.gl_pathv[i] + skip))
-					v[n++] = wstrdup(w, g.gl_pathv[i] +
-					    skip);
+				if (conf_file_ok(w, g.gl_pathv[i]))
+					v[n++] = wstrdup(w, g.gl_pathv[i]);
 			globfree(&g);
 		}
 	}
 	*np = n;
 	return (v);
+}
+
+/*
+ * An include's pattern in w's jail: its directory taken as it is,
+ * opened beneath the jail's root (scope_dirfd()), its last name matched
+ * against the entries there (fnmatch(3)); a pattern in a directory's
+ * name matches nothing.  glob(3) would follow the jail's links out of
+ * it, and list the host's.  The names kept added to v from n, max at
+ * most; the new n.
+ */
+static size_t
+jail_glob(struct work *w, const char *pat, const char **v, size_t n,
+    size_t max)
+{
+	struct dirent	**names;
+	const char	 *slash, *base;
+	char		 *dir;
+	int		  dfd, k, i;
+
+	if ((slash = strrchr(pat, '/')) == NULL)
+		return (n);
+	dir = slash == pat ? wstrdup(w, "/") : wstrndup(w, pat, (size_t)(slash -
+	    pat));
+	base = slash + 1;
+	if (strpbrk(dir, "*?[") != NULL || (dfd = scope_dirfd(w, dir)) == -1)
+		return (n);
+	k = scandirat(dfd, ".", &names, NULL, alphasort);
+	close(dfd);
+	for (i = 0; i < k; i++) {
+		if (n < max && names[i]->d_name[0] != '.' &&
+		    fnmatch(base, names[i]->d_name, FNM_PERIOD) == 0 &&
+		    conf_file_ok(w, wfmt(w, "%s/%s", strcmp(dir, "/") == 0 ?
+		    "" : dir, names[i]->d_name)))
+			v[n++] = wfmt(w, "%s/%s", strcmp(dir, "/") == 0 ? "" :
+			    dir, names[i]->d_name);
+		free(names[i]);
+	}
+	if (k > 0)
+		free(names);
+	return (n);
 }
 
 /*

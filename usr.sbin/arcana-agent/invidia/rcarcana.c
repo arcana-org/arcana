@@ -977,7 +977,7 @@ rca_write(struct rca *x, cbl_req *req, char *err, size_t errlen)
 		(void)snprintf(dir, sizeof(dir), "%s", x->path);
 		if ((slash = strrchr(dir, '/')) != NULL) {
 			*slash = '\0';
-			(void)mkdir(dir, 0755);
+			(void)mkdir_mode(dir, 0755);
 		}
 		if ((error = keep(x, x->path)) == 0 && vc_write(x->f, x->path,
 		    0644, err, errlen) == -1)

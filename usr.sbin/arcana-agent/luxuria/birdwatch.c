@@ -353,6 +353,8 @@ watch(void *arg __unused)
 	for (;;) {
 		sleep((unsigned int)opts.bird_watch_s);
 		work_init(&w);
+		/* A read: its programs in a jail end within JAIL_READ_SEC. */
+		w.nice = true;
 		nplaces = 0;
 		plugins_there(&w, 0, NULL, &pl, &np);
 		for (k = 0; k < np; k++)

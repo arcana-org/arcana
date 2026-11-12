@@ -127,7 +127,12 @@ inst_path(struct work *w, const struct instance *in, const char *ext)
 	return (wstrdup(w, buf));
 }
 
-/* birdc on an instance's socket; 0 and its output when it answered. */
+/*
+ * birdc on an instance's socket; 0 and its output when it answered.
+ * Within JAIL_READ_SEC, or killed and res->timedout: a jail edge's root
+ * may put a birdc there that never ends, and the watch, the reads and
+ * the steering's BFD would wait on it.
+ */
 static int
 inst_birdc(struct work *w, const struct instance *in, const char *a,
     const char *b, struct execres *res)
@@ -144,6 +149,7 @@ inst_birdc(struct work *w, const struct instance *in, const char *a,
 	if (b != NULL)
 		argv[n++] = (char *)(uintptr_t)b;
 	argv[n] = NULL;
+	exec_set_limit(JAIL_READ_SEC);
 	return (run_exec(w, argv, res));
 }
 
@@ -207,6 +213,9 @@ inst_start(struct work *w, const struct instance *in, const char **errp)
 	argv[n++] = (char *)(uintptr_t)"-P";
 	argv[n++] = (char *)(uintptr_t)inst_path(w, in, "pid");
 	argv[n] = NULL;
+	/* bird puts itself in the background at once: the lock the
+	 * instances are applied under is not held for longer. */
+	exec_set_limit(JAIL_READ_SEC);
 	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		*errp = wtext(w, exec_error(w, &res, "bird"));
 		return (-1);
@@ -348,6 +357,8 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 			    "bird %s%s%s stopped", instances[i].name, jail[0] !=
 			    '\0' ? " of " : "", jail);
 			inst_down(w, &instances[i]);
+			fault_clear("bird-instance", instances[i].name, "the BIRD "
+			    "instance %s is stopped", instances[i].name);
 			step_end(w, step, true, NULL);
 		}
 	}
@@ -364,7 +375,7 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 		e = NULL;
 		inst_scope(w, &ni[k]);
 		if (jail[0] != '\0' ? scope_replace(w, inst_path(w, &ni[k],
-		    "conf"), conf, strlen(conf), 0644, NULL) != 0 && (e =
+		    "conf"), conf, strlen(conf), 0600, NULL) != 0 && (e =
 		    wfmt(w, "%s: %s", inst_path(w, &ni[k], "conf"), strerror(
 		    errno))) != NULL : sdwan_conf_write(wfmt(w, "sdwan-bird-%s.conf",
 		    ni[k].name), conf, &e) != 0) {
@@ -379,6 +390,7 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 		argv[2] = (char *)(uintptr_t)"-c";
 		argv[3] = (char *)(uintptr_t)inst_path(w, &ni[k], "conf");
 		argv[4] = NULL;
+		exec_set_limit(JAIL_READ_SEC);
 		if (run_exec(w, argv, &res) != 0) {
 			step_end(w, step, false, "bird does not take it");
 			*errp = wfmt(w, "%s: bird does not take it: %s",
@@ -430,7 +442,8 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 /*
  * The BFD sessions of an instance, as "show bfd sessions" lists them:
  * a heading, then a line each of address, interface, state, since,
- * interval, timeout; into out, at most max; how many.
+ * interval, timeout; into out, at most max; how many, -1 when birdc
+ * did not answer in time.
  */
 static int
 bfd_read(struct work *w, const struct instance *in, struct bfd *out,
@@ -442,7 +455,7 @@ bfd_read(struct work *w, const struct instance *in, struct bfd *out,
 
 	if (inst_birdc(w, in, "show", "bfd sessions", &res) != 0 || res.out ==
 	    NULL)
-		return (0);
+		return (res.timedout ? -1 : 0);
 	n = 0;
 	text = wstrdup(w, res.out);
 	while (n < max && (line = strsep(&text, "\n")) != NULL) {
@@ -484,7 +497,7 @@ bfd_watch(void *arg __unused)
 	struct work	 w;
 	struct instance	 in[INSTANCES_MAX];
 	struct bfd	*now, *chg;
-	int		 n, i, k, m, was, nchg, round;
+	int		 n, i, k, m, r, was, nchg, round;
 	bool		 changed;
 
 	if ((now = calloc(BFD_MAX, sizeof(*now))) == NULL || (chg = calloc(
@@ -500,9 +513,25 @@ bfd_watch(void *arg __unused)
 		if (n == 0)
 			continue;
 		work_init(&w);
+		w.nice = true;
 		m = 0;
-		for (i = 0; i < n && m < BFD_MAX; i++)
-			m += bfd_read(&w, &in[i], now + m, BFD_MAX - m);
+		for (i = 0; i < n && m < BFD_MAX; i++) {
+			if ((r = bfd_read(&w, &in[i], now + m, BFD_MAX - m)) >= 0) {
+				m += r;
+				continue;
+			}
+			/* Not waited for: its sessions as last read, not
+			 * taken down by a birdc that hangs, and the instance
+			 * said not to answer. */
+			fault_set("bird-instance", "Critical", in[i].name,
+			    "bird", "the BIRD instance %s does not answer "
+			    "within %d s", in[i].name, JAIL_READ_SEC);
+			pthread_mutex_lock(&lock);
+			for (k = 0; k < nbfds && m < BFD_MAX; k++)
+				if (strcmp(bfds[k].instance, in[i].name) == 0)
+					now[m++] = bfds[k];
+			pthread_mutex_unlock(&lock);
+		}
 		changed = false;
 		nchg = 0;
 		/* Seen up once: from then on, down is a fault. */
@@ -590,8 +619,15 @@ protocols_watch(struct work *w, const struct instance *in)
 	char		*text, *line, *word, *rest, obj[160];
 	int		 k;
 
-	if (inst_birdc(w, in, "show", "protocols", &res) != 0 || res.out ==
-	    NULL) {
+	if (inst_birdc(w, in, "show", "protocols", &res) != 0 &&
+	    res.timedout) {
+		/* There, and not answering: not started a second time. */
+		fault_set("bird-instance", "Critical", name, "bird", "the BIRD "
+		    "instance %s does not answer within %d s", name,
+		    JAIL_READ_SEC);
+		return;
+	}
+	if (res.status != 0 || res.out == NULL) {
 		struct instance	again = *in;
 
 		/* Gone (BIRD 3.3.3 has died on a reconfigure): started
@@ -727,23 +763,35 @@ void
 sdwan_bird_json(struct work *w, ucl_object_t *top)
 {
 	struct execres	 res;
+	struct instance	*iv;
+	struct bfd	*bv;
 	ucl_object_t	*arr, *o, *ps, *p;
 	char		*text, *line, *word, *rest;
-	int		 i, k;
+	int		 i, k, niv, nbv;
 
+	/* Copied, and birdc run without the lock: the steering asks BFD's
+	 * state under it, and an instance that does not answer would hold
+	 * every other edge's reads and failover until it is killed. */
+	iv = wcalloc(w, INSTANCES_MAX, sizeof(*iv));
+	bv = wcalloc(w, BFD_MAX, sizeof(*bv));
 	pthread_mutex_lock(&lock);
+	niv = ninstances;
+	memcpy(iv, instances, sizeof(*iv) * (size_t)niv);
+	nbv = nbfds;
+	memcpy(bv, bfds, sizeof(*bv) * (size_t)nbv);
+	pthread_mutex_unlock(&lock);
 	arr = ucl_object_typed_new(UCL_ARRAY);
-	for (i = 0; i < ninstances; i++) {
+	for (i = 0; i < niv; i++) {
 		o = ucl_object_typed_new(UCL_OBJECT);
-		ucl_object_insert_key(o, ucl_object_fromstring(instances[i].name),
+		ucl_object_insert_key(o, ucl_object_fromstring(iv[i].name),
 		    "name", 0, false);
-		ucl_object_insert_key(o, ucl_object_fromint(instances[i].fib),
+		ucl_object_insert_key(o, ucl_object_fromint(iv[i].fib),
 		    "fib", 0, false);
-		if (instances[i].jail[0] != '\0')
+		if (iv[i].jail[0] != '\0')
 			ucl_object_insert_key(o, ucl_object_fromstring(
-			    instances[i].jail), "jail", 0, false);
+			    iv[i].jail), "jail", 0, false);
 		ps = ucl_object_typed_new(UCL_ARRAY);
-		if (inst_birdc(w, &instances[i], "show", "protocols",
+		if (inst_birdc(w, &iv[i], "show", "protocols",
 		    &res) == 0 && res.out != NULL) {
 			ucl_object_insert_key(o, ucl_object_frombool(true),
 			    "running", 0, false);
@@ -785,24 +833,23 @@ sdwan_bird_json(struct work *w, ucl_object_t *top)
 		ucl_object_insert_key(o, ps, "protocols", 0, false);
 		/* Its BFD sessions, as last read. */
 		ps = ucl_object_typed_new(UCL_ARRAY);
-		for (k = 0; k < nbfds; k++) {
-			if (strcmp(bfds[k].instance, instances[i].name) != 0)
+		for (k = 0; k < nbv; k++) {
+			if (strcmp(bv[k].instance, iv[i].name) != 0)
 				continue;
 			p = ucl_object_typed_new(UCL_OBJECT);
 			ucl_object_insert_key(p, ucl_object_fromstring(
-			    bfds[k].address), "address", 0, false);
+			    bv[k].address), "address", 0, false);
 			ucl_object_insert_key(p, ucl_object_fromstring(
-			    bfds[k].iface), "interface", 0, false);
+			    bv[k].iface), "interface", 0, false);
 			ucl_object_insert_key(p, ucl_object_fromstring(
-			    bfds[k].state == PROBE_UP ? "up" : bfds[k].state ==
+			    bv[k].state == PROBE_UP ? "up" : bv[k].state ==
 			    PROBE_DOWN ? "down" : "unknown"), "state", 0, false);
 			ucl_object_insert_key(p, ucl_object_fromstring(
-			    bfds[k].since), "since", 0, false);
+			    bv[k].since), "since", 0, false);
 			ucl_array_append(ps, p);
 		}
 		ucl_object_insert_key(o, ps, "bfd", 0, false);
 		ucl_array_append(arr, o);
 	}
 	ucl_object_insert_key(top, arr, "bird", 0, false);
-	pthread_mutex_unlock(&lock);
 }

@@ -15,8 +15,12 @@
  *   ifconfig, route, netstat, sockstat, ngctl
  *		the host's own programs, with their -j: they attach to
  *		the jail themselves, and need nothing in it.
- *   sysrc	the host's, with -R and the jail's root: the jail's own
+ *   sysrc	the host's, with -j and the jail's number: the jail's own
  *		rc.conf is where its network is kept for its next start.
+ *		Never -R with the jail's root: sysrc(8) runs the jail's
+ *		/bin/sh by chroot(8), as the host's root, when no running
+ *		jail has that path, which the jail's root can see to; -j
+ *		has jexec(8) alone, and fails when the jail is gone.
  *   birdc, bird, wg
  *		the jail's own programs, through jexec(8): the daemon in
  *		the jail is the jail's version, and so must be what
@@ -118,23 +122,17 @@ scope_argv(struct work *w, char *const argv[])
 	 */
 	if (argv[0] != NULL && argv[1] != NULL && ((strcmp(argv[1], "-j") ==
 	    0 && (argv[0] == opts.ifconfig_bin || argv[0] == opts.netstat_bin ||
-	    argv[0] == opts.ngctl_bin)) || (strcmp(argv[1], "-R") == 0 &&
-	    argv[0] == opts.sysrc_bin)))
+	    argv[0] == opts.ngctl_bin || argv[0] == opts.sysrc_bin))))
 		return (argv);
 	for (n = 0; argv[n] != NULL; n++)
 		;
 	v = wcalloc(w, n + 4, sizeof(*v));
 	k = 0;
 	if (argv[0] == opts.ifconfig_bin || argv[0] == opts.netstat_bin ||
-	    argv[0] == opts.ngctl_bin) {
+	    argv[0] == opts.ngctl_bin || argv[0] == opts.sysrc_bin) {
 		v[k++] = argv[0];
 		v[k++] = (char *)(uintptr_t)"-j";
 		v[k++] = wfmt(w, "%d", w->jid);
-		i = 1;
-	} else if (argv[0] == opts.sysrc_bin) {
-		v[k++] = argv[0];
-		v[k++] = (char *)(uintptr_t)"-R";
-		v[k++] = (char *)(uintptr_t)w->jroot;
 		i = 1;
 	} else if (argv[0] == opts.birdc_bin || argv[0] == opts.bird_bin ||
 	    argv[0] == opts.wg_bin ||
@@ -266,7 +264,7 @@ helper_socket(int jid, const char *verb, const char *word)
 	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
 	    O_RDONLY, 0);
 	posix_spawn_file_actions_adddup2(&fa, sp[1], STDOUT_FILENO);
-	rc = posix_spawn(&pid, argv[0], &fa, NULL, argv, noenv);
+	rc = agent_spawn(&pid, argv[0], &fa, NULL, argv, noenv);
 	posix_spawn_file_actions_destroy(&fa);
 	close(sp[1]);
 	if (rc != 0) {
@@ -616,7 +614,9 @@ scope_mkdirs(struct work *w, const char *dir)
 		next = c + strcspn(c, "/");
 		if (*next == '/')
 			*next++ = '\0';
-		if (mkdirat(fd, c, 0755) == -1 && errno != EEXIST)
+		if (mkdirat(fd, c, 0755) == 0)
+			(void)fchmodat(fd, c, 0755, AT_SYMLINK_NOFOLLOW);
+		else if (errno != EEXIST)
 			break;
 		nfd = openat(fd, c, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
 		    O_CLOEXEC | O_RESOLVE_BENEATH);
@@ -800,6 +800,12 @@ scope_helper(int argc, char **argv)
 		return (carp_helper(argc - 1, argv + 1));
 	if (strcmp(argv[1], "zfs-pipe") == 0)
 		return (zfs_pipe(argc - 1, argv + 1));
+	/* Of the host's alone: what outlives a request, out of the
+	 * daemon's process. */
+	if (jid == 0 && strcmp(argv[1], "run-wait") == 0)
+		return (run_wait(argc - 1, argv + 1));
+	if (jid == 0 && strcmp(argv[1], "service-detach") == 0)
+		return (service_detach(argc - 1, argv + 1));
 	/* The jail's models served on standard input, its LNE root. */
 	if (strcmp(argv[1], "lne-serve") == 0 && argc == 2)
 		return (lne_serve());

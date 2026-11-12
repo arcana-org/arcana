@@ -105,11 +105,11 @@ captures_dir(const char *inst, char *buf, size_t len)
 	char	rd[MAXPATHLEN];
 
 	suricata_inst_path(inst, "replay.d", rd, sizeof(rd));
-	if (mkdir(rd, 0750) == -1 && errno != EEXIST)
+	if (mkdir_mode(rd, 0750) == -1 && errno != EEXIST)
 		return (false);
 	if ((size_t)snprintf(buf, len, "%s/captures", rd) >= len)
 		return (false);
-	return (mkdir(buf, 0750) == 0 || errno == EEXIST);
+	return (mkdir_mode(buf, 0750) == 0 || errno == EEXIST);
 }
 
 /* The instance there is: its configuration. */

@@ -15,7 +15,8 @@
  * host to be checked against before it takes the files.  The agent's
  * own identity (its TLS key and certificates, its SSH keys) is never in
  * it: a host made the same is another host still, enrolled as itself.
- * Secrets (WireGuard's and strongSwan's) are only when asked for.
+ * Secrets (WireGuard's and strongSwan's, the SD-WAN's files, and any
+ * file whose text holds one: text_secret()) are only when asked for.
  *
  * Applied, only paths that a bundle may carry are written, each
  * checked against the same table that made it: a bundle is not a way
@@ -205,9 +206,13 @@ resolve(struct work *w, const char *path, bool *secret)
 			    1, ".lease") != NULL || strstr(slash + 1, ".log") !=
 			    NULL)
 				return (NULL);
+			/* The SD-WAN's kept forms and rendered files carry
+			 * its BIRD passwords, keys and the like. */
 			*secret = p[i].secret || (strlen(slash + 1) > 4 &&
 			    (strcmp(slash + strlen(slash) - 4, ".key") == 0 ||
-			    strcmp(slash + strlen(slash) - 4, ".pem") == 0));
+			    strcmp(slash + strlen(slash) - 4, ".pem") == 0)) ||
+			    (strcmp(p[i].path, "/usr/local/etc/arcana") == 0 &&
+			    strncmp(slash + 1, "sdwan-", 6) == 0);
 			return (local);
 		}
 	}
@@ -254,6 +259,46 @@ put_int(ucl_object_t *o, const char *k, int64_t v)
 	ucl_object_insert_key(o, ucl_object_fromint(v), k, 0, true);
 }
 
+/*
+ * Does a file's text hold a secret by what it says, beside the places
+ * that are secrets: an rc.conf variable whose name says it is one
+ * (secret_name()) with a value, a carp(4) key in an ifconfig_ line
+ * ("pass key"), speederv2's -k in a relay's flags, BIRD's password
+ * "...".  Such a file is withheld unless secrets are asked for, as a
+ * secret's place is: its text is no use with the secret masked.
+ */
+static bool
+text_secret(const char *text)
+{
+	const char	*p, *e, *v;
+	size_t		 n;
+
+	for (p = text; *p != '\0'; p = *e != '\0' ? e + 1 : e) {
+		e = p + strcspn(p, "\n");
+		p += strspn(p, " \t");
+		if (strncmp(p, "password", 8) == 0 && (p[8] == ' ' || p[8] ==
+		    '\t'))
+			return (true);
+		n = strspn(p, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		    "0123456789_");
+		if (n == 0 || p + n >= e || p[n] != '=')
+			continue;
+		v = p + n + 1;
+		if (*v == '"' || *v == '\'')
+			v++;
+		if (secret_name(p, n) && v < e && *v != '"' && *v != '\'' &&
+		    *v != '\n')
+			return (true);
+		if (strncmp(p, "ifconfig_", 9) == 0 && memmem(v, (size_t)(e - v),
+		    " pass ", 6) != NULL)
+			return (true);
+		if (strncmp(p, "arcana_relay", 12) == 0 && memmem(v, (size_t)(e -
+		    v), "-k ", 3) != NULL)
+			return (true);
+	}
+	return (false);
+}
+
 /* One file of the bundle, when it is there. */
 static void
 file_add(struct work *w, ucl_object_t *arr, const char *path,
@@ -279,7 +324,7 @@ file_add(struct work *w, ucl_object_t *arr, const char *path,
 	    (unsigned)sb.st_gid));
 	/* A private key wherever it is: a secret too. */
 	secret = secret || strstr(text, "PRIVATE KEY-----") != NULL ||
-	    strstr(text, "PrivateKey") != NULL;
+	    strstr(text, "PrivateKey") != NULL || text_secret(text);
 	if (secret && !secrets)
 		ucl_object_insert_key(o, ucl_object_frombool(true), "secret", 0,
 		    true);
@@ -596,7 +641,7 @@ mkparents(const char *path)
 		return (ENAMETOOLONG);
 	for (p = buf + 1; (p = strchr(p, '/')) != NULL; p++) {
 		*p = '\0';
-		if (mkdir(buf, 0755) == -1 && errno != EEXIST)
+		if (mkdir_mode(buf, 0755) == -1 && errno != EEXIST)
 			return (errno);
 		*p = '/';
 	}

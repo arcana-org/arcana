@@ -100,6 +100,23 @@ rtadvd splits a field) addresses' hex digits, dots, "/" and ","
 alone, never another field. The agent and the console are built with
 `_FORTIFY_SOURCE=2` and full RELRO.
 
+### Modes, secrets and guards, agent 0.283.0
+
+Agent 0.283.0 runs with umask 077, the programs it runs with 022 as
+before. At its start the SD-WAN's kept and rendered files beside its
+own (`sdwan-*` in `/usr/local/etc/arcana`) an agent before left 0644
+become 0600 (a proxy's that Squid reads, of group squid, 0640), and
+the directory 0711. A jail's rc.conf is read and written by `sysrc -j`
+and the jail's number, no longer `-R` and its root. ctl.conf's CHAP
+secrets are read as `"********"`, and a write that gives the marker
+back keeps the file's; a job's title and trace hide the value of a
+variable whose name says it is a secret, and a bundle exported without
+secrets withholds a file that holds one. A dataset or provider of the
+system's (a pool's root, its boot environments and bootfs, what is
+mounted where the system lives, mountpoint none or legacy, swap, a
+pool's devices) is refused for destroy, rollback, a jail's removal and
+GEOM's wiping verbs, with why. Nothing is to be done by hand.
+
 ### Faults held to what is watched, agent 0.280.0
 
 At its first start, agent 0.280.0 clears the open faults an agent

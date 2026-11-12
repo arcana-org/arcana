@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,8 @@
 #include "zprog.h"
 
 #define	VERSION_PREFIX	"arcana-agent "
+
+extern char	**environ;
 
 static bool
 sha256_is(const uint8_t *data, size_t len, const char *hex)
@@ -237,30 +240,72 @@ service_restart(const char *name)
  * service(8) name verb, from a process of its own that outlives this
  * daemon.  For what is done to the daemon's own service: run and waited
  * for like any other, service(8) would wait for the daemon to stop
- * while the daemon waits for service(8) to end.
+ * while the daemon waits for service(8) to end.  The process is this
+ * program exec'd as the helper (service-detach, below), never a fork
+ * of the daemon, which would keep its heap and keys while it waits.
  */
 void
 service_detached(const char *name, const char *verb)
 {
+	posix_spawn_file_actions_t	 fa;
+	posix_spawnattr_t		 at;
+	sigset_t			 none, all;
+	char				*argv[8];
+	pid_t				 pid;
+	int				 rc, status;
+
+	argv[0] = (char *)(uintptr_t)opts.own_bin;
+	argv[1] = (char *)(uintptr_t)"--scope-helper";
+	argv[2] = (char *)(uintptr_t)"0";
+	argv[3] = (char *)(uintptr_t)"service-detach";
+	argv[4] = (char *)(uintptr_t)opts.service_bin;
+	argv[5] = (char *)(uintptr_t)name;
+	argv[6] = (char *)(uintptr_t)verb;
+	argv[7] = NULL;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
+	    O_RDONLY, 0);
+	posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null",
+	    O_WRONLY, 0);
+	posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
+	    O_WRONLY, 0);
+	posix_spawnattr_init(&at);
+	sigemptyset(&none);
+	sigfillset(&all);
+	(void)posix_spawnattr_setsigmask(&at, &none);
+	(void)posix_spawnattr_setsigdefault(&at, &all);
+	(void)posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK |
+	    POSIX_SPAWN_SETSIGDEF);
+	rc = agent_spawn(&pid, argv[0], &fa, &at, argv, environ);
+	posix_spawnattr_destroy(&at);
+	posix_spawn_file_actions_destroy(&fa);
+	if (rc != 0) {
+		logmsg(LOG_ERR, "%s %s: %s: %s", name, verb, argv[0],
+		    strerror(rc));
+		return;
+	}
+	while (waitpid(pid, &status, 0) == -1 && errno == EINTR)
+		;
+}
+
+/*
+ * The helper's "service-detach service name verb": the process that runs it
+ * forked and gone, so that init has it, in a session of its own; a
+ * moment's wait, for the daemon's reply to leave, then service(8).
+ */
+int
+service_detach(int argc, char **argv)
+{
 	struct timespec	 ts = { 1, 0 };
-	sigset_t	 none;
 	pid_t		 pid;
 	int		 status;
 
-	if ((pid = fork()) == -1) {
-		logmsg(LOG_ERR, "restart: fork: %s", strerror(errno));
-		return;
-	}
-	if (pid > 0) {
-		(void)waitpid(pid, NULL, 0);
-		return;
-	}
-	if (fork() != 0)
-		_exit(0);
-	(void)setsid();
-	sigemptyset(&none);
-	(void)sigprocmask(SIG_SETMASK, &none, NULL);
+	if (argc != 4)
+		return (2);
 	closefrom(3);
+	if ((pid = fork()) != 0)
+		return (pid == -1 ? 1 : 0);
+	(void)setsid();
 	(void)nanosleep(&ts, NULL);
 	/*
 	 * service(8) runs in a child, so that its failing is not lost:
@@ -268,14 +313,13 @@ service_detached(const char *name, const char *verb)
 	 * nothing else would say why the old program still runs.
 	 */
 	if ((pid = fork()) == 0) {
-		execl(opts.service_bin, opts.service_bin, name, verb,
-		    (char *)NULL);
+		execl(argv[1], argv[1], argv[2], argv[3], (char *)NULL);
 		_exit(127);
 	}
 	if (pid == -1 || waitpid(pid, &status, 0) == -1 ||
 	    !WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		execl("/usr/bin/logger", "logger", "-t", "arcana-agent", "-p",
-		    "daemon.err", "service(8) failed:", name, verb,
+		    "daemon.err", "service(8) failed:", argv[2], argv[3],
 		    "(is it enabled in rc.conf?)", (char *)NULL);
 	_exit(0);
 }

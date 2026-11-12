@@ -474,7 +474,7 @@ fetch_ready(struct work *w, const char *source, const char *ref,
 		return (false);
 	}
 	s = step_begin(w, STEP_FILE, "mkdir", "%s", opts.build_dir);
-	if (mkdir(opts.build_dir, 0755) == -1 && errno != EEXIST) {
+	if (mkdir_mode(opts.build_dir, 0755) == -1 && errno != EEXIST) {
 		step_end(w, s, false, "%s", strerror(errno));
 		rsp->error = wfmt(w, "%s: %s", opts.build_dir, strerror(errno));
 		return (false);

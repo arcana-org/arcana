@@ -293,6 +293,7 @@ send_recv(struct work *w, const char *snap, const char *ds,
 	}
 	null = open("/dev/null", O_RDWR | O_CLOEXEC);
 	if ((sp = fork()) == 0) {
+		(void)umask(022);
 		dup2(fd[1], STDOUT_FILENO);
 		if (null != -1)
 			dup2(null, STDIN_FILENO);
@@ -300,6 +301,7 @@ send_recv(struct work *w, const char *snap, const char *ds,
 		_exit(127);
 	}
 	if (sp != -1 && (rp = fork()) == 0) {
+		(void)umask(022);
 		dup2(fd[0], STDIN_FILENO);
 		if (null != -1)
 			dup2(null, STDOUT_FILENO);
@@ -491,7 +493,7 @@ jail_make(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		*errp = wfmt(w, "a jail %s runs already", sp->jail);
 		return (-1);
 	}
-	(void)mkdir(opts.jail_conf_d, 0755);
+	(void)mkdir_mode(opts.jail_conf_d, 0755);
 	made = false;
 	top = "";
 	if (sp->dataset != NULL && sp->dataset[0] != '\0') {
@@ -603,11 +605,21 @@ jail_unmake(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	/* Its dataset, only where it is the jail's root: asked before
 	 * anything is done, the jail left running when it is not. */
 	if (sp->dataset != NULL && sp->dataset[0] != '\0') {
+		const char	*why;
+
 		mp = ds_get(w, sp->dataset, "mountpoint");
-		if (path == NULL || mp == NULL || strcmp(mp, path) != 0) {
+		/* The path a directory's, absolute, where the system does
+		 * not live: "none" is no path, and zroot/ROOT has it. */
+		if (path == NULL || mp == NULL || path[0] != '/' || strcmp(mp,
+		    path) != 0) {
 			*errp = wfmt(w, "%s is not mounted at the jail's path "
 			    "(%s): it is not destroyed, nor is anything else",
 			    sp->dataset, path != NULL ? path : "unknown");
+			return (-1);
+		}
+		if ((why = storage_protected(w, sp->dataset, false)) != NULL) {
+			*errp = wfmt(w, "%s: it is not destroyed, nor is "
+			    "anything else", why);
 			return (-1);
 		}
 	}
@@ -710,7 +722,7 @@ jail_template(struct work *w, const struct arc_job_spec *sp, bool rm,
 		}
 		return (0);
 	}
-	(void)mkdir(opts.jail_conf_d, 0755);
+	(void)mkdir_mode(opts.jail_conf_d, 0755);
 	old = get_file(w, file, &len);
 	if (old != NULL && write_backup(w, file, old, len, errp) != 0)
 		return (-1);

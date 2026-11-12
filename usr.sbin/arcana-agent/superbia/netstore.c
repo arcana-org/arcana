@@ -13,7 +13,8 @@
  * pnfsserver(4) has it), the iSCSI target (ctld(8), ctl.conf(5),
  * ctladm(8)) and HAST (hastd(8), hast.conf(5), hastctl(8)).  Read
  * whole (the netstore operation), changed by jobs of the nfs, iscsi and
- * hast kinds.
+ * hast kinds.  ctl.conf's CHAP secrets are read as a marker, and kept
+ * where a write gives the marker back.
  */
 
 #include <sys/param.h>
@@ -108,6 +109,379 @@ text_ok(const char *t)
 		if (*p < 0x20 && *p != '\n' && *p != '\t' && *p != '\r')
 			return (false);
 	return (true);
+}
+
+/*
+ * ctl.conf(5)'s CHAP secrets, in either of its forms: the classic one
+ * ("chap user secret", "chap-mutual user secret muser msecret") and
+ * UCL's (secret and mutual-secret beside user and mutual-user, in an
+ * object of a chap or chap-mutual list).  A read gives the text with
+ * each secret the marker, which the console's viewers see in its place;
+ * a write that gives the marker back keeps the secret the file has for
+ * the same place: the blocks around it, the kind, and its users.
+ */
+#define	SECRET_MARK	"\"********\""
+
+enum { T_WORD, T_STR, T_PUNCT };
+
+struct ctok {
+	size_t	 off, len;	/* in the text, quotes and all */
+	int	 type;
+	int	 depth;		/* of the { } and [ ] around it */
+	int	 open;		/* the token that opened its block; -1 */
+	bool	 used;		/* taken by a chap line */
+};
+
+/* A token's value: a word, or a string without its quotes. */
+static char *
+ctok_val(struct work *w, const char *text, const struct ctok *t)
+{
+
+	if (t->type == T_STR)
+		return (wstrndup(w, text + t->off + 1, t->len >= 2 ? t->len - 2 :
+		    0));
+	return (wstrndup(w, text + t->off, t->len));
+}
+
+static bool
+ctok_is(const char *text, const struct ctok *t, const char *s)
+{
+	size_t	n;
+
+	n = strlen(s);
+	if (t->type == T_STR)
+		return (t->len == n + 2 && memcmp(text + t->off + 1, s, n) == 0);
+	return (t->type == T_WORD && t->len == n && memcmp(text + t->off, s, n) ==
+	    0);
+}
+
+/*
+ * Is text[i] punctuation, a token of its own?  { } ; = always; [ only
+ * where UCL opens a list (after =, a key and its ':', a [ or a ','), ]
+ * and ',' only in such a list; ':' never (UCL's "key:" is a word that
+ * ends in it).
+ */
+static bool
+ctl_punct(const char *text, size_t i, const struct ctok *v, int n,
+    bool inlist)
+{
+	const struct ctok	*p;
+	char			 c;
+
+	if (strchr("{};=", text[i]) != NULL)
+		return (true);
+	if ((text[i] == ']' || text[i] == ',') && inlist)
+		return (true);
+	if (text[i] != '[' || n == 0)
+		return (false);
+	p = &v[n - 1];
+	c = text[p->off + p->len - 1];
+	return ((p->type == T_PUNCT && strchr("=[,", c) != NULL) ||
+	    (p->type == T_WORD && c == ':'));
+}
+
+/* The text's tokens; comments (#, //, slash-star) are none. */
+static struct ctok *
+ctl_tokens(struct work *w, const char *text, int *np)
+{
+	struct ctok	*v;
+	size_t		 i, len, cap;
+	int		 n, depth, stack[64];
+	char		 q;
+
+	len = strlen(text);
+	cap = 64;
+	v = wcalloc(w, cap, sizeof(*v));
+	n = depth = 0;
+	for (i = 0; i < len;) {
+		if (isspace((unsigned char)text[i])) {
+			i++;
+			continue;
+		}
+		if (text[i] == '#' || (text[i] == '/' && text[i + 1] == '/')) {
+			i += strcspn(text + i, "\n");
+			continue;
+		}
+		if (text[i] == '/' && text[i + 1] == '*') {
+			const char *e = strstr(text + i + 2, "*/");
+
+			i = e != NULL ? (size_t)(e - text) + 2 : len;
+			continue;
+		}
+		if ((size_t)n == cap) {
+			struct ctok *nv = wcalloc(w, cap * 2, sizeof(*v));
+
+			memcpy(nv, v, cap * sizeof(*v));
+			v = nv;
+			cap *= 2;
+		}
+		v[n].off = i;
+		v[n].used = false;
+		v[n].open = depth > 0 ? stack[depth - 1] : -1;
+		if (text[i] == '"' || text[i] == '\'') {
+			q = text[i++];
+			while (i < len && text[i] != q) {
+				if (text[i] == '\\' && i + 1 < len)
+					i++;
+				i++;
+			}
+			if (i < len)
+				i++;
+			v[n].type = T_STR;
+		} else if (ctl_punct(text, i, v, n, depth > 0 && text[v[stack[
+		    depth - 1]].off] == '[')) {
+			if ((text[i] == '}' || text[i] == ']') && depth > 0)
+				depth--;
+			v[n].open = depth > 0 ? stack[depth - 1] : -1;
+			v[n].type = T_PUNCT;
+			i++;
+		} else {
+			/* The classic form's words have ':' and '[ ]' in them
+			 * (an iqn name, [::1]:3260): braces, ;, =, quotes and #
+			 * end one. */
+			while (i < len && !isspace((unsigned char)text[i]) &&
+			    strchr("{};=\"'#", text[i]) == NULL && (text[i] != ','
+			    || depth == 0 || text[v[stack[depth - 1]].off] != '[') &&
+			    (text[i] != ']' || depth == 0 || text[v[stack[depth -
+			    1]].off] != '['))
+				i++;
+			v[n].type = T_WORD;
+		}
+		v[n].len = i - v[n].off;
+		v[n].depth = depth;
+		if (v[n].type == T_PUNCT && (text[v[n].off] == '{' ||
+		    text[v[n].off] == '[')) {
+			if (depth == (int)nitems(stack))
+				return (NULL);
+			stack[depth++] = n;
+		}
+		n++;
+	}
+	*np = n;
+	return (v);
+}
+
+/*
+ * Block b's name: UCL's key before its = or ':' (or the key that ends
+ * in ':'), or the classic form's words before it since the statement
+ * before (auth-group ag0, target iqn...).
+ */
+static const char *
+ctl_label(struct work *w, const char *text, const struct ctok *v, int b)
+{
+	const char	*l;
+	char		 c;
+	int		 k;
+
+	if (b > 0 && v[b - 1].type == T_PUNCT && text[v[b - 1].off] == '=')
+		return (b > 1 && v[b - 2].type != T_PUNCT ? ctok_val(w, text,
+		    &v[b - 2]) : "");
+	if (b > 0 && v[b - 1].type == T_WORD && (c = text[v[b - 1].off +
+	    v[b - 1].len - 1]) == ':') {
+		if (v[b - 1].len == 1)
+			return (b > 1 && v[b - 2].type != T_PUNCT ? ctok_val(w,
+			    text, &v[b - 2]) : "");
+		return (wstrndup(w, text + v[b - 1].off, v[b - 1].len - 1));
+	}
+	for (k = b - 1; k >= 0 && v[k].type != T_PUNCT; k--)
+		;
+	l = "";
+	for (k++; k < b; k++)
+		l = wfmt(w, "%s%s%s", l, l[0] != '\0' ? " " : "", ctok_val(w,
+		    text, &v[k]));
+	return (l);
+}
+
+/* Where token i is: the labels of the blocks around it, outermost first. */
+static const char *
+ctl_path(struct work *w, const char *text, const struct ctok *v, int i)
+{
+	const char	*p;
+	int		 b;
+
+	p = "";
+	for (b = v[i].open; b != -1; b = v[b].open)
+		p = wfmt(w, "%s{%s}", ctl_label(w, text, v, b), p);
+	return (p);
+}
+
+/* Is t UCL's key s: the word, "s", or s: */
+static bool
+ctok_key(const char *text, const struct ctok *t, const char *s)
+{
+	size_t	n;
+
+	n = strlen(s);
+	return (ctok_is(text, t, s) || (t->type == T_WORD && t->len == n + 1 &&
+	    memcmp(text + t->off, s, n) == 0 && text[t->off + n] == ':'));
+}
+
+/* The token of key k's value (after its = or ':', if any); -1 for none. */
+static int
+ctl_value(const char *text, const struct ctok *v, int n, int k)
+{
+
+	if (!(v[k].type == T_WORD && text[v[k].off + v[k].len - 1] == ':') &&
+	    k + 1 < n && ((v[k + 1].type == T_PUNCT && text[v[k + 1].off] ==
+	    '=') || (v[k + 1].type == T_WORD && v[k + 1].len == 1 &&
+	    text[v[k + 1].off] == ':')))
+		k++;
+	return (k + 1 < n && v[k + 1].type != T_PUNCT ? k + 1 : -1);
+}
+
+/* The value of key in the object opened at b (at its own level); NULL. */
+static const char *
+ctl_member(struct work *w, const char *text, const struct ctok *v, int n,
+    int b, const char *key)
+{
+	int	k, x;
+
+	for (k = b + 1; k < n && v[k].depth > v[b].depth; k++)
+		if (v[k].open == b && v[k].type != T_PUNCT && ctok_key(text,
+		    &v[k], key) && (x = ctl_value(text, v, n, k)) != -1)
+			return (ctok_val(w, text, &v[x]));
+	return (NULL);
+}
+
+struct csecret {
+	const char	*where;		/* path, kind and users */
+	size_t		 off, len;	/* the secret's token */
+};
+
+/* The secrets of text, each with where it is; *np of them; NULL when the
+ * text cannot be read as either form. */
+static struct csecret *
+ctl_secrets(struct work *w, const char *text, int *np)
+{
+	struct csecret	*s;
+	struct ctok	*v;
+	const char	*u, *mu;
+	int		 n, i, m, k;
+	bool		 sec;
+
+	if ((v = ctl_tokens(w, text, &n)) == NULL)
+		return (NULL);
+	s = wcalloc(w, (size_t)n + 1, sizeof(*s));
+	m = 0;
+	for (i = 0; i < n; i++) {
+		if (v[i].used || v[i].type == T_PUNCT)
+			continue;
+		/* The classic form: chap user secret. */
+		if ((ctok_is(text, &v[i], "chap") || ctok_is(text, &v[i],
+		    "chap-mutual")) && i + 2 < n && v[i + 1].type != T_PUNCT &&
+		    v[i + 2].type != T_PUNCT) {
+			bool mutual = ctok_is(text, &v[i], "chap-mutual");
+
+			u = ctok_val(w, text, &v[i + 1]);
+			s[m].where = wfmt(w, "%s|chap|%s", ctl_path(w, text, v,
+			    i), u);
+			s[m].off = v[i + 2].off;
+			s[m++].len = v[i + 2].len;
+			v[i + 1].used = v[i + 2].used = true;
+			if (mutual && i + 4 < n && v[i + 3].type != T_PUNCT &&
+			    v[i + 4].type != T_PUNCT) {
+				mu = ctok_val(w, text, &v[i + 3]);
+				s[m].where = wfmt(w, "%s|mutual|%s|%s", ctl_path(w,
+				    text, v, i), u, mu);
+				s[m].off = v[i + 4].off;
+				s[m++].len = v[i + 4].len;
+				v[i + 3].used = v[i + 4].used = true;
+			}
+			continue;
+		}
+		/* UCL's: secret = "...", its users beside it. */
+		if ((!(sec = ctok_key(text, &v[i], "secret")) && !ctok_key(text,
+		    &v[i], "mutual-secret")) || v[i].open == -1 || (k =
+		    ctl_value(text, v, n, i)) == -1)
+			continue;
+		u = ctl_member(w, text, v, n, v[i].open, "user");
+		mu = ctl_member(w, text, v, n, v[i].open, "mutual-user");
+		s[m].where = wfmt(w, "%s|%s|%s|%s", ctl_path(w, text, v, i), sec ?
+		    "chap" : "mutual", u != NULL ? u : "", mu != NULL && !sec ?
+		    mu : "");
+		s[m].off = v[k].off;
+		s[m++].len = v[k].len;
+		v[k].used = true;
+	}
+	*np = m;
+	return (s);
+}
+
+/* text with every CHAP secret the marker. */
+static const char *
+ctl_masked(struct work *w, const char *text)
+{
+	struct csecret	*s;
+	const char	*out;
+	size_t		 at;
+	int		 n, i;
+
+	if ((s = ctl_secrets(w, text, &n)) == NULL)
+		return ("# not shown: ctl.conf could not be read for its "
+		    "secrets\n");
+	out = "";
+	at = 0;
+	for (i = 0; i < n; i++) {
+		out = wfmt(w, "%s%.*s%s", out, (int)(s[i].off - at), text + at,
+		    SECRET_MARK);
+		at = s[i].off + s[i].len;
+	}
+	return (wfmt(w, "%s%s", out, text + at));
+}
+
+/*
+ * text as it is written: each marker given back replaced by the secret
+ * the file has (was) in the same place.  NULL, with why, when one has
+ * none there, or two of the same place.
+ */
+static const char *
+ctl_unmasked(struct work *w, const char *text, const char *was,
+    const char **errp)
+{
+	struct csecret	*s, *o;
+	const char	*out;
+	size_t		 at;
+	int		 n, no, i, k, hit;
+
+	if ((s = ctl_secrets(w, text, &n)) == NULL) {
+		*errp = "ctl.conf: its blocks nest too deep";
+		return (NULL);
+	}
+	o = NULL;
+	no = 0;
+	out = "";
+	at = 0;
+	for (i = 0; i < n; i++) {
+		if (s[i].len != strlen(SECRET_MARK) || memcmp(text + s[i].off,
+		    SECRET_MARK, s[i].len) != 0)
+			continue;
+		if (o == NULL && (was == NULL || (o = ctl_secrets(w, was,
+		    &no)) == NULL)) {
+			*errp = "ctl.conf: a secret is the marker, and the file "
+			    "keeps none: write the secret out";
+			return (NULL);
+		}
+		hit = -1;
+		for (k = 0; k < no; k++)
+			if (strcmp(o[k].where, s[i].where) == 0) {
+				if (hit != -1) {
+					*errp = wfmt(w, "ctl.conf: the marker of %s is "
+					    "two secrets of the file: write it out",
+					    s[i].where);
+					return (NULL);
+				}
+				hit = k;
+			}
+		if (hit == -1) {
+			*errp = wfmt(w, "ctl.conf: the marker of %s has no "
+			    "secret in the file: write it out", s[i].where);
+			return (NULL);
+		}
+		out = wfmt(w, "%s%.*s%.*s", out, (int)(s[i].off - at), text + at,
+		    (int)o[hit].len, was + o[hit].off);
+		at = s[i].off + s[i].len;
+	}
+	return (wfmt(w, "%s%s", out, text + at));
 }
 
 static const char *
@@ -317,8 +691,9 @@ iscsi_json(struct work *w)
 	service_json(w, o, "ctld");
 	service_json(w, o, "iscsid");
 	put_s(o, "conf_path", opts.ctl_conf);
+	/* Its CHAP secrets the marker: the read is any role's. */
 	if ((v = slurp(w, opts.ctl_conf)) != NULL)
-		put_s(o, "conf", wtext(w, v));
+		put_s(o, "conf", wtext(w, ctl_masked(w, v)));
 	if ((v = tool_out(w, "ctladm", devlist, 1)) != NULL)
 		put_s(o, "luns", v);
 	if ((v = tool_out(w, "ctladm", islist, 1)) != NULL)
@@ -745,7 +1120,10 @@ do_netstore_job(struct work *w, const struct arc_job_spec *sp,
 		return (nfs_server(w, sp, errp));
 	case ARC_JOB_KIND_ISCSI:
 		if (strcmp(sp->verb, "conf") == 0) {
-			if (put_file(w, opts.ctl_conf, sp->text, 0600, errp) != 0)
+			/* The secrets read as the marker kept as they are. */
+			if ((v = ctl_unmasked(w, sp->text, slurp(w,
+			    opts.ctl_conf), errp)) == NULL || put_file(w,
+			    opts.ctl_conf, v, 0600, errp) != 0)
 				return (-1);
 			return (service_reload(w, "ctld", errp));
 		}

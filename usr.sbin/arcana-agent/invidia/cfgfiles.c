@@ -514,11 +514,11 @@ mkdirs(const char *dir)
 		if (*p != '/')
 			continue;
 		*p = '\0';
-		if (mkdir(buf, 0755) == -1 && errno != EEXIST)
+		if (mkdir_mode(buf, 0755) == -1 && errno != EEXIST)
 			return (errno);
 		*p = '/';
 	}
-	if (mkdir(buf, 0755) == -1 && errno != EEXIST)
+	if (mkdir_mode(buf, 0755) == -1 && errno != EEXIST)
 		return (errno);
 	return (0);
 }

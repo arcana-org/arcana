@@ -547,6 +547,7 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 	const char		*name, *rcvar, *stem, *e, *p, *nl, *sep;
 	char			*argv[4];
 	size_t			 n, i, nv, stemlen, namelen;
+	int			 rc;
 
 	name = rq->service;
 	rsp->has_ok = true;
@@ -612,7 +613,11 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 	argv[0] = (char *)(uintptr_t)opts.sysrc_bin;
 	argv[1] = (char *)(uintptr_t)"-a";
 	argv[2] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	/* Every variable's value: no trace's, which every role reads. */
+	exec_set_secret(true);
+	rc = run_exec(w, argv, &res);
+	exec_set_secret(false);
+	if (rc != 0) {
 		rsp->error = wtext(w, exec_error(w, &res, "sysrc -a"));
 		goto out;
 	}

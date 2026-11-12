@@ -11,14 +11,17 @@
 
 #include <sys/param.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <libutil.h>
 #include <signal.h>
 #include <spawn.h>
@@ -203,6 +206,158 @@ traced(struct work *w, const char *s)
 }
 
 /*
+ * The daemon's umask is 077 (main()): what it makes is its own unless it
+ * says otherwise.  A directory made with mode has that mode, whatever
+ * the umask; one already there is left as it is.  mkdir(2)'s return.
+ */
+int
+mkdir_mode(const char *path, mode_t mode)
+{
+
+	if (mkdir(path, mode) == -1)
+		return (-1);
+	(void)chmod(path, mode);
+	return (0);
+}
+
+/*
+ * posix_spawn(3) with the umask the system's programs expect, 022: a
+ * child has the daemon's 077 otherwise, and a service restarted, a jail
+ * started (its rc), pkg, would make their files as the daemon makes its
+ * secrets.  posix_spawn sets no umask; it returns once the child has
+ * exec'd (vfork(2)'s way), so the mask is set around it, under a lock.
+ * Another thread's file made meanwhile is made with its own explicit
+ * mode: a secret's 0600 stays 0600 under either mask.
+ */
+static pthread_mutex_t	spawn_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int
+agent_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
+    const posix_spawnattr_t *sa, char *const argv[], char *const envp[])
+{
+	mode_t	old;
+	int	rc;
+
+	pthread_mutex_lock(&spawn_lock);
+	old = umask(022);
+	rc = posix_spawn(pid, path, fa, sa, argv, envp);
+	(void)umask(old);
+	pthread_mutex_unlock(&spawn_lock);
+	return (rc);
+}
+
+/*
+ * Does the variable name, n bytes of it, say it holds a secret: a
+ * password, a key, a token (rc.conf's, a form's)?
+ */
+bool
+secret_name(const char *s, size_t n)
+{
+	static const char *const says[] = { "pass", "secret", "key", "token",
+	    "psk", "cred" };
+	char	name[128];
+	size_t	i;
+
+	(void)snprintf(name, sizeof(name), "%.*s", (int)n, s);
+	for (i = 0; i < nitems(says); i++)
+		if (strcasestr(name, says[i]) != NULL)
+			return (true);
+	return (false);
+}
+
+/*
+ * Is a NAME=value (or += and -=) whose NAME says it holds a secret
+ * (sysrc of a password, a key, a token)?  *keep is how much of it is
+ * shown, the name and its = sign.
+ */
+static bool
+secret_assign(const char *a, size_t *keep)
+{
+	const char	*eq;
+	size_t		 n, i;
+
+	if ((eq = strchr(a, '=')) == NULL || eq == a)
+		return (false);
+	n = (size_t)(eq - a);
+	*keep = n + 1;
+	if (a[n - 1] == '+' || a[n - 1] == '-')
+		n--;
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)a[i]) && a[i] != '_' && a[i] != '.' &&
+		    a[i] != '-')
+			return (false);
+	return (secret_name(a, n));
+}
+
+/*
+ * s, words separated by spaces, with the value of each NAME=value that
+ * secret_assign() takes shown as <hidden>: a job's title.  Allocated;
+ * NULL when out of memory.
+ */
+char *
+mask_secrets(const char *s)
+{
+	const char	*p, *e;
+	char		*out, *t, word[256];
+	size_t		 keep, len;
+
+	if ((out = strdup("")) == NULL)
+		return (NULL);
+	for (p = s; *p != '\0'; p = e) {
+		e = p + strcspn(p, " ");
+		len = (size_t)(e - p);
+		(void)snprintf(word, sizeof(word), "%.*s", (int)len, p);
+		if (len < sizeof(word) && secret_assign(word, &keep))
+			len = keep;
+		else
+			keep = 0;
+		if (asprintf(&t, "%s%.*s%s", out, (int)len, p, keep > 0 ?
+		    "<hidden>" : "") == -1) {
+			free(out);
+			return (NULL);
+		}
+		free(out);
+		out = t;
+		if (*e == ' ') {
+			if (asprintf(&t, "%s ", out) == -1) {
+				free(out);
+				return (NULL);
+			}
+			free(out);
+			out = t;
+			e++;
+		}
+	}
+	return (out);
+}
+
+/*
+ * argv as the trace has it: the hidden word (exec_set_hide()) shown as
+ * <hidden> in every argument, and the value of a variable whose name
+ * says it is a secret; *secretp says there was one, and then what the
+ * program prints (sysrc's "name: old -> new") is not kept either.
+ */
+static char **
+trace_argv(struct work *w, char *const argv[], bool *secretp)
+{
+	char	**v;
+	size_t	  n, i, keep;
+
+	*secretp = false;
+	for (n = 0; argv[n] != NULL; n++)
+		;
+	v = wcalloc(w, n + 1, sizeof(*v));
+	for (i = 0; i < n; i++) {
+		v[i] = (char *)(uintptr_t)traced(w, argv[i]);
+		if (i > 0 && secret_assign(argv[i], &keep)) {
+			v[i] = wfmt(w, "%.*s<hidden>", (int)keep, argv[i]);
+			*secretp = true;
+		}
+	}
+	return (v);
+}
+
+/*
  * The programs this thread runs while this is set (pkg): each in a
  * process group of its own, so that what it starts (pkg -j's child in
  * the jail) is stopped with it; stopped too once nothing has come from
@@ -225,6 +380,21 @@ exec_kill(pid_t pid, bool group)
 	(void)kill(group ? -pid : pid, SIGTERM);
 	sleep(2);
 	(void)kill(group ? -pid : pid, SIGKILL);
+}
+
+/*
+ * The next program this thread runs ends within secs, or once it has
+ * been silent for as long: killed then, with its process group, and
+ * said timed out.  Once only.  A read's program run in a jail by
+ * jexec(8), or sysrc -j, has JAIL_READ_SEC without asking.
+ */
+static _Thread_local int	exec_limit;
+
+void
+exec_set_limit(int secs)
+{
+
+	exec_limit = secs;
 }
 
 void
@@ -267,10 +437,11 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	static char			 gitsystem[] = "GIT_CONFIG_NOSYSTEM=1";
 	char				*env[6];
 	const char			*cmdline;
+	char				**targv;
 	size_t				 i;
 	time_t				 deadline, heard, drain;
-	int				 ne;
-	bool				 group;
+	int				 ne, limit, idle;
+	bool				 group, secret;
 
 	ne = 0;
 	env[ne++] = pathenv;
@@ -290,6 +461,16 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	ssize_t				 wr;
 
 	argv = scope_argv(w, argv);
+	limit = exec_limit;
+	exec_limit = 0;
+	/* A read of the jail's own: by jexec(8), or sysrc -j (the jail's
+	 * /bin/sh, by jexec). */
+	if (limit == 0 && w->nice && w->jail != NULL && (argv[0] ==
+	    opts.jexec_bin || argv[0] == opts.sysrc_bin))
+		limit = JAIL_READ_SEC;
+	idle = exec_idle;
+	if (limit > 0 && (idle == 0 || idle > limit))
+		idle = limit;
 	in = exec_in;
 	inlen = exec_inlen;
 	exec_in = NULL;
@@ -301,16 +482,17 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	exec_infd = exec_outfd = -1;
 
 	memset(res, 0, sizeof(*res));
-	cmdline = wvis(w, argv[0]);
-	for (i = 1; argv[i] != NULL; i++)
-		cmdline = wfmt(w, "%s %s", cmdline, wvis(w, argv[i]));
+	targv = trace_argv(w, argv, &secret);
+	cmdline = wvis(w, targv[0]);
+	for (i = 1; targv[i] != NULL; i++)
+		cmdline = wfmt(w, "%s %s", cmdline, wvis(w, targv[i]));
 	cmdline = traced(w, cmdline);
 	step = step_begin(w, STEP_EXEC, cmdline,
 	    "posix_spawn(3), no shell");
 	/* A dry run's: what would be run, said, and taken as done. */
 	if (w->dry && !reads) {
 		res->out = res->err = "";
-		step_notrun(w, step, argv);
+		step_notrun(w, step, targv);
 		step_end(w, step, true, "not run: a dry run");
 		return (0);
 	}
@@ -345,12 +527,12 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	posix_spawnattr_setsigmask(&sa, &none);
 	posix_spawnattr_setsigdefault(&sa, &dfl);
 	/* Watched: a process group of its own, stopped whole. */
-	group = exec_idle > 0;
+	group = idle > 0;
 	if (group)
 		posix_spawnattr_setpgroup(&sa, 0);
 	posix_spawnattr_setflags(&sa, POSIX_SPAWN_SETSIGMASK |
 	    POSIX_SPAWN_SETSIGDEF | (group ? POSIX_SPAWN_SETPGROUP : 0));
-	rc = posix_spawn(&pid, argv[0], &fa, &sa, argv, env);
+	rc = agent_spawn(&pid, argv[0], &fa, &sa, argv, env);
 	if (rc == 0 && w->nice)
 		(void)setpriority(PRIO_PROCESS, pid, READ_NICE);
 	posix_spawnattr_destroy(&sa);
@@ -383,7 +565,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 		res->err = wfmt(w, "cannot run %s: %s", argv[0],
 		    strerror(rc));
 		res->errlen = strlen(res->err);
-		step_exec(w, step, argv, -1, NULL, 0, res->err, res->errlen);
+		step_exec(w, step, targv, -1, NULL, 0, res->err, res->errlen);
 		step_end(w, step, false, "%s", res->err);
 		return (-1);
 	}
@@ -395,7 +577,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	 * EXEC_DRAIN_SEC at most, within the deadline and the job's cancel.
 	 */
 	exited = false;
-	deadline = time(NULL) + EXEC_TIMEOUT_SEC;
+	deadline = time(NULL) + (limit > 0 ? limit : EXEC_TIMEOUT_SEC);
 	heard = drain = time(NULL);
 	while (op[0] != -1 || ep[0] != -1) {
 		pfd[0].fd = op[0];
@@ -455,9 +637,12 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 			res->cancelled = true;
 			break;
 		}
-		if (group && time(NULL) - heard > exec_idle) {
+		if (group && time(NULL) - heard > idle) {
 			exec_kill(pid, group);
-			res->stalled = exec_idle;
+			if (limit > 0)
+				res->timedout = true;
+			else
+				res->stalled = idle;
 			break;
 		}
 	}
@@ -481,11 +666,11 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	res->truncated = out.truncated;
 	free(out.buf);
 	free(eout.buf);
-	if (exec_secret)
-		step_exec(w, step, argv, rc, "(not kept: it has keys in it)\n",
-		    30, res->err, res->errlen);
+	if (exec_secret || secret)
+		step_exec(w, step, targv, rc, "(not kept: it has keys in it)\n",
+		    30, secret ? "" : res->err, secret ? 0 : res->errlen);
 	else
-		step_exec(w, step, argv, rc, res->out, MIN(res->outlen,
+		step_exec(w, step, targv, rc, res->out, MIN(res->outlen,
 		    (size_t)ARC_MAX_OUTPUT), res->err, res->errlen);
 	step_end(w, step, rc == 0, "exit status %d%s%s", rc,
 	    out.truncated || eout.truncated ? ", output truncated" : "",
@@ -575,24 +760,26 @@ run_exec_lines(struct work *w, char *const argv[],
 	char				*env[] = { pathenv, NULL };
 	struct pollfd			 pfd;
 	const char			*cmdline;
-	char				*buf;
+	char				*buf, **targv;
 	size_t				 cap, len, i, lines;
 	ssize_t				 got;
 	time_t				 deadline, drain;
 	pid_t				 pid;
 	int				 op[2], status, rc, step, n;
-	bool				 exited, timedout;
+	bool				 exited, timedout, secret;
 
 	argv = scope_argv(w, argv);
-
-	cmdline = wvis(w, argv[0]);
-	for (i = 1; argv[i] != NULL; i++)
-		cmdline = wfmt(w, "%s %s", cmdline, wvis(w, argv[i]));
+	/* Its lines are not traced: only its command line is. */
+	targv = trace_argv(w, argv, &secret);
+	(void)secret;
+	cmdline = wvis(w, targv[0]);
+	for (i = 1; targv[i] != NULL; i++)
+		cmdline = wfmt(w, "%s %s", cmdline, wvis(w, targv[i]));
 	cmdline = traced(w, cmdline);
 	step = step_begin(w, STEP_EXEC, cmdline,
 	    "posix_spawn(3), no shell; read line by line");
 	if (w->dry) {
-		step_notrun(w, step, argv);
+		step_notrun(w, step, targv);
 		step_end(w, step, true, "not run: a dry run");
 		return (0);
 	}
@@ -613,7 +800,7 @@ run_exec_lines(struct work *w, char *const argv[],
 	posix_spawnattr_setsigdefault(&sa, &dfl);
 	posix_spawnattr_setflags(&sa, POSIX_SPAWN_SETSIGMASK |
 	    POSIX_SPAWN_SETSIGDEF);
-	rc = posix_spawn(&pid, argv[0], &fa, &sa, argv, env);
+	rc = agent_spawn(&pid, argv[0], &fa, &sa, argv, env);
 	if (rc == 0 && w->nice)
 		(void)setpriority(PRIO_PROCESS, pid, READ_NICE);
 	posix_spawnattr_destroy(&sa);

@@ -49,6 +49,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -245,34 +246,124 @@ edge_keep(const char *jail, const char *file, const char *json, bool empty,
 	return (0);
 }
 
-int
-sdwan_conf_write(const char *file, const char *text, const char **errp)
+/*
+ * The files kept and rendered beside the agent's own (sdwan_conf_path()),
+ * and their modes, whatever the umask:
+ *
+ *	every file	0600, root's: the kept forms, and the BIRD, dnsmasq,
+ *			unbound, c-icap and Suricata files rendered from
+ *			them, hold passwords and keys; their daemons read
+ *			them as root
+ *	a proxy's	0640, group squid (sdwan_conf_write_group()): Squid
+ *	conf, deny	reads them again as its user when it is told to
+ *	and lists	reconfigure; 0600 where the host has no such group
+ *	the directory	0711: Squid and its certificate maker reach their
+ *			files by name as their user; none is listed but by
+ *			root, and each file's mode is its own
+ *
+ * sdwan_conf_tighten() puts what an agent before left 0644 to these at
+ * the start.
+ */
+#define	SDWAN_DIR_MODE	0711
+
+static int
+conf_write(const char *file, const char *text, mode_t mode, gid_t gid,
+    const char **errp)
 {
 	char	path[MAXPATHLEN], tmp[MAXPATHLEN];
-	FILE	*fp;
+	size_t	len, off;
+	ssize_t	n;
+	int	fd;
 
 	sdwan_conf_path(file, path, sizeof(path));
 	if (strrchr(path, '/') != NULL) {
 		snprintf(tmp, sizeof(tmp), "%.*s", (int)(strrchr(path, '/') -
 		    path), path);
-		(void)mkdir(tmp, 0755);
+		(void)mkdir_mode(tmp, SDWAN_DIR_MODE);
 	}
 	snprintf(tmp, sizeof(tmp), "%s.new", path);
-	if ((fp = fopen(tmp, "we")) == NULL || fputs(text, fp) == EOF ||
-	    fflush(fp) == EOF || fsync(fileno(fp)) != 0) {
-		*errp = strerror(errno);
-		if (fp != NULL)
-			fclose(fp);
-		unlink(tmp);
-		return (-1);
-	}
-	/* Closed once: a failed close or rename frees nothing twice. */
-	if (fclose(fp) != 0 || rename(tmp, path) == -1) {
-		*errp = strerror(errno);
-		unlink(tmp);
-		return (-1);
-	}
+	len = strlen(text);
+	off = 0;
+	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |
+	    O_NOFOLLOW, mode)) == -1 || fchmod(fd, mode) != 0 || (gid !=
+	    (gid_t)-1 && fchown(fd, (uid_t)-1, gid) != 0))
+		goto bad;
+	for (; off < len; off += (size_t)n)
+		if ((n = write(fd, text + off, len - off)) <= 0)
+			goto bad;
+	if (fsync(fd) != 0)
+		goto bad;
+	/* Closed once: a failed close or rename closes nothing twice. */
+	n = close(fd);
+	fd = -1;
+	if (n != 0 || rename(tmp, path) == -1)
+		goto bad;
 	return (0);
+bad:
+	*errp = strerror(errno != 0 ? errno : EIO);
+	if (fd != -1)
+		close(fd);
+	unlink(tmp);
+	return (-1);
+}
+
+int
+sdwan_conf_write(const char *file, const char *text, const char **errp)
+{
+
+	return (conf_write(file, text, 0600, (gid_t)-1, errp));
+}
+
+/* A file a daemon of group reads as that group: 0640, else 0600. */
+int
+sdwan_conf_write_group(const char *file, const char *text, const char *group,
+    const char **errp)
+{
+	struct group	*gr;
+
+	if ((gr = getgrnam(group)) == NULL)
+		return (conf_write(file, text, 0600, (gid_t)-1, errp));
+	return (conf_write(file, text, 0640, gr->gr_gid, errp));
+}
+
+/*
+ * The directory and its sdwan- files as the table above has them: one
+ * of the group a file was given 0640, every other 0600 (its owner kept:
+ * Squid's own stay Squid's); what is no regular file left alone.
+ */
+void
+sdwan_conf_tighten(void)
+{
+	struct dirent	*de;
+	struct stat	 sb;
+	char		 path[MAXPATHLEN], *slash;
+	DIR		*d;
+	int		 dfd;
+
+	sdwan_conf_path("x", path, sizeof(path));
+	if ((slash = strrchr(path, '/')) == NULL)
+		return;
+	*slash = '\0';
+	if ((dfd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC)) == -1)
+		return;
+	if (fstat(dfd, &sb) == 0 && sb.st_uid == 0 && (sb.st_mode & 0777) !=
+	    SDWAN_DIR_MODE && (sb.st_mode & 0022) != 0)
+		(void)fchmod(dfd, SDWAN_DIR_MODE);
+	if ((d = fdopendir(dfd)) == NULL) {
+		close(dfd);
+		return;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (strncmp(de->d_name, "sdwan-", 6) != 0 || fstatat(dfd,
+		    de->d_name, &sb, AT_SYMLINK_NOFOLLOW) != 0 ||
+		    !S_ISREG(sb.st_mode))
+			continue;
+		if ((sb.st_mode & 0077 & ~(sb.st_gid != 0 ? 0040 : 0)) != 0)
+			(void)fchmodat(dfd, de->d_name, sb.st_mode & (sb.st_gid !=
+			    0 ? 0640 : 0600), AT_SYMLINK_NOFOLLOW);
+	}
+	closedir(d);
 }
 
 /*
@@ -1912,7 +2003,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		if (strrchr(path, '/') != NULL) {
 			snprintf(tmp, sizeof(tmp), "%.*s", (int)(strrchr(path,
 			    '/') - path), path);
-			(void)mkdir(tmp, 0755);
+			(void)mkdir_mode(tmp, SDWAN_DIR_MODE);
 		}
 		load = wfmt(w, "%s.load", path);
 		if ((fd = open(load, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |

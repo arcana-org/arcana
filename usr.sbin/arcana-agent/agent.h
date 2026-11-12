@@ -7,6 +7,7 @@
 #ifndef _AGENT_H_
 #define _AGENT_H_
 
+#include <spawn.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 
@@ -20,7 +21,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.282.0"
+#define	ARCANA_AGENT_VERSION	"0.283.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -86,6 +87,13 @@
 
 #define	EXEC_TIMEOUT_SEC	3600	/* a pkg upgrade can take a while */
 /*
+ * A read of a jail's own program (birdc, wg, ipfw, anything by
+ * jexec(8)), and every birdc of SD-WAN's instances: killed with its
+ * process group when it has not ended in this long, or has been silent
+ * as long.  The jail's root may put one there that never ends.
+ */
+#define	JAIL_READ_SEC		5
+/*
  * pkg is stopped when nothing has come from it for this long (default
  * of --pkg-idle): off a terminal it prints a dot each tenth of a
  * download, so a large package on a slow link is quiet for minutes, but
@@ -136,6 +144,7 @@ struct opts {
 	const char	*tools_dir;	/* where programs without an option are */
 	const char	*helper_bin;	/* this program, run again with -Q */
 	bool		 helper_self;	/* it is this program: the host's own is read here */
+	const char	*own_bin;	/* this program as it runs: its helpers of the host's */
 	const char	*wg_bin;
 	const char	*wg_dir;	/* where wg-quick(8) reads from */
 	const char	*swanctl_bin;
@@ -322,6 +331,13 @@ const char	*tmp_dir(void);
 void		 exec_set_secret(bool);
 void		 exec_set_hide(const char *);
 void		 exec_set_watch(int);
+void		 exec_set_limit(int);
+char		*mask_secrets(const char *);
+int		 mkdir_mode(const char *, mode_t);
+const char	*storage_protected(struct work *, const char *, bool);
+int		 agent_spawn(pid_t *, const char *, const posix_spawn_file_actions_t *,
+		    const posix_spawnattr_t *, char *const [], char *const []);
+bool		 secret_name(const char *, size_t);
 int		 run_exec_lines(struct work *, char *const [],
 		    void (*)(const char *, void *), void *);
 int		 run_exec_max(struct work *, char *const [], struct execres *,
@@ -932,6 +948,9 @@ struct ucl_object_s;
 void		 sdwan_json(struct work *, struct ucl_object_s *);
 const char	*sdwan_conf_path(const char *, char *, size_t);
 int		 sdwan_conf_write(const char *, const char *, const char **);
+int		 sdwan_conf_write_group(const char *, const char *, const char *,
+		    const char **);
+void		 sdwan_conf_tighten(void);
 const char	*sdwan_subst(struct work *, const char *, const char *const *,
 		    const char *const *, size_t);
 char		*sdwan_kept_read(const char *);
@@ -1392,6 +1411,8 @@ bool		 network_part(struct cbl_dump_state *,
 /* invidia/parts.c: the arcana-parts family, its network-parts stream. */
 int		 parts_register(cbl_ctx *);
 int		 zfs_pipe(int, char **);
+int		 run_wait(int, char **);
+int		 service_detach(int, char **);
 const char	*tool(struct work *, const char *);
 int		 do_health(struct work *, struct storage_rsp *);
 struct ucl_object_s;

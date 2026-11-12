@@ -2817,7 +2817,7 @@ conf_write(const char *json, const char *jail, const char *owner,
 	if (strrchr(path, '/') != NULL) {
 		snprintf(tmp, sizeof(tmp), "%.*s", (int)(strrchr(path, '/') -
 		    path), path);
-		(void)mkdir(tmp, 0755);
+		(void)mkdir_mode(tmp, 0755);
 	}
 	snprintf(tmp, sizeof(tmp), "%s.new", path);
 	if ((fp = fopen(tmp, "we")) == NULL || fputs(json, fp) == EOF ||

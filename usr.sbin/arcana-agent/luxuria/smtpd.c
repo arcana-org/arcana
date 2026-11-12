@@ -153,7 +153,8 @@ scoped_mkdir(struct work *w, const char *path)
 
 	if ((dfd = scope_open_dir(w, path, &base)) == -1)
 		return;
-	(void)mkdirat(dfd, base, 0750);
+	if (mkdirat(dfd, base, 0750) == 0)
+		(void)fchmodat(dfd, base, 0750, AT_SYMLINK_NOFOLLOW);
 	close(dfd);
 }
 
@@ -1216,6 +1217,8 @@ watch(void *arg __unused)
 	for (;;) {
 		sleep((unsigned int)opts.smtpd_watch_s);
 		work_init(&w);
+		/* A read: its programs in a jail end within JAIL_READ_SEC. */
+		w.nice = true;
 		if (has_smtpd(&w, 0, NULL))
 			place_watch(&w, "");
 		list = NULL;

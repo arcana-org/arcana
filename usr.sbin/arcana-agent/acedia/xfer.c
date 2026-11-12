@@ -195,7 +195,7 @@ xfer_spawn(struct xfer *x)
 	else
 		posix_spawn_file_actions_adddup2(&fa, io[1], STDOUT_FILENO);
 	posix_spawn_file_actions_adddup2(&fa, er[1], STDERR_FILENO);
-	error = posix_spawn(&x->pid, x->argv[0], &fa, NULL, x->argv, environ);
+	error = agent_spawn(&x->pid, x->argv[0], &fa, NULL, x->argv, environ);
 	posix_spawn_file_actions_destroy(&fa);
 	close(x->recv ? io[0] : io[1]);
 	close(er[1]);

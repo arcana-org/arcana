@@ -21,9 +21,10 @@
  * A build takes hours, a jail or a ports tree made minutes: what would
  * hold the job queue that long is a run instead, started and left.  The
  * job starts poudriere under a process of its own that waits for it
- * (two forks: init reaps that one, so neither is the agent's child, and
- * both outlive the agent's restart), and comes back with the run's
- * number.  The run's output goes to its log, beside a file the waiter
+ * (this program exec'd as the helper, run-wait, which forks the waiter
+ * and ends: init reaps the waiter, so neither is the agent's child, and
+ * both outlive the agent's restart; the daemon itself is never forked),
+ * and comes back with the run's number.  The run's output goes to its log, beside a file the waiter
  * writes poudriere's pid to and one it writes the exit status to when
  * poudriere ends; what the agent knows of a run is those files.  A run
  * is stopped as a terminal stops it, SIGINT to its process group:
@@ -45,6 +46,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -592,27 +594,90 @@ put_num(int fd, long v)
 }
 
 /*
- * poudriere started with argv as run id, its output in the run's log:
- * the agent forks a child that forks the waiter and ends; the waiter,
+ * The helper's "run-wait pidpath exitpath program args...": this
+ * program exec'd, single-threaded and holding nothing of the daemon's
+ * (posix_spawn(3), not a fork of the daemon: a fork that lives as long
+ * as a build would keep the daemon's heap, its keys among it).  It
+ * forks the waiter and ends, so that init has the waiter; the waiter,
  * in a session of its own, forks poudriere, writes its pid, waits for
- * it and writes how it ended.  Between fork and exec only what is safe
- * in a child of a threaded process is called.
+ * it and writes how it ended.  Its standard input, output and error are
+ * what poudriere is given.
+ */
+int
+run_wait(int argc, char **argv)
+{
+	struct sigaction	 sa;
+	sigset_t		 none;
+	pid_t			 b, c;
+	int			 fd, st;
+
+	if (argc < 4)
+		return (2);
+	closefrom(3);
+	if ((b = fork()) != 0)
+		return (b == -1 ? 1 : 0);
+	(void)setsid();
+	sigemptyset(&none);
+	(void)sigprocmask(SIG_SETMASK, &none, NULL);
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = SIG_DFL;
+	if ((c = fork()) == -1)
+		_exit(1);
+	if (c == 0) {
+		/* poudriere: a process group of its own, which a stop
+		 * signals whole, as a terminal would. */
+		(void)setpgid(0, 0);
+		(void)sigaction(SIGINT, &sa, NULL);
+		(void)sigaction(SIGTERM, &sa, NULL);
+		(void)sigaction(SIGHUP, &sa, NULL);
+		(void)sigaction(SIGPIPE, &sa, NULL);
+		(void)sigaction(SIGCHLD, &sa, NULL);
+		execve(argv[3], argv + 3, environ);
+		(void)write(2, "poudriere could not be started\n", 31);
+		_exit(127);
+	}
+	/* The waiter: what the stop is not for. */
+	sa.sa_handler = SIG_IGN;
+	(void)sigaction(SIGINT, &sa, NULL);
+	(void)sigaction(SIGHUP, &sa, NULL);
+	if ((fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW,
+	    0640)) != -1) {
+		put_num(fd, (long)c);
+		(void)close(fd);
+	}
+	while (waitpid(c, &st, 0) == -1)
+		if (errno != EINTR)
+			_exit(1);
+	if ((fd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW,
+	    0640)) != -1) {
+		put_num(fd, WIFEXITED(st) ? WEXITSTATUS(st) :
+		    WIFSIGNALED(st) ? 128 + WTERMSIG(st) : 255);
+		(void)close(fd);
+	}
+	_exit(0);
+}
+
+/*
+ * poudriere started with argv as run id, its output in the run's log:
+ * the helper's run-wait (above), spawned and waited for until it has
+ * forked the waiter.
  */
 static int
 run_start(struct work *w, char *const argv[], const char *title, long *idp,
     const char **errp)
 {
-	struct sigaction	 sa;
-	ucl_object_t		*meta, *words;
-	sigset_t		 none;
-	const char		*dir;
-	char			*json, pidpath[MAXPATHLEN], exitpath[MAXPATHLEN];
-	long			*ids, id;
-	pid_t			 a, b, c;
-	int			 logfd, nullfd, fd, st, step, i;
+	posix_spawn_file_actions_t	 fa;
+	posix_spawnattr_t		 at;
+	ucl_object_t			*meta, *words;
+	sigset_t			 none, all;
+	const char			*dir;
+	char				*json, **hv;
+	long				*ids, id;
+	pid_t				 a;
+	int				 logfd, fd, st, step, i, n, rc;
 
 	dir = runs_dir(w);
-	(void)mkdir(dir, 0750);
+	(void)mkdir_mode(dir, 0750);
 	id = runs_list(w, &ids) > 0 ? ids[0] + 1 : 1;
 	meta = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(meta, ucl_object_fromint(id), "id", 0, false);
@@ -635,82 +700,46 @@ run_start(struct work *w, char *const argv[], const char *title, long *idp,
 	(void)write(fd, json, strlen(json));
 	close(fd);
 	free(json);
-	snprintf(pidpath, sizeof(pidpath), "%s/%ld.pid", dir, id);
-	snprintf(exitpath, sizeof(exitpath), "%s/%ld.exit", dir, id);
 	if ((logfd = open(wfmt(w, "%s/%ld.log", dir, id), O_WRONLY | O_CREAT |
-	    O_TRUNC | O_CLOEXEC, 0640)) == -1 || (nullfd = open("/dev/null",
-	    O_RDONLY | O_CLOEXEC)) == -1) {
+	    O_TRUNC | O_CLOEXEC, 0640)) == -1) {
 		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
-		if (logfd != -1)
-			close(logfd);
 		return (-1);
 	}
+	for (n = 0; argv[n] != NULL; n++)
+		;
+	hv = wcalloc(w, (size_t)n + 7, sizeof(*hv));
+	hv[0] = (char *)(uintptr_t)opts.own_bin;
+	hv[1] = (char *)(uintptr_t)"--scope-helper";
+	hv[2] = (char *)(uintptr_t)"0";
+	hv[3] = (char *)(uintptr_t)"run-wait";
+	hv[4] = wfmt(w, "%s/%ld.pid", dir, id);
+	hv[5] = wfmt(w, "%s/%ld.exit", dir, id);
+	for (i = 0; i < n; i++)
+		hv[6 + i] = argv[i];
+	hv[6 + n] = NULL;
 	step = step_begin(w, STEP_EXEC, argv[0], "run %ld: %s", id,
 	    title);
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
+	    O_RDONLY, 0);
+	posix_spawn_file_actions_adddup2(&fa, logfd, STDOUT_FILENO);
+	posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
+	posix_spawnattr_init(&at);
 	sigemptyset(&none);
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = SIG_DFL;
-	if ((a = fork()) == -1) {
-		*errp = wfmt(w, "fork: %s", strerror(errno));
-		close(logfd);
-		close(nullfd);
+	sigfillset(&all);
+	(void)posix_spawnattr_setsigmask(&at, &none);
+	(void)posix_spawnattr_setsigdefault(&at, &all);
+	(void)posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK |
+	    POSIX_SPAWN_SETSIGDEF);
+	rc = agent_spawn(&a, hv[0], &fa, &at, hv, environ);
+	posix_spawnattr_destroy(&at);
+	posix_spawn_file_actions_destroy(&fa);
+	close(logfd);
+	if (rc != 0) {
+		*errp = wfmt(w, "%s: %s", hv[0], strerror(rc));
 		step_end(w, step, false, "%s", *errp);
 		return (-1);
 	}
-	if (a == 0) {
-		/* The child: the waiter forked, then gone, so that init
-		 * has the waiter. */
-		if ((b = fork()) != 0)
-			_exit(b == -1 ? 1 : 0);
-		(void)setsid();
-		(void)sigprocmask(SIG_SETMASK, &none, NULL);
-		/*
-		 * The waiter lives as long as the build: none of the agent's
-		 * descriptors with it (its listening sockets would keep the
-		 * port from an agent started again), only what poudriere is
-		 * given.
-		 */
-		(void)dup2(nullfd, 0);
-		(void)dup2(logfd, 1);
-		(void)dup2(logfd, 2);
-		closefrom(3);
-		if ((c = fork()) == -1)
-			_exit(1);
-		if (c == 0) {
-			/* poudriere: a process group of its own, which a
-			 * stop signals whole, as a terminal would. */
-			(void)setpgid(0, 0);
-			(void)sigaction(SIGINT, &sa, NULL);
-			(void)sigaction(SIGTERM, &sa, NULL);
-			(void)sigaction(SIGHUP, &sa, NULL);
-			(void)sigaction(SIGPIPE, &sa, NULL);
-			(void)sigaction(SIGCHLD, &sa, NULL);
-			execve(argv[0], argv, environ);
-			(void)write(2, "poudriere could not be started\n", 31);
-			_exit(127);
-		}
-		/* The waiter: what the stop is not for. */
-		sa.sa_handler = SIG_IGN;
-		(void)sigaction(SIGINT, &sa, NULL);
-		(void)sigaction(SIGHUP, &sa, NULL);
-		if ((fd = open(pidpath, O_WRONLY | O_CREAT | O_TRUNC, 0640)) !=
-		    -1) {
-			put_num(fd, (long)c);
-			(void)close(fd);
-		}
-		while (waitpid(c, &st, 0) == -1)
-			if (errno != EINTR)
-				_exit(1);
-		if ((fd = open(exitpath, O_WRONLY | O_CREAT | O_TRUNC, 0640)) !=
-		    -1) {
-			put_num(fd, WIFEXITED(st) ? WEXITSTATUS(st) :
-			    WIFSIGNALED(st) ? 128 + WTERMSIG(st) : 255);
-			(void)close(fd);
-		}
-		_exit(0);
-	}
-	close(logfd);
-	close(nullfd);
 	while (waitpid(a, &st, 0) == -1 && errno == EINTR)
 		;
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
@@ -772,7 +801,7 @@ make_conf(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	}
 	step = step_begin(w, STEP_FILE, path, "written, %zu bytes",
 	    strlen(sp->text));
-	(void)mkdir(pd_dir(w), 0755);
+	(void)mkdir_mode(pd_dir(w), 0755);
 	tmp = wfmt(w, "%s.arcana-new", path);
 	ok = (fp = fopen(tmp, "w")) != NULL;
 	if (ok) {
@@ -1791,8 +1820,8 @@ options_set(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	    pkgname, exists ? "" : wfmt(w, ", in %s, made", optdir));
 	dir = wstrdup(w, file);
 	*strrchr(dir, '/') = '\0';
-	(void)mkdir(optdir, 0755);
-	(void)mkdir(dir, 0755);
+	(void)mkdir_mode(optdir, 0755);
+	(void)mkdir_mode(dir, 0755);
 	tmp = wfmt(w, "%s.arcana-new", file);
 	ok = (fp = fopen(tmp, "w")) != NULL;
 	if (ok) {

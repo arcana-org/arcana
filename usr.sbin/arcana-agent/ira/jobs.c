@@ -161,7 +161,7 @@ scoped(const struct arc_job_spec *sp)
 
 /* What the job does, in words: the activity log's line for it. */
 static char *
-title_of(const struct arc_job_spec *sp)
+title_words(const struct arc_job_spec *sp)
 {
 	char	*t, *in;
 	int	 rc;
@@ -402,6 +402,23 @@ title_of(const struct arc_job_spec *sp)
 		free(in);
 	}
 	return (t);
+}
+
+/*
+ * The same, the value of a variable whose name says it is a secret
+ * hidden (mask_secrets()): a title is read by every role.
+ */
+static char *
+title_of(const struct arc_job_spec *sp)
+{
+	char	*t, *m;
+
+	if ((t = title_words(sp)) == NULL)
+		return (NULL);
+	if ((m = mask_secrets(t)) == NULL)
+		err(1, "asprintf");
+	free(t);
+	return (m);
 }
 
 static void

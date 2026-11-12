@@ -1039,8 +1039,8 @@ suricata_source_job(struct work *w, const struct arc_job_spec *sp,
 					    yaml_quoted(w, strchr(sp->names.v[i],
 					    '=') + 1));
 		}
-		(void)mkdir(wfmt(w, "%s/update", suricata_data_dir(w)), 0755);
-		(void)mkdir(wfmt(w, "%s/update/sources", suricata_data_dir(w)),
+		(void)mkdir_mode(wfmt(w, "%s/update", suricata_data_dir(w)), 0755);
+		(void)mkdir_mode(wfmt(w, "%s/update/sources", suricata_data_dir(w)),
 		    0755);
 		(void)unlink(off);
 		/* Its secret, root's alone: a new file, its mode set whatever

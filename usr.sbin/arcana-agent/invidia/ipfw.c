@@ -190,7 +190,7 @@ file_write(struct work *w, const char *text, size_t len, const char **errp)
 	dir = wstrdup(w, opts.ipfw_rules);
 	if ((slash = strrchr(dir, '/')) != NULL && slash != dir) {
 		*slash = '\0';
-		(void)mkdir(dir, 0755);
+		(void)mkdir_mode(dir, 0755);
 	}
 	tmp = wfmt(w, "%s.arcana-new", opts.ipfw_rules);
 	bak = wfmt(w, "%s.arcana-old", opts.ipfw_rules);

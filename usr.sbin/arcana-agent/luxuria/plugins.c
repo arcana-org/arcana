@@ -13,18 +13,20 @@
  * has, and so does a jail with a network of its own, where the program
  * is the jail's.  WireGuard's wg(8) is the base system's: Invidia's.
  *
- * A jail's programs are looked for as the jail sees them: a child
- * attaches to it and asks there, so that its own links (a /usr/local
- * that leads elsewhere inside it) and mounts lead where they do for the
- * jail, and never out of it.  An agent the kernel does not let attach
- * looks beneath the jail's root instead, without following a link out
- * of it.  What a jail has is kept a few seconds: it is asked at every
- * list, and changes when a package is installed.
+ * A jail's programs are looked for as the jail sees them: the helper
+ * (this program exec'd, -Q) attaches to it and asks there, so that its
+ * own links (a /usr/local that leads elsewhere inside it) and mounts
+ * lead where they do for the jail, and never out of it.  When the
+ * helper does not answer (or answers what is no answer: the jail's
+ * root can see it run) they are looked for beneath the jail's root,
+ * without following a link out of it; what is not found then is not
+ * there.  The daemon itself is never forked into a jail: the child
+ * would carry its heap and every descriptor in.  What a jail has is
+ * kept a few seconds: it is asked at every list, and changes when a
+ * package is installed.
  */
 
 #include <sys/param.h>
-#include <sys/jail.h>
-#include <sys/wait.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -55,10 +57,7 @@ static const struct {
 	{ "speederv2", &opts.speederv2_bin },
 };
 
-/*
- * A bit for each plugin's program: a child in a jail writes them to its
- * parent through a pipe.
- */
+/* A bit for each plugin's program: the helper prints them as a number. */
 #define	BIT_PROG(i)	(1u << (i))
 #define	FOUND_NONE	0xffffffffu
 _Static_assert(nitems(plugins) < 32, "the bits of an unsigned int");
@@ -174,45 +173,6 @@ found_by_helper(int jid)
 	return ((unsigned int)m);
 }
 
-/*
- * In the jail itself: a child attaches and writes what it found through
- * a pipe; FOUND_NONE when it could not.  The child only makes system
- * calls, as a child of a process with threads must.
- */
-static unsigned int
-found_attached(int jid)
-{
-	unsigned int	m;
-	pid_t		pid;
-	ssize_t		n;
-	int		fd[2], status;
-
-	if (pipe2(fd, O_CLOEXEC) == -1)
-		return (FOUND_NONE);
-	if ((pid = fork()) == -1) {
-		close(fd[0]);
-		close(fd[1]);
-		return (FOUND_NONE);
-	}
-	if (pid == 0) {
-		close(fd[0]);
-		if (jail_attach(jid) == -1)
-			_exit(1);
-		m = found_here();
-		_exit(write(fd[1], &m, sizeof(m)) == sizeof(m) ? 0 : 1);
-	}
-	close(fd[1]);
-	while ((n = read(fd[0], &m, sizeof(m))) == -1 && errno == EINTR)
-		;
-	close(fd[0]);
-	while (waitpid(pid, &status, 0) == -1)
-		if (errno != EINTR)
-			return (FOUND_NONE);
-	if (n != sizeof(m) || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return (FOUND_NONE);
-	return (m);
-}
-
 /* What jail jid (rooted at root) has, or the host for jid 0. */
 static unsigned int
 found_in(int jid, const char *root)
@@ -236,8 +196,7 @@ found_in(int jid, const char *root)
 			slot = i;
 	}
 	pthread_mutex_unlock(&kept_lock);
-	if ((m = found_by_helper(jid)) == FOUND_NONE &&
-	    (m = found_attached(jid)) == FOUND_NONE)
+	if ((m = found_by_helper(jid)) == FOUND_NONE)
 		m = found_beneath(root);
 	pthread_mutex_lock(&kept_lock);
 	kept[slot].jid = jid;

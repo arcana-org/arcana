@@ -642,7 +642,7 @@ inst_start(struct work *w, const char *name, int divert, bool netmap,
 	int		 n, i, started;
 
 	started = 0;
-	(void)mkdir(inst_path(w, name, "d"), 0750);
+	(void)mkdir_mode(inst_path(w, name, "d"), 0750);
 	if (divert > 0 && divert_ready(w, errp) != 0)
 		return (-1);
 	/* A pid file of one that is not running (a start that failed, a
@@ -1116,7 +1116,7 @@ lua_sync(struct work *w, const char *name, const ucl_object_t *lua)
 	}
 	if (lua == NULL || ucl_object_type(lua) != UCL_OBJECT)
 		return (changed);
-	(void)mkdir(dir, 0750);
+	(void)mkdir_mode(dir, 0750);
 	it = NULL;
 	while ((e = ucl_object_iterate(lua, &it, true)) != NULL) {
 		path = wfmt(w, "%s/%s", dir, ucl_object_key(e));
@@ -1460,7 +1460,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			ok = false;
 			break;
 		}
-		(void)mkdir(inst_path(w, ni[k].name, "d"), 0750);
+		(void)mkdir_mode(inst_path(w, ni[k].name, "d"), 0750);
 		/* Checked first: what suricata refuses is not run. */
 		argv[0] = (char *)(uintptr_t)suricata_bin(w);
 		argv[1] = (char *)(uintptr_t)"-T";
@@ -2261,7 +2261,7 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 				(void)unlink(wfmt(w, "%s/%s", dir, de->d_name));
 		closedir(d);
 	}
-	(void)mkdir(dir, 0750);
+	(void)mkdir_mode(dir, 0750);
 	step = step_begin(w, STEP_EXEC, "suricata", "%s through %s, "
 	    "offline", file, inst);
 	argv[0] = (char *)(uintptr_t)suricata_bin(w);

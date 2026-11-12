@@ -86,7 +86,7 @@ put(const char *path, const char *text)
 	(void)snprintf(dir, sizeof(dir), "%s", path);
 	if ((slash = strrchr(dir, '/')) != NULL && slash != dir) {
 		*slash = '\0';
-		(void)mkdir(dir, 0755);
+		(void)mkdir_mode(dir, 0755);
 	}
 	if ((fp = fopen(path, "we")) == NULL)
 		return (errno);

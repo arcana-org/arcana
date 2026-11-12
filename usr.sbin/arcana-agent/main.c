@@ -9,6 +9,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 
 #include <err.h>
@@ -733,6 +734,7 @@ main(int argc, char *argv[])
 			err(1, "sysctl kern.proc.pathname");
 		if (opts.self_path == NULL)
 			opts.self_path = self;
+		opts.own_bin = self;
 		/* The program that is running, not one put in its place. */
 		if (opts.helper_bin == NULL) {
 			opts.helper_bin = self;
@@ -748,6 +750,12 @@ main(int argc, char *argv[])
 	if (setlocale(LC_CTYPE, "C.UTF-8") == NULL)
 		errx(1, "no C.UTF-8 locale");
 	signal(SIGPIPE, SIG_IGN);
+	/*
+	 * What the daemon makes is root's alone unless it says otherwise
+	 * (a file of the system's is given its mode); the programs it runs
+	 * have 022 again (agent_spawn()).
+	 */
+	(void)umask(077);
 	/* Before any thread: they all inherit the mask. */
 	sigemptyset(&stopset);
 	sigaddset(&stopset, SIGTERM);
@@ -847,6 +855,7 @@ main(int argc, char *argv[])
 	history_start();
 	probe_start();
 	record_start();
+	sdwan_conf_tighten();
 	sdwan_start();
 	stampd_start();
 	feeds_start();

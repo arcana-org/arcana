@@ -137,6 +137,30 @@ system_path(const char *path)
 }
 
 /*
+ * Is path one where a file system of the system's own is mounted: the
+ * root, a directory every FreeBSD has (system_path()'s) itself, or one
+ * of the datasets a FreeBSD install makes under them.  What is deeper
+ * (/usr/jails/www) is someone's, not the system's.
+ */
+static bool
+system_mount(const char *path)
+{
+	static const char *const sub[] = { "/usr/home", "/usr/local",
+	    "/usr/obj", "/usr/ports", "/usr/src", "/var/audit", "/var/cache",
+	    "/var/crash", "/var/db", "/var/log", "/var/mail", "/var/tmp" };
+	size_t	i;
+
+	if (!system_path(path))
+		return (false);
+	if (path[1] == '\0' || strchr(path + 1, '/') == NULL)
+		return (true);
+	for (i = 0; i < nitems(sub); i++)
+		if (strcmp(path, sub[i]) == 0)
+			return (true);
+	return (false);
+}
+
+/*
  * A dataset of the pool that is mounted where the system lives: its
  * mount point, or NULL when the pool has none there.
  */
@@ -361,51 +385,170 @@ vdevs_of(const ucl_object_t *vdevs, int depth, ucl_object_t *out)
 	}
 }
 
-/* Is a device, by its name or its path, one of these vdevs' or theirs? */
+/*
+ * Is name a device of p's own: p itself, or one GEOM makes of it (a
+ * partition ada1p3, a slice ada1s1, ada1.eli, ada1p3.nop)?
+ */
 static bool
-vdevs_have(const ucl_object_t *vdevs, const char *dev, const char *path)
+dev_under(const char *name, const char *p)
+{
+	size_t	n;
+
+	if (strncmp(name, "/dev/", 5) == 0)
+		name += 5;
+	n = strlen(p);
+	return (strncmp(name, p, n) == 0 && (name[n] == '\0' || name[n] ==
+	    'p' || name[n] == 's' || name[n] == '.'));
+}
+
+/* Does a vdev of these, or theirs, live on p (dev_under())? */
+static bool
+vdevs_under(const ucl_object_t *vdevs, const char *p)
 {
 	const ucl_object_t	*d;
 	ucl_object_iter_t	 it;
 
 	it = NULL;
 	while ((d = ucl_object_iterate(vdevs, &it, true)) != NULL) {
-		if ((jtext(d, "name") != NULL && strcmp(jtext(d, "name"), dev) ==
-		    0) || strcmp(ucl_object_key(d), dev) == 0 || (jtext(d,
-		    "path") != NULL && strcmp(jtext(d, "path"), path) == 0))
+		if ((jtext(d, "path") != NULL && dev_under(jtext(d, "path"),
+		    p)) || (jtext(d, "vdev_type") != NULL && strcmp(jtext(d,
+		    "vdev_type"), "disk") == 0 && dev_under(ucl_object_key(d),
+		    p)))
 			return (true);
-		if (ucl_object_lookup(d, "vdevs") != NULL && vdevs_have(
-		    ucl_object_lookup(d, "vdevs"), dev, path))
+		if (ucl_object_lookup(d, "vdevs") != NULL && vdevs_under(
+		    ucl_object_lookup(d, "vdevs"), p))
 			return (true);
 	}
 	return (false);
 }
 
-/* Is a device (ada1p1) one of a pool's, as zpool status -j has them? */
-static bool
-pool_has(struct work *w, const char *dev)
+/* What swapinfo -k says, or "". */
+static const char *
+swaps(struct work *w)
 {
+	struct execres	 res;
+	char		*argv[3];
+
+	argv[0] = (char *)(uintptr_t)opts.swapinfo_bin;
+	argv[1] = (char *)(uintptr_t)"-k";
+	argv[2] = NULL;
+	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
+		return ("");
+	return (res.out);
+}
+
+/*
+ * The one guard of the system's storage: why name, a dataset (with a
+ * snapshot's @, its dataset's), or with provider a GEOM provider, is
+ * the system's own and is not destroyed, rolled back, cleared, killed
+ * or written over from here; NULL when it is not.
+ *
+ * A dataset is the system's when it is a pool's root; under <pool>/ROOT
+ * (the boot environments) or the pool's bootfs or above it; mounted, or
+ * with a dataset under it mounted, where a file system of the system's
+ * is (system_mount()); its mountpoint such a place, or none or
+ * legacy (it is not known to be anyone's: a jail's has its path); or a
+ * volume the host swaps on.  A provider is the system's when something
+ * is mounted from it or from one made of it, the host swaps on it, or
+ * it, a partition of it or its .eli is a device of an imported pool.
+ * Each refusal names what it protects.
+ */
+const char *
+storage_protected(struct work *w, const char *name, bool provider)
+{
+	struct statfs		*mnt;
 	struct execres		 res;
 	const ucl_object_t	*jp;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*top;
-	char			*argv[4];
+	const char		*ds, *pool, *v, *sw, *l;
+	char			*argv[8];
+	size_t			 len;
+	int			 n, i;
 	bool			 has;
 
+	n = mnts(w, &mnt);
+	if (provider) {
+		if (strncmp(name, "/dev/", 5) == 0)
+			name += 5;
+		for (i = 0; i < n; i++)
+			if (strncmp(mnt[i].f_mntfromname, "/dev/", 5) == 0 &&
+			    dev_under(mnt[i].f_mntfromname, name))
+				return (wfmt(w, "%s is mounted on %s",
+				    mnt[i].f_mntfromname, mnt[i].f_mntonname));
+		for (sw = swaps(w); *sw != '\0'; sw = l + (*l != '\0')) {
+			l = sw + strcspn(sw, "\n");
+			v = wstrndup(w, sw, strcspn(sw, " \t\n"));
+			if (strncmp(v, "/dev/", 5) == 0 && dev_under(v, name))
+				return (wfmt(w, "the host swaps on %s", v));
+		}
+		argv[0] = (char *)(uintptr_t)opts.zpool_bin;
+		argv[1] = (char *)(uintptr_t)"status";
+		argv[2] = (char *)(uintptr_t)"-j";
+		argv[3] = NULL;
+		if (run_exec(w, argv, &res) != 0 || (top = json_of(&res)) ==
+		    NULL)
+			return (NULL);
+		has = false;
+		pool = NULL;
+		it = NULL;
+		while (!has && (jp = ucl_object_iterate(ucl_object_lookup(top,
+		    "pools"), &it, true)) != NULL)
+			if ((has = ucl_object_lookup(jp, "vdevs") != NULL &&
+			    vdevs_under(ucl_object_lookup(jp, "vdevs"), name)))
+				pool = wstrdup(w, ucl_object_key(jp));
+		ucl_object_unref(top);
+		return (has ? wfmt(w, "%s is a device of a pool, %s", name,
+		    pool) : NULL);
+	}
+	ds = wstrndup(w, name, strcspn(name, "@"));
+	pool = wstrndup(w, ds, strcspn(ds, "/"));
+	if (strchr(ds, '/') == NULL)
+		return (wfmt(w, "%s is the pool %s's root", ds, pool));
+	l = ds + strlen(pool) + 1;
+	if (strncmp(l, "ROOT", 4) == 0 && (l[4] == '\0' || l[4] == '/'))
+		return (wfmt(w, "%s is of %s/ROOT, the boot environments", ds,
+		    pool));
+	len = strlen(ds);
+	for (i = 0; i < n; i++)
+		if (strcmp(mnt[i].f_fstypename, "zfs") == 0 && strncmp(
+		    mnt[i].f_mntfromname, ds, len) == 0 &&
+		    (mnt[i].f_mntfromname[len] == '\0' ||
+		    mnt[i].f_mntfromname[len] == '/') && system_mount(
+		    mnt[i].f_mntonname))
+			return (wfmt(w, "%s is mounted on %s, where the system "
+			    "lives", mnt[i].f_mntfromname, mnt[i].f_mntonname));
 	argv[0] = (char *)(uintptr_t)opts.zpool_bin;
-	argv[1] = (char *)(uintptr_t)"status";
-	argv[2] = (char *)(uintptr_t)"-j";
-	argv[3] = NULL;
-	if (run_exec(w, argv, &res) != 0 || (top = json_of(&res)) == NULL)
-		return (false);
-	has = false;
-	it = NULL;
-	while (!has && (jp = ucl_object_iterate(ucl_object_lookup(top, "pools"),
-	    &it, true)) != NULL)
-		has = ucl_object_lookup(jp, "vdevs") != NULL && vdevs_have(
-		    ucl_object_lookup(jp, "vdevs"), dev, wfmt(w, "/dev/%s", dev));
-	ucl_object_unref(top);
-	return (has);
+	argv[1] = (char *)(uintptr_t)"get";
+	argv[2] = (char *)(uintptr_t)"-H";
+	argv[3] = (char *)(uintptr_t)"-o";
+	argv[4] = (char *)(uintptr_t)"value";
+	argv[5] = (char *)(uintptr_t)"bootfs";
+	argv[6] = (char *)(uintptr_t)pool;
+	argv[7] = NULL;
+	if (run_exec(w, argv, &res) == 0 && res.out != NULL) {
+		v = wstrndup(w, res.out, strcspn(res.out, "\t\n"));
+		if (strncmp(v, ds, len) == 0 && (v[len] == '\0' || v[len] == '/'))
+			return (wfmt(w, "%s is the pool's bootfs %s, or holds it", ds,
+			    v));
+	}
+	argv[0] = (char *)(uintptr_t)opts.zfs_bin;
+	argv[4] = (char *)(uintptr_t)"value";
+	argv[5] = (char *)(uintptr_t)"mountpoint";
+	argv[6] = (char *)(uintptr_t)ds;
+	if (run_exec(w, argv, &res) == 0 && res.out != NULL) {
+		v = wstrndup(w, res.out, strcspn(res.out, "\t\n"));
+		if (strcmp(v, "none") == 0 || strcmp(v, "legacy") == 0)
+			return (wfmt(w, "%s has mountpoint %s: whose it is is not "
+			    "known, and it is not taken from here", ds, v));
+		if (system_mount(v))
+			return (wfmt(w, "%s has mountpoint %s, where the system "
+			    "lives", ds, v));
+	}
+	v = wfmt(w, "/dev/zvol/%s ", ds);
+	if (strstr(swaps(w), v) != NULL)
+		return (wfmt(w, "the host swaps on /dev/zvol/%s", ds));
+	return (NULL);
 }
 
 /*
@@ -994,6 +1137,14 @@ storage_argv(struct work *w, const struct arc_job_spec *sp, const char **errp)
 			if (!(snapshot_ok(w, a[0]) || (dataset_ok(a[0]) &&
 			    strchr(a[0], '/') != NULL)))
 				goto name;
+			/* A snapshot goes alone; a dataset only when it is not
+			 * the system's (storage_protected()). */
+			if (strchr(a[0], '@') == NULL && (sysmnt =
+			    storage_protected(w, a[0], false)) != NULL) {
+				*errp = wfmt(w, "%s: not destroyed from here",
+				    sysmnt);
+				return (NULL);
+			}
 			ARG("destroy");
 			if (sp->recursive)
 				ARG("-r");
@@ -1009,6 +1160,12 @@ storage_argv(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		} else if (strcmp(verb, "rollback") == 0 && na == 1) {
 			if (!snapshot_ok(w, a[0]))
 				goto name;
+			if ((sysmnt = storage_protected(w, a[0], false)) !=
+			    NULL) {
+				*errp = wfmt(w, "%s: not rolled back from here",
+				    sysmnt);
+				return (NULL);
+			}
 			ARG("rollback");
 			/* To one that is not the latest: those after it go. */
 			if (sp->recursive)
@@ -1561,26 +1718,13 @@ storage_title(const struct arc_job_spec *sp)
 static const char *
 newfs_wrong(struct work *w, const char *dev, bool force)
 {
-	struct statfs	*mnt;
 	struct execres	 res;
-	const char	*bin;
+	const char	*bin, *why;
 	char		*argv[4], *path;
-	int		 n, i;
 
 	path = wfmt(w, "/dev/%s", dev);
-	n = mnts(w, &mnt);
-	for (i = 0; i < n; i++)
-		if (strcmp(mnt[i].f_mntfromname, path) == 0)
-			return (wfmt(w, "%s is mounted on %s", path,
-			    mnt[i].f_mntonname));
-	argv[0] = (char *)(uintptr_t)opts.swapinfo_bin;
-	argv[1] = (char *)(uintptr_t)"-k";
-	argv[2] = NULL;
-	if (run_exec(w, argv, &res) == 0 && res.out != NULL && strstr(res.out,
-	    wfmt(w, "%s ", path)) != NULL)
-		return (wfmt(w, "the host swaps on %s", path));
-	if (pool_has(w, dev))
-		return (wfmt(w, "%s is a device of a pool", dev));
+	if ((why = storage_protected(w, dev, true)) != NULL)
+		return (why);
 	if (force)
 		return (NULL);
 	if ((bin = tool(w, "fstyp")) == NULL)

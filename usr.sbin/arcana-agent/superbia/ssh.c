@@ -1444,7 +1444,7 @@ sign(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	 * is the CA's public key and the agent's socket, root's alone. */
 	if (opts.tools_dir != NULL) {
 		snprintf(dir, sizeof(dir), "%s/tmp", opts.tools_dir);
-		(void)mkdir(dir, 0755);
+		(void)mkdir_mode(dir, 0755);
 	} else
 		snprintf(dir, sizeof(dir), "%s", tmp_dir());
 	strlcat(dir, "/.arcana-sign.XXXXXXXX", sizeof(dir));

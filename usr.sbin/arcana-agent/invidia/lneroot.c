@@ -212,7 +212,7 @@ start(struct lneh *h)
 	sigemptyset(&none);
 	posix_spawnattr_setsigmask(&sa, &none);
 	posix_spawnattr_setflags(&sa, POSIX_SPAWN_SETSIGMASK);
-	rc = posix_spawn(&h->pid, argv[0], &fa, &sa, argv, noenv);
+	rc = agent_spawn(&h->pid, argv[0], &fa, &sa, argv, noenv);
 	posix_spawnattr_destroy(&sa);
 	posix_spawn_file_actions_destroy(&fa);
 	close(sp[1]);

@@ -103,8 +103,16 @@ write_rc()
 #!/bin/sh
 conf=$(pwd)/rc.conf
 echo "\$*" >> $(pwd)/sysrc.log
-# -R dir: the rc.conf of what is rooted there, a jail's.
-[ "\$1" = -R ] && { conf=\$2/etc/rc.conf; shift 2; }
+# -j jid: the jail's own rc.conf, as jexec(8) would run it there; a
+# jail not in ./jails is gone, and jexec fails.  Never -R, which runs
+# the jail's /bin/sh by chroot(8) as the host's root.
+[ "\$1" = -R ] && { echo "sysrc: -R" >&2; exit 2; }
+if [ "\$1" = -j ]; then
+	r=\$(awk -v j="\$2" '\$2 == j { print \$4 }' $(pwd)/jails 2>/dev/null)
+	[ -n "\$r" ] || { echo "jexec: jail_getid: jail \$2 not found" >&2; exit 1; }
+	conf=\$r/etc/rc.conf
+	shift 2
+fi
 [ "\$1" = -f ] && { conf=\$2; touch "\$conf"; shift 2; }
 ign=no
 [ "\$1" = -i ] && { ign=yes; shift; }
@@ -1590,6 +1598,12 @@ config_bundle_body()
 	chmod 600 wg/wg0.conf
 	echo 'every 10' > arcana/history.conf
 	echo 'id' > arcana/id_ed25519
+	# Secrets in files no place makes secret: rc.conf.d's, by their
+	# variables' names, a carp key, a relay's -k; the SD-WAN's files.
+	printf 'mysvc_enable="YES"\nmysvc_password="pw0rdA1"\n' > "$r/etc/rc.conf.d/mysvc"
+	printf 'ifconfig_em0_alias0="inet vhid 3 pass carpK3y 10.0.0.1/24"\n' > "$r/etc/rc.conf.d/carp"
+	printf 'arcana_relay_r1_flags="-c -l127.0.0.1:1 -r127.0.0.1:2 -k fecK3y"\n' > "$r/etc/rc.conf.d/relay"
+	printf 'protocol bgp p { neighbor 192.0.2.1 as 65001; password "bgpS3cret"; }\n' > arcana/sdwan-bird-sw1.conf
 	DAEMON_ARGS="--root $r -1 $(pwd)/arcana/history.conf"
 	start_daemon
 
@@ -1606,6 +1620,14 @@ config_bundle_body()
 	    -o match:'"facts":\{"arch":"[a-z0-9_]+"' -o match:'"interfaces":\[' \
 	    -o not-match:'hidden' -o not-match:'id_ed25519' \
 	    -o not-match:'c2VjcmV0' cat b.json
+	atf_check -o match:'"path":"/etc/rc.conf.d/mysvc","mode":"[0-9]+","owner":"[a-z0-9]+","group":"[a-z0-9]+","secret":true\}' \
+	    -o match:'"path":"/etc/rc.conf.d/carp",[^}]*"secret":true\}' \
+	    -o match:'"path":"/etc/rc.conf.d/relay",[^}]*"secret":true\}' \
+	    -o match:'"path":"/usr/local/etc/arcana/sdwan-bird-sw1.conf",[^}]*"secret":true\}' \
+	    -o not-match:'pw0rdA1|carpK3y|fecK3y|bgpS3cret' cat b.json
+	rm "$r/etc/rc.conf.d/mysvc" "$r/etc/rc.conf.d/carp" \
+	    "$r/etc/rc.conf.d/relay" arcana/sdwan-bird-sw1.conf
+	atf_check -o save:b.json "$JGC" -c "$SOCK" config-export
 	# With them, the key's text too.
 	atf_check -o match:'"path":"/usr/local/etc/wireguard/wg0.conf".*"text":"\[Interface\]\\nPrivateKey = c2VjcmV0\\n","secret":true' \
 	    "$JGC" -c "$SOCK" config-export -s
@@ -6324,6 +6346,12 @@ EOS
 	atf_check -o match:'^ifconfig_epair91b_alias0="inet 10.99.0.5/24"$' \
 	    cat "$R/etc/rc.conf"
 	atf_check -o not-match:'10.99.0.5' cat rc.conf
+	# Through sysrc -j and the jail's number (jexec), never -R and its
+	# root: sysrc(8) chroots into a root no running jail has, as the
+	# host's root.  A jail gone is a failure, not the root's files.
+	atf_check -o match:'^-j 4 -i -n ifconfig_epair91b_alias0$' \
+	    -o match:'^-j 4 ifconfig_epair91b_alias0=inet 10.99.0.5/24$' \
+	    -o not-match:'^-R' cat sysrc.log
 	atf_check -o match:'fake-helper --scope-helper 4 route-add 10.77.0.0/16 10.99.0.1 - 0 0 0 -' \
 	    "$JGC" -j gateway -c "$SOCK" route add 10.77.0.0/16 10.99.0.1
 	# Its firewall is its own: ipfw is run in the jail, not on the host.
@@ -6377,6 +6405,22 @@ EOS
 	atf_check -o match:'jexec 4 .*/fake-birdc -r show status' cat jexec.log
 	atf_check -o match:'^router id 10.0.0.1;$' \
 	    "$JGC" -j gateway -c "$SOCK" bird config
+	# Its include patterns matched beneath its root: a file there is
+	# one of the configuration's, a directory that is a link out of
+	# the jail lists nothing of the host's.
+	mkdir -p "$R$(pwd)/bird/peers" hostdir
+	printf 'protocol device {}\n' > "$R$(pwd)/bird/peers/a.conf"
+	printf 'host\n' > hostdir/b.conf
+	ln -s "$(pwd)/hostdir" "$R$(pwd)/bird/out"
+	cp "$R$(pwd)/bird/bird.conf" bird.conf.was
+	printf 'include "peers/*.conf";\ninclude "out/*.conf";\n' >> \
+	    "$R$(pwd)/bird/bird.conf"
+	atf_check -o match:'protocol device' \
+	    "$JGC" -j gateway -c "$SOCK" bird config "$(pwd)/bird/peers/a.conf"
+	atf_check -s exit:1 -e match:'not a file of BIRD' -o ignore \
+	    "$JGC" -j gateway -c "$SOCK" bird config "$(pwd)/bird/out/b.conf"
+	cp bird.conf.was "$R$(pwd)/bird/bird.conf"
+	rm "$R$(pwd)/bird/out"
 	sed -e 's/accept;/reject;/' "$R$(pwd)/bird/bird.conf" > new.conf
 	atf_check -o match:'in place, and BIRD told' \
 	    "$JGC" -j gateway -c "$SOCK" bird config -w new.conf
@@ -9127,8 +9171,8 @@ sdwan_rules_cleanup()
 atf_test_case sdwan_bird cleanup
 sdwan_bird_head()
 {
-	atf_set "descr" "BIRD instances of the SD-WAN, on the host and in a vnet jail; BFD's word in the steering, its faults; the breakout's default route steered"
-	atf_set "timeout" "60"
+	atf_set "descr" "BIRD instances of the SD-WAN, on the host and in a vnet jail; BFD's word in the steering, its faults; the breakout's default route steered; a jail's birdc that never ends not waited on"
+	atf_set "timeout" "120"
 }
 sdwan_bird_body()
 {
@@ -9156,6 +9200,10 @@ sdwan_bird_body()
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"table":1,"router_id":"100.64.0.0"}}]}'
 	atf_check -o match:'^setfib -F 1 .*fake-bird -c .*sdwan-bird-sw1.conf -s .*sdwan-bird-sw1.ctl -P .*sdwan-bird-sw1.pid$' cat setfib.log
 	atf_check -o match:'^router id 100.64.0.0;$' cat "$(dirname "$f")/sdwan-bird-sw1.conf"
+	# Rendered and kept files root's alone, whatever the umask: they
+	# hold the BIRD passwords.
+	atf_check -o match:'^-rw------- ' ls -l "$(dirname "$f")/sdwan-bird-sw1.conf"
+	atf_check -o match:'^-rw------- ' ls -l "$(dirname "$f")/sdwan-bird.json"
 	atf_check -o match:'"bird":\[\{"name":"sw1","fib":1,"running":true,"protocols":\[\{"name":"device1","proto":"Device","state":"up"\},\{"name":"uni_hq_0","proto":"BGP","state":"start","info":"Active        Socket: Connection refused"\}\]' \
 	    "$JGC" -c "$SOCK" sdwan
 	# BFD: the sessions read every second into the sdwan read; a
@@ -9236,8 +9284,33 @@ EOS
 	atf_check -o match:'"name":"sw1","fib":1,"running":true' -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":true' \
 	    "$JGC" -c "$SOCK" sdwan
 	test -f "$(dirname "$f")/sdwan-bird@gw.json" || atf_fail "the jail's instances are not kept"
+	# The jail's root puts a birdc there that never ends: the read
+	# answers within seconds all the same, that instance not running,
+	# the host's as it is; the watch says it does not answer and does
+	# not start a second one.
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+shift
+case "\$1" in *fake-birdc) [ -f $(pwd)/birdc.hang ] && exec sleep 40 ;; esac
+n=0; for a; do case "\$a" in /var/run/*) a="$R\$a" ;; esac; set -- "\$@" "\$a"; n=\$((n+1)); done
+shift \$n
+exec "\$@"
+EOS
+	touch birdc.hang
+	t0=$(date +%s)
+	atf_check -o match:'"name":"sw1","fib":1,"running":true' \
+	    -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":false' \
+	    "$JGC" -c "$SOCK" sdwan
+	[ $(($(date +%s) - t0)) -lt 25 ] || atf_fail "the read waited on the jail's birdc"
+	wait_match 'the BIRD instance sw1-gw does not answer within 5 s' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o inline:'1\n' sh -c "grep -c 'fake-bird -c /var/run/arcana-sdwan-bird-sw1-gw.conf' jexec.log"
+	rm birdc.hang
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird '{"jail":"gw","instances":[]}'
-	atf_check -o match:'"name":"sw1","fib":1' -o not-match:'sw1-gw' "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"name":"sw1","fib":1' -o not-match:'"name":"sw1-gw"' \
+	    -o match:'"type":"bird-instance","severity":"Cleared","was":"Critical","object":"sw1-gw"' \
+	    "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'^jexec 7 .*fake-birdc -s /var/run/arcana-sdwan-bird-sw1-gw.ctl down$' cat jexec.log
 	test ! -f "$R/var/run/arcana-sdwan-bird-sw1-gw.conf" || atf_fail "the jail's file stayed"
 	test ! -f "$(dirname "$f")/sdwan-bird@gw.json" || atf_fail "the jail's kept file stayed"
@@ -10941,6 +11014,31 @@ netstore_body()
 	atf_check -o match:'^-rw-------' ls -l ctl.conf
 	atf_check -o match:'done +iscsi enable' "$JGC" -c "$SOCK" iscsi enable yes
 	test -f running.ctld || atf_fail "ctld is not started"
+	# Its CHAP secrets are read as a marker, by any role, in either of
+	# ctl.conf's forms; given back, the marker keeps the secret the
+	# file has there; one with no secret there is refused.
+	printf 'auth-group ag0 {\n\tchap "u1" s3cretchap0000\n\tchap-mutual u2 "mutsec:0000aa" mu2 "msec0000bbbb"\n}\ntarget iqn.2012-06.org.example:t0 {\n\tchap u1 tgtsecret0000\n\tportal-group pg0\n}\n' > ctl.conf
+	atf_check -o save:ns.out "$JGC" -c "$SOCK" netstore iscsi
+	atf_check -o not-match:'s3cret|mutsec|msec0000|tgtsecret' cat ns.out
+	atf_check -o match:'chap \\"u1\\" \\"\*{8}\\"' \
+	    -o match:'chap-mutual u2 \\"\*{8}\\" mu2 \\"\*{8}\\"' \
+	    -o match:'chap u1 \\"\*{8}\\"\\n\\tportal-group' cat ns.out
+	printf 'auth-group ag0 {\n\tchap "u1" "********"\n\tchap-mutual u2 "********" mu2 "********"\n}\ntarget iqn.2012-06.org.example:t0 {\n\tchap u1 "********"\n\tportal-group pg1\n}\n' > ctl.back
+	atf_check -o match:'done +iscsi conf' "$JGC" -c "$SOCK" iscsi conf ctl.back
+	atf_check -o inline:'auth-group ag0 {\n\tchap "u1" s3cretchap0000\n\tchap-mutual u2 "mutsec:0000aa" mu2 "msec0000bbbb"\n}\ntarget iqn.2012-06.org.example:t0 {\n\tchap u1 tgtsecret0000\n\tportal-group pg1\n}\n' \
+	    cat ctl.conf
+	printf 'auth-group ag0 {\n\tchap u9 "********"\n}\n' > ctl.bad
+	atf_check -s exit:1 -o match:'failed.*the marker of .*u9 has no secret' \
+	    "$JGC" -c "$SOCK" iscsi conf ctl.bad
+	atf_check -o match:'s3cretchap0000' cat ctl.conf
+	# UCL's form.
+	printf 'auth-group {\n  ag0 {\n    chap = [ { user = "u1", secret = "uclsecret0000" } ]\n    chap-mutual = [ { user: "u2"; secret: "uclmut00001"; mutual-user = "m2"; mutual-secret = "uclmut00002" } ]\n  }\n}\n' > ctl.conf
+	atf_check -o not-match:'uclsecret|uclmut' -o match:'secret = \\"\*{8}\\"' \
+	    -o match:'mutual-secret = \\"\*{8}\\"' "$JGC" -c "$SOCK" netstore iscsi
+	printf 'auth-group {\n  ag0 {\n    chap = [ { user = "u1", secret = "********" } ]\n    chap-mutual = [ { user: "u2"; secret: "********"; mutual-user = "m2"; mutual-secret = "********" } ]\n  }\n}\n' > ctl.back
+	atf_check -o match:'done +iscsi conf' "$JGC" -c "$SOCK" iscsi conf ctl.back
+	atf_check -o match:'secret = "uclsecret0000"' -o match:'secret: "uclmut00001"' \
+	    -o match:'mutual-secret = "uclmut00002"' cat ctl.conf
 	# HAST: hast.conf; a resource made, its role set.
 	printf 'resource shared {\n\ton a { local /dev/ada1\n\t\tremote 10.0.0.2 }\n}\n' > hast.new
 	atf_check -o match:'done +hast conf' "$JGC" -c "$SOCK" hast conf hast.new
@@ -13759,6 +13857,7 @@ case "\$*" in
 "list -j -p -t snapshot"*)
 	printf '%s\n' '{"output_version":{"command":"zfs list","vers_major":0,"vers_minor":1},"datasets":{"fakepool/data@b":{"name":"fakepool/data@b","type":"SNAPSHOT","pool":"fakepool","properties":{"used":{"value":"10"},"referenced":{"value":"4000"},"creation":{"value":"1759500000"}}},"fakepool/data@a":{"name":"fakepool/data@a","type":"SNAPSHOT","pool":"fakepool","properties":{"used":{"value":"20"},"referenced":{"value":"3000"},"creation":{"value":"1759400000"}}}}}' ;;
 "destroy fakepool/busy") echo "cannot destroy 'fakepool/busy': dataset is busy" >&2; exit 1 ;;
+"get -H -o value mountpoint fakepool/none") echo none ;;
 "list -H -o name -s createtxg -t snapshot -d 1 fakepool/data") printf 'fakepool/data@a\nfakepool/data@b\n' ;;
 "destroy fakepool/data@b") [ -f $(pwd)/held ] && { echo "cannot destroy snapshot fakepool/data@b: dataset is busy" >&2; exit 1; } ;;
 esac
@@ -13770,6 +13869,7 @@ echo "zpool \$*" >> $(pwd)/storage.log
 case "\$*" in
 "list -Hp -o name,size,alloc,free,health") printf 'fakepool\t14000\t5000\t9000\tONLINE\n' ;;
 "list -j -p -o name,size,allocated"*) printf '%s\n' '{"output_version":{"command":"zpool list","vers_major":0,"vers_minor":1},"pools":{"fakepool":{"name":"fakepool","type":"POOL","state":"DEGRADED","properties":{"size":{"value":"14000"},"allocated":{"value":"5000"},"free":{"value":"9000"},"fragmentation":{"value":"12"},"capacity":{"value":"35"},"dedupratio":{"value":"1.00"},"health":{"value":"DEGRADED"}}}}}' ;;
+"get -H -o value bootfs fakepool") echo fakepool/be ;;
 import) printf '   pool: spare\n     id: 1234567890\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\tspare       ONLINE\n\t  ada7p1    ONLINE\n' ;;
 "status -j") printf '%s\n' '{"output_version":{"command":"zpool status","vers_major":0,"vers_minor":1},"pools":{"fakepool":{"name":"fakepool","state":"DEGRADED","pool_guid":"1","txg":"1","spa_version":"5000","zpl_version":"5","status":"One or more devices has been taken offline by the administrator. Sufficient replicas exist for the pool to continue functioning.","action":"Online the device using '\''zpool online'\''.","msgid":"ZFS-8000-2Q","moreinfo":"https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-2Q","scan_stats":{"function":"SCRUB","state":"FINISHED","start_time":"Sun Oct  4 02:49:49 2026","end_time":"Sun Oct  4 03:00:00 2026","errors":"0"},"vdevs":{"fakepool":{"name":"fakepool","vdev_type":"root","guid":"1","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"mirror-0":{"name":"mirror-0","vdev_type":"mirror","guid":"2","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"ada1p1":{"name":"ada1p1","vdev_type":"disk","guid":"3","path":"/dev/ada1p1","class":"normal","state":"ONLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"},"ada2p1":{"name":"ada2p1","vdev_type":"disk","guid":"4","path":"/dev/ada2p1","class":"normal","state":"OFFLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"}}}}}},"error_count":"0","errlist":[]}}}' ;;
 esac
@@ -13946,6 +14046,26 @@ zfs rename fakepool/data@b.resnap fakepool/data@b
 	# What zfs refuses is said as it said it.
 	atf_check -s exit:1 -o match:'dataset is busy' \
 	    "$JGC" -c "$SOCK" zfs destroy fakepool/busy
+	# The system's datasets and providers are not destroyed, rolled
+	# back or wiped (storage_protected()), each refusal saying why;
+	# stand-ins alone: fakepool and its ada1p1 are the fakes'.
+	for ds in fakepool/ROOT/default:'boot environments' \
+	    fakepool/be:"the pool's bootfs" fakepool/none:'mountpoint none'; do
+		atf_check -s exit:1 -e match:"${ds#*:}" -o ignore \
+		    "$JGC" -c "$SOCK" zfs destroy "${ds%%:*}"
+	done
+	atf_check -s exit:1 -e match:'boot environments' -o ignore \
+	    "$JGC" -c "$SOCK" zfs rollback -r fakepool/ROOT/default@a
+	printf '#!/bin/sh\necho "geom $*" >> %s/geom.log\n' "$(pwd)" > tools/geom
+	chmod +x tools/geom
+	atf_check -s exit:1 -o match:'ada1p1 is a device of a pool, fakepool' \
+	    "$JGC" -c "$SOCK" geom eli kill ada1p1
+	atf_check -s exit:1 -o match:'ada1 is a device of a pool, fakepool' \
+	    "$JGC" -c "$SOCK" geom label clear /dev/ada1
+	atf_check -o match:'done' "$JGC" -c "$SOCK" geom label clear /dev/ada3
+	atf_check -o inline:'geom label clear /dev/ada3\n' cat geom.log
+	atf_check -o not-match:'destroy fakepool/(ROOT|be|none)' \
+	    -o not-match:'rollback -r fakepool/ROOT' cat storage.log
 	atf_check -o match:'^zfs snapshot -r fakepool/data@c$' \
 	    -o match:'^zfs create -V 2G -o volblocksize=16k fakepool/zvol$' \
 	    cat storage.log
@@ -14390,6 +14510,22 @@ EOS
 	# Taken away: its dataset only where it is mounted at its path.
 	atf_check -s exit:1 -o match:'tank/jails/web2 is not mounted at the jail' "$JGC" -c "$SOCK" jailconf remove www tank/jails/web2
 	test -f "$d/jail.conf.d/www.conf" || atf_fail "a jail was taken away when its dataset was not its"
+	# A path that is none is no path (zroot/ROOT has mountpoint none);
+	# a dataset at the jail's path that is the system's (its boot
+	# environments) is not destroyed either.  Stand-ins: tank is the
+	# fake zfs's.
+	printf '.include "%s/jail.conf";\nrj {\n\tpath = none;\n}\n' "$d" > "$d/jail.conf.d/rj.conf"
+	echo none > mp.tank_ROOT_default
+	atf_check -s exit:1 -o match:'tank/ROOT/default is not mounted at the jail' \
+	    "$JGC" -c "$SOCK" jailconf remove rj tank/ROOT/default
+	printf '.include "%s/jail.conf";\nsj {\n\tpath = /usr/jails/sj;\n}\n' "$d" > "$d/jail.conf.d/sj.conf"
+	echo /usr/jails/sj > mp.tank_ROOT_sj
+	atf_check -s exit:1 -o match:'tank/ROOT/sj is of tank/ROOT, the boot environments' \
+	    "$JGC" -c "$SOCK" jailconf remove sj tank/ROOT/sj
+	atf_check -o not-match:'destroy -r tank/ROOT' cat zfs.log
+	test -f "$d/jail.conf.d/rj.conf" -a -f "$d/jail.conf.d/sj.conf" ||
+	    atf_fail "a jail was taken away with a dataset of the system's"
+	rm "$d/jail.conf.d/rj.conf" "$d/jail.conf.d/sj.conf"
 	atf_check -o match:'done +jail remove www' "$JGC" -c "$SOCK" jailconf remove www tank/jails/www
 	test -e "$d/jail.conf.d/www.conf" && atf_fail "the jail's file stayed"
 	atf_check -o match:'^zfs destroy -r tank/jails/www$' cat zfs.log
@@ -14467,6 +14603,10 @@ EOS
 	atf_check -o match:'^lo0 inet 10.0.0.100/24 vhid 3 alias$' cat ifconfig.log
 	atf_check -o match:'^ifconfig_lo0_alias0="inet vhid 3 advskew 20 pass sekrit 10.0.0.100/24"$' \
 	    -o match:'^kld_list="carp"$' cat rc.conf
+	# Nor in the job's trace as any role reads it: the programs' words
+	# (argv) as their command lines, the key <hidden>.
+	atf_check -o match:'"argv": ?\[[^]]*pass <hidden>' -o not-match:'sekrit' \
+	    "$JGC" --libxo json -c "$SOCK" job 1
 	# Changed: kept as it is now, the key as it was.
 	atf_check -o match:'done +lo0: carp set vhid 3$' \
 	    "$JGC" -p -c "$SOCK" carp set lo0 vhid=3 advskew=40 state=backup
@@ -15245,6 +15385,10 @@ EOF
 	# descriptors: only poudriere's standard input, output and error.
 	n=$(ps -o ppid= -p "$(cat builder/5.pid)" | tr -d ' ')
 	atf_check test "$(ps -o ppid= -p "$n" | tr -d ' ')" != "$(cat daemon.pid)"
+	# Nor a fork of the agent, its heap and keys with it: the agent
+	# exec'd as its helper.
+	atf_check -o match:'--scope-helper 0 run-wait .*/builder/5\.pid' \
+	    ps -ww -o args= -p "$n"
 	# procstat(1) sees another's descriptors as root, or when the host
 	# lets anyone debug their own (security.bsd.unprivileged_proc_debug).
 	if [ "$(id -u)" = 0 ] || [ "$(sysctl -n \

@@ -752,7 +752,7 @@ dma_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 
 		if (strrchr(dir, '/') != NULL) {
 			*strrchr(dir, '/') = '\0';
-			(void)mkdir(dir, 0755);
+			(void)mkdir_mode(dir, 0755);
 		}
 	}
 	if (dma_put(w, apath, aout, 0640, errp) != 0 || dma_put(w, cpath, out,
@@ -904,10 +904,10 @@ do_sysfile_job(struct work *w, const struct arc_job_spec *sp,
 		*strrchr(dir, '/') = '\0';
 		for (p = dir + 1; (p = strchr(p, '/')) != NULL; p++) {
 			*p = '\0';
-			(void)mkdir(dir, 0755);
+			(void)mkdir_mode(dir, 0755);
 			*p = '/';
 		}
-		(void)mkdir(dir, 0755);
+		(void)mkdir_mode(dir, 0755);
 	}
 	tmp = wfmt(w, "%s.arcana-new", path);
 	old = wfmt(w, "%s.arcana-old", path);

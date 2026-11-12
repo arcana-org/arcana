@@ -544,7 +544,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	 * what a commit wrote is what the host has. */
 	snprintf(buf, sizeof(buf), "#!/bin/sh\nconf=%s/rc.conf\n"
 	    "a=%s/root/usr/local/etc/rc.conf.d/arcana; [ -f \"$a\" ] || a=\n"
-	    "[ \"$1\" = -R ] && { conf=$2/etc/rc.conf; a=; shift 2; }\n"
+	    /* -j jid: the jail's rc.conf, as jexec(8) runs it there; the
+	     * agent never gives -R, which chroots as the host's root. */
+	    "[ \"$1\" = -R ] && exit 2\n"
+	    "if [ \"$1\" = -j ]; then r=$(awk -v j=\"$2\" '$2 == j { print $4 "
+	    "}' %s/jails); [ -n \"$r\" ] || exit 1; conf=$r/etc/rc.conf; a=; "
+	    "shift 2; fi\n"
 	    "[ \"$1\" = -f ] && { conf=$2; a=; touch \"$conf\"; shift 2; }\n"
 	    "[ \"$1\" = -i ] && shift\n"
 	    "case \"$1\" in\n"
@@ -560,7 +565,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "\"$n\" >> c.new; mv c.new \"$conf\" ;;\n"
 	    "*=*) k=${1%%%%=*}; v=${1#*=}; grep -v \"^$k=\" \"$conf\" > c.new; "
 	    "printf '%%s=\"%%s\"\\n' \"$k\" \"$v\" >> c.new; mv c.new \"$conf\" ;;\n"
-	    "esac\n", cwd, cwd);
+	    "esac\n", cwd, cwd, cwd);
 	put("fake-sysrc", buf);
 	ATF_REQUIRE(chmod("fake-sysrc", 0755) == 0);
 	snprintf(buf, sizeof(buf), "#!/bin/sh\nconf=%s/rc.conf\n"
@@ -2556,8 +2561,6 @@ ts_net(const char *cwd, const char *r2routes, const char *r2fw)
 	/* jexec: ipfw's list and tables, the jail's own. */
 	ATF_REQUIRE((fp = fopen("fake-jexec", "w")) != NULL);
 	fputs("#!/bin/sh\necho \"jexec $*\" >> jexec.log\nj=$1; shift\n"
-	    /* A jail whose answers hang, while hang-<jid> is there. */
-	    "[ -f hang-$j ] && sleep 45\n"
 	    "case \"$1 $2\" in\n*fake-ipfw\\ list) cat fw-$j.list 2>/dev/null; "
 	    "exit 0 ;;\n*fake-ipfw\\ table) cat fw-$j.tables 2>/dev/null; "
 	    "exit 0 ;;\nesac\nexec \"$@\"\n", fp);
@@ -2565,7 +2568,12 @@ ts_net(const char *cwd, const char *r2routes, const char *r2fw)
 	/* The helper: each jail's addresses and routes, the longest prefix
 	 * that covers an address taken; every neighbour answers. */
 	ATF_REQUIRE((fp = fopen("fake-helper", "w")) != NULL);
-	fputs("#!/bin/sh\nj=$2\ncase \"$3\" in\n"
+	fputs("#!/bin/sh\nj=$2\n"
+	    /* A jail whose answers hang, while hang-<jid> is there: the
+	     * agent's own helper, which no deadline of the agent's cuts
+	     * (a jail's own programs, by jexec, it kills itself). */
+	    "[ -f hang-$j ] && sleep 45\n"
+	    "case \"$3\" in\n"
 	    "route-addrs) cat addrs-$j 2>/dev/null; echo '{\"sysctl\":true,"
 	    "\"forwarding\":1,\"forwarding6\":0,\"fw\":1,\"fw6\":0}' ;;\n"
 	    "route-neighs) echo '{\"address\":\"'$5'\",\"state\":\"reachable\"}'"

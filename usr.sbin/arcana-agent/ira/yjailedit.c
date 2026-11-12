@@ -302,7 +302,7 @@ jail_new(struct jedit *e, const yjail *j)
 		memcpy(buf + blen, text, len);
 		blen += len;
 		free(text);
-		(void)mkdir(opts.jail_conf_d, 0755);
+		(void)mkdir_mode(opts.jail_conf_d, 0755);
 		/* jc_write() keeps a file's mode and owner: one made first. */
 		if (!f->there) {
 			int fd;
