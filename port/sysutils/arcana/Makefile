@@ -22,8 +22,8 @@ GH_PROJECT=	arcana
 # tarball does not carry: jailconf(8) and libjailconf; libipfeeds and
 # libwebpush, linked in; stamp: stampd(8), the STAMP reflector the agent
 # runs in the FIBs of its services, built and installed with the rest.
-GH_TUPLE=	spmzt:jailconf:e5ff11dc3551f462d5814e26e7e224ed7d648438:jailconf/jailconf \
-		spmzt:ipfeeds:e384c0bd4c33152ac20b288c840076dee348bd9e:ipfeeds/ipfeeds \
+GH_TUPLE=	spmzt:jailconf:19c06d0a74a4d074414c4fd4010f4aa05c6f00c1:jailconf/jailconf \
+		spmzt:ipfeeds:db443b8a70b64f0fbf98cc5587ee13dbd9dbf6f6:ipfeeds/ipfeeds \
 		spmzt:libwebpush:e23bc37c0ad6d535b5be9ddb36d73e3d816e561c:libwebpush/libwebpush \
 		spmzt:stamp:43ea48a1dfbf3ae42ce3916314c48be7c3b75ae0:stamp/stamp
 
