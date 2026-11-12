@@ -535,7 +535,7 @@ ATF_TC_BODY(nacm_user, tc)
 {
 	struct authn	 a, b;
 	struct resp	 r;
-	char		 id[16];
+	char		 id[16], path[160];
 
 	start(tc, 0, NULL);
 	enrol(&a);
@@ -547,6 +547,13 @@ ATF_TC_BODY(nacm_user, tc)
 	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "access denied") !=
 	    NULL, "%d %s", r.status, r.body);
 	resp_free(&r);
+	/* Nor the system's files, which give out keys: default-deny-all
+	 * on the host, an operator's by its group operator (nacm-sync). */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-system:system/read", id);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "access denied") !=
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
 	/* The admin. */
 	cookie[0] = '\0';
 	do_login(&a, 1, ORIGIN, RP_ID, NULL, false, &r);
@@ -555,6 +562,58 @@ ATF_TC_BODY(nacm_user, tc)
 	r1_submit(id, R1_MONITOR, &r);
 	EXPECT(&r, 200);
 	ATF_CHECK(strstr(r.body, "access denied") == NULL);
+	resp_free(&r);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status != 403 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * The host's operators synchronized too: bob, an operator of the
+ * console's on the host, in its group operator with the rule-list
+ * operator beside it, reads the system's files there; what changes the
+ * host stays refused to him, the group admin's.
+ */
+ATF_TC_WITHOUT_HEAD(nacm_sync_operator);
+ATF_TC_BODY(nacm_sync_operator, tc)
+{
+	struct authn	 a, b;
+	struct resp	 r;
+	char		 id[16], sync[256], admin[160], bob[160], path[160];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(admin, sizeof(admin), "%s", cookie);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(sync, sizeof(sync), CC "hosts/host=%s/nacm-sync", id);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-system:system/read", id);
+	r1_role("ops", "member", "operator");
+	cc_user(&b, "bob", "\"role\":[\"ops\"]", -8);
+	snprintf(bob, sizeof(bob), "%s", cookie);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_STREQ("changed", jstr(&r, "data.result"));
+	ATF_CHECK_STREQ("bob", jstr(&r, "data.operator.0"));
+	ATF_CHECK_MSG(strstr(r.body, "\"admin\":[\"admin\",\"console\"]") !=
+	    NULL, "%s", r.body);
+	resp_free(&r);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_STREQ("unchanged", jstr(&r, "data.result"));
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", bob);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status != 403 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	r1_submit(id, R1_MONITOR, &r);
+	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
+	    r.status, r.body);
 	resp_free(&r);
 }
 
@@ -619,7 +678,10 @@ ATF_TC_BODY(nacm_sync, tc)
 	snprintf(cookie, sizeof(cookie), "%s", admin);
 	rc_act(sync, NULL, &r);
 	ATF_CHECK_STREQ("changed", jstr(&r, "data.result"));
-	ATF_CHECK_MSG(strstr(r.body, "\"bob\"") == NULL, "%s", r.body);
+	/* Out of admin, into operator: his role on the host. */
+	ATF_CHECK_MSG(strstr(r.body, "\"admin\":[\"admin\",\"console\"]") !=
+	    NULL, "%s", r.body);
+	ATF_CHECK_STREQ("bob", jstr(&r, "data.operator.0"));
 	resp_free(&r);
 	snprintf(cookie, sizeof(cookie), "%s", bob);
 	r1_submit(id, R1_MONITOR, &r);
@@ -11827,7 +11889,7 @@ ATF_TC_BODY(enrol, tc)
 	struct resp	 r;
 	char		 url[64], body[512], tok[80], listen[64], path[128];
 	char		 tool[MAXPATHLEN], jgd[MAXPATHLEN], *argv[20], id[16];
-	char		 gone[16];
+	char		 gone[16], pin[80];
 	FILE		*fp;
 	pid_t		 pid;
 	int		 port, jport, i;
@@ -11862,15 +11924,31 @@ ATF_TC_BODY(enrol, tc)
 	EXPECT(&r, 200);
 	ATF_REQUIRE_MSG(jstr(&r, "token") != NULL, "%s", r.body);
 	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
-	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s http://"
-	    "localhost:") != NULL, "%s", jstr(&r, "command"));
+	/* The CA the host is to trust pinned in the command, by the
+	 * SHA-256 of its certificate. */
+	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s -f ") !=
+	    NULL && strstr(jstr(&r, "command"), " http://localhost:") != NULL,
+	    "%s", jstr(&r, "command"));
+	{
+		const char	*f = strstr(jstr(&r, "command"), "-f ");
+
+		snprintf(pin, sizeof(pin), "%.64s", f != NULL ? f + 3 : "");
+	}
+	ATF_CHECK(system("openssl x509 -in data/ca.pem -noout -fingerprint "
+	    "-sha256 | tr -d : | tr A-F a-f > fp.txt") == 0);
+	{
+		char	cmdfp[128];
+
+		snprintf(cmdfp, sizeof(cmdfp), "grep -q '=%s$' fp.txt", pin);
+		ATF_CHECK_MSG(system(cmdfp) == 0, "pin %s", pin);
+	}
 	resp_free(&r);
 	/* Another port than the usual is in the command for the host. */
 	rc_act(CC "enrolment/create-token", "\"name\":\"lab\",\"host\":"
 	    "\"127.0.0.1\",\"port\":4311", &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s -p 4311 "
-	    "http://") != NULL, "%s", jstr(&r, "command"));
+	    "-f ") != NULL, "%s", jstr(&r, "command"));
 	resp_free(&r);
 	http("POST", "/api/enrol", "{\"token\":\"nope\",\"csr\":\"\"}", &r);
 	EXPECT(&r, 403);
@@ -11881,8 +11959,44 @@ ATF_TC_BODY(enrol, tc)
 	 * fetch(3) waits out its connect before it tries 127.0.0.1. */
 	snprintf(url, sizeof(url), "http://127.0.0.1%s", strrchr(
 	    harness_origin, ':'));
+	/* Plain HTTP refused without -i, the token left unused; a CA that
+	 * is not the one pinned refused, nothing written. */
 	i = 0;
 	argv[i++] = tool;
+	argv[i++] = (char *)(uintptr_t)"-d";
+	argv[i++] = (char *)(uintptr_t)"host";
+	argv[i++] = url;
+	argv[i++] = tok;
+	argv[i] = NULL;
+	ATF_CHECK(!run_prog(argv));
+	ATF_CHECK(system("grep -q 'not HTTPS' run.out") == 0);
+	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
+	i = 0;
+	argv[i++] = tool;
+	argv[i++] = (char *)(uintptr_t)"-i";
+	argv[i++] = (char *)(uintptr_t)"-f";
+	argv[i++] = (char *)(uintptr_t)"00:11:22:33:44:55:66:77:88:99:aa:bb:"
+	    "cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff";
+	argv[i++] = (char *)(uintptr_t)"-d";
+	argv[i++] = (char *)(uintptr_t)"host";
+	argv[i++] = url;
+	argv[i++] = tok;
+	argv[i] = NULL;
+	ATF_CHECK(!run_prog(argv));
+	ATF_CHECK(system("grep -q 'not the one -f names' run.out") == 0);
+	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
+	ATF_CHECK(access("host/host.pem", F_OK) != 0);
+	/* That used the token: another, and the one pinned. */
+	rc_act(CC "enrolment/create-token", "\"name\":\"lab\",\"host\":"
+	    "\"127.0.0.1\"", &r);
+	EXPECT(&r, 200);
+	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	i = 0;
+	argv[i++] = tool;
+	argv[i++] = (char *)(uintptr_t)"-i";
+	argv[i++] = (char *)(uintptr_t)"-f";
+	argv[i++] = pin;
 	argv[i++] = (char *)(uintptr_t)"-d";
 	argv[i++] = (char *)(uintptr_t)"host";
 	argv[i++] = url;
@@ -12104,6 +12218,106 @@ ATF_TC_BODY(enrol, tc)
 	    "-q 'CN *= *lab-root' && openssl verify -CAfile root.pem "
 	    "-untrusted host/host.pem host/host.pem >/dev/null 2>&1") == 0);
 	r3_web(id);
+}
+
+/*
+ * The console's certificate from before the roles, without
+ * urn:arcana:role:console, which the agents refuse: made again at start
+ * by the CA of its own, for the same key, the one before kept beside
+ * it; an agent over TLS takes the new one, the one before and a host's
+ * refused.
+ */
+CONSOLE_TC(console_role, "The console's certificate without its role made "
+    "again at start, the same key; agents take it alone")
+ATF_TC_BODY(console_role, tc)
+{
+	char	 listen[64], jgd[MAXPATHLEN], ctl[MAXPATHLEN], cmd[1024];
+	char	*argv[20];
+	FILE	*fp;
+	pid_t	 pid;
+	int	 jport, i;
+
+	start(tc, 0, NULL);
+	ATF_REQUIRE(access("data/console.pem", F_OK) == 0);
+	/* As one from before the roles: the console's key, the CA's name,
+	 * no role. */
+	ATF_REQUIRE(system("openssl pkey -in data/console.key -pubout > "
+	    "key.before && openssl req -new -key data/console.key -subj "
+	    "'/CN=arcana console' -out old.csr 2>/dev/null && printf "
+	    "'extendedKeyUsage=clientAuth\\nsubjectAltName=DNS:console\\n' > "
+	    "old.ext && openssl x509 -req -in old.csr -CA data/ca.pem -CAkey "
+	    "data/ca.key -CAcreateserial -days 2 -extfile old.ext -out "
+	    "data/console.pem 2>/dev/null && cp data/console.pem old.pem") ==
+	    0);
+	restart_console();
+	/* Its socket is there before its worker has started: waited for. */
+	for (i = 0; i < 100 && access("data/console.pem.before-roles", F_OK) !=
+	    0; i++)
+		usleep(100000);
+	ATF_CHECK(system("openssl x509 -in data/console.pem -noout -ext "
+	    "subjectAltName | grep -q 'URI:urn:arcana:role:console'") == 0);
+	ATF_CHECK(system("cmp -s old.pem data/console.pem.before-roles") == 0);
+	ATF_CHECK(system("openssl x509 -in data/console.pem -noout -pubkey | "
+	    "cmp -s - key.before") == 0);
+	ATF_CHECK(system("openssl verify -CAfile data/ca.pem data/console.pem "
+	    ">/dev/null 2>&1") == 0);
+	for (i = 0; i < 50 && system("grep -q 'made again with "
+	    "urn:arcana:role:console' console.out") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 50, "the console did not log it");
+	/* Once is enough: started again, nothing to do. */
+	restart_console();
+	ATF_CHECK(system("cmp -s old.pem data/console.pem.before-roles") == 0);
+	/* An agent with a certificate of the CA, over TLS. */
+	ATF_REQUIRE(system("openssl req -newkey ec -pkeyopt "
+	    "ec_paramgen_curve:P-256 -nodes -keyout srv.key -out srv.csr -subj "
+	    "/CN=srv >/dev/null 2>&1 && printf 'subjectAltName=IP:127.0.0.1,"
+	    "URI:urn:arcana:role:agent\\nextendedKeyUsage=serverAuth,clientAuth"
+	    "\\n' > srv.ext && openssl x509 -req -in srv.csr -CA data/ca.pem "
+	    "-CAkey data/ca.key -CAcreateserial -days 2 -extfile srv.ext -out "
+	    "srv.pem >/dev/null 2>&1") == 0);
+	jport = 20000 + (int)(getpid() % 20000) + 3;
+	snprintf(listen, sizeof(listen), "tcp://127.0.0.1:%d", jport);
+	snprintf(jgd, sizeof(jgd), "%s", locate(tc,
+	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
+	    "/usr/local/sbin/arcana-agent"));
+	snprintf(ctl, sizeof(ctl), "%s", locate(tc,
+	    "../../../usr.sbin/arcanactl/arcanactl", "arcanactl",
+	    "/usr/local/sbin/arcanactl"));
+	i = 0;
+	argv[i++] = jgd;
+	argv[i++] = (char *)(uintptr_t)"-F";
+	argv[i++] = (char *)(uintptr_t)"-l";
+	argv[i++] = listen;
+	argv[i++] = (char *)(uintptr_t)"-A";
+	argv[i++] = (char *)(uintptr_t)"data/ca.pem";
+	argv[i++] = (char *)(uintptr_t)"-C";
+	argv[i++] = (char *)(uintptr_t)"srv.pem";
+	argv[i++] = (char *)(uintptr_t)"-K";
+	argv[i++] = (char *)(uintptr_t)"srv.key";
+	argv[i++] = (char *)(uintptr_t)"-f";
+	argv[i++] = (char *)(uintptr_t)"etc/jail.conf";
+	argv[i++] = (char *)(uintptr_t)"-D";
+	argv[i++] = (char *)(uintptr_t)"etc/jail.conf.d";
+	argv[i++] = (char *)(uintptr_t)"-j";
+	argv[i++] = (char *)(uintptr_t)"./fake-jail";
+	argv[i] = NULL;
+	pid = spawn_server(argv, "arcana-agent2.out");
+	ATF_REQUIRE((fp = fopen("arcana-agent2.pid", "w")) != NULL);
+	fprintf(fp, "%d\n", (int)pid);
+	fclose(fp);
+	for (i = 0; i < 100 && system("grep -q ready arcana-agent2.out") != 0;
+	    i++)
+		usleep(100000);
+	snprintf(cmd, sizeof(cmd), "%s -c %s -A data/ca.pem -C data/console.pem "
+	    "-K data/console.key hello >/dev/null 2>&1", ctl, listen);
+	ATF_CHECK_MSG(system(cmd) == 0, "%s", cmd);
+	snprintf(cmd, sizeof(cmd), "%s -c %s -A data/ca.pem -C old.pem -K "
+	    "data/console.key hello 2>&1 | grep -q 'not let in'", ctl, listen);
+	ATF_CHECK_MSG(system(cmd) == 0, "%s", cmd);
+	snprintf(cmd, sizeof(cmd), "%s -c %s -A data/ca.pem -C srv.pem -K "
+	    "srv.key hello 2>&1 | grep -q 'not let in'", ctl, listen);
+	ATF_CHECK_MSG(system(cmd) == 0, "%s", cmd);
 }
 
 /* A service as MEF 70.2 says one, with two edges: @A and @B are them. */
@@ -22859,6 +23073,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, cyang_feeds);
 	ATF_TP_ADD_TC(tp, nacm_user);
 	ATF_TP_ADD_TC(tp, nacm_sync);
+	ATF_TP_ADD_TC(tp, nacm_sync_operator);
 	ATF_TP_ADD_TC(tp, server_readdress);
 	ATF_TP_ADD_TC(tp, nacm_console);
 	ATF_TP_ADD_TC(tp, job_user);
@@ -22916,6 +23131,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sapnet);
 	ATF_TP_ADD_TC(tp, sapnet_attach);
 	ATF_TP_ADD_TC(tp, enrol);
+	ATF_TP_ADD_TC(tp, console_role);
 	ATF_TP_ADD_TC(tp, tls_ec);
 	ATF_TP_ADD_TC(tp, cyang_hosts);
 	ATF_TP_ADD_TC(tp, cyang_host_verbs);

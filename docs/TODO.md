@@ -115,6 +115,14 @@
   stamp-unauthenticated is raised.  Whether the console applies both
   ends when it remakes a pair (or a pair's change is told to it and
   answered by an apply) is open.
+- The agent's allocations (work.c's wcalloc, wmalloc and the rest, and
+  err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
+  root daemon when memory runs out, a change half done with it; a
+  failure of one request's alone, said, is to come.
+- arcana-enrol's -f pins the CA by the command the console shows; the
+  token itself does not carry the fingerprint (it is 32 random bytes,
+  looked up as they are): a token that does would let a host enrolled
+  from the bare token check its CA too.
 - To decide (the user's): BIRD that stops answering while a safe
   change waits leaves the unconfirmed file in place, as bird.c says
   ("one that died is not undone after"), so BIRD's next start reads a

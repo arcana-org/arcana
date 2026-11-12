@@ -6,6 +6,11 @@ module arcana-bird {
   import cblink-gen {
     prefix cg;
   }
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
   import ietf-inet-types {
     prefix inet;
     reference
@@ -622,6 +627,7 @@ module arcana-bird {
       }
     }
     action check {
+      nacm:default-deny-all;
       description
         "Whether bird(8) takes a text in a file's place (bird -p of the
          whole configuration with it), the file left as it is.";

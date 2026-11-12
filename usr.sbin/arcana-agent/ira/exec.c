@@ -30,6 +30,14 @@
 
 #include "agent.h"
 
+/*
+ * What is left in the pipes once the program exited is read for this
+ * long at most: what it started (a jail's exec.start, a daemon) may hold
+ * them open and write on for as long as it lives.
+ */
+#define	EXEC_DRAIN_SEC	2
+#define	LINES_MAX	(1024 * 1024)	/* a line run_exec_lines() gives */
+
 struct capture {
 	char	*buf;
 	size_t	 len;
@@ -118,6 +126,37 @@ exec_set_stdin(const char *text, size_t len)
 
 	exec_in = text;
 	exec_inlen = len;
+}
+
+/*
+ * Where a program's scratch file goes (a dtrace script, a socket's
+ * directory): TMPDIR's, when it names one, else /tmp.  Never a key's or
+ * a passphrase's: those go through a pipe.
+ */
+const char *
+tmp_dir(void)
+{
+	const char	*t;
+
+	t = getenv("TMPDIR");
+	return (t != NULL && t[0] == '/' ? t : "/tmp");
+}
+
+/*
+ * A file the next program this thread runs reads on its standard input,
+ * or writes its standard output to, in place of /dev/null and the pipe
+ * read: one opened beneath a jail's root, which no path given to a host
+ * program would name safely.  Once only; -1 for none.  The caller keeps
+ * and closes them.
+ */
+static _Thread_local int	exec_infd = -1, exec_outfd = -1;
+
+void
+exec_set_fds(int in, int out)
+{
+
+	exec_infd = in;
+	exec_outfd = out;
 }
 
 /*
@@ -229,7 +268,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	char				*env[6];
 	const char			*cmdline;
 	size_t				 i;
-	time_t				 deadline, heard;
+	time_t				 deadline, heard, drain;
 	int				 ne;
 	bool				 group;
 
@@ -244,7 +283,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	env[ne] = NULL;
 	pid_t				 pid;
 	int				 op[2], ep[2], ip[2], status, rc, step,
-					 n;
+					 n, infd, outfd;
 	bool				 exited, reads;
 	const char			*in;
 	size_t				 inlen, off;
@@ -257,6 +296,9 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	exec_inlen = 0;
 	reads = exec_reads;
 	exec_reads = false;
+	infd = exec_infd;
+	outfd = exec_outfd;
+	exec_infd = exec_outfd = -1;
 
 	memset(res, 0, sizeof(*res));
 	cmdline = wvis(w, argv[0]);
@@ -277,18 +319,22 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	memset(&eout, 0, sizeof(eout));
 	out.max = max;
 	eout.max = ARC_MAX_OUTPUT;
-	if (pipe2(op, O_CLOEXEC) == -1 || pipe2(ep, O_CLOEXEC) == -1)
+	op[0] = op[1] = ip[0] = ip[1] = -1;
+	if ((outfd == -1 && pipe2(op, O_CLOEXEC) == -1) ||
+	    pipe2(ep, O_CLOEXEC) == -1)
 		err(1, "pipe2");
-	ip[0] = ip[1] = -1;
 	if (in != NULL && pipe2(ip, O_CLOEXEC) == -1)
 		err(1, "pipe2");
 	posix_spawn_file_actions_init(&fa);
 	if (in != NULL)
 		posix_spawn_file_actions_adddup2(&fa, ip[0], STDIN_FILENO);
+	else if (infd != -1)
+		posix_spawn_file_actions_adddup2(&fa, infd, STDIN_FILENO);
 	else
 		posix_spawn_file_actions_addopen(&fa, STDIN_FILENO,
 		    "/dev/null", O_RDONLY, 0);
-	posix_spawn_file_actions_adddup2(&fa, op[1], STDOUT_FILENO);
+	posix_spawn_file_actions_adddup2(&fa, outfd != -1 ? outfd : op[1],
+	    STDOUT_FILENO);
 	posix_spawn_file_actions_adddup2(&fa, ep[1], STDERR_FILENO);
 	/* The daemon keeps its stop signals blocked; a program does not. */
 	sigemptyset(&none);
@@ -309,7 +355,8 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 		(void)setpriority(PRIO_PROCESS, pid, READ_NICE);
 	posix_spawnattr_destroy(&sa);
 	posix_spawn_file_actions_destroy(&fa);
-	close(op[1]);
+	if (op[1] != -1)
+		close(op[1]);
 	close(ep[1]);
 	/*
 	 * What the program reads is written as it reads it, beside its
@@ -329,7 +376,8 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	} else
 		ip[1] = -1;
 	if (rc != 0) {
-		close(op[0]);
+		if (op[0] != -1)
+			close(op[0]);
 		close(ep[0]);
 		res->status = -1;
 		res->err = wfmt(w, "cannot run %s: %s", argv[0],
@@ -343,11 +391,12 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	/*
 	 * Read until the program has exited and its output is drained, not
 	 * until the pipes close: what a jail's exec.start leaves running may
-	 * keep them open for as long as it lives.
+	 * keep them open for as long as it lives, and write on.  Drained for
+	 * EXEC_DRAIN_SEC at most, within the deadline and the job's cancel.
 	 */
 	exited = false;
 	deadline = time(NULL) + EXEC_TIMEOUT_SEC;
-	heard = time(NULL);
+	heard = drain = time(NULL);
 	while (op[0] != -1 || ep[0] != -1) {
 		pfd[0].fd = op[0];
 		pfd[0].events = POLLIN;
@@ -385,10 +434,15 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 				capture_read(&ep[0], &eout);
 		} else if (n == 0 && exited)
 			break;
-		if (exited)
+		if (exited) {
+			if (time(NULL) > drain || time(NULL) > deadline ||
+			    (group && w->cancel))
+				break;
 			continue;
+		}
 		if (waitpid(pid, &status, WNOHANG) == pid) {
 			exited = true;
+			drain = time(NULL) + EXEC_DRAIN_SEC;
 			continue;
 		}
 		if (time(NULL) > deadline) {
@@ -470,6 +524,41 @@ exec_error(struct work *w, const struct execres *res, const char *prog)
 }
 
 /*
+ * The whole lines of buf (*lenp bytes, one more there to end a line) to
+ * fn, what is left moved to its start; one longer than LINES_MAX in
+ * pieces, and at the end the rest as a line.  How many.
+ */
+static size_t
+lines_out(char *buf, size_t *lenp, bool end, void (*fn)(const char *,
+    void *), void *arg)
+{
+	char	*p, *nl, c;
+	size_t	 left, n;
+
+	n = 0;
+	buf[*lenp] = '\0';
+	for (p = buf; (left = *lenp - (size_t)(p - buf)) > 0; p = nl) {
+		if ((nl = memchr(p, '\n', left)) == NULL) {
+			if (left > LINES_MAX)
+				nl = p + LINES_MAX;
+			else if (end)
+				nl = p + left;
+			else
+				break;
+		}
+		c = *nl;
+		*nl = '\0';
+		fn(p, arg);
+		n++;
+		if ((*nl = c) == '\n')
+			nl++;
+	}
+	memmove(buf, p, left);
+	*lenp = left;
+	return (n);
+}
+
+/*
  * Run a program for its lines: each goes to fn as it comes and none is
  * kept, for output too large to hold.  Standard error is dropped.
  * Returns the exit status, or -1 if the program could not be started.
@@ -484,13 +573,15 @@ run_exec_lines(struct work *w, char *const argv[],
 	static char			 pathenv[] =
 	    "PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin";
 	char				*env[] = { pathenv, NULL };
+	struct pollfd			 pfd;
 	const char			*cmdline;
-	char				*line;
-	size_t				 cap, i, lines;
-	ssize_t				 len;
-	FILE				*fp;
+	char				*buf;
+	size_t				 cap, len, i, lines;
+	ssize_t				 got;
+	time_t				 deadline, drain;
 	pid_t				 pid;
-	int				 op[2], status, rc, step;
+	int				 op[2], status, rc, step, n;
+	bool				 exited, timedout;
 
 	argv = scope_argv(w, argv);
 
@@ -528,34 +619,68 @@ run_exec_lines(struct work *w, char *const argv[],
 	posix_spawnattr_destroy(&sa);
 	posix_spawn_file_actions_destroy(&fa);
 	close(op[1]);
-	if (rc != 0 || (fp = fdopen(op[0], "r")) == NULL) {
-		int	e = rc != 0 ? rc : errno;
-
+	if (rc != 0) {
 		close(op[0]);
-		/* Spawned but not read: reaped all the same, no zombie. */
-		if (rc == 0)
-			while (waitpid(pid, &status, 0) == -1 && errno == EINTR)
-				;
-		step_end(w, step, false, "%s", strerror(e));
+		step_end(w, step, false, "%s", strerror(rc));
 		return (-1);
 	}
-	line = NULL;
-	cap = 0;
+	/*
+	 * Read as run_exec_max() reads: until the program exited and its
+	 * output is drained, EXEC_DRAIN_SEC at most after, within the
+	 * deadline.  Each whole line to fn as it comes; one longer than
+	 * LINES_MAX in pieces.
+	 */
+	buf = NULL;
+	cap = len = 0;
 	lines = 0;
-	while ((len = getline(&line, &cap, fp)) > 0) {
-		if (line[len - 1] == '\n')
-			line[len - 1] = '\0';
-		fn(line, arg);
-		lines++;
+	exited = timedout = false;
+	deadline = time(NULL) + EXEC_TIMEOUT_SEC;
+	drain = 0;
+	while (op[0] != -1) {
+		pfd.fd = op[0];
+		pfd.events = POLLIN;
+		n = poll(&pfd, 1, exited ? 0 : 1000);
+		if (n == -1 && errno != EINTR)
+			err(1, "poll");
+		if (n > 0) {
+			if (len + 8192 + 1 > cap) {
+				cap = (len + 8192 + 1) * 2;
+				if ((buf = realloc(buf, cap)) == NULL)
+					err(1, "realloc");
+			}
+			if ((got = read(op[0], buf + len, 8192)) <= 0) {
+				close(op[0]);
+				op[0] = -1;
+			} else
+				len += (size_t)got;
+			lines += lines_out(buf, &len, op[0] == -1, fn, arg);
+		} else if (n == 0 && exited)
+			break;
+		if (exited) {
+			if (time(NULL) > drain || time(NULL) > deadline)
+				break;
+			continue;
+		}
+		if (waitpid(pid, &status, WNOHANG) == pid) {
+			exited = true;
+			drain = time(NULL) + EXEC_DRAIN_SEC;
+			continue;
+		}
+		if (time(NULL) > deadline) {
+			exec_kill(pid, false);
+			timedout = true;
+			break;
+		}
 	}
-	free(line);
-	fclose(fp);
-	while (waitpid(pid, &status, 0) == -1)
+	free(buf);
+	if (op[0] != -1)
+		close(op[0]);
+	while (!exited && waitpid(pid, &status, 0) == -1)
 		if (errno != EINTR)
 			err(1, "waitpid");
 	rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-	step_end(w, step, rc == 0, "exit status %d, %zu lines read", rc,
-	    lines);
+	step_end(w, step, rc == 0, "exit status %d, %zu lines read%s", rc,
+	    lines, timedout ? ", killed: out of time" : "");
 	return (rc);
 }
 

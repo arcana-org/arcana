@@ -3,6 +3,12 @@ module arcana-system {
   namespace "urn:arcana:yang:arcana-system";
   prefix arcsys;
 
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
+
   organization
     "Arcana";
   contact
@@ -47,9 +53,11 @@ module arcana-system {
     description
       "The system's own configuration, read when asked.";
     action read {
+      nacm:default-deny-all;
       description
         "The system's files, and the host's settings, or those named
-         alone.";
+         alone: ipsec.conf's keys and dma(8)'s credentials among them,
+         run by a rule that permits it.";
       input {
         leaf-list name {
           type string;

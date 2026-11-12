@@ -157,8 +157,8 @@ int	ytrans_jail_boot(cbl_conn *conn, const char *name, bool on,
  * is; err the agent's words, tag its error-app-tag, "" none.
  */
 int	ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
-	    char *const *users, size_t nusers, ucl_object_t **out, char *err,
-	    size_t errlen);
+	    char *const *users, size_t nusers, char *const *ops, size_t nops,
+	    ucl_object_t **out, char *err, size_t errlen);
 int	ytrans_commit(cbl_conn *conn, const struct cbl_ynode *n,
 	    const void *d, const char *const *acc, size_t nacc, int wait,
 	    char *token, size_t toklen, char *err, size_t errlen, char *tag,

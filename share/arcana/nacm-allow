@@ -1,0 +1,55 @@
+# The actions and rpcs of Arcana's modules that run by NACM's
+# exec-default (RFC 8341), not nacm:default-deny-all: each reads what
+# the host has, gives out nothing that should stay on it, runs nothing
+# with arguments its caller chooses and makes the host reach nowhere.
+# One a line: <module>:<path>, a tab, why (share/arcana/nacm.awk,
+# make check-nacm).  A whole module is "<module>:*".
+
+# Served by the console, not the agent: its roles decide
+# (restconf_act_role(), cyang.c), and arcana-cluster's are the nodes'.
+arcana-console:*	the console's own module, its roles checked by the console
+arcana-cluster:*	the console nodes' family, between nodes by their certificates
+
+arcana-bird:/daemon/read	birdc -r (restricted) show status and protocols
+arcana-bird:/daemon/routes	birdc -r show route, its words checked (route_words()); a viewer's
+arcana-bird:/daemon/ospf	birdc -r show ospf, a protocol's name checked; a viewer's
+arcana-crashes:/crashes/read	the cores' names and a backtrace (kgdb bt), no memory given out
+arcana-events:/events/read	the agent's own events after a number
+arcana-firewall:/firewall/firewall/trace	dtrace of ipfw's rule-matched for an address checked as one: the rule and the ports, no payload; a viewer's
+arcana-firewall:/kept-host/from-rc	the firewall script read and turned into kept rules, nothing written; a viewer's
+arcana-history:/history/read	the agent's own samples
+arcana-host:/host/read-certificates	the trusted certificates, public, parsed
+arcana-jail-files://arcj:jails/read-files	jail.conf(5)'s files, as a read of running has the jails
+arcana-jobs:/jobs/job/read	a job's trace, keys kept out of it
+arcana-log:/logs/read	a log of the log directory or the audit trail, opened beneath a jail's root; read-only, a viewer's
+arcana-netgraph:/netgraph/read	ngctl list
+arcana-netstore:/netstore/read	NFS, iSCSI and HAST as they are
+arcana-network:/network/bridges	ifconfig of the bridges
+arcana-network:/network/connections	the kernel's connections (pcb)
+arcana-network:/network/geneve	ifconfig of the geneve interfaces
+arcana-network:/network/interfaces	the interfaces as the kernel has them
+arcana-network:/network/ipfw	a vnet jail's ipfw rules, read
+arcana-network:/network/ipsec	swanctl's connections and SAs, never a private key
+arcana-network:/network/kept-routes	rc.conf's static routes, read
+arcana-network:/network/lookup	route get of an address checked as one
+arcana-network:/network/multicast	ifmcstat
+arcana-network:/network/neighbours	ARP and NDP, read
+arcana-network:/network/nexthops	netstat -on
+arcana-network:/network/nhgroups	netstat -On
+arcana-network:/network/routes	the routing tables
+arcana-network:/network/sockets	the kernel's sockets (pcb)
+arcana-probe:/probes/read	the probes' samples
+arcana-processes:/processes/process/read	a process's files and threads (procstat), no environment
+arcana-services:/services/service/read	service <name> enabled, status, describe, extracommands: what reads
+arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out
+arcana-speeder:/speeder/read	the relays, read
+arcana-sshd:/sshd/read	sshd's configuration and keys' fingerprints, public
+arcana-storage:/storage/read	disks, pools, datasets, mounts, read
+arcana-suricata:/suricata/command	one of the instance's read commands, from a fixed list
+arcana-suricata:/suricata/read-profiling	what profiling wrote, read
+arcana-suricata:/suricata/read-rules	a page of the ruleset's rules
+arcana-suricata:/suricata/read-sources	suricata-update's cached index and the sources' names and states, no secret code
+arcana-sysctl:/sysctl/read	the kernel's values by name
+arcana-troubleshoot:/troubleshoot/path-check	what the host would do with a packet, nothing sent
+arcana-troubleshoot:/troubleshoot/traceroute	one numeric traceroute to an address checked as one: probes, no connection, nothing fetched; a viewer's
+arcana-wireguard:/wireguard/read	wg show dump, the keys left out

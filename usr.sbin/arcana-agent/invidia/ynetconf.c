@@ -74,21 +74,21 @@ REFUSED(commit)
 REFUSED(discard_changes)
 REFUSED(cancel_commit)
 
-static void
-undo_failed(cbl_ctx *ctx, const struct cbl_ynode *n, int error,
-    const char *why, void *arg)
+/*
+ * An undo that failed, of a node (module:name) or a file put back as it
+ * was: logged, a Critical fault, and the undo-failed event with a
+ * report to file.  What is left stays as the change left it.
+ */
+void
+undo_report(const char *node, int error, const char *why)
 {
 	struct utsname	 u;
 	ucl_object_t	*o;
-	char		 node[160], report[1024], when[32];
+	char		 report[1024], when[32];
 	unsigned char	*json;
 	struct tm	 tm;
 	time_t		 now;
 
-	(void)ctx;
-	(void)arg;
-	(void)snprintf(node, sizeof(node), "%s:%s", n != NULL ?
-	    n->module->name : "?", n != NULL ? n->name : "?");
 	now = time(NULL);
 	(void)gmtime_r(&now, &tm);
 	(void)strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", &tm);
@@ -97,17 +97,16 @@ undo_failed(cbl_ctx *ctx, const struct cbl_ynode *n, int error,
 	(void)snprintf(report, sizeof(report),
 	    "arcana-agent %s on FreeBSD %s\n"
 	    "when: %s\n"
-	    "what: a confirmed commit was not confirmed in time, and "
-	    "undoing %s failed; the undo stopped there\n"
+	    "what: undoing %s failed, a change not confirmed or not "
+	    "through; what is left stays as the change left it\n"
 	    "error: %d (%s)\n"
 	    "why: %s\n",
 	    ARCANA_AGENT_VERSION, u.release, when, node, error,
 	    strerror(error), why != NULL ? why : "");
 	logmsg(LOG_ERR, "undoing %s failed: %s: what is left stays as "
-	    "committed", node, why != NULL ? why : strerror(error));
-	fault_set("undo", "Critical", node, "datastore", "the undo of a "
-	    "commit not confirmed failed: %s", why != NULL ? why :
-	    strerror(error));
+	    "the change left it", node, why != NULL ? why : strerror(error));
+	fault_set("undo", "Critical", node, "datastore", "an undo failed: %s",
+	    why != NULL ? why : strerror(error));
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, ucl_object_fromstring(node), "node", 0,
 	    false);
@@ -121,6 +120,20 @@ undo_failed(cbl_ctx *ctx, const struct cbl_ynode *n, int error,
 		event_add("undo-failed", "%s", json);
 	free(json);
 	ucl_object_unref(o);
+}
+
+/* cblink's undo of a confirmed commit not confirmed, stopped at n. */
+static void
+undo_failed(cbl_ctx *ctx, const struct cbl_ynode *n, int error,
+    const char *why, void *arg)
+{
+	char	node[160];
+
+	(void)ctx;
+	(void)arg;
+	(void)snprintf(node, sizeof(node), "%s:%s", n != NULL ?
+	    n->module->name : "?", n != NULL ? n->name : "?");
+	undo_report(node, error, why);
 }
 
 /* n's child of that name, or NULL. */

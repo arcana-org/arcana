@@ -6,6 +6,11 @@ module arcana-sdwan {
   import cblink-gen {
     prefix cg;
   }
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
   import ietf-inet-types {
     prefix inet;
     reference
@@ -651,6 +656,7 @@ module arcana-sdwan {
       uses edge-config;
     }
     action apply {
+      nacm:default-deny-all;
       description
         "A part of an edge set again as running has it, as its
          operation was when sent the same again: what of it is not

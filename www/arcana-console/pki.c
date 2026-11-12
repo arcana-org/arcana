@@ -12,7 +12,10 @@
  * with a one-time token made here by the logged-in user: arcana-enrol(8)
  * on the host sends a certificate request with the token, gets back a
  * certificate for its name signed by the CA, and the host is added to
- * the server list.  All EC P-256, signed with SHA-256.
+ * the server list.  All EC P-256, signed with SHA-256.  The console's
+ * client certificate says urn:arcana:role:console, which the agents ask
+ * of it; one from before the roles is made again at start where the
+ * console holds the CA's key (role_check()).
  */
 
 #include <sys/param.h>
@@ -47,6 +50,7 @@
 #define	TOKEN_TTL	3600
 #define	MAX_TOKENS	16
 #define	DEFAULT_PORT	4310
+#define	CERTS_MAX	32
 
 struct etoken {
 	char		value[65];	/* 32 random bytes in hex */
@@ -69,6 +73,8 @@ static int	 write_pem(const char *, X509 *, EVP_PKEY *, mode_t);
 static EVP_PKEY	*read_key(const char *);
 static bool	 valid_host(const char *);
 static struct etoken *token_find(const char *);
+static int	 certs_read(const char *, X509 **, int);
+static void	 certs_free(X509 **, int);
 
 static const char *
 ssl_err(void)
@@ -268,9 +274,101 @@ pki_sign_data(const uint8_t *data, size_t len, uint8_t **sigp,
 	return (e);
 }
 
+/* Does x say urn:arcana:role:console, as the agents ask of the console? */
+static bool
+console_role(X509 *x)
+{
+	GENERAL_NAMES		*sans;
+	const GENERAL_NAME	*g;
+	bool			 has;
+
+	if ((sans = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL)) ==
+	    NULL)
+		return (false);
+	has = false;
+	for (int i = 0; i < sk_GENERAL_NAME_num(sans) && !has; i++) {
+		g = sk_GENERAL_NAME_value(sans, i);
+		has = g->type == GEN_URI && ASN1_STRING_length(
+		    g->d.uniformResourceIdentifier) == 23 && memcmp(
+		    ASN1_STRING_get0_data(g->d.uniformResourceIdentifier),
+		    "urn:arcana:role:console", 23) == 0;
+	}
+	GENERAL_NAMES_free(sans);
+	return (has);
+}
+
+/*
+ * The console's client certificate as the agents take it: one from
+ * before the roles (no urn:arcana:role:console) is refused by every
+ * agent from 0.279.0 on.  Where the console holds its CA's key (its own
+ * CA, or tls.ca_key), a new one is made at start for the same key,
+ * which stays where it is, the one before kept beside it
+ * (.before-roles); each node of a cluster has its own data directory
+ * and certificate, and makes its own.  Without the CA's key, said how
+ * the admin makes one, at each start.
+ */
+static void
+role_check(void)
+{
+	EVP_PKEY	*cakey, *key;
+	X509		*all[CERTS_MAX], *cert;
+	char		 bak[MAXPATHLEN];
+	int		 n;
+
+	if (cfg.tls_cert == NULL || (n = certs_read(cfg.tls_cert, all,
+	    CERTS_MAX)) == 0)
+		return;
+	if (console_role(all[0])) {
+		certs_free(all, n);
+		return;
+	}
+	certs_free(all, n);
+	if (cfg.tls_ca == NULL || cfg.tls_ca_key == NULL || cfg.tls_key ==
+	    NULL) {
+		log_msg(LOG_WARNING, "%s: the console's certificate does not "
+		    "say urn:arcana:role:console, and the agents refuse it; "
+		    "the console holds no CA key (tls.ca_key) to sign one: "
+		    "sign it again by the CA with URI:urn:arcana:role:console "
+		    "in its subjectAltName and clientAuth, the same key or a "
+		    "new one, put it in place and restart the console "
+		    "(docs/UPDATING.md)", cfg.tls_cert);
+		return;
+	}
+	cert = NULL;
+	key = cakey = NULL;
+	if ((n = certs_read(cfg.tls_ca, all, CERTS_MAX)) == 0 || (cakey =
+	    read_key(cfg.tls_ca_key)) == NULL || (key = read_key(
+	    cfg.tls_key)) == NULL || (cert = cert_new(key, "arcana console",
+	    all[0], cakey, NULL, CA_DAYS)) == NULL) {
+		log_msg(LOG_ERR, "%s: the console's certificate does not say "
+		    "urn:arcana:role:console, and the agents refuse it; a new "
+		    "one is not signed (%s): sign it again by hand "
+		    "(docs/UPDATING.md)", cfg.tls_cert, n == 0 || cakey ==
+		    NULL ? "the CA is not read" : key == NULL ? "its key is "
+		    "not read" : ssl_err());
+		goto out;
+	}
+	/* Written whole beside it and moved over it (write_pem()). */
+	snprintf(bak, sizeof(bak), "%s.before-roles", cfg.tls_cert);
+	(void)unlink(bak);
+	(void)link(cfg.tls_cert, bak);
+	if (write_pem(cfg.tls_cert, cert, NULL, 0644) == -1)
+		goto out;
+	log_msg(LOG_NOTICE, "%s: the console's certificate made again with "
+	    "urn:arcana:role:console, the key as it was (the one before is "
+	    "%s): agents from 0.279.0 on take this one alone", cfg.tls_cert,
+	    bak);
+out:
+	X509_free(cert);
+	certs_free(all, n);
+	EVP_PKEY_free(cakey);
+	EVP_PKEY_free(key);
+}
+
 /*
  * Without a tls { } block: the CA and the console's client certificate
- * live in the data directory, made at first start.
+ * live in the data directory, made at first start; one without its role
+ * made again (role_check()).
  */
 int
 pki_init(void)
@@ -280,8 +378,10 @@ pki_init(void)
 	char		 path[4][MAXPATHLEN];
 	int		 rc;
 
-	if (!cfg.tls_own)
+	if (!cfg.tls_own) {
+		role_check();
 		return (0);
+	}
 	snprintf(path[0], MAXPATHLEN, "%s/ca.pem", cfg.datadir);
 	snprintf(path[1], MAXPATHLEN, "%s/ca.key", cfg.datadir);
 	snprintf(path[2], MAXPATHLEN, "%s/console.pem", cfg.datadir);
@@ -291,8 +391,10 @@ pki_init(void)
 	cfg.tls_cert = xstrdup(path[2]);
 	cfg.tls_key = xstrdup(path[3]);
 	if (access(path[0], F_OK) == 0 && access(path[1], F_OK) == 0 &&
-	    access(path[2], F_OK) == 0 && access(path[3], F_OK) == 0)
+	    access(path[2], F_OK) == 0 && access(path[3], F_OK) == 0) {
+		role_check();
 		return (0);
+	}
 
 	rc = -1;
 	cakey = key = NULL;
@@ -425,8 +527,6 @@ certs_pem(X509 **v, int n)
 	return (out);
 }
 
-#define	CERTS_MAX	32
-
 /*
  * A certificate for a host's request, from the CA of cafile (its first
  * certificate) with keyfile: for host, whatever the request's subject
@@ -503,6 +603,34 @@ pki_sign_host(const char *csrpem, const char *host, char *err, size_t errlen)
 	    errlen));
 }
 
+/*
+ * The roots of the console's CA file as arcana-enrol(8) pins them: " -f
+ * <SHA-256>" each, in buf; "" when there are none.
+ */
+static const char *
+anchors_pins(char *buf, size_t len)
+{
+	X509		*all[CERTS_MAX];
+	unsigned char	 md[EVP_MAX_MD_SIZE];
+	unsigned int	 mdlen;
+	char		 hex[2 * 32 + 1];
+	int		 n, i;
+
+	buf[0] = '\0';
+	n = certs_read(cfg.tls_ca, all, CERTS_MAX);
+	for (i = 0; i < n; i++) {
+		if (!self_signed(all[i]) || X509_digest(all[i], EVP_sha256(), md,
+		    &mdlen) != 1 || mdlen != 32)
+			continue;
+		for (unsigned int k = 0; k < mdlen; k++)
+			snprintf(hex + 2 * k, 3, "%02x", md[k]);
+		strlcat(buf, " -f ", len);
+		strlcat(buf, hex, len);
+	}
+	certs_free(all, n);
+	return (buf);
+}
+
 /* The roots of a CA file: what a host is to trust; PEM, to free. */
 static char *
 anchors_pem(const char *path)
@@ -574,7 +702,7 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	struct etoken	*t;
 	ucl_object_t	*o;
 	uint8_t		 raw[32];
-	char		 cmd[512], portstr[16];
+	char		 cmd[1024], portstr[16], pins[512];
 	int		 i;
 
 	if (cfg.tls_ca_key == NULL) {
@@ -612,10 +740,12 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	log_msg(LOG_NOTICE, "enrolment token for %s (%s) made", t->host,
 	    t->name);
 
-	/* Options first: getopt(3) stops at the first argument. */
-	snprintf(cmd, sizeof(cmd), "arcana-enrol -s%s%s %s %s",
+	/* Options first: getopt(3) stops at the first argument.  The roots
+	 * the host is to trust pinned by their SHA-256 (-f), each. */
+	snprintf(cmd, sizeof(cmd), "arcana-enrol -s%s%s%s %s %s",
 	    port != DEFAULT_PORT ? " -p " : "", port != DEFAULT_PORT ?
-	    portstr : "", cfg.origin, t->value);
+	    portstr : "", anchors_pins(pins, sizeof(pins)), cfg.origin,
+	    t->value);
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, ucl_object_fromstring(t->value), "token", 0,
 	    false);

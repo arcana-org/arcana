@@ -17,6 +17,11 @@
  * since is followed on in the file it now is (name.0, while it is that
  * file and not packed), then the new one from its start, so that no
  * line is lost to the turn nor read from its middle.
+ *
+ * A jail's logs and audit trail are opened beneath its root; what
+ * unpacks a log, and praudit(1), read the file so opened on their
+ * standard input, never a path of the jail's, which its links could
+ * lead to the host's.
  */
 
 #include <sys/param.h>
@@ -40,6 +45,7 @@
 #define	LOG_READ_MAX	(8 * 1024 * 1024)	/* of the end of a file */
 #define	LOG_LINE_MAX	2048		/* of one line, and no more */
 #define	LOG_FILES_MAX	256
+#define	AUDIT_CURRENT	"/var/audit/current"
 #define	POS_BITS	40		/* a position's offset; above, its file */
 #define	POS_OFF(p)	((p) & ((UINT64_C(1) << POS_BITS) - 1))
 #define	POS_TAG(p)	((p) >> POS_BITS)
@@ -347,10 +353,11 @@ special(struct work *w, const char *name, const char *filter, bool from,
     uint64_t position, uint32_t max, struct json_rsp *rsp)
 {
 	struct execres	 res;
+	struct stat	 sb;
 	const char	*bin;
 	char		*argv[4], *buf, *p, *q;
 	size_t		 len, k;
-	int		 step;
+	int		 step, fd, rc;
 
 	if (max == 0)
 		max = LOG_LINES;
@@ -408,12 +415,25 @@ special(struct work *w, const char *name, const char *filter, bool from,
 			rsp->error = "the host has no praudit";
 			return (0);
 		}
+		/* The trail opened here, a jail's beneath its root (its
+		 * current is a link, followed as the jail sees it), and given
+		 * praudit on its standard input: no path of the jail's. */
+		if ((fd = scope_open_read(w, AUDIT_CURRENT)) == -1 ||
+		    fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode)) {
+			rsp->error = fd == -1 ? wfmt(w, "%s: %s", AUDIT_CURRENT,
+			    strerror(errno)) : wfmt(w, "%s is not a file",
+			    AUDIT_CURRENT);
+			if (fd != -1)
+				close(fd);
+			return (0);
+		}
 		argv[0] = (char *)(uintptr_t)bin;
 		argv[1] = (char *)(uintptr_t)"-l";
-		argv[2] = wfmt(w, "%s/var/audit/current", w->jail != NULL ?
-		    w->jroot : "");
-		argv[3] = NULL;
-		if (run_exec_max(w, argv, &res, LOG_READ_MAX) != 0) {
+		argv[2] = NULL;
+		exec_set_fds(fd, -1);
+		rc = run_exec_max(w, argv, &res, LOG_READ_MAX);
+		close(fd);
+		if (rc != 0) {
 			rsp->error = wtext(w, exec_error(w, &res, "praudit"));
 			return (0);
 		}
@@ -507,24 +527,30 @@ do_log(struct work *w, const char *name, const char *filter, bool from,
 	}
 	start = from ? (off_t)position : 0;
 	if ((unpack = packed(name)) != NULL) {
-		/* Unpacked by its program, whole; it is not followed. */
+		/* Unpacked by its program, whole; it is not followed.  The
+		 * file opened here is its standard input: a jail's is not
+		 * named to it by a path its links could lead elsewhere. */
 		struct execres	 res;
 		const char	*bin;
-		char		*argv[3];
+		char		*argv[2];
+		int		 rc;
 
-		close(fd);
 		if ((bin = tool(w, unpack)) == NULL) {
 			rsp->error = wfmt(w, "the host has no %s to unpack %s",
 			    unpack, name);
 			step_end(w, step, false, NULL);
+			close(fd);
 			close(dfd);
 			return (0);
 		}
 		argv[0] = (char *)(uintptr_t)bin;
-		argv[1] = wfmt(w, "%s/%s", w->jail != NULL ? wfmt(w, "%s%s",
-		    w->jroot, opts.log_dir) : opts.log_dir, name);
-		argv[2] = NULL;
-		if (run_exec_max(w, argv, &res, LOG_READ_MAX) != 0) {
+		argv[1] = NULL;
+		/* Read from its start, whatever the reads before. */
+		(void)lseek(fd, 0, SEEK_SET);
+		exec_set_fds(fd, -1);
+		rc = run_exec_max(w, argv, &res, LOG_READ_MAX);
+		close(fd);
+		if (rc != 0) {
 			rsp->error = wtext(w, exec_error(w, &res, unpack));
 			step_end(w, step, false, NULL);
 			close(dfd);

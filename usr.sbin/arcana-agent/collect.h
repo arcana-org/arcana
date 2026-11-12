@@ -78,7 +78,8 @@ int	ysap_network(const struct ietf_interfaces *ifs, const char *host,
  * files rc(8) reads for service svc; rca_write(): f written, what the
  * user has not accepted (rc-conf-files, rc-conf-conflict) refused for
  * req (EEXIST, its error-app-tag), each file kept as it was; rca_undo():
- * them put back.  A variable of the user's that Arcana's file takes is
+ * them put back, each whole or as it is, what fails told
+ * (undo_report()).  A variable of the user's that Arcana's file takes is
  * commented out where it is, the line kept under "#" with RCA_TAKEN
  * after it (libvarconf's vc_comment()), never removed.
  */
@@ -125,7 +126,7 @@ struct rca {
 
 int	rca_open(struct rca *x, const char *svc, char *err, size_t errlen);
 int	rca_write(struct rca *x, cbl_req *req, char *err, size_t errlen);
-void	rca_undo(struct rca *x);
+int	rca_undo(struct rca *x);
 /* What rc(8) would have for name: Arcana's file's, else the last of the
  * user's files that sets it; NULL, none.  rca_set(): name's value in
  * Arcana's file ("" ends a list of aliases, as rc(8) reads it). */

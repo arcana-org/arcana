@@ -614,52 +614,6 @@ ietf_logical_network_element_logical_network_elements_edit(cbl_req *req,
 	return (EOPNOTSUPP);
 }
 
-/* A file's text as it is, to put back; *there: it was. */
-static char *
-file_text(const char *path, size_t *lenp, bool *there)
-{
-	FILE	*fp;
-	char	*buf = NULL;
-	size_t	 cap = 0;
-
-	*lenp = 0;
-	*there = false;
-	if ((fp = fopen(path, "re")) == NULL)
-		return (NULL);
-	*there = true;
-	for (;;) {
-		char	*nb;
-		size_t	 n;
-
-		if (cap - *lenp < 4096) {
-			if ((nb = realloc(buf, cap + 8192)) == NULL)
-				break;
-			buf = nb;
-			cap += 8192;
-		}
-		if ((n = fread(buf + *lenp, 1, cap - *lenp, fp)) == 0)
-			break;
-		*lenp += n;
-	}
-	fclose(fp);
-	return (buf);
-}
-
-static void
-file_back(const char *path, const char *text, size_t len, bool there)
-{
-	FILE	*fp;
-
-	if (!there) {
-		(void)unlink(path);
-		return;
-	}
-	if ((fp = fopen(path, "we")) == NULL)
-		return;
-	if (len > 0)
-		(void)fwrite(text, 1, len, fp);
-	fclose(fp);
-}
 
 /* An interface whose FIB is fib, in name (IFNAMSIZ); false: none. */
 static bool
@@ -710,10 +664,10 @@ ietf_network_instance_network_instances_edit(cbl_req *req,
 	const struct ietf_network_instance_network_instances *was =
 	    before != NULL ? before->network_instances : NULL;
 	struct vc_file	 lf, ff;
+	struct rca	 kept;
 	char		 lpath[MAXPATHLEN], fpath[MAXPATHLEN], err[512];
-	char		*ltext, *ftext, ifname[IFNAMSIZ];
-	size_t		 llen, flen;
-	bool		 lthere, fthere, reboot = false;
+	char		 ifname[IFNAMSIZ];
+	bool		 reboot = false;
 	int		 nfibs = yni_nfibs(), had = nfibs, want = nfibs;
 	int		 error = 0;
 
@@ -753,8 +707,17 @@ ietf_network_instance_network_instances_edit(cbl_req *req,
 		(void)snprintf(lpath, sizeof(lpath), "%s" LOADER_ARCANA,
 		    opts.root != NULL ? opts.root : "");
 	sdwan_conf_path(FIBS_CONF, fpath, sizeof(fpath));
-	ltext = file_text(lpath, &llen, &lthere);
-	ftext = file_text(fpath, &flen, &fthere);
+	/* Both as they are, to put back (rcarcana.c): one that cannot be
+	 * read fails the commit here, before anything changes. */
+	memset(&kept, 0, sizeof(kept));
+	if ((error = rca_keep(&kept, lpath)) != 0 || (error = rca_keep(&kept,
+	    fpath)) != 0) {
+		(void)snprintf(err, sizeof(err), "%s: %s", kept.nwas == 0 ?
+		    lpath : fpath, strerror(error));
+		(void)cbl_req_set_yerr(req, err, 0);
+		rca_close(&kept);
+		return (error);
+	}
 	memset(&lf, 0, sizeof(lf));
 	memset(&ff, 0, sizeof(ff));
 	if (vc_read(&lf, VC_LOADER, lpath, err, sizeof(err)) == -1 ||
@@ -801,17 +764,15 @@ ietf_network_instance_network_instances_edit(cbl_req *req,
 		}
 		error = statics_commit(req, fib, rb, ra);
 	}
-	if (error != 0) {
-		file_back(lpath, ltext, llen, lthere);
-		file_back(fpath, ftext, flen, fthere);
-	} else if (reboot)
+	if (error != 0)
+		(void)rca_undo(&kept);
+	else if (reboot)
 		(void)cbl_req_ywarn(req, ynode_named("ietf-network-instance",
 		    "network-instances")->sid, "after-reboot",
 		    "the kernel makes the new FIBs at the next boot");
 	vc_free(&lf);
 	vc_free(&ff);
-	free(ltext);
-	free(ftext);
+	rca_close(&kept);
 	return (error);
 }
 

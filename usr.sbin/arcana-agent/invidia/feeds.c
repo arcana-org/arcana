@@ -326,20 +326,37 @@ fw(struct work *w, const char **errp, int set, ...)
 /*
  * The table filled whole with the list l, in set
  * (-1: tables_sets is 0 and a table is in every set): a scratch table
- * filled by one ipfw run of a file and swapped in, then destroyed.
+ * filled by one ipfw run of a file and swapped in, then destroyed.  A
+ * scratch there already is destroyed first only when it is the feed's:
+ * its load file left beside the feeds' by a fill cut short, or empty of
+ * type addr, as the main table is checked; any other is the host's own,
+ * and the feed is refused.
  */
 static int
 fill(struct work *w, const char *name, int set, const struct ipf_list *l,
     bool exists, const char **errp)
 {
 	struct execres	 res;
+	struct ktable	*kt;
+	const struct ktable *t;
+	struct stat	 sb;
 	FILE		*fp;
 	char		*buf, *argv[4];
 	const char	*scratch, *path;
-	size_t		 len;
+	size_t		 len, nk;
 	int		 fd, rc;
 
 	scratch = wfmt(w, "%s_load", name);
+	path = wfmt(w, "%s/.%s.load", feeds_dir(w), name);
+	nk = ktables(w, &kt);
+	if ((t = ktable(kt, nk, scratch, set)) != NULL && lstat(path, &sb) ==
+	    -1 && (t->items != 0 || (t->type != NULL && strcmp(t->type,
+	    "addr") != 0))) {
+		*errp = wfmt(w, "table %s, the feed's scratch, is the host's "
+		    "own: it is not destroyed. Give the feed another table, or "
+		    "move that one", scratch);
+		return (-1);
+	}
 	(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
 	if ((fp = open_memstream(&buf, &len)) == NULL) {
 		*errp = "out of memory";
@@ -352,7 +369,6 @@ fill(struct work *w, const char *name, int set, const struct ipf_list *l,
 		return (-1);
 	}
 	wadopt(w, buf);
-	path = wfmt(w, "%s/.%s.load", feeds_dir(w), name);
 	if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |
 	    O_NOFOLLOW, 0600)) == -1 || write(fd, buf, len) != (ssize_t)len) {
 		*errp = wfmt(w, "%s: %s", path, strerror(errno));

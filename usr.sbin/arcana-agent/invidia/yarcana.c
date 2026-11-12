@@ -900,7 +900,6 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
     struct arcana_agent_agent_update_output *out, cbl_yarena *a)
 {
 	struct build_rsp	 r;
-	const cbl_peer			*pe;
 	struct work			*w;
 	bool				 local, restart;
 	int				 root;
@@ -920,10 +919,10 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
 	if ((w = ywork_told(req, a, restart ? "agent update and restart" :
 	    "agent update", &root)) == NULL)
 		return (ENOMEM);
-	/* The local socket's root is root already: its program is taken
-	 * unsigned; any other peer's must be signed by the CA. */
-	pe = cbl_req_peer(req);
-	local = pe != NULL && cbl_peer_transport(pe) == CBL_TR_UNIX;
+	/* Root on the local socket (or the agent's own user) is root
+	 * already: its program is taken unsigned; any other peer's, the
+	 * socket's group's too, must be signed by the CA. */
+	local = peer_kind(cbl_req_peer(req), NULL) == PEER_ROOT;
 	memset(&r, 0, sizeof(r));
 	/* Not while a change runs: a restart would cut it short. */
 	if (pthread_mutex_trylock(&change_lock) != 0) {

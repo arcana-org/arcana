@@ -2107,13 +2107,17 @@ kernel has now; with
 also the kept rules; after
 .Cm keep
 only those.
-.It Cm ipfw apply
+.It Cm ipfw apply Op Fl a Li ipfw-set1
 Make the kept rules the whole ruleset without a gap: loaded into set 1
 while it is disabled, then swapped with set 0.
 With
 .Fl s
 the rules that were there wait in set 1 and are swapped back unless the
 job is confirmed.
+Set 1 is the staging set: a rule there, or a table or NAT64 instance
+the agent did not leave there, is refused, named, unless
+.Fl a Li ipfw-set1
+accepts its deletion.
 .It Cm ipfw enable | disable | zero Op Ar number
 Turn the firewall on or off, with
 .Fl p

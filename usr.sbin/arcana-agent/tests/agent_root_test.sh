@@ -865,7 +865,7 @@ sdwan_control_body()
 	    -addext keyUsage=critical,keyCertSign >/dev/null 2>&1 ||
 	    atf_fail "openssl: cannot make the CA"
 	for c in server/IP:127.0.0.1/serverAuth,clientAuth \
-	    client/DNS:console/clientAuth; do
+	    client/DNS:console,URI:urn:arcana:role:console/clientAuth; do
 		n=${c%%/*}
 		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
 		    -keyout $n.key -out $n.csr -subj /CN=$n >/dev/null 2>&1
@@ -1044,7 +1044,7 @@ sctp_multihome_body()
 		if [ $n = server ]; then
 			printf 'subjectAltName=IP:10.91.0.1,IP:10.92.0.1\nextendedKeyUsage=serverAuth\n' > $n.ext
 		else
-			printf 'subjectAltName=DNS:console\nextendedKeyUsage=clientAuth\n' > $n.ext
+			printf 'subjectAltName=DNS:console,URI:urn:arcana:role:console\nextendedKeyUsage=clientAuth\n' > $n.ext
 		fi
 		openssl x509 -req -in $n.csr -CA ca.pem -CAkey ca.key \
 		    -CAcreateserial -out $n.pem -days 2 -extfile $n.ext \
@@ -1385,7 +1385,7 @@ sctp_loopback_body()
 		if [ $n = server ]; then
 			printf 'subjectAltName=IP:2001:db8:12::1\nextendedKeyUsage=serverAuth\n' > $n.ext
 		else
-			printf 'subjectAltName=DNS:console\nextendedKeyUsage=clientAuth\n' > $n.ext
+			printf 'subjectAltName=DNS:console,URI:urn:arcana:role:console\nextendedKeyUsage=clientAuth\n' > $n.ext
 		fi
 		openssl x509 -req -in $n.csr -CA ca.pem -CAkey ca.key \
 		    -CAcreateserial -out $n.pem -days 2 -extfile $n.ext \
@@ -4409,12 +4409,18 @@ console_group_body()
 	# A second socket where another account can reach it; its group
 	# is nobody's, so nobody is the console there.
 	rm -f /tmp/arcana-g57.sock
-	DAEMON_ARGS="-l unix:/tmp/arcana-g57.sock -g nobody"
+	echo old > installed-agent
+	DAEMON_ARGS="-l unix:/tmp/arcana-g57.sock -g nobody -U $(pwd)/installed-agent"
 	start_daemon
 	atf_check -o match:'^Host: ' \
 	    su -m nobody -c "$JGC -c unix:/tmp/arcana-g57.sock -u admin hello"
 	atf_check -o match:'^Host: ' \
 	    su -m nobody -c "$JGC -c unix:/tmp/arcana-g57.sock hello"
+	# The console, not root: what it installs is signed by the CA, an
+	# unsigned program refused and nothing put in place.
+	atf_check -s exit:1 -e match:'not signed' -o ignore \
+	    su -m nobody -c "$JGC -c unix:/tmp/arcana-g57.sock agent-update $JGD"
+	atf_check -o inline:'old\n' cat installed-agent
 	kill "$(cat daemon.pid)"
 	sleep 0.5
 	rm -f /tmp/arcana-g57.sock s.sock

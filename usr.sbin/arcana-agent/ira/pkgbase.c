@@ -15,6 +15,9 @@
  * own files that pkg put aside come back (keep_own()); and what is left
  * beside them (.pkgnew) is named at the end, for the admin to merge.
  * The jail is to be restarted after either, for the new base to run.
+ * The jail's root user owns every name under its root: what is read or
+ * written there is opened beneath it (scope.c), and no program of the
+ * host's is given a path there.
  */
 
 #include <sys/param.h>
@@ -22,10 +25,14 @@
 #include <sys/sysctl.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "agent.h"
 
@@ -35,10 +42,11 @@
  * repositories, named by pkg-repo, used as it is. */
 #define	BASE_REPO	"arcana-base"
 #define	BASE_SET	"FreeBSD-set-base-jail"
-#define	REPO_FILE	"/usr/local/etc/pkg/repos/arcana-base.conf"
-#define	ETC_BACKUP	"/var/backups/etc-before-pkgbase.tar"
+#define	REPO_DIR	"/usr/local/etc/pkg/repos"
+#define	REPO_FILE	REPO_DIR "/arcana-base.conf"
+#define	BACKUP_DIR	"/var/backups"
+#define	ETC_BACKUP	BACKUP_DIR "/etc-before-pkgbase.tar"
 #define	PATH_TAR	"/usr/bin/tar"
-#define	PATH_FIND	"/usr/bin/find"
 
 /* A release as a jail says it (15.1-RELEASE-p2, 16.0-CURRENT) or as
  * the job names it ("16", "15.2"). */
@@ -191,40 +199,16 @@ on_pkgbase(struct work *w, const struct arc_job_spec *sp)
 	return (pkg(w, sp, false, NULL, NULL, info, 3, &res) == 0);
 }
 
-/* The directories above path made, as mkdir -p would. */
-static int
-mkdirs(const char *path)
-{
-	char	buf[PATH_MAX], *p;
-
-	if (strlcpy(buf, path, sizeof(buf)) >= sizeof(buf))
-		return (-1);
-	if ((p = strrchr(buf, '/')) == NULL)
-		return (0);
-	*p = '\0';
-	for (p = buf + 1; *p != '\0'; p++)
-		if (*p == '/') {
-			*p = '\0';
-			if (mkdir(buf, 0755) == -1 && errno != EEXIST)
-				return (-1);
-			*p = '/';
-		}
-	if (mkdir(buf, 0755) == -1 && errno != EEXIST)
-		return (-1);
-	return (0);
-}
-
 /* The FreeBSD-base repository's file under the jail's root, for a
  * branch; a step of the trace. */
 static const char *
-repo_write(struct work *w, const char *root, const char *branch)
+repo_write(struct work *w, const char *branch)
 {
 	const char	*path, *e;
 	char		*text;
 	size_t		 len;
 	int		 step, rc;
 
-	/* The directory on the host, the file by its name in the jail. */
 	path = REPO_FILE;
 	text = wfmt(w, BASE_REPO ": {\n  url: \"pkg+https://pkg.FreeBSD.org/"
 	    "${ABI}/%s\",\n  mirror_type: \"srv\",\n  signature_type: "
@@ -233,69 +217,105 @@ repo_write(struct work *w, const char *root, const char *branch)
 	len = strlen(text);
 	step = step_begin(w, STEP_FILE, "write", "%s", path);
 	e = NULL;
-	rc = mkdirs(wfmt(w, "%s" REPO_FILE, root)) == -1 ? -1 : scope_replace(w,
-	    path, text, len, 0644, NULL);
+	rc = scope_mkdirs(w, REPO_DIR) == -1 ? -1 : scope_replace(w, path, text,
+	    len, 0644, NULL);
 	if (rc != 0)
 		e = wfmt(w, "%s: %s", path, strerror(errno));
 	step_end(w, step, e == NULL, "%s", e != NULL ? e : branch);
 	return (e);
 }
 
-/* The jail's /etc kept aside, whole, before the base changes. */
+/*
+ * The jail's /etc kept aside, whole, before the base changes: the
+ * jail's own tar(1) run in it, its archive written to a file opened
+ * beneath the jail's root, never by a path a link of the jail's could
+ * lead out of.  Root's alone: master.passwd is in it.
+ */
 static const char *
-etc_backup(struct work *w, const char *root)
+etc_backup(struct work *w)
 {
 	struct execres	 res;
 	char		*argv[8];
-	const char	*tar;
+	const char	*e;
+	int		 fd, rc;
 
-	tar = wfmt(w, "%s" ETC_BACKUP, root);
-	if (mkdirs(tar) == -1)
-		return (wfmt(w, "%s: %s", tar, strerror(errno)));
+	if (scope_mkdirs(w, BACKUP_DIR) == -1 || (fd = scope_open(w,
+	    ETC_BACKUP, O_WRONLY | O_CREAT | O_TRUNC, 0600)) == -1)
+		return (wfmt(w, "%s: %s", ETC_BACKUP, strerror(errno)));
 	argv[0] = (char *)(uintptr_t)PATH_TAR;
-	argv[1] = (char *)(uintptr_t)"-C";
-	argv[2] = (char *)(uintptr_t)root;
-	argv[3] = (char *)(uintptr_t)"-cf";
-	argv[4] = (char *)(uintptr_t)tar;
+	argv[1] = (char *)(uintptr_t)"-cf";
+	argv[2] = (char *)(uintptr_t)"-";
+	argv[3] = (char *)(uintptr_t)"-C";
+	argv[4] = (char *)(uintptr_t)"/";
 	argv[5] = (char *)(uintptr_t)"etc";
 	argv[6] = NULL;
-	if (run_exec(w, argv, &res) != 0)
-		return (wtext(w, exec_error(w, &res, "tar of etc")));
+	exec_set_fds(-1, fd);
+	rc = run_exec(w, scope_jexec(w, argv), &res);
+	close(fd);
+	if (rc != 0) {
+		if ((e = scope_missing(w, &res, "tar", NULL)) == NULL)
+			e = wtext(w, exec_error(w, &res, "tar of etc"));
+		return (e);
+	}
 	return (NULL);
 }
 
 /*
+ * The files named name (fnmatch(3)) in dfd, a directory of the jail's
+ * opened beneath its root that it calls dir, and below it: each as the
+ * jail has it, a line added to *outp.  No link is followed.
+ */
+static void
+walk(struct work *w, int dfd, const char *dir, const char *name, int depth,
+    char **outp)
+{
+	struct dirent	*de;
+	struct stat	 sb;
+	DIR		*d;
+	int		 fd, sub;
+
+	if (depth > 16 || (fd = openat(dfd, ".", O_RDONLY | O_DIRECTORY |
+	    O_CLOEXEC)) == -1)
+		return;
+	if ((d = fdopendir(fd)) == NULL) {
+		close(fd);
+		return;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name,
+		    "..") == 0 || fstatat(dfd, de->d_name, &sb,
+		    AT_SYMLINK_NOFOLLOW) == -1)
+			continue;
+		if (S_ISREG(sb.st_mode) && fnmatch(name, de->d_name, 0) == 0)
+			*outp = wfmt(w, "%s%s/%s\n", *outp, dir, de->d_name);
+		else if (S_ISDIR(sb.st_mode) && (sub = openat(dfd, de->d_name,
+		    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC |
+		    O_RESOLVE_BENEATH)) != -1) {
+			walk(w, sub, wfmt(w, "%s/%s", dir, de->d_name), name,
+			    depth + 1, outp);
+			close(sub);
+		}
+	}
+	closedir(d);
+}
+
+/*
  * The files named name under the jail's /etc, as the jail has them
- * ("/etc/group.pkgsave"), one a line; "" for none.
+ * ("/etc/group.pkgsave"), one a line; "" for none.  Read here, beneath
+ * its root: find(1) of the host would be given a path the jail's links
+ * can lead out of.
  */
 static char *
-etc_named(struct work *w, const char *root, const char *name)
+etc_named(struct work *w, const char *name)
 {
-	struct execres	 res;
-	char		*argv[8], *out, *line, *next, *o;
-	size_t		 rl;
+	char	*out;
+	int	 dfd;
 
-	argv[0] = (char *)(uintptr_t)PATH_FIND;
-	argv[1] = wfmt(w, "%s/etc", root);
-	argv[2] = (char *)(uintptr_t)"-type";
-	argv[3] = (char *)(uintptr_t)"f";
-	argv[4] = (char *)(uintptr_t)"-name";
-	argv[5] = (char *)(uintptr_t)name;
-	argv[6] = NULL;
-	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
-		return (wstrdup(w, ""));
-	rl = strlen(root);
-	out = o = wcalloc(w, res.outlen + 1, 1);
-	for (line = wstrndup(w, res.out, res.outlen); line != NULL &&
-	    *line != '\0'; line = next) {
-		if ((next = strchr(line, '\n')) != NULL)
-			*next++ = '\0';
-		if (strncmp(line, root, rl) != 0 || line[rl] != '/')
-			continue;
-		o = stpcpy(o, line + rl);
-		*o++ = '\n';
-	}
-	*o = '\0';
+	out = wstrdup(w, "");
+	if ((dfd = scope_dirfd(w, "/etc")) == -1)
+		return (out);
+	walk(w, dfd, "/etc", name, 0, &out);
+	close(dfd);
 	return (out);
 }
 
@@ -418,7 +438,7 @@ in_jail(struct work *w, const char *prog, const char *a1, const char *a2,
  * NULL, or what went wrong.
  */
 static const char *
-keep_own(struct work *w, const char *root, const char *before)
+keep_own(struct work *w, const char *before)
 {
 	const char	*e, *skipped, *done, *base;
 	char		*list, *p, *next, *live, *own, *pkgs, *merged, *keep;
@@ -426,7 +446,7 @@ keep_own(struct work *w, const char *root, const char *before)
 	int		 step, added, users, groups;
 	bool		 pw, cap, svc, ok;
 
-	list = etc_named(w, root, "*.pkgsave");
+	list = etc_named(w, "*.pkgsave");
 	done = NULL;
 	e = NULL;
 	users = groups = 0;
@@ -512,12 +532,12 @@ keep_own(struct work *w, const char *root, const char *before)
 /* What pkg left beside the jail's files, under /etc, named in a step
  * for the admin to merge; nothing is an error. */
 static void
-leftovers(struct work *w, const char *root)
+leftovers(struct work *w)
 {
 	char	*list, *p;
 	int	 step;
 
-	list = etc_named(w, root, "*.pkgnew");
+	list = etc_named(w, "*.pkgnew");
 	for (p = list; (p = strchr(p, '\n')) != NULL; p++)
 		if (p[1] != '\0')
 			*p = ' ';
@@ -598,8 +618,8 @@ sets_check(struct work *w, const struct arc_job_spec *sp, const char *repo,
  * neither can be.
  */
 static const char *
-base_repo(struct work *w, const struct arc_job_spec *sp, const char *root,
-    const char *branch, const char **errp)
+base_repo(struct work *w, const struct arc_job_spec *sp, const char *branch,
+    const char **errp)
 {
 	const char	*e;
 
@@ -610,7 +630,7 @@ base_repo(struct work *w, const struct arc_job_spec *sp, const char *root,
 		}
 		return (sp->pkg_repo);
 	}
-	if ((e = repo_write(w, root, branch)) != NULL) {
+	if ((e = repo_write(w, branch)) != NULL) {
 		*errp = e;
 		return (NULL);
 	}
@@ -640,8 +660,8 @@ repo_done(struct work *w, const char *repo)
 }
 
 static int
-convert(struct work *w, const struct arc_job_spec *sp, const char *root,
-    const char *osrelease, const char **errp)
+convert(struct work *w, const struct arc_job_spec *sp, const char *osrelease,
+    const char **errp)
 {
 	struct release	 r;
 	struct execres	 res;
@@ -699,9 +719,9 @@ convert(struct work *w, const struct arc_job_spec *sp, const char *root,
 		*errp = wfmt(w, NEED_CHFLAGS, sp->jail);
 		return (-1);
 	}
-	if ((repo = base_repo(w, sp, root, branch, errp)) == NULL)
+	if ((repo = base_repo(w, sp, branch, errp)) == NULL)
 		return (-1);
-	if ((e = etc_backup(w, root)) != NULL) {
+	if ((e = etc_backup(w)) != NULL) {
 		*errp = e;
 		return (-1);
 	}
@@ -719,7 +739,7 @@ convert(struct work *w, const struct arc_job_spec *sp, const char *root,
 		*errp = e;
 		return (-1);
 	}
-	before = etc_named(w, root, "*.pkgsave");
+	before = etc_named(w, "*.pkgsave");
 	args = wcalloc(w, nsets + 5, sizeof(*args));
 	n = 0;
 	args[n++] = "install";
@@ -731,15 +751,15 @@ convert(struct work *w, const struct arc_job_spec *sp, const char *root,
 	if (pkg(w, sp, sp->force, NULL, NULL, args, n, &res) != 0 || (e =
 	    pkg_repo_error(w, &res, "pkg install")) != NULL) {
 		*errp = e != NULL ? e : pkg_failed(w, &res, "pkg install");
-		keep_own(w, root, before);
+		keep_own(w, before);
 		return (-1);
 	}
-	if ((e = keep_own(w, root, before)) != NULL) {
+	if ((e = keep_own(w, before)) != NULL) {
 		*errp = e;
 		return (-1);
 	}
 	repo_done(w, repo);
-	leftovers(w, root);
+	leftovers(w);
 	return (0);
 }
 
@@ -751,8 +771,7 @@ convert(struct work *w, const struct arc_job_spec *sp, const char *root,
  * kernel does not run.
  */
 static int
-upgrade(struct work *w, const struct arc_job_spec *sp, const char *root,
-    const char **errp)
+upgrade(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
 	static const char *const rest[] = { "upgrade", "-y" };
 	struct release	 r;
@@ -795,10 +814,10 @@ upgrade(struct work *w, const struct arc_job_spec *sp, const char *root,
 		*errp = wfmt(w, NEED_CHFLAGS, sp->jail);
 		return (-1);
 	}
-	if ((repo = base_repo(w, sp, root, branch_of(w, &r, major_alone),
-	    errp)) == NULL)
+	if ((repo = base_repo(w, sp, branch_of(w, &r, major_alone), errp)) ==
+	    NULL)
 		return (-1);
-	if ((e = etc_backup(w, root)) != NULL) {
+	if ((e = etc_backup(w)) != NULL) {
 		*errp = e;
 		return (-1);
 	}
@@ -817,35 +836,35 @@ upgrade(struct work *w, const struct arc_job_spec *sp, const char *root,
 		    pkg_failed(w, &res, "pkg update"));
 		return (-1);
 	}
-	before = etc_named(w, root, "*.pkgsave");
+	before = etc_named(w, "*.pkgsave");
 	if (pkg(w, sp, true, abi, osversion, base, 4, &res) != 0 || (e =
 	    pkg_repo_error(w, &res, "pkg upgrade")) != NULL) {
 		*errp = wfmt(w, "repository %s: %s", repo, e != NULL ? e :
 		    pkg_failed(w, &res, "pkg upgrade of the base"));
-		keep_own(w, root, before);
+		keep_own(w, before);
 		return (-1);
 	}
-	if ((e = keep_own(w, root, before)) != NULL) {
+	if ((e = keep_own(w, before)) != NULL) {
 		*errp = e;
 		return (-1);
 	}
 	if (pkg(w, sp, sp->force, abi, osversion, rest, 2, &res) != 0 || (e =
 	    pkg_repo_error(w, &res, "pkg upgrade")) != NULL) {
-		leftovers(w, root);
+		leftovers(w);
 		*errp = wfmt(w, "the base is on %s; the other packages are not: "
 		    "%s", sp->release, e != NULL ? e : pkg_failed(w, &res,
 		    "pkg upgrade"));
 		return (-1);
 	}
 	repo_done(w, repo);
-	leftovers(w, root);
+	leftovers(w);
 	return (0);
 }
 
 int
 do_jail_base(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
-	const char	*root, *osrelease, *e;
+	const char	*osrelease, *e;
 
 	if (sp->verb == NULL) {
 		*errp = "verb convert or upgrade";
@@ -856,11 +875,10 @@ do_jail_base(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		*errp = e;
 		return (-1);
 	}
-	root = w->jroot;
 	if (strcmp(sp->verb, "convert") == 0)
-		return (convert(w, sp, root, osrelease, errp));
+		return (convert(w, sp, osrelease, errp));
 	if (strcmp(sp->verb, "upgrade") == 0)
-		return (upgrade(w, sp, root, errp));
+		return (upgrade(w, sp, errp));
 	*errp = wfmt(w, "'%s': verb convert or upgrade", sp->verb);
 	return (-1);
 }

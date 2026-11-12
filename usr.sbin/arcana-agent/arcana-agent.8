@@ -787,6 +787,19 @@ The threat feeds' tables, which arcana-firewall's feed-load fills whole
 beside it, a file a table; only a table with a file there is ever
 replaced or given up, and each is filled again at the start and by
 Apply.
+Set 1 is Apply's staging set: the kept rules are loaded there, swapped
+with set 0, and set 1 emptied before and after, its rules deleted and
+its tables and NAT64 instances destroyed.
+At rest it holds nothing of the agent's but the objects a rule kept it
+from destroying, named in
+.Pa ipfw.rules.set1
+beside the kept rules; a rule in set 1, or another object there, is
+the admin's, and Apply refuses, naming it, unless the job accepts the
+warning
+.Li ipfw-set1 .
+A feed's scratch table
+.Pq Ar table Ns Li _load
+that is the host's own is never destroyed either.
 .It Fl Q Ar sysctl , Fl O Ar sysctl.conf
 The
 .Xr sysctl 8

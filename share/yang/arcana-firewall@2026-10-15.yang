@@ -6,6 +6,11 @@ module arcana-firewall {
   import cblink-gen {
     prefix cg;
   }
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
   import ietf-inet-types {
     prefix inet;
     reference
@@ -756,6 +761,7 @@ module arcana-firewall {
       }
     }
     action check {
+      nacm:default-deny-all;
       description
         "A kept file's text, its aliases put in, read by ipfw -n:
          what it would say, nothing loaded or written.";
@@ -808,6 +814,7 @@ module arcana-firewall {
       }
     }
     action feed-load {
+      nacm:default-deny-all;
       description
         "A threat feed's prefixes made the whole of an ipfw table of
          the host's (not a vnet jail's): kept in a file of the agent's
@@ -881,6 +888,7 @@ module arcana-firewall {
       }
     }
     action feed-drop {
+      nacm:default-deny-all;
       description
         "A feed's table given up: its file removed and the table
          destroyed, or emptied when a rule names it still (ipfw

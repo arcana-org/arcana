@@ -9,9 +9,11 @@
  * and a client both, so that hosts can reach each other (the mesh), and
  * it says so: a SAN URI urn:arcana:role:agent.  A peer that shows one is
  * another host, and asks nothing here but the mesh's, which there is
- * none of yet: it is refused.  The console's own certificate may say
- * urn:arcana:role:console; one from before the roles says nothing, and
- * is taken as the console's.
+ * none of yet: it is refused.  The console's own certificate says
+ * urn:arcana:role:console, and only a peer over TLS that shows it is
+ * the console; one that says neither (a certificate from before the
+ * roles, a host's among them) asks nothing.  peer_kind() decides it,
+ * for the user of a request, agent-update and what a job records.
  *
  * What a request may do is NACM's (RFC 8341), as cblink checks it
  * (ynacm.c has the rules): its user is the one the console says it asks
@@ -38,21 +40,28 @@
 #include "ystream.h"
 
 #define	ROLE_AGENT	"URI:urn:arcana:role:agent"
+#define	ROLE_CONSOLE	"URI:urn:arcana:role:console"
+
+/* Does the peer's certificate say the role? */
+static bool
+has_role(const cbl_peer *p, const char *role)
+{
+	size_t	i, n;
+
+	n = cbl_peer_san_count(p);
+	for (i = 0; i < n; i++)
+		if (cbl_peer_san(p, i) != NULL && strcmp(cbl_peer_san(p, i),
+		    role) == 0)
+			return (true);
+	return (false);
+}
 
 /* Is the peer another host? */
 bool
 peer_is_host(const cbl_peer *p)
 {
-	size_t	i, n;
 
-	if (p == NULL)
-		return (false);
-	n = cbl_peer_san_count(p);
-	for (i = 0; i < n; i++)
-		if (cbl_peer_san(p, i) != NULL && strcmp(cbl_peer_san(p, i),
-		    ROLE_AGENT) == 0)
-			return (true);
-	return (false);
+	return (p != NULL && has_role(p, ROLE_AGENT));
 }
 
 /* Whether uid is in the socket's group (-g), the console's by the
@@ -79,12 +88,45 @@ in_sock_group(uid_t uid, gid_t gid)
 }
 
 /*
- * Whom a request of peer p is for (cbl_user_f): root's or the agent's
- * own on the unix socket, the user it says or the recovery session; a
- * local account in the socket's group (-g, the console's user by the
- * configuration), the console; another local account, "local:<login>";
- * the console by its certificate, the user it says or "console".  A
- * host's certificate asks nothing.
+ * What kind of peer p is: root or the agent's own user on the unix
+ * socket (PEER_ROOT: the recovery session, which may install a program
+ * unsigned); a local account in the socket's group (-g, the console's
+ * user by the configuration: PEER_GROUP); another local account
+ * (PEER_LOCAL); over TLS, the console by its certificate's role
+ * (PEER_CONSOLE), another host by its own (PEER_HOST), anything else
+ * nobody (PEER_NONE), as is a peer whose credentials are not known.
+ * The uid of a local one in *uidp.
+ */
+enum peer_kind
+peer_kind(const cbl_peer *p, uid_t *uidp)
+{
+	uid_t	uid;
+	gid_t	gid;
+
+	if (uidp != NULL)
+		*uidp = (uid_t)-1;
+	if (p == NULL)
+		return (PEER_NONE);
+	if (cbl_peer_transport(p) == CBL_TR_UNIX) {
+		if (cbl_peer_cred(p, &uid, &gid) != 0)
+			return (PEER_NONE);
+		if (uidp != NULL)
+			*uidp = uid;
+		if (uid == 0 || uid == geteuid())
+			return (PEER_ROOT);
+		return (in_sock_group(uid, gid) ? PEER_GROUP : PEER_LOCAL);
+	}
+	if (has_role(p, ROLE_AGENT))
+		return (PEER_HOST);
+	return (has_role(p, ROLE_CONSOLE) ? PEER_CONSOLE : PEER_NONE);
+}
+
+/*
+ * Whom a request of peer p is for (cbl_user_f), by peer_kind(): root's
+ * the user it says or the recovery session; the socket's group's and
+ * the console's the user it says or "console"; another local
+ * account's "local:<login>".  A host's certificate, and one without
+ * the console's role, ask nothing.
  */
 static int
 admit_user(const cbl_peer *p, const char *said, char *name, size_t len,
@@ -93,29 +135,19 @@ admit_user(const cbl_peer *p, const char *said, char *name, size_t len,
 	struct passwd	 pw, *res;
 	char		 buf[1024];
 	uid_t		 uid;
-	gid_t		 gid;
 
-	if (peer_is_host(p)) {
-		logmsg(LOG_WARNING, "%s: a host's certificate asked: refused, "
-		    "only the console asks", cbl_peer_subject(p) != NULL ?
-		    cbl_peer_subject(p) : "?");
-		return (EACCES);
-	}
-	if (cbl_peer_transport(p) == CBL_TR_UNIX) {
-		if (cbl_peer_cred(p, &uid, &gid) != 0)
-			return (EACCES);
-		if (uid == 0 || uid == geteuid()) {
-			if (said != NULL)
-				(void)strlcpy(name, said, len);
-			else
-				*recovery = true;
-			return (0);
-		}
-		if (in_sock_group(uid, gid)) {
-			(void)strlcpy(name, said != NULL ? said : NACM_CONSOLE,
-			    len);
-			return (0);
-		}
+	switch (peer_kind(p, &uid)) {
+	case PEER_ROOT:
+		if (said != NULL)
+			(void)strlcpy(name, said, len);
+		else
+			*recovery = true;
+		return (0);
+	case PEER_GROUP:
+	case PEER_CONSOLE:
+		(void)strlcpy(name, said != NULL ? said : NACM_CONSOLE, len);
+		return (0);
+	case PEER_LOCAL:
 		if (said != NULL)
 			return (EACCES);
 		/* A name of its own: a local account called admin is not
@@ -126,9 +158,21 @@ admit_user(const cbl_peer *p, const char *said, char *name, size_t len,
 		else
 			(void)snprintf(name, len, "local:%u", (unsigned)uid);
 		return (0);
+	case PEER_HOST:
+		logmsg(LOG_WARNING, "%s: a host's certificate asked: refused, "
+		    "only the console asks", cbl_peer_subject(p) != NULL ?
+		    cbl_peer_subject(p) : "?");
+		return (EACCES);
+	case PEER_NONE:
+		break;
 	}
-	(void)strlcpy(name, said != NULL ? said : NACM_CONSOLE, len);
-	return (0);
+	if (p != NULL && cbl_peer_transport(p) != CBL_TR_UNIX)
+		logmsg(LOG_WARNING, "%s: a certificate without the console's "
+		    "role (urn:arcana:role:console) asked: refused; the "
+		    "console issues itself one with it when it starts "
+		    "(docs/UPDATING.md)", cbl_peer_subject(p) != NULL ?
+		    cbl_peer_subject(p) : "?");
+	return (EACCES);
 }
 
 /* Whom each request is for, admit_user()'s, for NACM; before any

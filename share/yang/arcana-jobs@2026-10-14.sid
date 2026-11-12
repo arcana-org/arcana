@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 20,
+    "sid-file-version": 21,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3598,6 +3598,16 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:jobs/job/user",
         "sid": "63107"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/ipfw/accept",
+        "sid": "63108"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/ipfw/accept",
+        "sid": "63109"
       },
       {
         "namespace": "data",

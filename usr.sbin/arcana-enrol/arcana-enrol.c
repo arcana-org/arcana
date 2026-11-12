@@ -8,7 +8,10 @@
  * arcana-enrol: join this host to a arcana console.  Makes a key and
  * a certificate request, sends it with the one-time token the console
  * gave, and writes the certificate and the CA where arcana-agent(8) reads
- * them; with -s, enables and starts arcana-agent with them.
+ * them; with -s, enables and starts arcana-agent with them.  The CA that
+ * comes back is the agent's trust anchor: it comes over HTTPS alone
+ * unless -i says plain HTTP will do, and with -f each of its
+ * certificates must be one whose SHA-256 the console showed.
  */
 
 #include <sys/param.h>
@@ -22,6 +25,7 @@
 #include <openssl/x509.h>
 
 #include <capsicum_helpers.h>
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -40,13 +44,16 @@
 #define	PATH_ETC	PREFIX "/etc/arcana"
 #define	DEFAULT_PORT	4310
 #define	MAX_REPLY	(256 * 1024)
+#define	MAX_PINS	4
 
 extern char	**environ;
 
 static void	 usage(void) __dead2;
 static const char *ssl_err(void);
 static char	*csr_pem(EVP_PKEY *, const char *);
-static char	*post(const char *, const char *);
+static char	*post(const char *, const char *, bool);
+static bool	 pin_parse(const char *, unsigned char *);
+static void	 pins_check(const char *, unsigned char (*)[32], size_t);
 static void	 write_file(int, const char *, const char *, mode_t);
 static void	 write_key(int, const char *, EVP_PKEY *);
 static bool	 run(char *const []);
@@ -55,9 +62,10 @@ static void
 usage(void)
 {
 
-	fprintf(stderr, "usage: arcana-enrol [-s] [-a address ...] [-p port] "
-	    "[-d directory] [-n name]\n"
-	    "                     console-url token\n");
+	fprintf(stderr, "usage: arcana-enrol [-is] [-a address ...] "
+	    "[-f sha256 ...] [-p port]\n"
+	    "                     [-d directory] [-n name] console-url "
+	    "token\n");
 	exit(2);
 }
 
@@ -98,9 +106,12 @@ csr_pem(EVP_PKEY *key, const char *name)
 	return (out);
 }
 
-/* POST body as JSON to url; the reply's body, or an error exit. */
+/*
+ * POST body as JSON to url; the reply's body, or an error exit.  Plain
+ * HTTP only when insecure: what comes back is the agent's trust anchor.
+ */
 static char *
-post(const char *url, const char *body)
+post(const char *url, const char *body, bool insecure)
 {
 	struct url	*u;
 	FILE		*fp;
@@ -111,6 +122,10 @@ post(const char *url, const char *body)
 		errx(1, "%s: %s", url, fetchLastErrString);
 	if (strcmp(u->scheme, "https") != 0 && strcmp(u->scheme, "http") != 0)
 		errx(1, "%s: not an http(s) URL", url);
+	if (strcmp(u->scheme, "http") == 0 && !insecure)
+		errx(1, "%s: not HTTPS: the token and the CA the agent is to "
+		    "trust would travel in the clear; -i to enrol over plain "
+		    "HTTP all the same (with -f, the CA is checked)", url);
 	if (strcmp(u->scheme, "http") == 0)
 		warnx("%s: not HTTPS; the token and the certificate travel in "
 		    "the clear", url);
@@ -126,6 +141,59 @@ post(const char *url, const char *body)
 	fclose(fp);
 	fetchFreeURL(u);
 	return (buf);
+}
+
+/* A SHA-256 fingerprint as openssl(1) or the console shows it, colons
+ * or none, either case, into its 32 bytes. */
+static bool
+pin_parse(const char *s, unsigned char *out)
+{
+	size_t	n;
+
+	for (n = 0; n < 32; n++) {
+		if (n > 0 && *s == ':')
+			s++;
+		if (!isxdigit((unsigned char)s[0]) ||
+		    !isxdigit((unsigned char)s[1]))
+			return (false);
+		out[n] = (unsigned char)(digittoint((unsigned char)s[0]) << 4 |
+		    digittoint((unsigned char)s[1]));
+		s += 2;
+	}
+	return (*s == '\0');
+}
+
+/*
+ * Each certificate of the CA the console sent one of the pinned: one
+ * that is not, or none at all, and nothing is written.
+ */
+static void
+pins_check(const char *ca, unsigned char (*pins)[32], size_t npins)
+{
+	unsigned char	 md[EVP_MAX_MD_SIZE];
+	unsigned int	 mdlen;
+	BIO		*b;
+	X509		*x;
+	size_t		 i, n;
+
+	if (npins == 0)
+		return;
+	if ((b = BIO_new_mem_buf(ca, -1)) == NULL)
+		errx(1, "the console's CA: %s", ssl_err());
+	for (n = 0; (x = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL; n++) {
+		if (X509_digest(x, EVP_sha256(), md, &mdlen) != 1 ||
+		    mdlen != 32)
+			errx(1, "the console's CA: %s", ssl_err());
+		X509_free(x);
+		for (i = 0; i < npins && memcmp(pins[i], md, 32) != 0; i++)
+			;
+		if (i == npins)
+			errx(1, "the CA the console sent is not the one -f names "
+			    "(its certificate %zu): nothing written", n + 1);
+	}
+	BIO_free(b);
+	if (n == 0)
+		errx(1, "the console sent no CA certificate: nothing written");
 }
 
 /*
@@ -250,16 +318,18 @@ main(int argc, char *argv[])
 	int			 ns, dfd, gofd, status;
 	pid_t			 runner;
 	unsigned char		*json;
+	unsigned char		 pins[MAX_PINS][32];
+	size_t			 npins;
 	long			 port;
-	bool			 start;
+	bool			 start, insecure;
 	int			 ch;
 
 	dir = PATH_ETC;
-	naddrs = 0;
+	naddrs = npins = 0;
 	name = NULL;
 	port = DEFAULT_PORT;
-	start = false;
-	while ((ch = getopt(argc, argv, "a:d:n:p:s")) != -1) {
+	start = insecure = false;
+	while ((ch = getopt(argc, argv, "a:d:f:in:p:s")) != -1) {
 		switch (ch) {
 		case 'a':
 			if (naddrs == nitems(addrs))
@@ -268,6 +338,15 @@ main(int argc, char *argv[])
 			break;
 		case 'd':
 			dir = optarg;
+			break;
+		case 'f':
+			if (npins == MAX_PINS)
+				errx(1, "at most %d fingerprints", MAX_PINS);
+			if (!pin_parse(optarg, pins[npins++]))
+				errx(1, "%s: not a SHA-256 fingerprint", optarg);
+			break;
+		case 'i':
+			insecure = true;
 			break;
 		case 'n':
 			name = optarg;
@@ -354,7 +433,7 @@ main(int argc, char *argv[])
 	ucl_object_unref(body);
 	free(csr);
 
-	reply = post(api, (const char *)json);
+	reply = post(api, (const char *)json, insecure);
 	free(json);
 	/*
 	 * Capability mode from here (capsicum(4)): the console has
@@ -383,6 +462,7 @@ main(int argc, char *argv[])
 	if (cert == NULL || ca == NULL)
 		errx(1, "the console's answer has no certificate: %.200s",
 		    reply);
+	pins_check(ca, pins, npins);
 
 	write_key(dfd, "host.key", key);
 	write_file(dfd, "host.pem", cert, 0644);

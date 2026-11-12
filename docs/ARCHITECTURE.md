@@ -79,12 +79,20 @@ The core operations, and what each runs on the host (the rest are in
 | arcana-jobs `jobs`, its `read`, `cancel`, `confirm` | list jobs, read one with its trace so far, take a queued one back, keep a safe change | the job queue |
 
 Every request requires an authenticated peer: a client certificate
-from the arcana CA over TCP, or access to the 0600 AF_UNIX socket; a
-host's certificate (urn:arcana:role:agent) asks nothing.  What it may
-do is NACM's (RFC 8341): what changes the host, or gives out what
-should stay on it, is `nacm:default-deny-all`, run only by a rule that
-permits it.  A refusal comes back with its words, and the steps told
-while it ran, so a failed jail(8) run still comes back with its output.
+from the arcana CA that says urn:arcana:role:console over TCP or SCTP,
+or access to the 0600 AF_UNIX socket; a host's certificate
+(urn:arcana:role:agent), or one that says neither, asks nothing.  What
+it may do is NACM's (RFC 8341): what changes the host, runs a program
+with arguments its caller chooses, makes the host reach out, or gives
+out what should stay on it, is `nacm:default-deny-all`, run only by a
+rule that permits it (`make check-nacm` holds every action and rpc of
+Arcana's modules to it, or to `share/arcana/nacm-allow` with why it
+only reads).  The console's nacm-sync puts its owners in the host's
+group admin, and its operators of the host in its group operator, with
+a rule-list that lets them what an operator may and the host marks
+(arcana-system's read).  A refusal comes back with its words, and the
+steps told while it ran, so a failed jail(8) run still comes back with
+its output.
 
 Reading configuration goes through jail(8) itself (`-e`), so variables,
 includes, `*` blocks and per-jail `jail.conf.d/<name>.conf` files mean

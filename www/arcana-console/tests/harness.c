@@ -310,9 +310,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	put("jails", buf);
 	/* The jail's /var/run is beneath its root here: what a program is
 	 * given there, it finds. */
+	/* A tar's -C / is the jail's root, as ./jails has it by its jid. */
 	snprintf(buf, sizeof(buf), "#!/bin/sh\necho \"jexec $*\" >> jexec.log\n"
-	    "shift\nn=0; for a; do case \"$a\" in /var/run/*) a=%s/jroot$a ;; "
-	    "esac; set -- \"$@\" \"$a\"; n=$((n+1)); done\nshift $n\n"
+	    "r=$(awk -v j=\"$1\" '$2 == j { print $4 }' jails)\n"
+	    "shift\nn=0; c=; for a; do case \"$a\" in /var/run/*) a=%s/jroot$a ;; "
+	    "/) [ \"$c\" = -C ] && a=$r ;; esac; c=$a; set -- \"$@\" \"$a\"; "
+	    "n=$((n+1)); done\nshift $n\n"
 	    "exec \"$@\"\n", cwd);
 	put("fake-jexec", buf);
 	put("fake-helper", "#!/bin/sh\necho \"$*\" >> helper.log\n"
@@ -759,8 +762,9 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "unbound.log\nexit 0\n");
 	ATF_REQUIRE(chmod("fake-local-unbound-checkconf", 0755) == 0);
 	ATF_REQUIRE(chmod("fake-rtsol", 0755) == 0);
+	/* The keys on its standard input (setkey -c), in no file. */
 	put("fake-setkey", "#!/bin/sh\necho \"setkey $*\" >> setkey.log\n[ \"$1\" "
-	    "= -f ] && cat \"$2\" >> setkey.conf\nexit 0\n");
+	    "= -c ] && cat >> setkey.conf\nexit 0\n");
 	ATF_REQUIRE(chmod("fake-setkey", 0755) == 0);
 	/*
 	 * bird(8)'s check of a configuration (-p): where the host has

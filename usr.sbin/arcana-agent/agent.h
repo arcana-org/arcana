@@ -20,7 +20,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.278.0"
+#define	ARCANA_AGENT_VERSION	"0.279.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -317,6 +317,8 @@ void		 pid_stop(pid_t, const char *, int);
 void		 exec_set_home(struct work *, const char *);
 void		 exec_set_env(struct work *, const char *, const char *);
 void		 exec_set_stdin(const char *, size_t);
+void		 exec_set_fds(int, int);
+const char	*tmp_dir(void);
 void		 exec_set_secret(bool);
 void		 exec_set_hide(const char *);
 void		 exec_set_watch(int);
@@ -1182,6 +1184,7 @@ int		 do_ipfw_rules(struct work *, const struct ipfw_rules_req *,
  * differs from the kernel's set 0, the commit and its undo.
  */
 const char	*ipfw_boot_script(struct work *);
+char		*ipfw_script_text(const char *);
 bool		 ipfw_on_script(struct work *);
 int		 ipfw_migration(struct work *, const char **, const char **,
 		    const char **);
@@ -1224,6 +1227,15 @@ int		 transport_watch(cbl_ctx *);
 void		 transport_add(const char *, cbl_listener *);
 void		 transport_init(cbl_ctx *, cbl_loop *, cbl_tls *);
 /* superbia/admit.c: only the console asks */
+enum peer_kind {
+	PEER_NONE,		/* asks nothing */
+	PEER_ROOT,		/* the unix socket's root or the agent's user */
+	PEER_GROUP,		/* the unix socket's group (-g): the console */
+	PEER_LOCAL,		/* another local account */
+	PEER_CONSOLE,		/* TLS, urn:arcana:role:console */
+	PEER_HOST,		/* TLS, urn:arcana:role:agent */
+};
+enum peer_kind	 peer_kind(const cbl_peer *, uid_t *);
 bool		 peer_is_host(const cbl_peer *);
 int		 admit_init(cbl_ctx *);
 /*
@@ -1320,6 +1332,12 @@ int		 scope_open_dir(struct work *, const char *, const char **);
 char		*scope_slurp(struct work *, const char *, size_t *);
 int		 scope_replace(struct work *, const char *, const char *,
 		    size_t, mode_t, const char *);
+int		 file_replace(const char *, const char *, size_t, mode_t);
+/* invidia/ynetconf.c: an undo that failed, logged and told */
+void		 undo_report(const char *, int, const char *);
+int		 scope_open(struct work *, const char *, int, mode_t);
+int		 scope_open_read(struct work *, const char *);
+int		 scope_mkdirs(struct work *, const char *);
 int		 scope_unlink(struct work *, const char *);
 int		 scope_rename(struct work *, const char *, const char *,
 		    const char *);

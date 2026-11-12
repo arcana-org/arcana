@@ -17,7 +17,9 @@
  * see the old rules or the new ones and never half of either.  In safe
  * mode the old rules wait in set 1, disabled, and are swapped back
  * unless the change is confirmed: a ruleset that cuts the console off
- * takes itself back.
+ * takes itself back.  Set 1 is Arcana's staging set: Apply refuses to
+ * empty it while it holds a rule, or an object its ledger (the kept
+ * file's .set1) does not name, unless warning ipfw-set1 is accepted.
  *
  * Aliases: a name for what rules say again and again, written $name in
  * a rule.  An address list is an ipfw table of its name, the rule
@@ -46,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <ucl.h>
 #include <unistd.h>
 
@@ -2832,33 +2835,25 @@ struct kept_obj {
 	const char	*why;
 };
 
+#define	SET1_OBJS	256	/* of set 1's objects, looked at */
+#define	SET1_ACCEPT	"ipfw-set1"	/* what Apply's flush asks accepted */
+
 /*
- * Set 1's named objects destroyed, one by one by name.  A swap moves
- * them with their set as it moves the rules, so the objects of the old
- * rules stay in set 1 once those are deleted, and a load that makes
- * one of the same name there again fails.  One the kernel refuses (a
- * rule uses it still: EBUSY) stays; up to max of those are put in kept
- * with why, and how many returned.  A step says what went and stayed.
+ * Set 1's named objects, "<kind> <name>" each in v, max at most; how
+ * many: by ipfw set 1 <kind> all list (a table's info), read in a dry
+ * run too when reads.
  */
 static size_t
-set1_clean(struct work *w, struct kept_obj *kept, size_t max)
+set1_objects(struct work *w, const char **v, size_t max, bool reads)
 {
 	struct execres	 res;
-	struct ms	 gone, stay;
-	char		*argv[7], *text, *p, *line, *name, *g, *s;
-	const char	*kind, *e;
-	size_t		 k, kl, n, ngone;
-	int		 step;
+	char		*argv[7], *text, *p, *line, *name;
+	const char	*kind;
+	size_t		 k, kl, n;
 	bool		 fake;
 
 	fake = strcmp(opts.ipfw_bin, "/sbin/ipfw") != 0;
-	if (!ms_open(&gone))
-		return (0);
-	if (!ms_open(&stay)) {
-		(void)ms_close(w, &gone, NULL);
-		return (0);
-	}
-	n = ngone = 0;
+	n = 0;
 	for (k = 0; k < nitems(set_objs); k++) {
 		kind = set_objs[k].kind;
 		kl = strlen(kind);
@@ -2873,11 +2868,12 @@ set1_clean(struct work *w, struct kept_obj *kept, size_t max)
 		argv[5] = (char *)(uintptr_t)(strcmp(kind, "table") == 0 ?
 		    "info" : "list");
 		argv[6] = NULL;
-		if (run_exec(w, scope_argv(w, argv), &res) != 0 ||
+		if ((reads ? run_read(w, scope_argv(w, argv), &res) :
+		    run_exec(w, scope_argv(w, argv), &res)) != 0 ||
 		    res.out == NULL)
 			continue;
 		text = wstrndup(w, res.out, res.outlen);
-		for (p = text; (line = strsep(&p, "\n")) != NULL; ) {
+		for (p = text; (line = strsep(&p, "\n")) != NULL && n < max; ) {
 			/* "--- table(T), set(1) ---"; "set 1 nat64lsn N". */
 			if (strncmp(line, "--- table(", 10) == 0 && strcmp(kind,
 			    "table") == 0) {
@@ -2890,24 +2886,156 @@ set1_clean(struct work *w, struct kept_obj *kept, size_t max)
 				name[strcspn(name, " ")] = '\0';
 			} else
 				continue;
-			if (!word_ok(name))
-				continue;
-			e = NULL;
-			if (ipfw(w, &e, true, "set", "1", kind, name, "destroy",
-			    NULL) == 0) {
-				fprintf(gone.fp, "%s%s %s", ngone++ > 0 ? ", " :
-				    "", kind, name);
-				continue;
-			}
-			fprintf(stay.fp, "%s%s %s", n > 0 ? ", " : "", kind,
-			    name);
-			if (n < max) {
-				kept[n].what = wfmt(w, "%s %s", kind, name);
-				kept[n].why = e != NULL ? e : "ipfw refused it";
-			}
-			n++;
+			if (word_ok(name))
+				v[n++] = wfmt(w, "%s %s", kind, name);
 		}
 	}
+	return (n);
+}
+
+/*
+ * The ledger of what Arcana left in set 1: the objects set1_clean()
+ * could not destroy, "<kind> <name>" a line, beside the kept rules; so
+ * that Apply knows them from the admin's.  Written whole each time.
+ */
+static const char *
+ledger_path(struct work *w)
+{
+
+	return (wfmt(w, "%s.set1", opts.ipfw_rules));
+}
+
+static void
+ledger_write(struct work *w, const char *text)
+{
+
+	if (text[0] == '\0') {
+		if (scope_unlink(w, ledger_path(w)) == -1 && errno != ENOENT)
+			logmsg(LOG_WARNING, "%s: %s", ledger_path(w),
+			    strerror(errno));
+		return;
+	}
+	if (scope_replace(w, ledger_path(w), text, strlen(text), 0600,
+	    NULL) == -1)
+		logmsg(LOG_WARNING, "%s: %s", ledger_path(w), strerror(errno));
+}
+
+/* Is "<kind> <name>" one Arcana left in set 1, by the ledger? */
+static bool
+ledger_has(const char *ledger, const char *what)
+{
+	const char	*p;
+	size_t		 n;
+
+	n = strlen(what);
+	for (p = ledger; p != NULL && (p = strstr(p, what)) != NULL; p += n)
+		if ((p == ledger || p[-1] == '\n') && p[n] == '\n')
+			return (true);
+	return (false);
+}
+
+/*
+ * Set 1 is Arcana's staging set: Apply loads the kept rules there and
+ * swaps it with set 0, and empties it before and after; at rest it
+ * holds nothing of Arcana's but the objects of its ledger.  A rule
+ * there, or another object, is the admin's, and would be lost to the
+ * flush: refused, named, unless the warning ipfw-set1 is accepted.
+ * NULL when there is nothing of another's, or it is accepted.
+ */
+static const char *
+set1_others(struct work *w, const struct arc_job_spec *sp)
+{
+	struct execres	 res;
+	const char	*objs[SET1_OBJS], *ledger, *rules, *others;
+	char		*argv[5], *text, *p, *line;
+	size_t		 n, i, nr, no;
+
+	for (i = 0; sp != NULL && i < sp->accept.n; i++)
+		if (sp->accept.v[i] != NULL && strcmp(sp->accept.v[i],
+		    SET1_ACCEPT) == 0)
+			return (NULL);
+	rules = others = "";
+	nr = no = 0;
+	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
+	argv[1] = (char *)(uintptr_t)"set";
+	argv[2] = (char *)(uintptr_t)"1";
+	argv[3] = (char *)(uintptr_t)"list";
+	argv[4] = NULL;
+	if (run_read(w, scope_argv(w, argv), &res) == 0 && res.out != NULL) {
+		text = wstrndup(w, res.out, res.outlen);
+		for (p = text; (line = strsep(&p, "\n")) != NULL; ) {
+			if (!isdigit((unsigned char)line[0]) || nr++ >= 8)
+				continue;
+			rules = wfmt(w, "%s%s%.*s", rules, nr > 1 ? ", " : "",
+			    (int)strcspn(line, " "), line);
+		}
+	}
+	if ((ledger = scope_slurp(w, ledger_path(w), NULL)) == NULL)
+		ledger = "";
+	n = set1_objects(w, objs, nitems(objs), true);
+	for (i = 0; i < n; i++)
+		if (!ledger_has(ledger, objs[i]) && no++ < 8)
+			others = wfmt(w, "%s%s%s", others, no > 1 ? ", " : "",
+			    objs[i]);
+	if (nr == 0 && no == 0)
+		return (NULL);
+	return (wfmt(w, "set 1 is Arcana's staging set, which Apply empties, "
+	    "and it holds what Arcana did not put there: %s%s%s%s%s%s%s. "
+	    "Nothing was changed. Move them to another set (ipfw set move 1 "
+	    "to N, ipfw set 1 table T swap ...), or accept %s to have Apply "
+	    "delete them", nr > 0 ? wfmt(w, "%zu rule%s (", nr, nr > 1 ? "s" :
+	    "") : "", rules, nr > 8 ? ", ..." : "", nr > 0 ? ")" : "", nr > 0 &&
+	    no > 0 ? "; " : "", others, no > 8 ? ", ..." : "", SET1_ACCEPT));
+}
+
+/*
+ * Set 1's named objects destroyed, one by one by name.  A swap moves
+ * them with their set as it moves the rules, so the objects of the old
+ * rules stay in set 1 once those are deleted, and a load that makes
+ * one of the same name there again fails.  One the kernel refuses (a
+ * rule uses it still: EBUSY) stays, in the ledger; up to max of those
+ * are put in kept with why, and how many returned.  A step says what
+ * went and stayed.
+ */
+static size_t
+set1_clean(struct work *w, struct kept_obj *kept, size_t max)
+{
+	struct ms	 gone, stay;
+	const char	*objs[SET1_OBJS], *e, *ledger;
+	char		*g, *s, *kind, *name;
+	size_t		 i, nobj, n, ngone;
+	int		 step;
+
+	if (!ms_open(&gone))
+		return (0);
+	if (!ms_open(&stay)) {
+		(void)ms_close(w, &gone, NULL);
+		return (0);
+	}
+	n = ngone = 0;
+	ledger = "";
+	nobj = set1_objects(w, objs, nitems(objs), false);
+	for (i = 0; i < nobj; i++) {
+		kind = wstrdup(w, objs[i]);
+		name = strchr(kind, ' ');
+		*name++ = '\0';
+		e = NULL;
+		if (ipfw(w, &e, true, "set", "1", kind, name, "destroy",
+		    NULL) == 0) {
+			fprintf(gone.fp, "%s%s", ngone++ > 0 ? ", " : "",
+			    objs[i]);
+			continue;
+		}
+		fprintf(stay.fp, "%s%s", n > 0 ? ", " : "", objs[i]);
+		ledger = wfmt(w, "%s%s\n", ledger, objs[i]);
+		if (n < max) {
+			kept[n].what = objs[i];
+			kept[n].why = e != NULL ? e : "ipfw refused it";
+		}
+		n++;
+	}
+	if (!w->dry)
+		ledger_write(w, ledger);
 	g = ms_close(w, &gone, NULL);
 	s = ms_close(w, &stay, NULL);
 	if (ngone > 0 || n > 0) {
@@ -2942,10 +3070,12 @@ load_makes(struct work *w, const char *load, const char *what)
  * in set 0's place.  With hold the rules that were there stay in set
  * 1 until ipfw_settle() says which of the two it is to be.  What Apply
  * needs of the kernel's sysctls is asked first, and nothing is done
- * without it; set 1's objects are destroyed before and after.
+ * without it; nor while set 1 holds the admin's (set1_others()); set
+ * 1's objects are destroyed before and after.
  */
 static int
-apply(struct work *w, bool hold, const char **errp)
+apply(struct work *w, const struct arc_job_spec *sp, bool hold,
+    const char **errp)
 {
 	struct execres	 res;
 	struct ms	 m;
@@ -2993,7 +3123,10 @@ apply(struct work *w, bool hold, const char **errp)
 		    "the firewall with its last rule alone";
 		return (-1);
 	}
-	/* Set 1 is emptied and filled while nothing looks at it. */
+	/* Set 1 is emptied and filled while nothing looks at it: once it
+	 * is known to hold nothing of the admin's, or that is accepted. */
+	if ((*errp = set1_others(w, sp)) != NULL)
+		return (-1);
 	if (ipfw(w, errp, true, "set", "disable", "1", NULL) != 0)
 		return (-1);
 	(void)ipfw(w, NULL, true, "-f", "set", "1", "flush", NULL);
@@ -3659,7 +3792,7 @@ do_ipfw_job(struct work *w, const struct arc_job_spec *sp, bool *heldp,
 	if (strcmp(verb, "renumber") == 0)
 		return (renumber(w, sp, errp));
 	if (strcmp(verb, "apply") == 0) {
-		if (apply(w, sp->safe, errp) != 0)
+		if (apply(w, sp, sp->safe, errp) != 0)
 			return (-1);
 		*heldp = sp->safe;
 		return (0);
@@ -3905,7 +4038,7 @@ do_fw_trace(struct work *w, const char *address, uint32_t seconds,
 		return (0);
 	}
 	/* A script with its declarations is read from a file (-s). */
-	snprintf(path, sizeof(path), "/tmp/arcana-fw-trace.XXXXXX");
+	snprintf(path, sizeof(path), "%s/arcana-fw-trace.XXXXXX", tmp_dir());
 	if ((sfd = mkstemp(path)) == -1 || write(sfd, script, len) !=
 	    (ssize_t)len) {
 		if (sfd != -1) {
@@ -4362,12 +4495,15 @@ ipfw_kept_commit(struct work *w, cbl_req *req, const char *text,
 	}
 	if (migrate) {
 		const char	*sh;
+		char		*s;
 
-		sh = wfmt(w, "#!/bin/sh\n# Written by arcana-agent: rc.d/ipfw "
-		    "runs it at boot (firewall_script) to load\n# the kept "
-		    "rules.  The host's own firewall script is left as it "
-		    "was.\n%s -q -f flush\n%s -q %s\n", opts.ipfw_bin,
-		    opts.ipfw_bin, opts.ipfw_rules);
+		/* The one text of it (cfgfiles.c). */
+		if ((s = ipfw_script_text(opts.ipfw_rules)) == NULL) {
+			*errp = "out of memory";
+			rca_close(&rc);
+			return (-1);
+		}
+		sh = wadopt(w, s);
 		if ((fd = open(script, O_WRONLY | O_CREAT | O_TRUNC |
 		    O_CLOEXEC | O_NOFOLLOW, 0700)) == -1 || write(fd, sh,
 		    strlen(sh)) != (ssize_t)strlen(sh) || fchmod(fd, 0700) ==

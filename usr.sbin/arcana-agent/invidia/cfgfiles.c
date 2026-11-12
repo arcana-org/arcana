@@ -885,8 +885,12 @@ script_of(const char *rules, char *buf, size_t len)
 		(void)snprintf(buf, len, "%s.sh", rules);
 }
 
-static char *
-script_text(const char *rules)
+/*
+ * Arcana's boot script of a kept rules file, malloc'd: the one text of
+ * it, which a migration (ipfw.c) and a move here both write.
+ */
+char *
+ipfw_script_text(const char *rules)
 {
 	char	*s;
 
@@ -985,7 +989,7 @@ fw_do(const struct fwmove *m, char *err, size_t errlen)
 	error = put_file(m->to, a, la, 0600);
 	free(a);
 	if (error == 0 && m->has_sh) {
-		if ((s = script_text(cf_unrooted(m->to))) == NULL)
+		if ((s = ipfw_script_text(cf_unrooted(m->to))) == NULL)
 			return (ENOMEM);
 		error = put_file(m->tosh, s, strlen(s), 0700);
 		free(s);

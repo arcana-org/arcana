@@ -1374,33 +1374,85 @@ named_in(const char *s, char *const *v, size_t n)
 }
 
 /*
+ * The rule-list operator of a host's access rules, made once with its
+ * group: what the console gives an operator on the host
+ * (restconf_act_role()) and the host keeps nacm:default-deny-all,
+ * permitted: arcana-system's read of the system's files, which the
+ * agent marks since it gives out keys (ipsec.conf, dma's credentials).
+ * What changes the host stays the admin group's, as it was.
+ */
+#define	OP_GROUP	"operator"
+
+static const uint8_t	op_exec[] = {
+	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_EXEC
+};
+
+static struct ietf_netconf_acm_nacm_rule_list *
+op_list(cbl_yarena *a)
+{
+	struct ietf_netconf_acm_nacm_rule_list_group	*lg;
+	struct ietf_netconf_acm_nacm_rule_list_rule	*r;
+	struct ietf_netconf_acm_nacm_rule_list		*l;
+
+	if ((l = cbl_yarena_alloc(a, sizeof(*l))) == NULL ||
+	    (lg = cbl_yarena_alloc(a, sizeof(*lg))) == NULL ||
+	    (r = cbl_yarena_alloc(a, sizeof(*r))) == NULL)
+		return (NULL);
+	lg->which = 1;
+	lg->v.m1 = OP_GROUP;
+	r->name = "system-read";
+	r->has_module_name = true;
+	r->module_name.which = 1;
+	r->module_name.v.m1 = "arcana-system";
+	r->rule_type = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+	r->path = "/arcana-system:system/read";
+	r->has_access_operations = true;
+	r->access_operations.which = 1;
+	r->access_operations.v.m1.p = op_exec;
+	r->access_operations.v.m1.len = sizeof(op_exec);
+	r->has_action = true;
+	r->action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
+	r->comment = "The console's operators read the system's files.";
+	l->name = OP_GROUP;
+	l->group.n = 1;
+	l->group.v = lg;
+	l->rule.n = 1;
+	l->rule.v = r;
+	return (l);
+}
+
+/*
  * The console's roles on a host's access rules (ietf-netconf-acm's
  * nacm, what the host holds now, its default or rules written): in its
- * group admin the console's owners, and none of its other users; names
- * the console does not know, admin and console stay.  Nothing else of
- * the rules is touched, and rules with no group admin are left as they
- * are.  *out: {"result": "changed", "unchanged" or "no-admin-group",
- * "admin": [the group's names]}.
+ * group admin the console's owners, and none of its other users; in its
+ * group operator the users whose role on the host is an operator's or
+ * an admin's, owners aside (ops), with the rule-list operator (op_list())
+ * made beside it once; names the console does not know, admin and
+ * console stay.  Nothing else of the rules is touched, and rules with
+ * no group admin are left as they are.  *out: {"result": "changed",
+ * "unchanged" or "no-admin-group", "admin": [the group's names],
+ * "operator": [its names]}.
  */
 int
 ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
-    char *const *users, size_t nusers, ucl_object_t **out, char *err,
-    size_t errlen)
+    char *const *users, size_t nusers, char *const *ops, size_t nops,
+    ucl_object_t **out, char *err, size_t errlen)
 {
 	const struct cbl_ymodule			*m;
 	const struct cbl_ynode				*n;
-	const struct ietf_netconf_acm_nacm_groups_group	*g;
+	const struct ietf_netconf_acm_nacm_groups_group	*g, *og;
 	struct ietf_netconf_acm_nacm_groups_group	*ng;
 	struct ietf_netconf_acm_nacm_groups		*ngs;
+	struct ietf_netconf_acm_nacm_rule_list		*nl, *ol;
 	struct ietf_netconf_acm_nacm			*nn;
 	struct ietf_netconf_acm				 d;
-	const char					**v;
-	ucl_object_t					*names;
+	const char					**v, **ov;
+	ucl_object_t					*names, *onames;
 	cbl_yarena					*a;
 	const char					*result;
 	char						 tag[64];
-	size_t						 i, k, nv;
-	bool						 changed;
+	size_t						 i, k, nv, nov, ngroups;
+	bool						 changed, has_list;
 	int						 error;
 
 	*out = NULL;
@@ -1421,19 +1473,24 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 		error = ENOENT;
 		goto done;
 	}
-	g = NULL;
+	g = og = NULL;
 	for (i = 0; d.nacm->groups != NULL && i < d.nacm->groups->group.n; i++)
 		if (strcmp(d.nacm->groups->group.v[i].name, "admin") == 0)
 			g = &d.nacm->groups->group.v[i];
+		else if (strcmp(d.nacm->groups->group.v[i].name, OP_GROUP) == 0)
+			og = &d.nacm->groups->group.v[i];
 	names = ucl_object_typed_new(UCL_ARRAY);
+	onames = ucl_object_typed_new(UCL_ARRAY);
 	if (g == NULL) {
 		result = "no-admin-group";
 		goto reply;
 	}
 	/* Who stays, then the owners not there yet. */
 	if ((v = cbl_yarena_alloc(a, (g->user_name.n + nowners + 1) *
-	    sizeof(*v))) == NULL) {
+	    sizeof(*v))) == NULL || (ov = cbl_yarena_alloc(a, ((og != NULL ?
+	    og->user_name.n : 0) + nops + 1) * sizeof(*ov))) == NULL) {
 		ucl_object_unref(names);
+		ucl_object_unref(onames);
 		error = ENOMEM;
 		goto done;
 	}
@@ -1459,17 +1516,48 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	}
 	for (i = 0; i < nv; i++)
 		ucl_array_append(names, ucl_object_fromstring(v[i]));
+	/* The group operator the same way, with the host's operators. */
+	nov = 0;
+	for (i = 0; og != NULL && i < og->user_name.n; i++) {
+		const char	*u = og->user_name.v[i];
+
+		if (named_in(u, users, nusers) && !named_in(u, ops, nops)) {
+			changed = true;
+			continue;
+		}
+		ov[nov++] = u;
+	}
+	for (i = 0; i < nops; i++) {
+		for (k = 0; k < nov && strcmp(ov[k], ops[i]) != 0; k++)
+			;
+		if (k == nov) {
+			ov[nov++] = ops[i];
+			changed = true;
+		}
+	}
+	for (i = 0; i < nov; i++)
+		ucl_array_append(onames, ucl_object_fromstring(ov[i]));
+	has_list = false;
+	for (i = 0; i < d.nacm->rule_list.n; i++)
+		if (strcmp(d.nacm->rule_list.v[i].name, OP_GROUP) == 0)
+			has_list = true;
+	if (!has_list && (og != NULL || nov > 0))
+		changed = true;
 	if (!changed) {
 		result = "unchanged";
 		goto reply;
 	}
-	/* The rules as they are, but the group's names and the counters,
-	 * which are the host's to keep. */
+	/* The rules as they are, but the groups' names, the rule-list
+	 * operator when it is not there, and the counters, which are the
+	 * host's to keep. */
+	ngroups = d.nacm->groups->group.n + (og == NULL && nov > 0 ? 1 : 0);
 	if ((nn = cbl_yarena_alloc(a, sizeof(*nn))) == NULL ||
 	    (ngs = cbl_yarena_alloc(a, sizeof(*ngs))) == NULL ||
-	    (ng = cbl_yarena_alloc(a, d.nacm->groups->group.n *
-	    sizeof(*ng))) == NULL) {
+	    (ng = cbl_yarena_alloc(a, ngroups * sizeof(*ng))) == NULL ||
+	    (nl = cbl_yarena_alloc(a, (d.nacm->rule_list.n + 1) *
+	    sizeof(*nl))) == NULL || (ol = op_list(a)) == NULL) {
 		ucl_object_unref(names);
+		ucl_object_unref(onames);
 		error = ENOMEM;
 		goto done;
 	}
@@ -1481,15 +1569,32 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 		if (&d.nacm->groups->group.v[i] == g) {
 			ng[i].user_name.n = nv;
 			ng[i].user_name.v = v;
+		} else if (&d.nacm->groups->group.v[i] == og) {
+			ng[i].user_name.n = nov;
+			ng[i].user_name.v = ov;
 		}
 	}
+	if (og == NULL && nov > 0) {
+		memset(&ng[i], 0, sizeof(ng[i]));
+		ng[i].name = OP_GROUP;
+		ng[i].user_name.n = nov;
+		ng[i].user_name.v = ov;
+	}
 	*ngs = *d.nacm->groups;
+	ngs->group.n = ngroups;
 	ngs->group.v = ng;
 	nn->groups = ngs;
+	for (i = 0; i < d.nacm->rule_list.n; i++)
+		nl[i] = d.nacm->rule_list.v[i];
+	if (!has_list && (og != NULL || nov > 0))
+		nl[i++] = *ol;
+	nn->rule_list.n = i;
+	nn->rule_list.v = nl;
 	d.nacm = nn;
 	if ((error = ycommit(conn, n, &d, NULL, 0, err, errlen, tag,
 	    sizeof(tag))) != 0) {
 		ucl_object_unref(names);
+		ucl_object_unref(onames);
 		goto done;
 	}
 	result = "changed";
@@ -1497,6 +1602,7 @@ reply:
 	*out = ucl_object_typed_new(UCL_OBJECT);
 	put(*out, "result", ucl_object_fromstring(result));
 	put(*out, "admin", names);
+	put(*out, "operator", onames);
 done:
 	cbl_yarena_free(a);
 	return (error);

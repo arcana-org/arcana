@@ -1130,6 +1130,12 @@ submodule arcana-jobs-kinds {
             description
               "The file";
           }
+          leaf-list accept {
+            type string;
+            ordered-by user;
+            description
+              "Warnings accepted";
+          }
         }
       }
       case bridge {

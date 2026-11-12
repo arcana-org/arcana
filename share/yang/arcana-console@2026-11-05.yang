@@ -2642,7 +2642,9 @@ module arcana-console {
       action nacm-sync {
         description
           "The console's owners made the host's NACM group admin, its
-           other users taken out of it; by an owner of the console.";
+           other users taken out of it; those whose role on the host is
+           an operator's its group operator, with the rule-list
+           operator made once beside it; by an owner of the console.";
         output {
           anydata result {
             description

@@ -532,30 +532,145 @@ scope_slurp(struct work *w, const char *path, size_t *lenp)
 }
 
 /*
- * Put text in a file's place, there or in w's jail: written beside it
- * and moved over it, so that it is whole or as it was.  With keep, the
- * file as it was stays beside it under that name.
+ * A file of the host or of w's jail opened, created with mode where it
+ * is not, beneath the jail's root and never through a link: for a host
+ * program to write to (tar's -f -), which is given no path there.
+ * flags are open(2)'s; -1 with errno for none.
  */
 int
-scope_replace(struct work *w, const char *path, const char *text, size_t len,
-    mode_t mode, const char *keep)
+scope_open(struct work *w, const char *path, int flags, mode_t mode)
 {
 	const char	*base;
-	char		 tmp[NAME_MAX + 1];
 	int		 dfd, fd, e;
 
 	if ((dfd = scope_open_dir(w, path, &base)) == -1)
 		return (-1);
+	fd = openat(dfd, base, flags | O_NOFOLLOW | O_CLOEXEC, mode);
+	e = errno;
+	close(dfd);
+	errno = e;
+	return (fd);
+}
+
+/*
+ * A file of the host or of w's jail opened to read, through the links
+ * on its way as the jail sees them (/var/audit/current is one, to
+ * /var/audit/<its trail>): an absolute one from the jail's root, none
+ * out of it.  -1 with errno for none.
+ */
+int
+scope_open_read(struct work *w, const char *path)
+{
+	const char	*base;
+	char		 link[PATH_MAX], *dir;
+	ssize_t		 n;
+	int		 dfd, fd, e, hops;
+
+	if (w->jail == NULL)
+		return (open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC));
+	for (hops = 0; hops < 8; hops++) {
+		if ((dfd = scope_open_dir(w, path, &base)) == -1)
+			return (-1);
+		fd = openat(dfd, base, O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+		    O_CLOEXEC | O_RESOLVE_BENEATH);
+		if (fd != -1 || (errno != EMLINK && errno != ELOOP)) {
+			e = errno;
+			close(dfd);
+			errno = e;
+			return (fd);
+		}
+		n = readlinkat(dfd, base, link, sizeof(link) - 1);
+		e = errno;
+		close(dfd);
+		if (n <= 0) {
+			errno = n == 0 ? ENOENT : e;
+			return (-1);
+		}
+		link[n] = '\0';
+		/* Relative: from the link's own directory. */
+		if (link[0] != '/') {
+			dir = wstrndup(w, path, (size_t)(base - path));
+			path = wfmt(w, "%s%s", dir, link);
+		} else
+			path = wstrdup(w, link);
+	}
+	errno = ELOOP;
+	return (-1);
+}
+
+/*
+ * dir and the directories above it made, as mkdir -p makes them, of the
+ * host or beneath w's jail's root: a link on the way is not followed,
+ * so no directory is made out of the jail.  0, or -1 with errno.
+ */
+int
+scope_mkdirs(struct work *w, const char *dir)
+{
+	char	*p, *c, *next;
+	int	 fd, nfd, e;
+
+	if ((fd = scope_dirfd(w, "/")) == -1)
+		return (-1);
+	p = wstrdup(w, dir);
+	for (c = p + strspn(p, "/"); *c != '\0'; c = next) {
+		next = c + strcspn(c, "/");
+		if (*next == '/')
+			*next++ = '\0';
+		if (mkdirat(fd, c, 0755) == -1 && errno != EEXIST)
+			break;
+		nfd = openat(fd, c, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+		    O_CLOEXEC | O_RESOLVE_BENEATH);
+		e = errno;
+		close(fd);
+		errno = e;
+		if ((fd = nfd) == -1)
+			return (-1);
+		next += strspn(next, "/");
+	}
+	e = errno;
+	close(fd);
+	errno = e;
+	return (*c != '\0' ? -1 : 0);
+}
+
+/*
+ * text in base's place in the directory dfd: written beside it, synced,
+ * moved over it and the directory synced, so that it is whole or as it
+ * was, after a crash too.  A file there keeps its owner, and its mode
+ * when mode is 0 (a new one is 0600 then); with keep, the file as it
+ * was stays beside it under that name.  0, or -1 with errno.
+ */
+static int
+replace_at(int dfd, const char *base, const char *text, size_t len,
+    mode_t mode, const char *keep)
+{
+	struct stat	 sb;
+	char		 tmp[NAME_MAX + 1];
+	size_t		 off;
+	ssize_t		 n;
+	int		 fd, e;
+	bool		 there;
+
+	there = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW) == 0 &&
+	    S_ISREG(sb.st_mode);
+	if (mode == 0)
+		mode = there ? sb.st_mode & 07777 : 0600;
 	snprintf(tmp, sizeof(tmp), ".%.200s.%08x", base, arc4random());
 	if ((fd = openat(dfd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
-	    O_CLOEXEC, mode)) == -1)
-		goto fail;
-	if (write(fd, text, len) != (ssize_t)len || fsync(fd) == -1) {
-		e = errno;
+	    O_CLOEXEC, 0600)) == -1)
+		return (-1);
+	errno = 0;
+	for (off = 0; off < len; off += (size_t)n)
+		if ((n = write(fd, text + off, len - off)) <= 0)
+			break;
+	/* Another's file stays another's: only root may give it away. */
+	if (off < len || (there && fchown(fd, sb.st_uid, sb.st_gid) == -1 &&
+	    errno != EPERM) || fchmod(fd, mode) == -1 || fsync(fd) == -1) {
+		e = off < len && errno == 0 ? EIO : errno;
 		close(fd);
 		(void)unlinkat(dfd, tmp, 0);
 		errno = e;
-		goto fail;
+		return (-1);
 	}
 	close(fd);
 	if (keep != NULL) {
@@ -564,22 +679,66 @@ scope_replace(struct work *w, const char *path, const char *text, size_t len,
 			e = errno;
 			(void)unlinkat(dfd, tmp, 0);
 			errno = e;
-			goto fail;
+			return (-1);
 		}
 	}
 	if (renameat(dfd, tmp, dfd, base) == -1) {
 		e = errno;
 		(void)unlinkat(dfd, tmp, 0);
 		errno = e;
-		goto fail;
+		return (-1);
 	}
-	close(dfd);
+	(void)fsync(dfd);
 	return (0);
-fail:
+}
+
+/*
+ * Put text in a file's place, there or in w's jail, as replace_at()
+ * does: whole or as it was, its owner kept, mode its mode (0: the one it
+ * has).  With keep, the file as it was stays beside it under that name.
+ */
+int
+scope_replace(struct work *w, const char *path, const char *text, size_t len,
+    mode_t mode, const char *keep)
+{
+	const char	*base;
+	int		 dfd, rc, e;
+
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (-1);
+	rc = replace_at(dfd, base, text, len, mode, keep);
 	e = errno;
 	close(dfd);
 	errno = e;
-	return (-1);
+	return (rc);
+}
+
+/*
+ * The same for a file of the host's alone, by a caller with no work
+ * (rcarcana.c's undo, the commits' files put back, the SAs' state).
+ */
+int
+file_replace(const char *path, const char *text, size_t len, mode_t mode)
+{
+	const char	*slash;
+	char		 dir[PATH_MAX];
+	int		 dfd, rc, e;
+
+	/* A bare name is the current directory's (a test's). */
+	if ((slash = strrchr(path, '/')) != NULL && slash[1] == '\0') {
+		errno = EINVAL;
+		return (-1);
+	}
+	(void)snprintf(dir, sizeof(dir), "%.*s", slash == NULL ? 1 : slash ==
+	    path ? 1 : (int)(slash - path), slash == NULL ? "." : path);
+	if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+		return (-1);
+	rc = replace_at(dfd, slash != NULL ? slash + 1 : path, text, len, mode,
+	    NULL);
+	e = errno;
+	close(dfd);
+	errno = e;
+	return (rc);
 }
 
 /* A file taken away, in the scope; 0, or -1 with errno. */

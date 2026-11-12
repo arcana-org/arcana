@@ -41,6 +41,7 @@
 #include <sys/stat.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,13 +65,20 @@ rooted(char *buf, size_t len, const char *path)
 	return (buf);
 }
 
-/* A file as it was, to put back. */
+/*
+ * A file as it was, to put back: its text and mode, or that it is not
+ * there (ENOENT alone).  Any other failure to read it whole fails the
+ * keep, and so the change: an undo must not take a file it could not
+ * read for one that was never there.
+ */
 static int
 keep(struct rca *x, const char *path)
 {
 	struct rca_was	*w;
 	struct stat	 sb;
-	FILE		*fp;
+	ssize_t		 n;
+	size_t		 off;
+	int		 fd, e;
 
 	for (size_t i = 0; i < x->nwas; i++)
 		if (strcmp(x->was[i].path, path) == 0)
@@ -80,15 +88,36 @@ keep(struct rca *x, const char *path)
 	x->was = w;
 	w = &x->was[x->nwas];
 	memset(w, 0, sizeof(*w));
-	if ((w->path = strdup(path)) == NULL)
-		return (ENOMEM);
-	if ((fp = fopen(path, "re")) != NULL) {
+	if ((fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)) == -1) {
+		if (errno != ENOENT)
+			return (errno);
+	} else {
+		e = 0;
+		if (fstat(fd, &sb) == -1)
+			e = errno;
+		else if (!S_ISREG(sb.st_mode))
+			e = EFTYPE;
+		else if (sb.st_size > 0 && (w->text = malloc((size_t)
+		    sb.st_size)) == NULL)
+			e = ENOMEM;
+		for (off = 0; e == 0 && off < (size_t)sb.st_size; off +=
+		    (size_t)n)
+			if ((n = read(fd, w->text + off, (size_t)sb.st_size -
+			    off)) <= 0)
+				e = n == 0 ? EIO : errno;
+		close(fd);
+		if (e != 0) {
+			free(w->text);
+			w->text = NULL;
+			return (e);
+		}
 		w->there = true;
-		if (fstat(fileno(fp), &sb) == 0 && sb.st_size > 0 &&
-		    (w->text = malloc((size_t)sb.st_size)) != NULL)
-			w->len = fread(w->text, 1, (size_t)sb.st_size, fp);
+		w->len = (size_t)sb.st_size;
 		w->mode = sb.st_mode & 07777;
-		fclose(fp);
+	}
+	if ((w->path = strdup(path)) == NULL) {
+		free(w->text);
+		return (ENOMEM);
 	}
 	x->nwas++;
 	return (0);
@@ -333,25 +362,40 @@ rca_close(struct rca *x)
 	memset(x, 0, sizeof(*x));
 }
 
-void
+/*
+ * Every file kept put back as it was, the last kept first: written
+ * whole beside it and moved over it (file_replace()), its mode as it
+ * was, or taken away when it was not there.  One that cannot be is
+ * logged and told (undo_report()), and the rest put back all the same;
+ * 0, or the first error.
+ */
+int
 rca_undo(struct rca *x)
 {
-	FILE	*fp;
+	char	why[256];
+	int	error, e;
 
+	error = 0;
 	for (size_t i = x->nwas; i-- > 0; ) {
 		struct rca_was *w = &x->was[i];
 
+		e = 0;
 		if (!w->there) {
-			(void)unlink(w->path);
+			if (unlink(w->path) == -1 && errno != ENOENT)
+				e = errno;
+		} else if (file_replace(w->path, w->text != NULL ? w->text :
+		    "", w->len, w->mode != 0 ? w->mode : 0644) == -1)
+			e = errno;
+		if (e == 0)
 			continue;
-		}
-		if ((fp = fopen(w->path, "we")) == NULL)
-			continue;
-		if (w->len > 0)
-			(void)fwrite(w->text, 1, w->len, fp);
-		(void)fchmod(fileno(fp), w->mode != 0 ? w->mode : 0644);
-		(void)fclose(fp);
+		(void)snprintf(why, sizeof(why), "%s: %s", w->there ? "not put "
+		    "back as it was" : "not taken away, as it was not there",
+		    strerror(e));
+		undo_report(w->path, e, why);
+		if (error == 0)
+			error = e;
 	}
+	return (error);
 }
 
 /* Whether list, rc_conf_files' words, names path. */

@@ -8,8 +8,8 @@
  * each's own command, gmirror(8), gstripe(8), geli(8)...), its first
  * word the class's subcommand, of that class's own, the rest its words,
  * flags and names alone, never through a shell.  A GELI passphrase is
- * the job's text, given to geli by a file of the job's own (-J, -j),
- * never on a command line.  gpart(8) has its own job.
+ * the job's text, given to geli on its standard input (-J -, -j -),
+ * never on a command line nor in a file.  gpart(8) has its own job.
  */
 
 #include <sys/param.h>
@@ -158,10 +158,10 @@ do_geom_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
 {
 	struct execres	 res;
-	const char	*bin, *pf, *passfile;
+	const char	*bin, *pf;
 	char		*argv[40];
 	size_t		 i;
-	int		 n, fd, step, rc;
+	int		 n, step, rc;
 
 	if ((*errp = geom_check(sp)) != NULL)
 		return (-1);
@@ -171,26 +171,17 @@ do_geom_job(struct work *w, const struct arc_job_spec *sp,
 		*errp = "the host has no geom(8)";
 		return (-1);
 	}
-	passfile = NULL;
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)bin;
 	argv[n++] = (char *)(uintptr_t)sp->verb;
 	argv[n++] = (char *)(uintptr_t)sp->names.v[0];
-	/* The passphrase by a file of its own, root's alone, gone after. */
+	/* The passphrase on geli's standard input (its file "-"), a pipe:
+	 * in no file, not even for a moment. */
 	if (sp->text != NULL && sp->text[0] != '\0' &&
 	    (pf = pass_flag(sp->names.v[0])) != NULL) {
-		passfile = wfmt(w, "%s/arcana-geli.%d", opts.root != NULL ?
-		    opts.root : "/tmp", (int)getpid());
-		if ((fd = open(passfile, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-		    0600)) == -1 || write(fd, sp->text, strlen(sp->text)) !=
-		    (ssize_t)strlen(sp->text) || close(fd) != 0) {
-			*errp = wfmt(w, "a file for the passphrase: %s",
-			    strerror(errno));
-			(void)unlink(passfile);
-			return (-1);
-		}
 		argv[n++] = (char *)(uintptr_t)pf;
-		argv[n++] = (char *)(uintptr_t)passfile;
+		argv[n++] = (char *)(uintptr_t)"-";
+		exec_set_stdin(sp->text, strlen(sp->text));
 	}
 	for (i = 1; i < sp->names.n; i++)
 		argv[n++] = (char *)(uintptr_t)sp->names.v[i];
@@ -198,9 +189,6 @@ do_geom_job(struct work *w, const struct arc_job_spec *sp,
 	step = step_begin(w, STEP_EXEC, "geom", "%s %s", sp->verb,
 	    sp->names.v[0]);
 	rc = run_exec(w, argv, &res);
-	if (passfile != NULL) {
-		(void)unlink(passfile);
-	}
 	if (rc != 0) {
 		*errp = wtext(w, exec_error(w, &res, wfmt(w, "geom %s %s",
 		    sp->verb, sp->names.v[0])));

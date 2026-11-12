@@ -652,6 +652,7 @@ module arcana-agent {
       }
     }
     action source-head {
+      nacm:default-deny-all;
       description
         "The commit at the head of a repository's branch, as git
          ls-remote tells it; nothing cloned.";
@@ -668,6 +669,7 @@ module arcana-agent {
       }
     }
     action source-log {
+      nacm:default-deny-all;
       description
         "What is new in a repository's branch: its latest commits,
          newest first, and its tags with their messages.";

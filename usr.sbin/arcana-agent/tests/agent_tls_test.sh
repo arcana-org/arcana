@@ -56,7 +56,7 @@ start_daemon()
 	# The agent's: a server's, and a client's to a receiver of its
 	# configured subscriptions, as the console signs a host's.
 	cert ca server "IP:127.0.0.1,DNS:localhost" "serverAuth,clientAuth"
-	cert ca client "DNS:console" clientAuth
+	cert ca client "DNS:console,URI:urn:arcana:role:console" clientAuth
 	cert rogue intruder "DNS:intruder" clientAuth
 	cert ca elsewhere "DNS:elsewhere.example" serverAuth
 	mkdir -p etc/jail.conf.d
@@ -142,6 +142,21 @@ mtls_body()
 	    "$JGC" -c "$URI" -A ca.pem -C otherhost.pem -K otherhost.key hello
 	atf_check -o match:"a host's certificate asked: refused" \
 	    cat daemon.out
+	# One of the same CA without the console's role, as a certificate
+	# from before the roles is: nobody, whatever user it says.
+	cert ca norole "DNS:console" clientAuth
+	atf_check -s exit:1 -e match:'not let in' -o ignore \
+	    "$JGC" -c "$URI" -A ca.pem -C norole.pem -K norole.key hello
+	atf_check -s exit:1 -e not-empty -o ignore \
+	    "$JGC" -c "$URI" -A ca.pem -C norole.pem -K norole.key -u admin \
+	    sysctl kern.hostname=x
+	atf_check -o match:"without the console's role .* asked: refused" \
+	    cat daemon.out
+	# Both roles said, the host's wins: it asks nothing.
+	cert ca both "URI:urn:arcana:role:agent,URI:urn:arcana:role:console" \
+	    "serverAuth,clientAuth"
+	atf_check -s exit:1 -e match:'not let in' -o ignore \
+	    "$JGC" -c "$URI" -A ca.pem -C both.pem -K both.key hello
 	# Nor of the standard models (cblink's YANG family).
 	atf_check -s exit:1 -e not-empty -o ignore \
 	    "$JGC" -c "$URI" -A ca.pem -C otherhost.pem -K otherhost.key get
@@ -322,7 +337,7 @@ renew_body()
 	atf_check -o inline:"$(sha new.pem)\n" cat served
 	# Another CA: not trusted alone while the console's is of the first.
 	ca ca2
-	cert ca2 client2 "DNS:console" clientAuth
+	cert ca2 client2 "DNS:console,URI:urn:arcana:role:console" clientAuth
 	atf_check -s exit:1 -e match:'would not be trusted any more' -o ignore \
 	    "$JGC" -c "$URI" $C1 tls install - ca2.pem
 	atf_check -o match:'Host:' "$JGC" -c "$URI" $C1 hello

@@ -221,6 +221,11 @@ check-wire: .PHONY
 	    cmp -s "$$t/$$m@${ARC_WIRE_REV}.sid" ${_wire_dir}/$$m@${ARC_WIRE_REV}.sid || \
 	    { echo "share/yang/$$m@${ARC_WIRE_REV}: not what share/arcana/$$s.yaml makes: make regen-wire" >&2; exit 1; }; \
 	done
+# NACM: every action and rpc of Arcana's modules is nacm:default-deny-all
+# or in share/arcana/nacm-allow with why it only reads.
+check-nacm: .PHONY
+	@awk -f ${.CURDIR}/share/arcana/nacm.awk \
+	    ${.CURDIR}/share/arcana/nacm-allow ${.CURDIR}/share/yang/arcana-*.yang
 # "all" as a dependency would not recurse: bsd.subdir.mk only descends
 # for targets named on the command line.
 check: .PHONY
@@ -228,7 +233,7 @@ check: .PHONY
 .if ${CBLINK_SUBMODULE} == "yes"
 	@${MAKE} -C ${.CURDIR}/www/arcana-ui check-yang
 .endif
-	@${MAKE} -C ${.CURDIR} check-wire kyuafile
+	@${MAKE} -C ${.CURDIR} check-wire check-nacm kyuafile
 	@db=${.OBJDIR}/check.db; rm -f "$$db"; set -o pipefail; \
 	cd ${.OBJDIR} && env ${_KYUA_ENV} kyua -v parallelism=${CHECK_PARALLEL} test \
 	    --results-file="$$db" -k Kyuafile 2>&1 | ${_KYUA_OUT} || \

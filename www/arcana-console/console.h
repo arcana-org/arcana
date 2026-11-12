@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.426.0"
+#define	ARCW_VERSION		"0.427.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -292,6 +292,7 @@ void		 users_ldap_sync(const char *, const char **, int);
 const char	*user_password_check(const char *);
 #define	USERS_SYNC_MAX	256		/* users_names(): at most */
 size_t		 users_names(char **, size_t, bool);
+size_t		 users_operators(char **, size_t, const char *);
 const char	*user_owner_add(const char *);
 void		 user_owner_undo(const char *);
 bool		 user_has_password(const char *);
@@ -348,6 +349,7 @@ const struct server *server_at(int);
 int		 servers_move(const char *, const char *);
 int		 servers_safe_wait(const char *);
 bool		 servers_reach(const char *, char **, char **);
+bool		 servers_id_of(const char *, char *, size_t);
 int		 servers_notif_token_new(const char *, char *, size_t);
 bool		 servers_notif_token_check(const char *, const char *);
 #define	SAFE_WAIT_MIN	10	/* s, a rollback timer at least */

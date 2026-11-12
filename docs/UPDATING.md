@@ -71,7 +71,8 @@ it is a quarter of that. Each host
    and never past 32 MiB (`max-program`),
 2. checks the program, inflated, against the SHA-256 sent with it, and
    against its signature by the console's CA key (over a network
-   connection; the local socket's root is root already),
+   connection, and from the socket's group, the console's user; root,
+   or the agent's own user, on the local socket is root already),
 3. writes it beside the installed one and runs it with `-V`: a program
    built for another machine or FreeBSD version does not run, and is
    dropped,
@@ -82,6 +83,31 @@ An agent with no features in arcana-host (0.236.0 and before) takes
 the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
+
+### The console's role, agent 0.279.0
+
+From agent 0.279.0 on, a peer over TLS is the console only when its
+certificate says `URI:urn:arcana:role:console` in its subjectAltName;
+one that says neither role, as a certificate from before the roles
+does (hosts' among them, valid 825 days), asks nothing and is refused.
+Update the console first, to 0.427.0 or later, then the agents:
+
+1. The console, at its start, reads its own client certificate. Where
+   it holds its CA's key (its own CA, or `tls.ca_key`), one without the
+   role is signed again for the same key, which stays where it is, the
+   one before kept beside it as `.before-roles`; the log says so. Each
+   node of a cluster has its own data directory and certificate, and
+   does the same for its own. Without the CA's key it logs what to do,
+   at each start: sign the certificate again by the CA with
+   `URI:urn:arcana:role:console` in its subjectAltName and `clientAuth`,
+   put it in place of `tls.cert` and restart the console.
+2. Then the agents, from the console (**Update N agents**): the console
+   reaches them with the new certificate, which the agents before took
+   as well.
+
+An agent updated first refuses a console whose certificate has not the
+role yet, until the console is updated (or its certificate signed
+again by hand) and restarted.
 
 ### The switch to YANG alone
 

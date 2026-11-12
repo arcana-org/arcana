@@ -154,6 +154,30 @@ users_names(char **v, size_t max, bool owners_only)
 	return (n);
 }
 
+/*
+ * The names of the users whose role on host sid is an operator's or an
+ * admin's and who are no owner of the console, in v, max of them,
+ * copies the caller frees; how many.  Their NACM group on the host
+ * (ytrans_nacm_sync()).
+ */
+size_t
+users_operators(char **v, size_t max, const char *sid)
+{
+	const ucl_object_t	*u;
+	ucl_object_iter_t	 it;
+	const char		*name;
+	size_t			 n;
+
+	n = 0;
+	it = NULL;
+	while (n < max && (u = ucl_object_iterate(list_of("users"), &it,
+	    true)) != NULL)
+		if ((name = ucl_str(u, "name")) != NULL && user_console(name) !=
+		    CROLE_OWNER && user_host(name, sid) >= ROLE_OPERATOR)
+			v[n++] = xstrdup(name);
+	return (n);
+}
+
 static enum crole
 crole_of(const char *s)
 {

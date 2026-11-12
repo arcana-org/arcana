@@ -233,6 +233,9 @@ struct call {
 	size_t			 nnames;
 	char			**others;	/* nacm-sync: every user */
 	size_t			 nothers;
+	char			**ops;		/* nacm-sync: the host's
+						 * operators, no owner */
+	size_t			 nops;
 	struct arc_job_spec	*specs;		/* job-submit: the batch */
 	size_t			 nspecs;
 	uint64_t		 jobid;		/* job, job-cancel */
@@ -1120,6 +1123,8 @@ struct nacm_pending {
 	size_t	 nowners;
 	char	*users[USERS_SYNC_MAX];
 	size_t	 nusers;
+	char	*ops[USERS_SYNC_MAX];
+	size_t	 nops;
 };
 
 static pthread_mutex_t		 pending_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1135,6 +1140,8 @@ pending_free(struct nacm_pending *p)
 		free(p->owners[i]);
 	for (i = 0; i < p->nusers; i++)
 		free(p->users[i]);
+	for (i = 0; i < p->nops; i++)
+		free(p->ops[i]);
 	free(p->uri);
 	free(p);
 }
@@ -1143,11 +1150,14 @@ void
 hosts_nacm_sync_later(const char *uri)
 {
 	struct nacm_pending	*p;
+	char			 sid[16];
 
 	p = xcalloc(1, sizeof(*p));
 	p->uri = xstrdup(uri);
 	p->nowners = users_names(p->owners, USERS_SYNC_MAX, true);
 	p->nusers = users_names(p->users, USERS_SYNC_MAX, false);
+	if (servers_id_of(uri, sid, sizeof(sid)))
+		p->nops = users_operators(p->ops, USERS_SYNC_MAX, sid);
 	pthread_mutex_lock(&pending_lock);
 	if (npending == PENDING_MAX)
 		pending_free(pending[--npending]);
@@ -1193,7 +1203,7 @@ pending_sync(const char *uri, cbl_conn *conn)
 	(void)cbl_thread_set_user(NULL);
 	out = NULL;
 	if (ytrans_nacm_sync(conn, p->owners, p->nowners, p->users, p->nusers,
-	    &out, err, sizeof(err)) == 0)
+	    p->ops, p->nops, &out, err, sizeof(err)) == 0)
 		log_msg(LOG_NOTICE, "%s: the console's roles synchronized to its "
 		    "access rules: %s", uri, ucl_str(out, "result") != NULL ?
 		    ucl_str(out, "result") : "?");
@@ -2913,7 +2923,7 @@ connected:
 		ysteps_begin(conn, c, &ys);
 		(void)cbl_thread_set_user(NULL);
 		ok = ytrans_nacm_sync(conn, c->names, c->nnames, c->others,
-		    c->nothers, &e, ywhy, sizeof(ywhy)) == 0;
+		    c->nothers, c->ops, c->nops, &e, ywhy, sizeof(ywhy)) == 0;
 		(void)cbl_thread_set_user(acting[0] != '\0' ? acting : NULL);
 		ysteps_end(conn, &ys, &steps, &nsteps);
 		if (!ok)
@@ -3647,6 +3657,11 @@ call_release(struct call *c)
 	free(c->others);
 	c->others = NULL;
 	c->nothers = 0;
+	for (i = 0; i < c->nops; i++)
+		free(c->ops[i]);
+	free(c->ops);
+	c->ops = NULL;
+	c->nops = 0;
 	for (i = 0; i < c->nspecs; i++)
 		spec_free(&c->specs[i]);
 	free(c->specs);
@@ -4254,7 +4269,9 @@ api_tls(struct http_request *req)
 /*
  * POST hosts/host=<id>/nacm-sync: the console's roles synchronized to
  * the host's access rules (NACM): its owners in the host's group admin,
- * its other users out of it, nothing else of the rules touched.  The
+ * its other users out of it; those whose role on the host is an
+ * operator's in its group operator, with what an operator may there
+ * (ytrans_nacm_sync()); nothing else of the rules touched.  The
  * console's owners alone may ask: the console does it as itself.
  */
 int
@@ -4278,6 +4295,8 @@ api_nacm_sync(struct http_request *req)
 	c->nnames = users_names(c->names, USERS_SYNC_MAX, true);
 	c->others = xcalloc(USERS_SYNC_MAX, sizeof(*c->others));
 	c->nothers = users_names(c->others, USERS_SYNC_MAX, false);
+	c->ops = xcalloc(USERS_SYNC_MAX, sizeof(*c->ops));
+	c->nops = users_operators(c->ops, USERS_SYNC_MAX, c->sid);
 	return (call_start(req, c));
 }
 

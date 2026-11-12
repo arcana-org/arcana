@@ -71,11 +71,15 @@ valid_jail(const char *s)
 	return (!digits);
 }
 
+/*
+ * Interface names: a letter, then letters, digits, '_' and '.'; no
+ * longer than ifr_name holds, which would cut it to another's.
+ */
 bool
 valid_ifname(const char *s)
 {
 
-	if (!isalpha((unsigned char)*s))
+	if (!isalpha((unsigned char)*s) || strlen(s) >= IFNAMSIZ)
 		return (false);
 	for (; *s != '\0'; s++)
 		if (!isalnum((unsigned char)*s) && *s != '_' && *s != '.')
@@ -108,23 +112,30 @@ xstrdup(const char *s)
 	return (p);
 }
 
-/* Who asked: the certificate subject, or the local uid. */
+/* Who asked, by peer_kind(): the certificate subject, or the local uid. */
 static char *
 peer_name(cbl_req *req)
 {
 	const cbl_peer	*peer;
 	const char	*subj;
 	uid_t		 uid;
-	gid_t		 gid;
 	char		*s;
 
 	peer = cbl_req_peer(req);
-	if (peer != NULL && (subj = cbl_peer_subject(peer)) != NULL)
-		return (xstrdup(subj));
-	if (peer != NULL && cbl_peer_cred(peer, &uid, &gid) == 0) {
+	switch (peer_kind(peer, &uid)) {
+	case PEER_ROOT:
+	case PEER_GROUP:
+	case PEER_LOCAL:
 		if (asprintf(&s, "uid %u", (unsigned)uid) == -1)
 			err(1, "asprintf");
 		return (s);
+	case PEER_CONSOLE:
+	case PEER_HOST:
+		if ((subj = cbl_peer_subject(peer)) != NULL)
+			return (xstrdup(subj));
+		break;
+	case PEER_NONE:
+		break;
 	}
 	return (xstrdup("unknown peer"));
 }

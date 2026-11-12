@@ -330,7 +330,7 @@ usage(void)
 	    "    ipfw [keep] delete number\n"
 	    "    ipfw [keep] replace number new-number rule ...\n"
 	    "    ipfw alias name addr address ... | ports 80,443 | value word | delete\n"
-	    "    ipfw apply | enable | disable | zero [number]\n"
+	    "    ipfw apply [-a ipfw-set1] | enable | disable | zero [number]\n"
 	    "    ipfw table | nat | nat64lsn | nat64stl | nat64clat | nptv6 | "
 	    "pipe |\n        queue | sched name word ...\n"
 	    "    ipfw rules [-r | -w file [-n]]\n"
@@ -6744,6 +6744,22 @@ cmd_ipfw(cbl_conn *conn, int argc, char **argv)
 				sp.text = words_joined(argc - k - 1, argv + k + 1);
 				break;
 			}
+	}
+	/* apply [-a ipfw-set1]: the warning the flush of set 1 asks. */
+	if (strcmp(argv[1], "apply") == 0) {
+		optind = 1;
+		optreset = 1;
+		while ((ch = getopt(argc - 1, argv + 1, "a:")) != -1) {
+			if (ch != 'a')
+				usage();
+			if (naccepts < nitems(accepts))
+				accepts[naccepts++] = optarg;
+		}
+		if (optind != argc - 1)
+			usage();
+		sp.names.n = 0;
+		sp.accept.v = accepts;
+		sp.accept.n = naccepts;
 	}
 	sp.live = !keep;
 	sp.persist = keep || persist;

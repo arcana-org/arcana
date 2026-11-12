@@ -3585,6 +3585,9 @@ address_refused_body()
 	    "$JGC" -c "$SOCK" address add -p web 'em0|10.0.0.14'
 	atf_check -s exit:1 -e match:'invalid interface name' \
 	    "$JGC" -c "$SOCK" address add -p -i 'em0;x' web 10.0.0.14
+	# Longer than ifr_name holds: it would be cut to another's name.
+	atf_check -s exit:1 -e match:'invalid interface name' \
+	    "$JGC" -c "$SOCK" address add -p -i em0aaaaaaaaaaaaa web 10.0.0.14
 	atf_check cmp -s before etc/jail.conf
 }
 address_refused_cleanup()
@@ -3701,6 +3704,44 @@ service_actions_body()
 	    "$JGC" -c "$SOCK" service 'a;b' start
 }
 service_actions_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case exec_drain cleanup
+exec_drain_head()
+{
+	atf_set "descr" "a program that exited, what it left running holding its pipes and writing on: read a short while, not for ever, and the next change runs"
+	atf_set "timeout" "120"
+}
+exec_drain_body()
+{
+	start_daemon
+	# Started, sshd leaves children that write on without a pause, the
+	# pipe never empty; the helper, one that writes a line now and
+	# then, for good.
+	mv fake-service fake-service.real
+	cat > fake-service <<EOS
+#!/bin/sh
+case "\$2" in
+start|onestart) yes & yes & yes & yes & exit 0 ;;
+esac
+exec $(pwd)/fake-service.real "\$@"
+EOS
+	mv fake-helper fake-helper.real
+	cat > fake-helper <<EOS
+#!/bin/sh
+[ "\$3" = routes ] && { (while :; do echo y; sleep 0.2; done) & exit 0; }
+exec $(pwd)/fake-helper.real "\$@"
+EOS
+	chmod +x fake-service fake-helper
+	atf_check -o ignore "$JGC" -c "$SOCK" service sshd start
+	# change_lock let go: the next change runs.
+	atf_check -o match:'Running: no' "$JGC" -c "$SOCK" service sshd stop
+	atf_check -s ignore -o ignore -e ignore "$JGC" -c "$SOCK" net routes -6
+	atf_check -o match:'Running: no' "$JGC" -c "$SOCK" service sshd stop
+}
+exec_drain_cleanup()
 {
 	stop_daemon
 }
@@ -3933,6 +3974,22 @@ packages_cleanup()
 	stop_daemon
 }
 
+# jexec(8) for a jail rooted at $1: what it runs logged in jexec.log;
+# its tar (the /etc kept aside) the host's, of that root, on standard
+# output as the jail's own would be.
+jail_tar()
+{
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+case "\$2" in
+*/tar)	exec tar -cf - -C "$1" etc ;;
+esac
+exit 0
+EOS
+	chmod +x fake-jexec
+}
+
 atf_test_case jail_base cleanup
 jail_base_head()
 {
@@ -3945,6 +4002,7 @@ jail_base_body()
 	R="$(pwd)/web"
 	mkdir -p "$R/etc" "$R/usr/local/etc"
 	printf 'hostname="web"\n' > "$R/etc/rc.conf"
+	jail_tar "$R"
 	start_daemon
 	# The jails: web runs, on 15.1, and may set files' flags; old, an
 	# older release; nothing else.
@@ -4013,8 +4071,6 @@ EOS
 	printf 'own\n' > "$R/etc/login.conf"
 	printf 'same\n' > "$R/etc/hosts"
 	printf 'old\n' > "$R/etc/hosts.pkgsave"
-	printf '#!/bin/sh\necho "jexec $*" >> %s/jexec.log\n' "$(pwd)" > fake-jexec
-	chmod +x fake-jexec
 	atf_check -o save:keep.out "$JGC" -t -c "$SOCK" jail-base web convert
 	atf_check -o match:'^alice:' -o match:'^_newd:' -o not-match:'_clash' \
 	    cat "$R/etc/master.passwd"
@@ -4087,6 +4143,52 @@ EOS
 	atf_check -o match:'^Lanes: 2 ' "$JGC" -c "$SOCK" jobs
 }
 jail_base_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case jail_base_links cleanup
+jail_base_links_head()
+{
+	atf_set "descr" "a jail's base converted: nothing written or made through the jail's links out of its root, its etc read beneath it"
+}
+jail_base_links_body()
+{
+	local R
+
+	R="$(pwd)/web"
+	mkdir -p "$R/etc" "$R/var" "$R/usr/local/etc" outside host/pkg
+	printf 'hostname="web"\n' > "$R/etc/rc.conf"
+	printf 'old\n' > "$R/etc/hosts.pkgsave"
+	jail_tar "$R"
+	start_daemon
+	cat > jails <<EOS
+web 7 inherit $R 15.1-RELEASE-p3 allow.chflags=1
+EOS
+	# The repository's directory a link to the host's: no directory
+	# made there, the job refused.
+	ln -s "$(pwd)/host/pkg" "$R/usr/local/etc/pkg"
+	atf_check -s exit:1 -o match:'arcana-base.conf' \
+	    "$JGC" -c "$SOCK" jail-base web convert
+	atf_check test ! -e host/pkg/repos
+	rm "$R/usr/local/etc/pkg"
+	# The backups' directory a link out: no tar written there.
+	ln -s "$(pwd)/outside" "$R/var/backups"
+	atf_check -s exit:1 -o match:'etc-before-pkgbase.tar' \
+	    "$JGC" -c "$SOCK" jail-base web convert
+	atf_check test ! -e outside/etc-before-pkgbase.tar
+	atf_check test ! -e jexec.log
+	rm "$R/var/backups"
+	# The jail's own tar run in it, its archive the file opened beneath
+	# the root, root's alone; etc read here, no find(1) given its path.
+	atf_check -o save:cv.out "$JGC" -t -c "$SOCK" jail-base web convert
+	atf_check -o match:'^jexec 7 /usr/bin/tar -cf - -C / etc$' cat jexec.log
+	atf_check -o match:'rc.conf' tar -tf "$R/var/backups/etc-before-pkgbase.tar"
+	atf_check -o inline:'600\n' stat -f %Lp "$R/var/backups/etc-before-pkgbase.tar"
+	atf_check -o not-match:'find' cat cv.out
+	atf_check -o inline:'old\n' cat "$R/etc/hosts.pkgsave"
+}
+jail_base_links_cleanup()
 {
 	stop_daemon
 }
@@ -6596,7 +6698,7 @@ safe_ipsec_sa_body()
 	cat > fake-setkey <<EOS
 #!/bin/sh
 echo "setkey \$*" >> $(pwd)/setkey.log
-[ "\$1" = -f ] && cat "\$2" >> $(pwd)/setkey.conf
+[ "\$1" = -c ] && cat >> $(pwd)/setkey.conf
 exit 0
 EOS
 	chmod +x fake-setkey
@@ -6736,6 +6838,7 @@ safe_sysfile_body()
 	    -o match:'syslog.conf, as it was' "$JGC" -c "$SOCK" job 1
 	atf_check test ! -f root/etc/syslog.conf
 	printf '*.*\t/var/log/all\n' > root/etc/syslog.conf
+	chmod 640 root/etc/syslog.conf
 	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" sysfile syslog.conf syslog.new
 	for i in $(seq 1 200); do
 		"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
@@ -6745,6 +6848,9 @@ safe_sysfile_body()
 	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
 	    "$JGC" -c "$SOCK" job 2
 	atf_check -o inline:'*.*\t/var/log/all\n' cat root/etc/syslog.conf
+	# With the mode it had, not another.
+	atf_check -o inline:'640\n' stat -f %Lp root/etc/syslog.conf
+	chmod 644 root/etc/syslog.conf
 	# Confirmed: it stays.
 	atf_check -o match:'done' -o match:'confirmed: it stays' \
 	    "$JGC" -s -c "$SOCK" sysfile syslog.conf syslog.new
@@ -10579,7 +10685,7 @@ MASQUERADE arcana@example.org
 	atf_check -s exit:1 -e match:'smarthost is a host' "$JGC" -c "$SOCK" sysfile dma smarthost='a;b'
 	atf_check -s exit:1 -e match:'tls is none' "$JGC" -c "$SOCK" sysfile dma smarthost=x.example tls=maybe
 	# GEOM's classes loaded, their status; a class's command; GELI's
-	# passphrase by a file of its own, gone after.
+	# passphrase on its standard input, in no file.
 	atf_check -o match:'"geom_classes":\{"mirror":"Name Status Components\\nmirror/gm0 COMPLETE md1\\n"\}' \
 	    "$JGC" -c "$SOCK" system host
 	atf_check -o match:'done +geom mirror label /dev/md2' \
@@ -10588,7 +10694,7 @@ MASQUERADE arcana@example.org
 	printf 'correct horse' > pass.txt
 	atf_check -o match:'done +geom eli init /dev/md3' \
 	    "$JGC" -t -c "$SOCK" geom eli init -s 4096 /dev/md3 -P pass.txt
-	atf_check -o match:'^geom eli init -J .*/arcana-geli\.[0-9]+ -s 4096 /dev/md3$' tail -1 geom.log
+	atf_check -o match:'^geom eli init -J - -s 4096 /dev/md3$' tail -1 geom.log
 	atf_check -o inline:'correct horse' cat geom.pass
 	test -z "$(ls root | grep arcana-geli)" || atf_fail "the passphrase file stayed"
 	atf_check -s exit:1 -e match:'verb is mirror, stripe' "$JGC" -c "$SOCK" geom gpart add x
@@ -11781,6 +11887,57 @@ observe_log_cleanup()
 	stop_daemon
 }
 
+atf_test_case observe_log_jail cleanup
+observe_log_jail_head()
+{
+	atf_set "descr" "a jail's log and audit trail opened beneath its root: what unpacks a log and praudit read the file opened, never a path of the jail's its links lead elsewhere"
+	atf_set "timeout" "60"
+}
+observe_log_jail_body()
+{
+	local R L
+
+	R="$(pwd)/web"
+	# The jail's log directory, -v's under its root.
+	L="$R$(pwd)/log"
+	mkdir -p "$L" "$R/var/audit" tools hostlog
+	printf 'Oct  5 12:00:01 web kernel: in the jail\n' | bzip2 > "$L/messages.0.bz2"
+	printf 'Oct  5 12:00:01 host kernel: on the host\n' | bzip2 > hostlog/messages.0.bz2
+	printf 'the jail trail\n' > "$R/var/audit/20261105.not_terminated"
+	ln -s /var/audit/20261105.not_terminated "$R/var/audit/current"
+	printf 'the host trail\n' > hosttrail
+	# praudit prints what it reads; bzcat too, once the jail's root, as
+	# it may at any time, made its log directory a link to the host's.
+	cat > tools/praudit <<EOS
+#!/bin/sh
+[ \$# -gt 1 ] && exec cat "\$2"
+exec cat
+EOS
+	cat > tools/bzcat <<EOS
+#!/bin/sh
+[ -L "$L" ] || { mv "$L" "$L.real"; ln -s "$(pwd)/hostlog" "$L"; }
+[ \$# -gt 0 ] && exec bzip2 -dc "\$1"
+exec bzip2 -dc
+EOS
+	chmod +x tools/praudit tools/bzcat
+	DAEMON_ARGS="-v $(pwd)/log -2 $(pwd)/tools"
+	start_daemon
+	echo "web 7 inherit $R 15.1-RELEASE-p3" > jails
+	atf_check -o match:'"text":"in the jail"' -o not-match:'on the host' \
+	    "$JGC" -c "$SOCK" -j web log messages.0.bz2
+	# The trail as the jail has it: its current, an absolute link, from
+	# its root; one to the host's is no file of the jail's.
+	atf_check -o match:'"text":"the jail trail"' \
+	    "$JGC" -c "$SOCK" -j web log @audit
+	ln -sf "$(pwd)/hosttrail" "$R/var/audit/current"
+	atf_check -s exit:1 -o not-match:'the host trail' -e not-match:'the host trail' \
+	    "$JGC" -c "$SOCK" -j web log @audit
+}
+observe_log_jail_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case observe_history cleanup
 observe_history_head()
 {
@@ -11985,6 +12142,7 @@ fw_trace_body()
 	cat > tools/dtrace <<EOS
 #!/bin/sh
 cat "\$3" > $(pwd)/script.d
+echo "\$3" > $(pwd)/script.path
 echo 'P 12 0 192.0.2.7 198.51.100.1 6 40000 443 100 em0 0'
 echo 'P 13 1 198.51.100.1 192.0.2.7 6 443 40000 65535 em0 1'
 EOS
@@ -11996,6 +12154,8 @@ EOS
 	# Of that address only, as the kernel holds it, and no longer.
 	atf_check -o match:'^ipfw:::rule-matched$' -o match:'arg1 == 2 && \(\(\(\(uint32_t \*\)arg2\)\[0\] == [0-9]+U\) \|\| \(\(\(uint32_t \*\)arg3\)\[0\] == [0-9]+U\)\)' \
 	    -o match:'^tick-5s$' -o match:'^/n >= 100/$' cat script.d
+	# The script in TMPDIR's (the case's own), else /tmp.
+	atf_check -o match:"^${TMPDIR:-/tmp}/arcana-fw-trace\\." cat script.path
 	atf_check -o ignore "$JGC" -c "$SOCK" ipfw trace 2001:db8::7 1 3
 	atf_check -o match:'arg1 == 28 && \(\(\(\(uint32_t \*\)arg2\)\[0\] == [0-9]+U && .*\[3\] == [0-9]+U\)' \
 	    -o match:'^tick-1s$' -o match:'^/n >= 3/$' -o match:'inet_ntoa6' cat script.d
@@ -12227,6 +12387,8 @@ case "\$*" in
 	done ;;
 "set 1 "*" all list")
 	for n in \$(cat \$d/set1.\$3 2>/dev/null); do echo "set 1 \$3 \$n"; done ;;
+# Set 1's rules, of the admin's: set1.rules.
+"set 1 list") cat \$d/set1.rules 2>/dev/null ;;
 "-q set 1 "*" destroy")
 	if grep -qx "\$4 \$5" \$d/busy 2>/dev/null; then
 		echo "ipfw: failed to destroy \$4 instance \$5: Device busy" >&2
@@ -12301,13 +12463,28 @@ EOF
 	atf_check test ! -e ipfw.log
 	cp nat64.rules fw/ipfw.rules
 
-	# Set 1's NAT64 is used by a rule still, and the kept rules make
-	# one of its name there: refused, saying which; the CLAT nothing
-	# used is destroyed, nothing is loaded, set 0 is as it was.
+	# Set 1, the staging set, holds what no Apply left there (its
+	# ledger has none of it), and a rule: the admin's, refused and
+	# named, nothing flushed, disabled or destroyed.
+	echo '00500 allow ip from 192.0.2.1 to any' > set1.rules
+	: > ipfw.log
+	atf_check -s exit:1 -o match:"set 1 is Arcana's staging set" \
+	    -o match:'1 rule \(00500\); nat64lsn NAT64, nat64clat CLAT' \
+	    -o match:'accept ipfw-set1' "$JGC" -c "$SOCK" ipfw apply
+	atf_check -o not-match:'flush|disable|destroy|delete' cat ipfw.log
+	atf_check -o inline:'NAT64\n' cat set1.nat64lsn
+	atf_check -o inline:'CLAT\n' cat set1.nat64clat
+	rm set1.rules
+
+	# Accepted (-a ipfw-set1): set 1's NAT64 is used by a rule still,
+	# and the kept rules make one of its name there: refused, saying
+	# which; the CLAT nothing used is destroyed, the NAT64 in the
+	# ledger, nothing is loaded, set 0 is as it was.
 	echo 'nat64lsn NAT64' > busy
 	atf_check -s exit:1 -o match:"set 1's nat64lsn NAT64 could not be destroyed \(.*Device busy\)" \
 	    -o match:'Nothing was loaded: set 0, the running rules, is as it was' \
-	    "$JGC" -c "$SOCK" ipfw apply
+	    "$JGC" -c "$SOCK" ipfw apply -a ipfw-set1
+	atf_check -o inline:'nat64lsn NAT64\n' cat fw/ipfw.rules.set1
 	atf_check -o not-match:'swap' -o not-match:'arcana-load' cat ipfw.log
 	atf_check test ! -e loaded.rules
 	atf_check -o inline:'NAT64\n' cat set0.nat64lsn
@@ -12322,9 +12499,13 @@ EOF
 	echo CLAT > set1.nat64clat
 	echo T9 > set1.table
 	: > ipfw.log
+	atf_check -s exit:1 \
+	    -o match:'did not put there: nat64clat CLAT, table T9\. Nothing' \
+	    "$JGC" -c "$SOCK" ipfw apply
 	atf_check -o match:'done +ipfw apply' \
 	    -o match:"destroyed nat64lsn NAT64, nat64clat CLAT, table T9" \
-	    "$JGC" -t -c "$SOCK" ipfw apply
+	    "$JGC" -t -c "$SOCK" ipfw apply -a ipfw-set1
+	atf_check test ! -e fw/ipfw.rules.set1
 	atf_check -o match:'^set 1 nat64lsn NAT64 create prefix4' \
 	    -o match:'^set 1 nat64clat CLAT create' \
 	    -o match:'^add 00310 set 1 nat64lsn NAT64' cat loaded.rules
@@ -12469,6 +12650,17 @@ EOS
 	    entries="$(printf '192.0.2.0/24\n2001:db8::/32\n203.0.113.0/24\n')"
 	atf_check -o inline:'192.0.2.0/24\n2001:db8::/32\n203.0.113.0/24\n' \
 	    sort t/0.feed_drop
+	# A table of the scratch's name, the host's own with its entries:
+	# not destroyed, the feed refused.
+	echo 10.8.0.0/16 > t/0.feed_drop_load
+	atf_check -s exit:1 -e match:"table feed_drop_load, the feed's scratch, is the host's own" \
+	    "$JGC" -c "$SOCK" action firewall feed-load name=feed_drop \
+	    feed=spamhaus-drop \
+	    entries="$(printf '192.0.2.0/24\n2001:db8::/32\n203.0.113.0/24\n')"
+	atf_check -o inline:'10.8.0.0/16\n' cat t/0.feed_drop_load
+	atf_check -o inline:'192.0.2.0/24\n2001:db8::/32\n203.0.113.0/24\n' \
+	    sort t/0.feed_drop
+	rm t/0.feed_drop_load
 	# Dropping a table no feed made: refused, left as it is.
 	atf_check -s exit:1 -e match:'table own is no feed.s' \
 	    "$JGC" -c "$SOCK" action firewall feed-drop name=own
@@ -12844,14 +13036,21 @@ add 01001 allow tcp from any to me6 22 in
 	atf_check -o ignore "$JGC" -c "$SOCK" ipfw keep renumber 998 999
 	atf_check -o match:'^add 00999 deny log all from any to any$' cat fw/ipfw.rules
 
-	# Applied: the kept rules into set 1 while it is off, swapped with
-	# set 0, and the old ones deleted.
+	# Applied: set 1, the staging set, read first for what of the
+	# admin's it holds (none); the kept rules into it while it is off,
+	# swapped with set 0, and the old ones deleted.
 	: > ipfw.log
 	atf_check -o match:'done +ipfw apply' "$JGC" -c "$SOCK" ipfw apply
-	atf_check -o inline:'ipfw -q set disable 1
+	atf_check -o inline:'ipfw set 1 list
+ipfw set 1 nat64lsn all list
+ipfw set 1 nat64stl all list
+ipfw set 1 nat64clat all list
+ipfw set 1 nptv6 all list
+ipfw set 1 table all info
+ipfw -q set disable 1
 ipfw -q -f set 1 flush
 ipfw set 1 nat64lsn all list
-' sh -c 'head -3 ipfw.log'
+' sh -c 'head -9 ipfw.log'
 	atf_check -o match:'^ipfw -q .*/ipfw.rules.arcana-load$' \
 	    -o match:'^ipfw -q set swap 0 1$' \
 	    -o match:'^ipfw -q -f delete set 1$' cat ipfw.log
@@ -13561,7 +13760,8 @@ ipsec_sa_body()
 	cat > fake-setkey <<EOS
 #!/bin/sh
 echo "setkey \$*" >> $(pwd)/setkey.log
-[ "\$1" = -f ] && { stat -f %Lp "\$2" >> $(pwd)/setkey.log; cat "\$2" >> $(pwd)/setkey.conf; }
+# The keys on standard input, no file of them.
+[ "\$1" = -c ] && cat >> $(pwd)/setkey.conf
 exit 0
 EOS
 	chmod +x fake-setkey
@@ -13574,10 +13774,11 @@ EOS
 	atf_check -s exit:1 -e match:'authenticates by itself' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-gcm-16 auth hmac-sha1 key-in ${K}00112233 key-out ${K}00112233
 	atf_check -s exit:1 -e match:'of one family' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 fd00::2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A
 	# Set: the two SAs, out then in, on the reqid, ESN and ESP in UDP;
-	# the file 0600; the trace without the keys, the title too.
+	# the keys through a pipe to setkey -c, in no file; the trace
+	# without the keys, the title too.
 	atf_check -o save:sa.out "$JGC" -t -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A encap esn
 	atf_check -o match:'ipsec sa set ipsec0 reqid 100' -o not-match:"$K" -o not-match:"$A" -o match:'not kept: it has keys' cat sa.out
-	atf_check -o match:'^600$' -o match:'^setkey -f /tmp/arcana-sa\.' cat setkey.log
+	atf_check -o match:'^setkey -c$' -o not-match:'-f' cat setkey.log
 	atf_check -o match:"^add 10.202.0.1 10.202.0.2 esp 0x1002 -m tunnel -u 100 -r 128 -esn -natt 10.202.0.1\[4500\] 10.202.0.2\[4500\] -E aes-cbc 0x$K -A hmac-sha1 0x$A ;\$" \
 	    -o match:"^add 10.202.0.2 10.202.0.1 esp 0x1001 -m tunnel -u 100 -r 128 -esn -natt 10.202.0.2\[4500\] 10.202.0.1\[4500\] -E aes-cbc 0x$K -A hmac-sha1 0x$A ;\$" cat setkey.conf
 	# GCM: no auth; neither flag.
@@ -15067,6 +15268,25 @@ datastores_instances_body()
 	atf_check "$JGC" -c "$SOCK" commit
 	atf_check -o match:'"name":"blue"' -o not-match:'"name":"fib1"' \
 	    "$JGC" -c "$SOCK" get -d running network-instances
+	# Arcana's loader file there and not readable: not taken for none
+	# (whose undo would remove it), the commit refused before anything
+	# changes, the file as it was.
+	if [ "$(id -u)" != 0 ]; then
+		printf 'kern.ipc.maxsockbuf="4194304"\n' > \
+		    root/boot/loader.conf.d/arcana.conf
+		chmod 000 root/boot/loader.conf.d/arcana.conf
+		sed -e 's|"name":"blue"|"name":"green"|' blue.json > green.json
+		atf_check "$JGC" -c "$SOCK" edit network-instances @green.json
+		atf_check -s exit:1 -e match:'arcana.conf: Permission denied' \
+		    "$JGC" -c "$SOCK" commit
+		atf_check "$JGC" -c "$SOCK" discard
+		chmod 644 root/boot/loader.conf.d/arcana.conf
+		atf_check -o inline:'kern.ipc.maxsockbuf="4194304"\n' \
+		    cat root/boot/loader.conf.d/arcana.conf
+		atf_check -o match:'"name":"blue"' \
+		    "$JGC" -c "$SOCK" get -d running network-instances
+		rm root/boot/loader.conf.d/arcana.conf
+	fi
 	# One past the last FIB.
 	"$JGC" -c "$SOCK" get -d running network-instances |
 	    sed -e "s|\"network-instance\":\[|\"network-instance\":[{\"name\":\"red\",\"vrf-root\":{},\"arcana-network-instance:fib\":$n},|" \
@@ -16266,6 +16486,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_underlay
 	atf_add_test_case observe_ps
 	atf_add_test_case observe_log
+	atf_add_test_case observe_log_jail
 	atf_add_test_case datastores_syslog
 	atf_add_test_case datastores_ra
 	atf_add_test_case datastores_sysctl
@@ -16387,11 +16608,13 @@ atf_init_test_cases()
 	atf_add_test_case many_jails
 	atf_add_test_case services
 	atf_add_test_case service_actions
+	atf_add_test_case exec_drain
 	atf_add_test_case service_config
 	atf_add_test_case network
 	atf_add_test_case ipsec
 	atf_add_test_case packages
 	atf_add_test_case jail_base
+	atf_add_test_case jail_base_links
 	atf_add_test_case jobs
 	atf_add_test_case dry_run
 }

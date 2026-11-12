@@ -428,37 +428,6 @@ cert_check(const struct arc_job_spec *sp)
 	return (NULL);
 }
 
-/* dir, made where it is not, beneath the store's root. */
-static int
-mkdirs(struct work *w, const char *dir)
-{
-	char	*p, *c, *next;
-	int	 fd, nfd;
-
-	if ((fd = scope_dirfd(w, "/")) == -1)
-		return (-1);
-	p = wstrdup(w, dir);
-	for (c = p + strspn(p, "/"); *c != '\0'; c = next) {
-		next = c + strcspn(c, "/");
-		if (*next == '/')
-			*next++ = '\0';
-		if (mkdirat(fd, c, 0755) == -1 && errno != EEXIST)
-			break;
-		nfd = openat(fd, c, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
-		    O_CLOEXEC | O_RESOLVE_BENEATH);
-		close(fd);
-		if ((fd = nfd) == -1)
-			return (-1);
-		next += strspn(next, "/");
-	}
-	if (*c != '\0') {
-		close(fd);
-		return (-1);
-	}
-	close(fd);
-	return (0);
-}
-
 static int
 rehash(struct work *w, const char **errp)
 {
@@ -558,7 +527,7 @@ do_cert(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		    sp->path) - 4, ".pem") == 0 || strcmp(sp->path + strlen(
 		    sp->path) - 4, ".crt") == 0) ? sp->path : wfmt(w, "%s.pem",
 		    sp->path);
-		if (pem == NULL || mkdirs(w, dir) != 0 || scope_replace(w,
+		if (pem == NULL || scope_mkdirs(w, dir) != 0 || scope_replace(w,
 		    wfmt(w, "%s/%s", dir, name), pem, len, 0444, NULL) != 0) {
 			*errp = wfmt(w, "%s/%s: %s", dir + strlen(destdir(w)),
 			    name, strerror(errno));
@@ -588,8 +557,8 @@ do_cert(struct work *w, const struct arc_job_spec *sp, const char **errp)
 			return (-1);
 		}
 		dir = local_dir(w, "untrusted");
-		if (mkdirs(w, dir) != 0 || scope_replace(w, wfmt(w, "%s/%s.pem",
-		    dir, sp->path), pem, len, 0444, NULL) != 0) {
+		if (scope_mkdirs(w, dir) != 0 || scope_replace(w, wfmt(w,
+		    "%s/%s.pem", dir, sp->path), pem, len, 0444, NULL) != 0) {
 			*errp = wfmt(w, "%s/%s.pem: %s", dir + strlen(destdir(w)),
 			    sp->path, strerror(errno));
 			return (-1);

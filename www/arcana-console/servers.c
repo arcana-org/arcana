@@ -475,6 +475,24 @@ servers_safe_wait(const char *uri)
 	return (k);
 }
 
+/* The id of the server reached at uri, in id; false when there is none. */
+bool
+servers_id_of(const char *uri, char *id, size_t len)
+{
+	bool	found;
+	int	i;
+
+	found = false;
+	pthread_mutex_lock(&table_lock);
+	for (i = 0; i < nservers && !found; i++)
+		if (strcmp(servers[i].uri, uri) == 0) {
+			(void)snprintf(id, len, "%s", servers[i].id);
+			found = true;
+		}
+	pthread_mutex_unlock(&table_lock);
+	return (found);
+}
+
 /*
  * Where the server id is reached now, for a thread: its URI and peer
  * name copied (*peer NULL without one); false when it is gone.

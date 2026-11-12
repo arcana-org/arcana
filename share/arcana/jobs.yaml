@@ -248,7 +248,7 @@ fields:
   - field: accept
     type: list
     label: Warnings accepted
-    help: rc-conf-files to name Arcana's rc.conf file in rc_conf_files once, rc-conf-conflict to comment out a line of yours it takes; a space between them.
+    help: rc-conf-files to name Arcana's rc.conf file in rc_conf_files once, rc-conf-conflict to comment out a line of yours it takes; ipfw-set1 for Apply to delete what of yours is in set 1, its staging set; a space between them.
 
 kinds:
   - kind: jail-action
@@ -367,7 +367,7 @@ kinds:
   - kind: ipfw
     title: The firewall
     needs: verb args
-    uses: jail live persist safe text
+    uses: jail live persist safe text accept
     destroys: verb=delete|flush|replace
   - kind: bridge
     title: A bridge

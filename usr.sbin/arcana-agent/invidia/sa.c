@@ -334,27 +334,23 @@ sa_state_save(struct work *w, const char *ifname, const ucl_object_t *o,
     const char **errp)
 {
 	char	 path[MAXPATHLEN], *json;
-	FILE	*fp;
-	int	 fd;
+	int	 rc;
 
 	sdwan_conf_path(wfmt(w, STATE_FILE, ifname), path, sizeof(path));
 	if (o == NULL) {
 		(void)unlink(path);
 		return (0);
 	}
-	json = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
-	if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600)) == -1 ||
-	    (fp = fdopen(fd, "w")) == NULL) {
-		*errp = wfmt(w, "%s: %s", path, strerror(errno));
-		if (fd != -1)
-			close(fd);
-		free(json);
+	/* Whole or as it was: a crash half way leaves no SPIs cut short. */
+	if ((json = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT)) ==
+	    NULL) {
+		*errp = "out of memory";
 		return (-1);
 	}
-	fputs(json, fp);
-	fclose(fp);
+	if ((rc = file_replace(path, json, strlen(json), 0600)) == -1)
+		*errp = wfmt(w, "%s: %s", path, strerror(errno));
 	free(json);
-	return (0);
+	return (rc);
 }
 
 static uint32_t
@@ -694,35 +690,25 @@ word_next(const struct arc_job_spec *sp)
 	return (false);
 }
 
-/* A file for setkey -f, 0600, taken out again; what it said when strict. */
+/*
+ * The lines to setkey -c on its standard input, a pipe: the keys are
+ * in no file, not even for a moment.  What it said when strict.
+ */
 static int
 sa_setkey(struct work *w, const char *text, bool strict, const char **errp)
 {
 	struct execres	 res;
-	char		 path[] = "/tmp/arcana-sa.XXXXXX", *argv[4];
-	FILE		*fp;
-	int		 fd, rc;
+	char		*argv[3];
+	int		 rc;
 
-	if ((fd = mkstemp(path)) == -1 || (fp = fdopen(fd, "w")) == NULL) {
-		*errp = wfmt(w, "a file for setkey: %s", strerror(errno));
-		if (fd != -1) {
-			close(fd);
-			(void)unlink(path);
-		}
-		return (-1);
-	}
-	(void)fchmod(fd, 0600);
-	fputs(text, fp);
-	fclose(fp);
 	argv[0] = (char *)(uintptr_t)opts.setkey_bin;
-	argv[1] = (char *)(uintptr_t)"-f";
-	argv[2] = path;
-	argv[3] = NULL;
-	/* The file has the keys: what setkey says of it is not kept. */
+	argv[1] = (char *)(uintptr_t)"-c";
+	argv[2] = NULL;
+	/* What it reads has the keys: what it says of it is not kept. */
+	exec_set_stdin(text, strlen(text));
 	exec_set_secret(true);
 	rc = run_exec(w, argv, &res);
 	exec_set_secret(false);
-	(void)unlink(path);
 	if (rc != 0 && strict) {
 		*errp = wfmt(w, "setkey: exit status %d%s%.200s", res.status,
 		    res.errlen > 0 ? ": " : "", res.errlen > 0 ? res.err : "");

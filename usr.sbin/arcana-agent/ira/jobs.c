@@ -16,9 +16,11 @@
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/queue.h>
+#include <sys/stat.h>
 
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -70,6 +72,7 @@ struct qjob {
 		const char	*path;
 		char		*text;	/* malloc'd, zeroed at the end */
 		size_t		 len;
+		mode_t		 mode;	/* 0 when not known */
 		bool		 had;
 	}			 undo_files[4];
 	int			 undo_nfiles;
@@ -641,8 +644,11 @@ static bool
 undo_snap_file(struct qjob *j, const char *path)
 {
 	struct undo_file	*f;
+	struct stat		 sb;
+	const char		*base;
 	char			*text;
 	size_t			 len;
+	int			 dfd;
 
 	if (j->undo_nfiles == (int)nitems(j->undo_files))
 		return (false);
@@ -650,6 +656,13 @@ undo_snap_file(struct qjob *j, const char *path)
 	f->path = path;
 	f->text = NULL;
 	f->len = 0;
+	f->mode = 0;
+	/* Its mode, for the undo to put back with the text. */
+	if ((dfd = scope_open_dir(&j->w, path, &base)) != -1) {
+		if (fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW) == 0)
+			f->mode = sb.st_mode & 07777;
+		close(dfd);
+	}
 	if ((text = scope_slurp(&j->w, path, &len)) != NULL) {
 		if ((f->text = malloc(len + 1)) == NULL)
 			err(1, "malloc");
@@ -671,7 +684,7 @@ static int
 undo_files_back(struct qjob *j, struct work *w, const char **errp)
 {
 	const struct undo_file	*f;
-	int			 i, step, rc;
+	int			 i, step, rc, e;
 
 	rc = 0;
 	for (i = 0; i < j->undo_nfiles; i++) {
@@ -680,15 +693,18 @@ undo_files_back(struct qjob *j, struct work *w, const char **errp)
 		    "remove", "%s, as it was", f->path);
 		if (work_dry(w, step))
 			continue;
+		/* Whole or as it is, with the mode it had. */
 		if (f->had)
-			rc = scope_replace(w, f->path, f->text, f->len, 0600,
+			rc = scope_replace(w, f->path, f->text, f->len, f->mode,
 			    NULL) == 0 ? rc : -1;
 		else if (scope_unlink(w, f->path) != 0 && errno != ENOENT)
 			rc = -1;
 		step_end(w, step, rc == 0, rc == 0 ? NULL : "%s",
 		    strerror(errno));
 		if (rc != 0) {
-			*errp = wfmt(w, "%s: %s", f->path, strerror(errno));
+			e = errno;
+			*errp = wfmt(w, "%s: %s", f->path, strerror(e));
+			undo_report(f->path, e, *errp);
 			return (-1);
 		}
 	}

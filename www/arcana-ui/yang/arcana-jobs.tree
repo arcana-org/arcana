@@ -235,6 +235,7 @@ module: arcana-jobs
     |  |     |  |     +---w live?      boolean
     |  |     |  |     +---w persist?   boolean
     |  |     |  |     +---w text?      string
+    |  |     |  |     +---w accept*    string
     |  |     |  +--:(bridge)
     |  |     |  |  +---w bridge!
     |  |     |  |     +---w verb         string
@@ -591,6 +592,7 @@ module: arcana-jobs
        |  |  |  |     +---w live?      boolean
        |  |  |  |     +---w persist?   boolean
        |  |  |  |     +---w text?      string
+       |  |  |  |     +---w accept*    string
        |  |  |  +--:(bridge)
        |  |  |  |  +---w bridge!
        |  |  |  |     +---w verb         string
