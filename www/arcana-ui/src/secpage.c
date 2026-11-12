@@ -623,7 +623,7 @@ view_sigs(struct html *h)
 		    "it at boot and starts it.</p></div>");
 		return;
 	}
-	h_fmt(h, "<div class=\"toolbar\">%s<button class=\"ghost\" "
+	h_rawf(h, "<div class=\"toolbar\">%s<button class=\"ghost\" "
 	    "data-act=\"sec-freshclam\" data-arg=\"%s\" title=\"freshclam looks "
 	    "for new signatures as it starts\">%s</button></div>",
 	    jbool(cl, "freshclam") ? "<span class=\"chip st-up\">freshclam "
@@ -834,9 +834,10 @@ ids_profiling_form(struct html *h, const ucl_object_t *f)
 		    (strcmp(prof_secs[i].needs, "profiling_rules") == 0 &&
 		    jbool(b, "profiling"));
 		any = any || can;
-		h_fmt(h, "<label class=\"check\"%s><input type=\"checkbox\" "
-		    "name=\"prof_%s\"%s%s> %s</label>", can ? "" : " title=\""
-		    "This Suricata is not built for it\"", prof_secs[i].key,
+		h_raw(h, can ? "<label class=\"check\">" : "<label class=\"check\""
+		    " title=\"This Suricata is not built for it\">");
+		h_fmt(h, "<input type=\"checkbox\" name=\"prof_%s\"%s%s> %s"
+		    "</label>", prof_secs[i].key,
 		    has_word(jget(f, "profiling"), prof_secs[i].key) ? " checked" :
 		    "", can ? "" : " disabled", prof_secs[i].title);
 	}

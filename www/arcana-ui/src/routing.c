@@ -526,8 +526,10 @@ static void
 cell(struct html *h, const ucl_object_t *r, const char *key, const char *cls)
 {
 
-	h_fmt(h, "<td%s%s%s>", cls != NULL ? " class=\"" : "", cls != NULL ?
-	    cls : "", cls != NULL ? "\"" : "");
+	if (cls != NULL)
+		h_fmt(h, "<td class=\"%s\">", cls);
+	else
+		h_raw(h, "<td>");
 	h_txt(h, val(r, key)[0] != '\0' ? val(r, key) : "—");
 	h_raw(h, "</td>");
 }

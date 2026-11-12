@@ -64,10 +64,10 @@ CFLAGS+=	${IPFEEDS_CFLAGS}
 LDADD+=		${IPFEEDS_LIBA}
 DPADD+=		${IPFEEDS_LIBA}
 LDADD+=		-lfetch -ljail -lgeom -lmemstat -lprocstat -ldevstat -lnv -lutil -lpthread -lcrypto -lz ${UCL_LIBS}
-# Every symbol bound when the agent starts (ld(1) -z now): with a
+
+# Every symbol bound when the agent starts (BIND_NOW, arcana.mk): with a
 # libcblink older than the agent, it stops there, rtld(1) saying what
 # is missing, not at the first call to it, detached, its stderr closed.
-LDFLAGS+=	-Wl,-z,now
 
 # The agent's rc.d(8) script, and the one that runs its FEC relays
 # (share/rc.d/arcana_relay, as it is).

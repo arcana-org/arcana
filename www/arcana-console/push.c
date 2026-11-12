@@ -76,6 +76,8 @@ static EVP_PKEY		*vapid;
 static char		*vapid_pub;	/* base64url, for the browsers */
 static ucl_object_t	*subs;		/* {"subscriptions": [...]} */
 
+static const char	*keys_bad(const char *, const char *);
+
 static void
 put(ucl_object_t *o, const char *key, ucl_object_t *v)
 {
@@ -129,10 +131,19 @@ push_init(void)
 	return (vapid_pub != NULL ? 0 : -1);
 }
 
-/* push.json: at start, and when another node of the cluster wrote it. */
+/*
+ * push.json: at start, and when another node of the cluster wrote it.
+ * A subscription whose keys are not what a browser gives (the file
+ * changed by hand, or broken) is dropped, and said: the encryption
+ * reads 65 and 16 bytes of them.
+ */
 void
 push_reload(void)
 {
+	const ucl_object_t	*e;
+	ucl_object_t		*kept;
+	ucl_object_iter_t	 it;
+	const char		*bad;
 
 	if (subs != NULL)
 		ucl_object_unref(subs);
@@ -141,7 +152,21 @@ push_reload(void)
 			ucl_object_unref(subs);
 		subs = ucl_object_typed_new(UCL_OBJECT);
 		put(subs, "subscriptions", ucl_object_typed_new(UCL_ARRAY));
+		return;
 	}
+	kept = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((e = ucl_object_iterate(sub_list(), &it, true)) != NULL) {
+		if ((bad = keys_bad(ucl_str(e, "p256dh"), ucl_str(e,
+		    "auth"))) != NULL) {
+			log_msg(LOG_WARNING, "%s: a subscription of %s dropped: "
+			    "%s", PUSH_FILE, ucl_str(e, "user") != NULL ?
+			    ucl_str(e, "user") : "no one", bad);
+			continue;
+		}
+		ucl_array_append(kept, ucl_object_ref(e));
+	}
+	ucl_object_replace_key(subs, kept, "subscriptions", 0, false);
 }
 
 /* The host of an "https://host[:443]/path" address, and its path. */
@@ -352,6 +377,9 @@ send_run(struct task *t)
 		if (auth == NULL || webpush_encrypt(tg->p256dh, tg->auth, NULL,
 		    NULL, (const uint8_t *)s->payload, strlen(s->payload),
 		    &body, &len) != 0) {
+			thread_log(LOG_WARNING, "push to %s: %s", host, auth ==
+			    NULL ? "no VAPID token made" :
+			    "the message not encrypted");
 			free(auth);
 			continue;
 		}
@@ -542,6 +570,51 @@ push_save(char *why, size_t len)
 	return (0);
 }
 
+/* At most max bytes of s, not ending inside a UTF-8 sequence. */
+static size_t
+utf8_cut(const char *s, size_t max)
+{
+	size_t	n;
+
+	if ((n = strnlen(s, max)) < max || s[n] == '\0')
+		return (n);
+	while (n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80)
+		n--;
+	return (n);
+}
+
+/*
+ * The message, {"title", "body"} as JSON: a title of 120 bytes at most
+ * and a body of 600, each cut between characters, the body shorter
+ * again until the JSON, escaped, fits what one push carries.
+ */
+static char *
+payload(const char *title, const char *text)
+{
+	ucl_object_t	*msg;
+	char		*p;
+	size_t		 tn, bn;
+
+	tn = utf8_cut(title, 120);
+	bn = utf8_cut(text, 600);
+	for (;;) {
+		msg = ucl_object_typed_new(UCL_OBJECT);
+		put(msg, "title", ucl_object_fromlstring(title, tn));
+		put(msg, "body", ucl_object_fromlstring(text, bn));
+		p = (char *)ucl_object_emit(msg, UCL_EMIT_JSON_COMPACT);
+		ucl_object_unref(msg);
+		if (p == NULL || strlen(p) <= WEBPUSH_MAXLEN)
+			return (p);
+		free(p);
+		if (bn > 0)
+			bn = utf8_cut(text, bn / 2);
+		else if (tn > 0)
+			tn = utf8_cut(title, tn / 2);
+		else
+			return (NULL);
+	}
+}
+
 /*
  * arcana-console's push/send action, {"title", "body", "except"}: tell
  * every device of the request's user but the one at the address
@@ -550,7 +623,7 @@ push_save(char *why, size_t len)
 int
 api_push_send(struct http_request *req)
 {
-	ucl_object_t		*body, *o, *msg, *res, *one;
+	ucl_object_t		*body, *o, *res, *one;
 	const ucl_object_t	*e, *in;
 	ucl_object_iter_t	 it;
 	struct send		*s;
@@ -632,11 +705,7 @@ api_push_send(struct http_request *req)
 	s = xcalloc(1, sizeof(*s));
 	s->owner = session_user(req) != NULL && user_console(
 	    session_user(req)) == CROLE_OWNER;
-	msg = ucl_object_typed_new(UCL_OBJECT);
-	put(msg, "title", ucl_object_fromlstring(title, strnlen(title, 120)));
-	put(msg, "body", ucl_object_fromlstring(text, strnlen(text, 600)));
-	s->payload = (char *)ucl_object_emit(msg, UCL_EMIT_JSON_COMPACT);
-	ucl_object_unref(msg);
+	s->payload = payload(title, text);
 	it = NULL;
 	while ((e = ucl_object_iterate(sub_list(), &it, true)) != NULL &&
 	    s->ntargets < PUSH_MAX) {
@@ -646,10 +715,21 @@ api_push_send(struct http_request *req)
 		if (ep == NULL || k == NULL || a == NULL || strcmp(ep,
 		    except) == 0 || !mine(e, user))
 			continue;
+		/* Of the lengths webpush_encrypt() reads, or none. */
+		if (keys_bad(k, a) != NULL)
+			continue;
 		tg = &s->targets[s->ntargets];
 		tg->endpoint = strdup(ep);
 		tg->p256dh = webpush_unb64url(k, &len);
+		if (tg->p256dh != NULL && len != WEBPUSH_KEYLEN) {
+			free(tg->p256dh);
+			tg->p256dh = NULL;
+		}
 		tg->auth = webpush_unb64url(a, &len);
+		if (tg->auth != NULL && len != WEBPUSH_AUTHLEN) {
+			free(tg->auth);
+			tg->auth = NULL;
+		}
 		if (tg->endpoint == NULL || tg->p256dh == NULL ||
 		    tg->auth == NULL) {
 			free(tg->endpoint);

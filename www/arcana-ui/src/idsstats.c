@@ -1017,7 +1017,7 @@ view_replay(struct html *h, const ucl_object_t *l)
 	    ".pcapng,.cap,application/vnd.tcpdump.pcap\" data-upload=\""
 	    "ist-capture\"");
 	snprintf(url, sizeof(url), "/api/servers/%s/ids/pcap?instance=%s",
-	    sec_host_id(), open_name);
+	    rc_key(sec_host_id()), rc_key(open_name));
 	h_attr(h, "data-url", url);
 	h_raw(h, " hidden></label>");
 	if (up.busy && up.size > 0) {
@@ -1086,7 +1086,7 @@ ids_pcap_link(struct html *h, const char *inst, const char *file,
 	if (file == NULL || inst == NULL)
 		return;
 	snprintf(url, sizeof(url), "/api/servers/%s/ids/pcap-log?instance=%s&"
-	    "file=%s", sec_host_id(), inst, file);
+	    "file=%s", rc_key(sec_host_id()), rc_key(inst), rc_key(file));
 	snprintf(name, sizeof(name), "%s-%s.pcap", inst, file);
 	h_raw(h, "<a class=\"mono\" title=\"The packets Suricata logged for "
 	    "its alerts (pcap-log), downloaded through the console\"");

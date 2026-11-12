@@ -885,11 +885,11 @@ step_output(const char *b64)
 		bits -= 8;
 		c = (unsigned char)(acc >> bits);
 		if ((c < 0x20 && c != '\n' && c != '\t') || c == 0x7f)
-			h_fmt(&h, "\\%03o", c);
+			h_strf(&h, "\\%03o", c);
 		else if (c == '\\')
 			h_raw(&h, "\\\\");
 		else
-			h_fmt(&h, "%c", c);
+			h_strf(&h, "%c", c);
 	}
 	o = ucl_object_fromstring(h.s != NULL ? h.s : "");
 	free(h.s);
@@ -1186,12 +1186,12 @@ job_change(struct html *b, const char *json, const struct server *s)
 		ucl_object_insert_key(f, ucl_object_copy(v), key, 0, true);
 	}
 	t = (char *)ucl_object_emit(f, UCL_EMIT_JSON_COMPACT);
-	h_fmt(b, "{\"%s\":%s", jstr(o, "kind"), t != NULL ? t : "{}");
+	h_strf(b, "{\"%s\":%s", jstr(o, "kind"), t != NULL ? t : "{}");
 	free(t);
 	if (safe) {
 		h_raw(b, ",\"safe\":true");
 		if (s->safe_wait > 0)
-			h_fmt(b, ",\"safe-wait\":%d", s->safe_wait);
+			h_strf(b, ",\"safe-wait\":%d", s->safe_wait);
 	}
 	h_raw(b, "}");
 	ucl_object_unref(f);
@@ -1903,10 +1903,12 @@ refresh_jails(struct server *s, bool user)
 }
 
 struct hrc {
-	api_cb	*cb;
-	void	*arg;
-	char	 sid[9];
-	int	 op;		/* the task it made, read live */
+	api_cb		*cb;
+	void		*arg;
+	char		 sid[9];
+	int		 op;		/* the task it made, read live */
+	unsigned int	 gen;		/* the host shown's then (api_gen()) */
+	bool		 shown;		/* sid was the host shown */
 };
 
 /* A module the host's agent lacks (its own schema's 404), said so. */
@@ -1933,7 +1935,10 @@ hrc_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		    NULL ? " " : "", v != NULL ? v : "");
 		err = why;
 	}
-	h.cb(status, o, err, h.arg);
+	/* For the page as it showed the host, which it shows no more:
+	 * dropped (api_gen()). */
+	if (!h.shown || h.arg != NULL || !api_stale(h.gen, h.sid))
+		h.cb(status, o, err, h.arg);
 	/* Its task, over the socket: ended here. */
 	if (h.op != 0)
 		op_done(op_find(h.op), status >= 200 && status < 300, NULL,
@@ -1962,6 +1967,8 @@ host_yread(const struct server *s, const char *path, const char *input,
 	h->cb = cb;
 	h->arg = arg;
 	snprintf(h->sid, sizeof(h->sid), "%s", s->id);
+	h->gen = api_gen();
+	h->shown = cur_server() == s;
 	n = strcspn(path, "?");
 	snprintf(q, sizeof(q), "%s", path[n] == '?' ? path + n + 1 : "");
 	rc_h(url, sizeof(url), s->id, "%.*s", (int)n, path);
@@ -3743,22 +3750,17 @@ add_key(const char *name)
 	api("POST", "/api/auth/register/begin", "{}", register_begin_cb, c);
 }
 
+/*
+ * Signed out: the page loads itself again, nothing of the session kept
+ * in it (the hosts' data, the plugins' scripts); the sign-in page then
+ * asks the console which ways in it offers.
+ */
 static void
 logout_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 
-	app.screen = SCREEN_LOGIN;
-	app.auth_error[0] = '\0';
 	plugins_signed_out();
-	/* The reply is the status: which ways in the sign-in page offers. */
-	if (status == 200) {
-		app.ldap_on = jbool(o, "ldap");
-		app.password_on = jbool(o, "password");
-		app.password_full = jbool(o, "password_full");
-		app.no_keys = ucl_object_lookup(o, "keys") != NULL &&
-		    !jbool(o, "keys");
-	}
-	app.by_token = app.by_ldap = app.by_password = false;
+	arc_start_over(0);
 }
 
 void
@@ -4353,9 +4355,9 @@ notes_load(const char *component, const char *from, const char *to,
 {
 	char	url[256];
 
-	snprintf(url, sizeof(url), "component=%s&from=%s%s%s%s", component,
-	    from != NULL ? from : "", to != NULL && to[0] != '\0' ? "&to=" :
-	    "", to != NULL ? to : "", fresh ? "&fresh=1" : "");
+	snprintf(url, sizeof(url), "component=%s&from=%s%s%s%s",
+	    rc_key(component), rc_key(from), to != NULL && to[0] != '\0' ?
+	    "&to=" : "", rc_key(to), fresh ? "&fresh=1" : "");
 	snprintf(app.notes_for, sizeof(app.notes_for), "%s", component);
 	app.notes_busy = true;
 	app.notes_error[0] = '\0';
@@ -4711,7 +4713,7 @@ save_cases(struct html *b, const ucl_object_t *f, const char *key, int *n)
 	ucl_object_iter_t	 it;
 	ucl_object_t		*rows;
 	const char		*t, *c;
-	char			 field[64], name[64], *p;
+	char			 field[300], name[64], target[400], *p;
 	bool			 on, ok;
 
 	snprintf(name, sizeof(name), "%s", key);
@@ -4744,18 +4746,24 @@ save_cases(struct html *b, const ucl_object_t *f, const char *key, int *n)
 		    strcmp(c, jstr(e, "cooldown")) == 0)
 			continue;
 		(*n)++;
+		/* The type a key of the path (RFC 8040's), and a string of
+		 * the JSON: whatever it holds, it is one. */
+		snprintf(target, sizeof(target), "/%s=%s", name, rc_key(t));
 		if (on && c[0] == '\0') {
-			h_fmt(b, "%s{\"edit-id\":\"%d\",\"operation\":"
-			    "\"remove\",\"target\":\"/%s=%s\"}", *n > 1 ? "," :
-			    "", *n, name, t);
+			h_strf(b, "%s{\"edit-id\":\"%d\",\"operation\":"
+			    "\"remove\",\"target\":", *n > 1 ? "," : "", *n);
+			h_json(b, target);
+			h_raw(b, "}");
 			continue;
 		}
-		h_fmt(b, "%s{\"edit-id\":\"%d\",\"operation\":\"replace\","
-		    "\"target\":\"/%s=%s\",\"value\":{\"arcana-console:%s\":[{"
-		    "\"type\":\"%s\",\"include\":%s", *n > 1 ? "," : "", *n,
-		    name, t, name, t, on ? "true" : "false");
+		h_strf(b, "%s{\"edit-id\":\"%d\",\"operation\":\"replace\","
+		    "\"target\":", *n > 1 ? "," : "", *n);
+		h_json(b, target);
+		h_strf(b, ",\"value\":{\"arcana-console:%s\":[{\"type\":", name);
+		h_json(b, t);
+		h_strf(b, ",\"include\":%s", on ? "true" : "false");
 		if (c[0] != '\0')
-			h_fmt(b, ",\"cooldown\":%d", atoi(c));
+			h_strf(b, ",\"cooldown\":%d", atoi(c));
 		h_raw(b, "}]}}");
 	}
 	ucl_object_unref(rows);
@@ -4810,11 +4818,11 @@ save_settings(const ucl_object_t *f, int group)
 				*p = '-';
 		n++;
 		if (jbool(e, "number") && v[0] == '\0') {
-			h_fmt(&b, "%s{\"edit-id\":\"%d\",\"operation\":\"remove\","
+			h_strf(&b, "%s{\"edit-id\":\"%d\",\"operation\":\"remove\","
 			    "\"target\":\"/%s\"}", n > 1 ? "," : "", n, name);
 			continue;
 		}
-		h_fmt(&b, "%s{\"edit-id\":\"%d\",\"operation\":\"merge\","
+		h_strf(&b, "%s{\"edit-id\":\"%d\",\"operation\":\"merge\","
 		    "\"target\":\"/%s\",\"value\":{\"arcana-console:%s\":",
 		    n > 1 ? "," : "", n, name, name);
 		if (strcmp(type, "bool") == 0)

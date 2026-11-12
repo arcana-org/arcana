@@ -433,8 +433,10 @@ cap_splice(struct vc_capfile *f, size_t s, size_t e, const char *r,
 static char *
 render_cap(const char *cap, char type, const char *value)
 {
+	const char *q;
 	char *out = NULL, *p;
 	size_t n;
+	bool after;
 
 	if (type == '#') {
 		char *end;
@@ -452,6 +454,26 @@ render_cap(const char *cap, char type, const char *value)
 	}
 	if (type == 0)
 		return (strdup(cap));
+	/*
+	 * tskip() splits the fields at every ":", in quotes too: what
+	 * follows one in a string is a field of its own for the getters
+	 * (rtadvd reads an IPv6 address whole, its pieces after it
+	 * harmless).  So after a ":" a string holds addresses' hex
+	 * digits, dots, "/" and "," alone (rdnss's several), never
+	 * another field's name; and
+	 * "\072" is no way out: tskip() skips two characters past it, the
+	 * field's own ":" among them where it ends one.  No control
+	 * character either: a record is a line.
+	 */
+	for (q = value, after = false; *q != '\0'; q++) {
+		if ((unsigned char)*q < 0x20 || *q == 0x7f)
+			return (NULL);
+		if (*q == ':')
+			after = true;
+		else if (after && !isxdigit((unsigned char)*q) &&
+		    strchr("./,", *q) == NULL)
+			return (NULL);
+	}
 	n = strlen(cap) + 4 + 2 * strlen(value);
 	if ((out = malloc(n)) == NULL)
 		return (NULL);
@@ -502,7 +524,9 @@ vc_cap_set(struct vc_capfile *f, const char *name, const char *cap,
 		return (-1);
 	}
 	if ((field = render_cap(cap, type, value)) == NULL) {
-		cfail(err, errlen, "%s: not a number", cap);
+		cfail(err, errlen, type == '#' ? "%s: not a number" :
+		    "%s: a string holds no control character, and after a "
+		    "\":\" an address's hex digits alone", cap);
 		errno = EINVAL;
 		return (-1);
 	}

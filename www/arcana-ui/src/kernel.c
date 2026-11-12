@@ -299,7 +299,7 @@ view_kernel(struct html *h, struct server *s)
 			h_attr(h, "data-arg", name);
 			h_attr(h, "data-value", in_list(jget(kn.data, "kept"),
 			    name) ? "kept" : "");
-			h_fmt(h, "%s>Unload</button>", jint(o, "refs", 0) > 1 ?
+			h_rawf(h, "%s>Unload</button>", jint(o, "refs", 0) > 1 ?
 			    " title=\"Something else in the kernel holds it: "
 			    "the kernel refuses while that is so\"" : "");
 		}

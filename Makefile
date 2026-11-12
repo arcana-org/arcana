@@ -184,6 +184,11 @@ CHECK_ROOT_PARALLEL?=	6
 .if defined(CHECK_TMPDIR)
 _KYUA_ENV=	TMPDIR=${CHECK_TMPDIR}
 .endif
+# How long the console's cases wait for a server to come up, in
+# seconds (half a minute unless said): more on a loaded host.
+.if defined(CHECK_WAIT)
+_KYUA_ENV+=	ARCANA_TEST_WAIT=${CHECK_WAIT}
+.endif
 _KYUA_TOP=	${.OBJDIR}/Kyuafile
 _KYUA_OUT=	sed -n '/->/p;$$p' | sed -E 's|^([^ ]*/tests)/|\1: |'
 _KYUA_FAIL=	kyua report --results-file="$$db" --verbose \
@@ -226,6 +231,14 @@ check-wire: .PHONY
 check-nacm: .PHONY
 	@awk -f ${.CURDIR}/share/arcana/nacm.awk \
 	    ${.CURDIR}/share/arcana/nacm-allow ${.CURDIR}/share/yang/arcana-*.yang
+# The port's submodule tuples at the tree's pins (share/mk/check-port.sh).
+check-port: .PHONY
+	@sh ${.CURDIR}/share/mk/check-port.sh ${.CURDIR}
+# The page's markup: h_rawf()'s arguments this program's own markup,
+# h_strf() never markup (www/arcana-ui/tools/check-html.awk).
+check-html: .PHONY
+	@awk -f ${.CURDIR}/www/arcana-ui/tools/check-html.awk \
+	    ${.CURDIR}/www/arcana-ui/src/*.c
 # "all" as a dependency would not recurse: bsd.subdir.mk only descends
 # for targets named on the command line.
 check: .PHONY
@@ -233,7 +246,8 @@ check: .PHONY
 .if ${CBLINK_SUBMODULE} == "yes"
 	@${MAKE} -C ${.CURDIR}/www/arcana-ui check-yang
 .endif
-	@${MAKE} -C ${.CURDIR} check-wire check-nacm kyuafile
+	@${MAKE} -C ${.CURDIR} check-wire check-nacm check-html check-port \
+	    kyuafile
 	@db=${.OBJDIR}/check.db; rm -f "$$db"; set -o pipefail; \
 	cd ${.OBJDIR} && env ${_KYUA_ENV} kyua -v parallelism=${CHECK_PARALLEL} test \
 	    --results-file="$$db" -k Kyuafile 2>&1 | ${_KYUA_OUT} || \

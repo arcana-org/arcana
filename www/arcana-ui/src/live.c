@@ -118,9 +118,10 @@ live_yread(const char *sid, const char *path, const char *body,
 	}
 	q = json_quote(path);
 	memset(&m, 0, sizeof(m));
-	h_fmt(&m, "{\"id\":%d,\"server\":\"%s\",\"what\":\"restconf\","
-	    "\"path\":%s%s%s}", l->id, sid, q, body != NULL ? ",\"body\":" :
-	    "", body != NULL ? body : "");
+	h_strf(&m, "{\"id\":%d,\"server\":", l->id);
+	h_json(&m, sid);
+	h_strf(&m, ",\"what\":\"restconf\",\"path\":%s%s%s}", q, body != NULL ?
+	    ",\"body\":" : "", body != NULL ? body : "");
 	free(q);
 	msg = h_take(&m);
 	arc_stream_send(msg);

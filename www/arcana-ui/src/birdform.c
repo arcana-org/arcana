@@ -224,7 +224,7 @@ put_ifs(struct html *h, const char *list)
 			p++;
 		if (t <= p)
 			continue;
-		h_fmt(h, "%s%s\"%.*s\"", first ? "" : ", ", out ? "-" : "",
+		h_strf(h, "%s%s\"%.*s\"", first ? "" : ", ", out ? "-" : "",
 		    (int)(t - p), p);
 		first = false;
 	}
@@ -766,7 +766,9 @@ text_in(struct html *h, const char *label, const char *name, const char *v,
 	h_attr(h, "value", v);
 	if (ph != NULL)
 		h_attr(h, "placeholder", ph);
-	h_fmt(h, "%s></label>", extra != NULL ? extra : "");
+	if (extra != NULL)
+		h_raw(h, extra);	/* this program's attributes */
+	h_raw(h, "></label>");
 }
 
 static void
@@ -1386,52 +1388,52 @@ bf_text(const struct bfconf *c)
 
 	memset(&h, 0, sizeof(h));
 	if (strcmp(c->kind, "bgp") == 0) {
-		h_fmt(&h, "protocol bgp %s%s%s {\n", c->name, c->tmpl[0] != '\0' ?
+		h_strf(&h, "protocol bgp %s%s%s {\n", c->name, c->tmpl[0] != '\0' ?
 		    " from " : "", c->tmpl);
 		if (c->desc[0] != '\0')
-			h_fmt(&h, "\tdescription \"%s\";\n", c->desc);
+			h_strf(&h, "\tdescription \"%s\";\n", c->desc);
 		if (c->las[0] != '\0')
-			h_fmt(&h, "\tlocal as %s;\n", c->las);
-		h_fmt(&h, "\tneighbor %s%s%s;\n", c->nbr, c->nas[0] != '\0' ?
+			h_strf(&h, "\tlocal as %s;\n", c->las);
+		h_strf(&h, "\tneighbor %s%s%s;\n", c->nbr, c->nas[0] != '\0' ?
 		    " as " : "", c->nas);
 		if (c->src[0] != '\0')
-			h_fmt(&h, "\tsource address %s;\n", c->src);
+			h_strf(&h, "\tsource address %s;\n", c->src);
 		if (strcmp(c->multihop, "0") == 0)
 			h_raw(&h, "\tmultihop;\n");
 		else if (c->multihop[0] != '\0')
-			h_fmt(&h, "\tmultihop %s;\n", c->multihop);
+			h_strf(&h, "\tmultihop %s;\n", c->multihop);
 		if (c->pass[0] != '\0')
-			h_fmt(&h, "\tauthentication md5;\n\tpassword \"%s\";\n",
+			h_strf(&h, "\tauthentication md5;\n\tpassword \"%s\";\n",
 			    c->pass);
 		if (c->bfd >= 0)
-			h_fmt(&h, "\tbfd %s;\n", c->bfd ? "on" : "off");
+			h_strf(&h, "\tbfd %s;\n", c->bfd ? "on" : "off");
 		if (c->passive >= 0)
-			h_fmt(&h, "\tpassive %s;\n", c->passive ? "on" : "off");
+			h_strf(&h, "\tpassive %s;\n", c->passive ? "on" : "off");
 		if (c->efa >= 0)
-			h_fmt(&h, "\tenforce first as %s;\n", c->efa ? "on" :
+			h_strf(&h, "\tenforce first as %s;\n", c->efa ? "on" :
 			    "off");
 		for (i = 0; i < 2; i++) {
 			if (!c->ch[i])
 				continue;
-			h_fmt(&h, "\t%s {\n", chn[i]);
+			h_strf(&h, "\t%s {\n", chn[i]);
 			if (c->imp[i][0] != '\0')
-				h_fmt(&h, "\t\timport %s;\n", c->imp[i]);
+				h_strf(&h, "\t\timport %s;\n", c->imp[i]);
 			if (c->exp[i][0] != '\0')
-				h_fmt(&h, "\t\texport %s;\n", c->exp[i]);
+				h_strf(&h, "\t\texport %s;\n", c->exp[i]);
 			if (c->nhself[i])
 				h_raw(&h, "\t\tnext hop self;\n");
 			h_raw(&h, "\t};\n");
 		}
 	} else if (strcmp(c->kind, "ospf") == 0) {
-		h_fmt(&h, "protocol ospf %s %s {\n", c->ver, c->name);
+		h_strf(&h, "protocol ospf %s %s {\n", c->ver, c->name);
 		if (c->ecmp >= 0)
-			h_fmt(&h, "\tecmp %s;\n", c->ecmp ? "yes" : "no");
-		h_fmt(&h, "\t%s {\n", chn[c->chan]);
+			h_strf(&h, "\tecmp %s;\n", c->ecmp ? "yes" : "no");
+		h_strf(&h, "\t%s {\n", chn[c->chan]);
 		if (c->imp[0][0] != '\0')
-			h_fmt(&h, "\t\timport %s;\n", c->imp[0]);
+			h_strf(&h, "\t\timport %s;\n", c->imp[0]);
 		if (c->exp[0][0] != '\0')
-			h_fmt(&h, "\t\texport %s;\n", c->exp[0]);
-		h_fmt(&h, "\t};\n\tarea %s {\n", c->area);
+			h_strf(&h, "\t\texport %s;\n", c->exp[0]);
+		h_strf(&h, "\t};\n\tarea %s {\n", c->area);
 		for (i = 0; i < c->nifs; i++) {
 			x = &c->ifs[i];
 			if (x->cost[0] == '\0' && x->type[0] == '\0' &&
@@ -1446,13 +1448,13 @@ bf_text(const struct bfconf *c)
 			put_ifs(&h, x->name);
 			h_raw(&h, " {\n");
 			if (x->cost[0] != '\0')
-				h_fmt(&h, "\t\t\tcost %s;\n", x->cost);
+				h_strf(&h, "\t\t\tcost %s;\n", x->cost);
 			if (x->type[0] != '\0')
-				h_fmt(&h, "\t\t\ttype %s;\n", x->type);
+				h_strf(&h, "\t\t\ttype %s;\n", x->type);
 			if (x->hello[0] != '\0')
-				h_fmt(&h, "\t\t\thello %s;\n", x->hello);
+				h_strf(&h, "\t\t\thello %s;\n", x->hello);
 			if (x->dead[0] != '\0')
-				h_fmt(&h, "\t\t\tdead %s;\n", x->dead);
+				h_strf(&h, "\t\t\tdead %s;\n", x->dead);
 			if (x->bfd)
 				h_raw(&h, "\t\t\tbfd on;\n");
 			if (x->stub)
@@ -1461,9 +1463,9 @@ bf_text(const struct bfconf *c)
 		}
 		h_raw(&h, "\t};\n");
 	} else {
-		h_fmt(&h, "protocol bfd %s {\n", c->name);
+		h_strf(&h, "protocol bfd %s {\n", c->name);
 		if (c->accept[0] != '\0')
-			h_fmt(&h, "\taccept %s;\n", c->accept);
+			h_strf(&h, "\taccept %s;\n", c->accept);
 		for (i = 0; i < c->nifs; i++) {
 			x = &c->ifs[i];
 			if (x->rx[0] == '\0' && x->tx[0] == '\0' &&
@@ -1478,26 +1480,26 @@ bf_text(const struct bfconf *c)
 			h_raw(&h, " {\n");
 			/* One interval for both, as it is often said. */
 			if (x->rx[0] != '\0' && strcmp(x->rx, x->tx) == 0)
-				h_fmt(&h, "\t\tinterval %s ms;\n", x->rx);
+				h_strf(&h, "\t\tinterval %s ms;\n", x->rx);
 			else {
 				if (x->rx[0] != '\0')
-					h_fmt(&h, "\t\tmin rx interval %s ms;\n",
+					h_strf(&h, "\t\tmin rx interval %s ms;\n",
 					    x->rx);
 				if (x->tx[0] != '\0')
-					h_fmt(&h, "\t\tmin tx interval %s ms;\n",
+					h_strf(&h, "\t\tmin tx interval %s ms;\n",
 					    x->tx);
 			}
 			if (x->mult[0] != '\0')
-				h_fmt(&h, "\t\tmultiplier %s;\n", x->mult);
+				h_strf(&h, "\t\tmultiplier %s;\n", x->mult);
 			h_raw(&h, "\t};\n");
 		}
 		for (i = 0; i < c->nnbrs; i++) {
-			h_fmt(&h, "\tneighbor %s", c->nbrs[i].addr);
+			h_strf(&h, "\tneighbor %s", c->nbrs[i].addr);
 			if (c->nbrs[i].dev[0] != '\0')
-				h_fmt(&h, " dev \"%s\"", c->nbrs[i].dev);
+				h_strf(&h, " dev \"%s\"", c->nbrs[i].dev);
 			if (c->nbrs[i].local[0] != '\0')
-				h_fmt(&h, " local %s", c->nbrs[i].local);
-			h_fmt(&h, "%s;\n", c->nbrs[i].multihop ? " multihop" :
+				h_strf(&h, " local %s", c->nbrs[i].local);
+			h_strf(&h, "%s;\n", c->nbrs[i].multihop ? " multihop" :
 			    "");
 		}
 	}
@@ -1510,11 +1512,11 @@ bf_text(const struct bfconf *c)
 		/* The comments under the opening line, a # line each. */
 		memset(&o, 0, sizeof(o));
 		first = strcspn(h.s, "\n") + 1;
-		h_fmt(&o, "%.*s", (int)first, h.s);
+		h_strf(&o, "%.*s", (int)first, h.s);
 		for (p = c->notes; *p != '\0'; p = *nl != '\0' ? nl + 1 : nl) {
 			nl = p + strcspn(p, "\r\n");
 			if (nl > p)
-				h_fmt(&o, "\t# %.*s\n", (int)(nl - p), p);
+				h_strf(&o, "\t# %.*s\n", (int)(nl - p), p);
 		}
 		h_raw(&o, h.s + first);
 		free(h.s);

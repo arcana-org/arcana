@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1589,57 +1590,147 @@ done:
 	return (rc);
 }
 
+/* A directory or a link only root or this process could have made. */
+static bool
+ours(uid_t uid)
+{
+
+	return (uid == 0 || uid == geteuid());
+}
+
 /*
  * The file written to path atomically: a temporary file next to it,
- * the old one's mode and owner (mode for a new one), fsync, rename.
+ * the old one's mode and owner (mode for a new one), fsync, rename,
+ * fsync of its directory; the directory opened once and every step
+ * made in it (openat(2)'s family), so that nothing swapped into the
+ * path meanwhile is written.  path is trusted: a host's file, never one
+ * beneath a jail's root, whose owner could aim it anywhere.
+ *
+ * A symbolic link the administrator made (root's, or this process's
+ * user's) is written through: the file it names is replaced, beside
+ * itself, and the link stays.  Anyone else's link is refused, neither
+ * followed nor replaced.  The directory written in is root's or this
+ * user's, and no one else may write in it (group, other, sticky or
+ * not): else refused.  A file of several hard links is refused:
+ * renamed over, the others would keep the old text, two files from
+ * then on.
  */
 int
 vc_write(const struct vc_file *f, const char *path, mode_t mode, char *err,
     size_t errlen)
 {
-	struct stat sb;
-	char tmp[MAXPATHLEN];
+	struct stat sb, db;
+	char tmp[MAXPATHLEN], real[MAXPATHLEN], dir[MAXPATHLEN];
+	const char *base, *slash;
 	size_t off;
 	ssize_t w;
 	bool old;
-	int fd;
+	int fd, dfd;
 
-	if (!(old = stat(path, &sb) == 0) && errno != ENOENT) {
-		fail(err, errlen, "stat %s: %s", path, strerror(errno));
-		return (-1);
+	if (lstat(path, &sb) == 0 && S_ISLNK(sb.st_mode)) {
+		if (!ours(sb.st_uid)) {
+			fail(err, errlen, "%s: a symbolic link of uid %ju, "
+			    "neither root's nor this user's: not followed",
+			    path, (uintmax_t)sb.st_uid);
+			errno = ELOOP;
+			return (-1);
+		}
+		if (realpath(path, real) == NULL) {
+			fail(err, errlen, "%s: a symbolic link that names "
+			    "nothing: %s", path, strerror(errno));
+			return (-1);
+		}
+		path = real;
 	}
-	if (snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path) >=
+	/* Its directory, pinned: the checks and the writes all in it. */
+	if ((slash = strrchr(path, '/')) == NULL) {
+		snprintf(dir, sizeof(dir), ".");
+		base = path;
+	} else {
+		snprintf(dir, sizeof(dir), "%.*s", slash == path ? 1 :
+		    (int)(slash - path), path);
+		base = slash + 1;
+	}
+	if (*base == '\0' || snprintf(tmp, sizeof(tmp), "%s.XXXXXX", base) >=
 	    (int)sizeof(tmp)) {
-		fail(err, errlen, "%s: path too long", path);
-		errno = ENAMETOOLONG;
+		fail(err, errlen, "%s: not a file's path", path);
+		errno = EINVAL;
 		return (-1);
 	}
-	if ((fd = mkstemp(tmp)) == -1) {
-		fail(err, errlen, "mkstemp %s: %s", tmp, strerror(errno));
+	if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC)) == -1 || fstat(dfd, &db) == -1) {
+		fail(err, errlen, "%s: %s", dir, strerror(errno));
+		if (dfd != -1)
+			close(dfd);
+		return (-1);
+	}
+	if (!ours(db.st_uid) || (db.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		fail(err, errlen, "%s: %s, where another could put a file in "
+		    "its place: not written", dir, !ours(db.st_uid) ?
+		    "a directory neither root's nor this user's" :
+		    "a directory others may write in");
+		close(dfd);
+		errno = EPERM;
+		return (-1);
+	}
+	if (!(old = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW) == 0) &&
+	    errno != ENOENT) {
+		fail(err, errlen, "stat %s: %s", path, strerror(errno));
+		close(dfd);
+		return (-1);
+	}
+	if (old && !S_ISREG(sb.st_mode)) {
+		fail(err, errlen, "%s: not a regular file", path);
+		close(dfd);
+		errno = EFTYPE;
+		return (-1);
+	}
+	if (old && sb.st_nlink > 1) {
+		fail(err, errlen, "%s: %ju hard links: written anew, the "
+		    "others would keep the old text; make it one file, or "
+		    "the others symbolic links", path,
+		    (uintmax_t)sb.st_nlink);
+		close(dfd);
+		errno = EMLINK;
+		return (-1);
+	}
+	if ((fd = mkostempsat(dfd, tmp, 0, O_CLOEXEC)) == -1) {
+		fail(err, errlen, "%s/%s: %s", dir, tmp, strerror(errno));
+		close(dfd);
 		return (-1);
 	}
 	for (off = 0; off < f->len; off += (size_t)w)
 		if ((w = write(fd, f->text + off, f->len - off)) <= 0) {
-			fail(err, errlen, "write %s: %s", tmp,
+			fail(err, errlen, "write %s/%s: %s", dir, tmp,
 			    strerror(errno));
 			goto bad;
 		}
 	if (fchmod(fd, old ? sb.st_mode & ALLPERMS : mode) == -1 ||
 	    (old && geteuid() == 0 && fchown(fd, sb.st_uid, sb.st_gid) ==
 	    -1) || fsync(fd) == -1) {
-		fail(err, errlen, "%s: %s", tmp, strerror(errno));
+		fail(err, errlen, "%s/%s: %s", dir, tmp, strerror(errno));
 		goto bad;
 	}
 	close(fd);
-	if (rename(tmp, path) == -1) {
+	fd = -1;
+	/* The name replaced, in the directory pinned. */
+	if (renameat(dfd, tmp, dfd, base) == -1) {
 		fail(err, errlen, "rename %s: %s", path, strerror(errno));
-		unlink(tmp);
+		goto bad;
+	}
+	/* The rename itself kept: the directory synced. */
+	if (fsync(dfd) == -1) {
+		fail(err, errlen, "fsync %s: %s", dir, strerror(errno));
+		close(dfd);
 		return (-1);
 	}
+	close(dfd);
 	return (0);
 bad:
-	close(fd);
-	unlink(tmp);
+	if (fd != -1)
+		close(fd);
+	(void)unlinkat(dfd, tmp, 0);
+	close(dfd);
 	return (-1);
 }
 

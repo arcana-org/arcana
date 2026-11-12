@@ -1006,9 +1006,10 @@ view_mail(struct html *h, struct server *s)
 					n++;
 			}
 		}
-		h_fmt(h, "<tr%s><td class=\"mono\">%s</td><td class=\"dim\">%s"
-		    "</td><td>", strcmp(ml.table, tables[i]) == 0 ? " class=\"on\""
-		    : "", tables[i], holds[i]);
+		h_raw(h, strcmp(ml.table, tables[i]) == 0 ? "<tr class=\"on\">" :
+		    "<tr>");
+		h_fmt(h, "<td class=\"mono\">%s</td><td class=\"dim\">%s</td><td>",
+		    tables[i], holds[i]);
 		if (t == NULL)
 			h_raw(h, "<span class=\"dim\">not written yet</span>");
 		else

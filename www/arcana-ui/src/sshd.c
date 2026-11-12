@@ -767,7 +767,7 @@ ssh_modal(struct html *h)
 				struct html	 e;
 
 				memset(&e, 0, sizeof(e));
-				h_fmt(&e, "%s%s%s%s", other[0] != '\0' ? "," : "",
+				h_strf(&e, "%s%s%s%s", other[0] != '\0' ? "," : "",
 				    name, val[0] != '\0' || q ? "=" : "", q ?
 				    "\"" : "");
 				if (q)
@@ -904,7 +904,7 @@ ssh_form(const char *form, const ucl_object_t *f)
 			snprintf(key, sizeof(key), "o_%s", kopt[k].name);
 			if (kopt[k].flag) {
 				if (jbool(f, key))
-					h_fmt(&o, "%s%s", o.s != NULL ? "," : "",
+					h_strf(&o, "%s%s", o.s != NULL ? "," : "",
 					    kopt[k].name);
 				continue;
 			}
@@ -918,7 +918,7 @@ ssh_form(const char *form, const ucl_object_t *f)
 				    "%s is one line", kopt[k].say);
 				return (true);
 			}
-			h_fmt(&o, "%s%s=\"", o.s != NULL ? "," : "",
+			h_strf(&o, "%s%s=\"", o.s != NULL ? "," : "",
 			    kopt[k].name);
 			quoted_in(&o, v);
 			h_raw(&o, "\"");
@@ -932,7 +932,7 @@ ssh_form(const char *form, const ucl_object_t *f)
 			return (true);
 		}
 		if (v[0] != '\0')
-			h_fmt(&o, "%s%s", o.s != NULL ? "," : "", v);
+			h_strf(&o, "%s%s", o.s != NULL ? "," : "", v);
 		snprintf(what, sizeof(what), "options of %s's key", sh.user);
 		ssh_job(s, "options", NULL, sh.fp, o.s != NULL ? o.s : "",
 		    sh.user, what);

@@ -846,7 +846,7 @@ submit_form(const char *form, const ucl_object_t *f)
 			}
 			snprintf(word, sizeof(word), "%.*s", (int)n, p);
 			q = json_quote(word);
-			h_fmt(&b, "%s%s", nw++ > 0 ? "," : "", q);
+			h_strf(&b, "%s%s", nw++ > 0 ? "," : "", q);
 			free(q);
 			p += n;
 		}
@@ -947,7 +947,7 @@ submit_form(const char *form, const ucl_object_t *f)
 				}
 				snprintf(word, sizeof(word), "%.*s", (int)n, p);
 				w = json_quote(word);
-				h_fmt(&b, "%s%s", nw++ > 0 ? "," : "", w);
+				h_strf(&b, "%s%s", nw++ > 0 ? "," : "", w);
 				free(w);
 				p += n;
 			}
@@ -2362,6 +2362,10 @@ main(void)
 		free(t);
 	}
 	app.trace_schema = false;
+	/* Loaded anew because the session ended (api.c). */
+	if (arc_ended_take())
+		snprintf(app.auth_error, sizeof(app.auth_error),
+		    "Your session ended. Touch your key to continue.");
 	{
 		char *r = arc_loc_get();
 

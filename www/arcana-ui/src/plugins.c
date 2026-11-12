@@ -474,7 +474,7 @@ set_plugins(struct html *h)
 			h_raw(h, "</span> ");
 			n++;
 		}
-		h_fmt(h, "%s</td><td>%s</td><td>", n == 0 ?
+		h_rawf(h, "%s</td><td>%s</td><td>", n == 0 ?
 		    "<span class=\"dim\">—</span>" : "", jbool(p, "enabled") ?
 		    "yes" : "no");
 		state_cell(h, p);

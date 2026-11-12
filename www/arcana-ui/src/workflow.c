@@ -1174,7 +1174,7 @@ view_list(struct html *h)
 			}
 			n++;
 			h_fmt(h, "<li class=\"pick %s\" data-act=\"wf-run-open\"",
-			    jstr(r, "state") != NULL ? jstr(r, "state") : "");
+			    h_word(jstr(r, "state"), ""));
 			/* A run's id is a number. */
 			h_fmt(h, " data-arg=\"%lld\"", (long long)jint(r, "id",
 			    0));
@@ -1191,8 +1191,7 @@ view_list(struct html *h)
 			while ((x = ucl_object_iterate(jget(r, "hosts"), &xit,
 			    true)) != NULL) {
 				h_fmt(h, "<span class=\"chip %s\">",
-				    jstr(x, "state") != NULL ? jstr(x, "state") :
-				    "");
+				    h_word(jstr(x, "state"), ""));
 				h_txt(h, jstr(x, "name"));
 				h_raw(h, "</span>");
 			}
@@ -1499,7 +1498,7 @@ view_run(struct html *h)
 		n = (int)ucl_array_size(jget(x, "steps"));
 		h_fmt(h, "<div class=\"wfrow %s\" style=\"grid-template-"
 		    "columns:auto repeat(%d,auto)\"><span class=\"wfhost\">",
-		    jstr(x, "state") != NULL ? jstr(x, "state") : "",
+		    h_word(jstr(x, "state"), ""),
 		    n > 0 ? 2 * n - 1 : 1);
 		h_txt(h, jstr(x, "name"));
 		h_raw(h, "</span>");
@@ -1516,8 +1515,8 @@ view_run(struct html *h)
 				    1 + 2 * si);
 			h_fmt(h, "<button class=\"wfstep %s%s\" style=\""
 			    "grid-row:1;grid-column:%d\" data-act=\""
-			    "wf-step-pick\" data-arg=\"%s\"", jstr(s, "state") !=
-			    NULL ? jstr(s, "state") : "", strcmp(wf.pick, key) ==
+			    "wf-step-pick\" data-arg=\"%s\"", h_word(jstr(s,
+			    "state"), ""), strcmp(wf.pick, key) ==
 			    0 ? " on" : "", 2 + 2 * si, key);
 			h_attr(h, "title", jstr(s, "error") != NULL ? jstr(s,
 			    "error") : jstr(s, "title"));

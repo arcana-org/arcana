@@ -3,6 +3,7 @@
 
 # Third-party builds and development state.
 /build/
+.claude/
 
 # Build products: everything goes to obj/, mirroring the tree
 # (share/mk/arcana.mk), unless MAKEOBJDIRPREFIX says otherwise.

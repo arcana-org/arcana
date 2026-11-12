@@ -16,6 +16,7 @@
 
 #include <atf-c.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -703,6 +704,74 @@ ATF_TC_BODY(errors, tc)
 }
 
 /* rc.conf.d's fragments: a directory of the service's, not its file. */
+/*
+ * vc_write() through a symbolic link: the file it names replaced, the
+ * link a link still; a file of two hard links refused, neither changed.
+ */
+ATF_TC_WITHOUT_HEAD(write_links);
+ATF_TC_BODY(write_links, tc)
+{
+	struct stat sb;
+	struct vc_file f;
+	char err[256], buf[256];
+	int fd;
+	ssize_t n;
+
+	ATF_REQUIRE_EQ(0, mkdir("managed", 0755));
+	put("managed/rc.conf", "hostname=a\n", 11);
+	ATF_REQUIRE_EQ(0, symlink("managed/rc.conf", "rc.conf"));
+	ATF_REQUIRE_EQ(0, vc_read(&f, VC_SH, "rc.conf", err, sizeof(err)));
+	set(&f, "hostname", "b");
+	ATF_REQUIRE_MSG(vc_write(&f, "rc.conf", 0644, err, sizeof(err)) == 0,
+	    "%s", err);
+	vc_free(&f);
+	ATF_REQUIRE_EQ(0, lstat("rc.conf", &sb));
+	ATF_CHECK(S_ISLNK(sb.st_mode));
+	ATF_REQUIRE((fd = open("managed/rc.conf", O_RDONLY)) != -1);
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	ATF_REQUIRE(n > 0);
+	buf[n] = '\0';
+	ATF_CHECK_MSG(strstr(buf, "hostname=\"b\"") != NULL ||
+	    strstr(buf, "hostname=b") != NULL, "%s", buf);
+
+	/* Two hard links: refused, as they were. */
+	put("one.conf", "hostname=a\n", 11);
+	ATF_REQUIRE_EQ(0, link("one.conf", "two.conf"));
+	ATF_REQUIRE_EQ(0, vc_read(&f, VC_SH, "one.conf", err, sizeof(err)));
+	set(&f, "hostname", "c");
+	ATF_CHECK_EQ(-1, vc_write(&f, "one.conf", 0644, err, sizeof(err)));
+	ATF_CHECK_EQ(EMLINK, errno);
+	ATF_CHECK_MSG(strstr(err, "hard links") != NULL, "%s", err);
+	vc_free(&f);
+	ATF_REQUIRE_EQ(0, stat("one.conf", &sb));
+	ATF_CHECK_EQ(2, sb.st_nlink);
+
+	/*
+	 * Through a link into a directory others may write in, where
+	 * another could swap the file: refused, link and file as they
+	 * were.  A link of another user's is refused the same (not made
+	 * here: chown(2) of a link takes root).
+	 */
+	ATF_REQUIRE_EQ(0, mkdir("open", 0755));
+	ATF_REQUIRE_EQ(0, chmod("open", 0775));
+	put("open/rc.conf", "hostname=a\n", 11);
+	ATF_REQUIRE_EQ(0, symlink("open/rc.conf", "loose.conf"));
+	ATF_REQUIRE_EQ(0, vc_read(&f, VC_SH, "loose.conf", err, sizeof(err)));
+	set(&f, "hostname", "d");
+	ATF_CHECK_EQ(-1, vc_write(&f, "loose.conf", 0644, err, sizeof(err)));
+	ATF_CHECK_MSG(strstr(err, "others may write") != NULL, "%s", err);
+	vc_free(&f);
+	ATF_REQUIRE_EQ(0, lstat("loose.conf", &sb));
+	ATF_CHECK(S_ISLNK(sb.st_mode));
+	ATF_REQUIRE((fd = open("open/rc.conf", O_RDONLY)) != -1);
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	ATF_REQUIRE(n > 0);
+	buf[n] = '\0';
+	ATF_CHECK_STREQ("hostname=a\n", buf);
+}
+
 ATF_TC_WITHOUT_HEAD(rcd);
 ATF_TC_BODY(rcd, tc)
 {
@@ -1427,6 +1496,17 @@ ATF_TC_BODY(rtadvd_edits, tc)
 	ATF_CHECK_EQ(ENOENT, errno);
 	ATF_CHECK_EQ(-1, vc_cap_set(&f, "ef0", "mtu", '#', "-1", err,
 	    sizeof(err)));
+	/* A string that would end its field and begin another, or its
+	 * line: rtadvd splits at every ":", an address's pieces alone
+	 * harmless after one. */
+	ATF_CHECK_EQ(-1, vc_cap_set(&f, "ef0", "rdnss", '=', "x:raflags#0",
+	    err, sizeof(err)));
+	ATF_CHECK_MSG(strstr(err, "\":\"") != NULL, "%s", err);
+	ATF_CHECK_EQ(-1, vc_cap_set(&f, "ef0", "rdnss", '=', "x\nef1:", err,
+	    sizeof(err)));
+	ATF_CHECK(vc_cap_field("rdnss", '=', "a:mtu#9000") == NULL);
+	ATF_CHECK(vc_cap_field("rdnss", '=', "2001:db8::1,2001:db8::2") !=
+	    NULL);
 	ATF_CHECK_EQ(-1, vc_cap_add_record(&f, "ef0", em9, 2, err,
 	    sizeof(err)));
 	ATF_CHECK_EQ(EEXIST, errno);
@@ -1474,9 +1554,12 @@ ATF_TC_BODY(rtadvd_record, tc)
 	    sizeof(err)));
 	ATF_CHECK_EQ(-1, vc_cap_set_record(&f, "bad name", x0, 1, err,
 	    sizeof(err)));
-	ATF_REQUIRE((s = vc_cap_field("addr", '=', "2001:db8::\"x")) != NULL);
-	ATF_CHECK_STREQ("addr=\"2001:db8::\\\"x\"", s);
+	/* A quote escaped; after a ":", where rtadvd splits the field,
+	 * none at all. */
+	ATF_REQUIRE((s = vc_cap_field("addr", '=', "a\"x")) != NULL);
+	ATF_CHECK_STREQ("addr=\"a\\\"x\"", s);
 	free(s);
+	ATF_CHECK(vc_cap_field("addr", '=', "2001:db8::\"x") == NULL);
 	ATF_CHECK(vc_cap_field("mtu", '#', "12a") == NULL);
 	vc_cap_free(&f);
 }
@@ -1523,6 +1606,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, comments);
 	ATF_TP_ADD_TC(tp, uncomments);
 	ATF_TP_ADD_TC(tp, errors);
+	ATF_TP_ADD_TC(tp, write_links);
 	ATF_TP_ADD_TC(tp, rcd);
 	ATF_TP_ADD_TC(tp, conflicts);
 	ATF_TP_ADD_TC(tp, rc_values);

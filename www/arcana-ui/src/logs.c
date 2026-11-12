@@ -167,22 +167,6 @@ event_line(const ucl_object_t *e)
 	return (l);
 }
 
-/* s for a URL's query, %XX but letters, digits and -._~ (RFC 3986). */
-static void
-url_part(struct html *h, const char *s)
-{
-
-	for (; *s != '\0'; s++) {
-		unsigned char	c = (unsigned char)*s;
-
-		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		    (c >= '0' && c <= '9') || strchr("-._~", c) != NULL)
-			h_fmt(h, "%c", c);
-		else
-			h_fmt(h, "%%%02X", c);
-	}
-}
-
 /*
  * An undo's report: shown, and a link that opens an issue of Arcana's
  * with it, for the admin to file if they choose; Arcana sends nothing.
@@ -197,9 +181,9 @@ report_out(struct html *h, const char *report)
 	h_raw(h, "</pre><a class=\"ghost small\" target=\"_blank\" "
 	    "rel=\"noopener\" href=\"https://github.com/spmzt/arcana/issues/"
 	    "new?title=");
-	url_part(h, "An undo of a confirmed commit failed");
+	h_url(h, "An undo of a confirmed commit failed");
 	h_raw(h, "&amp;body=");
-	url_part(h, report);
+	h_url(h, report);
 	h_raw(h, "\">Open an issue with it</a></details>");
 }
 
@@ -404,29 +388,29 @@ logs_read(struct server *s, bool follow)
 		lg.seq = 0;
 	memset(&u, 0, sizeof(u));
 	if (strcmp(lg.name, EVENTS) == 0) {
-		h_fmt(&u, "{\"after\":\"%lld\"}", follow ? lg.position : 0LL);
+		h_strf(&u, "{\"after\":\"%lld\"}", follow ? lg.position : 0LL);
 		url = h_take(&u);
 		host_yread(s, "arcana-events:events/read", url, "read the "
 		    "events", !follow, yev_cb, strdup(s->id));
 		free(url);
 		return;
 	}
-	h_fmt(&u, "{\"lines\":%d", follow ? LOGS_MAX : lg.want);
+	h_strf(&u, "{\"lines\":%d", follow ? LOGS_MAX : lg.want);
 	q = json_quote(lg.name[0] != '\0' ? lg.name : "messages");
-	h_fmt(&u, ",\"name\":%s", q);
+	h_strf(&u, ",\"name\":%s", q);
 	free(q);
 	if (lg.jail[0] != '\0') {
 		q = json_quote(lg.jail);
-		h_fmt(&u, ",\"jail\":%s", q);
+		h_strf(&u, ",\"jail\":%s", q);
 		free(q);
 	}
 	if (lg.text[0] != '\0') {
 		q = json_quote(lg.text);
-		h_fmt(&u, ",\"filter\":%s", q);
+		h_strf(&u, ",\"filter\":%s", q);
 		free(q);
 	}
 	if (follow)
-		h_fmt(&u, ",\"position\":\"%lld\"", lg.position);
+		h_strf(&u, ",\"position\":\"%lld\"", lg.position);
 	h_raw(&u, "}");
 	url = h_take(&u);
 	/* Followed, it is read on by itself: no task. */

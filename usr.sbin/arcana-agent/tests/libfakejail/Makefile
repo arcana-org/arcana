@@ -9,6 +9,10 @@ MAN=
 .include "${.CURDIR}/../../../../share/mk/arcana.mk"
 
 SHLIBDIR=	${TESTSBASE}/arcana/arcana-agent
+# It defines libc's own functions (gethostname(3) and the rest) to stand
+# in for them: _FORTIFY_SOURCE's inline wrappers of those would be
+# defined twice.
+FORTIFY_SOURCE=	0
 
 # No mtree(8) hierarchy outside the tree: create the directory first.
 beforeinstall: .PHONY

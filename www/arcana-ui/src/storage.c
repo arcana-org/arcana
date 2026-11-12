@@ -399,7 +399,7 @@ sjob(struct server *s, const char *kind, const char *verb, const char *flags,
 	int		 i;
 
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"kind\":\"%s\",\"verb\":\"%s\"%s,\"args\":[", kind, verb,
+	h_strf(&b, "{\"kind\":\"%s\",\"verb\":\"%s\"%s,\"args\":[", kind, verb,
 	    flags);
 	snprintf(title, sizeof(title), "%s %s", strcmp(kind, "mount") == 0 ?
 	    "" : kind, verb);
@@ -407,7 +407,7 @@ sjob(struct server *s, const char *kind, const char *verb, const char *flags,
 	for (i = 0; i < n; i++) {
 		a = va_arg(ap, const char *);
 		q = json_quote(a);
-		h_fmt(&b, "%s", i > 0 ? "," : "");
+		h_strf(&b, "%s", i > 0 ? "," : "");
 		h_raw(&b, q);
 		free(q);
 		if (strlen(title) + strlen(a) + 2 < sizeof(title)) {
@@ -431,12 +431,12 @@ sjobv(struct server *s, const char *kind, const char *verb, const char *flags,
 	int		 i;
 
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"kind\":\"%s\",\"verb\":\"%s\"%s,\"args\":[", kind, verb,
+	h_strf(&b, "{\"kind\":\"%s\",\"verb\":\"%s\"%s,\"args\":[", kind, verb,
 	    flags);
 	snprintf(title, sizeof(title), "%s %s", kind, verb);
 	for (i = 0; i < n; i++) {
 		q = json_quote(v[i]);
-		h_fmt(&b, "%s", i > 0 ? "," : "");
+		h_strf(&b, "%s", i > 0 ? "," : "");
 		h_raw(&b, q);
 		free(q);
 		if (strlen(title) + strlen(v[i]) + 2 < sizeof(title)) {
@@ -856,7 +856,7 @@ view_snapshots(struct html *h)
 	for (r = 0; (o = rows[r]) != NULL; r++) {
 		name = jstr(o, "name") != NULL ? jstr(o, "name") : "";
 		n++;
-		h_fmt(h, "<tr%s", sel_find(name) != -1 ? " class=\"picked\"" :
+		h_rawf(h, "<tr%s", sel_find(name) != -1 ? " class=\"picked\"" :
 		    "");
 		h_attr(h, "data-snap", name);
 		h_raw(h, "><td class=\"mono\"><input type=\"checkbox\" "
@@ -1405,7 +1405,7 @@ view_transfers(struct html *h, struct server *s)
 			    "Sent between hosts</span></h4><ul class=\"xfers\">");
 		st = jstr(o, "state") != NULL ? jstr(o, "state") : "?";
 		fmt_size(size, sizeof(size), jnum(o, "bytes", 0));
-		h_fmt(h, "<li class=\"%s\"><b>", st);
+		h_fmt(h, "<li class=\"%s\"><b>", h_word(st, ""));
 		h_txt(h, jstr(o, "snapshot"));
 		h_raw(h, "</b>");
 		if (jstr(o, "since") != NULL) {
@@ -2348,7 +2348,7 @@ storage_form(const char *form, const ucl_object_t *f)
 		}
 		if (create || n > 0) {
 			memset(&b, 0, sizeof(b));
-			h_fmt(&b, "{\"kind\":\"zfs\",\"verb\":\"%s\",\"args\":[",
+			h_strf(&b, "{\"kind\":\"zfs\",\"verb\":\"%s\",\"args\":[",
 			    create ? "create" : "set");
 			q = json_quote(create ? name : sg.target);
 			h_raw(&b, q);

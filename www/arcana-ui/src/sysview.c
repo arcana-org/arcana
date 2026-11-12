@@ -625,9 +625,10 @@ view_hostsec(struct html *h, struct server *s)
 	for (i = 0; i < nitems(macs); i++) {
 		bool	on = jbool(jget(o, "mac"), macs[i].mod);
 
-		h_fmt(h, "<tr><td class=\"mono\">%s</td><td>%s%s</td><td>",
-		    macs[i].mod, macs[i].what, macs[i].boot ? " <small class="
-		    "\"dim\">(loaded at boot alone: loader.conf)</small>" : "");
+		h_fmt(h, "<tr><td class=\"mono\">%s</td><td>%s", macs[i].mod,
+		    macs[i].what);
+		h_raw(h, macs[i].boot ? " <small class=\"dim\">(loaded at boot "
+		    "alone: loader.conf)</small></td><td>" : "</td><td>");
 		chip(h, on, "loaded", "not loaded");
 		h_raw(h, "</td><td class=\"acts\">");
 		if (!macs[i].boot)

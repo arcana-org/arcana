@@ -269,7 +269,7 @@ view_bridges(struct html *h, struct server *s, const ucl_object_t *bridges)
 			mn = jstr(m, "name") != NULL ? jstr(m, "name") : "";
 			h_fmt(h, "<div class=\"port st-%s%s\" data-act=\""
 			    "br-pick\"", !jbool(m, "stp") ? "nostp" : state !=
-			    NULL ? state : "unknown", strcmp(l2.bridge, name) ==
+			    NULL ? h_word(state, "unknown") : "unknown", strcmp(l2.bridge, name) ==
 			    0 && strcmp(l2.member, mn) == 0 ? " sel" : "");
 			h_attr(h, "data-arg", name);
 			h_attr(h, "data-value", mn);
@@ -562,7 +562,7 @@ view_geneve(struct html *h, struct server *s, const ucl_object_t *geneves)
 		h_attr(h, "data-arg", name);
 		h_raw(h, "><td><b>");
 		h_txt(h, name);
-		h_fmt(h, "</b>%s</td><td><span class=\"chip\">", jbool(g,
+		h_rawf(h, "</b>%s</td><td><span class=\"chip\">", jbool(g,
 		    "up") ? "" : " <span class=\"chip dim\">down</span>");
 		h_txt(h, jstr(g, "mode"));
 		h_raw(h, "</span></td><td>");
@@ -735,7 +735,7 @@ l2_form(const char *form, const ucl_object_t *f)
 	}
 	memset(&b, 0, sizeof(b));
 	if (new)
-		h_fmt(&b, "\"mode\",\"%s\"", jstr(f, "mode") != NULL && strcmp(
+		h_strf(&b, "\"mode\",\"%s\"", jstr(f, "mode") != NULL && strcmp(
 		    jstr(f, "mode"), "l3") == 0 ? "l3" : "l2");
 	for (i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
 		v = jstr(f, opts[i]);
@@ -747,9 +747,9 @@ l2_form(const char *form, const ucl_object_t *f)
 			free(b.s);
 			return (true);
 		}
-		h_fmt(&b, "%s\"%s\",\"%s\"", b.len > 0 ? "," : "", opts[i], v);
+		h_strf(&b, "%s\"%s\",\"%s\"", b.len > 0 ? "," : "", opts[i], v);
 	}
-	h_fmt(&b, "%s\"learn\",\"%s\",\"dscpinherit\",\"%s\",\"external\","
+	h_strf(&b, "%s\"learn\",\"%s\",\"dscpinherit\",\"%s\",\"external\","
 	    "\"%s\"", b.len > 0 ? "," : "", jbool(f, "learn") ? "on" : "off",
 	    jbool(f, "dscpinherit") ? "on" : "off", jbool(f, "external") ?
 	    "on" : "off");

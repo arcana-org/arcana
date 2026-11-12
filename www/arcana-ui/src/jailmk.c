@@ -160,7 +160,7 @@ jail_allow_section(struct html *h, const struct server *s,
 		file = allow_in_file(j, names[i]);
 		h_raw(h, "<tr><th>");
 		h_txt(h, names[i]);
-		h_fmt(h, "</th><td class=\"%s\">%s</td><td class=\"%s\">%s</td>"
+		h_rawf(h, "</th><td class=\"%s\">%s</td><td class=\"%s\">%s</td>"
 		    "</tr>", live != NULL && live[0] == '1' ? "on" : "off",
 		    !running ? "—" : live == NULL ? "?" : live[0] == '1' ?
 		    "allowed" : "no", file != NULL && file[0] == '1' ? "on" :
@@ -624,7 +624,7 @@ addrs(struct html *b, const char *key, const char *typed)
 			p++;
 		if (e == p)
 			continue;
-		h_fmt(b, "\t%s %s \"%.*s\";\n", key, n++ == 0 ? "=" : "+=",
+		h_strf(b, "\t%s %s \"%.*s\";\n", key, n++ == 0 ? "=" : "+=",
 		    (int)(e - p - (e[-1] == '\r' ? 1 : 0)), p);
 	}
 }
@@ -637,7 +637,7 @@ lines(struct html *b, const char *typed, const char *indent)
 	for (p = typed; p != NULL && *p != '\0'; p = *e != '\0' ? e + 1 : e) {
 		e = p + strcspn(p, "\n");
 		if (e > p)
-			h_fmt(b, "%s%.*s\n", indent, (int)(e - p - (e[-1] == '\r' ?
+			h_strf(b, "%s%.*s\n", indent, (int)(e - p - (e[-1] == '\r' ?
 			    1 : 0)), p);
 	}
 }
@@ -699,7 +699,7 @@ jailmk_form(const char *form, const ucl_object_t *f)
 			    "domain, for the jails' host names");
 			return (true);
 		}
-		h_fmt(&b, "# Written by the Arcana console: what every jail "
+		h_strf(&b, "# Written by the Arcana console: what every jail "
 		    "includes.\npath = \"%s\";\nhost.hostname = \"${name}.%s\";\n"
 		    "host.domainname = \"%s\";\nexec.start = \"%s\";\nexec.stop = "
 		    "\"%s\";\nexec.consolelog = \"%s\";\n", jstr(f, "path"), v, v,
@@ -865,12 +865,12 @@ jailmk_form(const char *form, const ucl_object_t *f)
 			snprintf(ds, sizeof(ds), "%.*s/jails/%s", (int)(at - snap),
 			    snap, v);
 	}
-	h_fmt(&b, "# Written by the Arcana console.\n.include \"%s\";\n\n%s {\n",
+	h_strf(&b, "# Written by the Arcana console.\n.include \"%s\";\n\n%s {\n",
 	    defaults_path(), v);
 	if (jstr(f, "path") != NULL && jstr(f, "path")[0] != '\0')
-		h_fmt(&b, "\tpath = \"%s\";\n", path);
+		h_strf(&b, "\tpath = \"%s\";\n", path);
 	if (jstr(f, "ruleset") != NULL && jstr(f, "ruleset")[0] != '\0')
-		h_fmt(&b, "\tdevfs_ruleset = %d;\n", atoi(jstr(f, "ruleset")));
+		h_strf(&b, "\tdevfs_ruleset = %d;\n", atoi(jstr(f, "ruleset")));
 	if (jbool(f, "sysvsem"))
 		h_raw(&b, "\tsysvsem = new;\n");
 	if (jbool(f, "sysvshm"))
@@ -890,7 +890,7 @@ jailmk_form(const char *form, const ucl_object_t *f)
 		    true)) != NULL) {
 			snprintf(k, sizeof(k), "tpl_%s", jstr(o, "name"));
 			if (jbool(f, k))
-				h_fmt(&b, "\t.include \"%s/%s.inc\";\n", dir_of(),
+				h_strf(&b, "\t.include \"%s/%s.inc\";\n", dir_of(),
 				    jstr(o, "name"));
 		}
 	}

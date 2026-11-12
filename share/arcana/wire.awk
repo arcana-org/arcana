@@ -34,6 +34,8 @@ function die(msg) {
 function ystr(s) {
 	gsub(/\\/, "\\\\", s)
 	gsub(/"/, "\\\"", s)
+	gsub(/\t/, "\\t", s)
+	gsub(/\n/, "\\n", s)
 	return "\"" s "\""
 }
 
@@ -80,6 +82,7 @@ function ydesc(doc, ind,    n, i, a, out) {
 	}
 	gsub(/\\/, "\\\\", out)
 	gsub(/"/, "\\\"", out)
+	gsub(/\t/, "\\t", out)
 	printf "%sdescription\n%s  \"%s\";\n", ind, ind, out
 }
 

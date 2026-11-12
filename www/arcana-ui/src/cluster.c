@@ -134,13 +134,15 @@ set_cluster(struct html *h)
 		if (self != NULL && strcmp(jstr(n, "name"), self) == 0)
 			h_raw(h, " <small class=\"dim\">this one</small>");
 		h_raw(h, "</td><td class=\"mono\">");
-		if (jstr(n, "origin") != NULL && jstr(n, "origin")[0] != '\0') {
+		if (jstr(n, "origin") != NULL && strncmp(jstr(n, "origin"),
+		    "https://", 8) == 0) {
 			h_raw(h, "<a");
 			h_attr(h, "href", jstr(n, "origin"));
 			h_raw(h, ">");
 			h_txt(h, jstr(n, "origin"));
 			h_raw(h, "</a>");
-		}
+		} else
+			h_txt(h, jstr(n, "origin"));
 		h_raw(h, "</td><td>");
 		h_raw(h, leader != NULL && strcmp(jstr(n, "name"), leader) ==
 		    0 ? "<span class=\"chip st-up\">leader</span>" : "follower");

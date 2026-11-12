@@ -538,8 +538,9 @@ cfg_form(const char *form, const ucl_object_t *f)
 		    &it, true)) != NULL) {
 			snprintf(name, sizeof(name), "r:%s:%s", jstr(r, "kind"),
 			    jstr(r, "variable"));
-			h_fmt(&b, "%s{\"kind\":\"%s\",\"variable\":", first ? "" :
-			    ",", jstr(r, "kind"));
+			h_strf(&b, "%s{\"kind\":", first ? "" : ",");
+			h_json(&b, jstr(r, "kind"));
+			h_raw(&b, ",\"variable\":");
 			q = json_quote(jstr(r, "variable"));
 			h_raw(&b, q);
 			free(q);
@@ -561,7 +562,7 @@ cfg_form(const char *form, const ucl_object_t *f)
 		return (true);
 	}
 	/* The switch: each row's choice. */
-	h_fmt(&b, "{\"to\":\"%s\",\"merge\":[", cf.to);
+	h_strf(&b, "{\"to\":\"%s\",\"merge\":[", cf.to);
 	while ((r = ucl_object_iterate(jget(cf.dry, "row"), &it, true)) !=
 	    NULL) {
 		const char *c, *v;
@@ -573,12 +574,13 @@ cfg_form(const char *form, const ucl_object_t *f)
 		snprintf(name, sizeof(name), "v:%s:%s", jstr(r, "kind"),
 		    jstr(r, "variable"));
 		v = field(f, name);
-		h_fmt(&b, "%s{\"kind\":\"%s\",\"variable\":", first ? "" : ",",
-		    jstr(r, "kind"));
+		h_strf(&b, "%s{\"kind\":", first ? "" : ",");
+		h_json(&b, jstr(r, "kind"));
+		h_raw(&b, ",\"variable\":");
 		q = json_quote(jstr(r, "variable"));
 		h_raw(&b, q);
 		free(q);
-		h_fmt(&b, ",\"choice\":\"%s\"", strcmp(c, "additive") == 0 ?
+		h_strf(&b, ",\"choice\":\"%s\"", strcmp(c, "additive") == 0 ?
 		    "additive" : strcmp(c, "yours") == 0 ? "yours" :
 		    strcmp(c, "edit") == 0 ? "edit" : strcmp(c, "remove") ==
 		    0 ? "remove" : "arcana");

@@ -1228,6 +1228,22 @@ Your files are left as they are but for naming the file in
 .Va rc_conf_files ,
 once
 .Pq Cm rc-conf-files .
+The host's files it changes
+.Po
+.Xr rc.conf 5
+and
+.Pa rc.conf.d ,
+.Xr sysctl.conf 5 ,
+.Xr loader.conf 5
+.Pc
+are its own paths, never a file beneath a jail's root.
+Each is written beside itself and renamed into place within its
+directory, which must be root's (or the daemon's user's) and writable
+by no one else.
+A symbolic link there is written through only when root's or the
+daemon's user's; anyone else's is refused, neither followed nor
+replaced.
+A file of several hard links is refused.
 A variable Arcana writes that your files set too is a warning first
 .Pq Cm rc-conf-conflict ;
 accepted, a word list

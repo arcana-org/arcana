@@ -10,23 +10,29 @@
  */
 
 #include <sys/param.h>
+#include <sys/procctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/un.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include <atf-c.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <paths.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "harness.h"
@@ -132,8 +138,11 @@ spawn(char *const argv[], const char *out)
 pid_t
 spawn_server(char *const argv[], const char *out)
 {
+	pid_t	pid;
 
-	return (spawn_in(argv, out, true));
+	pid = spawn_in(argv, out, true);
+	harness_record(pid);
+	return (pid);
 }
 
 /* Run a program to completion; true if it exited 0. */
@@ -163,12 +172,62 @@ show(const char *path)
 	fclose(fp);
 }
 
+/*
+ * A port of 127.0.0.1 free now for TCP and UDP alike, as the kernel
+ * chose it for a socket bound to port 0: the cases side by side never
+ * pick one another's, nor one a server of the host has.
+ */
+int
+free_port(void)
+{
+	struct sockaddr_in	sin;
+	socklen_t		len;
+	int			s, u, port, i;
+
+	for (i = 0; i < 100; i++) {
+		ATF_REQUIRE((s = socket(AF_INET, SOCK_STREAM, 0)) != -1);
+		memset(&sin, 0, sizeof(sin));
+		sin.sin_len = sizeof(sin);
+		sin.sin_family = AF_INET;
+		sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		ATF_REQUIRE(bind(s, (struct sockaddr *)&sin, sizeof(sin)) == 0);
+		len = sizeof(sin);
+		ATF_REQUIRE(getsockname(s, (struct sockaddr *)&sin, &len) == 0);
+		port = ntohs(sin.sin_port);
+		/* UDP's too: a STAMP reflector's. */
+		ATF_REQUIRE((u = socket(AF_INET, SOCK_DGRAM, 0)) != -1);
+		if (bind(u, (struct sockaddr *)&sin, sizeof(sin)) == 0) {
+			close(u);
+			close(s);
+			return (port);
+		}
+		close(u);
+		close(s);
+	}
+	atf_tc_fail("no port of 127.0.0.1 free for TCP and UDP");
+}
+
+/*
+ * How long a server is waited for, in seconds: ARCANA_TEST_WAIT where
+ * the host is loaded (make check CHECK_WAIT=), else half a minute.
+ */
+int
+harness_wait(void)
+{
+	const char	*e;
+	int		 s;
+
+	if ((e = getenv("ARCANA_TEST_WAIT")) == NULL || (s = atoi(e)) <= 0)
+		s = 30;
+	return (s);
+}
+
 void
 wait_for(const char *path)
 {
 	int	i;
 
-	for (i = 0; i < 200; i++) {
+	for (i = 0; i < harness_wait() * 40; i++) {
 		if (access(path, F_OK) == 0)
 			return;
 		usleep(25000);
@@ -206,23 +265,118 @@ locate(const atf_tc_t *tc, const char *rel, const char *var, const char *def)
 }
 
 /*
+ * The servers the suite starts, recorded where every run of it finds
+ * them, whatever its work directory: /tmp/arcana-tests.<uid>/<pid>,
+ * holding when the process started, so that a pid used again by
+ * another process is not taken for it.
+ */
+static void
+reg_path(char *buf, size_t len, pid_t pid)
+{
+
+	if (pid == 0)
+		snprintf(buf, len, "%sarcana-tests.%u", _PATH_TMP,
+		    (unsigned int)getuid());
+	else
+		snprintf(buf, len, "%sarcana-tests.%u/%d", _PATH_TMP,
+		    (unsigned int)getuid(), (int)pid);
+}
+
+/* When process pid started, or false where there is none. */
+static bool
+started_at(pid_t pid, struct kinfo_proc *kp)
+{
+	size_t	len = sizeof(*kp);
+	int	mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+
+	return (sysctl(mib, 4, kp, &len, NULL, 0) == 0 && len > 0);
+}
+
+void
+harness_record(pid_t pid)
+{
+	struct kinfo_proc	 kp;
+	char			 path[MAXPATHLEN];
+	FILE			*fp;
+
+	reg_path(path, sizeof(path), 0);
+	if ((mkdir(path, 0700) == -1 && errno != EEXIST) ||
+	    !started_at(pid, &kp))
+		return;
+	reg_path(path, sizeof(path), pid);
+	if ((fp = fopen(path, "w")) == NULL)
+		return;
+	fprintf(fp, "%jd %ld\n", (intmax_t)kp.ki_start.tv_sec,
+	    (long)kp.ki_start.tv_usec);
+	fclose(fp);
+}
+
+static void
+unrecord(pid_t pid)
+{
+	char	path[MAXPATHLEN];
+
+	reg_path(path, sizeof(path), pid);
+	(void)unlink(path);
+}
+
+/*
  * The servers of an earlier test that never ran its cleanup (its kyua
  * killed, or the program run by hand) stay, each in its process group,
- * init's now, and load every test after: an arcana-agent on a test's
- * jgd.sock, arcana-console, chromedriver and its browsers.  A
- * test's own servers are its children, so those of tests running now
- * are left be.  Only the user's own processes are looked at.
+ * init's now, and load every test after: an arcana-agent, the console,
+ * chromedriver and its browsers.  Only those the suite started are
+ * ended: one it recorded (harness_record()), the same process still,
+ * an orphan now (its parent init, or the reaper it went to, procctl(2)'s:
+ * a sandbox's, a supervisor's).  A console or a chromedriver started by
+ * hand was never recorded, and is left be; a test's own servers are its
+ * children, so those of tests running now are too.
  */
 static void
 sweep_orphans(void)
 {
+	struct procctl_reaper_status	 rs;
+	struct kinfo_proc		 kp;
+	struct dirent			*d;
+	char				 path[MAXPATHLEN];
+	DIR				*dp;
+	FILE				*fp;
+	intmax_t			 sec;
+	long				 usec;
+	pid_t				 pid;
+	bool				 same;
 
-	/* The console names its supervisor "arcana-console: supervisor". */
-	(void)system("ps -ax -o pid=,ppid=,pgid=,command= -U \"$(id -u)\" | "
-	    "awk '$2 == 1 && ($0 ~ /arcana-agent -F -l unix:.*jgd[0-9]*\\.sock/ "
-	    "|| $4 == \"arcana-console:\" && $5 == \"supervisor\" || $4 ~ /chromedriver$/ "
-	    "&& $5 ~ /^--port=/) { print $3 }' | sort -u | "
-	    "while read g; do kill -TERM -\"$g\" 2>/dev/null; done");
+	reg_path(path, sizeof(path), 0);
+	if ((dp = opendir(path)) == NULL)
+		return;
+	while ((d = readdir(dp)) != NULL) {
+		if ((pid = (pid_t)atoi(d->d_name)) <= 0)
+			continue;
+		reg_path(path, sizeof(path), pid);
+		same = false;
+		if ((fp = fopen(path, "r")) != NULL) {
+			same = fscanf(fp, "%jd %ld", &sec, &usec) == 2 &&
+			    started_at(pid, &kp) && kp.ki_start.tv_sec ==
+			    (time_t)sec && kp.ki_start.tv_usec == usec &&
+			    kp.ki_stat != SZOMB;
+			fclose(fp);
+		}
+		/* Gone, or the pid another process's since. */
+		if (!same) {
+			(void)unlink(path);
+			continue;
+		}
+		memset(&rs, 0, sizeof(rs));
+		if (procctl(P_PID, pid, PROC_REAP_STATUS, &rs) == -1)
+			rs.rs_reaper = 1;
+		if (kp.ki_ppid != 1 && kp.ki_ppid != rs.rs_reaper)
+			continue;
+		/* Its group too: a console's workers, the browsers. */
+		if (kp.ki_pgid != getpgrp())
+			(void)kill(-kp.ki_pgid, SIGTERM);
+		(void)kill(pid, SIGTERM);
+		(void)unlink(path);
+	}
+	closedir(dp);
 }
 
 /*
@@ -1659,9 +1813,12 @@ terminate(const char *pidfile)
 
 	if ((fp = fopen(pidfile, "r")) == NULL)
 		return;
-	if (fscanf(fp, "%d", &pid) == 1 && pid > 0 && kill(pid, SIGTERM) == 0)
-		for (i = 0; i < 100 && kill(pid, 0) == 0; i++)
-			usleep(50000);
+	if (fscanf(fp, "%d", &pid) == 1 && pid > 0) {
+		if (kill(pid, SIGTERM) == 0)
+			for (i = 0; i < 100 && kill(pid, 0) == 0; i++)
+				usleep(50000);
+		unrecord(pid);
+	}
 	fclose(fp);
 }
 

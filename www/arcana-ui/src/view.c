@@ -431,7 +431,7 @@ rail(struct html *h)
 	    "title=\"Add a server\">");
 	h_raw(h, icon_plus);
 	h_raw(h, "</button></div><ul class=\"tree\">");
-	h_fmt(h, "<li class=\"titem fleet%s\" data-act=\"select-fleet\">"
+	h_rawf(h, "<li class=\"titem fleet%s\" data-act=\"select-fleet\">"
 	    "<span class=\"twig\">%s</span><span class=\"name\">All hosts</span>"
 	    "<span class=\"count\">%d</span></li>"
 	    "<li class=\"titem fleet devnode%s\" data-act=\"select-devices\">"
@@ -467,7 +467,7 @@ rail(struct html *h)
 	    app.node == NODE_BUILDER ? " selected" : "", icon_builder,
 	    app.node == NODE_TROUBLE ? " selected" : "", icon_trouble);
 	/* At the foot of the side bar: the console's own settings. */
-	h_fmt(h, "</ul><ul class=\"tree rail-foot\"><li class=\"titem fleet "
+	h_rawf(h, "</ul><ul class=\"tree rail-foot\"><li class=\"titem fleet "
 	    "setnode%s\" data-act=\"settings\"><span class=\"twig\">%s"
 	    "</span><span class=\"name\">Settings</span>",
 	    app.node == NODE_SETTINGS ? " selected" : "", icon_gear);
@@ -1385,10 +1385,11 @@ dock(struct html *h)
 	char		 dur[32];
 	int		 i, n;
 
-	h_fmt(h, "<section class=\"dock%s\">%s<header data-act=\"dock\">"
-	    "<span class=\"label\">%s</span><div class=\"recent\">",
-	    app.dock_open ? " open" : "", app.dock_open ? RESIZER("y",
-	    "dock") : "", app.dock_open ? "Tasks" : "Recent tasks");
+	h_raw(h, app.dock_open ? "<section class=\"dock open\">" RESIZER("y",
+	    "dock") : "<section class=\"dock\">");
+	h_fmt(h, "<header data-act=\"dock\"><span class=\"label\">%s</span>"
+	    "<div class=\"recent\">", app.dock_open ? "Tasks" :
+	    "Recent tasks");
 	/*
 	 * The last few, always in sight while the dock is closed: what
 	 * each was, on which host, how it ended and how long it took.
@@ -2558,7 +2559,7 @@ pkg_clean_box(struct html *h, struct server *s)
 	h_raw(h, "<fieldset><legend>Where</legend><label class=\"toggle\">"
 	    "<input type=\"checkbox\" name=\"host\" checked><span>This host, ");
 	h_txt(h, s->name);
-	h_fmt(h, "</span></label><label class=\"toggle\"><input type=\""
+	h_rawf(h, "</span></label><label class=\"toggle\"><input type=\""
 	    "checkbox\" name=\"jails\"%s><span>Its running jails%s</span>"
 	    "</label></fieldset>", n == 0 ? " disabled" : "", n == 0 ?
 	    " <small>it has no running jail</small>" : "");

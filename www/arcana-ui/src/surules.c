@@ -47,7 +47,7 @@ put_param(struct html *in, const char *key, const char *v)
 	if (v == NULL || v[0] == '\0')
 		return;
 	q = json_quote(v);
-	h_fmt(in, ",\"%s\":%s", key, q);
+	h_strf(in, ",\"%s\":%s", key, q);
 	free(q);
 }
 
@@ -63,12 +63,12 @@ surules_load(const char *sid)
 	if (strcmp(sid, sr.r.sid) != 0)
 		sr.offset = 0;
 	memset(&in, 0, sizeof(in));
-	h_fmt(&in, "{\"limit\":%d", SR_PAGE);
+	h_strf(&in, "{\"limit\":%d", SR_PAGE);
 	put_param(&in, "q", sr.q);
 	put_param(&in, "only", sr.only);
 	put_param(&in, "classtype", sr.classtype);
 	if (sr.offset > 0)
-		h_fmt(&in, ",\"offset\":%ld", sr.offset);
+		h_strf(&in, ",\"offset\":%ld", sr.offset);
 	h_raw(&in, "}");
 	res_yread(&sr.r, sid, "arcana-suricata:suricata/read-rules", in.s,
 	    suricata_conv);
@@ -507,8 +507,11 @@ view_susources(struct html *h, const char *sid)
 		h_txt(h, jstr(e, "vendor"));
 		h_raw(h, "</td><td>");
 		h_txt(h, jstr(e, "summary"));
-		if (jstr(e, "subscription") != NULL) {
-			h_raw(h, " <a target=\"_blank\" rel=\"noopener\"");
+		/* The host's word: a link only to https. */
+		if (jstr(e, "subscription") != NULL && strncmp(jstr(e,
+		    "subscription"), "https://", 8) == 0) {
+			h_raw(h, " <a target=\"_blank\" rel=\"noopener "
+			    "noreferrer\"");
 			h_attr(h, "href", jstr(e, "subscription"));
 			h_raw(h, ">subscription</a>");
 		}

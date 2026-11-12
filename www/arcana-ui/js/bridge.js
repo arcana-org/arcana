@@ -43,6 +43,71 @@ addToLibrary({
 	},
 
 	/*
+	 * A control whose request is in flight: the button pressed, or the
+	 * form sent and its button, that made the page send a change is
+	 * disabled until its answer comes, so that a second press sends no
+	 * second change.  What the page draws meanwhile keeps it so
+	 * (arc_patch()); then it is as the page draws it.
+	 */
+	$arcBusy: {
+		cur: null,	/* the controls of the event being handled */
+		by: {},		/* a request's id: its controls */
+		begin: function (els) {
+			this.cur = { els: els.filter(function (e) {
+				return (e !== null && e !== undefined);
+			}), ids: [] };
+		},
+		sent: function (id) {
+			if (this.cur !== null)
+				this.cur.ids.push(id);
+		},
+		end: function () {
+			var c = this.cur, self = this;
+
+			this.cur = null;
+			if (c === null || c.ids.length === 0 || c.els.length === 0)
+				return;
+			c.ids.forEach(function (id) {
+				self.by[id] = c.els;
+				c.els.forEach(function (el) {
+					if (!(el._arcBusy > 0)) {
+						el._arcBusy = 0;
+						el._arcWas = el.disabled === true;
+						if ("disabled" in el)
+							el.disabled = true;
+						el.setAttribute("aria-busy", "true");
+					}
+					el._arcBusy++;
+				});
+			});
+		},
+		done: function (id) {
+			var els = this.by[id];
+
+			if (els === undefined)
+				return;
+			delete this.by[id];
+			els.forEach(function (el) {
+				if (--el._arcBusy > 0)
+					return;
+				if ("disabled" in el)
+					el.disabled = el._arcWas;
+				el.removeAttribute("aria-busy");
+			});
+		},
+		/* Drawn again while busy: busy still, what the page says of
+		 * it kept for after. */
+		redraw: function (from, to) {
+			if (!(from._arcBusy > 0))
+				return;
+			from._arcWas = to.hasAttribute("disabled");
+			if ("disabled" in to)
+				to.disabled = true;
+			to.setAttribute("aria-busy", "true");
+		}
+	},
+
+	/*
 	 * Console plugins (the console's cplug.c, the page's plugins.c): the
 	 * files of each plugin a console owner enabled, loaded with the
 	 * integrity the console lists, and what their scripts are given,
@@ -558,7 +623,7 @@ addToLibrary({
 	 * changed (and the field being typed in) so transitions and focus
 	 * survive re-rendering.
 	 */
-	arc_patch__deps: ["$UTF8ToString"],
+	arc_patch__deps: ["$UTF8ToString", "$arcBusy"],
 	arc_patch: function (idp, htmlp) {
 		var el = document.getElementById(UTF8ToString(idp));
 		var html = UTF8ToString(htmlp);
@@ -592,6 +657,7 @@ addToLibrary({
 			onBeforeElUpdated: function (from, to) {
 				var tag = from.tagName, i, was, now;
 
+				arcBusy.redraw(from, to);
 				/* An element the page draws into itself, a
 				 * WebGL canvas: kept as it is. */
 				if (from.hasAttribute("data-keep"))
@@ -664,7 +730,7 @@ addToLibrary({
 	 * Events: clicks on [data-act], submitted forms (fields as a JSON
 	 * object), typing in [data-input], Escape, network and visibility.
 	 */
-	arc_events_init__deps: ["$arcStr", "$arcPlug"],
+	arc_events_init__deps: ["$arcStr", "$arcPlug", "$arcBusy"],
 	arc_events_init: function () {
 		function act(name, arg, value) {
 			var a = arcStr(name), b = arcStr(arg), c = arcStr(value);
@@ -729,12 +795,14 @@ addToLibrary({
 				return;
 			}
 
-			if (t === null || t.disabled)
+			if (t === null || t.disabled || t._arcBusy > 0)
 				return;
 			if (t.tagName === "A" || t.tagName === "BUTTON")
 				e.preventDefault();
+			arcBusy.begin([t.tagName === "BUTTON" ? t : null]);
 			act(t.dataset.act, t.dataset.arg || "",
 			    t.dataset.value || "");
+			arcBusy.end();
 		});
 		/* Back, forward, or an address typed: go where it says. */
 		window.addEventListener("popstate", function () {
@@ -749,6 +817,9 @@ addToLibrary({
 			var f = e.target, o = {}, i, el;
 
 			e.preventDefault();
+			/* Sent, and not answered yet: not sent again. */
+			if (f._arcBusy > 0)
+				return;
 			o.__submit = e.submitter && e.submitter.value ?
 			    e.submitter.value : "";
 			/* Of the buttons, only the one pressed says anything. */
@@ -771,9 +842,12 @@ addToLibrary({
 			}
 			/* By its attribute: a field named dataset or id
 			 * would stand for the form's own property. */
+			arcBusy.begin([f, e.submitter || f.querySelector(
+			    "button:not([type=button]), input[type=submit]")]);
 			act("submit:" + (f.getAttribute("data-form") ||
 			    f.getAttribute("id") || ""), "",
 			    JSON.stringify(o));
+			arcBusy.end();
 			/* A form that says so keeps no password once sent:
 			 * the field shows what is kept again (its placeholder).
 			 * Others, read again by a step that follows, keep it. */
@@ -2003,6 +2077,32 @@ addToLibrary({
 	 * not get an answer at all.
 	 */
 	/*
+	 * Signed out, or the session ended: the page loaded anew, at its
+	 * first screen, so that nothing of the last user's (what hosts
+	 * said, plugins' scripts) outlives them in this tab; what is the
+	 * browser's (the theme, localStorage's) stays.  ended: the sign-in
+	 * page says the session ended, in this tab alone.
+	 */
+	arc_start_over: function (ended) {
+		try {
+			if (ended)
+				sessionStorage.setItem("arc_ended", "1");
+		} catch (e) {
+		}
+		location.replace(location.pathname + location.search);
+	},
+	arc_ended_take: function () {
+		var v = 0;
+
+		try {
+			v = sessionStorage.getItem("arc_ended") === "1" ? 1 : 0;
+			sessionStorage.removeItem("arc_ended");
+		} catch (e) {
+		}
+		return (v);
+	},
+
+	/*
 	 * Load the page again, as the one a newer console serves.  The
 	 * service worker is asked for its update first and given a moment
 	 * to take over, or the reload would get the old shell from its
@@ -2488,8 +2588,15 @@ addToLibrary({
 		}
 	},
 
+	/* Request id changes something: the control pressed is busy until
+	 * it is answered (api.c, for what does not only read). */
+	arc_busy__deps: ["$arcBusy"],
+	arc_busy: function (id) {
+		arcBusy.sent(id);
+	},
+
 	arc_http__deps: ["$arcAborts", "$arcStr", "$UTF8ToString", "$arcHttpQ",
-	    "$arcHttpPump"],
+	    "$arcHttpPump", "$arcBusy"],
 	arc_http: function (id, methodp, urlp, bodyp, hdrsp, hi) {
 		var method = UTF8ToString(methodp), body = null, opts;
 		var ctl = new AbortController(), url = UTF8ToString(urlp);
@@ -2547,6 +2654,7 @@ addToLibrary({
 		function done() {
 			q.busy--;
 			delete arcAborts[id];
+			arcBusy.done(id);
 			arcHttpPump();
 		}
 		function send(tries, again) {
@@ -2597,6 +2705,7 @@ addToLibrary({
 				return;
 			w.splice(i, 1);
 			delete arcAborts[id];
+			arcBusy.done(id);
 			Promise.resolve().then(function () {
 				Module._arc_on_http(id, 0, arcStr("cancelled"), 0);
 			});

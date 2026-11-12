@@ -1262,7 +1262,7 @@ view_bulk(struct html *h)
 			h_txt(h, jstr(e, "build"));
 			h_raw(h, "</td><td>");
 			h_txt(h, jstr(e, "status"));
-			h_fmt(h, "</td><td>%lld</td><td%s>%lld</td><td>%lld</td>"
+			h_rawf(h, "</td><td>%lld</td><td%s>%lld</td><td>%lld</td>"
 			    "<td>%lld</td><td>", (long long)jint(e, "built", 0),
 			    jint(e, "failed", 0) > 0 ? " class=\"bad\"" : "",
 			    (long long)jint(e, "failed", 0), (long long)jint(e,
@@ -1613,7 +1613,7 @@ builder_form(const char *form, const ucl_object_t *f)
 			if (v == NULL || v[0] == '\0')
 				continue;
 			q = json_quote(v);
-			h_fmt(&in, "%s\"%s\":%s", in.len > 1 ? "," : "", k[i],
+			h_strf(&in, "%s\"%s\":%s", in.len > 1 ? "," : "", k[i],
 			    q);
 			free(q);
 		}

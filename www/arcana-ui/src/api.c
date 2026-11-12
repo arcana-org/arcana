@@ -27,6 +27,10 @@ struct inflight {
 	int		 node, tab;
 	int		 op;		/* the task it is, or 0 */
 	bool		 awaited;	/* op: the task that awaited it; else a quiet poll */
+	/* A read of the host shown, for a callback with no context of its
+	 * own: the shown host's generation then (api_gen()), its id. */
+	unsigned int	 gen;
+	char		 sid[9];
 	void		 (*wcb)(bool, const char *, void *);
 	void		*arg;
 };
@@ -34,6 +38,64 @@ struct inflight {
 static struct inflight	pend[MAX_PENDING];
 static int		lastid;
 static bool		reads;		/* the next request only reads */
+static bool		keep;		/* ... is answered whatever is shown */
+static unsigned int	gen;		/* of the host shown */
+static char		gen_sid[9];
+
+/*
+ * The generation of the host the page shows: another each time it
+ * shows another.  A read made for the page as it is shown, its callback
+ * holding nothing of its own (arg NULL), is taken at one; its reply,
+ * come at another with that host no longer shown, is dropped: it would
+ * fill the page of the host shown now with the other's.
+ */
+unsigned int
+api_gen(void)
+{
+	const struct server	*s;
+	const char		*id;
+
+	id = (s = cur_server()) != NULL ? s->id : "";
+	if (strcmp(id, gen_sid) != 0) {
+		snprintf(gen_sid, sizeof(gen_sid), "%s", id);
+		gen++;
+	}
+	return (gen);
+}
+
+/* A read of sid's taken at generation g that no one waits for now. */
+bool
+api_stale(unsigned int g, const char *sid)
+{
+	const struct server	*s;
+
+	return (sid[0] != '\0' && g != api_gen() && ((s = cur_server()) ==
+	    NULL || strcmp(s->id, sid) != 0));
+}
+
+/* The next request answered whatever host is shown by then. */
+void
+api_keep(void)
+{
+
+	keep = true;
+}
+
+/* The host a URL of the console's names: /api/servers/<id>/, host=<id>. */
+static void
+url_host(const char *url, char *sid, size_t len)
+{
+	const char	*p;
+
+	sid[0] = '\0';
+	if ((p = strstr(url, "/servers/")) != NULL)
+		p += 9;
+	else if ((p = strstr(url, "host=")) != NULL)
+		p += 5;
+	else
+		return;
+	snprintf(sid, len, "%.*s", (int)strcspn(p, "/?&"), p);
+}
 
 static struct inflight *
 slot(void)
@@ -85,11 +147,13 @@ api_hdr(const char *method, const char *url, const char *body,
     const char *hdrs, api_cb *cb, void *arg)
 {
 	struct inflight	*p;
-	bool		 rd;
+	bool		 rd, k;
 	int		 id;
 
 	rd = reads || strcmp(method, "GET") == 0;
 	reads = false;
+	k = keep;
+	keep = false;
 
 	/* Not sent is not "no answer": the console is not to blame. */
 	if ((p = slot()) == NULL) {
@@ -101,6 +165,16 @@ api_hdr(const char *method, const char *url, const char *body,
 	p->arg = arg;
 	id = p->id;
 	p->url[0] = '\0';
+	/* A read for the page as shown: of the host shown, the callback
+	 * keeping nothing of its own. */
+	p->sid[0] = '\0';
+	if (rd && arg == NULL && !k) {
+		url_host(url, p->sid, sizeof(p->sid));
+		if (cur_server() == NULL || strcmp(cur_server()->id, p->sid) !=
+		    0)
+			p->sid[0] = '\0';
+		p->gen = api_gen();
+	}
 	if (rd && strlen(url) < sizeof(p->url)) {
 		snprintf(p->url, sizeof(p->url), "%s", url);
 		export_where(&p->node, &p->tab);
@@ -130,6 +204,9 @@ api_hdr(const char *method, const char *url, const char *body,
 		/* The page's own poll: a task too, shown apart from what
 		 * was asked for, so that every exchange can be seen. */
 		p->op = op_quiet_begin(method, url);
+	/* A change: the control that asked for it busy until answered. */
+	if (!rd)
+		arc_busy(id);
 	/* The tick's reads wait behind the rest; the health check not. */
 	arc_http(id, method, url, body, hdrs, !(rd && app.polling) ||
 	    strcmp(url, "/api/health") == 0);
@@ -173,14 +250,17 @@ arc_on_http(int id, int status, char *text, char *etag)
 	/* None: a change's 204, RESTCONF's. */
 	if (status >= 200 && status < 300 && o == NULL && status != 204)
 		err = "the console sent something that is not JSON";
-	/* Every answer means the console is up; a 401 means log in. */
+	/*
+	 * Every answer means the console is up; a 401 means log in: the
+	 * page loads itself again, nothing of the session kept in it, its
+	 * sign-in page saying why.
+	 */
 	if (status != 0)
 		app.api = LINK_UP;
 	if (status == 401 && app.screen == SCREEN_CONSOLE) {
-		app.screen = SCREEN_LOGIN;
 		plugins_signed_out();
-		snprintf(app.auth_error, sizeof(app.auth_error),
-		    "Your session ended. Touch your key to continue.");
+		arc_start_over(1);
+		app.screen = SCREEN_LOGIN;
 	}
 	/*
 	 * An error without a reason of ours did not come from the console's
@@ -200,7 +280,9 @@ arc_on_http(int id, int status, char *text, char *etag)
 	if (p.op != 0 && !p.awaited)
 		op_quiet_end(p.op, status);
 	cur_etag = etag;
-	p.cb(status, o, err, p.arg);
+	/* Read for a host shown no more: not the page's now. */
+	if (p.sid[0] == '\0' || !api_stale(p.gen, p.sid))
+		p.cb(status, o, err, p.arg);
 	cur_etag = NULL;
 	if (p.awaited)
 		op_answered(p.op, id, status, o, err);

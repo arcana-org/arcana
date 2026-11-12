@@ -105,6 +105,12 @@ int		 vc_comment(struct vc_file *, const char *, const char *,
 		    char *, size_t);
 int		 vc_uncomment(struct vc_file *, const char *, const char *,
 		    char *, size_t);
+/*
+ * path is trusted: a host's file (rc.conf, rc.conf.d's, sysctl.conf,
+ * loader.conf), never one beneath a jail's root.  A link is followed
+ * only when root's or the process's user's, into a directory only they
+ * may write in (varconf.c).
+ */
 int		 vc_write(const struct vc_file *, const char *, mode_t, char *,
 		    size_t);
 int		 vc_rcd_path(const char *, const char *, const char *, char *,

@@ -870,7 +870,7 @@ lists_send(const char *was, ucl_object_t *feed)
 			memset(&b, 0, sizeof(b));
 			while ((e = ucl_object_iterate(jget(f, "entries"), &eit,
 			    true)) != NULL)
-				h_fmt(&b, "%s\n", ucl_object_tostring_forced(e));
+				h_strf(&b, "%s\n", ucl_object_tostring_forced(e));
 			ucl_object_insert_key(p, ucl_object_fromstring(jstr(f,
 			    "name")), "name", 0, false);
 			ucl_object_insert_key(p, ucl_object_fromstring(b.s != NULL ?
@@ -2521,7 +2521,7 @@ view_applied(struct html *h)
 	 * it was taken away again; the edges are as they were. */
 	h_fmt(h, "<div class=\"sd-block sd-applied %s\"><h3>%s <small class="
 	    "\"dim\">", strcmp(jstr(ap, "state"), "rolled back") == 0 ? "failed"
-	    : jstr(ap, "state"), sd.applying ? "Applying" :
+	    : h_word(jstr(ap, "state"), "failed"), sd.applying ? "Applying" :
 	    strcmp(jstr(ap, "state"), "done") == 0 ? "Last apply: done" :
 	    strcmp(jstr(ap, "state"), "rolled back") == 0 ? "Last apply: rolled "
 	    "back" : "Last apply: failed");
@@ -2540,7 +2540,7 @@ view_applied(struct html *h)
 		while ((s = ucl_object_iterate(jget(ap, "steps"), &it,
 		    true)) != NULL) {
 			h_fmt(h, "<li class=\"%s\"><span class=\"led\"></span>"
-			    "<b>", jstr(s, "state"));
+			    "<b>", h_word(jstr(s, "state"), ""));
 			h_txt(h, jstr(s, "name"));
 			h_raw(h, "</b> ");
 			h_txt(h, jstr(s, "title"));
@@ -2638,7 +2638,7 @@ view_needs(struct html *h, bool brief)
 			h_txt(h, jstr(e, "package"));
 			h_raw(h, "</code></td><td class=\"dim\">");
 			h_txt(h, jstr(e, "what"));
-			h_fmt(h, "</td><td>%s</td><td>", jbool(e, "there") ?
+			h_rawf(h, "</td><td>%s</td><td>", jbool(e, "there") ?
 			    "<span class=\"chip ok\">yes</span>" : "<span "
 			    "class=\"chip bad\">no</span>");
 			if (!jbool(e, "there")) {
@@ -2897,11 +2897,11 @@ view_edges(struct html *h)
 			continue;
 		h_fmt(h, "<tr class=\"ch-%s\"><td></td><td class=\"dim\" title=\""
 		    "Mplify 119 §12.1, the step of its activity flow\">%s</td><td>",
-		    jstr(c, "change"), step_label(c));
+		    h_word(jstr(c, "change"), ""), step_label(c));
 		h_txt(h, jstr(c, "title"));
 		h_fmt(h, "</td><td><span class=\"chip ch-%s\">%s</span></td>"
 		    "<td><details><summary>%u</summary><ul class=\"sd-jobs\">",
-		    jstr(c, "change"), change_word(jstr(c, "change")),
+		    h_word(jstr(c, "change"), ""), change_word(jstr(c, "change")),
 		    strcmp(jstr(c, "change"), "unmake") == 0 ?
 		    ucl_array_size(jget(c, "unmake")) : ucl_array_size(jget(c,
 		    "make")));
@@ -3524,9 +3524,8 @@ view_alarms(struct html *h)
 	rows = tbl_rows("sd-alarms", all, cols, (int)nitems(cols), app.filter);
 	for (n = 0; (r = rows[n]) != NULL; n++) {
 		fmt_age(age, sizeof(age), (double)jint(r, "at", 0) * 1000);
-		h_fmt(h, "<tr class=\"sev-%s%s\"><td><b>", jstr(r, "severity") !=
-		    NULL ? jstr(r, "severity") : "", jstr(r, "shelf") != NULL ?
-		    " shelved" : "");
+		h_fmt(h, "<tr class=\"sev-%s%s\"><td><b>", h_word(jstr(r,
+		    "severity"), ""), jstr(r, "shelf") != NULL ? " shelved" : "");
 		h_txt(h, jstr(r, "edge"));
 		h_raw(h, "</b></td><td class=\"mono\">");
 		h_txt(h, jstr(r, "path") != NULL ? jstr(r, "path") : "—");
@@ -3745,7 +3744,7 @@ view_stamp(struct html *h)
 		if (jstr(r, "dscp") == NULL)
 			h_raw(h, "<td class=\"dim\">—</td>");
 		else {
-			h_fmt(h, "<td class=\"mono%s\"%s>", jbool(r, "remarked") ?
+			h_rawf(h, "<td class=\"mono%s\"%s>", jbool(r, "remarked") ?
 			    " bad" : "", jbool(r, "remarked") ? " title=\"remarked "
 			    "on the way: sent → at the far end / back\"" : "");
 			h_txt(h, jstr(r, "dscp"));
@@ -4019,7 +4018,7 @@ view_paths(struct html *h)
 			fmt_age(age, sizeof(age), (double)jint(tg, "since", 0) *
 			    1000);
 			h_fmt(h, "<td><span class=\"chip st-%s\">%s</span> <small "
-			    "class=\"dim\">", st, st);
+			    "class=\"dim\">", h_word(st, "unknown"), st);
 			h_txt(h, age);
 			h_raw(h, "</small>");
 			/* BFD's word on it, when the service watches by BFD. */
@@ -4039,8 +4038,9 @@ view_paths(struct html *h)
 						    jstr(bs, "address"), far) == 0)
 							h_fmt(h, " <span class=\"chip st-%s\" "
 							    "title=\"BFD, by BIRD\">bfd %s"
-							    "</span>", jstr(bs, "state"),
-							    jstr(bs, "state"));
+							    "</span>", h_word(jstr(bs,
+							    "state"), "unknown"), jstr(bs,
+							    "state"));
 				}
 			}
 			if (jstr(tg, "error") != NULL) {
@@ -4143,11 +4143,12 @@ view_paths(struct html *h)
 			h_txt(h, kk != NULL && jstr(kk, "public") != NULL ? jstr(kk,
 			    "public") : "");
 			h_raw(h, "\">");
-			if (kk != NULL && jstr(kk, "public") != NULL)
-				h_fmt(h, "%.12s…%s", jstr(kk, "public"), jstr(kk, "next")
-				    != NULL ? " <span class=\"chip\">next made</span>" :
-				    "");
-			else
+			if (kk != NULL && jstr(kk, "public") != NULL) {
+				h_fmt(h, "%.12s…", jstr(kk, "public"));
+				if (jstr(kk, "next") != NULL)
+					h_raw(h, " <span class=\"chip\">next "
+					    "made</span>");
+			} else
 				h_raw(h, "<span class=\"dim\">no pair yet</span>");
 			h_raw(h, "</td><td>");
 			at = kk != NULL ? jint(kk, "keyed_at", 0) : 0;
@@ -5053,8 +5054,6 @@ static void
 pem_link(struct html *h, const char *host, const char *name,
     const char *what, const char *pem, const char *title)
 {
-	char	enc[8192];
-	size_t	i, k;
 
 	h_raw(h, "<a class=\"ghost small\" download=\"");
 	h_txt(h, host);
@@ -5062,19 +5061,7 @@ pem_link(struct html *h, const char *host, const char *name,
 	h_txt(h, name);
 	h_fmt(h, "-%s.crt\" href=\"data:application/x-x509-ca-cert;charset="
 	    "utf-8,", what);
-	for (i = 0, k = 0; pem[i] != '\0' && k + 4 < sizeof(enc); i++) {
-		if (pem[i] == '\n')
-			k += (size_t)snprintf(enc + k, sizeof(enc) - k, "%%0A");
-		else if (pem[i] == '+' || pem[i] == '/' || pem[i] == '=' ||
-		    pem[i] == ' ' || pem[i] == '%' || pem[i] == '#' || pem[i] ==
-		    '&')
-			k += (size_t)snprintf(enc + k, sizeof(enc) - k, "%%%02X",
-			    (unsigned char)pem[i]);
-		else
-			enc[k++] = pem[i];
-	}
-	enc[k] = '\0';
-	h_raw(h, enc);
+	h_url(h, pem);
 	h_raw(h, "\" title=\"");
 	h_txt(h, title);
 	h_raw(h, "\">certificate</a>");
@@ -5366,7 +5353,7 @@ view_security(struct html *h)
 		int		shown = 0;
 
 		memset(&csvb, 0, sizeof(csvb));
-		h_fmt(&csvb, "time,edge,rule,action,source,destination,interface,"
+		h_strf(&csvb, "time,edge,rule,action,source,destination,interface,"
 		    "comment\n");
 		h_raw(h, "<div class=\"sd-block\"><h3>Record <small class=\"dim\">"
 		    "what the policies' deny rules logged on each edge (ipfw's "
@@ -7024,7 +7011,7 @@ sdwan_modal_service(struct html *h)
 			memset(&b, 0, sizeof(b));
 			while ((e = ucl_object_iterate(jget(lf, "entries"), &eit,
 			    true)) != NULL)
-				h_fmt(&b, "%s\n", ucl_object_tostring_forced(e));
+				h_strf(&b, "%s\n", ucl_object_tostring_forced(e));
 			text = b.s;
 		}
 		h_raw(h, "<label>Entries<textarea name=\"text\" rows=\"8\">");
@@ -8567,11 +8554,11 @@ routes_text(const ucl_object_t *routes)
 	memset(&b, 0, sizeof(b));
 	it = NULL;
 	while ((r = ucl_object_iterate(routes, &it, true)) != NULL) {
-		h_fmt(&b, "%s %s", jstr(r, "prefix") != NULL ? jstr(r,
+		h_strf(&b, "%s %s", jstr(r, "prefix") != NULL ? jstr(r,
 		    "prefix") : "", jstr(r, "next_hop") != NULL ? jstr(r,
 		    "next_hop") : "");
 		if (jget(r, "distance") != NULL)
-			h_fmt(&b, " %lld", (long long)jint(r, "distance", 0));
+			h_strf(&b, " %lld", (long long)jint(r, "distance", 0));
 		h_raw(&b, "\n");
 	}
 	return (b.s != NULL ? h_take(&b) : strdup(""));
@@ -9872,7 +9859,7 @@ example(void)
 	a = app.nservers > 0 ? app.servers[0].id : "HOST-A";
 	z = app.nservers > 1 ? app.servers[1].id : a;
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\n"
+	h_strf(&b, "{\n"
 	    "\t\"ucs\": [\n"
 	    "\t\t{\"id\": \"internet\", \"type\": \"public\", \"billing\": "
 	    "\"flat-rate\",\n\t\t \"tunnel\": {\"kind\": \"gre\", \"ipsec\": "

@@ -45,6 +45,9 @@ void		 arc_http(int, const char *, const char *, const char *,
 		    const char *, int);
 void		 arc_http_abort(int);
 void		 arc_reload(void);
+void		 arc_start_over(int);
+void		 arc_busy(int);
+int		 arc_ended_take(void);
 void		 arc_push_sync(void);
 void		 arc_push_send(const char *, const char *);
 void		 arc_push_remove(const char *);
@@ -116,6 +119,12 @@ void		 h_txt(struct html *, const char *);
 void		 h_fit(struct html *, const char *, int);
 void		 h_fmt(struct html *, const char *, ...)
 		    __attribute__((format(printf, 2, 3)));
+void		 h_rawf(struct html *, const char *, ...)
+		    __attribute__((format(printf, 2, 3)));
+void		 h_strf(struct html *, const char *, ...)
+		    __attribute__((format(printf, 2, 3)));
+void		 h_json(struct html *, const char *);
+void		 h_url(struct html *, const char *);
 void		 h_attr(struct html *, const char *, const char *);
 const char	*h_word(const char *, const char *);
 char		*h_take(struct html *);
@@ -161,6 +170,9 @@ int		 api_hdr(const char *, const char *, const char *,
 		    const char *, api_cb *, void *);
 const char	*api_etag(void);
 void		 api_reads(void);
+void		 api_keep(void);
+unsigned int	 api_gen(void);
+bool		 api_stale(unsigned int, const char *);
 
 /*
  * rc.c: the console's RESTCONF (RFC 8040), JSON.  rc_c() and rc_h()

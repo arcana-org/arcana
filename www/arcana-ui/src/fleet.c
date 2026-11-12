@@ -693,7 +693,7 @@ view_devices(struct html *h)
 		h_raw(h, ">");
 		h_txt(h, jstr(r, "uri"));
 		h_fmt(h, "</td><td><span class=\"chip st-%s\">%s</span></td><td",
-		    jstr(r, "state"), jstr(r, "state"));
+		    h_word(jstr(r, "state"), "unknown"), jstr(r, "state"));
 		if (jbool(r, "behind"))
 			h_raw(h, " class=\"warn\" title=\"Not the arcana-agent "
 			    "this console sends: another build, or another "

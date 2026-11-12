@@ -184,19 +184,19 @@ job_json(const char *kind, const char *verb, const char *const *words,
 	size_t		 i;
 
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"kind\":\"%s\"", kind);
+	h_strf(&b, "{\"kind\":\"%s\"", kind);
 	if (verb != NULL)
-		h_fmt(&b, ",\"verb\":\"%s\"", verb);
+		h_strf(&b, ",\"verb\":\"%s\"", verb);
 	h_raw(&b, ",\"args\":[");
 	for (i = 0; i < n; i++) {
 		q = json_quote(words[i]);
-		h_fmt(&b, "%s%s", i > 0 ? "," : "", q);
+		h_strf(&b, "%s%s", i > 0 ? "," : "", q);
 		free(q);
 	}
 	h_raw(&b, "]");
 	if (text != NULL) {
 		q = json_quote(text);
-		h_fmt(&b, ",\"text\":%s", q);
+		h_strf(&b, ",\"text\":%s", q);
 		free(q);
 	}
 	if (extra != NULL)

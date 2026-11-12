@@ -19,6 +19,9 @@ ARC_OBJDIR=	${ARC_TOP}/obj/${.CURDIR:tA:S,^${ARC_TOP}/,,}
 __objdir!=	mkdir -p ${ARC_OBJDIR} && echo ${ARC_OBJDIR}
 .OBJDIR:	${ARC_OBJDIR}
 .endif
+# make obj: that directory, made already, not bsd.obj.mk's /usr/obj.
+obj: .PHONY
+	@mkdir -p ${.OBJDIR} ${SRCS:M*/*:H:O:u:S,^,${.OBJDIR}/,}
 .endif
 
 # Per-machine overrides (linker, where cblink lives) and the options make
@@ -26,6 +29,16 @@ __objdir!=	mkdir -p ${ARC_OBJDIR} && echo ${ARC_OBJDIR}
 # decided, so that its WITH_ and WITHOUT_ lines count as the command
 # line's do.
 .sinclude "${ARC_TOP}/config.mk"
+
+# Hardened, every program and library: full RELRO (bsd.prog.mk's and
+# bsd.lib.mk's RELRO, on by default, with BIND_NOW's -z now) and
+# _FORTIFY_SOURCE=2 (bsd.sys.mk's FORTIFY_SOURCE, 0 unless set).
+# WITHOUT_BIND_NOW and FORTIFY_SOURCE=0 turn them off.  The page's
+# WebAssembly is emcc's, and none of this.
+.if !defined(WITHOUT_BIND_NOW)
+WITH_BIND_NOW=	yes
+.endif
+FORTIFY_SOURCE?=	2
 
 .include <bsd.opts.mk>
 

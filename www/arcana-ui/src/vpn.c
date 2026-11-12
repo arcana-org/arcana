@@ -350,26 +350,7 @@ vpn_modal(struct html *h)
 		h_raw(h, ">Copy</button><a class=\"ghost small\" download=\"");
 		h_txt(h, wgc.name[0] != '\0' ? wgc.name : "client");
 		h_raw(h, ".conf\" href=\"data:text/plain;charset=utf-8,");
-		{
-			static const char	 hex[] = "0123456789ABCDEF";
-			const char		*c;
-			char			 e[4];
-
-			for (c = wgc.conf; *c != '\0'; c++) {
-				if ((*c >= 'A' && *c <= 'Z') || (*c >= 'a' &&
-				    *c <= 'z') || (*c >= '0' && *c <= '9') ||
-				    strchr("-_.~", *c) != NULL) {
-					e[0] = *c;
-					e[1] = '\0';
-				} else {
-					e[0] = '%';
-					e[1] = hex[(unsigned char)*c >> 4];
-					e[2] = hex[(unsigned char)*c & 15];
-					e[3] = '\0';
-				}
-				h_raw(h, e);
-			}
-		}
+		h_url(h, wgc.conf);
 		h_raw(h, "\">Download</a></p>");
 		return (true);
 	default:

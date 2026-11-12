@@ -84,6 +84,22 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Links in the files the agent writes, agent 0.281.0
+
+A file the agent changes through libvarconf (rc.conf and its
+rc.conf.d files, sysctl.conf, loader.conf, rtadvd.conf) that is a
+symbolic link stays one when root made it: the file it names is
+written, beside itself, where before the link was replaced by a plain
+file. Anyone else's link is refused, neither followed nor replaced.
+The directory written in must be root's and writable by no one else
+(not group, not other, sticky or not), else the write is refused with
+why. One of several hard links is refused: make it one file, or the
+others symbolic links. A string written
+into rtadvd.conf holds no control character, and after a ":" (where
+rtadvd splits a field) addresses' hex digits, dots, "/" and ","
+alone, never another field. The agent and the console are built with
+`_FORTIFY_SOURCE=2` and full RELRO.
+
 ### Faults held to what is watched, agent 0.280.0
 
 At its first start, agent 0.280.0 clears the open faults an agent

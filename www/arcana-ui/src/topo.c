@@ -476,12 +476,13 @@ node_sysctl(int i, const char *name, api_cb *cb, void *arg)
 static void
 node_send(int i, char *json, const char *title, const char *target)
 {
-	char	*in, t2[200];
+	char	*in, *qj, t2[200];
 
 	if (tn[i].jail[0] != '\0' && json[0] == '{') {
-		if (asprintf(&in, "{\"jail\":\"%s\",%s", tn[i].jail, json +
-		    1) == -1)
+		qj = json_quote(tn[i].jail);
+		if (asprintf(&in, "{\"jail\":%s,%s", qj, json + 1) == -1)
 			abort();
+		free(qj);
 		free(json);
 		json = in;
 		snprintf(t2, sizeof(t2), "%s: %s", tn[i].jail, title);
@@ -569,7 +570,7 @@ places_save(void)
 	memset(&b, 0, sizeof(b));
 	for (i = 0; i < nhosts; i++)
 		if (hosts[i].placed && node_index(hosts[i].sid) != -1)
-			h_fmt(&b, "%s %.0f %.0f\n", hosts[i].sid, hosts[i].x,
+			h_strf(&b, "%s %.0f %.0f\n", hosts[i].sid, hosts[i].x,
 			    hosts[i].y);
 	arc_store_set("arc_topo", b.s != NULL ? b.s : "");
 	free(b.s);
@@ -609,7 +610,7 @@ bends_save(void)
 
 	memset(&b, 0, sizeof(b));
 	for (i = 0; i < tp.nbends; i++)
-		h_fmt(&b, "%.0f\t%s\n", tp.bends[i].bend, tp.bends[i].key);
+		h_strf(&b, "%.0f\t%s\n", tp.bends[i].bend, tp.bends[i].key);
 	arc_store_set("arc_topo_bends", b.s != NULL ? b.s : "");
 	free(b.s);
 }
@@ -684,7 +685,7 @@ peers_save(void)
 
 	memset(&b, 0, sizeof(b));
 	for (i = 0; i < tp.npeers; i++)
-		h_fmt(&b, "%.0f %.0f %s\n", tp.peers[i].dx, tp.peers[i].dy,
+		h_strf(&b, "%.0f %.0f %s\n", tp.peers[i].dx, tp.peers[i].dy,
 		    tp.peers[i].key);
 	arc_store_set("arc_topo_peers", b.s != NULL ? b.s : "");
 	free(b.s);
@@ -6116,7 +6117,7 @@ lk_boot_write(int i, int k, int v)
 					h_raw(&b, "\n");
 					put = true;
 				} else if (q != NULL || *p != '\0') {
-					h_fmt(&b, "%.*s\n", (int)(q != NULL ? (size_t)(q - p) :
+					h_strf(&b, "%.*s\n", (int)(q != NULL ? (size_t)(q - p) :
 					    strlen(p)), p);
 				}
 				if (q == NULL)
@@ -6138,11 +6139,32 @@ lk_boot_write(int i, int k, int v)
 		lkg.loader[i] = text;
 }
 
+/* A route of a network to an interface in a FIB, or its removal: a job
+ * of its host's, each value quoted. */
+static void
+lk_job(int i, const char *title, const char *prefix, const char *ifn,
+    bool remove, bool persist, int fib)
+{
+	struct html	b;
+
+	memset(&b, 0, sizeof(b));
+	h_raw(&b, "{\"kind\":\"route\",\"destination\":");
+	h_json(&b, prefix);
+	h_raw(&b, ",\"gateway\":");
+	h_json(&b, ifn);
+	h_strf(&b, ",\"remove\":%s,\"persist\":%s,\"fib\":%d,\"safe\":true}",
+	    remove ? "true" : "false", persist ? "true" : "false", fib);
+	node_send(i, h_take(&b), title, ifn);
+}
+
 bool
 leaks_action(const char *act, const char *arg, const char *value)
 {
-	char	 fib[16], pfx[80], ifn[32], title[200];
-	int	 i, k, v;
+	const ucl_object_t	*r;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*all;
+	char			 title[200], row[160];
+	int			 i, k, v;
 
 	if (strcmp(act, "input:lk-node") == 0) {
 		snprintf(lkg.f_node, sizeof(lkg.f_node), "%s", value);
@@ -6175,23 +6197,34 @@ leaks_action(const char *act, const char *arg, const char *value)
 		}
 		snprintf(title, sizeof(title), "leak %s of %s into FIB %d",
 		    lkg.f_prefix, lkg.f_if, lkg.f_fib);
-		node_job(i, title, lkg.f_if, "{\"kind\":\"route\",\"destination\":"
-		    "\"%s\",\"gateway\":\"%s\",\"remove\":false,\"persist\":%s,"
-		    "\"fib\":%d,\"safe\":true}", lkg.f_prefix, lkg.f_if, lkg.f_keep ?
-		    "true" : "false", lkg.f_fib);
+		lk_job(i, title, lkg.f_prefix, lkg.f_if, false, lkg.f_keep,
+		    lkg.f_fib);
 		lkg.fetched[i] = 0;
 		return (true);
 	}
 	if (strcmp(act, "lk-remove") == 0) {
-		if ((i = node_index(arg)) == -1 || sscanf(value, "%15s %79s %31s",
-		    fib, pfx, ifn) != 3)
+		/* The row by its host and what it is, its values the
+		 * page's own: nothing of the button's is parsed. */
+		if ((i = node_index(arg)) == -1)
 			return (true);
-		snprintf(title, sizeof(title), "leak %s of %s out of FIB %s",
-		    pfx, ifn, fib);
-		node_job(i, title, ifn, "{\"kind\":\"route\",\"destination\":"
-		    "\"%s\",\"gateway\":\"%s\",\"remove\":true,\"persist\":true,"
-		    "\"fib\":%d,\"safe\":true}", pfx, ifn, atoi(fib));
-		lkg.fetched[i] = 0;
+		all = lk_rows();
+		it = NULL;
+		while ((r = ucl_object_iterate(all, &it, true)) != NULL) {
+			snprintf(row, sizeof(row), "%s %s %s", jstr(r, "into"),
+			    jstr(r, "prefix"), jstr(r, "if"));
+			if (strcmp(jstr(r, "key"), arg) == 0 &&
+			    strcmp(row, value) == 0)
+				break;
+		}
+		if (r != NULL) {
+			snprintf(title, sizeof(title), "leak %s of %s out of "
+			    "FIB %s", jstr(r, "prefix"), jstr(r, "if"),
+			    jstr(r, "into"));
+			lk_job(i, title, jstr(r, "prefix"), jstr(r, "if"), true,
+			    true, atoi(jstr(r, "into")));
+			lkg.fetched[i] = 0;
+		}
+		ucl_object_unref(all);
 		return (true);
 	}
 	if (strcmp(act, "lk-allfibs") == 0) {
@@ -9515,7 +9548,7 @@ view_lookup(struct html *h, const struct server *s)
 		    "</th><th>Gateway</th><th>Flags</th><th>Interface</th>"
 		    "</tr></thead><tbody>");
 	for (i = 0; i < n; i++) {
-		h_fmt(h, "<tr%s><td>", i == 0 && best != NULL ?
+		h_rawf(h, "<tr%s><td>", i == 0 && best != NULL ?
 		    " class=\"best\"" : "");
 		h_txt(h, jstr(cand[i], "destination"));
 		h_raw(h, "</td><td>");
@@ -10048,8 +10081,8 @@ tq_cell(struct html *h, const ucl_object_t *m, const char *why)
 	}
 	last = ucl_array_find_index(sm, n - 1);
 	h_fmt(h, "<td class=\"num tq-cell st-%s\">%.1f ms<small> ± %.1f · "
-	    "%.1f %%</small></td>", jstr(m, "state") != NULL ? jstr(m, "state") :
-	    "unknown", ucl_object_todouble(ucl_array_find_index(last, 1)),
+	    "%.1f %%</small></td>", h_word(jstr(m, "state"), "unknown"),
+	    ucl_object_todouble(ucl_array_find_index(last, 1)),
 	    ucl_object_todouble(ucl_array_find_index(last, 2)),
 	    ucl_object_todouble(ucl_array_find_index(last, 3)) * 100);
 }
@@ -10388,7 +10421,7 @@ tq_num(struct html *h, const char *key, const char *v)
 		return;
 	n = strtol(v, &end, 10);
 	if (*end == '\0' && n >= 0)
-		h_fmt(h, ",\"%s\":%ld", key, n);
+		h_strf(h, ",\"%s\":%ld", key, n);
 }
 
 /*
@@ -10420,25 +10453,25 @@ tq_send(const struct tqend *e, const char *prefix, const char *addr,
 	qj = json_quote(jail);
 	if (addr == NULL || addr[0] == '\0') {
 		if (jail[0] != '\0')
-			h_fmt(h, "{\"edit-id\":%s,\"operation\":\"remove\","
+			h_strf(h, "{\"edit-id\":%s,\"operation\":\"remove\","
 			    "\"target\":\"/jail=%s/monitor=%s\"}", qn, jail,
 			    name);
 		else
-			h_fmt(h, "{\"edit-id\":%s,\"operation\":\"remove\","
+			h_strf(h, "{\"edit-id\":%s,\"operation\":\"remove\","
 			    "\"target\":\"/monitor=%s\"}", qn, name);
 	} else {
 		qi = json_quote(e->ifname);
 		qa = json_quote(addr);
 		if (jail[0] != '\0')
-			h_fmt(h, "{\"edit-id\":%s,\"operation\":\"merge\","
+			h_strf(h, "{\"edit-id\":%s,\"operation\":\"merge\","
 			    "\"target\":\"/jail=%s\",\"value\":{"
 			    "\"arcana-probe:jail\":[{\"name\":%s,\"monitor\":[",
 			    qn, jail, qj);
 		else
-			h_fmt(h, "{\"edit-id\":%s,\"operation\":\"merge\","
+			h_strf(h, "{\"edit-id\":%s,\"operation\":\"merge\","
 			    "\"target\":\"/monitor=%s\",\"value\":{"
 			    "\"arcana-probe:monitor\":[", qn, name);
-		h_fmt(h, "{\"name\":%s,\"interface\":%s,\"address\":%s", qn,
+		h_strf(h, "{\"name\":%s,\"interface\":%s,\"address\":%s", qn,
 		    qi, qa);
 		tq_num(h, "fib", fib[0] != '\0' ? fib : "0");
 		tq_num(h, "interval", interval);

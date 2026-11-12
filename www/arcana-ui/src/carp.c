@@ -38,7 +38,7 @@ carp_job(struct server *s, const char *verb, const char *ifname,
 	bool		 first;
 
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"kind\":\"carp\",\"verb\":\"%s\",\"interface\":", verb);
+	h_strf(&b, "{\"kind\":\"carp\",\"verb\":\"%s\",\"interface\":", verb);
 	q = json_quote(ifname);
 	h_raw(&b, q);
 	free(q);
@@ -60,7 +60,7 @@ carp_job(struct server *s, const char *verb, const char *ifname,
 
 			snprintf(one, sizeof(one), "%.*s", (int)(e - p), p);
 			q = json_quote(one);
-			h_fmt(&b, "%s%s", first ? "" : ",", q);
+			h_strf(&b, "%s%s", first ? "" : ",", q);
 			free(q);
 		}
 		first = false;
@@ -72,7 +72,7 @@ carp_job(struct server *s, const char *verb, const char *ifname,
 		h_raw(&b, q);
 		free(q);
 	}
-	h_fmt(&b, ",\"persist\":%s}", keep ? "true" : "false");
+	h_strf(&b, ",\"persist\":%s}", keep ? "true" : "false");
 	snprintf(title, sizeof(title), "%s: carp %s %s%s%s", ifname, verb,
 	    words, address != NULL ? " " : "", address != NULL ? address : "");
 	job_send(s, b.s, title, JOB_IFACE, ifname);	/* it keeps b.s */
@@ -128,7 +128,7 @@ view_carp(struct html *h, struct server *s, const ucl_object_t *data)
 			while ((a = ucl_object_iterate(jget(i, "addresses"), &at,
 			    true)) != NULL)
 				if (jint(a, "vhid", 0) == jint(c, "vhid", -1))
-					h_fmt(&ad, "%s%s/%lld", ad.s != NULL ? " " :
+					h_strf(&ad, "%s%s/%lld", ad.s != NULL ? " " :
 					    "", jstr(a, "address"), (long long)jint(a,
 					    "prefixlen", 0));
 			ucl_object_insert_key(o, ucl_object_fromstring(ad.s !=

@@ -133,7 +133,7 @@ pfxlist_joined(const char *names, const char *sep)
 		it = NULL;
 		while ((e = ucl_object_iterate(jget(l, "prefixes"), &it,
 		    true)) != NULL) {
-			h_fmt(&b, "%s%s", first ? "" : sep,
+			h_strf(&b, "%s%s", first ? "" : sep,
 			    ucl_object_tostring_forced(e));
 			first = false;
 		}
@@ -359,7 +359,7 @@ pfxlists_form(const char *form_name, const ucl_object_t *f)
 		if (w[0] == '\0')
 			continue;
 		q = json_quote(w);
-		h_fmt(&b, "%s%s", first ? "" : ",", q);
+		h_strf(&b, "%s%s", first ? "" : ",", q);
 		free(q);
 		first = false;
 	}

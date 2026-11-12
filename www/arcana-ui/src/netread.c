@@ -911,7 +911,7 @@ net_yread(const char *sid, const struct netq *q, bool user, api_cb *cb,
 	nojail = strcmp(k, "traceroute") == 0;
 	if (jail != NULL && !nojail) {
 		qs = json_quote(jail);
-		h_fmt(&b, "\"jail\":%s", qs);
+		h_strf(&b, "\"jail\":%s", qs);
 		free(qs);
 	}
 #define	SEP	(b.s != NULL && b.s[strlen(b.s) - 1] != '{' ? "," : "")
@@ -919,35 +919,35 @@ net_yread(const char *sid, const struct netq *q, bool user, api_cb *cb,
 	    strcmp(k, "nhgroups") == 0 || strcmp(k, "connections") == 0 ||
 	    strcmp(k, "sockets") == 0 || strcmp(k, "interfaces") == 0 ||
 	    strcmp(k, "neighbours") == 0)
-		h_fmt(&b, "%s\"family\":\"%s\"", SEP, q->family == 4 ? "inet" :
+		h_strf(&b, "%s\"family\":\"%s\"", SEP, q->family == 4 ? "inet" :
 		    q->family == 6 ? "inet6" : "all");
 	if ((strcmp(k, "routes") == 0 || strcmp(k, "nexthops") == 0 ||
 	    strcmp(k, "nhgroups") == 0 || strcmp(k, "lookup") == 0) &&
 	    q->fib > 0)
-		h_fmt(&b, "%s\"fib\":%d", SEP, q->fib);
+		h_strf(&b, "%s\"fib\":%d", SEP, q->fib);
 	if (strcmp(k, "routes") == 0 && q->offset > 0)
-		h_fmt(&b, "%s\"offset\":%d", SEP, q->offset);
+		h_strf(&b, "%s\"offset\":%d", SEP, q->offset);
 	if ((strcmp(k, "routes") == 0 || strcmp(k, "neighbours") == 0 ||
 	    strcmp(k, "bird-routes") == 0) && q->filter != NULL &&
 	    q->filter[0] != '\0') {
 		qs = json_quote(q->filter);
-		h_fmt(&b, "%s\"filter\":%s", SEP, qs);
+		h_strf(&b, "%s\"filter\":%s", SEP, qs);
 		free(qs);
 	} else if (strcmp(k, "bird-routes") == 0)
-		h_fmt(&b, "%s\"filter\":\"\"", SEP);
+		h_strf(&b, "%s\"filter\":\"\"", SEP);
 	if (strcmp(k, "bird-ospf") == 0 && q->topology) {
 		r->topology = true;
-		h_fmt(&b, "%s\"topology\":true", SEP);
+		h_strf(&b, "%s\"topology\":true", SEP);
 		if (q->filter != NULL && q->filter[0] != '\0') {
 			qs = json_quote(q->filter);
-			h_fmt(&b, ",\"protocol\":%s", qs);
+			h_strf(&b, ",\"protocol\":%s", qs);
 			free(qs);
 		}
 	}
 	if ((strcmp(k, "lookup") == 0 || strcmp(k, "traceroute") == 0) &&
 	    q->address != NULL) {
 		qs = json_quote(q->address);
-		h_fmt(&b, "%s\"address\":%s", SEP, qs);
+		h_strf(&b, "%s\"address\":%s", SEP, qs);
 		free(qs);
 	}
 #undef	SEP

@@ -24,16 +24,20 @@
 # or a field that is no attribute of job-spec, stops the build with
 # what differs, and nothing is written.
 
+# A string of the spec as JSON's and C's both have it: a tab, a newline
+# or a carriage return escaped, as both write them, not put in raw
+# (JSON refuses a raw one, C a raw newline).
 function jstr(s) {
 	gsub(/\\/, "\\\\", s)
 	gsub(/"/, "\\\"", s)
+	gsub(/\t/, "\\t", s)
+	gsub(/\n/, "\\n", s)
+	gsub(/\r/, "\\r", s)
 	return "\"" s "\""
 }
 
 function cstr(s) {
-	gsub(/\\/, "\\\\", s)
-	gsub(/"/, "\\\"", s)
-	return "\"" s "\""
+	return jstr(s)
 }
 
 # "a b c" as a JSON array of strings.

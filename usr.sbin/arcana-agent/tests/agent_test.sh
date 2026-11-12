@@ -417,6 +417,20 @@ wait_match()
 	return 1
 }
 
+# Skipped where the suite runs niced (make check under nice(1)): what
+# the case starts, or has the agent start, is said to be at nice 0 or
+# niced below the suite's own, which a process that is not root cannot
+# go back to.  $1: what needs it.
+need_nice0()
+{
+	local n
+
+	n=$(ps -o nice= -p $$ | tr -d ' ')
+	[ "${n:-0}" -le 0 ] || atf_skip "the suite runs at nice $n: $1" \
+	    "needs nice 0, which a process that is not root cannot go" \
+	    "back to"
+}
+
 atf_test_case hello cleanup
 hello_head()
 {
@@ -3357,7 +3371,10 @@ yang_subscribe_body()
 	echo $! > sub.pid
 	"$JGC" -c "$SOCK" subscribe -p 30 > /dev/null 2>&1 &
 	echo $! > sub2.pid
-	sleep 0.5
+	# Both subscribed, as the agent lists them, before a job is made.
+	wait_match '"stream-xpath-filter":"/arcana-events:event/job"' \
+	    "$JGC" -c "$SOCK" get subscriptions
+	wait_match '"period":3000' "$JGC" -c "$SOCK" get subscriptions
 	atf_check -o match:'"stream":"NETCONF","stream-xpath-filter":"/arcana-events:event/job"' \
 	    -o match:'"period":3000' -o match:'"sent-event-records":"[0-9]+"' \
 	    "$JGC" -c "$SOCK" get subscriptions
@@ -3375,7 +3392,8 @@ yang_subscribe_body()
 	"$JGC" -c "$SOCK" subscribe -n 2 -o 0 -x '/arcana-jobs:jobs/job/title' \
 	    > change.out 2>&1 &
 	echo $! > sub3.pid
-	sleep 1.5
+	# Subscribed: its first push-update, the titles whole, came.
+	wait_match '^1$' sh -c 'wc -l < change.out | tr -d " "'
 	atf_check -o ignore "$(atf_get_srcdir)/ysubmit" "$SOCK" arcw1
 	for i in 1 2 3 4 5 6 7 8 9 10; do
 		kill -0 "$(cat sub3.pid)" 2>/dev/null || break
@@ -3390,7 +3408,7 @@ yang_subscribe_body()
 	"$JGC" -c "$SOCK" subscribe -n 2 -o 0 -x '/arcana-events:events/last' \
 	    > told.out 2>&1 &
 	echo $! > sub4.pid
-	sleep 1.5
+	wait_match '^1$' sh -c 'wc -l < told.out | tr -d " "'
 	atf_check -o ignore "$(atf_get_srcdir)/ysubmit" "$SOCK" arcw2
 	for i in 1 2 3 4 5 6 7 8 9 10; do
 		kill -0 "$(cat sub4.pid)" 2>/dev/null || break
@@ -5931,7 +5949,9 @@ vpn_bird_safe_body()
 		sleep 0.1
 	done
 	atf_check -o match:'^configure confirm$' cat birdc.log
-	sleep 3
+	# Its wait ended, as the agent says: no timer left to undo it.
+	wait_match 'bird: the change to .* was confirmed$' cat daemon.out
+	atf_check -o match:'bird: the change to .* was confirmed$' cat daemon.out
 	atf_check -o match:'# safe' cat bird/bird.conf
 }
 vpn_bird_safe_cleanup()
@@ -6003,7 +6023,10 @@ vpn_bird_gone_body()
 	atf_check -o match:'taken back unless confirmed' \
 	    "$JGC" -c "$SOCK" bird config -c 2 -w gone.conf
 	touch bird.dead
-	sleep 4
+	# The timer ran out, as the agent says, and left the file.
+	wait_match 'BIRD stopped answering after the change' cat daemon.out
+	atf_check -o match:'BIRD stopped answering after the change' \
+	    cat daemon.out
 	atf_check -o match:'# gone' cat bird/bird.conf
 	rm bird.dead
 	sed -e 's/# gone/# two/' bird/bird.conf > two.conf
@@ -6037,7 +6060,9 @@ vpn_bird_gone_body()
 	done
 	atf_check -o match:'taken back unless confirmed' cat out
 	printf '# somebody else\n' >> bird/bird.conf
-	sleep 4
+	wait_match 'no longer the one put there: left as it is' cat daemon.out
+	atf_check -o match:'no longer the one put there: left as it is' \
+	    cat daemon.out
 	atf_check -o match:'# three' -o match:'# somebody else' cat bird/bird.conf
 }
 vpn_bird_gone_cleanup()
@@ -10258,6 +10283,7 @@ smtpd_head()
 }
 smtpd_body()
 {
+	need_nice0 "a job's smtpctl at the agent's own nice"
 	mkdir -p tools smtpd.d
 	cat > tools/smtpd <<EOS
 #!/bin/sh
@@ -12098,6 +12124,7 @@ observe_ps_head()
 }
 observe_ps_body()
 {
+	need_nice0 "a process given nice 5"
 	observe_start
 
 	# What runs: this test's own sleep among it, with what top shows.

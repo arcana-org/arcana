@@ -118,6 +118,8 @@ ask(void)
 	ucl_object_unref(b);
 	ts.busy = true;
 	ts.error[0] = '\0';
+	/* It only reads: asked again at once (swapped, say), not busy. */
+	api_reads();
 	rc_verb("/restconf/operations/arcana-console:trace-path", json, NULL,
 	    path_cb, (void *)(uintptr_t)++ts.asked);
 	free(json);
@@ -229,8 +231,7 @@ way(struct html *h, const char *title, const ucl_object_t *hops,
 		h_raw(h, "</pre></details></li>");
 		free(text);
 	}
-	h_fmt(h, "<li class=\"tsend %s\">", jstr(end, "how") != NULL ?
-	    jstr(end, "how") : "");
+	h_fmt(h, "<li class=\"tsend %s\">", h_word(jstr(end, "how"), ""));
 	h_txt(h, jstr(end, "what"));
 	h_raw(h, "</li></ol>");
 	(void)reply;
@@ -273,7 +274,7 @@ static void
 ts_legend(struct html *h, bool reply)
 {
 
-	h_fmt(h, "<ul class=\"glegend\"><li class=\"ts-way\">the way there"
+	h_rawf(h, "<ul class=\"glegend\"><li class=\"ts-way\">the way there"
 	    "</li>%s<li class=\"ts-bad\">stopped</li><li class=\"ts-leaves\">"
 	    "leaves the places asked</li><li class=\"box dashed\">did not "
 	    "answer</li><li class=\"ts-fw good\">its firewall lets it by</li>"
@@ -456,7 +457,7 @@ result(struct html *h)
 	if (strcmp(sev, "bad") != 0 && jstr(r, "end.how") != NULL &&
 	    strcmp(jstr(r, "end.how"), "unknown") == 0)
 		sev = "warn";
-	h_fmt(h, "<div class=\"tsverdict %s\">", sev);
+	h_fmt(h, "<div class=\"tsverdict %s\">", h_word(sev, "ok"));
 	if (strcmp(sev, "bad") == 0) {
 		h_raw(h, "<b>Stopped");
 		if (jstr(f, "place") != NULL) {
@@ -492,7 +493,7 @@ result(struct html *h)
 		if (strcmp(jstr(f, "severity"), "ok") == 0)
 			continue;
 		h_fmt(h, "<li class=\"%s\"><span class=\"chip %s\">%s</span>",
-		    jstr(f, "severity"), strcmp(jstr(f, "severity"), "bad") ==
+		    h_word(jstr(f, "severity"), ""), strcmp(jstr(f, "severity"), "bad") ==
 		    0 ? "bad" : strcmp(jstr(f, "severity"), "warn") == 0 ?
 		    "warn" : "", jstr(f, "severity"));
 		if (jstr(f, "place") != NULL) {

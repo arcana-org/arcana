@@ -16,6 +16,7 @@
 
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
@@ -25,6 +26,7 @@
 #include <openssl/evp.h>
 
 #include <atf-c.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <signal.h>
@@ -37,26 +39,6 @@
 
 static int	wd_port;
 static char	wd_sid[128];
-
-static int
-free_port(void)
-{
-	struct sockaddr_in	sin;
-	socklen_t		len;
-	int			s, port;
-
-	ATF_REQUIRE((s = socket(AF_INET, SOCK_STREAM, 0)) != -1);
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_len = sizeof(sin);
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	ATF_REQUIRE(bind(s, (struct sockaddr *)&sin, sizeof(sin)) == 0);
-	len = sizeof(sin);
-	ATF_REQUIRE(getsockname(s, (struct sockaddr *)&sin, &len) == 0);
-	port = ntohs(sin.sin_port);
-	close(s);
-	return (port);
-}
 
 /* One WebDriver command; returns its "value", which the caller unrefs. */
 static ucl_object_t *
@@ -384,6 +366,7 @@ browser_start(const atf_tc_t *tc)
 	argv[1] = port;
 	argv[2] = NULL;
 	pid = spawn(argv, "chromedriver.out");
+	harness_record(pid);
 	ATF_REQUIRE((fp = fopen("chromedriver.pid", "w")) != NULL);
 	fprintf(fp, "%d\n", (int)pid);
 	fclose(fp);
@@ -5655,8 +5638,8 @@ part_firewall_objects(void)
 	    "'call 9100') && document.querySelector('ol.fw-steps li.decides')"
 	    ".textContent.includes('65535') && document.querySelector('.stage "
 	    ".fw-steps + .notice').textContent.includes('Dropped') && document."
-	    "querySelector('.fw-tctx a[href^=\"#/troubleshoot?src=2001:db8::9"
-	    "\"]')", 20);
+	    "querySelector('.fw-tctx a[href^=\"#/troubleshoot?src=2001%3Adb8"
+	    "%3A%3A9\"]')", 20);
 	shot("7o-firewall-trace");
 	/* And the kernel's own answer, for an address: the packets it
 	 * decided, each with the rule that did, a press away. */
@@ -8956,6 +8939,87 @@ ATF_TC_CLEANUP(pwa_notify_cases, tc)
 }
 
 /*
+ * What the page is told is text, however hostile: an alarm's type that
+ * holds markup, quotes, an ampersand and a newline (the console's
+ * settings as a console that let one in would send them) is shown as it
+ * is, no element made of it, the field named by it whole, and sent back
+ * as one JSON string.  A form sent twice at once sends one change.
+ * Signed out, the page starts over: nothing of the session left in it.
+ */
+ATF_TC_WITH_CLEANUP(pwa_hostile);
+ATF_TC_HEAD(pwa_hostile, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A hostile value from the console "
+	    "shown as text; a form not sent twice; signing out starts over");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_hostile, tc)
+{
+
+	prologue(tc, 1);
+	/* The settings' reply given a mail case of that type; each change
+	 * sent kept, its body. */
+	run("window.H = '\"><button data-act=\"pwn\">pwn</button>\\' <b>&amp; "
+	    "& \\n x'; window.sent = []; const ofh = window.fetch; "
+	    "window.fetch = function (u, o) { const s = String(u && u.url || "
+	    "u), m = (o && o.method) || 'GET'; if (m !== 'GET') "
+	    "window.sent.push({ m: m, s: s, b: o && o.body }); "
+	    "if (m !== 'GET' || !/arcana-console:settings$/.test(s)) "
+	    "return ofh.apply(this, arguments); return ofh.apply(this, "
+	    "arguments).then(r => r.text().then(t => { const j = JSON.parse(t), "
+	    "v = j['arcana-console:settings'] || j; (v['mail-case'] = "
+	    "v['mail-case'] || []).push({ type: window.H, include: true }); "
+	    "return new Response(JSON.stringify(j), { status: r.status, "
+	    "headers: r.headers }); })); };");
+	run("document.querySelector('.rail-foot li[data-act=settings]')"
+	    ".click()");
+	click_when("button[data-act=set-tab][data-arg=notify]", 10);
+	wait_js("[...document.querySelectorAll('table.mailcases tbody tr')]"
+	    ".some(r => r.dataset.case === window.H)", 20);
+	/* Shown as it is, nothing made of it: no button of its own, no
+	 * bold; the field's name, and the row's, it whole. */
+	ATF_CHECK(js_true("document.querySelector('[data-act=pwn]') === "
+	    "null && !document.querySelector('table.mailcases b b') && "
+	    "[...document.querySelectorAll('table.mailcases td.mono')].some("
+	    "d => d.textContent === window.H)"));
+	ATF_CHECK(js_true("[...document.querySelectorAll('table.mailcases "
+	    "input[type=checkbox]')].some(i => i.name === 'case-in:' + "
+	    "window.H) && [...document.querySelectorAll('table.mailcases "
+	    "input[inputmode=numeric]')].some(i => i.name === 'case-cd:' + "
+	    "window.H)"));
+	/* Every data-act the page's own: no word of the value's. */
+	ATF_CHECK(js_true("[...document.querySelectorAll('[data-act]')]"
+	    ".every(e => e.dataset.act !== 'pwn' && !e.dataset.act.includes("
+	    "'\"'))"));
+	/* Left out of the mail, sent twice at once: one change, its body
+	 * JSON, the type one string in it. */
+	run("const f = document.querySelector('form[data-form=settings-mail]');"
+	    " [...f.querySelectorAll('input[type=checkbox]')].find(i => i.name "
+	    "=== 'case-in:' + window.H).checked = false; f.mail_to.value = "
+	    "'ops@example.org'; f.requestSubmit(); f.requestSubmit();");
+	wait_js("window.sent.some(x => x.m === 'PATCH')", 10);
+	usleep(500000);
+	ATF_CHECK_MSG(js_true("window.sent.filter(x => x.m === 'PATCH')"
+	    ".length === 1"), "the form sent twice");
+	ATF_CHECK(js_true("(() => { const x = window.sent.find(x => x.m === "
+	    "'PATCH'); const j = JSON.parse(x.b); return JSON.stringify(j)"
+	    ".includes(JSON.stringify(window.H).slice(1, -1)); })()"));
+
+	/* Signed out: the page loaded anew, nothing of the session's. */
+	run("window.mark = 1; document.querySelector('button[data-act=logout]')"
+	    ".click()");
+	click_when("button[data-act=login]", 20);
+	ATF_CHECK(js_true("window.mark === undefined && "
+	    "window.sent === undefined"));
+}
+ATF_TC_CLEANUP(pwa_hostile, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A host's configuration files on its System tab: Arcana's own, then
  * switched to the system's.  The dry run's rows drawn, a word list's
  * Additive by default, a value both set waiting for a choice; the rows
@@ -11325,7 +11389,16 @@ ATF_TC_HEAD(pwa_storage_procs, tc)
 }
 ATF_TC_BODY(pwa_storage_procs, tc)
 {
+	int	n;
 
+	/* The sleep it starts is given nice 7: below the suite's own
+	 * where it runs niced, which a process that is not root cannot
+	 * go back to. */
+	errno = 0;
+	if ((n = getpriority(PRIO_PROCESS, 0)) > 0 && errno == 0)
+		atf_tc_skip("the suite runs at nice %d: a process given nice "
+		    "7 needs less, which a process that is not root cannot "
+		    "go back to", n);
 	prologue(tc, 2);
 	part_storage_procs();
 }
@@ -13562,6 +13635,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_plugins_netmap);
 	ATF_TP_ADD_TC(tp, pwa_hosts);
 	ATF_TP_ADD_TC(tp, pwa_notify_cases);
+	ATF_TP_ADD_TC(tp, pwa_hostile);
 	ATF_TP_ADD_TC(tp, pwa_route_late);
 	ATF_TP_ADD_TC(tp, pwa_flows_wf);
 	ATF_TP_ADD_TC(tp, pwa_nettab_ifaces);

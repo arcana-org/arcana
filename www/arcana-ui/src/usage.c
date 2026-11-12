@@ -1135,12 +1135,12 @@ usage_form(const char *form, const ucl_object_t *f)
 		}
 	}
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"arcana-history:history\":{\"sampling\":{\"step\":%d,"
+	h_strf(&b, "{\"arcana-history:history\":{\"sampling\":{\"step\":%d,"
 	    "\"keep\":%d", step, keep);
 	if (u->has_hold)
-		h_fmt(&b, ",\"hold\":%d,\"enabled\":%s", hold, jbool(f,
+		h_strf(&b, ",\"hold\":%d,\"enabled\":%s", hold, jbool(f,
 		    "enabled") ? "true" : "false");
-	h_fmt(&b, "},\"limits\":{\"cpu\":%d,\"memory\":%d,\"swap\":%d,"
+	h_strf(&b, "},\"limits\":{\"cpu\":%d,\"memory\":%d,\"swap\":%d,"
 	    "\"storage\":%d},\"rule\":[", lim[0], lim[1], lim[2], lim[3]);
 	if (!rules_json(&b, jstr(f, "rules") != NULL ? jstr(f, "rules") :
 	    "")) {
@@ -1197,7 +1197,7 @@ rules_json(struct html *b, const char *text)
 		}
 		*eq = '\0';
 		q = json_quote(colon + 1);
-		h_fmt(b, "%s{\"kind\":\"%s\",\"name\":%s,\"limit\":\"%llu\"}",
+		h_strf(b, "%s{\"kind\":\"%s\",\"name\":%s,\"limit\":\"%llu\"}",
 		    n++ > 0 ? "," : "", kinds[k], q, lim);
 		free(q);
 	}

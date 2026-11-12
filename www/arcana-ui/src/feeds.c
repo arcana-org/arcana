@@ -399,7 +399,7 @@ form(struct html *h, const ucl_object_t *f, const ucl_object_t *pr)
 		h_fmt(h, "><input type=\"hidden\" name=\"bogons\" value=\"%s\">",
 		    jbool(src, "bogons") ? "true" : "false");
 	}
-	h_fmt(h, "<label>Format<select%s>", lock ? " disabled" :
+	h_rawf(h, "<label>Format<select%s>", lock ? " disabled" :
 	    " name=\"format\"");
 	for (i = 0; i < nitems(fmts); i++)
 		h_fmt(h, "<option%s>%s</option>", strcmp(fmt, fmts[i]) == 0 ?
@@ -413,7 +413,7 @@ form(struct html *h, const ucl_object_t *f, const ucl_object_t *pr)
 	    " readonly" : "");
 	h_attr(h, "value", f != NULL && jstr(f, "table") != NULL ? jstr(f,
 	    "table") : "");
-	h_fmt(h, "></label><label class=\"toggle\" title=\"Private and reserved "
+	h_rawf(h, "></label><label class=\"toggle\" title=\"Private and reserved "
 	    "space (RFC 1918, loopback, multicast...) is dropped unless the "
 	    "list holds it on purpose\"><input type=\"checkbox\"%s%s><span>it "
 	    "lists private space on purpose</span></label>"
@@ -806,20 +806,20 @@ feeds_form(const char *form_name, const ucl_object_t *f)
 	h_raw(&b, "{");
 	if (jstr(f, "preset") != NULL) {
 		q = json_quote(jstr(f, "preset"));
-		h_fmt(&b, "\"preset\":%s,", q);
+		h_strf(&b, "\"preset\":%s,", q);
 		free(q);
 	}
 	q = json_quote(jstr(f, "name") != NULL ? jstr(f, "name") : id);
-	h_fmt(&b, "\"name\":%s,", q);
+	h_strf(&b, "\"name\":%s,", q);
 	free(q);
 	q = json_quote(jstr(f, "url") != NULL ? jstr(f, "url") : "");
-	h_fmt(&b, "\"url\":%s,", q);
+	h_strf(&b, "\"url\":%s,", q);
 	free(q);
 	q = json_quote(jstr(f, "format") != NULL ? jstr(f, "format") : "plain");
-	h_fmt(&b, "\"format\":%s,", q);
+	h_strf(&b, "\"format\":%s,", q);
 	free(q);
 	q = json_quote(jstr(f, "table") != NULL ? jstr(f, "table") : "");
-	h_fmt(&b, "\"table\":%s,\"interval\":%d,\"bogons\":%s,\"enabled\":%s,"
+	h_strf(&b, "\"table\":%s,\"interval\":%d,\"bogons\":%s,\"enabled\":%s,"
 	    "\"hosts\":[", q, jstr(f, "interval") != NULL ? atoi(jstr(f,
 	    "interval")) : 6, jbool(f, "bogons") || (jstr(f, "bogons") != NULL && strcmp(jstr(f,
 	    "bogons"), "true") == 0) ? "true" : "false", jbool(f,
@@ -832,7 +832,7 @@ feeds_form(const char *form_name, const ucl_object_t *f)
 		    ucl_object_key(e)))
 			continue;
 		q = json_quote(ucl_object_key(e) + 5);
-		h_fmt(&b, "%s%s", first ? "" : ",", q);
+		h_strf(&b, "%s%s", first ? "" : ",", q);
 		free(q);
 		first = false;
 	}

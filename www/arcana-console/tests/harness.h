@@ -75,7 +75,10 @@ const char	*locate(const atf_tc_t *, const char *, const char *,
 void		 put(const char *, const char *);
 pid_t		 spawn(char *const [], const char *);
 pid_t		 spawn_server(char *const [], const char *);
+void		 harness_record(pid_t);
 void		 wait_for(const char *);
+int		 harness_wait(void);
+int		 free_port(void);
 void		 show(const char *);
 bool		 run_prog(char *const []);
 void		 start(const atf_tc_t *, int, const char *);

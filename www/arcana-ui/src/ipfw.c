@@ -597,12 +597,12 @@ fwk_edit(struct fwk *c)
 	memset(&b, 0, sizeof(b));
 	q = json_quote(c->text);
 	if (c->jail[0] == '\0')
-		h_fmt(&b, "{\"arcana-firewall:firewall\":{\"kept\":{\"text\":"
+		h_strf(&b, "{\"arcana-firewall:firewall\":{\"kept\":{\"text\":"
 		    "%s}}}", q);
 	else {
 		char	*qj = json_quote(c->jail);
 
-		h_fmt(&b, "{\"arcana-firewall:firewall\":{\"jail\":[{\"name\":"
+		h_strf(&b, "{\"arcana-firewall:firewall\":{\"jail\":[{\"name\":"
 		    "%s,\"text\":%s}]}}", qj, q);
 		free(qj);
 	}
@@ -665,7 +665,7 @@ fwk_in(const struct fwk *c, struct html *b, const char *more)
 	h_raw(b, "{");
 	if (c->jail[0] != '\0') {
 		q = json_quote(c->jail);
-		h_fmt(b, "\"jail\":%s%s", q, more != NULL ? "," : "");
+		h_strf(b, "\"jail\":%s%s", q, more != NULL ? "," : "");
 		free(q);
 	}
 	if (more != NULL)
@@ -1291,9 +1291,9 @@ object_job(struct server *s, const char *verb, const char *words, bool keep)
 	char		title[220];
 
 	memset(&b, 0, sizeof(b));
-	h_fmt(&b, "{\"kind\":\"ipfw\",\"verb\":\"%s\",\"args\":[\"\"", verb);
+	h_strf(&b, "{\"kind\":\"ipfw\",\"verb\":\"%s\",\"args\":[\"\"", verb);
 	rule_args(&b, words);
-	h_fmt(&b, "]%s}", keep ? ",\"persist\":true" : "");
+	h_strf(&b, "]%s}", keep ? ",\"persist\":true" : "");
 	/* rule_args begins each word with a comma: the first has none. */
 	memmove(strstr(b.s, "[\"\",") + 1, strstr(b.s, "[\"\",") + 4, strlen(
 	    strstr(b.s, "[\"\",") + 4) + 1);
@@ -2158,7 +2158,8 @@ view_trace_fw(struct html *h)
 		    "what it would do, turned on, is shown\">firewall off"
 		    "</span>");
 	snprintf(q, sizeof(q), "#/troubleshoot?src=%s&dst=%s&proto=%s&port=%s",
-	    fw.t_src, fw.t_dst, fw.t_proto, fw.t_port);
+	    rc_key(fw.t_src), rc_key(fw.t_dst), rc_key(fw.t_proto),
+	    rc_key(fw.t_port));
 	h_raw(h, "<a class=\"ghost small\"");
 	h_attr(h, "href", q);
 	h_raw(h, " title=\"The same packet followed across every host and "
@@ -3274,10 +3275,10 @@ qos_form(const ucl_object_t *f)
 			strlcat(words, via, sizeof(words));
 		}
 		memset(&b, 0, sizeof(b));
-		h_fmt(&b, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"",
+		h_strf(&b, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"",
 		    atoi(num));
 		rule_args(&b, words);
-		h_fmt(&b, "],\"live\":true,\"persist\":%s}", keep ? "true" :
+		h_strf(&b, "],\"live\":true,\"persist\":%s}", keep ? "true" :
 		    "false");
 		snprintf(title, sizeof(title), "ipfw add %d %.140s", atoi(num),
 		    words);
@@ -3408,21 +3409,23 @@ more_form(const char *form, const ucl_object_t *f)
 
 			/* arcana-troubleshoot's path-check. */
 			memset(&in, 0, sizeof(in));
-			h_fmt(&in, "{\"source\":\"%s\",\"destination\":\"%s\"",
-			    fw.t_src, fw.t_dst);
+			h_raw(&in, "{\"source\":");
+			h_json(&in, fw.t_src);
+			h_raw(&in, ",\"destination\":");
+			h_json(&in, fw.t_dst);
 			if (fw.t_proto[0] != '\0')
-				h_fmt(&in, ",\"protocol\":\"%s\"",
+				h_strf(&in, ",\"protocol\":\"%s\"",
 				    h_word(fw.t_proto, "tcp"));
 			if (atoi(fw.t_port) > 0)
-				h_fmt(&in, ",\"port\":%d", atoi(fw.t_port));
+				h_strf(&in, ",\"port\":%d", atoi(fw.t_port));
 			if (fw.t_if[0] != '\0') {
 				q = json_quote(fw.t_if);
-				h_fmt(&in, ",\"interface\":%s", q);
+				h_strf(&in, ",\"interface\":%s", q);
 				free(q);
 			}
 			if (fw.jail[0] != '\0') {
 				q = json_quote(fw.jail);
-				h_fmt(&in, ",\"jail\":%s", q);
+				h_strf(&in, ",\"jail\":%s", q);
 				free(q);
 			}
 			h_raw(&in, "}");
@@ -3796,8 +3799,8 @@ more_action(struct server *s, const char *act, const char *arg,
 		k = 0;
 		while ((w = strsep(&p, " ")) != NULL)
 			if (*w != '\0' && strspn(w, "0123456789") == strlen(w))
-				h_fmt(&b, "%s\"%s\"", k++ > 0 ? "," : "", w);
-		h_fmt(&b, "],\"live\":%s,\"persist\":%s}", live ? "true" :
+				h_strf(&b, "%s\"%s\"", k++ > 0 ? "," : "", w);
+		h_strf(&b, "],\"live\":%s,\"persist\":%s}", live ? "true" :
 		    "false", kept ? "true" : "false");
 		/* The title: the pairs, after the two sides' flags. */
 		{
@@ -4527,7 +4530,7 @@ rule_args(struct html *b, const char *rule)
 			w++;
 		}
 		q = json_quote(w);
-		h_fmt(b, ",%s", q);
+		h_strf(b, ",%s", q);
 		free(q);
 	}
 	free(copy);
@@ -4620,11 +4623,11 @@ firewall_form(const char *form, const ucl_object_t *f)
 		(void)o;
 		(void)it;
 		if (was_live || was_kept) {
-			h_fmt(&b, "{\"kind\":\"ipfw\",\"verb\":\"replace\","
+			h_strf(&b, "{\"kind\":\"ipfw\",\"verb\":\"replace\","
 			    "\"args\":[\"%lld\",\"%d\"", fw.edit, num);
 			rule_args(&b, rule);
 			q = json_quote(row_words(row));
-			h_fmt(&b, "],\"text\":%s,\"live\":%s,\"persist\":%s}", q,
+			h_strf(&b, "],\"text\":%s,\"live\":%s,\"persist\":%s}", q,
 			    jbool(f, "live") ? "true" : "false", jbool(f,
 			    "persist") ? "true" : "false");
 			free(q);
@@ -4658,9 +4661,9 @@ firewall_form(const char *form, const ucl_object_t *f)
 			object_job(s, "table", words, jbool(f, "persist"));
 		}
 	}
-	h_fmt(&b, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"", num);
+	h_strf(&b, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"", num);
 	rule_args(&b, rule);
-	h_fmt(&b, "],\"live\":%s,\"persist\":%s}", jbool(f, "live") ? "true" :
+	h_strf(&b, "],\"live\":%s,\"persist\":%s}", jbool(f, "live") ? "true" :
 	    "false", jbool(f, "persist") ? "true" : "false");
 	snprintf(title, sizeof(title), "ipfw add %d %.140s", num, rule);
 	fw_job(s, b.s, title);
@@ -4890,10 +4893,10 @@ firewall_action(const char *act, const char *arg, const char *value)
 			return (true);
 		}
 		memset(&b, 0, sizeof(b));
-		h_fmt(&b, "{\"kind\":\"ipfw\",\"verb\":\"delete\",\"args\":"
+		h_strf(&b, "{\"kind\":\"ipfw\",\"verb\":\"delete\",\"args\":"
 		    "[\"%d\"", atoi(arg));
 		rule_args(&b, row_words(row));
-		h_fmt(&b, "],\"live\":%s,\"persist\":%s}", strcmp(value, "kept") ==
+		h_strf(&b, "],\"live\":%s,\"persist\":%s}", strcmp(value, "kept") ==
 		    0 ? "false" : "true", strcmp(value, "live") == 0 ? "false" :
 		    "true");
 		snprintf(title, sizeof(title), "ipfw delete %d %.60s", atoi(arg),

@@ -32,8 +32,9 @@ share/man/man8/arcana-agent.8.gz
 %%CONSOLE%%%%WWWDIR%%/index.html
 %%CONSOLE%%%%WWWDIR%%/arcana.js
 %%CONSOLE%%%%WWWDIR%%/arcana.wasm
+%%CONSOLE%%%%WWWDIR%%/jobs.json
 %%CONSOLE%%%%WWWDIR%%/manifest.webmanifest
 %%CONSOLE%%%%WWWDIR%%/morphdom-umd.min.js
-%%CONSOLE%%%%WWWDIR%%/schema.json
 %%CONSOLE%%%%WWWDIR%%/style.css
 %%CONSOLE%%%%WWWDIR%%/sw.js
+%%CONSOLE%%%%WWWDIR%%/yang.json

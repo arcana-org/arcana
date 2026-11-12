@@ -397,19 +397,19 @@ span_form(const char *form, const ucl_object_t *f)
 		    to[0] != '\0' ? to : "any", port[0] != '\0' ? " dst-port " :
 		    "", port, via[0] != '\0' ? " via " : "", via);
 		memset(&j, 0, sizeof(j));
-		h_fmt(&j, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"",
+		h_strf(&j, "{\"kind\":\"ipfw\",\"verb\":\"add\",\"args\":[\"%d\"",
 		    atoi(num));
 		for (w = words; *w != '\0'; w = e) {
 			e = w + strcspn(w, " ");
 			q = strndup(w, (size_t)(e - w));
 			q2 = json_quote(q);
-			h_fmt(&j, ",%s", q2);
+			h_strf(&j, ",%s", q2);
 			free(q);
 			free(q2);
 			if (*e == ' ')
 				e++;
 		}
-		h_fmt(&j, "],\"live\":true,\"persist\":%s}", jbool(f, "persist") ?
+		h_strf(&j, "],\"live\":true,\"persist\":%s}", jbool(f, "persist") ?
 		    "true" : "false");
 		snprintf(title, sizeof(title), "ipfw add %d %.140s", atoi(num),
 		    words);

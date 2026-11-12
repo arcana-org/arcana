@@ -166,7 +166,7 @@ template_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 				q = e;
 				continue;
 			}
-			h_fmt(&out, "%.*s{{hostname}}", (int)(q - p), p);
+			h_strf(&out, "%.*s{{hostname}}", (int)(q - p), p);
 			p = q = e;
 		}
 		h_raw(&out, p);
@@ -305,7 +305,7 @@ config_report(struct html *h, const ucl_object_t *r, const char *host,
 		if (strcmp(st, "same") == 0)
 			continue;
 		nch++;
-		h_fmt(h, "<tr class=\"%s\"><td><code>", st);
+		h_fmt(h, "<tr class=\"%s\"><td><code>", h_word(st, ""));
 		h_txt(h, jstr(e, "path"));
 		h_raw(h, "</code>");
 		if (jstr(e, "diff") != NULL) {

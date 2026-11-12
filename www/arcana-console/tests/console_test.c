@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/un.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 
 #include <net/if.h>
@@ -419,6 +420,63 @@ ATF_TC_HEAD(name, tc)							\
 ATF_TC_CLEANUP(name, tc)						\
 {									\
 	stop();								\
+}
+
+/* Process pid runs: there, and not a zombie its reaper has yet to
+ * wait for. */
+static bool
+running(int pid)
+{
+	struct kinfo_proc	kp;
+	size_t			len = sizeof(kp);
+	int			mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID,
+				    pid };
+
+	return (sysctl(mib, 4, &kp, &len, NULL, 0) == 0 && len > 0 &&
+	    kp.ki_stat != SZOMB);
+}
+
+/*
+ * start() ends the servers an earlier case left, orphans now, and only
+ * those: the suite recorded them (harness_record()).  One that looks
+ * the same, its command line an agent's of the suite, but was started
+ * by hand is left be.
+ */
+CONSOLE_TC(sweep_own, "Orphaned servers ended at start only when the "
+    "suite recorded them")
+ATF_TC_BODY(sweep_own, tc)
+{
+	FILE	*fp;
+	int	 mine, hand, i;
+
+	ATF_REQUIRE(mkdir("mine", 0755) == 0 && mkdir("hand", 0755) == 0);
+	/* sh as an "arcana-agent" whose command line is one the suite's
+	 * would have, an orphan once the subshell is gone. */
+	ATF_REQUIRE(system("cp /bin/sh mine/arcana-agent && "
+	    "cp /bin/sh hand/arcana-agent && "
+	    "(cd mine; ./arcana-agent -c 'while :; do sleep 1; done' "
+	    "arcana-agent -F -l unix:$PWD/jgd.sock > /dev/null 2>&1 & "
+	    "echo $! > arcana-agent.pid) && "
+	    "(cd hand; ./arcana-agent -c 'while :; do sleep 1; done' "
+	    "arcana-agent -F -l unix:$PWD/jgd.sock > /dev/null 2>&1 & "
+	    "echo $! > ../hand-pid)") == 0);
+	ATF_REQUIRE((fp = fopen("mine/arcana-agent.pid", "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &mine) == 1);
+	fclose(fp);
+	ATF_REQUIRE((fp = fopen("hand-pid", "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &hand) == 1);
+	fclose(fp);
+	/* The suite's own recorded, as spawn_server() does; both orphans
+	 * now, their subshells gone: init's, or the reaper's this runs
+	 * under. */
+	harness_record(mine);
+	start(tc, 0, NULL);
+	for (i = 0; i < 100 && running(mine); i++)
+		usleep(20000);
+	ATF_CHECK_MSG(!running(mine), "the suite's orphan %d lives", mine);
+	ATF_CHECK_MSG(running(hand), "one started by hand, %d, ended", hand);
+	(void)kill(hand, SIGTERM);
+	(void)kill(mine, SIGKILL);
 }
 
 CONSOLE_TC(unauthenticated, "Without a session only health and status work")
@@ -1470,6 +1528,70 @@ ATF_TC_BODY(restconf_cbor, tc)
 	ATF_CHECK_MSG(st == 400 && strstr((char *)out, "malformed-message") !=
 	    NULL, "%d %s", st, out);
 	free(out);
+	ucl_object_unref(sids);
+}
+
+/*
+ * The page's decoder given what no agent sends: tags in tags a million
+ * deep (the page's stack is not checked), a text longer than the
+ * CBOR, the most negative integer, a decimal whose mantissa is it.
+ * Each refused, or read as it is, and nothing past its end.
+ */
+ATF_TC_WITHOUT_HEAD(ycbor_hostile);
+ATF_TC_BODY(ycbor_hostile, tc)
+{
+	/* {1260 (a group's name): ...}, the value after. */
+	static const uint8_t top[] = { 0xa1, 0x19, 0x04, 0xec };
+	static const uint8_t longtext[] = { 0x7b, 0xff, 0xff, 0xff, 0xff,
+	    0xff, 0xff, 0xff, 0xf0, 'a' };
+	static const uint8_t minint[] = { 0x3b, 0xff, 0xff, 0xff, 0xff, 0xff,
+	    0xff, 0xff, 0xff };
+	static const uint8_t decimal[] = { 0xc4, 0x82, 0x20, 0x3b, 0xff, 0xff,
+	    0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+	ucl_object_t	*sids, *o;
+	uint8_t		*b;
+	size_t		 n, i;
+	char		 why[160];
+
+	sids = sid_files();
+	n = sizeof(top) + 2 * 1000000 + 1;
+	ATF_REQUIRE((b = malloc(n)) != NULL);
+	memcpy(b, top, sizeof(top));
+	for (i = sizeof(top); i + 1 < n; i += 2) {
+		b[i] = 0xd8;	/* tag 43, bits */
+		b[i + 1] = 43;
+	}
+	b[n - 1] = 0x01;
+	why[0] = '\0';
+	o = ycbor_json(b, n, sids, why, sizeof(why));
+	ATF_CHECK(o == NULL);
+	ATF_CHECK_MSG(strstr(why, "deep") != NULL, "%s", why);
+	ucl_object_unref(o);
+	free(b);
+
+	ATF_REQUIRE((b = malloc(sizeof(top) + sizeof(decimal))) != NULL);
+	memcpy(b, top, sizeof(top));
+	memcpy(b + sizeof(top), longtext, sizeof(longtext));
+	o = ycbor_json(b, sizeof(top) + sizeof(longtext), sids, why,
+	    sizeof(why));
+	ATF_CHECK_MSG(o == NULL && strstr(why, "early") != NULL, "%s", why);
+	ucl_object_unref(o);
+
+	memcpy(b + sizeof(top), minint, sizeof(minint));
+	o = ycbor_json(b, sizeof(top) + sizeof(minint), sids, why,
+	    sizeof(why));
+	ATF_REQUIRE_MSG(o != NULL, "%s", why);
+	ATF_CHECK_STREQ("-18446744073709551616", ucl_object_tostring_forced(
+	    ucl_object_lookup(o, "ietf-netconf-acm:name")));
+	ucl_object_unref(o);
+
+	memcpy(b + sizeof(top), decimal, sizeof(decimal));
+	o = ycbor_json(b, sizeof(top) + sizeof(decimal), sids, why,
+	    sizeof(why));
+	ATF_CHECK_MSG(o == NULL, "%s", o != NULL ? (const char *)
+	    ucl_object_emit(o, UCL_EMIT_JSON_COMPACT) : "");
+	ucl_object_unref(o);
+	free(b);
 	ucl_object_unref(sids);
 }
 
@@ -6273,9 +6395,9 @@ slapd_start(const atf_tc_t *tc, int *portp, int *tlsportp)
 	etc = atf_tc_has_config_var(tc, "slapd_etc") ? atf_tc_get_config_var(tc,
 	    "slapd_etc") : "/usr/local/etc/openldap";
 	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	*portp = port;
-	*tlsportp = port + 1;
+	*tlsportp = free_port();
 	ATF_REQUIRE(system("openssl req -x509 -newkey ec -pkeyopt "
 	    "ec_paramgen_curve:P-256 -nodes -keyout lca.key -out lca.pem -subj "
 	    "'/CN=Arcana test LDAP CA' -days 2 >/dev/null 2>&1 && openssl req "
@@ -6325,7 +6447,7 @@ slapd_start(const atf_tc_t *tc, int *portp, int *tlsportp)
 	snprintf(cmd, sizeof(cmd), "LD_LIBRARY_PATH=%s %s/../sbin/slapadd -f "
 	    "slapd.conf -l base.ldif >slapadd.out 2>&1 && LD_LIBRARY_PATH=%s %s "
 	    "-f slapd.conf -h 'ldap://127.0.0.1:%d/ ldaps://127.0.0.1:%d/' "
-	    ">slapd.out 2>&1", lib, lib, lib, slapd, port, port + 1);
+	    ">slapd.out 2>&1", lib, lib, lib, slapd, port, *tlsportp);
 	ATF_REQUIRE_MSG(system(cmd) == 0, "slapd did not start: %s", cmd);
 	usleep(500000);
 	return (true);
@@ -7662,6 +7784,47 @@ ATF_TC_BODY(push, tc)
 	resp_free(&r);
 	ATF_CHECK(system("grep -q 'BTBZMqHH6r4Tts7J_aSIgg' data/push.json") ==
 	    0);
+
+	/*
+	 * A message that is too long once escaped (each character six
+	 * bytes in JSON) is cut until it fits: the device is tried (no
+	 * one listens: -1), not left out (0).
+	 */
+	http("POST", CC "push", R2_SUB("https://localhost/b", R2_KEY, R2_AUTH,
+	    ""), &r);
+	EXPECT(&r, 201);
+	resp_free(&r);
+	{
+		char	long_in[8192];
+		size_t	n;
+		int	i;
+
+		n = (size_t)snprintf(long_in, sizeof(long_in),
+		    "{\"arcana-console:input\":{\"except\":\"https://localhost/"
+		    "a\",\"title\":\"");
+		for (i = 0; i < 120; i++)
+			n += (size_t)snprintf(long_in + n, sizeof(long_in) - n,
+			    "\\u0001");
+		n += (size_t)snprintf(long_in + n, sizeof(long_in) - n,
+		    "\",\"body\":\"");
+		for (i = 0; i < 600; i++)
+			n += (size_t)snprintf(long_in + n, sizeof(long_in) - n,
+			    "\\u0001");
+		snprintf(long_in + n, sizeof(long_in) - n, "\"}}");
+		http("POST", CC "push/send", long_in, &r);
+	}
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("-1", jstr(&r, "arcana-console:output.result.0.status"));
+	resp_free(&r);
+
+	/* Keys broken in the file: dropped as it is read, not used. */
+	ATF_REQUIRE(system("sed -i '' 's/BTBZMqHH6r4Tts7J_aSIgg/AAAA/' "
+	    "data/push.json") == 0);
+	restart_console();
+	http("GET", CC "push", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK(jstr(&r, "arcana-console:push.subscription.0") == NULL);
+	resp_free(&r);
 }
 #undef	R2_SUB
 #undef	R2_KEY
@@ -10165,7 +10328,7 @@ mtls_start(const atf_tc_t *tc, struct authn *a, int *portp, char *sid,
 	start(tc, 0, NULL);
 
 	/* A second arcana-agent, on TCP. */
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	snprintf(listen, sizeof(listen), "tcp://127.0.0.1:%d", port);
 	snprintf(jgd, sizeof(jgd), "%s", locate(tc,
 	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
@@ -10509,7 +10672,7 @@ ATF_TC_BODY(mtls_move, tc)
 		char	moved[64], b2[160], was[64];
 
 		snprintf(was, sizeof(was), "tcp://127.0.0.1:%d", port);
-		snprintf(moved, sizeof(moved), "tcp://127.0.0.1:%d", port + 1);
+		snprintf(moved, sizeof(moved), "tcp://127.0.0.1:%d", free_port());
 		snprintf(b2, sizeof(b2), "\"uri\":\"%s\"", moved);
 		r3_verb(sid, "move", b2, &r);
 		EXPECT(&r, 200);
@@ -10794,7 +10957,7 @@ ATF_TC_BODY(agent_update_bridge, tc)
 	    "/usr/local/sbin/arcana-agent"));
 	ATF_REQUIRE(stat(jgd, &snew) == 0);
 
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	snprintf(unix, sizeof(unix), "unix:%s/old.sock", cwd);
 	snprintf(tcp, sizeof(tcp), "tcp://127.0.0.1:%d", port);
 	pid = agent_spawn(old, unix, tcp, "installed-old");
@@ -11912,7 +12075,7 @@ ATF_TC_BODY(enrol, tc)
 	pid_t		 pid;
 	int		 port, jport, i;
 
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	snprintf(tool, sizeof(tool), "%s", locate(tc,
 	    "../../../usr.sbin/arcana-enrol/arcana-enrol", "enrol",
 	    "/usr/local/sbin/arcana-enrol"));
@@ -12055,7 +12218,7 @@ ATF_TC_BODY(enrol, tc)
 	http("DELETE", path, NULL, &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
-	jport = port + 1;
+	jport = free_port();
 	snprintf(listen, sizeof(listen), "tcp://127.0.0.1:%d", jport);
 	snprintf(jgd, sizeof(jgd), "%s", locate(tc,
 	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
@@ -12294,7 +12457,7 @@ ATF_TC_BODY(console_role, tc)
 	    "\\n' > srv.ext && openssl x509 -req -in srv.csr -CA data/ca.pem "
 	    "-CAkey data/ca.key -CAcreateserial -days 2 -extfile srv.ext -out "
 	    "srv.pem >/dev/null 2>&1") == 0);
-	jport = 20000 + (int)(getpid() % 20000) + 3;
+	jport = free_port();
 	snprintf(listen, sizeof(listen), "tcp://127.0.0.1:%d", jport);
 	snprintf(jgd, sizeof(jgd), "%s", locate(tc,
 	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
@@ -17379,7 +17542,7 @@ ATF_TC_BODY(sdwan_vpn_pm, tc)
 	if (sd == NULL || access(sd, X_OK) != 0)
 		atf_tc_skip("no stampd (the submodule stamp/)");
 	/* A stampd of the test's on the loopback, the agent's far end. */
-	p = 20000 + (int)arc4random_uniform(40000);
+	p = free_port();
 	snprintf(port, sizeof(port), "%d", p);
 	argv[0] = __DECONST(char *, sd);
 	argv[1] = __DECONST(char *, "-d");
@@ -18729,7 +18892,7 @@ ATF_TC_BODY(tls_ec, tc)
 	    "-subj /CN=localhost 2>/dev/null") == 0);
 	snprintf(harness_server, sizeof(harness_server), "\tcertfile = "
 	    "\"%s/ec.pem\";\n\tcertkey = \"%s/ec.key\";\n", cwd, cwd);
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	start(tc, port, NULL);
 	for (i = 0; i < 50; i++) {
 		snprintf(cmd, sizeof(cmd), "curl -sk https://127.0.0.1:%d/api/"
@@ -18754,6 +18917,14 @@ ATF_TC_BODY(tls_ec, tc)
 	    "json' -d '{}' https://127.0.0.1:%d/api/auth/status | grep -qx "
 	    "'2 [0-9][0-9][0-9]'", port);
 	ATF_CHECK_MSG(system(cmd) == 0, "no answer to a body over HTTP/2");
+	/* A handler's reply over HTTP/2, written after its request's
+	 * headers are gone: the policy still the browser's. */
+	snprintf(cmd, sizeof(cmd), "curl -sk --http2 -D - -o /dev/null -A "
+	    "'Mozilla/5.0 (X11; FreeBSD amd64) AppleWebKit/537.36 (KHTML, "
+	    "like Gecko) Chrome/130.0.0.0 Safari/537.36' "
+	    "https://127.0.0.1:%d/api/health | grep -qi "
+	    "\"^content-security-policy:.*'wasm-unsafe-eval'\"", port);
+	ATF_CHECK_MSG(system(cmd) == 0, "HTTP/2: not the browser's policy");
 	snprintf(cmd, sizeof(cmd), "curl -sk --http1.1 -o /dev/null -w "
 	    "'%%{http_version} %%{http_code}' https://127.0.0.1:%d/api/health "
 	    "| grep -qx '1.1 200'", port);
@@ -18933,7 +19104,7 @@ ATF_TC_BODY(h2_streams, tc)
 	    "-subj /CN=localhost 2>/dev/null") == 0);
 	snprintf(harness_server, sizeof(harness_server), "\tcertfile = "
 	    "\"%s/ec.pem\";\n\tcertkey = \"%s/ec.key\";\n", cwd, cwd);
-	port = 20000 + (int)(getpid() % 20000);
+	port = free_port();
 	start(tc, port, NULL);
 	for (i = 0; i < 50; i++) {
 		snprintf(cmd, sizeof(cmd), "curl -sk https://127.0.0.1:%d/api/"
@@ -19078,7 +19249,7 @@ ATF_TC_BODY(notif_receiver, tc)
 	char		 path[256], path2[256], token[80];
 	int		 n, after;
 
-	harness_tls_port = 20000 + (int)(getpid() % 20000);
+	harness_tls_port = free_port();
 	start(tc, 0, NULL);
 	enrol(&a);
 	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
@@ -19210,7 +19381,7 @@ ATF_TC_BODY(notif_token, tc)
 	char		 put[256], commit[256], relay[256], caps[256];
 	char		 path[256], token[80], token2[80];
 
-	harness_tls_port = 20000 + (int)(getpid() % 20000);
+	harness_tls_port = free_port();
 	snprintf(harness_webconf, sizeof(harness_webconf),
 	    "notif_auth = \"token\";\n");
 	start(tc, 0, NULL);
@@ -23886,6 +24057,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, watch_held);
 	ATF_TP_ADD_TC(tp, watch_events);
 
+	ATF_TP_ADD_TC(tp, sweep_own);
 	ATF_TP_ADD_TC(tp, unauthenticated);
 	ATF_TP_ADD_TC(tp, setup_token);
 	ATF_TP_ADD_TC(tp, setup_password);
@@ -23904,6 +24076,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, restconf_boot);
 	ATF_TP_ADD_TC(tp, restconf_mount);
 	ATF_TP_ADD_TC(tp, restconf_cbor);
+	ATF_TP_ADD_TC(tp, ycbor_hostile);
 	ATF_TP_ADD_TC(tp, restconf_edit);
 	ATF_TP_ADD_TC(tp, restconf_yang_patch);
 	ATF_TP_ADD_TC(tp, restconf_etag);

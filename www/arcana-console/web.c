@@ -1154,7 +1154,8 @@ static const struct {
 	{ "pdf", "application/pdf" },
 };
 
-static int	sec_add(struct lws *, unsigned char **, unsigned char *);
+static int	sec_add(struct lws *, const char *, unsigned char **,
+		    unsigned char *);
 static int	hsts_max_age = 365 * 86400;
 
 /* A file of the web root; 0 when it is being sent, -1 for none. */
@@ -1165,6 +1166,7 @@ serve_file(struct lws *wsi, const char *path)
 	const char	*dot, *type;
 	char		 full[MAXPATHLEN];
 	unsigned char	 hdrs[2048], *p;
+	char		 ua[512];
 	size_t		 i;
 	int		 n;
 
@@ -1190,8 +1192,13 @@ serve_file(struct lws *wsi, const char *path)
 				type = mimes[i].type;
 				break;
 			}
+	/* Served now, while the request's headers are there. */
+	ua[0] = '\0';
+	if (lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_USER_AGENT) > 0)
+		(void)lws_hdr_copy(wsi, ua, sizeof(ua),
+		    WSI_TOKEN_HTTP_USER_AGENT);
 	p = hdrs;
-	if (sec_add(wsi, &p, hdrs + sizeof(hdrs)) != 0)
+	if (sec_add(wsi, ua, &p, hdrs + sizeof(hdrs)) != 0)
 		return (-2);
 	return (lws_serve_http_file(wsi, full, type, (const char *)hdrs,
 	    (int)(p - hdrs)) < 0 ? -2 : 0);
@@ -1353,19 +1360,19 @@ ua_wasm_eval(const char *ua)
 	return (false);
 }
 
-/* The policy for the browser that asks, at *pp. */
+/*
+ * The policy for the browser of User-Agent ua, at *pp.  ua is read when
+ * the request comes: by the time a handler's reply is written, over
+ * HTTP/2 libwebsockets has the request's headers no more.
+ */
 static int
-csp_add(struct lws *wsi, unsigned char **pp, unsigned char *end)
+csp_add(struct lws *wsi, const char *ua, unsigned char **pp,
+    unsigned char *end)
 {
-	char	ua[512];
 	const char *v;
 
-	ua[0] = '\0';
-	if (lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_USER_AGENT) > 0)
-		(void)lws_hdr_copy(wsi, ua, sizeof(ua),
-		    WSI_TOKEN_HTTP_USER_AGENT);
-	v = ua_wasm_eval(ua) ? CSP_HEAD "'wasm-unsafe-eval'" CSP_TAIL :
-	    CSP_HEAD "'unsafe-eval'" CSP_TAIL;
+	v = ua != NULL && ua_wasm_eval(ua) ? CSP_HEAD "'wasm-unsafe-eval'"
+	    CSP_TAIL : CSP_HEAD "'unsafe-eval'" CSP_TAIL;
 	return (lws_add_http_header_by_name(wsi, (const unsigned char *)
 	    "content-security-policy:", (const unsigned char *)v,
 	    (int)strlen(v), pp, end));
@@ -1374,12 +1381,13 @@ csp_add(struct lws *wsi, unsigned char **pp, unsigned char *end)
 /* The policy, sec_headers, and over TLS the browser's keeping to it
  * for the days the settings say (none for 0), at *pp. */
 static int
-sec_add(struct lws *wsi, unsigned char **pp, unsigned char *end)
+sec_add(struct lws *wsi, const char *ua, unsigned char **pp,
+    unsigned char *end)
 {
 	size_t	i;
 	int	rc;
 
-	rc = csp_add(wsi, pp, end);
+	rc = csp_add(wsi, ua, pp, end);
 	for (i = 0; rc == 0 && i < nitems(sec_headers); i++)
 		rc = lws_add_http_header_by_name(wsi, sec_headers[i].name,
 		    sec_headers[i].value,
@@ -1430,8 +1438,13 @@ req_write(struct lws *wsi, struct pss *pss)
 				    (unsigned char *)name, (unsigned char *)
 				    h->value, (int)strlen(h->value), &p, end);
 		}
-		if (rc == 0)
-			rc = sec_add(wsi, &p, end);
+		/* The browser's User-Agent as it came (req_new()). */
+		if (rc == 0) {
+			const char	*ua = NULL;
+
+			(void)http_request_header(req, "user-agent", &ua);
+			rc = sec_add(wsi, ua, &p, end);
+		}
 		/*
 		 * A stream's length is not known: it goes until it ends,
 		 * chunked over HTTP/1.1 so that its end is told; not over

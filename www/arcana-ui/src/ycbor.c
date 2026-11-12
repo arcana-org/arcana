@@ -150,6 +150,10 @@ scalar(struct rd *r, int depth)
 	int			 major, mm;
 	char			 buf[48], *s;
 
+	/* Tags in tags: as deep as maps may be, no deeper (the page's
+	 * stack is not checked). */
+	if (depth > DEPTH_MAX)
+		return (bad(r, "the CBOR nests too deep"), NULL);
 	if (!head(r, &major, &arg))
 		return (NULL);
 	switch (major) {
@@ -160,6 +164,9 @@ scalar(struct rd *r, int depth)
 		}
 		return (ucl_object_fromint((int64_t)arg));
 	case 1:
+		/* -1 - arg: past UINT64_MAX when arg is it. */
+		if (arg == UINT64_MAX)
+			return (ucl_object_fromstring("-18446744073709551616"));
 		if (arg >= (UINT64_C(1) << 53)) {
 			snprintf(buf, sizeof(buf), "-%" PRIu64, arg + 1);
 			return (ucl_object_fromstring(buf));
@@ -184,7 +191,8 @@ scalar(struct rd *r, int depth)
 		case 4:
 			if (!head(r, &major, &arg) || major != 4 || arg != 2 ||
 			    !head(r, &major, &e) || major != 1 || e > 17 ||
-			    !head(r, &mm, &m) || mm > 1)
+			    !head(r, &mm, &m) || mm > 1 || (mm == 1 &&
+			    m == UINT64_MAX))
 				return (bad(r, "a decimal not [exp, mantissa]"),
 				    NULL);
 			{
@@ -305,67 +313,75 @@ static bool
 member(struct rd *r, ucl_object_t *parent, const struct sitem *it,
     const char *pmod, int depth)
 {
-	ucl_object_t	*v, *m, *metas = NULL, *e;
+	ucl_object_t	*v = NULL, *m = NULL, *metas = NULL, *e;
 	uint64_t	 n, arg;
 	int		 major;
 	bool		 any = false;
-	char		 key[200];
+	char		 key[200], at[204];
 
 	if (pmod == NULL || strcmp(pmod, it->nmod) != 0)
 		snprintf(key, sizeof(key), "%s:%s", it->nmod, it->name);
 	else
 		snprintf(key, sizeof(key), "%s", it->name);
+	snprintf(at, sizeof(at), "@%s", key);
 	if (!annotated(r, it->sid, &m, depth) || !peek(r, &major, &arg))
-		return (false);
+		goto fail;
 	if (major == 5) {
 		if ((v = object(r, it, depth + 1)) == NULL)
-			return (false);
+			goto fail;
 		if (m != NULL)
 			ucl_object_insert_key(v, m, "@", 0, false);
+		m = NULL;
 	} else if (major == 4) {
 		(void)head(r, &major, &n);
 		v = ucl_object_typed_new(UCL_ARRAY);
 		for (uint64_t i = 0; i < n; i++) {
 			if (!annotated(r, it->sid, &m, depth) ||
 			    !peek(r, &major, &arg))
-				return (false);
+				goto fail;
 			if (major == 5) {
 				if ((e = object(r, it, depth + 1)) == NULL)
-					return (false);
+					goto fail;
 				if (m != NULL)
 					ucl_object_insert_key(e, m, "@", 0,
 					    false);
+				m = NULL;
 				ucl_array_append(v, e);
 				continue;
 			}
 			if ((e = scalar(r, depth + 1)) == NULL)
-				return (false);
+				goto fail;
 			ucl_array_append(v, e);
 			if (metas == NULL)
 				metas = ucl_object_typed_new(UCL_ARRAY);
+			any |= m != NULL;
 			ucl_array_append(metas, m != NULL ? m :
 			    ucl_object_typed_new(UCL_NULL));
-			any |= m != NULL;
+			m = NULL;
 		}
-		if (any) {
-			char at[204];
-
-			snprintf(at, sizeof(at), "@%s", key);
+		if (any)
 			ucl_object_insert_key(parent, metas, at, 0, true);
-		} else
+		else
 			ucl_object_unref(metas);
+		metas = NULL;
 	} else {
 		if ((v = scalar(r, depth + 1)) == NULL)
-			return (false);
-		if (m != NULL) {
-			char at[204];
-
-			snprintf(at, sizeof(at), "@%s", key);
+			goto fail;
+		if (m != NULL)
 			ucl_object_insert_key(parent, m, at, 0, true);
-		}
+		m = NULL;
 	}
 	ucl_object_insert_key(parent, v, key, 0, true);
 	return (true);
+fail:
+	/* What was read before the failure, freed. */
+	if (v != NULL)
+		ucl_object_unref(v);
+	if (m != NULL)
+		ucl_object_unref(m);
+	if (metas != NULL)
+		ucl_object_unref(metas);
+	return (false);
 }
 
 /* A map of it's children (it NULL: the top, keys absolute). */

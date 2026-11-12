@@ -56,10 +56,14 @@ key_ok(const char *key, const char *format)
 	return ("a raw key is not typed: its keylocation has it");
 }
 
-/* zfs get of the dataset's keylocation, keystatus and keyformat. */
+/*
+ * zfs get of the dataset's keylocation (into loc, len bytes), keystatus
+ * and keyformat (into status and format, of KEYWORD bytes each).
+ */
+#define	KEYWORD	64
 static int
-key_props(struct work *w, const char *ds, char *loc, char *status,
-    char *format, size_t len, const char **errp)
+key_props(struct work *w, const char *ds, char *loc, size_t len,
+    char status[KEYWORD], char format[KEYWORD], const char **errp)
 {
 	struct execres	 res;
 	char		*argv[8], *p, *l;
@@ -81,9 +85,9 @@ key_props(struct work *w, const char *ds, char *loc, char *status,
 	l = strsep(&p, "\n");
 	strlcpy(loc, l != NULL ? l : "", len);
 	l = strsep(&p, "\n");
-	strlcpy(status, l != NULL ? l : "", len);
+	strlcpy(status, l != NULL ? l : "", KEYWORD);
 	l = strsep(&p, "\n");
-	strlcpy(format, l != NULL ? l : "", len);
+	strlcpy(format, l != NULL ? l : "", KEYWORD);
 	return (0);
 }
 
@@ -130,7 +134,7 @@ do_zfs_key(struct work *w, const struct zfskey_req *rq,
     struct zfskey_rsp *rsp)
 {
 	const char	*e;
-	char		 loc[MAXPATHLEN], status[64], format[64];
+	char		 loc[MAXPATHLEN], status[KEYWORD], format[KEYWORD];
 	bool		 has_key, has_new;
 
 	has_key = rq->zfs_key != NULL && rq->zfs_key[0] != '\0';
@@ -191,7 +195,7 @@ do_zfs_key(struct work *w, const struct zfskey_req *rq,
 		rsp->error = "a key to load, or a new one";
 		return;
 	}
-	if (key_props(w, rq->zfs_dataset, loc, status, format, sizeof(loc),
+	if (key_props(w, rq->zfs_dataset, loc, sizeof(loc), status, format,
 	    &rsp->error) != 0)
 		return;
 	if (strcmp(status, "-") == 0 || strcmp(status, "none") == 0) {

@@ -367,7 +367,7 @@ set_lines(int i)
 			if (any)
 				h_raw(&h, " ");
 			for (; p < q && *p != '\n'; p++)
-				h_fmt(&h, "%c", *p);
+				h_strf(&h, "%c", *p);
 			if (*p == '#' || q[-1] != '/' || !any) {
 				h_raw(&h, "\n");
 				any = false;
@@ -399,7 +399,7 @@ set_lines(int i)
 		}
 		if (isspace((unsigned char)*p) && (!any || depth == 0))
 			continue;
-		h_fmt(&h, "%c", *p);
+		h_strf(&h, "%c", *p);
 		any = true;
 	}
 	/* Not ending in a blank line. */
@@ -1255,14 +1255,14 @@ bconf_read_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		h_raw(&b, "{");
 		if (c->jail[0] != '\0') {
 			q = json_quote(c->jail);
-			h_fmt(&b, "\"jail\":%s,", q);
+			h_strf(&b, "\"jail\":%s,", q);
 			free(q);
 		}
 		q = json_quote(c->path);
-		h_fmt(&b, "\"path\":%s,", q);
+		h_strf(&b, "\"path\":%s,", q);
 		free(q);
 		q = json_quote(c->text);
-		h_fmt(&b, "\"text\":%s}", q);
+		h_strf(&b, "\"text\":%s}", q);
 		free(q);
 		rc_action(rc_h(url, sizeof(url), c->sid,
 		    "arcana-bird:bird/check"), b.s, NULL, bconf_check_cb, c);
@@ -1276,14 +1276,14 @@ bconf_read_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	h_raw(&b, "{\"arcana-bird:bird\":{");
 	if (c->jail[0] != '\0') {
 		q = json_quote(c->jail);
-		h_fmt(&b, "\"jail\":[{\"name\":%s,", q);
+		h_strf(&b, "\"jail\":[{\"name\":%s,", q);
 		free(q);
 	}
 	q = json_quote(c->path);
-	h_fmt(&b, "\"configuration\":{\"file\":[{\"path\":%s,", q);
+	h_strf(&b, "\"configuration\":{\"file\":[{\"path\":%s,", q);
 	free(q);
 	q = json_quote(c->text);
-	h_fmt(&b, "\"text\":%s}]}", q);
+	h_strf(&b, "\"text\":%s}]}", q);
 	free(q);
 	h_raw(&b, c->jail[0] != '\0' ? "}]}}" : "}}");
 	api("PATCH", rc_ds(url, sizeof(url), "candidate", c->sid,
@@ -2316,7 +2316,7 @@ bird_modal(struct html *h)
 			    "Added to the entries below when kept (Network, Prefix "
 			    "lists).", true);
 			h_raw(h, "<label");
-			h_fmt(h, "%s></label><label>Entries, one a line"
+			h_rawf(h, "%s></label><label>Entries, one a line"
 			    "<textarea name=\"text\" class=\"code\" "
 			    "spellcheck=\"false\" rows=\"10\" placeholder=\"%s"
 			    "\">", i >= 0 ? " readonly" : " autofocus",
@@ -2614,7 +2614,7 @@ bird_form(const char *form, const ucl_object_t *f)
 		 * is last is found first.
 		 */
 		memset(&b, 0, sizeof(b));
-		h_fmt(&b, "define %s = [", name);
+		h_strf(&b, "define %s = [", name);
 		first = true;
 		for (last = NULL, p = text; *p != '\0'; p = *nl != '\0' ? nl +
 		    1 : nl) {
@@ -2641,17 +2641,17 @@ bird_form(const char *form, const ucl_object_t *f)
 					c += strcspn(c + 1, "\"\n") + 1;
 			c = c > ee ? ee : c;
 			if (c == p) {
-				h_fmt(&b, "\n\t%.*s", (int)(ee - p), p);
+				h_strf(&b, "\n\t%.*s", (int)(ee - p), p);
 				continue;
 			}
 			first = false;
 			for (nl = c; nl > p && isspace((unsigned char)nl[-1]);
 			    nl--)
 				;
-			h_fmt(&b, "\n\t%.*s%s", (int)(nl - p), p, p == last ?
+			h_strf(&b, "\n\t%.*s%s", (int)(nl - p), p, p == last ?
 			    "" : ",");
 			if (c < ee)
-				h_fmt(&b, " %.*s", (int)(ee - c), c);
+				h_strf(&b, " %.*s", (int)(ee - c), c);
 			nl = p + strcspn(p, "\n");
 		}
 		h_raw(&b, first ? " ];" : "\n];");
@@ -2677,9 +2677,9 @@ bird_form(const char *form, const ucl_object_t *f)
 		}
 		memset(&b, 0, sizeof(b));
 		if (block_find("table", r4) < 0)
-			h_fmt(&b, "roa4 table %s;\n", r4);
+			h_strf(&b, "roa4 table %s;\n", r4);
 		if (block_find("table", r6) < 0)
-			h_fmt(&b, "roa6 table %s;\n", r6);
+			h_strf(&b, "roa6 table %s;\n", r6);
 		for (first = true, port = jstr(f, "port"); first; first = false) {
 			int n = 1;
 			char pn[32];
@@ -2687,13 +2687,13 @@ bird_form(const char *form, const ucl_object_t *f)
 			do
 				snprintf(pn, sizeof(pn), "rpki%d", n++);
 			while (block_find("protocol", pn) >= 0);
-			h_fmt(&b, "\nprotocol rpki %s {\n\troa4 { table %s; };\n"
+			h_strf(&b, "\nprotocol rpki %s {\n\troa4 { table %s; };\n"
 			    "\troa6 { table %s; };\n\tremote \"%s\" port %s;\n"
 			    "\tretry keep 90;\n\trefresh keep 900;\n\texpire "
 			    "keep 172800;\n}\n", pn, r4, r6, host, port);
 		}
 		if (block_find("function", "rpki_invalid") < 0)
-			h_fmt(&b, "\nfunction rpki_invalid() -> bool {\n\treturn "
+			h_strf(&b, "\nfunction rpki_invalid() -> bool {\n\treturn "
 			    "(net.type = NET_IP4 && roa_check(%s, net, "
 			    "bgp_path.last) = ROA_INVALID) ||\n\t    (net.type "
 			    "= NET_IP6 && roa_check(%s, net, bgp_path.last) = "
