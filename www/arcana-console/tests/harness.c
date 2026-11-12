@@ -60,6 +60,8 @@ char		 harness_telegram_api[128];	/* the agent's Bot API, or "" */
 /* A TLS listener of the console's on this port of 127.0.0.1, the
  * agent with a certificate for it; 0: none. */
 int		 harness_tls_port;
+/* The console's origin that listener's, https://localhost:<port>. */
+bool		 harness_origin_tls;
 
 extern char	**environ;
 
@@ -292,7 +294,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(mkdir("www", 0755) == 0);
 	put("www/index.html", "<!doctype html><title>t</title>\n");
 	harness_port = port;
-	if (port != 0)
+	if (harness_origin_tls && harness_tls_port != 0)
+		snprintf(harness_origin, sizeof(harness_origin),
+		    "https://localhost:%d", harness_tls_port);
+	else if (port != 0)
 		snprintf(harness_origin, sizeof(harness_origin),
 		    "http://localhost:%d", port);
 	else

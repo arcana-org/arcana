@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,9 +47,38 @@ store_load(const char *name)
 	return (o);
 }
 
+/*
+ * The writes under way, each from its temporary to its rename: a stop
+ * waits for them (store_quiesce()).  The SD-WAN manager saves its state
+ * every few seconds, an fsync each time, and a worker that exited in
+ * the middle left the temporary behind at every stop.
+ */
+static pthread_rwlock_t	writing = PTHREAD_RWLOCK_INITIALIZER;
+
+static int	store_write1(const char *, const void *, size_t);
+
 /* A document as it is to be, written here: to a temporary, renamed. */
 int
 store_write(const char *name, const void *body, size_t len)
+{
+	int	rc;
+
+	pthread_rwlock_rdlock(&writing);
+	rc = store_write1(name, body, len);
+	pthread_rwlock_unlock(&writing);
+	return (rc);
+}
+
+/* The worker stopping: the writes under way end, no other begins. */
+void
+store_quiesce(void) __no_lock_analysis
+{
+
+	pthread_rwlock_wrlock(&writing);
+}
+
+static int
+store_write1(const char *name, const void *body, size_t len)
 {
 	char		 path[MAXPATHLEN], tmp[MAXPATHLEN], *p;
 	const char	*step;

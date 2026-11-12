@@ -42,7 +42,7 @@ void		 arc_set_class(const char *, const char *, int);
 void		 arc_focus(const char *);
 void		 arc_events_init(void);
 void		 arc_http(int, const char *, const char *, const char *,
-		    const char *);
+		    const char *, int);
 void		 arc_http_abort(int);
 void		 arc_reload(void);
 void		 arc_push_sync(void);
@@ -612,6 +612,8 @@ struct app {
 	int		 aaatab;	/* AAA_*: the AAA tab's sub-tab */
 	bool		 quiet;		/* the reads asked now are the page's own
 					 * (a timer, an event): no task */
+	bool		 polling;	/* in the tick: its reads wait behind
+					 * the user's (bridge.js) */
 	char		 service[65];	/* open in the drawer, or "" */
 	ucl_object_t	*svc_config;	/* the open service's config reply */
 	bool		 svc_loading;

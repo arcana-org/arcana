@@ -130,7 +130,9 @@ api_hdr(const char *method, const char *url, const char *body,
 		/* The page's own poll: a task too, shown apart from what
 		 * was asked for, so that every exchange can be seen. */
 		p->op = op_quiet_begin(method, url);
-	arc_http(id, method, url, body, hdrs);
+	/* The tick's reads wait behind the rest; the health check not. */
+	arc_http(id, method, url, body, hdrs, !(rd && app.polling) ||
+	    strcmp(url, "/api/health") == 0);
 	return (id);
 }
 

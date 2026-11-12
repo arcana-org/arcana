@@ -527,12 +527,14 @@ prologue(const atf_tc_t *tc, int nservers)
 
 	/* Opened at an address it is not set up for, the console says so
 	 * before the browser can only say "SecurityError". */
-	snprintf(script, sizeof(script), "{\"url\":\"http://127.0.0.1:%d/\"}",
-	    harness_port);
-	ucl_object_unref(wd("POST", "/session/url", script));
-	wait_js("document.querySelector('.err.origin') && document."
-	    "querySelector('.err.origin').textContent.includes('rp_id "
-	    "localhost')", 20);
+	if (!harness_origin_tls) {
+		snprintf(script, sizeof(script), "{\"url\":\"http://127.0.0.1:"
+		    "%d/\"}", harness_port);
+		ucl_object_unref(wd("POST", "/session/url", script));
+		wait_js("document.querySelector('.err.origin') && document."
+		    "querySelector('.err.origin').textContent.includes('rp_id "
+		    "localhost')", 20);
+	}
 
 	/* Enrol: the setup token and the (virtual) security key. */
 	go("/");
@@ -8259,6 +8261,99 @@ ATF_TC_CLEANUP(pwa_streams, tc)
 	browser_stop();
 }
 
+/*
+ * Pages of the console in several tabs of one browser, over HTTPS: one
+ * HTTP/2 connection for them all, each page's event streams and its
+ * WebSocket held on it, their polls added every tick.  A stream
+ * libwebsockets still counted after the browser had its end made the
+ * browser's next one past the limit, which ended the connection and
+ * every request on it: "The console does not answer".  Each page
+ * counts its requests (window.arcanaHttp) and is watched for the
+ * banner from its first moment.
+ */
+#define	TABS_N		3
+/* One of a page's counts of its requests (bridge.js). */
+#define	HTTP_N(k)	"((window.arcanaHttp || {})." k " || 0)"
+
+static void
+tab_watch(void)
+{
+
+	run("window.downSeen = false; new MutationObserver(() => { if ("
+	    "document.querySelector('.banner.bad')) window.downSeen = true; })"
+	    ".observe(document.body, { childList: true, subtree: true });");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_tabs);
+ATF_TC_HEAD(pwa_tabs, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Pages in several tabs on one HTTP/2 connection, left to their ticks: no request fails, no page says the console does not answer");
+	atf_tc_set_md_var(tc, "timeout", "300");
+}
+ATF_TC_BODY(pwa_tabs, tc)
+{
+	ucl_object_t	*v;
+	char		 hd[TABS_N][128], body[256];
+	int		 i, k;
+
+	harness_tls_port = free_port();
+	harness_origin_tls = true;
+	browser_flags = ",\"--ignore-certificate-errors\"";
+	prologue(tc, 1);
+	ATF_REQUIRE(strncmp(harness_origin, "https:", 6) == 0);
+	/* The first tab the prologue's, on the fleet; two more, a host's
+	 * page in each. */
+	v = wd("GET", "/session/window", NULL);
+	ATF_REQUIRE(v != NULL);
+	snprintf(hd[0], sizeof(hd[0]), "%s", ucl_object_tostring(v));
+	ucl_object_unref(v);
+	tab_watch();
+	for (i = 1; i < TABS_N; i++) {
+		v = wd("POST", "/session/window/new", "{\"type\":\"tab\"}");
+		ATF_REQUIRE(v != NULL && ucl_object_lookup(v, "handle") != NULL);
+		snprintf(hd[i], sizeof(hd[i]), "%s", ucl_object_tostring(
+		    ucl_object_lookup(v, "handle")));
+		ucl_object_unref(v);
+		snprintf(body, sizeof(body), "{\"handle\":\"%s\"}", hd[i]);
+		ucl_object_unref(wd("POST", "/session/window", body));
+		go("/");
+		wait_js("document.querySelector('.shell')", 30);
+		tab_watch();
+		host_open("lab");
+		wait_js("document.querySelector('.tiles .tile')", 30);
+	}
+	/* A minute of ticks, each tab brought forward in turn, its timers
+	 * then the browser's full ones. */
+	for (k = 0; k < 6; k++)
+		for (i = 0; i < TABS_N; i++) {
+			snprintf(body, sizeof(body), "{\"handle\":\"%s\"}",
+			    hd[i]);
+			ucl_object_unref(wd("POST", "/session/window", body));
+			sleep(3);
+		}
+	for (i = 0; i < TABS_N; i++) {
+		snprintf(body, sizeof(body), "{\"handle\":\"%s\"}", hd[i]);
+		ucl_object_unref(wd("POST", "/session/window", body));
+		/* Over HTTP/2, the requests' connection the tabs' one. */
+		ATF_CHECK_MSG(js_true("performance.getEntriesByType('resource')"
+		    ".some(e => e.nextHopProtocol === 'h2')"), "tab %d: not "
+		    "over HTTP/2", i);
+		ATF_CHECK_MSG(js_num(HTTP_N("sent")) > 20, "tab %d: hardly a "
+		    "request sent (%g)", i, js_num(HTTP_N("sent")));
+		ATF_CHECK_MSG(js_num(HTTP_N("failed")) == 0, "tab %d: %g "
+		    "requests failed (%g sent again)", i,
+		    js_num(HTTP_N("failed")), js_num(HTTP_N("retried")));
+		ATF_CHECK_MSG(!js_true("window.downSeen"), "tab %d said the "
+		    "console does not answer", i);
+	}
+}
+ATF_TC_CLEANUP(pwa_tabs, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_routes);
 ATF_TC_HEAD(pwa_routes, tc)
 {
@@ -13501,6 +13596,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_cplug);
 	ATF_TP_ADD_TC(tp, pwa_routes);
 	ATF_TP_ADD_TC(tp, pwa_streams);
+	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);
 	ATF_TP_ADD_TC(tp, pwa_nacm);
 	ATF_TP_ADD_TC(tp, pwa_ra);

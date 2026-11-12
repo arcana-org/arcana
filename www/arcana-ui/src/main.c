@@ -517,6 +517,8 @@ tick(void *arg)
 		if (app.screen == SCREEN_OFFLINE && app.online)
 			auth_status();
 	}
+	/* What the tick reads waits behind what the user asks (api.c). */
+	app.polling = true;
 	/* Running jobs: read them, and redraw when their trace grew. */
 	if (app.screen == SCREEN_CONSOLE) {
 		ops_load();
@@ -613,6 +615,7 @@ tick(void *arg)
 			    now, OTHERS_EVERY * REFRESH_MS, false))
 				refresh_jails(&app.servers[i], false);
 	}
+	app.polling = false;
 	if (changed || now - last_tick_render >= AGE_STEP_MS) {
 		last_tick_render = now;
 		render();

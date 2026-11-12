@@ -67,6 +67,8 @@ extern int		 harness_stamp_port;	/* the agent's --stamp-port; 0, none */
 extern bool		 harness_webconf_only_local;
 extern char		 harness_telegram_api[128];
 extern int		 harness_tls_port;
+/* The page's origin the TLS listener's (https://localhost:<port>). */
+extern bool		 harness_origin_tls;
 
 const char	*locate(const atf_tc_t *, const char *, const char *,
 		    const char *);

@@ -129,6 +129,23 @@
   change nobody confirmed.  Safe mode takes an unconfirmed change back
   elsewhere: put the file back here too?
 
+- One EventSource a page instead of three (sse.c: the fleet's stream,
+  arcana-host's stats, arcana-jobs): every tab of the console shares
+  the browser's one HTTP/2 connection, and each page holds its event
+  streams and its WebSocket open on it for good.  The design: a GET
+  /restconf/streams/page/json?fleet=1&sub=<id>,<id> (rcstream.c) that
+  starts the fleet's stream and takes the page's established
+  subscriptions on one reply, one thread, each event named by what it
+  is of ("event: fleet", "event: sub-<id>"; its id the event time
+  prefixed by the same, so Last-Event-ID replays each); a subscription
+  established later, or one ended, said to it by a POST naming the
+  page's stream (its id from the reply's first comment line) rather
+  than a new GET; bridge.js's arc_sse_open/arc_sse_close then add and
+  remove a name on the one EventSource, arc_on_sse unchanged.  The
+  rcs threads already hold one host list each; the change is that one
+  rcs carries several sources (rch sets) and the keep-alive and lost
+  events are the reply's, not each source's.
+
 ## Not yet run for real
 
 Written and tested with stand-ins only:
@@ -216,6 +233,27 @@ Written and tested with stand-ins only:
     TWAMP Light's ways; ours takes them).
 
 ## Known limits
+
+- libwebsockets 5.1 ends a whole HTTP/2 connection (GOAWAY
+  PROTOCOL_ERROR, "Another stream not allowed", lib/sansio/h2/http2.c
+  in lws_h2_parse_frame_header()) for a HEADERS frame that would open
+  one stream past SETTINGS_MAX_CONCURRENT_STREAMS; RFC 9113 5.1.2 has
+  it a stream error, and REFUSED_STREAM tells the client to send it
+  again.  A client sends its first requests before it has the server's
+  SETTINGS, so with libwebsockets' 24 a browser with more waiting lost
+  every new connection; the console allows 100 (web.c, H2_STREAMS),
+  what clients take for granted till then.  What would change in
+  libwebsockets: there, refuse the stream as lws_h2_refuse_stream()
+  does for a full header pool (RST_STREAM REFUSED_STREAM, its block
+  decoded into the sink for the HPACK table, its sid recorded closed),
+  and drop the same test in __lws_wsi_server_new(); a stream that is
+  closing (flushing what waits on the connection, or its completion
+  put off behind it) to count no more once its END_STREAM is out.  And
+  each new stream queues a window update (lws_pps_schedule()), 50 of
+  them at most before it ends the connection with ENHANCE_YOUR_CALM:
+  a frame's worth of new streams beyond that would want the window
+  given by SETTINGS_INITIAL_WINDOW_SIZE rather than per stream.  Not
+  patched here: the port's.
 
 - A query argument's value with an "=" in it (encoded %3D, or even
   %253D) comes to the console cut at it: libwebsockets' argument

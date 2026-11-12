@@ -71,12 +71,25 @@
  * connection's buffer: the socket then takes it whole (a writable socket
  * has room for 2 KB, its low-water mark), so the HTTP/2 stream it ends
  * closes before the client has its end.  Closing one while output waits
- * is put off by libwebsockets until it is sent, the client may open its
- * next stream first, and one stream past libwebsockets' limit (24, which
- * its 50 pending frames, two for each new stream, do not let us raise)
- * ends the whole connection.
+ * is put off by libwebsockets until it is sent, and the client may open
+ * its next stream first: one past the streams allowed (H2_STREAMS).
  */
 #define	FINAL_MAX	1024
+/*
+ * The streams a client may have open on one HTTP/2 connection.  One past
+ * them libwebsockets 5.1 takes for the client's fault and ends the
+ * connection, every stream on it (GOAWAY PROTOCOL_ERROR, not the stream
+ * alone refused).  A client sends its first requests before it has the
+ * server's SETTINGS, as many as it has waiting, up to the 100 browsers
+ * and nghttp2 take for granted until then: a browser that opened a
+ * connection again with more than libwebsockets' own 24 waiting (a
+ * page's polls, every tab's) had it ended at once, again and again.
+ * 100 is what no well-behaved client passes.  Each new stream is also a
+ * window update libwebsockets queues, and past 50 queued it ends the
+ * connection as well: a first flight of 100 does not get there
+ * (console_test:h2_streams), which was the reason given for 24.
+ */
+#define	H2_STREAMS	100
 #define	WS_IN_MAX	(1024 * 1024)	/* a message from a page, at most */
 /* A message goes out in fragments of this much at most: over HTTP/2 a
  * WebSocket frame may not be larger than an HTTP/2 frame (16 KB), and
@@ -1411,11 +1424,18 @@ req_write(struct lws *wsi, struct pss *pss)
 		}
 		if (rc == 0)
 			rc = sec_add(wsi, &p, end);
-		/* A stream's length is not known: it goes until it ends,
-		 * chunked over HTTP/1.1 (no :method pseudo-header: not
-		 * HTTP/2, which frames its own) so that its end is told. */
+		/*
+		 * A stream's length is not known: it goes until it ends,
+		 * chunked over HTTP/1.1 so that its end is told; not over
+		 * HTTP/2 (a stream of its connection), which frames its own
+		 * and takes Transfer-Encoding for a malformed reply.  Its
+		 * :method is no sign: libwebsockets 5.1 gives an HTTP/2
+		 * stream's headers back once it is dispatched, and an event
+		 * stream went out chunked, its reply refused by browsers
+		 * (PROTOCOL_ERROR), every EventSource over and over.
+		 */
 		if (rc == 0 && req->stream != NULL &&
-		    lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COLON_METHOD) == 0) {
+		    lws_get_network_wsi(wsi) == wsi) {
 			rc = lws_add_http_header_by_token(wsi,
 			    WSI_TOKEN_HTTP_TRANSFER_ENCODING,
 			    (const unsigned char *)"chunked", 7, &p, end);
@@ -1476,6 +1496,11 @@ req_write(struct lws *wsi, struct pss *pss)
 		}
 		if (!req->stream_end)
 			return (0);
+		/* Its end a last piece too (FINAL_MAX). */
+		if (lws_send_pipe_choked(wsi)) {
+			lws_callback_on_writable(wsi);
+			return (0);
+		}
 		buf = xmalloc(LWS_PRE + 8);
 		if (req->chunked) {
 			memcpy(buf + LWS_PRE, "0\r\n\r\n", 5);
@@ -1838,6 +1863,15 @@ web_client_ca(const char *cafile)
 		}
 		SSL_CTX_set_client_CA_list(ssl_ctxs[i], i + 1 < nssl_ctx ?
 		    SSL_dup_CA_list(names) : names);
+		/*
+		 * A session resumed where the peer is asked for its
+		 * certificate needs the context it was made in: without one
+		 * OpenSSL ends the handshake with internal_error, every
+		 * browser's connection after its first.  libwebsockets sets
+		 * it only for a client CA of its own.
+		 */
+		SSL_CTX_set_session_id_context(ssl_ctxs[i],
+		    (const unsigned char *)"arcana-console", 14);
 		SSL_CTX_set_verify(ssl_ctxs[i], SSL_VERIFY_PEER, peer_verify);
 	}
 	client_ca = true;
@@ -2117,6 +2151,14 @@ vhost_new(int k)
 			 */
 			info.options |= LWS_SERVER_OPTION_SNI_FALLBACK;
 #endif
+			/* libwebsockets' own settings but the streams. */
+			info.http2_settings[0] = 1;
+			info.http2_settings[H2SET_HEADER_TABLE_SIZE] = 65536;
+			info.http2_settings[H2SET_ENABLE_PUSH] = 0;
+			info.http2_settings[H2SET_MAX_CONCURRENT_STREAMS] =
+			    H2_STREAMS;
+			info.http2_settings[H2SET_INITIAL_WINDOW_SIZE] = 0;
+			info.http2_settings[H2SET_MAX_FRAME_SIZE] = 16384;
 			info.ssl_cipher_list = "ECDHE+AESGCM:ECDHE+CHACHA20";
 			info.ssl_options_set = SSL_OP_NO_TLSv1 |
 			    SSL_OP_NO_TLSv1_1;
@@ -2191,6 +2233,8 @@ worker(void)
 			break;
 	hosts_tally_log();
 	lws_context_destroy(ctx);
+	/* A store's write under way on a thread finishes first. */
+	store_quiesce();
 	_exit(0);
 }
 

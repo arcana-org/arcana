@@ -1444,20 +1444,27 @@ queue_clear(void)
 }
 
 static int	health_misses;
+static bool	health_hidden;	/* the check was asked with the page hidden */
 
 static void
 health_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
+	bool	miss;
 
 	/*
 	 * One check without an answer is a hiccup: a busy moment, a
 	 * connection the server closed.  It is asked again at once, and
-	 * only a second miss says the console is away.
+	 * only a second miss says the console is away.  None is counted
+	 * that the page gave up itself, nor while it is hidden, when the
+	 * browser holds its timers back and may drop its connections.
 	 */
+	miss = status != 200 && status != 429 && !(status == 0 &&
+	    (health_hidden || !app.visible || (err != NULL &&
+	    strcmp(err, "cancelled") == 0)));
 	if (status == 200) {
 		health_misses = 0;
 		app.api = LINK_UP;
-	} else if (status != 429 && ++health_misses >= 2)
+	} else if (miss && ++health_misses >= 2)
 		app.api = LINK_DOWN;
 	else if (status != 429)
 		app.health_retry = arc_now() + HEALTH_RETRY_MS;
@@ -1522,6 +1529,7 @@ check_health(void)
 		app.api = LINK_UNKNOWN;
 		return;
 	}
+	health_hidden = !app.visible;
 	api("GET", "/api/health", NULL, health_cb, NULL);
 }
 

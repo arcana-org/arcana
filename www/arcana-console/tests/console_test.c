@@ -18778,7 +18778,7 @@ ATF_TC_BODY(tls_ec, tc)
 	/*
 	 * Forty large replies on one connection, to a client with
 	 * HTTP/2's own window (64 KB, nghttp's; curl's is far larger)
-	 * that keeps to the 24 streams the console allows: the host's
+	 * that keeps to 24 streams at once: the host's
 	 * sysctl tree read by GET, larger than the window.  Written past
 	 * the window, the client ended the connection with
 	 * FLOW_CONTROL_ERROR; a stream ended while output waited stayed
@@ -18826,6 +18826,141 @@ ATF_TC_BODY(tls_ec, tc)
 	ATF_CHECK(system(cmd) == 0);
 }
 ATF_TC_CLEANUP(tls_ec, tc)
+{
+
+	(void)tc;
+	stop();
+}
+
+/* h2_streams' host. */
+#define	R4_H2_ID	"0a0e0002"
+
+/*
+ * n reads of /api/health, par of them wanted at once, after nsse of the
+ * host's event streams, all on one HTTP/2 connection (curl -Z waits for
+ * it to multiplex): each read's status, HTTP version and connections
+ * made in burst.out, curl's complaints in burst.err; the streams' to
+ * sse<k>.out, for 8 s.
+ */
+static void
+h2_burst(int port, int nsse, int par, int n)
+{
+	FILE	*f;
+	char	 cmd[128];
+	int	 i;
+
+	ATF_REQUIRE((f = fopen("burst.conf", "w")) != NULL);
+	fprintf(f, "http2\ninsecure\nsilent\nshow-error\ncookie = \"jar\"\n"
+	    "max-time = 8\n");
+	for (i = 0; i < nsse; i++)
+		fprintf(f, "url = \"https://127.0.0.1:%d/restconf/streams/"
+		    R4_H2_ID "/json\"\noutput = \"sse%d.out\"\n", port, i);
+	if (nsse > 0)
+		fprintf(f, "next\nhttp2\ninsecure\nsilent\nshow-error\n");
+	fprintf(f, "write-out = \"%%{http_code} %%{http_version} "
+	    "%%{num_connects}\\n\"\n");
+	for (i = 0; i < n; i++)
+		fprintf(f, "url = \"https://127.0.0.1:%d/api/health\"\n"
+		    "output = \"/dev/null\"\n", port);
+	ATF_REQUIRE(fclose(f) == 0);
+	snprintf(cmd, sizeof(cmd), "curl -Z --parallel-max %d -K burst.conf "
+	    "> burst.out 2> burst.err", par);
+	(void)system(cmd);
+	snprintf(cmd, sizeof(cmd), "[ $(grep -c '^200 2 ' burst.out) -eq %d ]",
+	    n);
+	if (system(cmd) != 0) {
+		(void)system("sort burst.out | uniq -c; sort burst.err | uniq -c "
+		    "| sort -rn | head -5");
+		atf_tc_fail("%d reads, %d at once, %d event streams: not every "
+		    "one answered on one HTTP/2 connection", n, par, nsse);
+	}
+	/* One connection for all of it: it never ended. */
+	ATF_CHECK_MSG(system("[ $(awk '{ n += $3 } END { print n + 0 }' "
+	    "burst.out) -le 1 ]") == 0, "%d at once: the connection was made "
+	    "again", par);
+	ATF_CHECK_MSG(system("! grep -i 'http2\\|reset\\|framing\\|alert' "
+	    "burst.err") == 0, "%d at once: the connection or a stream was "
+	    "reset", par);
+}
+
+/*
+ * HTTP/2 connections with more requests wanted than streams allowed.  A
+ * client sends its first requests before it has the console's SETTINGS,
+ * as many as it has waiting, up to the 100 it takes for granted till
+ * then: with libwebsockets' own 24 the 25th ended the connection, every
+ * request on it, and the next connection's the same way (the page's
+ * "does not answer").  Then, three of a host's event streams open on the
+ * connection all along, reads 40 at a time, the next sent the moment
+ * one ends for the client.  And connections after the first, which
+ * resume its TLS session: refused with an internal_error alert while
+ * the console asked for client certificates with no session context.
+ */
+ATF_TC_WITH_CLEANUP(h2_streams);
+ATF_TC_HEAD(h2_streams, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "HTTP/2 connections with more "
+	    "requests wanted than streams allowed, event streams among them, "
+	    "and TLS sessions resumed: every request answered, no connection "
+	    "ended");
+	atf_tc_set_md_var(tc, "require.progs", "curl openssl sha256");
+}
+ATF_TC_BODY(h2_streams, tc)
+{
+	char	 cwd[MAXPATHLEN], cmd[MAXPATHLEN * 2];
+	int	 port, i;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	ATF_REQUIRE(system("openssl req -x509 -newkey ec -pkeyopt "
+	    "ec_paramgen_curve:P-256 -nodes -keyout ec.key -out ec.pem -days 1 "
+	    "-subj /CN=localhost 2>/dev/null") == 0);
+	snprintf(harness_server, sizeof(harness_server), "\tcertfile = "
+	    "\"%s/ec.pem\";\n\tcertkey = \"%s/ec.key\";\n", cwd, cwd);
+	port = 20000 + (int)(getpid() % 20000);
+	start(tc, port, NULL);
+	for (i = 0; i < 50; i++) {
+		snprintf(cmd, sizeof(cmd), "curl -sk https://127.0.0.1:%d/api/"
+		    "health | grep -q '\"ok\":true'", port);
+		if (system(cmd) == 0)
+			break;
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(i < 50, "no answer over HTTPS");
+	/* A session by an API token, and the host whose stream is heard. */
+	snprintf(cmd, sizeof(cmd), "T=arcw_$(printf 'c%%.0s' $(seq 1 64)); "
+	    "printf '{\"tokens\":[{\"hash\":\"%%s\",\"name\":\"t\","
+	    "\"created\":1,\"last\":0,\"write\":true}]}' $(printf %%s $T "
+	    "| sha256 -q) > data/tokens.json && "
+	    "curl -sk --http2 -c jar -H 'content-type: application/json' -d "
+	    "\"{\\\"token\\\":\\\"$T\\\"}\" https://127.0.0.1:%d/api/auth/"
+	    "login/token -o /dev/null && "
+	    "curl -sk --http2 -b jar -H 'origin: %s' -H 'content-type: "
+	    "application/json' -d '{\"arcana-console:host\":[{\"id\":"
+	    "\"" R4_H2_ID "\",\"name\":\"here\",\"uri\":\"unix:%s/"
+	    "jgd.sock\"}]}' -o /dev/null -w '%%{http_code}' "
+	    "https://127.0.0.1:%d" CC "hosts | grep -qx 201", port,
+	    harness_origin, cwd, port);
+	ATF_REQUIRE_MSG(system(cmd) == 0, "no session, or no host");
+	/* A new connection's first flight: 100 at once, and 25. */
+	h2_burst(port, 0, 100, 300);
+	h2_burst(port, 0, 25, 100);
+	/* Slots taken again the moment they end, event streams beside. */
+	h2_burst(port, 3, 40, 300);
+	for (i = 0; i < 3; i++) {
+		snprintf(cmd, sizeof(cmd), "head -1 sse%d.out | grep -q "
+		    "'^: the host' || { echo sse%d:; head -c 300 sse%d.out; "
+		    "exit 1; }", i, i, i);
+		ATF_CHECK_MSG(system(cmd) == 0, "event stream %d not open", i);
+	}
+	/* Three connections, the second and the third resuming the first's
+	 * TLS session. */
+	snprintf(cmd, sizeof(cmd), "U=https://127.0.0.1:%d/api/health; "
+	    "curl -sSk --http1.1 -H 'connection: close' -w '%%{http_code}\\n' "
+	    "-o /dev/null -o /dev/null -o /dev/null $U $U $U > tls.out 2>&1; "
+	    "[ $(grep -cx 200 tls.out) -eq 3 ] || { cat tls.out; exit 1; }",
+	    port);
+	ATF_CHECK_MSG(system(cmd) == 0, "a TLS session not resumed");
+}
+ATF_TC_CLEANUP(h2_streams, tc)
 {
 
 	(void)tc;
@@ -23133,6 +23268,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, enrol);
 	ATF_TP_ADD_TC(tp, console_role);
 	ATF_TP_ADD_TC(tp, tls_ec);
+	ATF_TP_ADD_TC(tp, h2_streams);
 	ATF_TP_ADD_TC(tp, cyang_hosts);
 	ATF_TP_ADD_TC(tp, cyang_host_verbs);
 	ATF_TP_ADD_TC(tp, cyang_dataset_key);

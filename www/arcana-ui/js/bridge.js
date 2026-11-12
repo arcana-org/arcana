@@ -2457,11 +2457,45 @@ addToLibrary({
 		}
 	},
 
-	arc_http__deps: ["$arcAborts", "$arcStr", "$UTF8ToString"],
-	arc_http: function (id, methodp, urlp, bodyp, hdrsp) {
+	/*
+	 * The page's requests, six of them in flight at most, the rest
+	 * waiting: the health check and what the user asked for (hi)
+	 * ahead of the page's own polls (lo).  A browser has one HTTP/2
+	 * connection to the console for every tab of it, its streams a
+	 * hundred at most (web.c, H2_STREAMS); each page keeps a few of
+	 * them for good (its event streams, its WebSocket), and a burst of
+	 * one page's polls is not to stand before another's health check.
+	 * Six, what a browser opens to a host over HTTP/1.1: the page was
+	 * made for that; the polls four of them, so that hosts slow to
+	 * answer leave room for the rest.  window.arcanaHttp counts what went (sent), what
+	 * was sent again after a lost connection (retried) and what failed
+	 * all the same (failed), for a test to read.
+	 */
+	$arcHttpQ: { busy: 0, hi: [], lo: [] },
+	$arcHttpPump__deps: ["$arcHttpQ"],
+	$arcHttpPump: function () {
+		var q = arcHttpQ, go;
+
+		for (;;) {
+			if (q.busy < 6 && q.hi.length > 0)
+				go = q.hi.shift();
+			else if (q.busy < 4 && q.lo.length > 0)
+				go = q.lo.shift();
+			else
+				break;
+			q.busy++;
+			go();
+		}
+	},
+
+	arc_http__deps: ["$arcAborts", "$arcStr", "$UTF8ToString", "$arcHttpQ",
+	    "$arcHttpPump"],
+	arc_http: function (id, methodp, urlp, bodyp, hdrsp, hi) {
 		var method = UTF8ToString(methodp), body = null, opts;
 		var ctl = new AbortController(), url = UTF8ToString(urlp);
-		var rc = url.indexOf("/restconf/") === 0;
+		var rc = url.indexOf("/restconf/") === 0, q = arcHttpQ, go;
+		var stat = window.arcanaHttp || (window.arcanaHttp =
+		    { sent: 0, retried: 0, failed: 0 });
 
 		if (bodyp !== 0)
 			body = UTF8ToString(bodyp);
@@ -2491,7 +2525,6 @@ addToLibrary({
 			});
 		if (body !== null)
 			opts.body = body;
-		arcAborts[id] = ctl;
 		/*
 		 * A 408 is the server's answer to a connection it found
 		 * idle, not to this request: the browser had opened the
@@ -2505,12 +2538,23 @@ addToLibrary({
 		 * or is busy.  A question is asked again a few times, ever
 		 * later, before a host is said not to answer; what would
 		 * change something is not, since it may have arrived.
+		 *
+		 * A read whose connection went under it (fetch's TypeError,
+		 * no status) is sent once again, on the connection the
+		 * browser makes anew, before its caller is told: one lost
+		 * connection, every request on it, is not the console gone.
 		 */
-		(function send(tries) {
+		function done() {
+			q.busy--;
+			delete arcAborts[id];
+			arcHttpPump();
+		}
+		function send(tries, again) {
+			stat.sent++;
 			fetch(url, opts).then(function (r) {
 				if (r.status === 408 && tries < 3) {
 					setTimeout(function () {
-						send(tries + 1);
+						send(tries + 1, again);
 					}, 150 * (tries + 1));
 					return (null);
 				}
@@ -2519,21 +2563,46 @@ addToLibrary({
 					    r.status <= 504 && t.charAt(0) !==
 					    "{" && tries < 4 && !ctl.gaveUp) {
 						setTimeout(function () {
-							send(tries + 1);
+							send(tries + 1, again);
 						}, 400 * (tries + 1) * (tries + 1));
 						return;
 					}
-					delete arcAborts[id];
+					done();
 					Module._arc_on_http(id, r.status,
 					    arcStr(t), r.headers.get("ETag") ?
 					    arcStr(r.headers.get("ETag")) : 0);
 				}));
 			}).catch(function (err) {
-				delete arcAborts[id];
+				if (!ctl.gaveUp && !again && (method === "GET" ||
+				    method === "HEAD") && err && err.name ===
+				    "TypeError") {
+					stat.retried++;
+					send(tries, true);
+					return;
+				}
+				if (!ctl.gaveUp)
+					stat.failed++;
+				done();
 				Module._arc_on_http(id, 0, arcStr(ctl.gaveUp ?
 				    "cancelled" : String(err)), 0);
 			});
-		})(0);
+		}
+		arcAborts[id] = ctl;
+		go = function () { send(0, false); };
+		/* Given up while it waits: told so, never sent. */
+		ctl.signal.addEventListener("abort", function () {
+			var w = hi ? q.hi : q.lo, i = w.indexOf(go);
+
+			if (i < 0)
+				return;
+			w.splice(i, 1);
+			delete arcAborts[id];
+			Promise.resolve().then(function () {
+				Module._arc_on_http(id, 0, arcStr("cancelled"), 0);
+			});
+		});
+		(hi ? q.hi : q.lo).push(go);
+		arcHttpPump();
 	},
 
 	/*
