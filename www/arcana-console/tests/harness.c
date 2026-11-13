@@ -1423,9 +1423,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 		snprintf(local, sizeof(local), harness_local_agent ?
 		    "local_agent = \"unix:%s/jgd.sock\";\n" :
 		    "local_agent = \"\";\n", cwd);
-	/* Mail goes into mail.out. */
-	snprintf(buf, sizeof(buf), "#!/bin/sh\n{ echo \"ARGS $*\"; cat; echo "
-	    "--END--; } >> %s/mail.out\n", cwd);
+	/* Mail goes into mail.out; the descriptors the mailer was left
+	 * beyond its three, each a line of mail.fds. */
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nfor n in 3 4 5 6 7 8 9; do "
+	    "(: >&$n) 2>/dev/null && echo $n; done >> %s/mail.fds\n"
+	    "{ echo \"ARGS $*\"; cat; echo --END--; } >> %s/mail.out\n", cwd,
+	    cwd);
 	ATF_REQUIRE(mkdir("tools", 0755) == 0 || errno == EEXIST);
 	put("tools/sendmail", buf);
 	ATF_REQUIRE(chmod("tools/sendmail", 0755) == 0);

@@ -418,6 +418,10 @@ send_with(const struct mailconf *mc, const char *subject, const char *body,
 	posix_spawn_file_actions_adddup2(&fa, in[0], STDIN_FILENO);
 	posix_spawn_file_actions_adddup2(&fa, out[1], STDOUT_FILENO);
 	posix_spawn_file_actions_adddup2(&fa, out[1], STDERR_FILENO);
+	/* Nothing else of the console's: a mailer that waits to deliver
+	 * (dma's queue runner, for days) would hold the listening sockets,
+	 * and the console could not be started again. */
+	posix_spawn_file_actions_addclosefrom_np(&fa, STDERR_FILENO + 1);
 	argv[0] = (char *)(uintptr_t)"sendmail";
 	argv[1] = (char *)(uintptr_t)"-t";
 	argv[2] = (char *)(uintptr_t)"-i";

@@ -1796,6 +1796,7 @@ version_of(const char *path, char *buf, size_t len)
 	posix_spawn_file_actions_adddup2(&fa, p[1], STDOUT_FILENO);
 	posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
 	    O_WRONLY, 0);
+	posix_spawn_file_actions_addclosefrom_np(&fa, STDERR_FILENO + 1);
 	if (posix_spawn(&pid, path, &fa, NULL, argv, env) == 0) {
 		close(p[1]);
 		p[1] = -1;

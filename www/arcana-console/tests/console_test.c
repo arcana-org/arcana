@@ -8443,6 +8443,10 @@ ATF_TC_BODY(mail, tc)
 	r2_settings("\"mail-to\":\"\"", &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
+	/* The mailer has the console's listening sockets no more: one that
+	 * stays to deliver would keep the console from starting again. */
+	ATF_CHECK_MSG(system("test -e mail.fds && ! test -s mail.fds") == 0,
+	    "the mailer was left descriptors of the console's");
 }
 
 /* The stand-in agent's host named name, at sock in the work directory:
