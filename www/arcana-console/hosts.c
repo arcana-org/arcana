@@ -1995,7 +1995,7 @@ fetch_put(ucl_object_t *top, int error, ucl_object_t *data,
 #define	JOBCACHE_US	1000000
 struct jobread {
 	char		 host[256];	/* its server, else its URI */
-	char		 user[64];
+	char		 user[USER_NAME_LEN];
 	uint64_t	 id;
 	char		*json;
 	uint64_t	 at;
@@ -4130,10 +4130,19 @@ api_config_apply(struct http_request *req)
 		snprintf(c->hostname, sizeof(c->hostname), "%s", hn);
 	fid = ucl_str(body, "from");
 	b = ucl_object_lookup(body, "bundle");
-	/* A template, made this host's by its values: as a bundle. */
+	/* A template, made this host's by its values: as a bundle, by one
+	 * the templates are open to (its dry run shows a template's files). */
 	if ((tn = ucl_str(body, "template")) != NULL) {
 		char	why[300], *json;
 
+		if (session_user(req) != NULL && !user_may_path(session_user(req),
+		    CYANG_DATA "templates", false)) {
+			ucl_object_unref(body);
+			call_release(c);
+			free(c);
+			return (reply_error(req, 403, "role", "the templates are "
+			    "the console's operators' and owners'"));
+		}
 		if (!template_name_ok(tn) || (json = template_render(tn,
 		    req_tenant(req), ucl_object_lookup(body, "values"), why,
 		    sizeof(why))) == NULL) {
@@ -4199,7 +4208,9 @@ api_transport_switch(struct http_request *req)
 		}
 		return (call_finish(req));
 	}
-	if ((c = call_new(req, OP_HELLO)) == NULL)
+	/* Moving where a host is reached is its admin's, as a move is
+	 * (servers.c). */
+	if ((c = call_open(req, OP_HELLO, true, true, true)) == NULL)
 		return (WEB_OK);
 	to = NULL;
 	if ((body = read_json(req)) != NULL)
@@ -4225,7 +4236,13 @@ api_transport_switch(struct http_request *req)
 	c->uri = uri;
 	c->fresh = true;
 	c->reads = false;
-	return (call_start(req, c));
+	req->hdlr_extra = c;
+	task_create(&c->task, call_run);
+	task_bind_request(&c->task, req);
+	/* The URI just made of the server's own: no server's yet. */
+	c->task.who.flags |= P_F_NEWURI;
+	task_run(&c->task);
+	return (WEB_RETRY);
 }
 
 /*

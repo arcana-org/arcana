@@ -123,9 +123,113 @@ cert_new(EVP_PKEY *key, const char *cn, X509 *issuer, EVP_PKEY *ikey,
 	    "console", days));
 }
 
+/* Is s a host's name (RFC 1123's labels), not an address? */
+static bool
+dns_name_ok(const char *s)
+{
+	size_t	i, label;
+
+	if (s[0] == '\0' || strlen(s) > 253)
+		return (false);
+	label = 0;
+	for (i = 0; s[i] != '\0'; i++) {
+		if (s[i] == '.') {
+			if (label == 0 || s[i - 1] == '-')
+				return (false);
+			label = 0;
+			continue;
+		}
+		if (!isalnum((unsigned char)s[i]) && (s[i] != '-' || label == 0))
+			return (false);
+		if (++label > 63)
+			return (false);
+	}
+	return (label > 0 && s[i - 1] != '-');
+}
+
+/*
+ * The subjectAltName of a leaf: each host of hosts (a URI's host part,
+ * "h1[,h2...]", an IPv6 address in brackets, as cblink's SCTP URIs list
+ * them) a DNS name or an IP address, each checked to be one, then the
+ * role's URI, made with the API, never pasted into a configuration's
+ * text: nothing a host's name says can add a name.  hosts NULL, the
+ * role's URI alone.  0, or -1.
+ */
+static int
+san_add(X509 *x, const char *hosts, const char *role)
+{
+	GENERAL_NAMES	*gens;
+	GENERAL_NAME	*g;
+	ASN1_IA5STRING	*ia5;
+	ASN1_OCTET_STRING *ip;
+	const char	*p, *e;
+	char		 h[256], uri[64];
+	int		 rc, n;
+
+	if ((gens = sk_GENERAL_NAME_new_null()) == NULL)
+		return (-1);
+	rc = -1;
+	n = 0;
+	for (p = hosts; p != NULL && *p != '\0'; p = *e == ',' ? e + 1 : e) {
+		if (*p == '[') {
+			if ((e = strchr(p, ']')) == NULL || (e[1] != '\0' &&
+			    e[1] != ','))
+				goto out;
+			snprintf(h, sizeof(h), "%.*s", (int)(e - p - 1), p + 1);
+			e++;
+		} else {
+			e = p + strcspn(p, ",");
+			if ((size_t)(e - p) >= sizeof(h))
+				goto out;
+			snprintf(h, sizeof(h), "%.*s", (int)(e - p), p);
+		}
+		if ((g = GENERAL_NAME_new()) == NULL)
+			goto out;
+		if ((ip = a2i_IPADDRESS(h)) != NULL)
+			GENERAL_NAME_set0_value(g, GEN_IPADD, ip);
+		else if (strchr(h, ':') == NULL && dns_name_ok(h) && (ia5 =
+		    ASN1_IA5STRING_new()) != NULL && ASN1_STRING_set(ia5, h, -1) ==
+		    1)
+			GENERAL_NAME_set0_value(g, GEN_DNS, ia5);
+		else {
+			GENERAL_NAME_free(g);
+			goto out;
+		}
+		if (sk_GENERAL_NAME_push(gens, g) == 0) {
+			GENERAL_NAME_free(g);
+			goto out;
+		}
+		n++;
+	}
+	if (hosts != NULL && n == 0)
+		goto out;
+	snprintf(uri, sizeof(uri), "urn:arcana:role:%s", role);
+	if ((g = GENERAL_NAME_new()) == NULL || (ia5 = ASN1_IA5STRING_new()) ==
+	    NULL) {
+		GENERAL_NAME_free(g);
+		goto out;
+	}
+	if (ASN1_STRING_set(ia5, uri, -1) != 1) {
+		ASN1_IA5STRING_free(ia5);
+		GENERAL_NAME_free(g);
+		goto out;
+	}
+	GENERAL_NAME_set0_value(g, GEN_URI, ia5);
+	if (sk_GENERAL_NAME_push(gens, g) == 0) {
+		GENERAL_NAME_free(g);
+		goto out;
+	}
+	rc = X509_add1_ext_i2d(x, NID_subject_alt_name, gens, 0,
+	    X509V3_ADD_REPLACE) == 1 ? 0 : -1;
+out:
+	GENERAL_NAMES_free(gens);
+	return (rc);
+}
+
 /*
  * A certificate: the CA's own when there is no issuer; else a leaf of
- * role (agent, or console), for a server too when it names a host (san).
+ * role (agent, or console), for a server too when it names its hosts
+ * (san, a URI's host part: san_add()).
  */
 static X509 *
 cert_make(EVP_PKEY *key, const char *cn, X509 *issuer, EVP_PKEY *ikey,
@@ -174,16 +278,7 @@ cert_make(EVP_PKEY *key, const char *cn, X509 *issuer, EVP_PKEY *ikey,
 		 * Its role: a host's may reach other hosts (the mesh) but
 		 * not ask them as the console does; they tell it by this.
 		 */
-		if (san != NULL) {
-			char	sanr[400];
-
-			snprintf(sanr, sizeof(sanr), "%s,URI:urn:arcana:role:%s",
-			    san, role);
-			ok = ok && add_ext(x, issuer, NID_subject_alt_name,
-			    sanr) == 0;
-		} else
-			ok = ok && add_ext(x, issuer, NID_subject_alt_name,
-			    "URI:urn:arcana:role:console") == 0;
+		ok = ok && san_add(x, san, role) == 0;
 	}
 	ok = ok && add_ext(x, issuer, NID_subject_key_identifier, "hash") == 0;
 	ok = ok && X509_sign(x, issuer != NULL ? ikey : key, EVP_sha256()) > 0;
@@ -541,8 +636,7 @@ sign_with(const char *cafile, const char *keyfile, const char *csrpem,
 	X509		*all[CERTS_MAX], *ch[CERTS_MAX], *cert;
 	EVP_PKEY	*cakey, *key;
 	BIO		*b;
-	char		 san[300], *s;
-	unsigned char	 a[16];
+	char		 cn[256], *s;
 	int		 n, k;
 
 	s = NULL;
@@ -572,11 +666,12 @@ sign_with(const char *cafile, const char *keyfile, const char *csrpem,
 		snprintf(err, errlen, "cannot read the CA");
 		goto out;
 	}
-	snprintf(san, sizeof(san), "%s:%s", inet_pton(AF_INET, host, a) == 1 ||
-	    inet_pton(AF_INET6, host, a) == 1 ? "IP" : "DNS", host);
-	if ((cert = cert_new(key, host, all[0], cakey, san, CERT_DAYS)) ==
+	/* Its name the first of its hosts; each a DNS or an IP name. */
+	snprintf(cn, sizeof(cn), "%.*s", (int)strcspn(host[0] == '[' ? host + 1 :
+	    host, host[0] == '[' ? "]" : ","), host[0] == '[' ? host + 1 : host);
+	if ((cert = cert_new(key, cn, all[0], cakey, host, CERT_DAYS)) ==
 	    NULL) {
-		snprintf(err, errlen, "cannot sign: %s", ssl_err());
+		snprintf(err, errlen, "cannot sign for %s: %s", host, ssl_err());
 		goto out;
 	}
 	/* The leaf, then its CAs short of the root the host trusts. */
@@ -1297,28 +1392,44 @@ struct tlshost {
 	char	*name, *uri, *peer;
 };
 
-/* The hosts reached over TLS, copied: the list may change meanwhile. */
-static int
-tls_hosts(struct tlshost **vp)
-{
-	const struct server	*s;
-	struct tlshost		*v;
-	int			 i, n;
+#define	TLS_HOSTS_MAX	256
 
-	for (n = 0; server_at(n) != NULL; n++)
-		;
-	if ((v = calloc((size_t)n + 1, sizeof(*v))) == NULL)
+/*
+ * The hosts reached over TLS that whom this thread acts for administers,
+ * copied from what the worker last gave the threads (host_refs()): of
+ * the others, nothing is kept or said but how many, into *hiddenp: a
+ * host the CA's change does not reach is one it would lose.
+ */
+static int
+tls_hosts(struct tlshost **vp, int *hiddenp)
+{
+	struct hostref		*all;
+	struct principal	 p;
+	struct tlshost		*v;
+	int			 i, n, k;
+
+	if ((all = calloc(TLS_HOSTS_MAX, sizeof(*all))) == NULL)
 		abort();
-	for (i = n = 0; (s = server_at(i)) != NULL; i++) {
-		if (strncmp(s->uri, "unix:", 5) == 0)
+	k = host_refs_get(all, TLS_HOSTS_MAX);
+	if ((v = calloc((size_t)k + 1, sizeof(*v))) == NULL)
+		abort();
+	hosts_acting(&p);
+	*hiddenp = 0;
+	for (i = n = 0; i < k; i++) {
+		if (strncmp(all[i].uri, "unix:", 5) == 0)
 			continue;
-		strlcpy(v[n].id, s->id, sizeof(v[n].id));
-		if ((v[n].name = strdup(s->name)) == NULL || (v[n].uri =
-		    strdup(s->uri)) == NULL || (s->peer_name != NULL &&
-		    (v[n].peer = strdup(s->peer_name)) == NULL))
+		if (!principal_may_now(&p, all[i].id, ROLE_ADMIN)) {
+			(*hiddenp)++;
+			continue;
+		}
+		strlcpy(v[n].id, all[i].id, sizeof(v[n].id));
+		if ((v[n].name = strdup(all[i].name)) == NULL || (v[n].uri =
+		    strdup(all[i].uri)) == NULL || (all[i].peer[0] != '\0' &&
+		    (v[n].peer = strdup(all[i].peer)) == NULL))
 			abort();
 		n++;
 	}
+	free(all);
 	*vp = v;
 	return (n);
 }
@@ -1430,8 +1541,7 @@ rollout_run(void *arg)
 	free(cur);
 	/* 2. Each host: both to trust, then its certificate. */
 	mine = text_of(cfg.tls_cert);
-	n = tls_hosts(&hv);
-	fails = 0;
+	n = tls_hosts(&hv, &fails);
 	for (i = 0; i < n; i++) {
 		const ucl_object_t *h;
 
@@ -1568,8 +1678,7 @@ finish_run(void *arg)
 		certs_free(v, m);
 	}
 	mine = text_of(cfg.tls_cert);
-	n = tls_hosts(&hv);
-	fails = 0;
+	n = tls_hosts(&hv, &fails);
 	for (i = 0; roots != NULL && mine != NULL && i < n; i++) {
 		h = ucl_object_lookup(ucl_object_lookup(st, "hosts"), hv[i].id);
 		if (!force && (h == NULL || strcmp(ucl_object_tostring(
@@ -1771,6 +1880,7 @@ api_ca(struct http_request *req)
 			    "running", 0, true);
 			state_write(st);
 			hosts_need(ROLE_ADMIN);
+			host_refs();
 			if (hosts_thread(&tid, act[0] == 'r' ?
 			    rollout_run : finish_run, ucl_object_toboolean(
 			    ucl_object_lookup(body, "force")) ? (void *)1 :
@@ -1808,8 +1918,7 @@ pki_node_cert(const char *host, const char *certpath, const char *keypath,
 {
 	X509		*all[CERTS_MAX], *cert;
 	EVP_PKEY	*key, *cakey;
-	unsigned char	 a[16];
-	char		 san[300], cn[300];
+	char		 cn[300];
 	int		 n, rc;
 
 	if (access(certpath, F_OK) == 0 && access(keypath, F_OK) == 0)
@@ -1828,11 +1937,9 @@ pki_node_cert(const char *host, const char *certpath, const char *keypath,
 		snprintf(err, errlen, "cannot read the CA");
 		goto out;
 	}
-	snprintf(san, sizeof(san), "%s:%s", inet_pton(AF_INET, host, a) == 1 ||
-	    inet_pton(AF_INET6, host, a) == 1 ? "IP" : "DNS", host);
 	snprintf(cn, sizeof(cn), "arcana console %s", host);
 	if ((key = key_new()) == NULL || (cert = cert_make(key, cn, all[0],
-	    cakey, san, "console", CERT_DAYS)) == NULL) {
+	    cakey, host, "console", CERT_DAYS)) == NULL) {
 		snprintf(err, errlen, "cannot sign: %s", ssl_err());
 		goto out;
 	}

@@ -491,7 +491,7 @@ value_of(struct http_request *req, const struct part *p, uint32_t one)
 	if (strcmp(p->name, "tokens") == 0)
 		return (tokens_yang());
 	if (strcmp(p->name, "users") == 0)
-		return (users_yang());
+		return (users_yang(req_tenant(req)));
 	if (strcmp(p->name, "roles") == 0)
 		return (roles_yang());
 	if (strcmp(p->name, "groups") == 0)
@@ -661,7 +661,8 @@ keep(struct http_request *req, const struct part *p, const ucl_object_t *was,
 		    "workflows"), ucl_object_lookup(now, "workflows"), why,
 		    len));
 	if (p->trio)
-		return (users_yang_set(was, now, session_who(req), why, len));
+		return (users_yang_set(was, now, session_who(req), req_tenant(req),
+		    why, len));
 	if (strcmp(p->name, "templates") == 0)
 		return (templates_yang_set(req, ucl_object_lookup(was,
 		    "templates"), ucl_object_lookup(now, "templates"), why,
@@ -783,8 +784,11 @@ action(struct http_request *req)
 	rc = 0;
 	why[0] = '\0';
 	if (strcmp(req->path, CYANG_DATA "tokens/create") == 0) {
+		struct principal	maker;
+
+		req_principal(req, &maker);
 		if ((rc = token_new(ucl_str(in, "name"), ucl_str(in, "kind"),
-		    id, value, why, sizeof(why))) == 0) {
+		    &maker, id, value, why, sizeof(why))) == 0) {
 			out = ucl_object_typed_new(UCL_OBJECT);
 			put(out, "id", ucl_object_fromstring(id));
 			put(out, "token", ucl_object_fromstring(value));

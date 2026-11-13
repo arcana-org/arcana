@@ -173,14 +173,33 @@ document for the whole fleet, and so not a tenant's user's.
   opened by the directory's, and the console's own then, cannot change
   sign-ins, tokens, users, the CA, the settings or enrol hosts; that
   takes a key.  A directory's user the directory gives no role on the
-  console is refused.  Failed sign-ins wait by the name tried (5 a
-  minute) and the address (20), and every one after 100; bcrypt and the
-  directory run in a task, never on the server's loop.
+  console is refused, and so is a directory account whose name is a
+  local user's (the built-in owner's among them): the directory signs
+  in its own users alone, and a local user is not made of a directory
+  user's name but by removing that one first.  Directory users are of
+  no tenant: a role their group gives with "*" for its hosts is every
+  tenant's hosts (docs/TODO.md).  Failed sign-ins wait by the name
+  tried from one address (5 a minute), by the name from every address
+  (50) and by the address (20), never for everyone; the setup token's
+  tries have a count of their own; bcrypt and the directory run in a
+  task, never on the server's loop.
+* **Users and tenants.**  Each user has a stable id beside its name
+  (`users.json`, made with the user): a session, a token's maker and a
+  stored intent's author name it, so that a user removed and another
+  made with the name is not taken for them.  A tenant's user is a
+  console operator at most: the tokens, users and settings are every
+  tenant's.
 * **Sessions.**  32 random bytes in a cookie; only its SHA-256 is kept.
   Idle timeout 30 min, absolute 12 h.  As many as are open, 4096 at
   most; a user (or a token) has 16, their own oldest ending when they
   open another.  The key, user, token or password a session was opened
-  by, removed, ends it.  One guard checks every protected
+  by, removed, ends it.  A WebSocket or an event stream is bound to
+  the session (or token) that opened it, judged again at each message
+  and record when who may do what changed or its session's end is due,
+  and closed with it; a host its principal may no longer read is read
+  no more.  8 streams of one principal at once (a token's from one
+  address), an event stream an hour at most, then made again by the
+  browser.  One guard checks every protected
   route; state-changing requests also need the console's own `Origin`
   (a browser sends it), or `X-Arcana: 1` from a client that sends no
   `Origin`.  A GET changes nothing, so it needs neither, even where a
@@ -189,11 +208,20 @@ document for the whole fleet, and so not a tenant's user's.
   principal (`hosts.c`): a console user, held to the role it needs on
   that host (`users.c`) and, there, to the host's access rules by
   name; an API token, held to its own reach (a read token a viewer's,
-  a write token an admin's of every host, said to the host as the
-  console); or the console itself, which only the paths that act for
-  no one take (the subscriptions' connections, the notifier's and the
-  workflows' event reads, the SD-WAN manager, the threat feeds'
-  delivery, the alert channel, the hosts' roles synchronized).  A
+  a write token an admin's), never more than its maker may now, a host
+  at a time, said to the host as the console; or the console itself,
+  which only the paths that act for no one take (the subscriptions'
+  connections, the notifier's and the workflows' event reads, the
+  SD-WAN manager, the threat feeds' delivery, the alert channel, the
+  hosts' roles synchronized).  What the console does by itself is
+  bounded by who asked for it: the SD-WAN manager works from the L3NM
+  as a user last applied it (each edge it changed theirs to change),
+  never from what is kept and not applied, an identity run out taken
+  away on its edge alone; a threat feed goes to the hosts its author
+  (who last saved it) may operate at each delivery, the others skipped
+  and said so.  A change of the SD-WAN document or the L3NM is the
+  writer's on each edge it reaches at any depth, kept with who made
+  it.  A
   thread starts acting for no one and asks no host anything until told
   whom for; one started by `hosts_thread()` acts for its starter.  A
   workflow runs for who started it, or, by itself, for who last saved

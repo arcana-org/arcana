@@ -397,10 +397,27 @@ Written and tested with stand-ins only:
   its clients still need a session or a token, but all count as one
   address to the sign-in throttle, and the threat feeds learn no
   user's address from them (`feeds_signin()`).
-- Threat feeds are delivered as the console itself, each host chosen
-  by one who may change it when the feed was kept; one who lost the
-  role since still has the feed delivered there.  As workflows do, a
-  feed could keep its author and be delivered as them.
+- Directory users are fleet-wide (console 0.432.0): a user the
+  directory keeps is of no tenant, and a role whose directory group
+  has them, with "*" for its hosts, gives them every tenant's hosts.
+  The design: a tenant beside the group in the mapping (a role's
+  `ldap_group` and an `ldap_tenant` with it, a leaf of the role in
+  arcana-console, its .sid renumbered), `users_ldap_sync()` making the
+  user of the tenant of the groups that admit them (refused when two
+  tenants' groups do, said why), and the page's Roles form a field
+  for it.  Until then an owner gives directory groups roles that name
+  their hosts, not "*".
+- Setting one's own password needs no current password and no fresh
+  key: a session left open sets it.  It is to ask for the current
+  password, or, from a key's session, a key assertion made for it (a
+  challenge of its own, as login/begin's); the page's password form
+  then asks for one.
+- The Telegram alerts' sender host (Settings, `telegram_via`) is
+  asked as the console for every message, a workflow's notify step's
+  too: a workflow's error names that host to an operator who may not
+  read it.
+- Adding a host whose URI is another's is refused saying so, the host
+  unnamed: that a URI is registered is told to whoever may add one.
 - bcrypt runs on the loop still when a password is set (setup, Settings,
   AAA): the sign-in, which anyone may ask, runs in a task.
 - Adding a host resolves its name on the loop to compare it with the

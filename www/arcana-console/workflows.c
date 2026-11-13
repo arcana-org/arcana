@@ -946,8 +946,12 @@ wf_find(const char *id)
 
 /*
  * Whom a workflow acts for when it runs by itself: who last saved it
- * (author, or author_token for an API token); one saved before it kept
- * who, the built-in owner.
+ * (author with author_id, or author_token for an API token); one saved
+ * before it kept who, the built-in owner; one saved before ids, the
+ * user of the name when the console first read it (workflows_init()).
+ * A user of the name with another id is not the author, who is gone:
+ * the run then has no role anywhere (users.c), and says so.  A name or
+ * an id that does not fit is no one.
  */
 static void
 wf_author(const ucl_object_t *w, struct principal *p)
@@ -955,14 +959,20 @@ wf_author(const ucl_object_t *w, struct principal *p)
 
 	memset(p, 0, sizeof(*p));
 	if (ucl_str(w, "author_token") != NULL) {
-		p->kind = P_WTOKEN;
-		snprintf(p->name, sizeof(p->name), "%s", ucl_str(w,
-		    "author_token"));
-	} else {
+		if (name_copy(p->name, sizeof(p->name), ucl_str(w,
+		    "author_token")))
+			p->kind = P_WTOKEN;
+	} else if (name_copy(p->name, sizeof(p->name), ucl_str(w, "author") !=
+	    NULL ? ucl_str(w, "author") : ADMIN_USER) && name_copy(p->uid,
+	    sizeof(p->uid), ucl_str(w, "author_id") != NULL ? ucl_str(w,
+	    "author_id") : "")) {
 		p->kind = P_USER;
-		snprintf(p->name, sizeof(p->name), "%s", ucl_str(w, "author") !=
-		    NULL ? ucl_str(w, "author") : ADMIN_USER);
+		/* Never checked is never to be: "-" no user's id. */
+		if (p->uid[0] == '\0' && ucl_str(w, "author") != NULL)
+			snprintf(p->uid, sizeof(p->uid), "-");
 	}
+	if (p->kind == P_NONE)
+		memset(p, 0, sizeof(*p));
 }
 
 /* w's author made p. */
@@ -971,11 +981,15 @@ wf_author_set(ucl_object_t *w, const struct principal *p)
 {
 
 	(void)ucl_object_delete_key(w, "author");
+	(void)ucl_object_delete_key(w, "author_id");
 	(void)ucl_object_delete_key(w, "author_token");
 	if (p->kind == P_RTOKEN || p->kind == P_WTOKEN)
 		put(w, "author_token", ucl_object_fromstring(p->name));
-	else if (p->kind == P_USER)
+	else if (p->kind == P_USER) {
 		put(w, "author", ucl_object_fromstring(p->name));
+		put(w, "author_id", ucl_object_fromstring(p->uid[0] != '\0' ?
+		    p->uid : user_id(p->name)));
+	}
 }
 
 /* Does w hold a step of Arcana's own (run_arcana()), or one that
@@ -1127,7 +1141,7 @@ struct run {
 	ucl_object_t	*params;
 	ucl_object_t	*event;		/* of what began it, or NULL */
 	char		 trigger[64];
-	char		 started_by[64];	/* the console user, or "" */
+	char		 started_by[USER_NAME_LEN];	/* the console user, or "" */
 	struct principal who;		/* whom it acts for: its starter, or
 					 * its workflow's author */
 	char		 state[12];
@@ -2786,6 +2800,23 @@ workflows_init(void)
 			}
 		if (changed)
 			(void)store_save(RUNS_FILE, top);
+		ucl_object_unref(top);
+	}
+	/* An author named before ids: the user of the name now, once. */
+	if ((top = store_load(WF_FILE)) != NULL) {
+		changed = false;
+		it = NULL;
+		while ((o = (ucl_object_t *)(uintptr_t)ucl_object_iterate(
+		    ucl_object_lookup(top, "workflows"), &it, true)) != NULL)
+			if (ucl_str(o, "author") != NULL && ucl_str(o,
+			    "author_id") == NULL && user_id(ucl_str(o,
+			    "author"))[0] != '\0') {
+				put(o, "author_id", ucl_object_fromstring(user_id(
+				    ucl_str(o, "author"))));
+				changed = true;
+			}
+		if (changed)
+			(void)store_save(WF_FILE, top);
 		ucl_object_unref(top);
 	}
 	if (pthread_create(&tid, NULL, scheduler, NULL) == 0)

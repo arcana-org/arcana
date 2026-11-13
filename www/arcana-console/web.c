@@ -1607,6 +1607,28 @@ ws_send(struct conn *c, uint8_t op, const void *d, size_t len)
 	lws_callback_on_writable(c->wsi);
 }
 
+void
+ws_close(struct conn *c)
+{
+
+	if (c->wsi == NULL || c->closing)
+		return;
+	c->closing = true;
+	lws_callback_on_writable(c->wsi);
+}
+
+bool
+name_copy(char *dst, size_t len, const char *src)
+{
+
+	if (src == NULL || strlcpy(dst, src, len) >= len) {
+		if (len > 0)
+			dst[0] = '\0';
+		return (false);
+	}
+	return (true);
+}
+
 static void
 conn_free(struct conn *c)
 {
@@ -1805,9 +1827,16 @@ callback(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 		buf_reset(c->in);
 		return (0);
 	case LWS_CALLBACK_SERVER_WRITEABLE:
-		if ((c = pss->conn) == NULL || (m = STAILQ_FIRST(&c->out)) ==
-		    NULL)
+		if ((c = pss->conn) == NULL)
 			return (0);
+		/* Closed by the server, what it said first. */
+		if ((m = STAILQ_FIRST(&c->out)) == NULL) {
+			if (!c->closing)
+				return (0);
+			lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION,
+			    (unsigned char *)(uintptr_t)"signed out", 10);
+			return (-1);
+		}
 		/* The next fragment; what lws puts before it overwrites
 		 * the end of the one sent before, which is gone. */
 		n = m->len - m->off;

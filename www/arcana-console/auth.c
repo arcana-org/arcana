@@ -66,19 +66,22 @@ struct session {
 	time_t		created;
 	time_t		last;
 	bool		used;
-	char		who[64];	/* the key it was opened with */
+	char		who[65];	/* the key it was opened with, its name */
 	char		cred[65];	/* SHA-256 of that key's id, hex; ""
 					 * opened by none */
 	char		tok[17];	/* the API token it was, its id; "" a key */
 	bool		ldap;		/* opened by a directory's user */
 	bool		pw;		/* ... by the console's own password */
-	char		user[64];	/* the console user (users.c); "" none */
+	char		user[USER_NAME_LEN];	/* the console user (users.c);
+						 * "" none */
+	char		uid[USER_ID_LEN];	/* its id; "": one opened before
+						 * ids */
 	time_t		written;	/* last as its document has it */
 };
 
 static ucl_object_t	*creds;		/* the credentials document */
 static char		 setup_token[65];
-static char		 last_user[64];	/* of the session just started: its
+static char		 last_user[USER_NAME_LEN];	/* of the session just started: its
 					 * cookie is not on the request yet */
 
 /*
@@ -117,6 +120,7 @@ struct regchal {
  */
 static struct session	**sessions;
 static int		 nsessions;
+static uint64_t		 session_gen;	/* one more at each session's end */
 static time_t		 sessions_saved;	/* when the file was last written */
 
 static char	*b64url(const void *, size_t);
@@ -622,6 +626,8 @@ session_put(struct session *s)
 		put(e, "password", ucl_object_frombool(true));
 	if (s->user[0] != '\0')
 		put(e, "user", ucl_object_fromstring(s->user));
+	if (s->uid[0] != '\0')
+		put(e, "uid", ucl_object_fromstring(s->uid));
 	session_doc(s, name, sizeof(name));
 	(void)store_save(name, e);
 	ucl_object_unref(e);
@@ -636,6 +642,8 @@ session_end(struct session *s)
 	char	name[128];
 	int	i;
 
+	/* Its streams judged again, and closed (sbind_ok()). */
+	session_gen++;
 	if (s->used) {
 		session_doc(s, name, sizeof(name));
 		(void)store_remove(name);
@@ -654,6 +662,7 @@ static void
 sessions_drop(void)
 {
 
+	session_gen++;
 	while (nsessions > 0) {
 		explicit_bzero(sessions[nsessions - 1], sizeof(struct session));
 		free(sessions[--nsessions]);
@@ -761,9 +770,12 @@ sessions_load(void)
 		    NULL ? ucl_str(e, "cred") : "");
 		s->ldap = ucl_object_toboolean(ucl_object_lookup(e, "ldap"));
 		s->pw = ucl_object_toboolean(ucl_object_lookup(e, "password"));
-		snprintf(s->user, sizeof(s->user), "%s", ucl_object_lookup(e,
-		    "user") != NULL ? ucl_object_tostring_forced(
-		    ucl_object_lookup(e, "user")) : "");
+		/* A name or an id that does not fit is no one's. */
+		if (!name_copy(s->user, sizeof(s->user), ucl_str(e, "user") !=
+		    NULL ? ucl_str(e, "user") : "") || !name_copy(s->uid,
+		    sizeof(s->uid), ucl_str(e, "uid") != NULL ? ucl_str(e,
+		    "uid") : ""))
+			s->user[0] = s->tok[0] = '\0';
 		ucl_object_unref(e);
 		/* One of no one (neither a user's nor a token's) opens
 		 * nothing. */
@@ -833,6 +845,22 @@ session_by(struct http_request *req)
 	return (s->ldap ? BY_LDAP : s->pw ? BY_PASSWORD : BY_KEY);
 }
 
+/*
+ * Is s still good: in time, and its token, its key and its user (by
+ * name and id: one removed and made again is another) still there, on
+ * every node?
+ */
+static bool
+session_alive(const struct session *s, time_t now)
+{
+
+	return (now - s->last <= cfg.session_idle && now - s->created <=
+	    cfg.session_max && (s->tok[0] == '\0' || token_alive(s->tok)) &&
+	    (s->cred[0] == '\0' || cred_alive(s->cred)) && (s->user[0] ==
+	    '\0' || (user_exists(s->user) && (s->uid[0] == '\0' ||
+	    strcmp(user_id(s->user), s->uid) == 0))));
+}
+
 bool
 session_valid(struct http_request *req)
 {
@@ -843,11 +871,7 @@ session_valid(struct http_request *req)
 	if ((s = session_of(req)) != NULL) {
 		/* Its token deleted, its key removed, or its user, the
 		 * session it opened ends with it, on every node. */
-		if (now - s->last > cfg.session_idle ||
-		    now - s->created > cfg.session_max || (s->tok[0] != '\0' &&
-		    !token_alive(s->tok)) || (s->cred[0] != '\0' &&
-		    !cred_alive(s->cred)) || (s->user[0] != '\0' &&
-		    !user_exists(s->user))) {
+		if (!session_alive(s, now)) {
 			session_end(s);
 			return (false);
 		}
@@ -862,27 +886,61 @@ session_valid(struct http_request *req)
 }
 
 /*
- * Who a request comes from: the name of the security key its session
- * was opened with, or "API token <name>" for a write token; NULL else.
- * For the audit trail (MEF 118.1's who of a Policy Action).
+ * Who a request comes from, for the audit trail (MEF 118.1's who of a
+ * Policy Action) and the log: the session's user and their id, and the
+ * key that opened it by its id (the first bytes of its hash), its name
+ * beside them alone, which any user names as they like; "API token
+ * <id> (<name>)" for a write token's; NULL else.
  */
 const char *
 session_who(struct http_request *req)
 {
-	uint8_t	 h[32];
-	char	*cookie;
-	int	 i;
+	static char	 who[256];
+	struct session	*s;
 
-	if (!http_request_cookie(req, SESSION_COOKIE, &cookie) ||
-	    strlen(cookie) != 64)
+	if ((s = session_of(req)) == NULL)
 		return (token_who(req));
-	sha256(cookie, strlen(cookie), h);
-	for (i = 0; i < nsessions; i++)
-		if (sessions[i]->used && memcmp(sessions[i]->hash, h, sizeof(h))
-		    == 0)
-			return (sessions[i]->who[0] != '\0' ? sessions[i]->who :
-			    "a security key");
-	return (token_who(req));
+	if (s->user[0] == '\0' && s->tok[0] != '\0')
+		snprintf(who, sizeof(who), "%s", s->who);
+	else if (s->cred[0] != '\0')
+		snprintf(who, sizeof(who), "user %s %s, key %.16s \"%s\"",
+		    s->user, s->uid[0] != '\0' ? s->uid : "-", s->cred,
+		    s->who[0] != '\0' ? s->who : "a security key");
+	else
+		snprintf(who, sizeof(who), "user %s %s, %s", s->user,
+		    s->uid[0] != '\0' ? s->uid : "-", s->ldap ? "the directory's "
+		    "password" : "a password");
+	return (who);
+}
+
+/*
+ * Whose a thing the request makes is, to be taken by the same alone:
+ * the session's user, their id, the key's hash and the token's id, or
+ * a bearer token's id; into buf, "" for none.
+ */
+const char *
+session_owner(struct http_request *req, char *buf, size_t len)
+{
+	struct session		*s;
+	struct principal	 p;
+
+	buf[0] = '\0';
+	if ((s = session_of(req)) != NULL)
+		snprintf(buf, len, "s:%s/%s/%s/%s", s->user, s->uid, s->cred,
+		    s->tok);
+	else if (token_principal(req, &p))
+		snprintf(buf, len, "t:%s", p.name);
+	return (buf);
+}
+
+/* Who a request comes from, in words (session_who()), into buf. */
+const char *
+req_who(struct http_request *req, char *buf, size_t len)
+{
+	const char	*w;
+
+	snprintf(buf, len, "%s", (w = session_who(req)) != NULL ? w : "?");
+	return (buf);
 }
 
 /*
@@ -911,25 +969,106 @@ req_principal(struct http_request *req, struct principal *p)
 
 	memset(p, 0, sizeof(*p));
 	if ((s = session_of(req)) != NULL) {
-		if (s->user[0] != '\0') {
+		/* One opened before ids: its user's id now. */
+		if (s->user[0] != '\0' && name_copy(p->name, sizeof(p->name),
+		    s->user) && name_copy(p->uid, sizeof(p->uid), s->uid[0] !=
+		    '\0' ? s->uid : user_id(s->user)))
 			p->kind = P_USER;
-			snprintf(p->name, sizeof(p->name), "%s", s->user);
-		} else if (s->tok[0] != '\0') {
+		else if (s->user[0] == '\0' && s->tok[0] != '\0' && name_copy(
+		    p->name, sizeof(p->name), s->tok))
 			p->kind = P_WTOKEN;
-			snprintf(p->name, sizeof(p->name), "%s", s->tok);
-		}
+		else
+			memset(p, 0, sizeof(*p));
 	} else
 		(void)token_principal(req, p);
 	p->need = ROLE_VIEWER;
 }
 
-/* The tenant of the request's user, "" for none (and for a token). */
+/* The tenant of the request's user, or of its token's maker; "" for
+ * none. */
 const char *
 req_tenant(struct http_request *req)
 {
-	const char	*u;
+	struct principal	 p;
+	const char		*u;
 
-	return ((u = session_user(req)) != NULL ? user_tenant(u) : "");
+	if ((u = session_user(req)) != NULL)
+		return (user_tenant(u));
+	req_principal(req, &p);
+	return (p.kind == P_RTOKEN || p.kind == P_WTOKEN ? token_tenant(p.name)
+	    : "");
+}
+
+/* ---- Streams bound to their session ---------------------------------- */
+
+uint64_t
+sbind_gen(void)
+{
+
+	return (session_gen + acl_generation());
+}
+
+/* req's session, or its bearer token, into b, with whom it acts for. */
+void
+sbind_make(struct http_request *req, struct sbind *b)
+{
+	struct session	*s;
+
+	memset(b, 0, sizeof(*b));
+	req_principal(req, &b->who);
+	(void)web_peer(req, b->addr, sizeof(b->addr));
+	b->born = time(NULL);
+	if ((s = session_of(req)) != NULL)
+		memcpy(b->hash, s->hash, sizeof(b->hash));
+	else if (b->who.kind == P_RTOKEN || b->who.kind == P_WTOKEN)
+		(void)name_copy(b->tok, sizeof(b->tok), b->who.name);
+	b->gen = sbind_gen();
+	b->until = b->born;	/* judged at its first use */
+}
+
+/*
+ * On the loop: is what b is bound to still good?  Judged again only
+ * when who may do what, or a session, changed since, or its session's
+ * end is due: a walk of the sessions then, never at every record.
+ * Once dead, dead.
+ */
+bool
+sbind_ok(struct sbind *b)
+{
+	static const uint8_t	 zero[32];
+	struct session		*s;
+	time_t			 now;
+	int			 i;
+
+	if (b->dead)
+		return (false);
+	now = time(NULL);
+	if (b->gen == sbind_gen() && now < b->until)
+		return (true);
+	b->gen = sbind_gen();
+	if (memcmp(b->hash, zero, sizeof(zero)) == 0) {
+		/* A bearer token's: while it is there, a minute at a time. */
+		if (b->tok[0] == '\0' || token_kind_of(b->tok) == TOKEN_NONE) {
+			b->dead = true;
+			return (false);
+		}
+		b->until = now + 60;
+		return (true);
+	}
+	s = NULL;
+	for (i = 0; i < nsessions && s == NULL; i++)
+		if (sessions[i]->used && memcmp(sessions[i]->hash, b->hash,
+		    sizeof(b->hash)) == 0)
+			s = sessions[i];
+	if (s == NULL || !session_alive(s, now)) {
+		if (s != NULL)
+			session_end(s);
+		b->dead = true;
+		return (false);
+	}
+	b->until = MIN(s->last + cfg.session_idle, s->created +
+	    cfg.session_max) + 1;
+	return (true);
 }
 
 /* web.h's. */
@@ -1119,7 +1258,12 @@ session_start(struct http_request *req, const char *who, const char *cred,
 		cred_hash(cred, s->cred);
 	snprintf(s->tok, sizeof(s->tok), "%s", tok != NULL ? tok : "");
 	s->ldap = s->pw = false;
-	snprintf(s->user, sizeof(s->user), "%s", user != NULL ? user : "");
+	/* A name that does not fit opens a session of no one, which
+	 * guard() refuses; never another user's, cut. */
+	if (!name_copy(s->user, sizeof(s->user), user != NULL ? user : "") ||
+	    !name_copy(s->uid, sizeof(s->uid), s->user[0] != '\0' ?
+	    user_id(s->user) : ""))
+		s->user[0] = s->uid[0] = '\0';
 	snprintf(last_user, sizeof(last_user), "%s", s->user);
 	/* Where from: no threat feed is to cut it off. */
 	feeds_signin(req, s->user);
@@ -1151,7 +1295,7 @@ status_reply_as(struct http_request *req, bool authenticated, bool by_token,
 	/* Who, and what they may (users.c): the page offers no more. */
 	if (authenticated) {
 		const char	*u = session_user(req);
-		char		 just[64];
+		char		 just[USER_NAME_LEN];
 
 		/* Just signed in: the session's cookie is on its way. */
 		if (u == NULL && session_of(req) == NULL && last_user[0] != '\0') {
@@ -1661,7 +1805,7 @@ api_login_token(struct http_request *req)
 struct pwlogin {
 	struct task	 task;		/* first */
 	/* The directory groups of the roles: roles_ldap_groups()'s. */
-	char		 user[72];
+	char		 user[USER_NAME_LEN];
 	char		*password;	/* wiped and freed once tried */
 	char		 addr[64];
 	bool		 own;		/* the console's own password */
@@ -1731,13 +1875,21 @@ pwlogin_done(struct http_request *req, struct pwlogin *pl)
 	bool		 own;
 
 	own = pl->own;
-	if (pl->ok && !own) {
+	if (pl->ok && !own && user_exists(pl->user) && !user_ldap(pl->user)) {
+		/* The name is a local user's (the built-in owner, keys
+		 * alone, among them): the directory's account of that
+		 * name is not them. */
+		pl->ok = false;
+		snprintf(pl->err, sizeof(pl->err), "%s is a user of the "
+		    "console's own, not the directory's: it signs in with its "
+		    "key or its own password", pl->user);
+	} else if (pl->ok && !own) {
 		/* The directory's groups give the user's roles (users.c):
-		 * the user kept, or made, as the groups say, unless the
-		 * owner made it.  One the console then has no record of
-		 * has no role on it: refused, not let in as no one. */
+		 * the user kept, or made, as the groups say.  One the
+		 * console then has no record of has no role on it:
+		 * refused, not let in as no one. */
 		users_ldap_sync(pl->user, pl->roles, pl->nroles);
-		if (!user_exists(pl->user)) {
+		if (!user_exists(pl->user) || !user_ldap(pl->user)) {
 			pl->ok = false;
 			snprintf(pl->err, sizeof(pl->err), "the directory "
 			    "gives %s no role on this console: an owner maps a "
@@ -1809,7 +1961,15 @@ api_login_password(struct http_request *req)
 		    "password on this console: no user has one, and no "
 		    "directory is set up"));
 	}
-	snprintf(pl->user, sizeof(pl->user), "%s", user != NULL ? user : "");
+	if (!name_copy(pl->user, sizeof(pl->user), user != NULL ? user : "")) {
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
+		ucl_object_unref(body);
+		free(pl);
+		return (reply_error(req, 400, "login", "a user name is "
+		    __XSTRING(USER_NAME_MAX) " characters at most"));
+	}
 	(void)web_peer(req, pl->addr, sizeof(pl->addr));
 	if (signin_throttled(pl->addr, pl->user)) {
 		if (password != NULL)
@@ -1852,7 +2012,7 @@ api_setup_password(struct http_request *req)
 	struct session	*s;
 	ucl_object_t	*body;
 	const char	*token, *user, *password, *e;
-	char		 name[72], who[96], addr[64];
+	char		 name[USER_NAME_LEN], who[96], addr[64];
 	bool		 made;
 
 	name[0] = '\0';
@@ -1873,16 +2033,21 @@ api_setup_password(struct http_request *req)
 	e = NULL;
 	made = false;
 	(void)web_peer(req, addr, sizeof(addr));
-	if (signin_throttled(addr, NULL))
+	/* Its own count, the sign-ins' not touched by it, nor it by
+	 * theirs. */
+	if (setup_throttled(addr))
 		e = "too many failed attempts: try again in a minute";
 	else if (!setup_token_ok(token)) {
-		signin_failed(addr, NULL);
+		setup_failed(addr);
 		e = "not the setup token";
 	} else if ((e = user_password_check(password)) == NULL) {
-		snprintf(name, sizeof(name), "%s", user);
-		made = !user_exists(name);
-		if ((e = user_owner_add(name)) == NULL)
-			e = user_password_set(name, password);
+		if (!name_copy(name, sizeof(name), user))
+			e = "a user name is 1 to 64 letters, digits and _ . @ -";
+		else {
+			made = !user_exists(name);
+			if ((e = user_owner_add(name)) == NULL)
+				e = user_password_set(name, password);
+		}
 	}
 	if (password != NULL)
 		explicit_bzero((char *)(uintptr_t)password, strlen(password));
@@ -1921,7 +2086,7 @@ api_auth_password(struct http_request *req)
 {
 	ucl_object_t	*body, *o;
 	const char	*me, *user, *password, *e;
-	char		 name[72];
+	char		 name[USER_NAME_LEN];
 	bool		 set;
 
 	if (req->method != HTTP_METHOD_POST)

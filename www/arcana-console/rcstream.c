@@ -46,6 +46,17 @@
  *
  * Records left out, the client being slow, are said in a lost event:
  * a page then reads again what it shows.
+ *
+ * A stream is bound to the session (or the bearer token) that opened
+ * it (auth.c's sbind), judged each time the worker passes records on:
+ * the session ended, timed out or its user gone, the reply ends; a host
+ * its principal may no longer read, the reply ends saying so, and the
+ * client, coming back, hears what it may then.  RCS_WHO streams of one
+ * principal at once (a token's from one address), RCS_MAX of all; each
+ * lasts RCS_LIFE_S at most, then ends, and EventSource comes back by
+ * itself, from its last event's id.  A subscription is taken by the
+ * session that made it alone: its user, their id and the key's (or the
+ * token's id), never a name a user gives.
  */
 
 #include <sys/param.h>
@@ -70,7 +81,10 @@
 #include "restconf.h"
 #include "ymodel.h"
 
-#define	RCS_MAX		32		/* at once, of every client */
+#define	RCS_MAX		128		/* at once, of every client */
+#define	RCS_WHO		8		/* ... of one principal (a token's,
+					 * of one address) */
+#define	RCS_LIFE_S	3600		/* a stream lasts, then is made again */
 #define	RCS_OUT_MAX	(4 * 1024 * 1024)	/* not yet passed on */
 #define	RCS_TICK_MS	200
 #define	RCS_WAKE_MS	250		/* how soon a stop is seen */
@@ -84,7 +98,8 @@
 struct rcsub {
 	uint32_t	 id;		/* 0: the slot is free */
 	char		 sid[9];
-	char		 who[128];	/* who made it, alone may take it */
+	char		 who[256];	/* whose (session_owner()), alone
+					 * may take it */
 	time_t		 made;
 	bool		 fleet;		/* every host's: sid "" */
 	bool		 datastore;	/* else the NETCONF stream */
@@ -133,6 +148,9 @@ struct rcs {
 	struct rcsub		 sub;	/* its input: id 0, the NETCONF stream */
 	char			 why[200];	/* why the stream ended */
 	time_t			 said;	/* when the reply had a line last */
+	struct sbind		 b;	/* whose: the session that opened it */
+	uint64_t		 hgen;	/* sbind_gen() when its hosts were
+					 * judged last */
 };
 
 static LIST_HEAD(, rcs)	streams = LIST_HEAD_INITIALIZER(streams);
@@ -633,13 +651,43 @@ put(struct http_request *req, const char *s)
 	http_stream_put(req, s, strlen(s));
 }
 
+/*
+ * Is rs's still to be told: its session good, each host its own still
+ * to read (judged again when who may do what changed), and its time not
+ * over?  Why not into why.
+ */
+static bool
+rcs_ok(struct rcs *rs, time_t t, char *why, size_t len)
+{
+
+	if (!sbind_ok(&rs->b)) {
+		snprintf(why, len, "the session ended: sign in again");
+		return (false);
+	}
+	if (t - rs->b.born >= RCS_LIFE_S) {
+		snprintf(why, len, "the stream's time is over: open it again");
+		return (false);
+	}
+	if (rs->hgen == sbind_gen())
+		return (true);
+	rs->hgen = sbind_gen();
+	for (size_t i = 0; i < rs->nh; i++)
+		if (!rs->h[i].gone && !principal_may(&rs->b.who, rs->h[i].sid,
+		    ROLE_VIEWER)) {
+			snprintf(why, len, "host %s is not one to read any more",
+			    rs->h[i].sid);
+			return (false);
+		}
+	return (true);
+}
+
 /* In the worker: what each thread heard, to its reply. */
 static void
 rcs_tick(void *arg, uint64_t now)
 {
 	struct rcs	*rs, *next;
 	struct buf	*b;
-	char		*why;
+	char		*why, no[200];
 	time_t		 t;
 	bool		 lost;
 
@@ -647,6 +695,21 @@ rcs_tick(void *arg, uint64_t now)
 	(void)now;
 	t = time(NULL);
 	LIST_FOREACH_SAFE(rs, &streams, list, next) {
+		/* No longer its principal's: nothing more passed on, the
+		 * reply ended, saying why. */
+		if (rs->req != NULL && !atomic_load(&rs->stop) && !rcs_ok(rs, t,
+		    no, sizeof(no))) {
+			atomic_store(&rs->stop, true);
+			if ((why = restconf_errors(403, no)) != NULL) {
+				put(rs->req, "event: error\ndata: ");
+				put(rs->req, why);
+				put(rs->req, "\n\n");
+				free(why);
+			}
+			http_stream_end(rs->req);
+			rs->req->hdlr_extra = NULL;
+			rs->req = NULL;
+		}
 		pthread_mutex_lock(&rs->lock);
 		b = rs->out;
 		rs->out = buf_alloc(512);
@@ -706,12 +769,23 @@ static int
 rcs_start(struct http_request *req, const struct server *const *sv,
     size_t n, bool fleet, struct rcsub *sb, const char *since)
 {
-	struct rcs	*rs;
+	struct rcs	*rs, *o;
+	struct sbind	 b;
+	int		 mine;
 
-	if (nstreams >= RCS_MAX)
+	sbind_make(req, &b);
+	mine = 0;
+	LIST_FOREACH(o, &streams, list)
+		if (o->req != NULL && o->b.who.kind == b.who.kind && strcmp(
+		    o->b.who.name, b.who.name) == 0 && (b.who.kind == P_USER ||
+		    strcmp(o->b.addr, b.addr) == 0))
+			mine++;
+	if (nstreams >= RCS_MAX || mine >= RCS_WHO)
 		return (restconf_error(req, 503, "too many streams are open: "
 		    "try again"));
 	rs = xcalloc(1, sizeof(*rs));
+	rs->b = b;
+	rs->hgen = sbind_gen();
 	rs->h = xcalloc(n, sizeof(*rs->h));
 	rs->nh = n;
 	rs->fleet = fleet;
@@ -895,8 +969,7 @@ restconf_establish(struct http_request *req, const char *sid)
 	sb.fleet = sid == NULL;
 	if (sid != NULL)
 		strlcpy(sb.sid, s->id, sizeof(sb.sid));
-	snprintf(sb.who, sizeof(sb.who), "%s", session_who(req) != NULL ?
-	    session_who(req) : "");
+	(void)session_owner(req, sb.who, sizeof(sb.who));
 	sb.stop = str_of(in, "stop-time", &bad);
 	if ((v = ucl_object_tostring(ucl_object_lookup(in, "stream"))) != NULL) {
 		/* A stream: the agent's one, NETCONF. */
@@ -971,18 +1044,18 @@ int
 api_restconf_subscription(struct http_request *req)
 {
 	const struct server	*s;
-	char			 num[16], *end;
+	char			 num[16], *end, who[256];
 	unsigned long		 id;
-	const char		*who;
 
 	if (!guard(req, false))
 		return (WEB_OK);
 	if (!capture(req, 3, num, sizeof(num)) || (id = strtoul(num, &end,
 	    10)) == 0 || *end != '\0')
 		return (restconf_error(req, 404, "no such subscription"));
-	who = session_who(req) != NULL ? session_who(req) : "";
+	(void)session_owner(req, who, sizeof(who));
 	for (int i = 0; i < SUBS_MAX; i++) {
-		if (subs[i].id != id || strcmp(subs[i].who, who) != 0 ||
+		if (subs[i].id != id || who[0] == '\0' || strcmp(subs[i].who,
+		    who) != 0 ||
 		    time(NULL) - subs[i].made > SUB_WAIT_S)
 			continue;
 		if (subs[i].fleet) {

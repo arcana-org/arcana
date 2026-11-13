@@ -47,7 +47,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.431.0"
+#define	ARCW_VERSION		"0.432.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -197,6 +197,7 @@ int		 token_kind(struct http_request *);
 const char	*token_login(const char *, char *, size_t);
 bool		 token_alive(const char *);
 int		 token_kind_of(const char *);
+int		 token_maker_of(const char *, const char **, const char **);
 ucl_object_t	*tokens_acl(void);
 bool		 token_principal(struct http_request *, struct principal *);
 bool		 session_by_token(struct http_request *);
@@ -206,12 +207,15 @@ bool		 ldap_enabled(void);
 bool		 ldap_login(const char *, const char *, const char *const *,
 		    const char *const *, int, char *, size_t, char *, size_t,
 		    const char **, int *, int, bool *);
-#define	SIGNIN_TRIES	5		/* failures a minute of a name
-					 * before a wait */
+#define	SIGNIN_TRIES	5		/* failures a minute of a name from
+					 * one address before a wait */
+#define	SIGNIN_TRIES_NAME 50		/* ... of a name from every address */
 #define	SIGNIN_TRIES_ADDR 20		/* ... from an address */
-#define	SIGNIN_TRIES_ALL 100		/* ... of all, before every one */
+#define	SETUP_TRIES	5		/* setup tokens tried from an address */
 bool		 signin_throttled(const char *, const char *);
 void		 signin_failed(const char *, const char *);
+bool		 setup_throttled(const char *);
+void		 setup_failed(const char *);
 int		 api_login_token(struct http_request *);
 int		 api_login_password(struct http_request *);
 void		 api_login_password_free(struct http_request *);
@@ -273,7 +277,28 @@ enum crole { CROLE_NONE, CROLE_MEMBER, CROLE_OPERATOR, CROLE_OWNER };
 void		 auth_init(void);
 bool		 session_valid(struct http_request *);
 const char	*session_who(struct http_request *);
+const char	*session_owner(struct http_request *, char *, size_t);
 const char	*session_user(struct http_request *);
+/*
+ * A stream (a WebSocket, Server-Sent Events) bound to the session that
+ * opened it, or to the bearer token: sbind_ok() on the loop, at each
+ * message and record and every second, judges it again only when who
+ * may do what changed or its session's idle or absolute end is due; a
+ * session ended, the stream is closed.  who: whom it acts for, again.
+ */
+struct sbind {
+	uint8_t			 hash[32];	/* its session's; 0: a token's */
+	char			 tok[17];	/* the bearer token's id */
+	uint64_t		 gen;		/* sbind_gen() when judged */
+	time_t			 until;		/* judged again by then */
+	time_t			 born;
+	bool			 dead;
+	struct principal	 who;
+	char			 addr[64];	/* where from */
+};
+void		 sbind_make(struct http_request *, struct sbind *);
+bool		 sbind_ok(struct sbind *);
+uint64_t	 sbind_gen(void);
 bool		 host_allowed(struct http_request *, const char *, bool, bool);
 bool		 host_role_ok(struct http_request *, const char *, bool, bool);
 void		 req_principal(struct http_request *, struct principal *);
@@ -289,6 +314,16 @@ void		 sessions_end_password(const char *);
 void		 users_init(void);
 bool		 user_name_ok(const char *);
 bool		 user_exists(const char *);
+const char	*user_id(const char *);
+bool		 user_ldap(const char *);
+bool		 principal_user(struct principal *, const char *);
+ucl_object_t	*principal_record(const struct principal *);
+bool		 principal_of_record(const ucl_object_t *, struct principal *);
+bool		 principal_may_now(const struct principal *, const char *,
+		    enum role);
+uint64_t	 acl_generation(void);
+const char	*token_tenant(const char *);
+const char	*req_who(struct http_request *, char *, size_t);
 enum crole	 user_console(const char *);
 bool		 roles_name_host(const char *);
 enum role	 user_host(const char *, const char *);
@@ -589,17 +624,17 @@ ucl_object_t	*settings_yang(void);
 int		 settings_yang_set(const ucl_object_t *, const ucl_object_t *,
 		    char *, size_t);
 #define	TOKEN_LEN	72		/* a token's value, with its NUL */
-int		 token_new(const char *, const char *, char *, char *, char *,
-		    size_t);
+int		 token_new(const char *, const char *, const struct principal *,
+		    char *, char *, char *, size_t);
 int		 token_drop(const char *, char *, size_t);
 ucl_object_t	*tokens_yang(void);
 int		 tokens_yang_set(const ucl_object_t *, const ucl_object_t *,
 		    char *, size_t);
-ucl_object_t	*users_yang(void);
+ucl_object_t	*users_yang(const char *);
 ucl_object_t	*roles_yang(void);
 ucl_object_t	*groups_yang(void);
 int		 users_yang_set(const ucl_object_t *, const ucl_object_t *,
-		    const char *, char *, size_t);
+		    const char *, const char *, char *, size_t);
 int		 users_yang_invite(const char *, const char *, char *, size_t,
 		    time_t *, char *, size_t);
 int		 enrol_token_new(const char *, const char *, int64_t,

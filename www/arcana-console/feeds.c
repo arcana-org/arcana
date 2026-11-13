@@ -793,13 +793,36 @@ alarm_set(ucl_object_t *st, const ucl_object_t *f, bool raise,
 #define	RUN_KEPT	2	/* the kept entries, to the hosts that lack them */
 
 /*
+ * Whom feed f is delivered for: who last saved it (author), held at
+ * each delivery to the hosts they may operate now; one saved before
+ * feeds kept it, the built-in owner; an author that cannot be read, no
+ * one, to whom nothing is delivered.
+ */
+static void
+feed_author(const ucl_object_t *f, struct principal *p)
+{
+
+	if (ucl_object_lookup(f, "author") != NULL) {
+		(void)principal_of_record(ucl_object_lookup(f, "author"), p);
+		return;
+	}
+	memset(p, 0, sizeof(*p));
+	p->kind = P_USER;
+	p->need = ROLE_VIEWER;
+	snprintf(p->name, sizeof(p->name), "%s", ADMIN_USER);
+}
+
+/*
  * One feed fetched, its entries kept when they changed and sent to each
- * of its hosts that has not them; a preview keeps nothing but what it
- * says.  st is the feed's state, changed.
+ * of its hosts that has not them and its author may operate still (one
+ * that it may not is skipped, logged and said in the feed's state); a
+ * preview keeps nothing but what it says.  st is the feed's state,
+ * changed.
  */
 static void
 feed_run(const ucl_object_t *f, ucl_object_t *st, int how)
 {
+	struct principal	 author;
 	struct prot	*pv;
 	ucl_object_t	*entries, *dropped, *kept, *hosts, *h, *o, *ev;
 	const ucl_object_t	*sid, *was, *hw;
@@ -961,12 +984,36 @@ feed_run(const ucl_object_t *f, ucl_object_t *st, int how)
 		put(dry ? (ucl_object_t *)(uintptr_t)ucl_object_lookup(st,
 		    "preview") : st, "hosts", hosts);
 	}
+	feed_author(f, &author);
 	it = NULL;
 	while ((sid = ucl_object_iterate(ucl_object_lookup(f, "hosts"), &it,
 	    true)) != NULL) {
 		const char	*s = ucl_object_tostring(sid);
 
 		was = ucl_object_lookup(ucl_object_lookup(st, "hosts"), s);
+		/* Its author's to operate now, or not delivered: a role
+		 * taken away, a user removed (another of the name is not
+		 * them), the feed saved again by one who may. */
+		if (!principal_may_now(&author, s, ROLE_OPERATOR)) {
+			char	who[96];
+
+			h = ucl_object_typed_new(UCL_OBJECT);
+			put(h, "tried_at", I(now));
+			put(h, "table", S(table));
+			snprintf(err, sizeof(err), "skipped: %s may not operate "
+			    "it now; saved again by one who may, it is "
+			    "delivered", principal_who(&author, who,
+			    sizeof(who)));
+			put(h, "error", S(err));
+			if (!dry && was != NULL && str(was, "sha256") != NULL)
+				put(h, "sha256", S(str(was, "sha256")));
+			if (was == NULL || str(was, "error") == NULL || strcmp(
+			    str(was, "error"), err) != 0)
+				thread_log(LOG_NOTICE, "feed %s: not delivered to "
+				    "%s: %s", id, s, err);
+			put(hosts, s, h);
+			continue;
+		}
 		if (!dry && was != NULL && str(was, "sha256") != NULL &&
 		    strcmp(str(was, "sha256"), sha) == 0 && str(was, "table") !=
 		    NULL && strcmp(str(was, "table"), table) == 0 && str(was,
@@ -1296,8 +1343,10 @@ dropped_for(struct http_request *req, const ucl_object_t *dropped,
 	out = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;
 	while ((d = ucl_object_iterate(dropped, &it, true)) != NULL) {
-		if (!owner && str(d, "detail") != NULL && (str(d, "host") ==
-		    NULL || !host_role_ok(req, str(d, "host"), false, false))) {
+		/* A host's, to one who may read it alone, an owner too; the
+		 * console's own and a sign-in's, to an owner. */
+		if (str(d, "detail") != NULL && (str(d, "host") == NULL ? !owner :
+		    !host_role_ok(req, str(d, "host"), false, false))) {
 			(*hiddenp)++;
 			continue;
 		}
@@ -1313,8 +1362,8 @@ static bool	is_owner(struct http_request *);
 /*
  * Every per-host part of a feed as the request's user may see it: of a
  * list of host ids, or an object keyed by them (what each host was sent,
- * its name and errors), those the user may read; the rest only counted
- * in *hiddenp.  The console's owners see them all.
+ * its name and errors), those the user may read, an owner's too; the
+ * rest only counted in *hiddenp.
  */
 static ucl_object_t *
 hosts_for(struct http_request *req, const ucl_object_t *o, int64_t *hiddenp)
@@ -1323,17 +1372,16 @@ hosts_for(struct http_request *req, const ucl_object_t *o, int64_t *hiddenp)
 	const ucl_object_t	*e;
 	ucl_object_iter_t	 it;
 	const char		*sid;
-	bool			 owner, arr;
+	bool			 arr;
 
 	*hiddenp = 0;
 	arr = ucl_object_type(o) == UCL_ARRAY;
 	out = ucl_object_typed_new(arr ? UCL_ARRAY : UCL_OBJECT);
-	owner = is_owner(req);
 	it = NULL;
 	while ((e = ucl_object_iterate(o, &it, true)) != NULL) {
 		sid = arr ? ucl_object_tostring_forced(e) : ucl_object_key(e);
-		if (sid == NULL || (!owner && (server_find(sid) == NULL ||
-		    !host_role_ok(req, sid, false, false)))) {
+		if (sid == NULL || server_find(sid) == NULL || !host_role_ok(req,
+		    sid, false, false)) {
 			(*hiddenp)++;
 			continue;
 		}
@@ -1699,6 +1747,14 @@ feed_put(struct http_request *req, const char *id, const ucl_object_t *body,
 		ucl_object_unref(doc);
 		ucl_object_unref(f);
 		return (0);
+	}
+	/* Who saved it: delivered for them, as they may at each delivery
+	 * (feed_run()). */
+	{
+		struct principal	p;
+
+		req_principal(req, &p);
+		put(f, "author", principal_record(&p));
 	}
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;

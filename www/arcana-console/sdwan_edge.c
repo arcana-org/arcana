@@ -7893,6 +7893,29 @@ plan_kept(struct plan *pl, const ucl_object_t *st)
 }
 
 /*
+ * The L3NM as a checked user last applied it (apply_begin()), and the
+ * document it is, in the state: what the console does by itself works
+ * from it alone, never from what is kept and not applied yet.  NULL
+ * while no user applied one (a state from before keeps none).
+ */
+static const ucl_object_t *
+applied_l3nm(const ucl_object_t *st)
+{
+	const ucl_object_t	*y;
+
+	y = ucl_object_lookup(st, "applied_l3nm");
+	return (y != NULL && ucl_object_type(y) == UCL_OBJECT ? y : NULL);
+}
+
+static ucl_object_t *
+applied_doc(const ucl_object_t *st)
+{
+
+	return (applied_l3nm(st) != NULL ? mef_export(applied_l3nm(st)) :
+	    NULL);
+}
+
+/*
  * The ledger as a plan has it: the tables, RDs, VNIs, addresses and
  * units each service has, kept and new, and the ipfw tables' names.
  */
@@ -9430,6 +9453,7 @@ api_sdwan_lists(struct http_request *req)
 }
 
 static bool	 apply_now(ucl_object_t *, char *, size_t);
+static bool	 apply_console(const ucl_object_t *, char *, size_t);
 
 /* ---- Identities: issued, listed, revoked ------------------- */
 
@@ -9978,8 +10002,10 @@ api_sdwan_identities(struct http_request *req)
 }
 
 /*
- * Each tick: an identity whose re-authorisation ran out since the last
- * is a peer to remove, by an apply of the document as it is.
+ * Each tick: an identity of the document as applied (doc, applied_doc();
+ * NULL, none applied) whose re-authorisation ran out since the last is
+ * a peer to remove, by the console's apply of what was applied, on its
+ * edge alone (apply_console()).
  */
 static void
 identities_tick(const ucl_object_t *doc, time_t now)
@@ -9987,11 +10013,11 @@ identities_tick(const ucl_object_t *doc, time_t now)
 	static time_t		 prev;
 	const ucl_object_t	*sw, *ep, *r, *id;
 	ucl_object_iter_t	 it, eit, iit;
-	char			 why[300];
+	ucl_object_t		*due;
+	char			 why[300], sid[64], jail[64];
 	int64_t			 exp;
-	bool			 due;
 
-	due = false;
+	due = ucl_object_typed_new(UCL_OBJECT);
 	it = NULL;
 	while ((sw = ucl_object_iterate(ucl_object_lookup(doc, "swvcs"), &it,
 	    true)) != NULL) {
@@ -10011,7 +10037,11 @@ identities_tick(const ucl_object_t *doc, time_t now)
 				if (prev != 0 && exp > prev && exp <= now) {
 					char	where[300];
 
-					due = true;
+					if (str(ep, "edge") != NULL &&
+					    sdwan_edge_split(str(ep, "edge"), sid,
+					    sizeof(sid), jail, sizeof(jail)))
+						ucl_object_insert_key(due, B(true),
+						    sid, 0, true);
 					/* Time-based Continuous Monitoring (MEF
 					 * 118.1 §18.1): the Subject Actor Blocked
 					 * until it authenticates again. */
@@ -10033,9 +10063,11 @@ identities_tick(const ucl_object_t *doc, time_t now)
 		}
 	}
 	prev = now;
-	if (due && !apply_now(ucl_object_copy(doc), why, sizeof(why)))
+	if (ucl_object_type(due) == UCL_OBJECT && due->len > 0 &&
+	    !apply_console(due, why, sizeof(why)))
 		log_msg(LOG_NOTICE, "identities: an authorisation ran out, no "
 		    "apply: %s", why);
+	ucl_object_unref(due);
 }
 
 /* ---- The record: what the edges' security rules logged ----- */
@@ -10645,7 +10677,10 @@ manager_tick(void)
 	if (st == NULL)
 		return;
 	ap = ucl_object_lookup(st, "applied");
-	doc = sdwan_load();
+	/* What a user applied, not what is kept since: its identities, its
+	 * policies' performance criteria. */
+	if ((doc = applied_doc(st)) == NULL)
+		doc = ucl_object_typed_new(UCL_OBJECT);
 	now = time(NULL);
 	identities_tick(doc, now);
 	all = (ucl_object_t *)(uintptr_t)ucl_object_lookup(st, "steer_sent");
@@ -11435,12 +11470,14 @@ edges_ours(const ucl_object_t *edges, const char *key, char *why,
  * there are.  Its thread acts for whom this one does.
  */
 static int
-apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
-    const ucl_object_t *acc, char *why, size_t wlen, int *statusp)
+apply_begin(struct plan *plp, const ucl_object_t *y, ucl_object_t *st,
+    ucl_object_t *chg, bool fresh, const ucl_object_t *acc, char *why,
+    size_t wlen, int *statusp)
 {
 	ucl_object_t		*ap, *steps, *s;
 	const ucl_object_t	*o;
 	ucl_object_iter_t	 it;
+	struct principal	 who;
 	struct run		*r;
 	pthread_t		 tid;
 	char			 path[MAXPATHLEN];
@@ -11508,6 +11545,18 @@ apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
 	put(ap, "steps", steps);
 	put(ap, "tunnels", ucl_object_copy(plp->tunnels));
 	put(st, "apply", ap);
+	/*
+	 * Applied by one checked for each edge it changes (edges_ours()):
+	 * the L3NM it made, with who, is what the console then keeps by
+	 * itself (identities run out, steering).  The console's own apply
+	 * changes it not.
+	 */
+	hosts_acting(&who);
+	if (who.kind != P_CONSOLE && y != NULL) {
+		put(st, "applied_l3nm", ucl_object_copy(y));
+		put(st, "applied_by", principal_record(&who));
+		put(st, "applied_at", I(time(NULL)));
+	}
 	/* The allocations of what is made: new ones now, gone ones after. */
 	{
 		ucl_object_t		*keep;
@@ -11553,27 +11602,30 @@ apply_begin(struct plan *plp, ucl_object_t *st, ucl_object_t *chg, bool fresh,
 }
 
 /*
- * An apply of a document as it is, for the console's own changes (an
- * identity issued, revoked or expired): the document is consumed.
+ * An apply of the L3NM kept, for a user's change of an identity (issued
+ * or revoked, the document doc checked first): each edge it changes the
+ * user's to change (apply_begin()).  doc is consumed.
  */
 static bool
 apply_now(ucl_object_t *doc, char *why, size_t wlen)
 {
 	struct plan	 pl;
-	ucl_object_t	*st, *chg, *needs;
-	int		 status;
+	ucl_object_t	*st, *chg, *needs, *y;
+	int		 n, status;
 
 	if (!sdwan_valid(doc, why, wlen)) {
 		ucl_object_unref(doc);
 		return (false);
 	}
+	ucl_object_unref(doc);
 	pthread_mutex_lock(&st_lock);
 	st = state_load();
 	pthread_mutex_unlock(&st_lock);
-	if (!plan_kept(&pl, st)) {
+	y = l3nm_kept();
+	if (!plan_build(&pl, y, st)) {
 		snprintf(why, wlen, "%s", pl.why);
 		plan_free(&pl);
-		ucl_object_unref(doc);
+		ucl_object_unref(y);
 		ucl_object_unref(st);
 		return (false);
 	}
@@ -11581,18 +11633,71 @@ apply_now(ucl_object_t *doc, char *why, size_t wlen)
 	if (!needs_met(needs, why, wlen)) {
 		ucl_object_unref(needs);
 		plan_free(&pl);
-		ucl_object_unref(doc);
+		ucl_object_unref(y);
 		ucl_object_unref(st);
 		return (false);
 	}
 	ucl_object_unref(needs);
 	chg = changes(&pl, st, false);
-	if (apply_begin(&pl, st, chg, false, NULL, why, wlen, &status) < 0) {
-		ucl_object_unref(doc);
+	n = apply_begin(&pl, y, st, chg, false, NULL, why, wlen, &status);
+	ucl_object_unref(y);
+	return (n >= 0);
+}
+
+/*
+ * The console's own apply: the L3NM a checked user last applied, planned
+ * again now (identities whose time ran out drop out of it), on the edges
+ * of edges alone (an object keyed by server id), what else it would
+ * change there or elsewhere left to the next user's apply.  Nothing
+ * kept and not applied yet is made by it.
+ */
+static bool
+apply_console(const ucl_object_t *edges, char *why, size_t wlen)
+{
+	struct plan		 pl;
+	ucl_object_t		*st, *chg, *needs, *y;
+	ucl_object_t		*c;
+	ucl_object_iter_t	 it;
+	char			 sid[64], jail[64];
+	int			 n, status;
+
+	pthread_mutex_lock(&st_lock);
+	st = state_load();
+	pthread_mutex_unlock(&st_lock);
+	if (applied_l3nm(st) == NULL) {
+		snprintf(why, wlen, "no user has applied the services yet: the "
+		    "console applies nothing by itself before");
+		ucl_object_unref(st);
 		return (false);
 	}
-	ucl_object_unref(doc);
-	return (true);
+	y = ucl_object_copy(applied_l3nm(st));
+	if (!plan_build(&pl, y, st)) {
+		snprintf(why, wlen, "%s", pl.why);
+		plan_free(&pl);
+		ucl_object_unref(y);
+		ucl_object_unref(st);
+		return (false);
+	}
+	needs = plan_needs(&pl);
+	if (!needs_met(needs, why, wlen)) {
+		ucl_object_unref(needs);
+		plan_free(&pl);
+		ucl_object_unref(y);
+		ucl_object_unref(st);
+		return (false);
+	}
+	ucl_object_unref(needs);
+	chg = changes(&pl, st, false);
+	it = NULL;
+	while ((c = (ucl_object_t *)(uintptr_t)ucl_object_iterate(chg, &it,
+	    true)) != NULL)
+		if (str(c, "server") == NULL || !sdwan_edge_split(str(c,
+		    "server"), sid, sizeof(sid), jail, sizeof(jail)) ||
+		    ucl_object_lookup(edges, sid) == NULL)
+			put(c, "change", S("keep"));
+	n = apply_begin(&pl, y, st, chg, false, NULL, why, wlen, &status);
+	ucl_object_unref(y);
+	return (n >= 0);
 }
 
 /*
@@ -11771,7 +11876,8 @@ api_sdwan_edges(struct http_request *req)
 	}
 	ucl_object_unref(needs);
 	ucl_object_unref(listed);
-	n = apply_begin(&pl, st, chg, fresh, acc, why, sizeof(why), &status);
+	n = apply_begin(&pl, doc, st, chg, fresh, acc, why, sizeof(why),
+	    &status);
 	if (acc != NULL)
 		ucl_object_unref(acc);
 	ucl_object_unref(doc);

@@ -99,9 +99,12 @@ struct conn {
 	ws_disconnect_fn	*on_disconnect;
 	STAILQ_HEAD(, wsmsg)	 out;		/* to be sent */
 	struct buf		*in;		/* a message being received */
+	bool			 closing;	/* closed once out is sent */
 };
 
 void		 ws_send(struct conn *, uint8_t, const void *, size_t);
+/* The socket closed by the server, once what was sent is out. */
+void		 ws_close(struct conn *);
 
 /* The request's body, kept in memory whole. */
 struct http_body {
@@ -216,13 +219,28 @@ typedef void	task_cb(struct task *);
 /*
  * Who what a thread asks of the hosts is for: the program says (kind
  * and need are its own, hosts.c's); a kind of 0 is no one, for whom
- * nothing is asked.
+ * nothing is asked.  A user's name is USER_NAME_MAX bytes at most, and
+ * every copy of one refuses what would not fit (name_copy()), never
+ * cuts it: a name cut is another user's.  uid, the user's stable id
+ * where known: a user of the name with another id is not this one.
  */
+#define	USER_NAME_MAX	64
+#define	USER_NAME_LEN	(USER_NAME_MAX + 1)
+#define	USER_ID_LEN	40		/* a user's stable id, with its NUL */
+
+#define	P_F_NEWURI	0x01	/* may reach a URI no server has yet: the
+				 * one a host is being added or moved to */
+
 struct principal {
 	int	kind;
 	int	need;		/* the least role on each host reached */
-	char	name[64];
+	int	flags;		/* P_F_* */
+	char	name[USER_NAME_LEN];
+	char	uid[USER_ID_LEN];	/* "": not checked */
 };
+
+/* src into dst of len: false, and dst "", when it does not fit. */
+bool		 name_copy(char *, size_t, const char *);
 
 struct task {
 	task_fn			*entry;

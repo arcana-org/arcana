@@ -968,6 +968,8 @@ mv_start(struct http_request *req, struct mv *m, int stage)
 	task_create(&m->task, mv_run);
 	task_bind_request(&m->task, req);
 	m->task.who.need = ROLE_ADMIN;
+	/* m->to, checked by the route, no server's yet: its to reach. */
+	m->task.who.flags |= P_F_NEWURI;
 	task_run(&m->task);
 }
 

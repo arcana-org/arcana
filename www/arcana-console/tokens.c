@@ -20,9 +20,12 @@
  * sign-in, push, the enrolment tokens that let a host join, or, for a
  * change, the tokens and the CA: a token cannot make another, add a
  * passkey or change what repository is built as root.  What a write
- * token does is audited under its name.  Deleted, a token opens
+ * token does is audited under its name and id.  Deleted, a token opens
  * nothing at once, in every worker: the file is read again whenever it
- * changed.
+ * changed.  A token keeps who made it (the user's name and id): it
+ * reaches no more than its maker may now, a host at a time (users.c's
+ * principal_host()), and nothing once the maker is gone; one made
+ * before tokens kept a maker is the built-in owner's.
  */
 
 #include <sys/param.h>
@@ -50,6 +53,8 @@ struct token {
 	time_t		created;
 	time_t		last;
 	bool		write;
+	char		maker[USER_NAME_LEN];	/* "": the built-in owner */
+	char		maker_id[USER_ID_LEN];	/* "": not checked */
 };
 
 static struct token	tokens[TOKENS_MAX];
@@ -169,6 +174,19 @@ tokens_load(void)
 		    "last"));
 		tokens[ntokens].write = ucl_object_toboolean(ucl_object_lookup(
 		    e, "write"));
+		/* A maker whose name or id would not fit is no one: the
+		 * token then reaches nothing (users.c). */
+		tokens[ntokens].maker[0] = tokens[ntokens].maker_id[0] = '\0';
+		if (ucl_str(e, "maker") != NULL && (!name_copy(
+		    tokens[ntokens].maker, sizeof(tokens[ntokens].maker),
+		    ucl_str(e, "maker")) || (ucl_str(e, "maker_id") != NULL &&
+		    !name_copy(tokens[ntokens].maker_id,
+		    sizeof(tokens[ntokens].maker_id), ucl_str(e, "maker_id"))))) {
+			snprintf(tokens[ntokens].maker,
+			    sizeof(tokens[ntokens].maker), "-");
+			snprintf(tokens[ntokens].maker_id,
+			    sizeof(tokens[ntokens].maker_id), "-");
+		}
 		ntokens++;
 	}
 	ucl_object_unref(o);
@@ -192,6 +210,11 @@ tokens_save(void)
 		put(e, "created", ucl_object_fromint(tokens[i].created));
 		put(e, "last", ucl_object_fromint(tokens[i].last));
 		put(e, "write", ucl_object_frombool(tokens[i].write));
+		if (tokens[i].maker[0] != '\0')
+			put(e, "maker", ucl_object_fromstring(tokens[i].maker));
+		if (tokens[i].maker_id[0] != '\0')
+			put(e, "maker_id", ucl_object_fromstring(
+			    tokens[i].maker_id));
 		ucl_array_append(a, e);
 	}
 	put(o, "tokens", a);
@@ -289,18 +312,42 @@ token_kind_of(const char *id)
 	return (TOKEN_NONE);
 }
 
-/* The tokens as the threads judge by them (users.c): {id: kind}. */
+/* What the token of id is, its maker's name and id into *makerp and
+ * *midp ("" none): TOKEN_NONE when there is none.  On the loop. */
+int
+token_maker_of(const char *id, const char **makerp, const char **midp)
+{
+	int	i;
+
+	*makerp = *midp = "";
+	tokens_load();
+	for (i = 0; i < ntokens; i++)
+		if (strcmp(tokens[i].id, id) == 0) {
+			*makerp = tokens[i].maker;
+			*midp = tokens[i].maker_id;
+			return (tokens[i].write ? TOKEN_WRITE : TOKEN_READ);
+		}
+	return (TOKEN_NONE);
+}
+
+/* The tokens as the threads judge by them (users.c): {id: {kind, maker,
+ * maker_id}}. */
 ucl_object_t *
 tokens_acl(void)
 {
-	ucl_object_t	*o;
+	ucl_object_t	*o, *e;
 	int		 i;
 
 	tokens_load();
 	o = ucl_object_typed_new(UCL_OBJECT);
-	for (i = 0; i < ntokens; i++)
-		put(o, tokens[i].id, ucl_object_fromstring(tokens[i].write ?
+	for (i = 0; i < ntokens; i++) {
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put(e, "kind", ucl_object_fromstring(tokens[i].write ?
 		    "write" : "read"));
+		put(e, "maker", ucl_object_fromstring(tokens[i].maker));
+		put(e, "maker_id", ucl_object_fromstring(tokens[i].maker_id));
+		put(o, tokens[i].id, e);
+	}
 	return (o);
 }
 
@@ -317,7 +364,7 @@ token_principal(struct http_request *req, struct principal *p)
 		return (false);
 	memset(p, 0, sizeof(*p));
 	p->kind = t->write ? P_WTOKEN : P_RTOKEN;
-	snprintf(p->name, sizeof(p->name), "%s", t->id);
+	(void)name_copy(p->name, sizeof(p->name), t->id);
 	return (true);
 }
 
@@ -343,23 +390,28 @@ token_who(struct http_request *req)
 
 	if ((t = token_of(req)) == NULL || !t->write)
 		return (NULL);
-	snprintf(who, sizeof(who), "API token %s", t->name);
+	snprintf(who, sizeof(who), "API token %s (%s)", t->id, t->name);
 	return (who);
 }
 
 /*
- * A token of name and kind (NULL: read) made and kept, its id and its
- * value (said once; TOKEN_LEN bytes) into id and value: 0, or
- * the HTTP status and why.
+ * A token of name and kind (NULL: read) made and kept for maker, a
+ * console user, its id and its value (said once; TOKEN_LEN bytes) into
+ * id and value: 0, or the HTTP status and why.
  */
 int
-token_new(const char *name, const char *kind, char *id, char *value,
-    char *why, size_t len)
+token_new(const char *name, const char *kind, const struct principal *maker,
+    char *id, char *value, char *why, size_t len)
 {
 	uint8_t	raw[32];
 	bool	write;
 
 	tokens_load();
+	if (maker == NULL || maker->kind != P_USER || maker->uid[0] == '\0') {
+		snprintf(why, len, "a token is made by a console user, whose "
+		    "reach it never exceeds");
+		return (403);
+	}
 	if (name == NULL || name[0] == '\0' || strlen(name) > 64) {
 		snprintf(why, len, "a token has a name of 1 to 64 characters");
 		return (400);
@@ -386,6 +438,10 @@ token_new(const char *name, const char *kind, char *id, char *value,
 	    name);
 	tokens[ntokens].created = time(NULL);
 	tokens[ntokens].write = write;
+	(void)name_copy(tokens[ntokens].maker, sizeof(tokens[ntokens].maker),
+	    maker->name);
+	(void)name_copy(tokens[ntokens].maker_id,
+	    sizeof(tokens[ntokens].maker_id), maker->uid);
 	ntokens++;
 	explicit_bzero(raw, sizeof(raw));
 	if (tokens_save() != 0) {

@@ -62,15 +62,34 @@
 #include "ytrans.h"
 #include "ymodel.h"
 
-#define	STREAMS_MAX	16		/* at once, on all sockets */
+#define	STREAMS_MAX	64		/* at once, on all sockets */
+#define	STREAMS_WHO	8		/* ... of one principal (a token's,
+					 * of one address) */
 #define	STREAM_PART	(1024 * 1024)	/* one part's text, at most */
 #define	STREAM_WINDOW	(2 * 1024 * 1024)	/* the host sends ahead */
 #define	SYSCTL_PART	120		/* values asked for at once */
+#define	SOCK_TICK_MS	1000		/* the sockets judged again, so often */
+
+/*
+ * A socket, bound to the session (or the bearer token) that opened it
+ * (auth.c's sbind): judged at each message, at each part sent and every
+ * second; its session ended, timed out or its user gone, it is closed,
+ * and a host its principal may no longer read is read no more.
+ */
+struct sock {
+	LIST_ENTRY(sock)	 list;
+	struct conn		*c;
+	struct sbind		 b;
+};
+
+static LIST_HEAD(, sock)	socks = LIST_HEAD_INITIALIZER(socks);
+static struct timer		*sock_timer;
 
 struct stream {
 	struct task	 task;	/* first */
 	LIST_ENTRY(stream)	 list;
 	struct conn	*c;	/* NULL once the socket is gone */
+	char		 addr[64];	/* where the socket is from */
 	atomic_bool		 stop;
 	uint64_t		 id;
 	char			 sid[9];
@@ -508,7 +527,39 @@ stream_free(struct stream *s)
 	free(s);
 }
 
-/* In the worker: what the task wrote goes to the socket, if it is there. */
+/* The socket's: its binding good still?  Else it is closed, its
+ * streams stopped. */
+static bool
+sock_ok(struct conn *c)
+{
+	struct sock	*k;
+	struct stream	*s;
+
+	if ((k = c->hdlr_extra) != NULL && sbind_ok(&k->b))
+		return (true);
+	LIST_FOREACH(s, &streams, list)
+		if (s->c == c)
+			atomic_store(&s->stop, true);
+	ws_close(c);
+	return (false);
+}
+
+/*
+ * Whom the socket was opened by, kept with it: each host asked for is
+ * theirs to read, or refused as if it were not, and each read asked of
+ * it as theirs, as they may now.
+ */
+static bool
+stream_host_ok(struct conn *c, const char *sid)
+{
+	struct sock	*k;
+
+	return (sock_ok(c) && (k = c->hdlr_extra) != NULL &&
+	    principal_may(&k->b.who, sid, ROLE_VIEWER));
+}
+
+/* In the worker: what the task wrote goes to the socket, if it is there
+ * and its principal may read the host still. */
 static void
 stream_ready(struct task *t)
 {
@@ -516,12 +567,14 @@ stream_ready(struct task *t)
 	u_int32_t	 len;
 
 	s = (struct stream *)t;
+	if (s->c != NULL && !stream_host_ok(s->c, s->sid))
+		atomic_store(&s->stop, true);
 	/* Every part that is there: the event comes once for several. */
 	while (task_channel_pending(t)) {
 		len = task_channel_read(t, part, STREAM_PART);
 		if (len > STREAM_PART)
 			continue;
-		if (s->c != NULL)
+		if (s->c != NULL && !atomic_load(&s->stop))
 			ws_send(s->c, WS_OP_TEXT, part,
 			    len);
 	}
@@ -529,24 +582,30 @@ stream_ready(struct task *t)
 		stream_free(s);
 }
 
+/* Every second: each socket judged again (sbind_ok() walks nothing
+ * unless who may do what changed, or a session's end is due). */
+static void
+sock_tick(void *arg __unused, uint64_t now __unused)
+{
+	struct sock	*k;
+
+	LIST_FOREACH(k, &socks, list)
+		(void)sock_ok(k->c);
+}
+
 void
 stream_connect(struct conn *c)
 {
+	struct sock	*k;
 
-	(void)c;
-}
-
-/*
- * Whom the socket was opened by (req_principal()), kept on the
- * connection by api_stream(): each host asked for is theirs to read,
- * or refused as if it were not, and each read asked of it as theirs.
- */
-static bool
-stream_host_ok(struct conn *c, const char *sid)
-{
-
-	return (c->hdlr_extra != NULL && principal_may(c->hdlr_extra, sid,
-	    ROLE_VIEWER));
+	if ((k = c->hdlr_extra) == NULL) {
+		ws_close(c);
+		return;
+	}
+	k->c = c;
+	LIST_INSERT_HEAD(&socks, k, list);
+	if (sock_timer == NULL)
+		sock_timer = timer_add(sock_tick, SOCK_TICK_MS, NULL, 0);
 }
 
 /* The socket went: its requests stop, and end with nobody to tell. */
@@ -554,14 +613,39 @@ void
 stream_disconnect(struct conn *c)
 {
 	struct stream	*s;
+	struct sock	*k;
 
 	LIST_FOREACH(s, &streams, list)
 		if (s->c == c) {
 			s->c = NULL;
 			atomic_store(&s->stop, true);
 		}
+	if ((k = c->hdlr_extra) != NULL && k->c == c)
+		LIST_REMOVE(k, list);
 	free(c->hdlr_extra);
 	c->hdlr_extra = NULL;
+}
+
+/*
+ * May the socket's principal start one more: STREAMS_WHO of theirs at
+ * once (a token's from one address), STREAMS_MAX of all.
+ */
+static bool
+stream_room(struct conn *c)
+{
+	const struct sock	*k = c->hdlr_extra;
+	struct stream		*s;
+	int			 n;
+
+	if (nstreams >= STREAMS_MAX)
+		return (false);
+	n = 0;
+	LIST_FOREACH(s, &streams, list)
+		if (s->task.who.kind == k->b.who.kind && strcmp(s->task.who.name,
+		    k->b.who.name) == 0 && (k->b.who.kind == P_USER ||
+		    strcmp(s->addr, k->b.addr) == 0))
+			n++;
+	return (n < STREAMS_WHO);
 }
 
 static void
@@ -586,7 +670,7 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 	uint64_t		 id;
 	uint8_t			 kind;
 
-	if (op != WS_OP_TEXT || len == 0 || len > 1024)
+	if (op != WS_OP_TEXT || len == 0 || len > 1024 || !sock_ok(c))
 		return;
 	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
 	    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
@@ -617,7 +701,7 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 		else if ((sv = server_find(sid)) == NULL || !stream_host_ok(c,
 		    sid))
 			refuse(c, id, "no such server");
-		else if (nstreams >= STREAMS_MAX)
+		else if (!stream_room(c))
 			refuse(c, id, "too much is being read at once: try "
 			    "again");
 		else {
@@ -634,11 +718,14 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 			s->peer = sv->peer_name != NULL ?
 			    xstrdup(sv->peer_name) : NULL;
 			s->name = xstrdup(sv->name);
+			strlcpy(s->addr, ((struct sock *)c->hdlr_extra)->b.addr,
+			    sizeof(s->addr));
 			LIST_INSERT_HEAD(&streams, s, list);
 			nstreams++;
 			task_create(&s->task, read_run);
 			task_bind_callback(&s->task, stream_ready);
-			task_bind_principal(&s->task, c->hdlr_extra);
+			task_bind_principal(&s->task,
+			    &((struct sock *)c->hdlr_extra)->b.who);
 			task_run(&s->task);
 		}
 		ucl_object_unref(o);
@@ -672,7 +759,7 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 		    ". _ - % : /");
 	else if ((sv = server_find(sid)) == NULL || !stream_host_ok(c, sid))
 		refuse(c, id, "no such server");
-	else if (nstreams >= STREAMS_MAX)
+	else if (!stream_room(c))
 		refuse(c, id, "too much is being read at once: try again");
 	else {
 		if (part == NULL)
@@ -694,11 +781,14 @@ stream_message(struct conn *c, u_int8_t op, void *data, size_t len)
 		s->fib = (uint32_t)ucl_object_toint(ucl_object_lookup(o, "fib"));
 		if (jail != NULL)
 			strlcpy(s->jail, jail, sizeof(s->jail));
+		strlcpy(s->addr, ((struct sock *)c->hdlr_extra)->b.addr,
+		    sizeof(s->addr));
 		LIST_INSERT_HEAD(&streams, s, list);
 		nstreams++;
 		task_create(&s->task, kind == 255 ? sysctl_run : stream_run);
 		task_bind_callback(&s->task, stream_ready);
-		task_bind_principal(&s->task, c->hdlr_extra);
+		task_bind_principal(&s->task,
+		    &((struct sock *)c->hdlr_extra)->b.who);
 		task_run(&s->task);
 	}
 	ucl_object_unref(o);
@@ -720,10 +810,11 @@ api_stream(struct http_request *req)
 	    cfg.origin) != 0 && !cluster_origin(v)))
 		return (reply_error(req, 403, "csrf", "not from the console's "
 		    "own page"));
-	/* Whose socket: who it acts for stays with the connection. */
+	/* Whose socket: bound to the session (or the token) that opens
+	 * it, and who it acts for, kept with the connection. */
 	free(req->owner->hdlr_extra);
-	req->owner->hdlr_extra = xmalloc(sizeof(struct principal));
-	req_principal(req, req->owner->hdlr_extra);
+	req->owner->hdlr_extra = xcalloc(1, sizeof(struct sock));
+	sbind_make(req, &((struct sock *)req->owner->hdlr_extra)->b);
 	ws_handshake(req, stream_connect, stream_message, stream_disconnect);
 	return (WEB_OK);
 }

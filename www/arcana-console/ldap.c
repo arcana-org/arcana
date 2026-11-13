@@ -18,9 +18,9 @@
  * write waits LDAP_WAIT_S at most.  An empty password is refused
  * first: a directory takes it as an anonymous bind and says yes.
  * Failures are counted by the name tried and where they come from
- * (signin_failed()): after SIGNIN_TRIES in a minute of a name, or
- * SIGNIN_TRIES_ADDR from an address, that one waits for the minute to
- * pass, and after SIGNIN_TRIES_ALL of all, every one.  A sign-in runs
+ * (signin_failed()): after SIGNIN_TRIES in a minute of a name from one
+ * address, SIGNIN_TRIES_NAME of it from all, or SIGNIN_TRIES_ADDR from
+ * an address, that one waits for the minute to pass.  A sign-in runs
  * in a task (auth.c), never on the loop, so what the directory takes
  * waits for no one else.
  */
@@ -582,35 +582,21 @@ bind_as(struct lconn *c, const char *dn, const char *password, long *codep)
 	return (0);
 }
 
-/* A value in a filter, escaped as RFC 4515 says. */
-static void
-filter_value(struct ber *b, const char *v)
-{
-	char	esc[4];
-
-	for (; *v != '\0'; v++) {
-		if (*v == '*' || *v == '(' || *v == ')' || *v == '\\' || *v ==
-		    '\0' || (unsigned char)*v < 0x20) {
-			snprintf(esc, sizeof(esc), "\\%02x", (unsigned char)*v);
-			ber_room(b, 3);
-			memcpy(b->p + b->len, esc, 3);
-			b->len += 3;
-		} else
-			ber_byte(b, (unsigned char)*v);
-	}
-}
-
-/* An equalityMatch [3] { attr, value } filter. */
+/*
+ * An equalityMatch [3] { attr, value } filter.  The AssertionValue is
+ * the value's octets as they are (RFC 4511 §4.1.6): RFC 4515's escapes
+ * are of a filter's text alone, which none is built here, so a name or
+ * a DN with * ( ) \ in it matches itself, and no character of it is a
+ * filter's.
+ */
 static void
 filter_eq(struct ber *b, const char *attr, const char *value)
 {
-	size_t	mark, vmark;
+	size_t	mark;
 
 	mark = b->len;
 	ber_str(b, T_OCTETS, attr);
-	vmark = b->len;
-	filter_value(b, value);
-	ber_wrap(b, T_OCTETS, vmark);
+	ber_str(b, T_OCTETS, value);
 	ber_wrap(b, T_CTXC(3), mark);
 }
 
@@ -660,10 +646,26 @@ search(struct lconn *c, const char *base, int scope, struct ber *f, char *dn,
 		if (op.tag == T_SEARCH_ENTRY) {
 			p = op.v;
 			end = op.v + op.len;
+			/*
+			 * The entry's LDAPDN (RFC 4514's string, as the server
+			 * wrote it), bound as and matched as it is: one that
+			 * does not fit, or has a NUL, is refused, never cut
+			 * into another entry's.
+			 */
 			if (ber_next(&p, end, &name) && name.tag == T_OCTETS &&
-			    *np == 0)
-				snprintf(dn, dnlen, "%.*s", (int)MIN(name.len,
-				    dnlen - 1), (const char *)name.v);
+			    *np == 0) {
+				if (name.len >= dnlen || memchr(name.v, '\0',
+				    name.len) != NULL) {
+					free(buf);
+					snprintf(c->err, c->errlen, "the "
+					    "directory's entry has a DN of %zu "
+					    "bytes, more than %zu", name.len,
+					    dnlen - 1);
+					return (-1);
+				}
+				memcpy(dn, name.v, name.len);
+				dn[name.len] = '\0';
+			}
 			(*np)++;
 			free(buf);
 			continue;
@@ -688,22 +690,25 @@ search(struct lconn *c, const char *base, int scope, struct ber *f, char *dn,
 
 /*
  * Failed sign-ins by password, the directory's and the console's own
- * (users.c) alike, this minute's: by address and by user name, in
- * tables of SIGNIN_KEYS each (when one is full, the entry with the
- * fewest failures makes room), and of all.  From any thread.
+ * (users.c) alike, this minute's: by address, by user name and address
+ * (the real user from another address still signs in), and by user
+ * name from every address, with a ceiling well above one address's; and
+ * the setup token's tries by address, apart.  No count of all: one
+ * client would stop everyone's sign-in.  Tables of SIGNIN_KEYS each
+ * (when one is full, the entry with the fewest failures makes room).
+ * From any thread.
  */
 #define	SIGNIN_KEYS	256
 
 struct fails {
-	char	key[72];
+	char	key[USER_NAME_LEN + 64];
 	time_t	minute;
 	int	n;
 };
 
 static pthread_mutex_t	fail_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct fails	by_addr[SIGNIN_KEYS], by_user[SIGNIN_KEYS];
-static time_t		fail_minute;	/* the minute fails_all is of */
-static int		fails_all;
+static struct fails	by_pair[SIGNIN_KEYS], by_setup[SIGNIN_KEYS];
 
 /* key's entry in t, this minute's; NULL: none, unless made. */
 static struct fails *
@@ -730,32 +735,42 @@ fails_of(struct fails *t, const char *key, time_t now, bool make)
 	return (room);
 }
 
+/* The key of a name tried from an address. */
+static void
+pair_key(char *buf, size_t len, const char *addr, const char *user)
+{
+
+	snprintf(buf, len, "%s\n%s", user, addr != NULL ? addr : "");
+}
+
 /*
  * Must a sign-in from addr as user wait: SIGNIN_TRIES failures this
- * minute of that name, SIGNIN_TRIES_ADDR from that address (many users
- * may be behind one), or SIGNIN_TRIES_ALL of all?  Either may be NULL
- * or "".
+ * minute of that name from that address, SIGNIN_TRIES_NAME of it from
+ * every one, or SIGNIN_TRIES_ADDR from that address (many users may be
+ * behind one)?  Either may be NULL or "".
  */
 bool
 signin_throttled(const char *addr, const char *user)
 {
 	struct fails	*f;
+	char		 k[sizeof(f->key)];
 	time_t		 now;
 	bool		 wait;
 
 	now = time(NULL) / 60;
+	wait = false;
 	pthread_mutex_lock(&fail_lock);
-	if (now != fail_minute) {
-		fail_minute = now;
-		fails_all = 0;
-	}
-	wait = fails_all >= SIGNIN_TRIES_ALL;
-	if (!wait && addr != NULL && addr[0] != '\0' && (f = fails_of(by_addr,
-	    addr, now, false)) != NULL)
+	if (addr != NULL && addr[0] != '\0' && (f = fails_of(by_addr, addr, now,
+	    false)) != NULL)
 		wait = f->n >= SIGNIN_TRIES_ADDR;
 	if (!wait && user != NULL && user[0] != '\0' && (f = fails_of(by_user,
 	    user, now, false)) != NULL)
-		wait = f->n >= SIGNIN_TRIES;
+		wait = f->n >= SIGNIN_TRIES_NAME;
+	if (!wait && user != NULL && user[0] != '\0') {
+		pair_key(k, sizeof(k), addr, user);
+		if ((f = fails_of(by_pair, k, now, false)) != NULL)
+			wait = f->n >= SIGNIN_TRIES;
+	}
 	pthread_mutex_unlock(&fail_lock);
 	return (wait);
 }
@@ -763,19 +778,45 @@ signin_throttled(const char *addr, const char *user)
 void
 signin_failed(const char *addr, const char *user)
 {
+	char	k[sizeof(((struct fails *)0)->key)];
 	time_t	now;
 
 	now = time(NULL) / 60;
 	pthread_mutex_lock(&fail_lock);
-	if (now != fail_minute) {
-		fail_minute = now;
-		fails_all = 0;
-	}
-	fails_all++;
 	if (addr != NULL && addr[0] != '\0')
 		fails_of(by_addr, addr, now, true)->n++;
-	if (user != NULL && user[0] != '\0')
+	if (user != NULL && user[0] != '\0') {
 		fails_of(by_user, user, now, true)->n++;
+		pair_key(k, sizeof(k), addr, user);
+		fails_of(by_pair, k, now, true)->n++;
+	}
+	pthread_mutex_unlock(&fail_lock);
+}
+
+/* The setup token tried from addr: SETUP_TRIES failures a minute. */
+bool
+setup_throttled(const char *addr)
+{
+	struct fails	*f;
+	time_t		 now;
+	bool		 wait;
+
+	now = time(NULL) / 60;
+	pthread_mutex_lock(&fail_lock);
+	wait = (f = fails_of(by_setup, addr != NULL ? addr : "", now, false)) !=
+	    NULL && f->n >= SETUP_TRIES;
+	pthread_mutex_unlock(&fail_lock);
+	return (wait);
+}
+
+void
+setup_failed(const char *addr)
+{
+	time_t	now;
+
+	now = time(NULL) / 60;
+	pthread_mutex_lock(&fail_lock);
+	fails_of(by_setup, addr != NULL ? addr : "", now, true)->n++;
 	pthread_mutex_unlock(&fail_lock);
 }
 

@@ -85,7 +85,7 @@ struct wsub {
 	LIST_ENTRY(wsub)	 link;
 	struct watch		*w;
 	int			 topic;
-	char			 user[64];	/* "": the console's own */
+	char			 user[USER_NAME_LEN];	/* "": the console's own */
 	cbl_stream		*s;		/* the thread's */
 	int			 state;		/* WATCH_S_* */
 	uint64_t		 wanted;	/* µs, when last asked for */
@@ -926,9 +926,13 @@ sub_of(struct watch *w, int topic, const char *user)
 			return (ws);
 	if ((ws = calloc(1, sizeof(*ws))) == NULL)
 		return (NULL);
+	/* A name that does not fit is none held for: never another's. */
+	if (!name_copy(ws->user, sizeof(ws->user), user)) {
+		free(ws);
+		return (NULL);
+	}
 	ws->w = w;
 	ws->topic = topic;
-	snprintf(ws->user, sizeof(ws->user), "%s", user);
 	ws->state = WATCH_S_NONE;
 	LIST_INSERT_HEAD(&w->subs, ws, link);
 	return (ws);

@@ -12,7 +12,13 @@
  * reads; operator changes; admin also updates, moves and removes).  A
  * user has roles, one or more, and what they allow together; and may
  * belong to a tenant, a fleet of its own: it then sees the hosts of
- * that tenant alone (servers carry the tenant's name).  Three roles
+ * that tenant alone (servers carry the tenant's name), and is an
+ * operator of the console at most, whose own are every tenant's.  Each
+ * user has a stable id (user_id()), named beside the name by what
+ * stays: a user removed and another made with the name is another.
+ * A user the directory keeps is the directory's: no edit makes it a
+ * local one, and no local user's name signs in by the directory.
+ * Three roles
  * come built in, owner, operator and viewer, and may be changed like
  * any.  Sign-in keys belong to a user; a key with none is the built-in
  * admin's, an owner, so a console with keys from before has its owner.
@@ -44,6 +50,8 @@
 #include <unistd.h>
 
 #include <openssl/evp.h>
+
+#include <stdatomic.h>
 
 #include "console.h"
 
@@ -138,7 +146,8 @@ by_name(const char *list, const char *name)
 	return (NULL);
 }
 
-/* A user's, a role's or a tenant's name: letters, digits, _ . @ -, 64. */
+/* A user's, a role's or a tenant's name: letters, digits, _ . @ -,
+ * USER_NAME_MAX. */
 bool
 user_name_ok(const char *s)
 {
@@ -147,7 +156,8 @@ user_name_ok(const char *s)
 	if (s == NULL)
 		return (false);
 	n = strlen(s);
-	return (n > 0 && n <= 64 && strspn(s, "abcdefghijklmnopqrstuvwxyz"
+	return (n > 0 && n <= USER_NAME_MAX && strspn(s,
+	    "abcdefghijklmnopqrstuvwxyz"
 	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.@-") == n);
 }
 
@@ -156,6 +166,96 @@ user_exists(const char *name)
 {
 
 	return (by_name("users", name) != NULL);
+}
+
+/*
+ * A user's stable id, made once with the user (when it was made, and
+ * random bytes): what a session, a token's maker or a stored intent's
+ * author names beside the name, so that a user removed and another made
+ * with the name, of another tenant even, is not taken for them.
+ */
+static void
+uid_new(char *buf, size_t len)
+{
+	uint8_t	r[12];
+	char	s[20];
+
+	arc4random_buf(r, sizeof(r));
+	b64url_of(r, sizeof(r), s, sizeof(s));
+	snprintf(buf, len, "%jx-%s", (intmax_t)time(NULL), s);
+}
+
+/*
+ * The id of a user kept before ids, or the built-in owner made at start:
+ * of its name and when it was made, so that every node of a cluster,
+ * reading the same users, gives it the same; the built-in owner's of
+ * its name alone, as each node makes its own at its first start.
+ */
+static void
+uid_of(const ucl_object_t *u, char *buf, size_t len)
+{
+	uint8_t		 h[32];
+	char		 s[64], text[USER_NAME_LEN + 32];
+	unsigned int	 n;
+	int64_t		 made;
+
+	made = ucl_str(u, "name") != NULL && strcmp(ucl_str(u, "name"),
+	    ADMIN_USER) == 0 ? 0 : ucl_object_toint(ucl_object_lookup(u,
+	    "created"));
+	snprintf(text, sizeof(text), "%s/%jd", ucl_str(u, "name") != NULL ?
+	    ucl_str(u, "name") : "", (intmax_t)made);
+	EVP_Digest(text, strlen(text), h, &n, EVP_sha256(), NULL);
+	b64url_of(h, 12, s, sizeof(s));
+	snprintf(buf, len, "%jx-%s", (intmax_t)made, s);
+}
+
+/* The user's id; "" for no such user. */
+const char *
+user_id(const char *name)
+{
+	const ucl_object_t	*u;
+
+	if ((u = by_name("users", name)) == NULL || ucl_str(u, "id") == NULL)
+		return ("");
+	return (ucl_str(u, "id"));
+}
+
+/* Is the user one the directory keeps (source ldap)? */
+bool
+user_ldap(const char *name)
+{
+	const ucl_object_t	*u;
+
+	return ((u = by_name("users", name)) != NULL && ucl_str(u, "source") !=
+	    NULL && strcmp(ucl_str(u, "source"), "ldap") == 0);
+}
+
+/*
+ * The principal of console user name, with their id: false, and p no
+ * one's, when there is no such user or the name does not fit.
+ */
+bool
+principal_user(struct principal *p, const char *name)
+{
+
+	memset(p, 0, sizeof(*p));
+	if (!user_exists(name) || !name_copy(p->name, sizeof(p->name), name) ||
+	    !name_copy(p->uid, sizeof(p->uid), user_id(name))) {
+		memset(p, 0, sizeof(*p));
+		return (false);
+	}
+	p->kind = P_USER;
+	p->need = ROLE_VIEWER;
+	return (true);
+}
+
+/* Is p's user, by name and id, still there? */
+static bool
+principal_user_alive(const struct principal *p)
+{
+
+	return (user_exists(p->name) && (p->uid[0] == '\0' || strcmp(
+	    user_id(p->name), p->uid) == 0));
 }
 
 /*
@@ -296,21 +396,14 @@ roles_of(const ucl_object_t *u, const ucl_object_t **v, int max)
 	return (n);
 }
 
-/*
- * A user's role on the console: the most its roles allow; none for no
- * user (an API token's reach is tokens.c's, not a role).
- */
-enum crole
-user_console(const char *name)
+/* The most a user's roles allow on the console, a tenant's or not. */
+static enum crole
+crole_roles(const ucl_object_t *u)
 {
-	const ucl_object_t	*u, *v[ROLES_MAX];
+	const ucl_object_t	*v[ROLES_MAX];
 	enum crole		 best, c;
 	int			 i, n;
 
-	if (name == NULL || name[0] == '\0')
-		return (CROLE_NONE);
-	if ((u = by_name("users", name)) == NULL)
-		return (CROLE_NONE);
 	best = CROLE_NONE;
 	n = roles_of(u, v, ROLES_MAX);
 	for (i = 0; i < n; i++) {
@@ -318,6 +411,30 @@ user_console(const char *name)
 		if (c > best)
 			best = c;
 	}
+	return (best);
+}
+
+/*
+ * A user's role on the console: the most its roles allow; none for no
+ * user (an API token's reach is tokens.c's, not a role).  A tenant's
+ * user is an operator at most: the console's own (its tokens, users,
+ * settings, CA) are every tenant's, so no tenant's (users_init() logs
+ * one whose roles say more).
+ */
+enum crole
+user_console(const char *name)
+{
+	const ucl_object_t	*u;
+	enum crole		 best;
+
+	if (name == NULL || name[0] == '\0')
+		return (CROLE_NONE);
+	if ((u = by_name("users", name)) == NULL)
+		return (CROLE_NONE);
+	best = crole_roles(u);
+	if (best == CROLE_OWNER && ucl_str(u, "tenant") != NULL &&
+	    ucl_str(u, "tenant")[0] != '\0')
+		best = CROLE_OPERATOR;
 	return (best);
 }
 
@@ -387,48 +504,82 @@ user_host(const char *name, const char *sid)
 	return (best);
 }
 
-/* What the API token of id is now: TOKEN_NONE once deleted. */
+/*
+ * What the API token of id is now: TOKEN_NONE once deleted; its
+ * maker's name and id into *makerp and *midp ("" none: one made before
+ * tokens kept their maker, the built-in owner's).
+ */
 static int
-token_now(const char *id)
+token_now(const char *id, const char **makerp, const char **midp)
 {
-	const char	*k;
+	const ucl_object_t	*e;
+	const char		*k;
 
+	*makerp = *midp = "";
 	if (acl_in == NULL)
-		return (token_kind_of(id));
-	if ((k = ucl_str(ucl_object_lookup(acl_in, "tokens"), id)) == NULL)
+		return (token_maker_of(id, makerp, midp));
+	e = ucl_object_lookup(ucl_object_lookup(acl_in, "tokens"), id);
+	if ((k = ucl_str(e, "kind")) == NULL)
 		return (TOKEN_NONE);
+	if (ucl_str(e, "maker") != NULL)
+		*makerp = ucl_str(e, "maker");
+	if (ucl_str(e, "maker_id") != NULL)
+		*midp = ucl_str(e, "maker_id");
 	return (strcmp(k, "write") == 0 ? TOKEN_WRITE : TOKEN_READ);
 }
 
 /*
- * A principal's role on host sid: a user's own (user_host()); an API
- * token's its reach, a read token a viewer's and a write token an
- * admin's of every host (tokens.c: an owner's tool, which the routes
- * it may take keep to what they keep it to), none once deleted; the
- * console's every host's; no one's none.
+ * A principal's role on host sid: a user's own (user_host()), none once
+ * the user of the name is another (its id); an API token's its reach,
+ * a read token a viewer's and a write token an admin's, never more
+ * than its maker may now (none once the maker is gone; one made before
+ * tokens kept their maker, the built-in owner's), none once deleted;
+ * the console's every host's; no one's none.
  */
 enum role
 principal_host(const struct principal *p, const char *sid)
 {
-	const char	*t;
+	const char	*t, *maker, *mid;
+	enum role	 r, m;
 	int		 k;
 
 	switch (p->kind) {
 	case P_USER:
+		if (!principal_user_alive(p))
+			return (ROLE_NONE);
 		return (user_host(p->name, sid));
 	case P_RTOKEN:
 	case P_WTOKEN:
 		if (!host_tenant(sid, &t))
 			return (ROLE_NONE);
-		if ((k = token_now(p->name)) == TOKEN_NONE)
+		if ((k = token_now(p->name, &maker, &mid)) == TOKEN_NONE)
 			return (ROLE_NONE);
-		return (p->kind == P_WTOKEN && k == TOKEN_WRITE ? ROLE_ADMIN :
-		    ROLE_VIEWER);
+		r = p->kind == P_WTOKEN && k == TOKEN_WRITE ? ROLE_ADMIN :
+		    ROLE_VIEWER;
+		if (maker[0] == '\0')
+			maker = ADMIN_USER;
+		if (!user_exists(maker) || (mid[0] != '\0' && strcmp(
+		    user_id(maker), mid) != 0))
+			return (ROLE_NONE);
+		m = user_host(maker, sid);
+		return (m < r ? m : r);
 	case P_CONSOLE:
 		return (ROLE_ADMIN);
 	default:
 		return (ROLE_NONE);
 	}
+}
+
+/* The tenant of an API token's maker, "" none (users.c's, tokens.c's
+ * acl). */
+const char *
+token_tenant(const char *id)
+{
+	const char	*maker, *mid;
+
+	if (token_now(id, &maker, &mid) == TOKEN_NONE)
+		return ("");
+	return (user_tenant(maker[0] != '\0' ? maker : ADMIN_USER));
 }
 
 /* May p have need on host sid (ROLE_VIEWER: read it)? */
@@ -464,6 +615,60 @@ principal_who(const struct principal *p, char *buf, size_t len)
 		break;
 	}
 	return (buf);
+}
+
+/*
+ * p as a stored intent's author keeps it, {"kind", "name", "id"}: a
+ * user with their id, a token by its id, the console.
+ */
+ucl_object_t *
+principal_record(const struct principal *p)
+{
+	ucl_object_t	*o;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "kind", ucl_object_fromstring(p->kind == P_USER ? "user" :
+	    p->kind == P_RTOKEN || p->kind == P_WTOKEN ? "token" : p->kind ==
+	    P_CONSOLE ? "console" : "none"));
+	if (p->kind == P_USER || p->kind == P_RTOKEN || p->kind == P_WTOKEN)
+		put(o, "name", ucl_object_fromstring(p->name));
+	if (p->kind == P_USER)
+		put(o, "id", ucl_object_fromstring(p->uid[0] != '\0' ? p->uid :
+		    user_id(p->name)));
+	if (p->kind == P_WTOKEN)
+		put(o, "write", ucl_object_frombool(true));
+	return (o);
+}
+
+/*
+ * The author r (principal_record()'s) as a principal into p: a user by
+ * name and id (one of the name with another id is not them, and has no
+ * role: principal_host()), a token by its id; false, p no one's, for
+ * none, or one that does not fit.
+ */
+bool
+principal_of_record(const ucl_object_t *r, struct principal *p)
+{
+	const char	*k;
+
+	memset(p, 0, sizeof(*p));
+	if ((k = ucl_str(r, "kind")) == NULL || !name_copy(p->name,
+	    sizeof(p->name), ucl_str(r, "name") != NULL ? ucl_str(r, "name") :
+	    ""))
+		return (false);
+	if (strcmp(k, "user") == 0) {
+		if (!name_copy(p->uid, sizeof(p->uid), ucl_str(r, "id") != NULL ?
+		    ucl_str(r, "id") : "-"))
+			return (false);
+		p->kind = P_USER;
+	} else if (strcmp(k, "token") == 0)
+		p->kind = ucl_flag(r, "write") ? P_WTOKEN : P_RTOKEN;
+	else if (strcmp(k, "console") == 0)
+		p->kind = P_CONSOLE;
+	if (p->kind == P_NONE)
+		memset(p, 0, sizeof(*p));
+	p->need = ROLE_VIEWER;
+	return (p->kind != P_NONE);
 }
 
 /* What acl_publish() last made, a reference taken; NULL while there
@@ -525,8 +730,9 @@ principal_host_at(const struct principal *p, const char *uri)
 /*
  * From any thread: may p ask the agent at uri for what needs need, by
  * what acl_publish() last made?  Why not into why.  A URI no server has
- * is a host being added or moved, which its route let the user do;
- * the host's access rules hold the user there.
+ * is refused, but to a principal flagged P_F_NEWURI: a host being added
+ * or moved, the URI its route just checked, which the user may add or
+ * move (servers.c, hosts.c); the host's access rules hold them there.
  */
 bool
 principal_reach(const struct principal *p, const char *uri, enum role need,
@@ -566,15 +772,60 @@ principal_reach(const struct principal *p, const char *uri, enum role need,
 			    ": an admin of it alone may" :
 			    ": it may not change it");
 		}
+	} else if ((p->flags & P_F_NEWURI) == 0) {
+		ok = false;
+		snprintf(why, len, "no host is reached at %s", uri);
 	}
 	acl_in = NULL;
 	acl_put(snap);
 	return (ok);
 }
 
-/* On the loop: what the threads judge by, made again. */
+/* From any thread: may p have need on host sid, by what acl_publish()
+ * last made? */
+bool
+principal_may_now(const struct principal *p, const char *sid, enum role need)
+{
+	const ucl_object_t	*snap;
+	bool			 ok;
+
+	if (p->kind == P_CONSOLE)
+		return (true);
+	if ((snap = acl_get()) == NULL)
+		return (false);
+	acl_in = snap;
+	ok = principal_may(p, sid, need);
+	acl_in = NULL;
+	acl_put(snap);
+	return (ok);
+}
+
+/*
+ * How many times who may do what changed (users, roles, groups, tokens,
+ * the hosts): what judged by it before judges again (auth.c's streams).
+ */
+static _Atomic uint64_t	acl_gen;
+
+uint64_t
+acl_generation(void)
+{
+
+	return (atomic_load(&acl_gen));
+}
+
+static void	acl_make(void);
+
+/* On the loop: what the threads judge by, made again, after a change. */
 void
 acl_publish(void)
+{
+
+	acl_make();
+	atomic_fetch_add(&acl_gen, 1);
+}
+
+static void
+acl_make(void)
 {
 	ucl_object_t		*n, *t, *u;
 	const struct server	*s;
@@ -597,17 +848,23 @@ acl_publish(void)
 	put(n, "uris", u);
 	put(n, "tokens", tokens_acl());
 	pthread_mutex_lock(&acl_lock);
+	/* Another node's change, read again: a change all the same. */
+	if (acl == NULL || ucl_object_compare(acl, n) != 0)
+		atomic_fetch_add(&acl_gen, 1);
 	if (acl != NULL)
 		ucl_object_unref(acl);
 	acl = n;
 	pthread_mutex_unlock(&acl_lock);
 }
 
+/* Every second: what another node of the cluster changed, or the
+ * tokens' file, reaches the threads; a change of who may do what is
+ * one of the generation's (acl_publish()). */
 static void
 acl_tick(void *arg __unused, uint64_t now __unused)
 {
 
-	acl_publish();
+	acl_make();
 }
 
 /* At the worker's start, once the servers are read. */
@@ -958,6 +1215,26 @@ users_init(void)
 		ucl_array_append(list_of("users"), u);
 		changed = true;
 	}
+	/* Each user its id, one made before ids (or the built-in owner just
+	 * made) given one now, the same on every node (uid_of()); a
+	 * tenant's user whose roles say owner is an operator (user_console()),
+	 * said once. */
+	it = NULL;
+	while ((e = ucl_object_iterate(list_of("users"), &it, true)) != NULL) {
+		char	id[USER_ID_LEN];
+
+		u = (ucl_object_t *)(uintptr_t)e;
+		if (ucl_str(u, "id") == NULL) {
+			uid_of(u, id, sizeof(id));
+			put(u, "id", ucl_object_fromstring(id));
+			changed = true;
+		}
+		if (ucl_str(u, "tenant") != NULL && ucl_str(u, "tenant")[0] !=
+		    '\0' && crole_roles(u) == CROLE_OWNER)
+			log_msg(LOG_WARNING, "user %s of tenant %s: its roles say "
+			    "owner of the console, which a tenant's user is not; "
+			    "an operator", ucl_str(u, "name"), ucl_str(u, "tenant"));
+	}
 	if (changed)
 		(void)users_save();
 }
@@ -1068,6 +1345,24 @@ owners(void)
 	return (n);
 }
 
+/* How many users of a tenant have roles that say owner: a change that
+ * makes more is refused (user_check() for the user's own). */
+static int
+tenant_owners(void)
+{
+	const ucl_object_t	*u;
+	ucl_object_iter_t	 it;
+	int			 n;
+
+	n = 0;
+	it = NULL;
+	while ((u = ucl_object_iterate(list_of("users"), &it, true)) != NULL)
+		if (ucl_str(u, "tenant") != NULL && ucl_str(u, "tenant")[0] !=
+		    '\0' && crole_roles(u) == CROLE_OWNER)
+			n++;
+	return (n);
+}
+
 /*
  * The roles given by a directory group, and the groups: into names and
  * groups, max at most; how many.  Good while the users are not changed.
@@ -1102,6 +1397,7 @@ users_ldap_sync(const char *name, const char **roles, int nroles)
 {
 	const ucl_object_t	*old;
 	ucl_object_t		*u, *ra;
+	char			 id[USER_ID_LEN];
 	int			 i;
 
 	if (!user_name_ok(name))
@@ -1110,12 +1406,17 @@ users_ldap_sync(const char *name, const char **roles, int nroles)
 	if (old != NULL && (ucl_str(old, "source") == NULL || strcmp(ucl_str(
 	    old, "source"), "ldap") != 0))
 		return;
+	/* The same user as before, its id kept. */
+	if (old == NULL || ucl_str(old, "id") == NULL || !name_copy(id,
+	    sizeof(id), ucl_str(old, "id")))
+		uid_new(id, sizeof(id));
 	if (old != NULL)
 		ucl_object_unref(ucl_array_delete(list_of("users"), (ucl_object_t *)
 		    (uintptr_t)old));
 	if (nroles > 0) {
 		u = ucl_object_typed_new(UCL_OBJECT);
 		put(u, "name", ucl_object_fromstring(name));
+		put(u, "id", ucl_object_fromstring(id));
 		put(u, "source", ucl_object_fromstring("ldap"));
 		ra = ucl_object_typed_new(UCL_ARRAY);
 		for (i = 0; i < nroles; i++)
@@ -1314,6 +1615,12 @@ user_owner_add(const char *name)
 		return ("too many users");
 	u = ucl_object_typed_new(UCL_OBJECT);
 	put(u, "name", ucl_object_fromstring(name));
+	{
+		char	id[USER_ID_LEN];
+
+		uid_new(id, sizeof(id));
+		put(u, "id", ucl_object_fromstring(id));
+	}
 	roles = ucl_object_typed_new(UCL_ARRAY);
 	ucl_array_append(roles, ucl_object_fromstring("owner"));
 	put(u, "roles", roles);
@@ -1410,6 +1717,11 @@ user_check(const ucl_object_t *body)
 	if ((v == NULL || ucl_array_size(v) == 0) && (g == NULL ||
 	    ucl_array_size(g) == 0))
 		return ("a user has a role, or is in a group, one at least");
+	/* The console's own are every tenant's: no tenant's user owns it. */
+	if ((s = ucl_str(body, "tenant")) != NULL && s[0] != '\0' &&
+	    crole_roles(body) == CROLE_OWNER)
+		return ("a tenant's user is no owner of the console: its "
+		    "tokens, users and settings are every tenant's");
 	return (NULL);
 }
 
@@ -1466,8 +1778,9 @@ role_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	ucl_object_t		*r;
 	const ucl_object_t	*old;
 	const char		*e, *name;
-	char			 kept[65];	/* name, the body's, kept */
+	char			 kept[USER_NAME_LEN];	/* the body's name */
 	bool			 was_owner;
+	int			 tenanted;
 
 	name = ucl_str(body, "name");
 	if (!user_name_ok(name)) {
@@ -1502,6 +1815,7 @@ role_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	/* Changed so that no owner is left: refused. */
 	was_owner = old != NULL && crole_of(ucl_str(old, "console")) ==
 	    CROLE_OWNER;
+	tenanted = tenant_owners();
 	if (old != NULL)
 		ucl_object_unref(ucl_array_delete(list_of("roles"),
 		    (ucl_object_t *)(uintptr_t)old));
@@ -1510,6 +1824,11 @@ role_keep(ucl_object_t *body, const char *who, struct uerr *err)
 		undo();
 		return (refuse(err, 409, "last_owner", "the console keeps an "
 		    "owner: this role is what makes the last one"));
+	}
+	if (tenant_owners() > tenanted) {
+		undo();
+		return (refuse(err, 409, "tenant", "a tenant's user has this "
+		    "role: no tenant's user owns the console"));
 	}
 	if (keep(err, "roles") != 0)
 		return (500);
@@ -1526,8 +1845,10 @@ user_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	ucl_object_t		*u;
 	const ucl_object_t	*old;
 	const char		*e, *name;
-	char			 kept[65];	/* name, the body's, kept */
+	char			 kept[USER_NAME_LEN];	/* the body's name */
+	char			 id[USER_ID_LEN];
 	bool			 was_owner;
+	int			 tenanted;
 
 	name = ucl_str(body, "name");
 	if (!user_name_ok(name)) {
@@ -1547,9 +1868,27 @@ user_keep(ucl_object_t *body, const char *who, struct uerr *err)
 		return (refuse(err, 400, "invalid", "%d users at most",
 		    USERS_MAX));
 	}
+	/*
+	 * A user the directory keeps is the directory's: made a local one
+	 * by an edit, the directory's account of the name would sign in as
+	 * it.  An owner who wants the name for a local user removes the
+	 * directory's first, and makes it again.
+	 */
+	if (old != NULL && user_ldap(name)) {
+		ucl_object_unref(body);
+		return (refuse(err, 409, "directory", "user %s is the "
+		    "directory's, its roles its groups': remove it first to make "
+		    "a local user of the name", kept));
+	}
 	was_owner = old != NULL && user_console(name) == CROLE_OWNER;
+	tenanted = tenant_owners();
+	/* The same user: its id kept; a new one, its own. */
+	if (old == NULL || ucl_str(old, "id") == NULL || !name_copy(id,
+	    sizeof(id), ucl_str(old, "id")))
+		uid_new(id, sizeof(id));
 	u = ucl_object_typed_new(UCL_OBJECT);
 	put(u, "name", ucl_object_fromstring(name));
+	put(u, "id", ucl_object_fromstring(id));
 	if (ucl_str(body, "tenant") != NULL && ucl_str(body, "tenant")[0] != '\0')
 		put(u, "tenant", ucl_object_fromstring(ucl_str(body, "tenant")));
 	put(u, "roles", ucl_object_lookup(body, "roles") != NULL ?
@@ -1575,6 +1914,11 @@ user_keep(ucl_object_t *body, const char *who, struct uerr *err)
 		undo();
 		return (refuse(err, 409, "last_owner", "the console keeps an "
 		    "owner: make another one first"));
+	}
+	if (tenant_owners() > tenanted) {
+		undo();
+		return (refuse(err, 409, "tenant", "a tenant's user is no owner "
+		    "of the console"));
 	}
 	if (keep(err, "users") != 0)
 		return (500);
@@ -1736,9 +2080,11 @@ group_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	const ucl_object_t	*old, *m, *u, *e;
 	ucl_object_iter_t	 it, mit;
 	const char		*bad, *name;
-	char			 kept[65];	/* name, the body's, kept */
+	char			 kept[USER_NAME_LEN];	/* the body's name */
 	bool			 named;
+	int			 tenanted;
 
+	tenanted = tenant_owners();
 	name = ucl_str(body, "name");
 	if (!user_name_ok(name)) {
 		ucl_object_unref(body);
@@ -1785,6 +2131,11 @@ group_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	/* The last owner stays one, whatever a group's roles became. */
 	if (owners() == 0)
 		return (undo_owner(err));
+	if (tenant_owners() > tenanted) {
+		undo();
+		return (refuse(err, 409, "tenant", "a tenant's user is in the "
+		    "group: no tenant's user owns the console"));
+	}
 	if (keep(err, "groups") != 0)
 		return (500);
 	log_msg(LOG_NOTICE, "group %s %s by %s", kept, old != NULL ? "changed" :
@@ -1834,9 +2185,11 @@ strings_into(ucl_object_t *o, const char *key, const ucl_object_t *a)
 		ucl_object_unref(l);
 }
 
-/* arcana-console:users's value. */
+/* arcana-console:users's value, as one of tenant (""  none: every
+ * user) may see it: that tenant's users alone, their invitations
+ * with them. */
 ucl_object_t *
-users_yang(void)
+users_yang(const char *tenant)
 {
 	ucl_object_t		*o, *a, *e;
 	const ucl_object_t	*u, *inv, *v;
@@ -1848,6 +2201,10 @@ users_yang(void)
 	it = NULL;
 	while ((u = ucl_object_iterate(list_of("users"), &it, true)) != NULL) {
 		if ((name = ucl_str(u, "name")) == NULL)
+			continue;
+		if (tenant != NULL && tenant[0] != '\0' && (ucl_str(u,
+		    "tenant") == NULL || strcmp(ucl_str(u, "tenant"), tenant) !=
+		    0))
 			continue;
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put(e, "name", ucl_object_fromstring(name));
@@ -2012,7 +2369,7 @@ strings_of(const ucl_object_t *o, const char *key)
  */
 int
 users_yang_set(const ucl_object_t *was, const ucl_object_t *now,
-    const char *who, char *why, size_t len)
+    const char *who, const char *tenant, char *why, size_t len)
 {
 	static const char *const ukeys[] = { "tenant", "role", "group", NULL };
 	static const char *const rkeys[] = { "console", "host", "ldap-group",
@@ -2024,6 +2381,12 @@ users_yang_set(const ucl_object_t *was, const ucl_object_t *now,
 	struct uerr		 err;
 	int			 rc = 0;
 
+	/* Who is who, and of which tenant, is an untenanted owner's. */
+	if (tenant != NULL && tenant[0] != '\0') {
+		snprintf(why, len, "the users, roles and groups are changed by "
+		    "an owner of no tenant");
+		return (403);
+	}
 	saved = ucl_object_copy(udoc);
 	/* The roles, the groups, then the users made or changed. */
 	it = NULL;

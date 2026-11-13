@@ -731,8 +731,12 @@ api_troubleshoot_path(struct http_request *req)
 			t->n++;
 		}
 	} else
+		/* Every host the user may read, as the places named are: of
+		 * one they may not, nothing is said, its id and name none. */
 		for (i = 0; (s = server_at(i)) != NULL && t->n < TS_PLACES;
 		    i++) {
+			if (!host_role_ok(req, s->id, false, false))
+				continue;
 			snprintf(t->p[t->n].sid, sizeof(t->p[0].sid), "%s",
 			    s->id);
 			snprintf(t->p[t->n].name, sizeof(t->p[0].name), "%s",

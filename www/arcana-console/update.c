@@ -152,6 +152,7 @@ static struct {
 	ucl_object_t	*ans;
 	time_t		 at;
 	char		 host[128];
+	char		 sid[9];	/* its id */
 } notes;
 
 /* A host's answer, as it came. */
@@ -230,8 +231,11 @@ api_update_notes(struct http_request *req)
 	if (cfg.agent_source == NULL)
 		return (reply_error(req, 409, "source", "agent_source in "
 		    "web.conf names no repository"));
+	/* Through a host the user may read: of another, nothing said. */
 	pick = NULL;
 	for (i = 0; (s = server_at(i)) != NULL; i++) {
+		if (!host_role_ok(req, s->id, false, false))
+			continue;
 		if (pick == NULL)
 			pick = s;
 		if (strncmp(s->uri, "unix:", 5) == 0) {
@@ -263,6 +267,7 @@ api_update_notes(struct http_request *req)
 		notes.ans = ans;
 		notes.at = time(NULL);
 		snprintf(notes.host, sizeof(notes.host), "%s", pick->name);
+		snprintf(notes.sid, sizeof(notes.sid), "%s", pick->id);
 	}
 	list = ucl_object_typed_new(UCL_ARRAY);
 	tagl = parse(ucl_str(notes.ans, "tags"));
@@ -357,8 +362,10 @@ api_update_notes(struct http_request *req)
 	if (ucl_str(notes.ans, "commit") != NULL)
 		ucl_object_insert_key(out, ucl_object_fromstring(ucl_str(notes.ans,
 		    "commit")), "head", 0, false);
-	ucl_object_insert_key(out, ucl_object_fromstring(notes.host), "host", 0,
-	    false);
+	/* Read through another's host before: whose, not said. */
+	if (host_role_ok(req, notes.sid, false, false))
+		ucl_object_insert_key(out, ucl_object_fromstring(notes.host),
+		    "host", 0, false);
 	ucl_object_insert_key(out, ucl_object_fromint(notes.at), "read", 0,
 	    false);
 	ucl_object_insert_key(out, ucl_object_fromstring(cfg.agent_source),

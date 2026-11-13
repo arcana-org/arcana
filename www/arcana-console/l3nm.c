@@ -126,16 +126,14 @@ l3nm_load(cbl_yarena *a, char *why, size_t len)
 	return (t);
 }
 
-/* Tree t kept, as RFC 7951's JSON, its version one more than the kept
- * one's and than floor. */
-static int
-l3nm_save(const cbl_dtree *t, int64_t floor)
+/* Tree t as RFC 7951's JSON, {"ietf-l3vpn-ntw:l3vpn-ntw": ...}; NULL
+ * when it cannot be made. */
+static ucl_object_t *
+tree_json(const cbl_dtree *t)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
 	struct ucl_parser	*p;
-	ucl_object_t		*o = NULL, *kept;
-	int64_t			 v;
-	int			 rc;
+	ucl_object_t		*o = NULL;
 
 	if (cbl_dtree_json(t, &b) == 0) {
 		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
@@ -146,7 +144,22 @@ l3nm_save(const cbl_dtree *t, int64_t floor)
 		ucl_parser_free(p);
 	}
 	cbl_ybuf_free(&b);
-	if (o == NULL)
+	return (o);
+}
+
+/*
+ * Tree t kept, as RFC 7951's JSON, its version one more than the kept
+ * one's and than floor, with who made it (who, NULL the console's own
+ * change), for the audit.
+ */
+static int
+l3nm_save(const cbl_dtree *t, int64_t floor, const struct principal *who)
+{
+	ucl_object_t	*o, *kept;
+	int64_t		 v;
+	int		 rc;
+
+	if ((o = tree_json(t)) == NULL)
 		return (-1);
 	kept = store_load(L3NM_FILE);
 	v = ucl_object_toint(ucl_object_lookup(kept, "version"));
@@ -155,9 +168,340 @@ l3nm_save(const cbl_dtree *t, int64_t floor)
 	    "version", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint(time(NULL)), "changed", 0,
 	    false);
+	if (who != NULL)
+		ucl_object_insert_key(o, principal_record(who), "author", 0,
+		    false);
 	rc = store_save(L3NM_FILE, o);
 	ucl_object_unref(o);
 	return (rc);
+}
+
+/* ---- Who may change what ----------------------------------------------- */
+
+#define	ISSUED_SKEW	300	/* s an identity's issued may be from now */
+
+static const ucl_object_t *
+entry_by(const ucl_object_t *list, const char *key, const char *v)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+
+	while (v != NULL && (e = ucl_object_iterate(list, &it, true)) != NULL)
+		if (ucl_str(e, key) != NULL && strcmp(ucl_str(e, key), v) == 0)
+			return (e);
+	return (NULL);
+}
+
+static bool
+same(const ucl_object_t *a, const ucl_object_t *b)
+{
+
+	if (a == NULL || b == NULL)
+		return (a == b);
+	return (ucl_object_compare(a, b) == 0);
+}
+
+/* o without key, a copy, to compare the rest of it (none: empty). */
+static ucl_object_t *
+without(const ucl_object_t *o, const char *key)
+{
+	ucl_object_t	*c;
+
+	if (o == NULL)
+		return (ucl_object_typed_new(UCL_OBJECT));
+	c = ucl_object_copy(o);
+	(void)ucl_object_delete_key(c, key);
+	return (c);
+}
+
+/* A service's nodes, the edges they are. */
+static const ucl_object_t *
+nodes_of(const ucl_object_t *svc)
+{
+
+	return (ucl_object_lookup(ucl_object_lookup(svc, "vpn-nodes"),
+	    "vpn-node"));
+}
+
+static void
+mark(ucl_object_t *edges, const char *edge)
+{
+
+	if (edge != NULL && edge[0] != '\0')
+		ucl_object_replace_key(edges, ucl_object_frombool(true), edge, 0,
+		    true);
+}
+
+/* Every node of svc marked. */
+static void
+mark_nodes(ucl_object_t *edges, const ucl_object_t *svc)
+{
+	const ucl_object_t	*n;
+	ucl_object_iter_t	 it = NULL;
+
+	while ((n = ucl_object_iterate(nodes_of(svc), &it, true)) != NULL)
+		mark(edges, ucl_str(n, "vpn-node-id") != NULL ? ucl_str(n,
+		    "vpn-node-id") : ucl_str(n, "ne-id"));
+}
+
+/* Every edge of y, of its services and of its SD-WAN document. */
+static void
+mark_all(ucl_object_t *edges, const ucl_object_t *y, const ucl_object_t *doc)
+{
+	const ucl_object_t	*s;
+	ucl_object_iter_t	 it = NULL;
+
+	while ((s = ucl_object_iterate(ucl_object_lookup(ucl_object_lookup(y,
+	    "vpn-services"), "vpn-service"), &it, true)) != NULL)
+		mark_nodes(edges, s);
+	it = NULL;
+	while ((s = ucl_object_iterate(ucl_object_lookup(doc, "edges"), &it,
+	    true)) != NULL)
+		mark(edges, ucl_str(s, "server"));
+}
+
+/*
+ * The services' vpn-service list of was and of now, each service a
+ * change on every edge it has when more than its nodes changed, else on
+ * each node that changed alone.
+ */
+static void
+mark_services(ucl_object_t *edges, const ucl_object_t *was,
+    const ucl_object_t *now)
+{
+	const ucl_object_t	*pair[2] = { was, now }, *s, *o, *n, *m;
+	ucl_object_t		*a, *b;
+	ucl_object_iter_t	 it, nit;
+	int			 k;
+
+	for (k = 0; k < 2; k++) {
+		it = NULL;
+		while ((s = ucl_object_iterate(ucl_object_lookup(
+		    ucl_object_lookup(pair[k], "vpn-services"), "vpn-service"),
+		    &it, true)) != NULL) {
+			o = entry_by(ucl_object_lookup(ucl_object_lookup(
+			    pair[1 - k], "vpn-services"), "vpn-service"),
+			    "vpn-id", ucl_str(s, "vpn-id"));
+			if (same(s, o))
+				continue;
+			a = without(s, "vpn-nodes");
+			b = o != NULL ? without(o, "vpn-nodes") : NULL;
+			if (b == NULL || ucl_object_compare(a, b) != 0) {
+				mark_nodes(edges, s);
+				if (o != NULL)
+					mark_nodes(edges, o);
+			} else {
+				nit = NULL;
+				while ((n = ucl_object_iterate(nodes_of(s), &nit,
+				    true)) != NULL) {
+					m = entry_by(nodes_of(o), "vpn-node-id",
+					    ucl_str(n, "vpn-node-id"));
+					if (!same(n, m))
+						mark(edges, ucl_str(n,
+						    "vpn-node-id"));
+				}
+			}
+			ucl_object_unref(a);
+			if (b != NULL)
+				ucl_object_unref(b);
+		}
+	}
+}
+
+/*
+ * The SD-WAN document's own of was and now (dw, dn, their exports): an
+ * edge's entry its edge's, an underlay every edge that has an end point
+ * on it, anything else every edge; its services are mark_services()'s.
+ */
+static void
+mark_document(ucl_object_t *edges, const ucl_object_t *dw,
+    const ucl_object_t *dn, bool *allp)
+{
+	const ucl_object_t	*pair[2] = { dw, dn }, *e, *o, *u, *ue;
+	ucl_object_iter_t	 it, eit, uit;
+	ucl_object_t		*a, *b;
+	int			 k;
+
+	for (k = 0; k < 2; k++) {
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(pair[k],
+		    "edges"), &it, true)) != NULL) {
+			o = entry_by(ucl_object_lookup(pair[1 - k], "edges"),
+			    "server", ucl_str(e, "server"));
+			if (!same(e, o))
+				mark(edges, ucl_str(e, "server"));
+		}
+		it = NULL;
+		while ((u = ucl_object_iterate(ucl_object_lookup(pair[k], "ucs"),
+		    &it, true)) != NULL) {
+			if (same(u, entry_by(ucl_object_lookup(pair[1 - k],
+			    "ucs"), "id", ucl_str(u, "id"))))
+				continue;
+			eit = NULL;
+			while ((e = ucl_object_iterate(ucl_object_lookup(pair[k],
+			    "edges"), &eit, true)) != NULL) {
+				uit = NULL;
+				while ((ue = ucl_object_iterate(ucl_object_lookup(e,
+				    "ucs_end_points"), &uit, true)) != NULL)
+					if (ucl_str(ue, "ucs") != NULL && strcmp(
+					    ucl_str(ue, "ucs"), ucl_str(u, "id")) ==
+					    0)
+						mark(edges, ucl_str(e, "server"));
+			}
+		}
+	}
+	/* The rest of the document: lists, settings, every edge's. */
+	a = without(dw, "edges");
+	b = without(dn, "edges");
+	(void)ucl_object_delete_key(a, "ucs");
+	(void)ucl_object_delete_key(b, "ucs");
+	(void)ucl_object_delete_key(a, "swvcs");
+	(void)ucl_object_delete_key(b, "swvcs");
+	if (ucl_object_compare(a, b) != 0)
+		*allp = true;
+	ucl_object_unref(a);
+	ucl_object_unref(b);
+}
+
+/*
+ * The identities of now's document: one made or changed has an issued
+ * of now (ISSUED_SKEW either way) or none, which the console makes, so
+ * that no client can have it run out at once; a remote's reauth an hour
+ * to a year.  NULL, or what is wrong.
+ */
+static const char *
+identities_ok(const ucl_object_t *dw, const ucl_object_t *dn, char *why,
+    size_t len)
+{
+	const ucl_object_t	*sw, *ep, *r, *id, *ow, *oe, *oi, *v;
+	ucl_object_iter_t	 it, eit, iit;
+	time_t			 now;
+	int64_t			 t;
+
+	now = time(NULL);
+	it = NULL;
+	while ((sw = ucl_object_iterate(ucl_object_lookup(dn, "swvcs"), &it,
+	    true)) != NULL) {
+		ow = entry_by(ucl_object_lookup(dw, "swvcs"), "id", ucl_str(sw,
+		    "id"));
+		eit = NULL;
+		while ((ep = ucl_object_iterate(ucl_object_lookup(sw,
+		    "end_points"), &eit, true)) != NULL) {
+			if ((r = ucl_object_lookup(ep, "remote")) == NULL)
+				continue;
+			if ((v = ucl_object_lookup(r, "reauth")) != NULL &&
+			    (ucl_object_type(v) != UCL_INT || ucl_object_toint(v) <
+			    3600 || ucl_object_toint(v) > 366 * 86400)) {
+				snprintf(why, len, "end point %s: its remote's "
+				    "reauth is an hour to a year", ucl_str(ep,
+				    "id"));
+				return (why);
+			}
+			oe = entry_by(ucl_object_lookup(ow, "end_points"), "id",
+			    ucl_str(ep, "id"));
+			iit = NULL;
+			while ((id = ucl_object_iterate(ucl_object_lookup(r,
+			    "identities"), &iit, true)) != NULL) {
+				if ((v = ucl_object_lookup(id, "issued")) == NULL)
+					continue;
+				oi = entry_by(ucl_object_lookup(ucl_object_lookup(
+				    oe, "remote"), "identities"), "name",
+				    ucl_str(id, "name"));
+				if (oi != NULL && same(ucl_object_lookup(oi,
+				    "issued"), v) && same(ucl_object_lookup(oi,
+				    "public_key"), ucl_object_lookup(id,
+				    "public_key")))
+					continue;
+				t = ucl_object_toint(v);
+				if (t < now - ISSUED_SKEW || t > now + ISSUED_SKEW) {
+					snprintf(why, len, "identity %s: issued is "
+					    "when the console issues it, not a "
+					    "time a client says", ucl_str(id,
+					    "name"));
+					return (why);
+				}
+			}
+		}
+	}
+	return (NULL);
+}
+
+/*
+ * May p change the L3NM kept from was to now (l3vpn-ntw's values)?
+ * Each change at any depth is mapped to the edges it changes (a
+ * service's, an end point's, a policy's or a zone's to every edge of
+ * its service; a vpn-node's or a site-network-access's to its edge; an
+ * edge's entry or an underlay's to theirs; anything else to every
+ * edge), and p is to be an operator of each.  The console's own change
+ * (p NULL, or the console) is not judged.  Why not into why.
+ */
+static bool
+touch_ok(const struct principal *p, const ucl_object_t *was,
+    const ucl_object_t *now, char *why, size_t len)
+{
+	ucl_object_t		*edges, *dw, *dn, *a, *b;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	char			 who[96], sid[64], jail[64];
+	bool			 all, ok;
+
+	if (p == NULL || p->kind == P_CONSOLE)
+		return (true);
+	if (p->kind == P_NONE) {
+		snprintf(why, len, "changed for no one");
+		return (false);
+	}
+	dw = mef_export(was);
+	dn = mef_export(now);
+	if (identities_ok(dw, dn, why, len) != NULL) {
+		ucl_object_unref(dw);
+		ucl_object_unref(dn);
+		return (false);
+	}
+	edges = ucl_object_typed_new(UCL_OBJECT);
+	all = false;
+	mark_services(edges, was, now);
+	mark_document(edges, dw, dn, &all);
+	/* L3NM's own beside the services and the SD-WAN: every edge's. */
+	a = without(was, "vpn-services");
+	b = without(now, "vpn-services");
+	(void)ucl_object_delete_key(a, "arcana-l3nm:sdwan");
+	(void)ucl_object_delete_key(b, "arcana-l3nm:sdwan");
+	if (ucl_object_compare(a, b) != 0)
+		all = true;
+	ucl_object_unref(a);
+	ucl_object_unref(b);
+	if (all) {
+		mark_all(edges, was, dw);
+		mark_all(edges, now, dn);
+	}
+	ok = true;
+	it = NULL;
+	while (ok && (e = ucl_object_iterate(edges, &it, true)) != NULL) {
+		if (!sdwan_edge_split(ucl_object_key(e), sid, sizeof(sid), jail,
+		    sizeof(jail)))
+			snprintf(sid, sizeof(sid), "%s", ucl_object_key(e));
+		if (!principal_may_now(p, sid, ROLE_OPERATOR)) {
+			snprintf(why, len, "edge %s: host %s, which the change "
+			    "reaches, is not yours to change (%s)",
+			    ucl_object_key(e), sid, principal_who(p, who,
+			    sizeof(who)));
+			ok = false;
+		}
+	}
+	ucl_object_unref(edges);
+	ucl_object_unref(dw);
+	ucl_object_unref(dn);
+	return (ok);
+}
+
+/* Whom this thread changes the L3NM for; NULL for the console. */
+static const struct principal *
+writer(struct principal *p)
+{
+
+	hosts_acting(p);
+	return (p->kind == P_CONSOLE ? NULL : p);
 }
 
 /* /restconf/data's: the L3NM kept, its top-level node into top, where
@@ -197,14 +541,15 @@ reply(struct http_request *req, struct rcreq *r, int status, char *json)
 int
 api_l3nm(struct http_request *req)
 {
-	struct rcreq	*r;
-	ucl_object_t	*body = NULL;
-	cbl_dtree	*t;
-	cbl_yarena	*a;
-	const char	*why = NULL, *ctype = NULL;
-	char		 err[256], *json = NULL;
-	bool		 changed;
-	int		 st, status;
+	struct rcreq		*r;
+	struct principal	 p;
+	ucl_object_t		*body = NULL, *was, *now;
+	cbl_dtree		*t;
+	cbl_yarena		*a;
+	const char		*why = NULL, *ctype = NULL;
+	char			 err[256], refused[400], *json = NULL;
+	bool			 changed;
+	int			 st, status;
 
 	if (!guard(req, req->method != HTTP_METHOD_GET))
 		return (WEB_OK);
@@ -242,7 +587,26 @@ api_l3nm(struct http_request *req)
 		    "be read"));
 	}
 	restconf_run_own(r, t, a, &changed, &json, &status);
-	if (changed && l3nm_save(t, 0) != 0) {
+	/* Each edge the change reaches, at any depth, the writer's to
+	 * change (touch_ok()). */
+	if (changed) {
+		was = store_load(L3NM_FILE);
+		now = tree_json(t);
+		if (now == NULL || !touch_ok(writer(&p), ucl_object_lookup(was,
+		    L3NM_MEMBER), ucl_object_lookup(now, L3NM_MEMBER), refused,
+		    sizeof(refused))) {
+			free(json);
+			json = restconf_errors(now == NULL ? 500 : 403, now ==
+			    NULL ? "out of memory" : refused);
+			status = now == NULL ? 500 : 403;
+			changed = false;
+		}
+		if (was != NULL)
+			ucl_object_unref(was);
+		if (now != NULL)
+			ucl_object_unref(now);
+	}
+	if (changed && l3nm_save(t, 0, writer(&p)) != 0) {
 		free(json);
 		json = restconf_errors(500, "the services could not be kept");
 		status = 500;
@@ -296,17 +660,18 @@ error_of(const char *json, char *why, size_t len)
 }
 
 /*
- * Document doc imported into the L3NM kept, run as a PUT of it: 0, or
- * the HTTP status and why.  expect, unless -1, the version it was made
- * from; floor, the least the version kept is before it.  Under the
- * lock.
+ * Document doc imported into the L3NM kept, run as a PUT of it, for who
+ * (NULL: the console's own), each edge it changes theirs (touch_ok()):
+ * 0, or the HTTP status and why.  expect, unless -1, the version it was
+ * made from; floor, the least the version kept is before it.  Under
+ * the lock.
  */
 static int
-put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor, char *why,
-    size_t len)
+put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor,
+    const struct principal *who, char *why, size_t len)
 {
 	struct rcreq	*r;
-	ucl_object_t	*o, *y, *body;
+	ucl_object_t	*o, *y, *body, *now;
 	cbl_dtree	*t;
 	cbl_yarena	*a;
 	const char	*w = NULL;
@@ -326,11 +691,11 @@ put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor, char *why,
 	y = ucl_object_lookup(o, L3NM_MEMBER) != NULL ? ucl_object_copy(
 	    ucl_object_lookup(o, L3NM_MEMBER)) : ucl_object_typed_new(
 	    UCL_OBJECT);
-	ucl_object_unref(o);
 	mef_import(doc, y);
 	body = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(body, y, L3NM_MEMBER, 0, false);
 	if ((r = restconf_parse_own(L3NM_PATH, NULL, &w)) == NULL) {
+		ucl_object_unref(o);
 		ucl_object_unref(body);
 		snprintf(why, len, "%s", w != NULL ? w : "out of memory");
 		return (500);
@@ -338,6 +703,7 @@ put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor, char *why,
 	if ((status = restconf_prepare(r, HTTP_METHOD_PUT,
 	    "application/yang-data+json", body, &w)) != 0) {
 		snprintf(why, len, "as L3NM: %s", w != NULL ? w : "refused");
+		ucl_object_unref(o);
 		restconf_free(r);
 		return (status >= 500 ? 500 : 400);
 	}
@@ -346,21 +712,33 @@ put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor, char *why,
 	    sizeof(err))) == NULL) {
 		if (a != NULL)
 			cbl_yarena_free(a);
+		ucl_object_unref(o);
 		restconf_free(r);
 		snprintf(why, len, "the services kept could not be read");
 		return (500);
 	}
 	restconf_run_own(r, t, a, &changed, &json, &status);
+	/* Judged as kept, both sides RESTCONF's own JSON of it. */
+	now = status < 300 ? tree_json(t) : NULL;
 	if (status >= 300) {
 		error_of(json, why, len);
 		status = status >= 500 ? 500 : 400;
-	} else if (l3nm_save(t, floor) != 0) {
+	} else if (now == NULL) {
+		snprintf(why, len, "out of memory");
+		status = 500;
+	} else if (!touch_ok(who, ucl_object_lookup(o, L3NM_MEMBER),
+	    ucl_object_lookup(now, L3NM_MEMBER), why, len))
+		status = 403;
+	else if (l3nm_save(t, floor, who) != 0) {
 		snprintf(why, len, "the services could not be kept");
 		status = 500;
 	} else {
 		restconf_own_changed(L3NM_URI);
 		status = 0;
 	}
+	if (now != NULL)
+		ucl_object_unref(now);
+	ucl_object_unref(o);
 	free(json);
 	cbl_dtree_free(t);
 	cbl_yarena_free(a);
@@ -399,7 +777,7 @@ l3nm_sdwan_migrate(void)
 	done = mef_has_sdwan(ucl_object_lookup(o, L3NM_MEMBER));
 	ucl_object_unref(o);
 	rc = done ? 0 : put_doc(old, -1, ucl_object_toint(ucl_object_lookup(
-	    old, "version")) - 1, why, sizeof(why));
+	    old, "version")) - 1, NULL, why, sizeof(why));
 	if (rc == 0 && store_save(MEF_BACKUP, old) == 0 &&
 	    store_remove(MEF_FILE) == 0)
 		thread_log(LOG_NOTICE, "%s: %s as L3NM, kept as %s", MEF_FILE,
@@ -451,18 +829,20 @@ l3nm_kept(void)
 }
 
 /* y, an l3vpn-ntw's value, merged into the L3NM kept as RESTCONF's
- * PATCH of it: 0, or the HTTP status and why. */
+ * PATCH of it, for whom this thread acts for, each edge it changes
+ * theirs: 0, or the HTTP status and why. */
 int
 l3nm_merge(const ucl_object_t *y, char *why, size_t len)
 {
-	struct rcreq	*r;
-	ucl_object_t	*body;
-	cbl_dtree	*t;
-	cbl_yarena	*a;
-	const char	*w = NULL;
-	char		 err[256], *json = NULL;
-	bool		 changed;
-	int		 status;
+	struct rcreq		*r;
+	struct principal	 p;
+	ucl_object_t		*body, *was, *now;
+	cbl_dtree		*t;
+	cbl_yarena		*a;
+	const char		*w = NULL;
+	char			 err[256], *json = NULL;
+	bool			 changed;
+	int			 status;
 
 	body = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(body, ucl_object_copy(y), L3NM_MEMBER, 0, false);
@@ -490,10 +870,21 @@ l3nm_merge(const ucl_object_t *y, char *why, size_t len)
 		return (500);
 	}
 	restconf_run_own(r, t, a, &changed, &json, &status);
+	was = now = NULL;
+	if (status < 300 && changed) {
+		was = store_load(L3NM_FILE);
+		now = tree_json(t);
+	}
 	if (status >= 300) {
 		error_of(json, why, len);
 		status = status >= 500 ? 500 : 400;
-	} else if (changed && l3nm_save(t, 0) != 0) {
+	} else if (changed && (now == NULL || !touch_ok(writer(&p),
+	    ucl_object_lookup(was, L3NM_MEMBER), ucl_object_lookup(now,
+	    L3NM_MEMBER), why, len))) {
+		if (now == NULL)
+			snprintf(why, len, "out of memory");
+		status = now == NULL ? 500 : 403;
+	} else if (changed && l3nm_save(t, 0, writer(&p)) != 0) {
 		snprintf(why, len, "the services could not be kept");
 		status = 500;
 	} else {
@@ -502,6 +893,10 @@ l3nm_merge(const ucl_object_t *y, char *why, size_t len)
 		status = 0;
 	}
 	pthread_mutex_unlock(&l3nm_lock);
+	if (was != NULL)
+		ucl_object_unref(was);
+	if (now != NULL)
+		ucl_object_unref(now);
 	free(json);
 	cbl_dtree_free(t);
 	cbl_yarena_free(a);
@@ -509,17 +904,21 @@ l3nm_merge(const ucl_object_t *y, char *why, size_t len)
 	return (status);
 }
 
-/* Document doc kept, as L3NM: 0, or the HTTP status and why (409: not
- * made from version expect, unless that is -1). */
+/*
+ * Document doc kept, as L3NM, for whom this thread acts for, each edge
+ * it changes theirs: 0, or the HTTP status and why (409: not made from
+ * version expect, unless that is -1; 403: an edge not theirs).
+ */
 int
 l3nm_sdwan_put(const ucl_object_t *doc, int64_t expect, char *why,
     size_t len)
 {
-	int	rc;
+	struct principal	p;
+	int			rc;
 
 	l3nm_sdwan_migrate();
 	pthread_mutex_lock(&l3nm_lock);
-	rc = put_doc(doc, expect, 0, why, len);
+	rc = put_doc(doc, expect, 0, writer(&p), why, len);
 	pthread_mutex_unlock(&l3nm_lock);
 	return (rc);
 }
