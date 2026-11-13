@@ -20,6 +20,11 @@ APP_SRCS=	cfgfiles.c cluster.c plugins.c glmap.c users.c pfxlists.c feeds.c ifla
 UCL_SRCS=	ucl_emitter_streamline.c ucl_emitter_utils.c ucl_emitter.c \
 		ucl_hash.c ucl_msgpack.c ucl_parser.c ucl_schema.c ucl_sexp.c \
 		ucl_util.c
+# A libucl that reads and writes CBOR has it in a file of its own, which
+# the parser and the emitter then call.
+.if exists(${LIBUCL_SRC}/src/ucl_cbor.c)
+UCL_SRCS+=	ucl_cbor.c
+.endif
 YAML_SRCS=	api.c dumper.c emitter.c loader.c parser.c reader.c scanner.c \
 		writer.c
 
