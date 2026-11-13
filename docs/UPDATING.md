@@ -47,6 +47,14 @@ The build's programs run with the build directory
 and builds its system libraries into it the first time, which takes a
 few minutes more.
 
+`make install` runs as root in the tree the build user built, so before
+it does the agent holds the tree to the commit it fetched (agent
+0.285.0): no process of the build user's still running, `git status`
+(as the build user) saying nothing changed, `HEAD` the commit fetched,
+and no file changed since the fetch but beneath an `obj` directory;
+otherwise nothing is installed, and the reply says what changed. A
+build whose makefiles write into the source tree is refused so.
+
 It needs on that host what building Arcana needs (see the README),
 Emscripten included, and its settings in
 `/usr/local/etc/arcana/config.mk`. A console in a container is updated

@@ -17,6 +17,8 @@
  * sshd reloaded; in safe mode, that file is put back unless the change
  * is confirmed.  A CA key given to sign the host keys is on the disk
  * only while ssh-keygen reads it, in /etc/ssh, readable by root alone.
+ * A key authorized is every line of what is given, each one public key
+ * and its comment, options apart (options), written as checked.
  */
 
 #include <sys/param.h>
@@ -337,6 +339,99 @@ key_obj(struct work *w, const char *line)
 		    s.p, s.n)), "ca", 0, false);
 	ucl_object_insert_key(o, c, "certificate", 0, false);
 	return (o);
+}
+
+/*
+ * The keys an authorize adds, every line of text one public key of a
+ * type sshd takes for a user, "type base64 [comment]": no options (a
+ * key's options are the options verb's, checked there), no certificate,
+ * a comment of printable characters.  Each line as it is to be
+ * written, its key's fingerprint in fps[i]; NULL and why in *errp for
+ * a text any line of which is not one.
+ */
+static char **
+authorized_lines(struct work *w, const char *text, const char ***fpsp,
+    size_t *np, const char **errp)
+{
+	static const char *const types[] = { "ssh-ed25519", "ssh-rsa",
+	    "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+	    "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com",
+	    "sk-ecdsa-sha2-nistp256@openssh.com" };
+	const unsigned char	*c;
+	ucl_object_t		*k;
+	const char		*l, *e, *type, *b64, *cm, **fps;
+	char			**v, *line;
+	size_t			 n, i, tlen, blen, clen, ln;
+
+	for (l = text, n = 1; (l = strchr(l, '\n')) != NULL; l++)
+		n++;
+	v = wcalloc(w, n, sizeof(*v));
+	fps = wcalloc(w, n, sizeof(*fps));
+	n = 0;
+	for (l = text, ln = 1; *l != '\0'; l = *e != '\0' ? e + 1 : e, ln++) {
+		e = l + strcspn(l, "\n");
+		clen = (size_t)(e - l);
+		if (clen > 0 && l[clen - 1] == '\r')
+			clen--;
+		if (strspn(l, " \t") >= clen)
+			continue;
+		line = wstrndup(w, l, clen);
+		type = line + strspn(line, " \t");
+		tlen = strcspn(type, " \t");
+		for (i = 0; i < nitems(types); i++)
+			if (strlen(types[i]) == tlen && strncmp(type, types[i],
+			    tlen) == 0)
+				break;
+		if (i == nitems(types)) {
+			*errp = wfmt(w, "ssh: line %zu is not a public key: "
+			    "type base64 [comment], of ssh-ed25519, ssh-rsa, "
+			    "ecdsa-sha2-nistp256/384/521 or a security key's; "
+			    "options are set apart (options)", ln);
+			return (NULL);
+		}
+		b64 = type + tlen + strspn(type + tlen, " \t");
+		blen = strcspn(b64, " \t");
+		cm = b64 + blen + strspn(b64 + blen, " \t");
+		for (c = (const unsigned char *)cm; *c != '\0'; c++)
+			if (*c < 0x20 || *c == 0x7f)
+				break;
+		if (*c != '\0' || strlen(cm) > 1024) {
+			*errp = wfmt(w, "ssh: line %zu: a comment is one line "
+			    "of printable characters", ln);
+			return (NULL);
+		}
+		line = *cm != '\0' ? wfmt(w, "%.*s %.*s %s", (int)tlen, type,
+		    (int)blen, b64, cm) : wfmt(w, "%.*s %.*s", (int)tlen, type,
+		    (int)blen, b64);
+		/* Read back as that key, of that type. */
+		if ((k = key_obj(w, line)) == NULL || ucl_object_lookup(k,
+		    "options") != NULL || ucl_object_lookup(k,
+		    "certificate") != NULL) {
+			if (k != NULL)
+				ucl_object_unref(k);
+			*errp = wfmt(w, "ssh: line %zu is no key OpenSSH reads",
+			    ln);
+			return (NULL);
+		}
+		v[n] = line;
+		fps[n] = wstrdup(w, ucl_object_tostring(ucl_object_lookup(k,
+		    "fingerprint")));
+		ucl_object_unref(k);
+		for (i = 0; i < n; i++)
+			if (strcmp(fps[i], fps[n]) == 0) {
+				*errp = wfmt(w, "ssh: line %zu is a key of line "
+				    "%zu again", ln, i + 1);
+				return (NULL);
+			}
+		n++;
+	}
+	if (n == 0) {
+		*errp = "ssh: a key, one line of authorized_keys";
+		return (NULL);
+	}
+	*fpsp = fps;
+	*np = n;
+	return (v);
 }
 
 /* Each key of a file of them, one a line. */
@@ -802,11 +897,12 @@ ssh_check(const struct arc_job_spec *sp)
 		if (sp->safe)
 			return ("ssh: a key is not taken back by itself: not in "
 			    "safe mode");
-		if (sp->text == NULL || sp->text[0] == '\0' || strchr(sp->text,
-		    '\n') != NULL || strlen(sp->text) > 16384)
-			return (strcmp(sp->verb, "authorize") == 0 ? "ssh: a key, "
-			    "one line of authorized_keys" : "ssh: the key's "
-			    "fingerprint, SHA256:...");
+		if (sp->text == NULL || sp->text[0] == '\0' || (strchr(sp->text,
+		    '\n') != NULL && strcmp(sp->verb, "authorize") != 0) ||
+		    strlen(sp->text) > 16384)
+			return (strcmp(sp->verb, "authorize") == 0 ? "ssh: a key "
+			    "a line, as authorized_keys has them" : "ssh: the "
+			    "key's fingerprint, SHA256:...");
 		if (strcmp(sp->verb, "unauthorize") == 0 && strncmp(sp->text,
 		    "SHA256:", 7) != 0)
 			return ("ssh: the key's fingerprint, SHA256:...");
@@ -1200,30 +1296,36 @@ authorize(struct work *w, const struct arc_job_spec *sp, int how,
 	if (text == NULL)
 		text = wstrdup(w, "");
 	if (add) {
-		if ((k = key_obj(w, sp->text)) == NULL) {
+		char		**keys;
+		const char	**fps;
+		size_t		  nk, j;
+
+		/* What was checked is what is written, a key a line. */
+		if ((keys = authorized_lines(w, sp->text, &fps, &nk, errp)) ==
+		    NULL) {
 			close(dfd);
-			*errp = "ssh: that is no key OpenSSH reads";
 			return (-1);
 		}
-		fp = wstrdup(w, ucl_object_tostring(ucl_object_lookup(k,
-		    "fingerprint")));
-		ucl_object_unref(k);
-		out = wfmt(w, "%s%s%s\n", text, len > 0 && text[len - 1] != '\n' ?
-		    "\n" : "", sp->text);
+		out = wfmt(w, "%s%s", text, len > 0 && text[len - 1] != '\n' ?
+		    "\n" : "");
+		for (j = 0; j < nk; j++)
+			out = wfmt(w, "%s%s\n", out, keys[j]);
 		/* Not twice. */
 		for (l = text; *l != '\0'; l = *e != '\0' ? e + 1 : e) {
 			e = l + strcspn(l, "\n");
-			if ((k = key_obj(w, wstrndup(w, l, (size_t)(e - l)))) !=
-			    NULL) {
-				cut = strcmp(ucl_object_tostring(
-				    ucl_object_lookup(k, "fingerprint")), fp) == 0;
-				ucl_object_unref(k);
-				if (cut) {
-					close(dfd);
-					*errp = wfmt(w, "ssh: %s has that key "
-					    "already (%s)", sp->user, fp);
-					return (-1);
-				}
+			if ((k = key_obj(w, wstrndup(w, l, (size_t)(e - l)))) ==
+			    NULL)
+				continue;
+			fp = ucl_object_tostring(ucl_object_lookup(k,
+			    "fingerprint"));
+			for (j = 0; j < nk && strcmp(fp, fps[j]) != 0; j++)
+				;
+			ucl_object_unref(k);
+			if (j < nk) {
+				close(dfd);
+				*errp = wfmt(w, "ssh: %s has that key already "
+				    "(%s)", sp->user, fps[j]);
+				return (-1);
 			}
 		}
 	} else if (how == AK_OPTIONS) {

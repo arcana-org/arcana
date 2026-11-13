@@ -260,8 +260,8 @@ quoted(FILE *fp, const char *s)
 char *
 smtpd_render(struct work *w, const ucl_object_t *in, const char **errp)
 {
-	static const char *const owned[] = { "listen ", "table ", "pki ",
-	    "action ", "match ", "include ", "filter " };
+	static const char *const owned[] = { "listen", "table", "pki",
+	    "action", "match", "include", "filter" };
 	const ucl_object_t	*l, *e, *rel, *pol, *del;
 	ucl_object_iter_t	 it, fit;
 	FILE			*b;
@@ -550,15 +550,36 @@ smtpd_render(struct work *w, const ucl_object_t *in, const char **errp)
 		*errp = "the own lines are 16 KB at most";
 		goto bad;
 	}
+	/*
+	 * Each line's first word, after its blanks, as smtpd(8) reads it;
+	 * none continued (a backslash at its end joins the next to it,
+	 * wherever, so a word could be made of two lines).
+	 */
 	for (p = own; p != NULL && *p != '\0'; p = strchr(p, '\n') != NULL ?
-	    strchr(p, '\n') + 1 : NULL)
-		for (i = 0; i < nitems(owned); i++)
-			if (strncmp(p, owned[i], strlen(owned[i])) == 0) {
-				*errp = wfmt(w, "the own lines may not %.*s, which "
-				    "the form does", (int)strlen(owned[i]) - 1,
-				    owned[i]);
+	    strchr(p, '\n') + 1 : NULL) {
+		const char	*q;
+		size_t		 kl;
+
+		n = strcspn(p, "\n");
+		if (n > 0 && p[n - 1] == '\r')
+			n--;
+		if (n > 0 && p[n - 1] == '\\') {
+			*errp = "the own lines are not continued: no backslash "
+			    "at a line's end";
+			goto bad;
+		}
+		q = p + strspn(p, " \t");
+		for (i = 0; i < nitems(owned); i++) {
+			kl = strlen(owned[i]);
+			if (strncmp(q, owned[i], kl) == 0 && (q[kl] == ' ' ||
+			    q[kl] == '\t' || q[kl] == '\r' || q[kl] == '\n' ||
+			    q[kl] == '\0')) {
+				*errp = wfmt(w, "the own lines may not %s, which "
+				    "the form does", owned[i]);
 				goto bad;
 			}
+		}
+	}
 	if (own != NULL && own[strspn(own, " \t\r\n")] != '\0')
 		fprintf(b, "# The admin's own:\n%s%s", own, own[strlen(own) -
 		    1] != '\n' ? "\n" : "");

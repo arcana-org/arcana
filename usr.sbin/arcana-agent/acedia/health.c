@@ -284,15 +284,16 @@ swap_list(struct work *w)
 /*
  * The helper's "zfs-pipe zfs snapshot target from recursive": zfs send
  * of the snapshot into zfs receive of the target, which is not mounted
- * and must not be there.  from is the snapshot both have, for what
- * changed since, or "-"; recursive "r" for the datasets under it too.
+ * and must not be there, its properties the target's to decide
+ * (zfs_recv_opts).  from is the snapshot both have, for what changed
+ * since, or "-"; recursive "r" for the datasets under it too.
  */
 int
 zfs_pipe(int argc, char **argv)
 {
-	const char	*sv[8], *rv[6];
+	const char	*sv[8], *rv[32];
 	pid_t		 a, b;
-	int		 fd[2], st, sa, n;
+	int		 fd[2], st, sa, n, i;
 
 	if (argc != 6)
 		return (2);
@@ -307,11 +308,13 @@ zfs_pipe(int argc, char **argv)
 	}
 	sv[n++] = argv[2];
 	sv[n] = NULL;
-	rv[0] = argv[1];
-	rv[1] = "receive";
-	rv[2] = "-u";
-	rv[3] = argv[3];
-	rv[4] = NULL;
+	n = 0;
+	rv[n++] = argv[1];
+	rv[n++] = "receive";
+	for (i = 0; zfs_recv_opts[i] != NULL; i++)
+		rv[n++] = zfs_recv_opts[i];
+	rv[n++] = argv[3];
+	rv[n] = NULL;
 	if (pipe(fd) == -1 || (a = fork()) == -1)
 		return (1);
 	if (a == 0) {

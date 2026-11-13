@@ -607,6 +607,27 @@ bfd_watch(void *arg __unused)
 }
 
 /*
+ * What a BIRD of a jail's says, for a fault, which goes as it is to mail
+ * and to Telegram: one line, no control character, max bytes at most,
+ * not cut inside a character.
+ */
+static const char *
+bird_said(struct work *w, const char *s, size_t max)
+{
+	char	*t;
+	size_t	 n;
+
+	n = strlen(s);
+	if (n > max) {
+		for (n = max; n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80;
+		    n--)
+			;
+	}
+	t = wstrndup(w, s, n);
+	return (wname(w, t));
+}
+
+/*
  * An instance that does not answer is a fault (Critical: nothing is
  * routed by it), and each BGP neighbour of it that is not up is one
  * (Major), cleared when it is (Table 4).
@@ -675,6 +696,10 @@ protocols_watch(struct work *w, const struct instance *in)
 		}
 		if (k < 4 || strcmp(f[1], "BGP") != 0)
 			continue;
+		f[0] = (char *)(uintptr_t)bird_said(w, f[0], 64);
+		f[3] = (char *)(uintptr_t)bird_said(w, f[3], 32);
+		if (rest != NULL)
+			rest = (char *)(uintptr_t)bird_said(w, rest, 200);
 		snprintf(obj, sizeof(obj), "%s/%s", name, f[0]);
 		if (strcmp(f[3], "up") == 0) {
 			(void)was_up(obj, true);

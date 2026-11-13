@@ -17,6 +17,14 @@
  * writes what came to zfs receive, and only then gives the room it
  * took back to the sender of it.  A dataset is never overwritten: no
  * -F, and nothing is received into a pool's own dataset.
+ *
+ * What a stream of -R or -p carries of its properties is the sender's
+ * to say, and the receiving side decides (zfs_recv_opts, the helper's
+ * zfs-pipe too): nothing mounted, now (-u) or at the next boot
+ * (canmount=noauto), where it would mount the destination's (-x
+ * mountpoint), and what makes a dataset a way into the host (setuid,
+ * exec, devices, jailed, overlay, sharenfs, sharesmb, keylocation)
+ * inherited from the destination, as if the stream had none of them.
  */
 
 #include <sys/param.h>
@@ -53,7 +61,7 @@ struct chunk {
 struct xfer {
 	cbl_stream		*s;
 	bool			 recv;
-	char			*argv[8];
+	char			*argv[32];
 	pid_t			 pid;
 	int			 io;		/* send's stdout, receive's stdin */
 	int			 err;		/* its stderr */
@@ -503,6 +511,12 @@ zfs_send_open(cbl_req *req, const struct arcana_stream_open *rq,
 	return (0);
 }
 
+/* zfs receive's options: the receiving side's say over the stream's. */
+const char *const zfs_recv_opts[] = { "-u", "-x", "mountpoint", "-o",
+    "canmount=noauto", "-x", "setuid", "-x", "exec", "-x", "devices",
+    "-x", "jailed", "-x", "overlay", "-x", "sharenfs", "-x", "sharesmb",
+    "-x", "keylocation", NULL };
+
 int
 zfs_receive_open(cbl_req *req, const struct arcana_stream_open *rq,
     cbl_stream *s)
@@ -510,6 +524,7 @@ zfs_receive_open(cbl_req *req, const struct arcana_stream_open *rq,
 	struct arcana_stream_opened	 rsp;
 	struct xfer			*x;
 	cbl_msg				*msg;
+	size_t				 i, n;
 
 	/* Never into a pool's own dataset: a dataset under one. */
 	if (rq->name.n != 1 || !dataset_name(rq->name.v[0]) ||
@@ -524,10 +539,12 @@ zfs_receive_open(cbl_req *req, const struct arcana_stream_open *rq,
 		    NULL, 0, -1);
 		return (EBUSY);
 	}
-	x->argv[0] = strdup(opts.zfs_bin);
-	x->argv[1] = strdup("receive");
-	x->argv[2] = strdup("-u");
-	x->argv[3] = strdup(rq->name.v[0]);
+	n = 0;
+	x->argv[n++] = strdup(opts.zfs_bin);
+	x->argv[n++] = strdup("receive");
+	for (i = 0; zfs_recv_opts[i] != NULL; i++)
+		x->argv[n++] = strdup(zfs_recv_opts[i]);
+	x->argv[n++] = strdup(rq->name.v[0]);
 	if (xfer_spawn(x) == -1) {
 		(void)cbl_req_set_err(req, strerror(errno), NULL, 0, -1);
 		x->refs = 1;

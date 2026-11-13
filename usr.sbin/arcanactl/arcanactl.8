@@ -801,6 +801,16 @@ reads the core with its program (named, or found by the core's name),
 or
 .Xr gdb 1
 when lldb cannot.
+Only a core the kernel said it dumped
+.Pq Dq exited on signal ... (core dumped)
+of that program and pid, where
+.Va kern.corefile
+puts one, a regular file of one link of the process's user or root, is
+read, and a program of that name; the agent opens it, without a link,
+and the debugger reads it on its standard input, run as
+.Ql nobody
+without init files or scripts, within limits of CPU time, memory and
+time.
 A SIGBUS whose code is
 .Dv BUS_OOMERR
 was a page fault the kernel found no memory for.
@@ -1286,7 +1296,17 @@ which the rc script makes writable by the relay's user),
 .Cm key Ns = Ns Ar key
 (kept when not given;
 .Cm nokey
-takes it away; never in a trace),
+takes it away; never in a trace; but speederv2 takes its key on its
+command line alone, so any local user who may see other users'
+processes reads it with
+.Xr ps 1
+while the relay runs, and in
+.Pa /etc/rc.conf ,
+where
+.Xr sysrc 8
+writes the flags, unless that file is kept from them: the read's
+.Cm key
+says one is set, and so this),
 .Cm extra Ns = Ns Ar words
 (options of speederv2's own, such as
 .Fl -jitter
@@ -1531,7 +1551,10 @@ first),
 .Cm authorize
 and
 .Cm unauthorize
-add and take away a user's authorized key,
+add and take away a user's authorized key
+(every line of
+.Ar keyfile
+one public key, without options: a line that is not refuses them all),
 .Cm options
 changes a key's options in place (principals= among them),
 .Cm sign

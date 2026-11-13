@@ -27,6 +27,9 @@ ychange.c: ${ARC_TOP}/share/arcana/jobs.awk ${ARC_TOP}/share/arcana/jobs.yaml \
 
 CFLAGS+=	-I${.CURDIR}/../../www/arcana-console \
 		-I${.CURDIR}/../arcana-agent/ira ${UCL_CFLAGS}
+# Casper for real: without it <libcasper.h> gives fileargs(3) as plain
+# open(2) and caph_enter_casper() enters no capability mode at all.
+CFLAGS+=	-DHAVE_CASPER
 LDADD+=		-lxo -lmd -lcasper -lcap_fileargs -lnv -lz ${UCL_LIBS}
 
 .include <bsd.prog.mk>

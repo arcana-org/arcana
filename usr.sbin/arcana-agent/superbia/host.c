@@ -66,7 +66,7 @@ host_info(struct work *w, struct host_facts *h)
 	} else
 		step_end(w, step, false, NULL);
 	if (gethostname(name, sizeof(name)) == 0)
-		h->hostname = wtext(w, wstrdup(w, name));
+		h->hostname = wname(w, wstrdup(w, name));
 	h->has_osreldate = true;
 	h->osreldate = (uint32_t)getosreldate();
 

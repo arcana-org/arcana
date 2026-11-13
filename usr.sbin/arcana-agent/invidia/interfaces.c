@@ -133,6 +133,7 @@ extras(int s4, int s6, const char *name, ucl_object_t *o)
 	struct in6_ifreq	 ifr6;
 	ucl_object_t		*t;
 	char			 descr[256], a[NI_MAXHOST], b[NI_MAXHOST];
+	char			 vis[sizeof(descr) * 4];
 
 	/* Its table, and a tunnel's for its outer packets: told when they
 	 * are not the first, which is most interfaces'. */
@@ -149,8 +150,11 @@ extras(int s4, int s6, const char *name, ucl_object_t *o)
 	ifr.ifr_buffer.buffer = descr;
 	ifr.ifr_buffer.length = sizeof(descr);
 	if (s4 != -1 && ioctl(s4, SIOCGIFDESCR, &ifr) == 0 &&
-	    ifr.ifr_buffer.buffer == descr && ifr.ifr_buffer.length > 1)
-		put(o, "description", ucl_object_fromstring(descr));
+	    ifr.ifr_buffer.buffer == descr && ifr.ifr_buffer.length > 1) {
+		descr[sizeof(descr) - 1] = '\0';
+		put(o, "description", ucl_object_fromstring(text_fit(descr,
+		    true) ? descr : text_vis(vis, descr, true)));
+	}
 
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));

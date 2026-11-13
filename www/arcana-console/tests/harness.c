@@ -669,6 +669,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    /* The commit a clone is at; the head, from ./head. */
 	    "[ \"$1\" = -C ] && [ \"$3\" = rev-parse ] && { cat head 2>/dev/null "
 	    "|| echo 1111111111111111111111111111111111111111; exit 0; }\n"
+	    /* Nothing of the tree changed. */
+	    "[ \"$1\" = -C ] && [ \"$3\" = status ] && exit 0\n"
 	    /* ./slow: the head is a while coming. */
 	    "[ \"$1\" = ls-remote ] && [ -f slow ] && sleep 6\n"
 	    "[ \"$1\" = ls-remote ] && { printf '%s\\tHEAD\\n' \"$(cat head "
@@ -964,9 +966,9 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "'create -o encryption=aes-256-gcm -o keyformat=passphrase -o "
 	    "keylocation=prompt tank/secret') echo \"newkey=$(cat)\" >> "
 	    "storage.log ;;\n"
-	    "'receive -u tank/fail') cat > /dev/null; echo \"cannot receive "
-	    "new filesystem stream: destination 'tank/fail' exists\" >&2; "
-	    "exit 1 ;;\n"
+	    "'receive -u '*' tank/fail') cat > /dev/null; echo \"cannot "
+	    "receive new filesystem stream: destination 'tank/fail' exists\" "
+	    ">&2; exit 1 ;;\n"
 	    "'receive -u '*) cat > zrecv.data ;;\n"
 	    "esac\nexit 0\n");
 	put("fake-zpool", "#!/bin/sh\necho \"zpool $*\" >> storage.log\n"

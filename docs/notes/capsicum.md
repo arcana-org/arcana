@@ -26,14 +26,25 @@ before entering.
 
 - **arcanactl(8)**: capability mode once the agent is connected and TLS
   is up (`cbl_conn_connect` resolves and connects before; the TLS
-  files are loaded before).  The files named on the command line,
-  and the file behind an `@word`, are opened through Casper's
-  `cap_fileargs` service (read: `CAP_READ|CAP_FSTAT|CAP_SEEK`); for
-  `agent-build` alone a second fileargs instance opens the output
-  program to write (`O_CREAT|O_TRUNC`, 0755).  The time zone and the
-  message catalogs are cached first (`caph_cache_tzdata`,
-  `caph_cache_catpages`).  Every reply the agent sends is decoded and
-  printed in the sandbox.  Links `-lcasper -lcap_fileargs -lnv`.
+  files, `-K`'s key among them, are loaded before).  Casper's
+  `cap_fileargs` service opens the files the command may read (read:
+  `CAP_READ|CAP_FSTAT|CAP_SEEK`), and no other: its own words, after
+  the verb, and the file behind an `@word`, with `tls` `-C`'s
+  certificate too; never the global options' files, so `-K`'s key is
+  out of reach once in capability mode (a word naming it is left out
+  too).  `agent-build` reads none, and a second fileargs instance
+  opens its output program alone to write (`-o`'s, or `arcana-agent`;
+  `O_CREAT|O_TRUNC`, 0755).  The time zone and the message catalogs
+  are cached first (`caph_cache_tzdata`, `caph_cache_catpages`).
+  Every reply the agent sends is decoded and printed in the sandbox,
+  each string of it through `vis_text()` in text output and on the
+  standard error (C0, DEL, C1 and bytes that are no UTF-8 escaped),
+  libxo's JSON and XML escaping for themselves.  Links `-lcasper
+  -lcap_fileargs -lnv`, built with `-DHAVE_CASPER`: without it
+  `<libcasper.h>` gives fileargs as plain `open(2)` and
+  `caph_enter_casper()` enters nothing, which is how it was built
+  until 2026-11-13 (no sandbox at all then); the read rights carry
+  `CAP_FCNTL`, which `fdopen(3)` asks of `fileargs_fopen()`.
 - **arcana-enrol(8)**: the directory for the files is opened first,
   the runner of `sysrc` and `service` is forked first (a child that
   waits for a `g` on a pipe, since capability mode cannot run

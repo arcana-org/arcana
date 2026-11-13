@@ -14,7 +14,11 @@
  * /capabilities is answered with the receiver's capabilities, JSON
  * among them; a POST whose path ends in /relay-notification with 204;
  * anything else 404.  While the file "down" exists beside the log, a
- * connection is closed at once: the receiver is away.
+ * connection is closed at once: the receiver is away.  Each connection
+ * taken is logged as "accepted".  While the file "unsized" exists, a
+ * POST is answered 200 with no Content-Length, the connection kept,
+ * and what follows the head, sent apart, looks like another reply: a
+ * client that reads the next reply there takes a 500.
  */
 
 #include <sys/socket.h>
@@ -51,9 +55,24 @@ reply(SSL *ssl, int status, const char *text, const char *body)
 	return (0);
 }
 
+/* A reply of no length, and a stale one behind it. */
+static int
+unsized(SSL *ssl)
+{
+	static const char	head[] = "HTTP/1.1 200 OK\r\nContent-Type: "
+	    "application/yang-data+json\r\n\r\n";
+	static const char	stale[] = "HTTP/1.1 500 Stale\r\n"
+	    "Content-Length: 0\r\n\r\n";
+
+	if (SSL_write(ssl, head, (int)strlen(head)) <= 0)
+		return (-1);
+	usleep(100000);
+	return (SSL_write(ssl, stale, (int)strlen(stale)) <= 0 ? -1 : 0);
+}
+
 /* The requests of one connection, until it ends. */
 static void
-serve(SSL *ssl, FILE *log)
+serve(SSL *ssl, FILE *log, const char *nolen)
 {
 	char	buf[65536], method[16], path[512], auth[300], *e, *l;
 	size_t	len = 0, hlen, clen;
@@ -96,7 +115,8 @@ serve(SSL *ssl, FILE *log)
 		else if (strcmp(method, "POST") == 0 && strlen(path) >= 19 &&
 		    strcmp(path + strlen(path) - 19, "/relay-notification") ==
 		    0)
-			n = reply(ssl, 204, "No Content", NULL);
+			n = access(nolen, F_OK) == 0 ? unsized(ssl) : reply(ssl,
+			    204, "No Content", NULL);
 		else
 			n = reply(ssl, 404, "Not Found", "{}");
 		if (n != 0)
@@ -113,7 +133,7 @@ main(int argc, char *argv[])
 	SSL_CTX			*ctx;
 	SSL			*ssl;
 	FILE			*log;
-	char			 down[1024], *slash;
+	char			 down[1024], nolen[1024], *slash;
 	int			 ls, fd, on = 1;
 
 	if (argc != 6)
@@ -135,6 +155,8 @@ main(int argc, char *argv[])
 		    "down");
 	else
 		snprintf(down, sizeof(down), "down");
+	snprintf(nolen, sizeof(nolen), "%.*sunsized", (int)strlen(down) - 4,
+	    down);
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_len = sizeof(sin);
@@ -154,13 +176,15 @@ main(int argc, char *argv[])
 			close(fd);
 			continue;
 		}
+		fprintf(log, "accepted\n\n");
+		fflush(log);
 		if ((ssl = SSL_new(ctx)) == NULL) {
 			close(fd);
 			continue;
 		}
 		SSL_set_fd(ssl, fd);
 		if (SSL_accept(ssl) == 1)
-			serve(ssl, log);
+			serve(ssl, log, nolen);
 		SSL_free(ssl);
 		close(fd);
 	}

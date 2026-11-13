@@ -30,6 +30,7 @@
 #define	KERNEL_TYPES	48	/* of malloc types and of zones: the largest */
 #define	KERNEL_AVAIL	2000	/* module files offered, at most */
 #define	KERNEL_MODS	4000	/* modules named of one file, at most */
+#define	KLD_LIST_MAX	(64 * 1024)	/* rc.conf's kld_list, at most */
 
 struct use {
 	const char	*name;
@@ -363,27 +364,26 @@ kld_listed(struct work *w, const char *name)
 static int
 kld_list_set(struct work *w, const char *name, bool keep, const char **errp)
 {
-	const char	*v;
-	char		*words, *word, *rest, out[1024];
+	const char	*v, *out;
+	char		*words, *word, *rest;
 
 	if (keep && kld_listed(w, name))
 		return (0);
-	out[0] = '\0';
 	v = rc_get(w, "kld_list");
 	words = wstrdup(w, v != NULL ? v : "");
+	out = "";
 	for (rest = words; (word = strsep(&rest, " \t")) != NULL; ) {
 		if (word[0] == '\0' || (!keep && kld_same(word, name)))
 			continue;
-		if (strlen(out) + strlen(word) + 2 >= sizeof(out)) {
-			*errp = "kld_list would be too long";
-			return (-1);
-		}
-		snprintf(out + strlen(out), sizeof(out) - strlen(out), "%s%s",
-		    out[0] != '\0' ? " " : "", word);
+		out = wfmt(w, "%s%s%s", out, out[0] != '\0' ? " " : "", word);
 	}
 	if (keep)
-		snprintf(out + strlen(out), sizeof(out) - strlen(out), "%s%s",
-		    out[0] != '\0' ? " " : "", name);
+		out = wfmt(w, "%s%s%s", out, out[0] != '\0' ? " " : "", name);
+	/* Whole or not at all: rc.conf is read by sh(1), not cut. */
+	if (strlen(out) > KLD_LIST_MAX) {
+		*errp = "kld_list would be too long";
+		return (-1);
+	}
 	if (out[0] == '\0') {
 		rc_unset(w, "kld_list");
 		return (0);

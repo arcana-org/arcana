@@ -24,13 +24,13 @@ arcana_relay: ${.CURDIR}/../../../share/rc.d/arcana_relay
 YOBJ=		${.OBJDIR}/..
 # ycollect: what the collectors find: interfaces, routes, vnet jails.
 PROGS=		ycollect
-SRCS.ycollect=	ycollect.c yif.c yip.c yni.c ylne.c yrt.c rtimes.c \
+SRCS.ycollect=	ycollect.c yif.c yip.c yni.c ylne.c yrt.c rtimes.c textfit.c \
 		ymodel_schema.c
 LDADD.ycollect+=	${CBLINK_LIBS} -ljail -lnv \
 		${.OBJDIR}/../../../lib/libvarconf/libvarconf_pie.a
 # yni: FIBs as network instances, names in fibs.conf.
 PROGS+=		yni
-SRCS.yni=	yni_test.c yni.c yif.c yip.c ymodel_schema.c
+SRCS.yni=	yni_test.c yni.c yif.c yip.c textfit.c ymodel_schema.c
 LDADD.yni+=	${CBLINK_LIBS} -lnv \
 		${.OBJDIR}/../../../lib/libvarconf/libvarconf_pie.a
 # yrtadv: rtadvd.conf as the router advertisement submodule has it.
@@ -133,6 +133,13 @@ SRCS.kmsg=	kmsg_test.c kmsg.c
 CFLAGS.kmsg_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 CFLAGS.kmsg.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 LDADD.kmsg+=	${CBLINK_LIBS} -ljail -lpthread
+# crash: crashes.c alone, the host stood in for: which cores a
+# backtrace reads, and how its debugger runs.
+PROGS+=		crash
+SRCS.crash=	crash_test.c crashes.c
+CFLAGS.crash_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+CFLAGS.crashes.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.crash+=	${CBLINK_LIBS} ${UCL_LIBS}
 # faults: faults.c and events.c alone, the files and the YANG side
 # stood in for: objects whole, the list full, the writer, the control's
 # types, an owner's faults held to what it watches, events checked.

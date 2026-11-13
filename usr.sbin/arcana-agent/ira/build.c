@@ -24,17 +24,28 @@
  * O_NOFOLLOW (open_beneath()), the program and id_ed25519.pub fstat'ed
  * (a regular file of the build user's, one link) and read through that
  * descriptor, the program's SHA-256 logged before it goes back.
+ *
+ * The console's own update installs the whole tree, and make install
+ * runs as root in the build user's tree: before it does, the tree is
+ * held to the commit fetched (tree_unchanged(): no process of the
+ * build user's left, git as the build user saying HEAD is that commit
+ * and nothing of it changed, no file changed since the fetch but
+ * beneath an object directory), so the makefiles root runs are the
+ * commit's.  What an object directory holds is still the build's
+ * (docs/TODO.md: the install staged by the build user instead).
  */
 
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
 #include <sys/user.h>
 
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,13 +243,36 @@ key_lines(struct work *w, const char *out, size_t len, const char *name)
  * with the line that makes it when there is none.  The agent never
  * makes a user itself.
  */
+/* Does a process of uid's run (the agent's own aside)?  NULL, or which. */
+static const char *
+user_procs(struct work *w, uid_t uid)
+{
+	struct kinfo_proc	*kp;
+	size_t			 sz, i;
+	int			 mib[4];
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC;
+	mib[2] = KERN_PROC_UID;
+	mib[3] = (int)uid;
+	sz = 0;
+	if (sysctl(mib, 4, NULL, &sz, NULL, 0) == -1)
+		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
+	kp = wmalloc(w, sz + sizeof(*kp));
+	if (sysctl(mib, 4, kp, &sz, NULL, 0) == -1)
+		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
+	for (i = 0; i < sz / sizeof(*kp); i++)
+		if (kp[i].ki_pid != getpid())
+			return (wfmt(w, "%s, pid %d", wtext(w, kp[i].ki_comm),
+			    (int)kp[i].ki_pid));
+	return (NULL);
+}
+
 static const char *
 build_user_ok(struct work *w, struct passwd *pwp, char *buf, size_t len)
 {
-	struct kinfo_proc	*kp;
 	struct passwd		*pw;
-	size_t			 sz, i;
-	int			 mib[4];
+	const char		*why;
 
 	if (getpwnam_r(opts.build_user, pwp, buf, len, &pw) != 0 || pw ==
 	    NULL)
@@ -259,22 +293,9 @@ build_user_ok(struct work *w, struct passwd *pwp, char *buf, size_t len)
 		return (wfmt(w, "%s has a home of its own, %s: a user that "
 		    "builds owns nothing but the build directory (-d "
 		    "/nonexistent)", opts.build_user, pw->pw_dir));
-	mib[0] = CTL_KERN;
-	mib[1] = KERN_PROC;
-	mib[2] = KERN_PROC_UID;
-	mib[3] = (int)pw->pw_uid;
-	sz = 0;
-	if (sysctl(mib, 4, NULL, &sz, NULL, 0) == -1)
-		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
-	kp = wmalloc(w, sz + sizeof(*kp));
-	if (sysctl(mib, 4, kp, &sz, NULL, 0) == -1)
-		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
-	for (i = 0; i < sz / sizeof(*kp); i++)
-		if (kp[i].ki_pid != getpid())
-			return (wfmt(w, "%s runs other processes (%s, pid "
-			    "%d): builds run as a user nothing else is",
-			    opts.build_user, wtext(w, kp[i].ki_comm),
-			    (int)kp[i].ki_pid));
+	if ((why = user_procs(w, pw->pw_uid)) != NULL)
+		return (wfmt(w, "%s runs other processes (%s): builds run as a "
+		    "user nothing else is", opts.build_user, why));
 	return (NULL);
 }
 
@@ -1061,9 +1082,83 @@ agent_build(struct work *w, const char *source, const char *ref,
 }
 
 /*
+ * The tree in src as it was fetched at commit, at fetched: no process
+ * of the build user's left to change it; HEAD that commit, nothing of
+ * it modified and nothing new git does not ignore (git as the build
+ * user); no file changed since but beneath an object directory (obj)
+ * or git's own.  NULL, or why not.
+ */
+static const char *
+tree_unchanged(struct work *w, const char *src, const char *commit,
+    const struct timespec *fetched, bool unpriv)
+{
+	struct execres	 res;
+	const char	*argv[MAX_ARGS], *why;
+	char		*paths[2];
+	FTS		*fts;
+	FTSENT		*e;
+	int		 n;
+
+	if (unpriv && (why = user_procs(w, build_uid(true))) != NULL)
+		return (wfmt(w, "%s still runs a process (%s)", opts.build_user,
+		    why));
+	n = 0;
+	argv[n++] = opts.git_bin;
+	argv[n++] = "-C";
+	argv[n++] = src;
+	argv[n++] = "rev-parse";
+	argv[n++] = "HEAD";
+	argv[n] = NULL;
+	if (commit == NULL || run_as(w, unpriv, argv, &res) != 0 ||
+	    res.out == NULL || (why = commit_of(w, res.out, res.outlen)) ==
+	    NULL || strcmp(why, commit) != 0)
+		return (wfmt(w, "the tree is not at %s, the commit fetched",
+		    commit != NULL ? commit : "(none)"));
+	n = 3;
+	argv[n++] = "status";
+	argv[n++] = "--porcelain";
+	argv[n++] = "--ignore-submodules=none";
+	argv[n++] = "--untracked-files=all";
+	argv[n] = NULL;
+	if (run_as(w, unpriv, argv, &res) != 0)
+		return (wtext(w, exec_error(w, &res, "git status")));
+	if (res.outlen > 0)
+		return (wfmt(w, "the tree is not the commit fetched: %s",
+		    wtext(w, wstrndup(w, res.out, MIN(res.outlen, 512)))));
+	/* What git ignores too: a file changed since it was fetched. */
+	paths[0] = (char *)(uintptr_t)src;
+	paths[1] = NULL;
+	if ((fts = fts_open(paths, FTS_PHYSICAL | FTS_NOCHDIR | FTS_XDEV,
+	    NULL)) == NULL)
+		return (wfmt(w, "%s: %s", src, strerror(errno)));
+	why = NULL;
+	while (why == NULL && (e = fts_read(fts)) != NULL) {
+		if (e->fts_level > 0 && (strcmp(e->fts_name, "obj") == 0 ||
+		    strcmp(e->fts_name, ".git") == 0)) {
+			if (e->fts_info == FTS_D)
+				(void)fts_set(fts, e, FTS_SKIP);
+			continue;
+		}
+		if (e->fts_info == FTS_D || e->fts_info == FTS_DP)
+			continue;
+		if (e->fts_statp == NULL || e->fts_info == FTS_NS ||
+		    e->fts_info == FTS_ERR || e->fts_info == FTS_DNR)
+			why = wfmt(w, "%s: %s", e->fts_path, strerror(
+			    e->fts_errno));
+		else if (timespeccmp(&e->fts_statp->st_mtim, fetched, >) ||
+		    timespeccmp(&e->fts_statp->st_ctim, fetched, >))
+			why = wfmt(w, "%s changed since the tree was fetched",
+			    wtext(w, e->fts_path));
+	}
+	(void)fts_close(fts);
+	return (why);
+}
+
+/*
  * The whole tree built and installed on this host from the repository,
  * for the console to update itself where it runs: make as the build
- * user, make install as the daemon.  The caller restarts the console's
+ * user, then, the tree held to the commit fetched (tree_unchanged()),
+ * make install as the daemon.  The caller restarts the console's
  * service once the reply has left.
  */
 static int
@@ -1073,10 +1168,11 @@ console_update(struct work *w, const char *source, const char *ref,
 {
 	struct fetched	 f;
 	struct execres	 res;
-	const char	*argv[MAX_ARGS];
+	struct timespec	 fetched;
+	const char	*argv[MAX_ARGS], *why;
 	char		*src;
 	bool		 unpriv;
-	int		 n;
+	int		 n, s;
 
 	rsp->has_ok = true;
 	rsp->ok = false;
@@ -1089,6 +1185,7 @@ console_update(struct work *w, const char *source, const char *ref,
 		rsp->fingerprints.n = f.fingerprints.n;
 		return (0);
 	}
+	(void)clock_gettime(CLOCK_REALTIME, &fetched);
 	n = 0;
 	argv[n++] = opts.make_bin;
 	argv[n++] = "-C";
@@ -1099,6 +1196,16 @@ console_update(struct work *w, const char *source, const char *ref,
 		rsp->error = wtext(w, exec_error(w, &res, "make"));
 		return (0);
 	}
+	/* What root's make install reads: the commit's, as fetched. */
+	s = step_begin(w, STEP_FILE, "check", "%s at %s", src, f.commit !=
+	    NULL ? f.commit : "(none)");
+	if ((why = tree_unchanged(w, src, f.commit, &fetched, unpriv)) !=
+	    NULL) {
+		step_end(w, s, false, "%s", why);
+		rsp->error = wfmt(w, "not installed: %s", why);
+		return (0);
+	}
+	step_end(w, s, true, "as fetched");
 	argv[n++] = "install";
 	argv[n] = NULL;
 	if (run_as(w, false, argv, &res) != 0) {

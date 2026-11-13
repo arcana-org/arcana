@@ -1,6 +1,6 @@
 PROG=		arcana-agent
 # The Agent itself, then what it does by Archive (docs/NAMING.md).
-SRCS=		main.c handlers.c work.c
+SRCS=		main.c handlers.c work.c textfit.c
 # The standard models and Arcana's, served by cblink's YANG family:
 # what the collectors (y*.c) read into their structs.
 SRCS+=		yjson.c

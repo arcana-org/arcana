@@ -797,19 +797,15 @@ parse(const char *json)
 	return (o);
 }
 
-/* A string of eve.json's, made safe for the JSON of an event. */
+/* A string of eve.json's as the inside of the event's JSON string:
+ * json_quote()'s, cut where it fits, never inside a character. */
 static void
 jstr(char *out, size_t len, const ucl_object_t *o, const char *key)
 {
-	const char	*s;
-	size_t		 n;
 
-	s = ucl_object_lookup(o, key) != NULL ? ucl_object_tostring_forced(
-	    ucl_object_lookup(o, key)) : "";
-	for (n = 0; *s != '\0' && n + 2 < len; s++)
-		if ((unsigned char)*s >= 0x20 && *s != '"' && *s != '\\')
-			out[n++] = *s;
-	out[n] = '\0';
+	(void)json_quote(ucl_object_lookup(o, key) != NULL ?
+	    ucl_object_tostring_forced(ucl_object_lookup(o, key)) : "", out,
+	    len);
 }
 
 /*

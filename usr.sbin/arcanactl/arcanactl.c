@@ -16,6 +16,7 @@
 #include <casper/cap_fileargs.h>
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <libcasper.h>
 #include <libxo/xo.h>
@@ -28,7 +29,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <vis.h>
 
 /* Generated into the object directory; <> so that a stale copy next
  * to the sources is never picked up. */
@@ -97,6 +97,21 @@ static const char *job_states[] = {
 	[ARC_JOB_STATE_UNCONFIRMED] = "unconfirmed",
 };
 
+/*
+ * What the agent says, fit for a terminal: vis_text() of every field
+ * text output shows, and of whatever goes to the standard error.
+ */
+#define	VT_LINES	0x01	/* a field of lines: tab and newline kept */
+#define	VT_JSON		0x02	/* JSON a field holds: still JSON */
+#define	VT_ALWAYS	0x04	/* whatever the style (stderr, printf(3)) */
+#define	tx(s)		vis_text((s), (size_t)-1, 0)
+#define	txn(s, n)	vis_text((s), (n), 0)
+#define	txl(s)		vis_text((s), (size_t)-1, VT_LINES)
+#define	txj(s)		vis_text((s), (size_t)-1, VT_JSON)
+#define	txjn(s, n)	vis_text((s), (n), VT_JSON)
+#define	txe(s)		vis_text((s), (size_t)-1, VT_LINES | VT_ALWAYS)
+
+static const char *vis_text(const char *, size_t, int);
 static void	usage(void) __dead2;
 static void	fail(int, const char *) __dead2;
 static char	*slurp(const char *);
@@ -104,8 +119,8 @@ static char	*words_joined(int, char **);
 
 /*
  * In capability mode (capsicum(4)) once the agent is connected: the
- * files named on the command line are opened by Casper's fileargs
- * service, nothing else of the system is reachable.
+ * files the command names are opened by Casper's fileargs service,
+ * nothing else of the system is reachable (main(): which).
  */
 static fileargs_t	*files;		/* to read */
 static fileargs_t	*outfiles;	/* agent-build's program, to write */
@@ -404,7 +419,7 @@ static void
 fail(int error, const char *what)
 {
 
-	xo_errx(1, "%s: %s", what, strerror(error));
+	xo_errx(1, "%s: %s", txe(what), strerror(error));
 }
 
 /* An array of strings as "a,b,c" (static buffer). */
@@ -423,6 +438,122 @@ join(const char *const *v, size_t n)
 	return (buf);
 }
 
+/* The length of the UTF-8 character s begins with (of n bytes), whole
+ * and the shortest form, its code point in *cp; 0 when it is none. */
+static size_t
+utf8_char(const unsigned char *s, size_t n, unsigned int *cp)
+{
+	unsigned int	c;
+	size_t		k, i;
+
+	if (s[0] < 0x80) {
+		*cp = s[0];
+		return (1);
+	}
+	if (s[0] >= 0xc2 && s[0] <= 0xdf) {
+		k = 2;
+		c = s[0] & 0x1fU;
+	} else if (s[0] >= 0xe0 && s[0] <= 0xef) {
+		k = 3;
+		c = s[0] & 0x0fU;
+	} else if (s[0] >= 0xf0 && s[0] <= 0xf4) {
+		k = 4;
+		c = s[0] & 0x07U;
+	} else
+		return (0);
+	if (k > n)
+		return (0);
+	for (i = 1; i < k; i++) {
+		if ((s[i] & 0xc0) != 0x80)
+			return (0);
+		c = c << 6 | (s[i] & 0x3fU);
+	}
+	if ((k == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) ||
+	    (k == 4 && (c < 0x10000 || c > 0x10ffff)))
+		return (0);
+	*cp = c;
+	return (k);
+}
+
+/*
+ * s (len bytes, or as far as its NUL with (size_t)-1) as a terminal may
+ * be given it: valid printable UTF-8 as it is; a control character (C0,
+ * DEL, C1: U+0080 to U+009F, which terminals take as ESC and CSI) and a
+ * byte that is no UTF-8 as vis(3) VIS_CSTYLE | VIS_SAFE writes them, by
+ * their bytes (vis(3) leaves a byte that is no UTF-8 as it is, and is of
+ * the locale); a tab and a newline kept in a field of lines alone.  JSON
+ * a field holds stays JSON: those as \u00XX, a byte that is no UTF-8 as
+ * U+FFFD.  libxo's JSON, XML and HTML escape for themselves: s as it is
+ * there, unless VT_ALWAYS.  What is returned lasts for 64 calls more.
+ */
+static const char *
+vis_text(const char *s, size_t len, int how)
+{
+	static char		*ring[64];
+	static unsigned int	 next;
+	const unsigned char	*p, *end;
+	unsigned int		 c;
+	size_t			 n, i;
+	char			*out, *o;
+	bool			 plain;
+	int			 saved;
+
+	if (s == NULL)
+		return (len == (size_t)-1 ? NULL : "");
+	plain = !(how & VT_ALWAYS) && xo_get_style(NULL) != XO_STYLE_TEXT;
+	if (len == (size_t)-1) {
+		if (plain)
+			return (s);
+		len = strlen(s);
+		/* Nothing to escape: s itself. */
+		for (p = (const unsigned char *)s; *p != '\0'; p += n)
+			if ((n = utf8_char(p, len - (size_t)(p -
+			    (const unsigned char *)s), &c)) == 0 ||
+			    (c < 0x20 && ((how & VT_LINES) == 0 ||
+			    (c != '\n' && c != '\t'))) || (c >= 0x7f &&
+			    c < 0xa0))
+				break;
+		if (*p == '\0')
+			return (s);
+	}
+	saved = errno;
+	if ((out = malloc(len * 6 + 1)) == NULL)
+		xo_err(1, "malloc");
+	o = out;
+	end = (const unsigned char *)s + len;
+	for (p = (const unsigned char *)s; p < end; p += n) {
+		if (plain) {
+			n = 1;
+			*o++ = *p != '\0' ? (char)*p : '?';
+		} else if ((n = utf8_char(p, (size_t)(end - p), &c)) == 0) {
+			n = 1;
+			if (how & VT_JSON)
+				o = stpcpy(o, "\\ufffd");
+			else
+				o += sprintf(o, "\\%03o", *p);
+		} else if ((c == '\n' || c == '\t') && (how & VT_LINES))
+			*o++ = (char)c;
+		else if ((c == '\n' || c == '\t') && (how & VT_JSON) == 0)
+			o = stpcpy(o, c == '\n' ? "\\n" : "\\t");
+		else if (c < 0x20 || (c >= 0x7f && c < 0xa0)) {
+			if (how & VT_JSON)
+				o += sprintf(o, "\\u%04x", c);
+			else
+				for (i = 0; i < n; i++)
+					o += sprintf(o, "\\%03o", p[i]);
+		} else {
+			memcpy(o, p, n);
+			o += n;
+		}
+	}
+	*o = '\0';
+	free(ring[next]);
+	ring[next] = out;
+	next = (next + 1) % nitems(ring);
+	errno = saved;
+	return (out);
+}
+
 static void
 emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 {
@@ -430,7 +561,7 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 
 	if (table) {
 		xo_open_instance("jail");
-		xo_emit("{k:name/%-16s/%s} {:state/%-8s/%s} ", j->name,
+		xo_emit("{k:name/%-16s/%s} {:state/%-8s/%s} ", tx(j->name),
 		    j->has_state && (size_t)j->state < nitems(state_names) ?
 		    state_names[j->state] : "?");
 		if (j->has_jid)
@@ -438,10 +569,10 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 		else
 			xo_emit("{P:/%4s} ", "-");
 		xo_emit("{d:addresses/%-31s} {:hostname/%s}\n",
-		    j->ip4.n + j->ip6.n == 0 ? "-" :
+		    tx(j->ip4.n + j->ip6.n == 0 ? "-" :
 		    join(j->ip4.n > 0 ? j->ip4.v : j->ip6.v,
-		    j->ip4.n > 0 ? j->ip4.n : j->ip6.n),
-		    j->hostname != NULL ? j->hostname : "-");
+		    j->ip4.n > 0 ? j->ip4.n : j->ip6.n)),
+		    tx(j->hostname != NULL ? j->hostname : "-"));
 		/* For a program that reads this: its plugins, if it has. */
 		for (i = 0; i < j->plugin.n; i++)
 			xo_emit("{el:plugins/%s}", j->plugin.v[i]);
@@ -464,7 +595,7 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 
 	/* One jail in detail. */
 	xo_open_container("jail");
-	xo_emit("{Lwc:Name}{:name/%s}\n", j->name);
+	xo_emit("{Lwc:Name}{:name/%s}\n", tx(j->name));
 	xo_emit("{Lwc:State}{:state/%s}", j->has_state &&
 	    (size_t)j->state < nitems(state_names) ? state_names[j->state] :
 	    "?");
@@ -475,29 +606,29 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 		xo_emit("{Lwc:At boot}{:boot/%s}\n", j->boot ? "started" :
 		    "not started");
 	if (j->hostname != NULL)
-		xo_emit("{Lwc:Hostname}{:hostname/%s}\n", j->hostname);
+		xo_emit("{Lwc:Hostname}{:hostname/%s}\n", tx(j->hostname));
 	if (j->path != NULL)
-		xo_emit("{Lwc:Path}{:path/%s}\n", j->path);
+		xo_emit("{Lwc:Path}{:path/%s}\n", tx(j->path));
 	if (j->plugin.n > 0) {
 		xo_emit("{Lwc:Plugins}");
 		xo_open_list("plugins");
 		for (i = 0; i < j->plugin.n; i++)
 			xo_emit("{P:/%s}{l:plugins/%s}", i > 0 ? " " : "",
-			    j->plugin.v[i]);
+			    tx(j->plugin.v[i]));
 		xo_close_list("plugins");
 		xo_emit("\n");
 	}
 	if (j->ip4.n > 0)
-		xo_emit("{Lwc:IPv4}{d:/%s}\n", join(j->ip4.v, j->ip4.n));
+		xo_emit("{Lwc:IPv4}{d:/%s}\n", tx(join(j->ip4.v, j->ip4.n)));
 	if (j->ip6.n > 0)
-		xo_emit("{Lwc:IPv6}{d:/%s}\n", join(j->ip6.v, j->ip6.n));
+		xo_emit("{Lwc:IPv6}{d:/%s}\n", tx(join(j->ip6.v, j->ip6.n)));
 	for (i = 0; i < j->ip4.n; i++)
 		xo_emit("{el:ip4/%s}", j->ip4.v[i]);
 	xo_emit("{en:configured/%s}", j->configured ? "true" : "false");
 	for (i = 0; i < j->ip6.n; i++)
 		xo_emit("{el:ip6/%s}", j->ip6.v[i]);
 	if (j->scope != NULL)
-		xo_emit("{Lwc:Configured in}{:scope/%s}\n", j->scope);
+		xo_emit("{Lwc:Configured in}{:scope/%s}\n", tx(j->scope));
 	if (j->has_nproc)
 		xo_emit("{Lwc:Processes}{:nproc/%u}, {:rss-kb/%ju} KiB, "
 		    "{:cpu-pct/%.1f}% CPU\n", j->nproc, (uintmax_t)j->rss,
@@ -506,11 +637,11 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 		xo_open_list("param");
 		for (i = 0; i < j->param.n; i++) {
 			xo_open_instance("param");
-			xo_emit("{P:  }{:key/%s}", j->param.v[i].name);
+			xo_emit("{P:  }{:key/%s}", tx(j->param.v[i].name));
 			if (j->param.v[i].value.n > 0)
-				xo_emit("{D: = }{d:/%s}", join(
+				xo_emit("{D: = }{d:/%s}", tx(join(
 				    j->param.v[i].value.v,
-				    j->param.v[i].value.n));
+				    j->param.v[i].value.n)));
 			for (k = 0; k < j->param.v[i].value.n; k++)
 				xo_emit("{el:value/%s}",
 				    j->param.v[i].value.v[k]);
@@ -523,14 +654,13 @@ emit_jail(const struct arcana_jails_jails_jail *j, bool table)
 }
 
 /*
- * Program output, each line indented under its step, unprintable
- * characters shown as C escapes (text output only).
+ * Program output, each line indented under its step, what a terminal
+ * acts on escaped (text output only).
  */
 static void
 emit_lines(const char *name, const struct cbl_bytes *b)
 {
 	const char	*p, *e, *end;
-	char		*line;
 
 	if (b->len == 0)
 		return;
@@ -538,12 +668,8 @@ emit_lines(const char *name, const struct cbl_bytes *b)
 	for (p = b->p; p < end; p = e + 1) {
 		for (e = p; e < end && *e != '\n'; e++)
 			;
-		if ((line = malloc((size_t)(e - p) * 4 + 1)) == NULL)
-			xo_err(1, "malloc");
-		strvisx(line, p, (size_t)(e - p), VIS_CSTYLE | VIS_OCTAL |
-		    VIS_SAFE);
-		xo_emit("{P:          }{D:/%s}{D:/%s}\n", name, line);
-		free(line);
+		xo_emit("{P:          }{D:/%s}{D:/%s}\n", name, txn(p,
+		    (size_t)(e - p)));
 		if (e == end)
 			break;
 	}
@@ -569,9 +695,9 @@ emit_trace(const struct arcana_jobs_step *v, size_t n)
 		xo_open_instance("step");
 		xo_emit("{P:/%*s}[{:kind/%s}] {:label/%s}",
 		    depth * 2 + 2, "", s->kind < nitems(kind_names) ?
-		    kind_names[s->kind] : "?", s->label);
+		    kind_names[s->kind] : "?", tx(s->label));
 		if (s->detail != NULL)
-			xo_emit(": {:detail/%s}", s->detail);
+			xo_emit(": {:detail/%s}", tx(s->detail));
 		xo_emit(" ({:duration-us/%ju}{U:us})",
 		    (uintmax_t)s->duration);
 		if (s->has_status && s->status != ARCANA_JOBS_STEP_STATUS_OK)
@@ -651,6 +777,54 @@ ytop_any(const char *name)
 }
 
 static void	sxf_run(cbl_conn *, const char *, const bool *);
+
+/*
+ * The first leaf below n whose type is a union with a member of a
+ * pattern (what cbl_yvalue_parse() matches: an inet:ip-address), or
+ * NULL.
+ */
+static const struct cbl_ynode *
+pattern_leaf(const struct cbl_ynode *n, int depth)
+{
+	const struct cbl_ynode	*f;
+	uint32_t		 i;
+
+	if (n->kind == CBL_YN_LEAF && n->type != NULL &&
+	    n->type->kind == CBL_YT_UNION)
+		for (i = 0; i < n->type->nmembers; i++)
+			if (n->type->members[i]->kind == CBL_YT_STRING &&
+			    n->type->members[i]->npatterns > 0)
+				return (n);
+	for (i = 0; depth < MAX_DEPTH && i < n->nchild; i++)
+		if (n->child[i] != NULL && (f = pattern_leaf(n->child[i],
+		    depth + 1)) != NULL)
+			return (f);
+	return (NULL);
+}
+
+/*
+ * A value matched against a pattern once, before capability mode:
+ * cblink makes the C.UTF-8 locale it matches in then, which newlocale(3)
+ * cannot load in capability mode.
+ */
+static void
+patterns_ready(void)
+{
+	const struct cbl_ynode	*n;
+	cbl_yarena		*a;
+	void			*v;
+	uint32_t		 i, k;
+
+	n = NULL;
+	for (i = 0; n == NULL && i < ymodel_schema.nmod; i++)
+		for (k = 0; n == NULL && k < ymodel_schema.mod[i]->ntop; k++)
+			n = pattern_leaf(ymodel_schema.mod[i]->top[k], 0);
+	if (n == NULL || (a = cbl_yarena_new()) == NULL)
+		return;
+	if ((v = cbl_yarena_alloc(a, n->type->csize)) != NULL)
+		(void)cbl_yvalue_parse(n, n->type, "x", v, a);
+	cbl_yarena_free(a);
+}
 
 static enum cbl_yds_name ds_named(const char *);
 
@@ -735,22 +909,22 @@ cmd_get(cbl_conn *conn, int argc, char **argv)
 		/* The node at fault, where the agent named one. */
 		n = rep != NULL && cbl_msg_err_sid(rep) != 0 ?
 		    cbl_yschema_node(&ymodel_schema, cbl_msg_err_sid(rep)) : NULL;
-		xo_errx(1, "get: %s%s%s", n != NULL ? n->name : "", n != NULL ?
-		    ": " : "", rep != NULL && cbl_msg_err_str(rep) != NULL ?
-		    cbl_msg_err_str(rep) : strerror(error));
+		xo_errx(1, "get: %s%s%s", txe(n != NULL ? n->name : ""), n !=
+		    NULL ? ": " : "", txe(rep != NULL && cbl_msg_err_str(rep) !=
+		    NULL ? cbl_msg_err_str(rep) : strerror(error)));
 	}
 	/* Annotated: as an instance tree, which has them. */
 	if (origin || wd == CBL_YWD_REPORT_ALL_TAGGED) {
 		if ((t = cbl_dtree_new(&ymodel_schema)) == NULL)
 			xo_err(1, "get");
 		if ((error = cbl_msg_ydtree(rep, t, 0, why, sizeof(why))) != 0)
-			xo_errx(1, "get: %s", why[0] != '\0' ? why :
-			    strerror(error));
+			xo_errx(1, "get: %s", txe(why[0] != '\0' ? why :
+			    strerror(error)));
 		if ((error = cbl_dtree_json(t, &b)) != 0)
 			xo_errx(1, "get: %s", strerror(error));
 		if ((out = strndup((const char *)b.p, b.len)) == NULL)
 			xo_err(1, "get");
-		xo_emit("{:json/%s}\n", out);
+		xo_emit("{:json/%s}\n", txj(out));
 		free(out);
 		cbl_ybuf_free(&b);
 		cbl_dtree_free(t);
@@ -773,16 +947,18 @@ cmd_get(cbl_conn *conn, int argc, char **argv)
 			error = cbl_msg_ydecode_member(rep, n, data, a, 0, why,
 			    sizeof(why));
 			if (error != 0 && error != ENOENT)
-				xo_errx(1, "get: %s: %s", n->name, why[0] != '\0' ?
-				    why : strerror(error));
+				xo_errx(1, "get: %s: %s", txe(n->name),
+				    txe(why[0] != '\0' ? why :
+				    strerror(error)));
 		}
 		if ((error = cbl_yjson_members(m, data, &b, &first)) != 0)
-			xo_errx(1, "get: %s: %s", m->name, strerror(error));
+			xo_errx(1, "get: %s: %s", txe(m->name),
+			    strerror(error));
 	}
 	if (asprintf(&out, "{%.*s}", (int)b.len, b.p != NULL ? (const char *)
 	    b.p : "") == -1)
 		xo_err(1, "get");
-	xo_emit("{:json/%s}\n", out);
+	xo_emit("{:json/%s}\n", txj(out));
 	free(out);
 	cbl_ybuf_free(&b);
 	cbl_yarena_free(a);
@@ -818,8 +994,9 @@ refused(const char *what, const char *msg, const char *tag)
 {
 
 	if (tag != NULL && tag[0] != '\0')
-		xo_errx(1, "%s: %s (go on with -a %s)", what, msg, tag);
-	xo_errx(1, "%s: %s", what, msg);
+		xo_errx(1, "%s: %s (go on with -a %s)", txe(what), txe(msg),
+		    txe(tag));
+	xo_errx(1, "%s: %s", txe(what), txe(msg));
 }
 
 /* The warnings an answer has, printed. */
@@ -834,8 +1011,8 @@ warnings_of(const cbl_msg *rep)
 		return;
 	if (cbl_msg_ywarnings(rep, a, &w, &n) == 0)
 		for (size_t i = 0; i < n; i++)
-			xo_emit("{Lw:warning}{:tag/%s}: {:text/%s}\n", w[i].tag,
-			    w[i].text);
+			xo_emit("{Lw:warning}{:tag/%s}: {:text/%s}\n",
+			    tx(w[i].tag), txl(w[i].text));
 	cbl_yarena_free(a);
 }
 
@@ -880,7 +1057,8 @@ cmd_edit(cbl_conn *conn, int argc, char **argv)
 		if ((p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS)) == NULL)
 			xo_err(1, "edit");
 		if (!ucl_parser_add_string(p, text, 0))
-			xo_errx(1, "edit: not JSON: %s", ucl_parser_get_error(p));
+			xo_errx(1, "edit: not JSON: %s",
+			    txe(ucl_parser_get_error(p)));
 		top = ucl_parser_get_object(p);
 		ucl_parser_free(p);
 		/* {"module:node": value}: the value. */
@@ -922,12 +1100,12 @@ netconf_try(cbl_conn *conn, const char *name, const void *in,
 		if (rpc->child[i]->kind == CBL_YN_INPUT)
 			inode = rpc->child[i];
 	if (inode == NULL)
-		xo_errx(1, "%s: not in the tables", name);
+		xo_errx(1, "%s: not in the tables", txe(name));
 	if ((error = cbl_msg_new(cbl_conn_ctx(conn), CBL_YANG_FAMILY,
 	    CBL_YCMD_RPC, 0, &m)) != 0 || (error = cbl_msg_put_ynode(m, inode,
 	    in)) != 0 || (naccepts > 0 && (error = cbl_msg_set_accept(m,
 	    accepts, naccepts)) != 0))
-		xo_errx(1, "%s: %s", name, strerror(error));
+		xo_errx(1, "%s: %s", txe(name), strerror(error));
 	if ((error = cbl_request(conn, m, &rep, -1)) != 0) {
 		if (err != NULL)
 			(void)snprintf(err, errlen, "%s", rep != NULL &&
@@ -1047,7 +1225,7 @@ cmd_commit(cbl_conn *conn, int argc, char **argv)
 	if (in.confirmed)
 		xo_emit("{Lw:confirm within}{:seconds/%u}{L: seconds: "
 		    "arcanactl commit -i }{:persist-id/%s}\n",
-		    in.confirm_timeout, in.persist);
+		    in.confirm_timeout, tx(in.persist));
 	return (0);
 }
 
@@ -1098,8 +1276,8 @@ yset(const struct cbl_ynode *n, void *p, const char *s, cbl_yarena *a)
 
 	if ((error = cbl_yvalue_parse(n, n->type, s, (char *)p + n->off,
 	    a)) != 0)
-		xo_errx(1, "action: %s: %s is not one: %s", n->name, s,
-		    strerror(error));
+		xo_errx(1, "action: %s: %s is not one: %s", txe(n->name),
+		    txe(s), strerror(error));
 	if (n->hoff != CBL_YOFF_NONE)
 		*(bool *)(void *)((char *)p + n->hoff) = true;
 }
@@ -1132,10 +1310,11 @@ yentry(const struct cbl_ynode *n, void *p, const char *s, cbl_yarena *a)
 	for (it = copy; (w = strsep(&it, ",")) != NULL; ) {
 		if ((colon = strchr(w, ':')) == NULL)
 			xo_errx(1, "action: %s: an entry is leaf:value,...",
-			    n->name);
+			    txe(n->name));
 		*colon = '\0';
 		if ((c = ychild(n, w)) == NULL || c->kind != CBL_YN_LEAF)
-			xo_errx(1, "action: %s has no leaf %s", n->name, w);
+			xo_errx(1, "action: %s has no leaf %s", txe(n->name),
+			    txe(w));
 		yset(c, e, colon + 1, a);
 	}
 	l->v = v;
@@ -1173,7 +1352,8 @@ cmd_yaction(cbl_conn *conn, int argc, char **argv)
 		while (path != NULL && (seg = strsep(&path, "/")) != NULL)
 			if ((n = n == NULL ? ytop_named(seg) : ychild(n,
 			    seg)) == NULL)
-				xo_errx(1, "action: %s: no such node", seg);
+				xo_errx(1, "action: %s: no such node",
+				    txe(seg));
 	/* A module's rpc: the name alone, its input after it. */
 	if (n != NULL && n->kind == CBL_YN_RPC) {
 		act = n;
@@ -1187,17 +1367,19 @@ cmd_yaction(cbl_conn *conn, int argc, char **argv)
 	for (k = 0; n->kind == CBL_YN_LIST && k < n->nkeys; k++, i++) {
 		c = n->child[n->keys[k]];
 		if (i >= argc)
-			xo_errx(1, "action: %s takes its %s", n->name, c->name);
+			xo_errx(1, "action: %s takes its %s", txe(n->name),
+			    txe(c->name));
 		if ((key = cbl_yarena_alloc(a, c->type->csize)) == NULL)
 			xo_err(1, "action");
 		if ((error = cbl_yvalue_parse(c, c->type, argv[i], key, a)) != 0)
-			xo_errx(1, "action: %s: %s is not one", c->name, argv[i]);
+			xo_errx(1, "action: %s: %s is not one", txe(c->name),
+			    argv[i]);
 		vals[k] = key;
 	}
 	if (i >= argc || (act = ychild(n, argv[i])) == NULL ||
 	    act->kind != CBL_YN_ACTION)
-		xo_errx(1, "action: %s has no action %s", n->name, i < argc ?
-		    argv[i] : "");
+		xo_errx(1, "action: %s has no action %s", txe(n->name), i < argc
+		    ? argv[i] : "");
 input:
 	in = ychild(act, "input");
 	out = ychild(act, "output");
@@ -1205,7 +1387,7 @@ input:
 	    (pin = cbl_yarena_alloc(a, in->size)) == NULL ||
 	    (pout = cbl_yarena_alloc(a, out->size)) == NULL)
 		xo_errx(1, "action: %s's tables have no input or output",
-		    act->name);
+		    txe(act->name));
 	for (i++; i < argc; i++) {
 		if ((eq = strchr(argv[i], '=')) == NULL)
 			xo_errx(1, "action: %s: an input is name=value",
@@ -1217,7 +1399,7 @@ input:
 			continue;
 		}
 		if (c == NULL || c->kind != CBL_YN_LEAF)
-			xo_errx(1, "action: %s has no input %s", act->name,
+			xo_errx(1, "action: %s has no input %s", txe(act->name),
 			    argv[i]);
 		yset(c, pin, eq + 1, a);
 	}
@@ -1229,15 +1411,14 @@ input:
 	    (act != n && (error = cbl_msg_put_yaction(req, t.p, t.len)) != 0))
 		xo_errx(1, "action: %s", strerror(error));
 	if ((error = cbl_request(conn, req, &rep, -1)) != 0)
-		xo_errx(1, "action: %s", rep != NULL && cbl_msg_err_str(rep) !=
-		    NULL ? cbl_msg_err_str(rep) : strerror(error));
+		xo_errx(1, "action: %s", txe(rep != NULL && cbl_msg_err_str(rep)
+		    != NULL ? cbl_msg_err_str(rep) : strerror(error)));
 	if ((error = cbl_msg_ydecode(rep, out, pout, a, 0, why,
 	    sizeof(why))) != 0 && error != ENOENT)
-		xo_errx(1, "action: %s", why);
+		xo_errx(1, "action: %s", txe(why));
 	if ((error = cbl_yjson(out, pout, &b)) != 0)
 		xo_errx(1, "action: %s", strerror(error));
-	xo_emit("{:json/%.*s}\n", (int)b.len, b.p != NULL ? (const char *)
-	    b.p : "{}");
+	xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 	cbl_ybuf_free(&b);
 	cbl_ybuf_free(&t);
 	cbl_yarena_free(a);
@@ -1269,11 +1450,13 @@ ynotif_print(const cbl_msg *msg)
 	    cbl_ydecode(n, nt.content, nt.len, data, a, 0, NULL, 0) != 0 ||
 	    cbl_yjson(n, data, &b) != 0)
 		printf("{\"ietf-restconf:notification\":{\"eventTime\":\"%s\","
-		    "\"sid\":\"%ju\"}}\n", nt.event_time, (uintmax_t)nt.sid);
+		    "\"sid\":\"%ju\"}}\n", vis_text(nt.event_time, (size_t)-1,
+		    VT_JSON | VT_ALWAYS), (uintmax_t)nt.sid);
 	else
 		printf("{\"ietf-restconf:notification\":{\"eventTime\":\"%s\","
-		    "\"%s:%s\":%.*s}}\n", nt.event_time, n->module->name,
-		    n->name, (int)b.len, (const char *)b.p);
+		    "\"%s:%s\":%s}}\n", vis_text(nt.event_time, (size_t)-1,
+		    VT_JSON | VT_ALWAYS), n->module->name, n->name,
+		    vis_text((const char *)b.p, b.len, VT_JSON | VT_ALWAYS));
 	fflush(stdout);
 out:
 	cbl_ybuf_free(&b);
@@ -1368,20 +1551,20 @@ subtree_arg(const struct cbl_ynode *in, const char *name, const char *arg,
 		if (strcmp(in->child[i]->name, name) == 0)
 			n = in->child[i];
 	if (n == NULL)
-		xo_errx(1, "subscribe: no %s in the tables", name);
+		xo_errx(1, "subscribe: no %s in the tables", txe(name));
 	if ((text = arg[0] == '@' ? slurp(arg + 1) : strdup(arg)) == NULL)
 		xo_err(1, "subscribe");
 	if ((p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS)) == NULL)
 		xo_err(1, "subscribe");
 	if (!ucl_parser_add_string(p, text, 0))
 		xo_errx(1, "subscribe: -f: not JSON: %s",
-		    ucl_parser_get_error(p));
+		    txe(ucl_parser_get_error(p)));
 	top = ucl_parser_get_object(p);
 	ucl_parser_free(p);
 	if ((error = yjson_subtree(&ymodel_schema, top, &f, why,
 	    sizeof(why))) != 0)
-		xo_errx(1, "subscribe: -f: %s", why[0] != '\0' ? why :
-		    strerror(error));
+		xo_errx(1, "subscribe: -f: %s", txe(why[0] != '\0' ? why :
+		    strerror(error)));
 	if ((error = cbl_dfilter_encode(f, n->sid, b)) != 0)
 		xo_errx(1, "subscribe: -f: %s", strerror(error));
 	cbl_dfilter_free(f);
@@ -1540,11 +1723,11 @@ cmd_subscribe(cbl_conn *conn, int argc, char **argv)
 			    strerror(error));
 	}
 	if (ys.error != 0)
-		xo_errx(1, "subscribe: %s", ys.why[0] != '\0' ? ys.why :
-		    strerror(ys.error));
+		xo_errx(1, "subscribe: %s", txe(ys.why[0] != '\0' ? ys.why :
+		    strerror(ys.error)));
 	if (ys.close_text[0] != '\0' && (ys.count == 0 ||
 	    ys.records < ys.count))
-		xo_warnx("subscribe: ended: %s", ys.close_text);
+		xo_warnx("subscribe: ended: %s", txe(ys.close_text));
 	return (0);
 }
 
@@ -1609,12 +1792,12 @@ hlist(const ucl_object_t *o, const char *key, const char *label)
 
 	if ((l = ucl_object_lookup(o, key)) == NULL || ucl_array_size(l) == 0)
 		return;
-	xo_emit("{Lwc:/%s}", label);
+	xo_emit("{Lwc:/%s}", tx(label));
 	xo_open_list(key);
 	first = true;
 	while ((e = ucl_object_iterate(l, &it, true)) != NULL) {
 		xo_emit("{P:/%s}{l:/%s}", first ? "" : " ",
-		    ucl_object_tostring(e));
+		    tx(ucl_object_tostring(e)));
 		first = false;
 	}
 	xo_close_list(key);
@@ -1631,26 +1814,27 @@ cmd_hello(cbl_conn *conn)
 	int		 error;
 
 	if ((error = yh_hello(conn, &h, err, sizeof(err))) != 0)
-		xo_errx(1, "hello: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_errx(1, "hello: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 	xo_open_container("host");
-	xo_emit("{Lwc:Host}{:hostname/%s}\n", hstr(h, "hostname"));
+	xo_emit("{Lwc:Host}{:hostname/%s}\n", tx(hstr(h, "hostname")));
 	xo_emit("{Lwc:System}{:sysname/%s} {:release/%s} {:machine/%s}\n",
-	    hstr(h, "sysname"), hstr(h, "release"), hstr(h, "machine"));
+	    tx(hstr(h, "sysname")), tx(hstr(h, "release")), tx(hstr(h,
+	    "machine")));
 	xo_emit("{Lwc:CPUs}{:ncpu/%jd}\n", (intmax_t)hint(h, "ncpu"));
 	xo_emit("{Lwc:Memory}{:physmem/%jd} {U:bytes}\n",
 	    (intmax_t)hint(h, "physmem"));
 	t = (time_t)hint(h, "boottime");
 	strftime(boot, sizeof(boot), "%F %T", localtime(&t));
-	xo_emit("{Lwc:Booted}{d:/%s}{e:boottime/%jd}\n", boot, (intmax_t)t);
+	xo_emit("{Lwc:Booted}{d:/%s}{e:boottime/%jd}\n", tx(boot), (intmax_t)t);
 	xo_emit("{Lwc:Securelevel}{:securelevel/%jd}\n",
 	    (intmax_t)hint(h, "securelevel"));
 	xo_emit("{Lwc:Privileged}{n:privileged/%s}\n",
 	    ucl_object_toboolean(ucl_object_lookup(h, "privileged")) ?
 	    "true" : "false");
-	xo_emit("{Lwc:arcana-agent}{:version/%s}\n", hstr(h, "version"));
+	xo_emit("{Lwc:arcana-agent}{:version/%s}\n", tx(hstr(h, "version")));
 	if (ucl_object_lookup(h, "build") != NULL)
-		xo_emit("{Lwc:Build}{:build/%s}\n", hstr(h, "build"));
+		xo_emit("{Lwc:Build}{:build/%s}\n", tx(hstr(h, "build")));
 	/* What is installed there that is not the base system's. */
 	hlist(h, "plugins", "Plugins");
 	/* What it takes that an agent before it did not. */
@@ -1856,7 +2040,7 @@ ypath_parse(char *path, struct yseg *seg)
 	size_t				 ns = 0;
 
 	if (path[0] != '/')
-		xo_errx(2, "set: %s: an api-path begins with /", path);
+		xo_errx(2, "set: %s: an api-path begins with /", txe(path));
 	for (p = path + 1; p != NULL && *p != '\0'; ) {
 		s = p;
 		if ((p = strchr(p, '/')) != NULL)
@@ -1869,7 +2053,7 @@ ypath_parse(char *path, struct yseg *seg)
 		if (ns == 0) {
 			if ((colon = strchr(s, ':')) == NULL)
 				xo_errx(2, "set: %s: the top node is "
-				    "module:name", s);
+				    "module:name", txe(s));
 			*colon = '\0';
 			for (uint32_t i = 0; n == NULL && i < ymodel_schema.nmod;
 			    i++) {
@@ -1885,14 +2069,17 @@ ypath_parse(char *path, struct yseg *seg)
 		} else
 			n = yseg_child(seg[ns - 1].n, s);
 		if (n == NULL || (n->flags & CBL_YNF_CONFIG) == 0)
-			xo_errx(1, "set: %s: no configuration node there", s);
+			xo_errx(1, "set: %s: no configuration node there",
+			    txe(s));
 		seg[ns].n = n;
 		if (eq != NULL) {
 			if (n->kind != CBL_YN_LIST && n->kind != CBL_YN_LEAFLIST)
-				xo_errx(2, "set: %s: keys are a list's", s);
+				xo_errx(2, "set: %s: keys are a list's",
+				    txe(s));
 			for (k = eq; k != NULL; ) {
 				if (seg[ns].nkey == SKEY_MAX)
-					xo_errx(1, "set: %s: too many keys", s);
+					xo_errx(1, "set: %s: too many keys",
+					    txe(s));
 				seg[ns].key[seg[ns].nkey++] = k;
 				if ((k = strchr(k, ',')) != NULL)
 					*k++ = '\0';
@@ -1900,18 +2087,19 @@ ypath_parse(char *path, struct yseg *seg)
 			for (size_t i = 0; i < seg[ns].nkey; i++)
 				if (!pct_decoded(seg[ns].key[i]))
 					xo_errx(2, "set: %s: a key's %% escape",
-					    s);
+					    txe(s));
 			if (seg[ns].nkey != (n->kind == CBL_YN_LIST ? n->nkeys :
 			    1u))
-				xo_errx(2, "set: %s: %u keys", s, n->kind ==
-				    CBL_YN_LIST ? n->nkeys : 1u);
+				xo_errx(2, "set: %s: %u keys", txe(s), n->kind
+				    == CBL_YN_LIST ? n->nkeys : 1u);
 		} else if (n->kind == CBL_YN_LIST && p != NULL && *p != '\0')
-			xo_errx(2, "set: %s: an entry is named by its keys", s);
+			xo_errx(2, "set: %s: an entry is named by its keys",
+			    txe(s));
 		ns++;
 		if (n->kind == CBL_YN_LEAF || n->kind == CBL_YN_LEAFLIST) {
 			if (p != NULL && *p != '\0')
 				xo_errx(2, "set: %s: nothing is below a leaf",
-				    s);
+				    txe(s));
 			break;
 		}
 	}
@@ -1936,12 +2124,13 @@ yds_read(cbl_conn *conn, enum cbl_yds_name ds,
 	    (error = cbl_msg_set_datastore(req, ds)) != 0)
 		xo_errx(1, "set: %s", strerror(error));
 	if ((error = cbl_request(conn, req, &rep, -1)) != 0)
-		xo_errx(1, "set: %s", rep != NULL && cbl_msg_err_str(rep) !=
-		    NULL ? cbl_msg_err_str(rep) : strerror(error));
+		xo_errx(1, "set: %s", txe(rep != NULL && cbl_msg_err_str(rep) !=
+		    NULL ? cbl_msg_err_str(rep) : strerror(error)));
 	if ((t = cbl_dtree_new(&ymodel_schema)) == NULL)
 		xo_err(1, "set");
 	if ((error = cbl_msg_ydtree(rep, t, 0, why, sizeof(why))) != 0)
-		xo_errx(1, "set: %s", why[0] != '\0' ? why : strerror(error));
+		xo_errx(1, "set: %s", txe(why[0] != '\0' ? why :
+		    strerror(error)));
 	cbl_msg_free(rep);
 	return (t);
 }
@@ -1980,7 +2169,7 @@ yseg_keys(const struct yseg *s, cbl_yarena *a)
 		if (yjson_text(s->n->kind == CBL_YN_LIST ?
 		    s->n->child[s->n->keys[i]] : s->n, s->key[i], a, &val, why,
 		    sizeof(why)) != 0)
-			xo_errx(1, "set: %s", why);
+			xo_errx(1, "set: %s", txe(why));
 		v[i] = val;
 	}
 	return (v);
@@ -2049,7 +2238,7 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 	if ((n->flags & CBL_YNF_KEY) != 0 && ns > 1 &&
 	    seg[ns - 2].n->kind == CBL_YN_LIST)
 		xo_errx(1, "set: %s: a key is the entry's name: set the entry",
-		    n->name);
+		    txe(n->name));
 	if (!del && value == NULL && n->kind == CBL_YN_LEAF &&
 	    n->type->kind == CBL_YT_EMPTY)
 		value = "";
@@ -2058,9 +2247,10 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 	    (n->kind == CBL_YN_LEAFLIST && seg[ns - 1].nkey > 0)))
 		value = n->kind == CBL_YN_LEAFLIST ? seg[ns - 1].key[0] : "{}";
 	if (!del && value == NULL)
-		xo_errx(2, "set: %s: a value is needed", n->name);
+		xo_errx(2, "set: %s: a value is needed", txe(n->name));
 	if (n->kind == CBL_YN_LIST && seg[ns - 1].nkey == 0)
-		xo_errx(2, "set: %s: an entry is named by its keys", n->name);
+		xo_errx(2, "set: %s: an entry is named by its keys",
+		    txe(n->name));
 	if (ds == CBL_YDS_CANDIDATE && !stop && !candidate_clean(conn))
 		xo_errx(1, "set: the candidate has changes of its own: commit "
 		    "or discard them first, or set -n");
@@ -2074,11 +2264,12 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 		c = sn->kind == CBL_YN_LIST ? cbl_dnode_entry(d, sn,
 		    yseg_keys(&seg[i], a)) : cbl_dnode_child(d, sn);
 		if (c == NULL && del)
-			xo_errx(1, "set: %s: not there", sn->name);
+			xo_errx(1, "set: %s: not there", txe(sn->name));
 		if (c == NULL && (error = sn->kind == CBL_YN_LIST ?
 		    cbl_dnode_add_entry(d, sn, yseg_keys(&seg[i], a), &c) :
 		    cbl_dnode_add(d, sn, NULL, &c)) != 0)
-			xo_errx(1, "set: %s: %s", sn->name, strerror(error));
+			xo_errx(1, "set: %s: %s", txe(sn->name),
+			    strerror(error));
 		d = c;
 	}
 	/* The node itself: there now, or not. */
@@ -2096,12 +2287,13 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 			while ((c = cbl_dnode_child(d, n)) != NULL)
 				(void)cbl_dnode_remove(c);
 		} else if (c == NULL)
-			xo_errx(1, "set: %s: not there", n->name);
+			xo_errx(1, "set: %s: not there", txe(n->name));
 		else if ((error = cbl_dnode_remove(c)) != 0)
-			xo_errx(1, "set: %s: %s", n->name, strerror(error));
+			xo_errx(1, "set: %s: %s", txe(n->name),
+			    strerror(error));
 	} else if (n->kind == CBL_YN_LEAF || n->kind == CBL_YN_LEAFLIST) {
 		if (yjson_text(n, value, a, &val, why, sizeof(why)) != 0)
-			xo_errx(1, "set: %s", why);
+			xo_errx(1, "set: %s", txe(why));
 		if (n->kind == CBL_YN_LEAF && c != NULL)
 			error = cbl_dnode_set(c, val);
 		else if (n->kind == CBL_YN_LEAFLIST &&
@@ -2110,7 +2302,8 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 		else
 			error = cbl_dnode_add(d, n, val, NULL);
 		if (error != 0)
-			xo_errx(1, "set: %s: %s", n->name, strerror(error));
+			xo_errx(1, "set: %s: %s", txe(n->name),
+			    strerror(error));
 	} else {
 		/* A container or an entry: what value says, in its place. */
 		if ((text = value[0] == '@' ? slurp(value + 1) :
@@ -2119,11 +2312,13 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 		if ((p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS)) == NULL)
 			xo_err(1, "set");
 		if (!ucl_parser_add_string(p, text, 0))
-			xo_errx(1, "set: not JSON: %s", ucl_parser_get_error(p));
+			xo_errx(1, "set: not JSON: %s",
+			    txe(ucl_parser_get_error(p)));
 		v = ucl_parser_get_object(p);
 		ucl_parser_free(p);
 		if (ucl_object_type(v) != UCL_OBJECT)
-			xo_errx(1, "set: %s: its value is an object", n->name);
+			xo_errx(1, "set: %s: its value is an object",
+			    txe(n->name));
 		if (c != NULL)
 			(void)cbl_dnode_remove(c);
 		arr = NULL;
@@ -2141,7 +2336,8 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 				    ucl_object_tostring_forced(kv),
 				    seg[ns - 1].key[i]) != 0))
 					xo_errx(1, "set: %s: its %s is the "
-					    "path's", n->name, kn->name);
+					    "path's", txe(n->name),
+					    txe(kn->name));
 				if (kv == NULL)
 					ucl_object_insert_key(v,
 					    ucl_object_fromstring(
@@ -2153,8 +2349,8 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 		}
 		if ((error = yjson_node(d, n, arr != NULL ? arr : v, a, &made,
 		    why, sizeof(why))) != 0)
-			xo_errx(1, "set: %s", why[0] != '\0' ? why :
-			    strerror(error));
+			xo_errx(1, "set: %s", txe(why[0] != '\0' ? why :
+			    strerror(error)));
 		ucl_object_unref(arr);
 		ucl_object_unref(v);
 		free(text);
@@ -2196,7 +2392,7 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 			    tag, sizeof(tag)) != 0) {
 				ytold_end(true);
 				xo_errx(1, "set: committed, not confirmed: %s "
-				    "(undone at its timeout)", err);
+				    "(undone at its timeout)", txe(err));
 			}
 			confirmed = true;
 		}
@@ -2206,7 +2402,7 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 	dsname = ds == CBL_YDS_RUNNING ? "running" : "candidate";
 	xo_open_container("set");
 	xo_emit("{:path/%s}: {:operation/%s}{L: in }{:datastore/%s}", argv[0],
-	    op, dsname);
+	    tx(op), tx(dsname));
 	xo_emit("{en:committed/%s}{en:confirmed/%s}", committed ? "true" :
 	    "false", confirmed ? "true" : "false");
 	if (confirmed)
@@ -2215,7 +2411,7 @@ cmd_set(cbl_conn *conn, int argc, char **argv)
 		xo_emit("{L:, committed}\n");
 		xo_emit("{Lw:confirm within}{:seconds/%u}{L: seconds: "
 		    "arcanactl commit -i }{:persist-id/%s}\n", safe_wait > 0 ?
-		    safe_wait : 600, token);
+		    safe_wait : 600, tx(token));
 	} else
 		xo_emit("\n");
 	xo_close_container("set");
@@ -2237,15 +2433,15 @@ ydata_out(const char *what, int error, ucl_object_t *data, const char *err)
 
 	if (data != NULL && (json = ucl_object_emit(data,
 	    UCL_EMIT_JSON_COMPACT)) != NULL) {
-		xo_emit("{:json/%s}\n", (char *)json);
+		xo_emit("{:json/%s}\n", txj((char *)json));
 		free(json);
 	}
 	if (data != NULL)
 		ucl_object_unref(data);
 	ytold_end(true);
 	if (error != 0)
-		xo_warnx("%s: %s", what, err[0] != '\0' ? err :
-		    strerror(error));
+		xo_warnx("%s: %s", txe(what), txe(err[0] != '\0' ? err :
+		    strerror(error)));
 	return (error != 0 ? 1 : 0);
 }
 
@@ -2265,14 +2461,14 @@ yget_data(cbl_conn *conn, const struct cbl_ynode *n, int ds,
 	    CBL_YCMD_GET, 0, &req)) != 0 || (error = cbl_msg_put_yget(req,
 	    &n->sid, 1)) != 0 || (ds >= 0 && (error = cbl_msg_set_datastore(
 	    req, (enum cbl_yds_name)ds)) != 0))
-		xo_errx(1, "%s: %s", n->name, strerror(error));
+		xo_errx(1, "%s: %s", txe(n->name), strerror(error));
 	if ((error = cbl_request(conn, req, &rep, -1)) != 0)
-		xo_errx(1, "%s: %s", n->name, rep != NULL &&
+		xo_errx(1, "%s: %s", txe(n->name), txe(rep != NULL &&
 		    cbl_msg_err_str(rep) != NULL ? cbl_msg_err_str(rep) :
-		    strerror(error));
+		    strerror(error)));
 	if ((error = cbl_msg_ydecode_member(rep, n, data, a, 0, why,
 	    sizeof(why))) != 0 && error != ENOENT)
-		xo_errx(1, "%s: %s", n->name, why);
+		xo_errx(1, "%s: %s", txe(n->name), txe(why));
 	cbl_msg_free(rep);
 }
 
@@ -2293,15 +2489,16 @@ ycall(cbl_conn *conn, const struct cbl_ynode *n,
 
 	if ((an = ychild(n, act)) == NULL || (inode = ychild(an, "input")) ==
 	    NULL || (onode = ychild(an, "output")) == NULL)
-		xo_errx(1, "%s: %s is not in the tables", n->name, act);
+		xo_errx(1, "%s: %s is not in the tables", txe(n->name),
+		    txe(act));
 	if (in == NULL && (in = cbl_yarena_alloc(a, inode->size)) == NULL)
-		xo_err(1, "%s", act);
+		xo_err(1, "%s", txe(act));
 	if ((error = cbl_yiid_write(n, (const void **)(uintptr_t)vals, nvals,
 	    &t)) != 0 || (error = cbl_msg_new(cbl_conn_ctx(conn),
 	    CBL_YANG_FAMILY, CBL_YCMD_RPC, 0, &req)) != 0 ||
 	    (error = cbl_msg_put_ynode(req, inode, in)) != 0 ||
 	    (error = cbl_msg_put_yaction(req, t.p, t.len)) != 0)
-		xo_errx(1, "%s: %s", act, strerror(error));
+		xo_errx(1, "%s: %s", txe(act), strerror(error));
 	cbl_ybuf_free(&t);
 	if ((error = cbl_request(conn, req, &rep, -1)) != 0) {
 		(void)snprintf(err, errlen, "%s", rep != NULL &&
@@ -2339,20 +2536,19 @@ yplug_read(cbl_conn *conn, const char *top, const char *act,
 	n = ytop_named(top);
 	if (n == NULL || (an = ychild(n, act)) == NULL || (onode = ychild(an,
 	    "output")) == NULL)
-		xo_errx(1, "%s: its module is not in the tables", what);
+		xo_errx(1, "%s: its module is not in the tables", txe(what));
 	if ((a = cbl_yarena_new()) == NULL || (out = cbl_yarena_alloc(a,
 	    onode->size)) == NULL)
-		xo_err(1, "%s", what);
+		xo_err(1, "%s", txe(what));
 	ytold_begin(conn);
 	error = ycall(conn, n, NULL, 0, act, in, out, a, why, sizeof(why));
 	ytold_end(true);
 	if (error == 0 && (error = cbl_yjson(onode, out, &b)) != 0)
 		(void)snprintf(why, sizeof(why), "%s", strerror(error));
 	if (error == 0)
-		xo_emit("{:json/%.*s}\n", (int)b.len, b.p != NULL ?
-		    (const char *)b.p : "{}");
+		xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 	else
-		xo_warnx("%s: %s", what, why);
+		xo_warnx("%s: %s", txe(what), txe(why));
 	cbl_ybuf_free(&b);
 	cbl_yarena_free(a);
 	return (error == 0 ? 0 : 1);
@@ -2422,8 +2618,8 @@ cmd_list(cbl_conn *conn, int argc, char **argv)
 			emit_jail(&js->jail.v[i], true);
 	xo_close_list("jail");
 	for (size_t i = 0; i < js->conf_error.n; i++)
-		xo_warnx("%s: %s", js->conf_error.v[i].scope,
-		    js->conf_error.v[i].message);
+		xo_warnx("%s: %s", txe(js->conf_error.v[i].scope),
+		    txe(js->conf_error.v[i].message));
 	ytold_end(true);
 	cbl_yarena_free(a);
 	return (0);
@@ -2438,7 +2634,7 @@ yjail_show(cbl_conn *conn, const char *name, const bool *boot)
 	cbl_yarena				*a;
 
 	if ((a = cbl_yarena_new()) == NULL)
-		xo_err(1, "%s", name);
+		xo_err(1, "%s", txe(name));
 	if ((j = yjail_in(yjails(conn, -1, a), name)) != NULL) {
 		c = *j;
 		if (boot != NULL) {
@@ -2473,11 +2669,12 @@ jail_boot(cbl_conn *conn, const char *verb, const char *name, bool on)
 	if ((n = ytop_named("jails")) == NULL)
 		xo_errx(1, "jails: arcana-jails is not in the tables");
 	if ((a = cbl_yarena_new()) == NULL)
-		xo_err(1, "%s", verb);
+		xo_err(1, "%s", txe(verb));
 	js = yjails(conn, CBL_YDS_RUNNING, a);
 	if ((j = (struct arcana_jails_jails_jail *)(uintptr_t)yjail_in(js,
 	    name)) == NULL)
-		xo_errx(1, "%s %s: jail '%s' is not defined", verb, name, name);
+		xo_errx(1, "%s %s: jail '%s' is not defined", txe(verb),
+		    txe(name), txe(name));
 	if (!j->has_boot || j->boot != on) {
 		j->has_boot = true;
 		j->boot = on;
@@ -2556,7 +2753,7 @@ cmd_action(cbl_conn *conn, uint8_t action, int argc, char **argv)
 	yjail_show(conn, argv[1], NULL);
 	ytold_end(true);
 	if (error != 0) {
-		xo_warnx("%s %s: %s", argv[0], argv[1], why);
+		xo_warnx("%s %s: %s", argv[0], argv[1], txe(why));
 		return (1);
 	}
 	return (0);
@@ -2644,14 +2841,14 @@ cmd_address(cbl_conn *conn, int argc, char **argv)
 	    sizeof(why));
 	ytold_end(false);
 	if (error == 0 && out.diff != NULL)
-		xo_emit("{:diff/%s}", out.diff);
+		xo_emit("{:diff/%s}", txl(out.diff));
 	cbl_yarena_free(a);
 	/* The jail as it is after, as arcana-jails has it. */
 	if (error == 0 && !req.dry_run)
 		yjail_show(conn, req.jail, NULL);
 	ytold_end(true);
 	if (error != 0) {
-		xo_warnx("address %s: %s", req.address, why);
+		xo_warnx("address %s: %s", txe(req.address), txe(why));
 		return (1);
 	}
 	return (0);
@@ -2663,7 +2860,7 @@ emit_service(const struct arc_service *s, bool table)
 
 	if (table) {
 		xo_open_instance("service");
-		xo_emit("{k:name/%-24s/%s} {:enabled/%-8s/%s} ", s->name,
+		xo_emit("{k:name/%-24s/%s} {:enabled/%-8s/%s} ", tx(s->name),
 		    !s->has_enabled ? "?" : s->enabled ? "enabled" : "-");
 		if (s->has_running)
 			xo_emit("{:running/%-8s/%s} ", s->running ? "running" :
@@ -2677,7 +2874,8 @@ emit_service(const struct arc_service *s, bool table)
 		return;
 	}
 	xo_open_container("service");
-	xo_emit("{Lwc:Service}{:name/%s} ({:path/%s})\n", s->name, s->path);
+	xo_emit("{Lwc:Service}{:name/%s} ({:path/%s})\n", tx(s->name),
+	    tx(s->path));
 	if (s->has_enabled)
 		xo_emit("{Lwc:Enabled}{:enabled/%s}\n", s->enabled ? "yes" :
 		    "no");
@@ -2688,7 +2886,7 @@ emit_service(const struct arc_service *s, bool table)
 	if (s->has_running)
 		xo_emit("\n");
 	if (s->status != NULL)
-		xo_emit("{Lwc:Status}{:status/%s}\n", s->status);
+		xo_emit("{Lwc:Status}{:status/%s}\n", tx(s->status));
 	xo_close_container("service");
 }
 
@@ -2776,12 +2974,12 @@ service_show(cbl_conn *conn, const char *name, bool vars)
 	    "service")) == NULL)
 		xo_errx(1, "services: arcana-services is not in the tables");
 	if ((a = cbl_yarena_new()) == NULL)
-		xo_err(1, "%s", name);
+		xo_err(1, "%s", txe(name));
 	vals[0] = &name;
 	memset(&o, 0, sizeof(o));
 	if (ycall(conn, n, vals, 1, "read", NULL, &o, a, why,
 	    sizeof(why)) != 0) {
-		xo_warnx("service %s: %s", name, why);
+		xo_warnx("service %s: %s", txe(name), txe(why));
 		cbl_yarena_free(a);
 		return (1);
 	}
@@ -2800,10 +2998,10 @@ service_show(cbl_conn *conn, const char *name, bool vars)
 	if (vars) {
 		if (o.description != NULL)
 			xo_emit("{Lwc:Describe}{:description/%s}\n",
-			    o.description);
+			    tx(o.description));
 		if (o.command.n > 0)
-			xo_emit("{Lwc:Commands}{d:/%s}\n", join(o.command.v,
-			    o.command.n));
+			xo_emit("{Lwc:Commands}{d:/%s}\n", tx(join(o.command.v,
+			    o.command.n)));
 		for (size_t i = 0; i < o.command.n; i++)
 			xo_emit("{el:command/%s}", o.command.v[i]);
 		ss = yservices(conn, CBL_YDS_RUNNING, a);
@@ -2816,9 +3014,9 @@ service_show(cbl_conn *conn, const char *name, bool vars)
 			for (size_t k = 0; k < y->variable.n; k++) {
 				xo_open_instance("variable");
 				xo_emit("{P:  }{k:key/%s}{D:=}{:value/%s}\n",
-				    y->variable.v[k].name,
-				    y->variable.v[k].value != NULL ?
-				    y->variable.v[k].value : "");
+				    tx(y->variable.v[k].name),
+				    tx(y->variable.v[k].value != NULL ?
+				    y->variable.v[k].value : ""));
 				xo_close_instance("variable");
 			}
 		}
@@ -2854,13 +3052,13 @@ service_commit(cbl_conn *conn, const char *verb, const char *name,
 	if ((n = ytop_named("services")) == NULL)
 		xo_errx(1, "services: arcana-services is not in the tables");
 	if ((a = cbl_yarena_new()) == NULL)
-		xo_err(1, "%s", verb);
+		xo_err(1, "%s", txe(verb));
 	ss = yservices(conn, CBL_YDS_RUNNING, a);
 	for (k = 0; k < ss->service.n; k++)
 		if (strcmp(ss->service.v[k].name, name) == 0)
 			y = (yservice *)(uintptr_t)&ss->service.v[k];
 	if (y == NULL)
-		xo_errx(1, "%s: no rc.d script '%s'", verb, name);
+		xo_errx(1, "%s: no rc.d script '%s'", txe(verb), txe(name));
 	if (enable != 0) {
 		y->has_enabled = true;
 		y->enabled = enable > 0;
@@ -2868,7 +3066,7 @@ service_commit(cbl_conn *conn, const char *verb, const char *name,
 	if (nv > 0) {
 		if ((v = cbl_yarena_alloc(a, (y->variable.n + nv) *
 		    sizeof(*v))) == NULL)
-			xo_err(1, "%s", verb);
+			xo_err(1, "%s", txe(verb));
 		m = 0;
 		for (k = 0; k < y->variable.n; k++)
 			v[m++] = y->variable.v[k];
@@ -2963,7 +3161,7 @@ cmd_services_convert(cbl_conn *conn, int argc, char **argv)
 	memset(&o, 0, sizeof(o));
 	if ((error = cbl_msg_ydecode(rep, out, &o, a, 0, why, sizeof(why))) !=
 	    0 && error != ENOENT)
-		xo_errx(1, "services: %s", why);
+		xo_errx(1, "services: %s", txe(why));
 	warnings_of(rep);
 	xo_emit("{T:/%-16s} {T:/%-24s} {T:/%-24s} {T:/%s}\n", "SERVICE",
 	    "VARIABLE", "VALUE", "WHERE");
@@ -2982,11 +3180,11 @@ cmd_services_convert(cbl_conn *conn, int argc, char **argv)
 
 			xo_open_instance("variable");
 			xo_emit("{d:service/%-16s} {:name/%-24s} {:value/%-24s} "
-			    "{:file}:{:line/%u}", j == 0 ? s->name : "",
-			    v->name, v->value != NULL ? v->value : "", v->file,
-			    v->line);
+			    "{:file}:{:line/%u}", tx(j == 0 ? s->name : ""),
+			    tx(v->name), tx(v->value != NULL ? v->value : ""),
+			    tx(v->file), v->line);
 			if (v->left != NULL)
-				xo_emit("  left: {:left/%s}", v->left);
+				xo_emit("  left: {:left/%s}", tx(v->left));
 			xo_emit("\n");
 			xo_close_instance("variable");
 		}
@@ -3055,7 +3253,7 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
 	memset(&o, 0, sizeof(o));
 	if ((error = cbl_msg_ydecode(rep, out, &o, a, 0, why, sizeof(why))) !=
 	    0 && error != ENOENT)
-		xo_errx(1, "services: %s", why);
+		xo_errx(1, "services: %s", txe(why));
 	warnings_of(rep);
 	xo_emit("{T:/%-16s} {T:/%-24s} {T:/%-24s} {T:/%s}\n", "SERVICE",
 	    "VARIABLE", "VALUE", "WHERE");
@@ -3069,7 +3267,7 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
 		xo_emit("{e:name/%s}", s->name);
 		if (s->variable.n == 0)
 			xo_emit("{d:service/%-16s} {d:/nothing to give back}\n",
-			    s->name);
+			    tx(s->name));
 		xo_open_list("variable");
 		for (size_t j = 0; j < s->variable.n; j++) {
 			const struct
@@ -3085,10 +3283,10 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
 				xo_open_instance("restored");
 				xo_emit("{d:service/%-16s} {d:variable/%-24s} "
 				    "{:value/%-24s} {:file}:{:line/%u}\n",
-				    first ? s->name : "", r == 0 ? v->name : "",
-				    v->restored.v[r].value != NULL ?
-				    v->restored.v[r].value : "",
-				    v->restored.v[r].file,
+				    tx(first ? s->name : ""), tx(r == 0 ?
+				    v->name : ""), tx(v->restored.v[r].value !=
+				    NULL ? v->restored.v[r].value : ""),
+				    tx(v->restored.v[r].file),
 				    v->restored.v[r].line);
 				xo_close_instance("restored");
 				first = false;
@@ -3097,14 +3295,14 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
 			if (v->dropped != NULL) {
 				xo_emit("{d:service/%-16s} {d:variable/%-24s} "
 				    "{d:value/%-24s} dropped: {:dropped/%s}\n",
-				    first ? s->name : "", v->name,
-				    v->arcana_value != NULL ? v->arcana_value :
-				    "", v->dropped);
+				    tx(first ? s->name : ""), tx(v->name),
+				    tx(v->arcana_value != NULL ? v->arcana_value
+				    : ""), tx(v->dropped));
 				first = false;
 			}
 			if (v->differs != NULL)
 				xo_emit("{d:/%-16s} {d:/%-24s} differs: "
-				    "{:differs/%s}\n", "", "", v->differs);
+				    "{:differs/%s}\n", "", "", tx(v->differs));
 			xo_close_instance("variable");
 		}
 		xo_close_list("variable");
@@ -3189,7 +3387,8 @@ cmd_service(cbl_conn *conn, int argc, char **argv)
 		cbl_yarena_free(a);
 		if (error != 0) {
 			ytold_end(true);
-			xo_warnx("service %s %s: %s", argv[1], argv[2], why);
+			xo_warnx("service %s %s: %s", argv[1], argv[2],
+			    txe(why));
 			return (1);
 		}
 		error = service_show(conn, argv[1], false);
@@ -3242,8 +3441,8 @@ takes_gzip(cbl_conn *conn)
 	int		 error;
 
 	if ((error = yh_hello(conn, &h, err, sizeof(err))) != 0)
-		xo_errx(1, "hello: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_errx(1, "hello: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 	yes = yh_takes_gzip(h);
 	ucl_object_unref(h);
 	return (yes);
@@ -3263,14 +3462,14 @@ fetch_refused(const char *what, int error, ucl_object_t *data,
 
 	if (error != EPERM || data == NULL) {
 		if (error != 0)
-			xo_warnx("%s: %s", what, err[0] != '\0' ? err :
-			    strerror(error));
+			xo_warnx("%s: %s", txe(what), txe(err[0] != '\0' ? err :
+			    strerror(error)));
 		return (false);
 	}
 	fp = ucl_object_lookup(data, "fingerprints");
 	while (fp != NULL && (e = ucl_object_iterate(fp, &it, true)) != NULL)
 		xo_emit("{Lwc:Host key}{l:fingerprint/%s}\n",
-		    ucl_object_tostring(e));
+		    tx(ucl_object_tostring(e)));
 	k = ucl_object_tostring(ucl_object_lookup(data, "host_keys"));
 	if (trust && *keys == NULL && k != NULL) {
 		if ((*keys = strdup(k)) == NULL)
@@ -3279,8 +3478,8 @@ fetch_refused(const char *what, int error, ucl_object_t *data,
 	}
 	if ((k = ucl_object_tostring(ucl_object_lookup(data,
 	    "deploy_key"))) != NULL)
-		xo_emit("{Lwc:Deploy key}{:deploy-key/%s}\n", k);
-	xo_warnx("%s: %s", what, err);
+		xo_emit("{Lwc:Deploy key}{:deploy-key/%s}\n", tx(k));
+	xo_warnx("%s: %s", txe(what), txe(err));
 	return (false);
 }
 
@@ -3349,14 +3548,14 @@ cmd_agent_build(cbl_conn *conn, int argc, char **argv)
 		    "SHA-256");
 	if ((fd = fileargs_open(outfiles, out)) == -1 ||
 	    write(fd, prog, len) != (ssize_t)len || close(fd) == -1)
-		xo_err(1, "%s", out);
+		xo_err(1, "%s", txe(out));
 	xo_emit("{Lwc:Built}{:agent-version/%s}{P: }{:sha256/%s}{P: }"
-	    "{:file/%s}\n", ucl_object_tostring(ucl_object_lookup(data,
+	    "{:file/%s}\n", tx(ucl_object_tostring(ucl_object_lookup(data,
 	    "version")) != NULL ? ucl_object_tostring(ucl_object_lookup(data,
-	    "version")) : "?", hex, out);
+	    "version")) : "?"), tx(hex), tx(out));
 	if (ucl_object_lookup(data, "commit") != NULL)
-		xo_emit("{Lwc:Commit}{:commit/%s}\n", ucl_object_tostring(
-		    ucl_object_lookup(data, "commit")));
+		xo_emit("{Lwc:Commit}{:commit/%s}\n", tx(ucl_object_tostring(
+		    ucl_object_lookup(data, "commit"))));
 	ucl_object_unref(data);
 	free(keys);
 	free(prog);
@@ -3411,8 +3610,8 @@ cmd_console_update(cbl_conn *conn, int argc, char **argv)
 		    ", restarting");
 		if (ucl_object_lookup(data, "commit") != NULL)
 			xo_emit("{Lwc:Commit}{:commit/%s}\n",
-			    ucl_object_tostring(ucl_object_lookup(data,
-			    "commit")));
+			    tx(ucl_object_tostring(ucl_object_lookup(data,
+			    "commit"))));
 	}
 	if (data != NULL)
 		ucl_object_unref(data);
@@ -3465,10 +3664,10 @@ cmd_source_head(cbl_conn *conn, int argc, char **argv)
 		ucl_object_unref(data);
 	}
 	if (error == 0)
-		xo_emit("{Lwc:Commit}{:commit/%s}\n", ucl_object_tostring(
+		xo_emit("{Lwc:Commit}{:commit/%s}\n", tx(ucl_object_tostring(
 		    ucl_object_lookup(data, "commit")) != NULL ?
 		    ucl_object_tostring(ucl_object_lookup(data, "commit")) :
-		    "");
+		    ""));
 	if (data != NULL)
 		ucl_object_unref(data);
 	free(keys);
@@ -3514,22 +3713,22 @@ cmd_source_log(cbl_conn *conn, int argc, char **argv)
 	    key, count, &data, err, sizeof(err));
 	ytold_end(true);
 	if (error != 0) {
-		xo_warnx("source-log: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_warnx("source-log: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 		return (1);
 	}
-	xo_emit("{Lwc:Commit}{:commit/%s}\n", ucl_object_tostring(
+	xo_emit("{Lwc:Commit}{:commit/%s}\n", tx(ucl_object_tostring(
 	    ucl_object_lookup(data, "commit")) != NULL ? ucl_object_tostring(
-	    ucl_object_lookup(data, "commit")) : "");
+	    ucl_object_lookup(data, "commit")) : ""));
 	/* The commits and the tags as the agent lists them, JSON each. */
 	lj = ucl_object_emit(ucl_object_lookup(data, "log"),
 	    UCL_EMIT_JSON_COMPACT);
-	xo_emit("{Lwc:Commits}{:commits/%s}\n", lj != NULL ? (char *)lj :
-	    "[]");
+	xo_emit("{Lwc:Commits}{:commits/%s}\n", txj(lj != NULL ? (char *)lj :
+	    "[]"));
 	free(lj);
 	lj = ucl_object_emit(ucl_object_lookup(data, "tags"),
 	    UCL_EMIT_JSON_COMPACT);
-	xo_emit("{Lwc:Tags}{:tags/%s}\n", lj != NULL ? (char *)lj : "[]");
+	xo_emit("{Lwc:Tags}{:tags/%s}\n", txj(lj != NULL ? (char *)lj : "[]"));
 	free(lj);
 	ucl_object_unref(data);
 	return (0);
@@ -3592,19 +3791,19 @@ cmd_agent_update(cbl_conn *conn, int argc, char **argv)
 	    sizeof(err));
 	ytold_end(error != EFBIG);
 	if (error == EFBIG)
-		xo_errx(1, "%s: %s%s", argv[optind], err, plain ?
+		xo_errx(1, "%s: %s%s", argv[optind], txe(err), plain ?
 		    "; send it without -p" : "");
 	if (error != 0) {
-		xo_warnx("agent-update: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_warnx("agent-update: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 		free(prog);
 		return (1);
 	}
 	restarting = ucl_object_toboolean(ucl_object_lookup(data,
 	    "restarting"));
 	xo_emit("{Lwc:Agent}{:agent-version/%s}{d:restarting/%s}\n",
-	    ucl_object_tostring(ucl_object_lookup(data, "version")) != NULL ?
-	    ucl_object_tostring(ucl_object_lookup(data, "version")) : "?",
+	    tx(ucl_object_tostring(ucl_object_lookup(data, "version")) != NULL ?
+	    ucl_object_tostring(ucl_object_lookup(data, "version")) : "?"),
 	    restarting ? ", restarting" :
 	    " in place; it runs from the next start");
 	xo_emit("{e:restarting/%s}", restarting ? "true" : "false");
@@ -3712,10 +3911,10 @@ cmd_bird_config(cbl_conn *conn, int argc, char **argv)
 		ytold_end(true);
 		if (c == NULL || i == c->file.n)
 			xo_errx(1, "bird config: %s is not a file of BIRD's "
-			    "configuration%s", path, c == NULL ? " (it has none)" :
-			    "");
-		xo_emit("{:text/%s}", c->file.v[i].text != NULL ?
-		    c->file.v[i].text : "");
+			    "configuration%s", txe(path), c == NULL ?
+			    " (it has none)" : "");
+		xo_emit("{:text/%s}", txl(c->file.v[i].text != NULL ?
+		    c->file.v[i].text : ""));
 		for (k = 0; k < c->file.n; k++)
 			if (k != i)
 				xo_emit("{e:file/%s}", c->file.v[k].path);
@@ -3725,7 +3924,7 @@ cmd_bird_config(cbl_conn *conn, int argc, char **argv)
 	if ((fd = fileargs_open(files, from)) == -1 || fstat(fd, &sb) == -1 ||
 	    (text = malloc((size_t)sb.st_size + 1)) == NULL ||
 	    read(fd, text, (size_t)sb.st_size) != sb.st_size)
-		xo_err(1, "%s", from);
+		xo_err(1, "%s", txe(from));
 	close(fd);
 	text[sb.st_size] = '\0';
 	if (dry_run) {
@@ -3736,8 +3935,8 @@ cmd_bird_config(cbl_conn *conn, int argc, char **argv)
 		k = (size_t)yplug_read(conn, "bird", "check", &cin,
 		    "bird config -n");
 		if (k == 0)
-			xo_emit("{:path/%s}: {:result/%s}\n", path, "parses; left "
-			    "as it was");
+			xo_emit("{:path/%s}: {:result/%s}\n", tx(path),
+			    "parses; left " "as it was");
 		free(text);
 		cbl_yarena_free(a);
 		return ((int)k);
@@ -3809,13 +4008,13 @@ cmd_bird_config(cbl_conn *conn, int argc, char **argv)
 		refused("bird config", err, tag);
 	}
 	ytold_end(true);
-	xo_emit("{:path/%s}: {:result/%s}\n", path, wait > 0 ? "in place, and "
-	    "BIRD told; taken back unless confirmed" : "in place, and BIRD "
-	    "told");
+	xo_emit("{:path/%s}: {:result/%s}\n", tx(path), wait > 0 ?
+	    "in place, and " "BIRD told; taken back unless confirmed" :
+	    "in place, and BIRD " "told");
 	if (wait > 0)
 		xo_emit("{Lw:confirm within}{:seconds/%u}{L: seconds: arcanactl "
 		    "bird confirm }{:persist-id/%s}\n", com.confirm_timeout,
-		    token);
+		    tx(token));
 	free(text);
 	cbl_yarena_free(a);
 	return (0);
@@ -3901,7 +4100,7 @@ json_arg(const char *arg)
 	if (arg == NULL || arg[0] != '@')
 		return (arg);
 	if ((fp = fileargs_fopen(files, arg + 1, "r")) == NULL)
-		xo_err(1, "%s", arg + 1);
+		xo_err(1, "%s", txe(arg + 1));
 	if ((text = malloc(8 * 1024 * 1024)) == NULL)
 		xo_err(1, "malloc");
 	for (len = 0; len < 8 * 1024 * 1024 - 1; len += n)
@@ -3943,36 +4142,37 @@ sdwan_stamp_out(cbl_conn *conn)
 	error = ysdwan_stamp(conn, &data, err, sizeof(err));
 	ytold_end(true);
 	if (error != 0)
-		xo_errx(1, "sdwan stamp: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_errx(1, "sdwan stamp: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 	xo_open_container("stamp");
 	c = ucl_object_lookup(data, "sender");
 	xo_emit("{L:sender}: {Lw:port}{:port/%jd}, {Lw:clock}{:clock-source/%s}"
 	    ", {Lw:error}{:clock-error/%.3f} {U:ms}{d:/%s}\n", (intmax_t)
-	    ucl_object_toint(ucl_object_lookup(c, "port")), ostr(c,
-	    "clock_source"), ucl_object_todouble(ucl_object_lookup(c,
+	    ucl_object_toint(ucl_object_lookup(c, "port")), tx(ostr(c,
+	    "clock_source")), ucl_object_todouble(ucl_object_lookup(c,
 	    "clock_error")), ucl_object_toboolean(ucl_object_lookup(c,
 	    "clock_synchronised")) ? ", synchronised" : ", not synchronised");
 	c = ucl_object_lookup(data, "reflector");
 	xo_emit("{L:reflector}: {L:stampd} {:installed/%s}{d:/%s}{:status/%s}\n",
 	    ucl_object_toboolean(ucl_object_lookup(c, "installed")) ?
-	    "installed" : "not installed", ostr(c, "status")[0] != '\0' ?
-	    "; " : "", ostr(c, "status"));
+	    "installed" : "not installed", ostr(c, "status")[0] != '\0' ? "; " :
+	    "", tx(ostr(c, "status")));
 	xo_open_list("session");
 	while ((s = ucl_object_iterate(ucl_object_lookup(data, "sessions"),
 	    &it, true)) != NULL) {
 		xo_open_instance("session");
 		xo_emit("{k:target/%s}{d:/%s}{e:jail/%s}{d:/%s}{d:/%s}{k:class/%s}: "
-		    "{:method/%s} {e:kind/%s}", ostr(s, "target"), ostr(s,
-		    "jail")[0] != '\0' ? "@" : "", ostr(s, "jail"), ostr(s,
-		    "jail"), ostr(s, "class")[0] != '\0' ? "/" : "", ostr(s,
-		    "class"), ostr(s, "method"), ostr(s, "kind"));
-		xo_emit("({:mode/%s}{d:/%s}{d:/%s})", ostr(s, "mode"),
+		    "{:method/%s} {e:kind/%s}", tx(ostr(s, "target")), ostr(s,
+		    "jail")[0] != '\0' ? "@" : "", ostr(s, "jail"), tx(ostr(s,
+		    "jail")), ostr(s, "class")[0] != '\0' ? "/" : "", tx(ostr(s,
+		    "class")), tx(ostr(s, "method")), ostr(s, "kind"));
+		xo_emit("({:mode/%s}{d:/%s}{d:/%s})", tx(ostr(s, "mode")),
 		    strcmp(ostr(s, "kind"), "stamp") == 0 ? ", stamp alone" :
 		    "", ucl_object_toboolean(ucl_object_lookup(s,
 		    "authenticated")) ? ", authenticated" : "");
 		if (ostr(s, "reason")[0] != '\0')
-			xo_emit(" {Lw:because}{:reason/%s}", ostr(s, "reason"));
+			xo_emit(" {Lw:because}{:reason/%s}", tx(ostr(s,
+			    "reason")));
 		if ((v = ucl_object_lookup(s, "rtt")) != NULL) {
 			xo_emit(", {Lw:rtt}{:rtt/%.3f} {U:ms}",
 			    ucl_object_todouble(v));
@@ -4006,7 +4206,7 @@ sdwan_stamp_out(cbl_conn *conn)
 			    ucl_object_lookup(s, "dscp_sent")) ? " (remarked)" :
 			    "");
 		if (ostr(s, "nat")[0] != '\0')
-			xo_emit(", {Lw:NAT}{:nat/%s}", ostr(s, "nat"));
+			xo_emit(", {Lw:NAT}{:nat/%s}", tx(ostr(s, "nat")));
 		xo_emit("{d:/%s}\n", ucl_object_toboolean(ucl_object_lookup(s,
 		    "authenticated")) ? ", auth yes" : ", auth no");
 		xo_close_instance("session");
@@ -4038,8 +4238,8 @@ sdwan_intervals_out(cbl_conn *conn)
 	error = ysdwan_read(conn, false, 0, &data, err, sizeof(err));
 	ytold_end(true);
 	if (error != 0)
-		xo_errx(1, "sdwan intervals: %s", err[0] != '\0' ? err :
-		    strerror(error));
+		xo_errx(1, "sdwan intervals: %s", txe(err[0] != '\0' ? err :
+		    strerror(error)));
 	xo_open_list("target");
 	while ((t = ucl_object_iterate(ucl_object_lookup(data, "targets"), &it,
 	    true)) != NULL) {
@@ -4056,9 +4256,9 @@ sdwan_intervals_out(cbl_conn *conn)
 		}
 		xo_open_instance("target");
 		xo_emit("{k:id/%s}{d:/%s}{e:jail/%s}{d:/%s}{d:/%s}{k:class/%s}: ",
-		    ostr(t, "id"), ostr(t, "jail")[0] != '\0' ? "@" : "",
-		    ostr(t, "jail"), ostr(t, "jail"), ostr(t, "class")[0] !=
-		    '\0' ? "/" : "", ostr(t, "class"));
+		    tx(ostr(t, "id")), ostr(t, "jail")[0] != '\0' ? "@" : "",
+		    ostr(t, "jail"), tx(ostr(t, "jail")), ostr(t, "class")[0] !=
+		    '\0' ? "/" : "", tx(ostr(t, "class")));
 		if (last == NULL) {
 			xo_emit("{L:no interval ended yet}");
 			if (run != NULL)
@@ -4075,19 +4275,19 @@ sdwan_intervals_out(cbl_conn *conn)
 		at = (time_t)ucl_object_toint(ucl_object_lookup(last, "end"));
 		gmtime_r(&at, &tm);
 		strftime(to, sizeof(to), "%H:%M:%SZ", &tm);
-		xo_emit("{:start/%s} {L:to} {:end/%s}", from, to);
+		xo_emit("{:start/%s} {L:to} {:end/%s}", tx(from), tx(to));
 		v = ucl_object_lookup(last, "rtt");
 		if (v != NULL && ucl_object_lookup(v, "intermediate") != NULL) {
 			snprintf(pn, sizeof(pn), "p%g", ucl_object_todouble(
 			    ucl_object_lookup(pm, "intermediate")));
 			xo_emit(", {Lw:rtt}{Lw:/%s}{:rtt-intermediate/%.3f} {U:ms}",
-			    pn, ucl_object_toint(ucl_object_lookup(v,
+			    tx(pn), ucl_object_toint(ucl_object_lookup(v,
 			    "intermediate")) / 1000.0);
 		}
 		if (v != NULL && ucl_object_lookup(v, "high") != NULL) {
 			snprintf(pn, sizeof(pn), "p%g", ucl_object_todouble(
 			    ucl_object_lookup(pm, "high")));
-			xo_emit(", {Lw:/%s}{:rtt-high/%.3f} {U:ms}", pn,
+			xo_emit(", {Lw:/%s}{:rtt-high/%.3f} {U:ms}", tx(pn),
 			    ucl_object_toint(ucl_object_lookup(v, "high")) /
 			    1000.0);
 		}
@@ -4505,7 +4705,7 @@ np_data(cbl_stream *s, cbl_msg *data, void *arg)
 		return;
 	}
 	if (cbl_yjson(n, &d, &b) == 0)
-		xo_emit("{:json/%.*s}\n", (int)b.len, (const char *)b.p);
+		xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 	cbl_ybuf_free(&b);
 	cbl_yarena_free(a);
 }
@@ -4579,8 +4779,8 @@ net_parts(cbl_conn *conn, int kind, int family, const char *filter)
 		xo_errx(1, "net: %s", strerror(error));
 	sxf_run(conn, "net", &x.done);
 	if (x.error != 0) {
-		xo_warnx("net: %s", x.why[0] != '\0' ? x.why :
-		    strerror(x.error));
+		xo_warnx("net: %s", txe(x.why[0] != '\0' ? x.why :
+		    strerror(x.error)));
 		return (1);
 	}
 	return (0);
@@ -4621,7 +4821,7 @@ net_ipfw(cbl_conn *conn)
 		xo_errx(1, "net ipfw: the host told of no firewall there");
 	if (cbl_yjson(fn, f, &b) != 0)
 		xo_errx(1, "net ipfw: not written as JSON");
-	xo_emit("{:json/%.*s}\n", (int)b.len, (const char *)b.p);
+	xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 	cbl_ybuf_free(&b);
 	cbl_yarena_free(a);
 	return (0);
@@ -4655,14 +4855,14 @@ net_routes(cbl_conn *conn,
 	if (error == 0 && (error = cbl_yjson(an, &out, &b)) != 0)
 		(void)snprintf(why, sizeof(why), "%s", strerror(error));
 	if (error == 0) {
-		xo_emit("{:json/%.*s}\n", (int)b.len, (const char *)b.p);
+		xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 		if (out.truncated)
 			xo_warnx("net routes: the table has %ju rows, more "
 			    "than a reply carries: these are the first; give "
 			    "a text to search for, or -o to read on",
 			    (uintmax_t)out.total);
 	} else
-		xo_warnx("net routes: %s", why);
+		xo_warnx("net routes: %s", txe(why));
 	cbl_ybuf_free(&b);
 	cbl_yarena_free(a);
 	return (error == 0 ? 0 : 1);
@@ -4754,8 +4954,9 @@ cmd_net(cbl_conn *conn, int argc, char **argv)
 	if (optind < argc && strcmp(argv[optind], "parts") == 0) {
 		if (i != ARC_NET_KIND_ROUTES && i != ARC_NET_KIND_CONNECTIONS &&
 		    i != ARC_NET_KIND_SOCKETS)
-			xo_errx(1, "net %s: the routes, connections and sockets "
-			    "come in parts; the rest whole", kinds[i]);
+			xo_errx(1,
+			    "net %s: the routes, connections and sockets "
+			    "come in parts; the rest whole", txe(kinds[i]));
 		return (net_parts(conn, (int)i, family, optind + 1 < argc ?
 		    argv[optind + 1] : NULL));
 	}
@@ -4948,7 +5149,7 @@ slurp(const char *path)
 
 	if ((fp = strcmp(path, "-") == 0 ? stdin : fileargs_fopen(files, path,
 	    "r")) == NULL)
-		xo_err(1, "%s", path);
+		xo_err(1, "%s", txe(path));
 	cap = 4096;
 	len = 0;
 	if ((buf = malloc(cap)) == NULL)
@@ -5195,7 +5396,6 @@ cmd_sshd(cbl_conn *conn, int argc, char **argv)
 	struct arc_job_spec	 sp;
 	ucl_object_t		*data;
 	char			 ebuf[256];
-	char			*t;
 	int			 error;
 
 	if (argc == 1 || (argc == 2 && strcmp(argv[1], "list") == 0)) {
@@ -5216,10 +5416,9 @@ cmd_sshd(cbl_conn *conn, int argc, char **argv)
 		sp.names.v = (const char **)(uintptr_t)&argv[3];
 		sp.names.n = (size_t)argc - 3;
 	} else if (argc == 4 && strcmp(argv[1], "authorize") == 0) {
+		/* Every line a key: the agent checks each. */
 		sp.user = argv[2];
-		t = slurp(argv[3]);
-		t[strcspn(t, "\n")] = '\0';
-		sp.text = t;
+		sp.text = slurp(argv[3]);
 	} else if (argc == 4 && strcmp(argv[1], "unauthorize") == 0) {
 		sp.user = argv[2];
 		sp.text = argv[3];
@@ -5717,7 +5916,8 @@ sxf_step(cbl_conn *conn, const char *what)
 	    CBL_EV_READ : 0) | ((pfd.revents & POLLOUT) != 0 ?
 	    CBL_EV_WRITE : 0);
 	if ((error = cbl_conn_process(conn, ev)) != 0)
-		xo_errx(1, "%s: the host is gone: %s", what, strerror(error));
+		xo_errx(1, "%s: the host is gone: %s", txe(what),
+		    strerror(error));
 }
 
 /* The connection run until done says so, or the host goes. */
@@ -5759,8 +5959,8 @@ cmd_suricata_xfer(cbl_conn *conn, int argc, char **argv)
 		xo_errx(1, "suricata %s: %s", argv[1], strerror(error));
 	sxf_run(conn, argv[1], &x.opened);
 	if (x.error != 0)
-		xo_errx(1, "suricata %s: %s", argv[1], x.why[0] != '\0' ? x.why :
-		    strerror(x.error));
+		xo_errx(1, "suricata %s: %s", argv[1], txe(x.why[0] != '\0' ?
+		    x.why : strerror(x.error)));
 	if (put) {
 		if ((buf = malloc(256 * 1024)) == NULL)
 			xo_err(1, "malloc");
@@ -5782,9 +5982,9 @@ cmd_suricata_xfer(cbl_conn *conn, int argc, char **argv)
 	}
 	sxf_run(conn, argv[1], &x.closed);
 	if (x.code != 0)
-		xo_errx(1, "suricata %s: %s", argv[1], x.why);
+		xo_errx(1, "suricata %s: %s", argv[1], txe(x.why));
 	if (put)
-		xo_emit("{:json/%s}\n", x.json);
+		xo_emit("{:json/%s}\n", txj(x.json));
 	return (0);
 }
 
@@ -5814,7 +6014,7 @@ cmd_suricata(cbl_conn *conn, int argc, char **argv)
 		    (size_t)argc - 2, &data, &raw, ebuf, sizeof(ebuf));
 		/* Suricata's own answer, as it wrote it. */
 		if (raw != NULL) {
-			xo_emit("{:json/%s}\n", raw);
+			xo_emit("{:json/%s}\n", txj(raw));
 			free(raw);
 			if (data != NULL)
 				ucl_object_unref(data);
@@ -6020,16 +6220,15 @@ sysctl_read(cbl_conn *conn, const char *prefix, const char *after,
 	    (error = cbl_msg_put_yaction(req, t.p, t.len)) != 0)
 		xo_errx(1, "sysctl: %s", strerror(error));
 	if ((error = cbl_request(conn, req, &rep, -1)) != 0)
-		xo_errx(1, "sysctl: %s", rep != NULL && cbl_msg_err_str(rep) !=
-		    NULL ? cbl_msg_err_str(rep) : strerror(error));
+		xo_errx(1, "sysctl: %s", txe(rep != NULL && cbl_msg_err_str(rep)
+		    != NULL ? cbl_msg_err_str(rep) : strerror(error)));
 	memset(&o, 0, sizeof(o));
 	if ((error = cbl_msg_ydecode(rep, out, &o, a, 0, why, sizeof(why))) !=
 	    0 && error != ENOENT)
-		xo_errx(1, "sysctl: %s", why);
+		xo_errx(1, "sysctl: %s", txe(why));
 	if ((error = cbl_yjson(out, &o, &b)) != 0)
 		xo_errx(1, "sysctl: %s", strerror(error));
-	xo_emit("{:json/%.*s}\n", (int)b.len, b.p != NULL ? (const char *)
-	    b.p : "{}");
+	xo_emit("{:json/%s}\n", txjn((const char *)b.p, b.len));
 	if (o.next != NULL && (*next = strdup(o.next)) == NULL)
 		xo_err(1, "sysctl");
 	cbl_ybuf_free(&b);
@@ -6081,7 +6280,7 @@ cmd_sysctl(cbl_conn *conn, int argc, char **argv)
 	sysctl_read(conn, argc == 2 ? argv[1] : NULL, NULL, 0, &next);
 	if (next != NULL)
 		xo_warnx("sysctl: the first part: go on after %s, or sysctl "
-		    "parts", next);
+		    "parts", txe(next));
 	free((void *)(uintptr_t)next);
 	return (0);
 }
@@ -6093,10 +6292,11 @@ json_out(const char *what, bool ok, const char *error, const char *json,
 {
 
 	if (json != NULL)
-		xo_emit("{:json/%s}\n", json);
+		xo_emit("{:json/%s}\n", txj(json));
 	emit_trace(steps, nsteps);
 	if (!ok)
-		xo_warnx("%s: %s", what, error != NULL ? error : "failed");
+		xo_warnx("%s: %s", txe(what), txe(error != NULL ? error :
+		    "failed"));
 	return (ok ? 0 : 1);
 }
 
@@ -6124,7 +6324,8 @@ event_line(cbl_conn *conn, cbl_msg *msg, void *arg)
 	if ((o = ygula_event_of(msg)) == NULL)
 		return;
 	if ((json = ucl_object_emit(o, UCL_EMIT_JSON_COMPACT)) != NULL) {
-		printf("%s\n", (char *)json);
+		printf("%s\n", vis_text((char *)json, (size_t)-1, VT_JSON |
+		    VT_ALWAYS));
 		fflush(stdout);
 		free(json);
 	}
@@ -6186,7 +6387,7 @@ cmd_gula(cbl_conn *conn, int argc, char **argv)
 		if (argc == 2) {
 			pid = (uint32_t)strtonum(argv[1], 1, 99999, &e);
 			if (e != NULL)
-				xo_errx(1, "ps: %s: %s", argv[1], e);
+				xo_errx(1, "ps: %s: %s", argv[1], txe(e));
 		}
 		ytold_begin(conn);
 		error = ygula_processes(conn, netjail, pid, &data, err,
@@ -6220,7 +6421,8 @@ cmd_gula(cbl_conn *conn, int argc, char **argv)
 		if (argc == 2) {
 			after = (uint64_t)strtonum(argv[1], 0, INT64_MAX, &e);
 			if (e != NULL)
-				xo_errx(1, "events: after %s: %s", argv[1], e);
+				xo_errx(1, "events: after %s: %s", argv[1],
+				    txe(e));
 		}
 		ytold_begin(conn);
 		error = ygula_events(conn, argc == 2, after, &data, err,
@@ -6282,18 +6484,19 @@ cmd_gula(cbl_conn *conn, int argc, char **argv)
 			step = (uint32_t)strtonum(argv[2], 1, 3600, &e);
 			if (e != NULL)
 				xo_errx(1, "history: seconds %s: %s", argv[2],
-				    e);
+				    txe(e));
 			keep = (uint32_t)strtonum(argv[3], 0, 5000, &e);
 			if (e != NULL)
 				xo_errx(1, "history: samples %s: %s", argv[3],
-				    e);
+				    txe(e));
 		} else if (argc > 2)
 			usage();
 		else if (argc == 2) {
 			has_after = true;
 			after = (uint64_t)strtonum(argv[1], 0, INT64_MAX, &e);
 			if (e != NULL)
-				xo_errx(1, "history: after %s: %s", argv[1], e);
+				xo_errx(1, "history: after %s: %s", argv[1],
+				    txe(e));
 		}
 		ytold_begin(conn);
 		data = NULL;
@@ -6315,12 +6518,13 @@ cmd_gula(cbl_conn *conn, int argc, char **argv)
 			from = true;
 			position = (uint64_t)strtonum(optarg, 0, INT64_MAX, &e);
 			if (e != NULL)
-				xo_errx(1, "log: position %s: %s", optarg, e);
+				xo_errx(1, "log: position %s: %s", optarg,
+				    txe(e));
 			break;
 		case 'o':
 			lines = (uint32_t)strtonum(optarg, 1, 5000, &e);
 			if (e != NULL)
-				xo_errx(1, "log: lines %s: %s", optarg, e);
+				xo_errx(1, "log: lines %s: %s", optarg, txe(e));
 			break;
 		default:
 			usage();
@@ -6555,11 +6759,11 @@ ipfw_rules(cbl_conn *conn, bool from_rc, const char *text, bool check)
 		    sizeof(why));
 		ytold_end(true);
 		if (error != 0)
-			xo_errx(1, "ipfw rules: %s", why);
+			xo_errx(1, "ipfw rules: %s", txe(why));
 		if (rout.rc_file != NULL)
-			xo_emit("{:rc-file/# from %s}\n", rout.rc_file);
+			xo_emit("{:rc-file/# from %s}\n", tx(rout.rc_file));
 		if (rout.text != NULL)
-			xo_emit("{:text/%s}", rout.text);
+			xo_emit("{:text/%s}", txl(rout.text));
 		cbl_yarena_free(a);
 		return (0);
 	}
@@ -6572,7 +6776,7 @@ ipfw_rules(cbl_conn *conn, bool from_rc, const char *text, bool check)
 		    sizeof(why));
 		ytold_end(true);
 		if (error != 0)
-			xo_errx(1, "ipfw rules: %s", why);
+			xo_errx(1, "ipfw rules: %s", txe(why));
 		xo_emit("{:result/ipfw has nothing against it; left as it "
 		    "was}\n");
 		cbl_yarena_free(a);
@@ -6589,7 +6793,7 @@ ipfw_rules(cbl_conn *conn, bool from_rc, const char *text, bool check)
 			if (strcmp(f->jail.v[k].name, netjail) == 0)
 				was = f->jail.v[k].text;
 	if (text == NULL) {
-		xo_emit("{:text/%s}", was != NULL ? was : "");
+		xo_emit("{:text/%s}", txl(was != NULL ? was : ""));
 		cbl_yarena_free(a);
 		return (0);
 	}
@@ -6667,14 +6871,14 @@ cmd_ipfw(cbl_conn *conn, int argc, char **argv)
 		if (argc > 3) {
 			seconds = (uint32_t)strtonum(argv[3], 1, 60, &e);
 			if (e != NULL)
-				xo_errx(1, "ipfw trace: seconds %s: %s", argv[3],
-				    e);
+				xo_errx(1, "ipfw trace: seconds %s: %s",
+				    argv[3], txe(e));
 		}
 		if (argc > 4) {
 			packets = (uint32_t)strtonum(argv[4], 1, 1000, &e);
 			if (e != NULL)
-				xo_errx(1, "ipfw trace: packets %s: %s", argv[4],
-				    e);
+				xo_errx(1, "ipfw trace: packets %s: %s",
+				    argv[4], txe(e));
 		}
 		ytold_begin(conn);
 		error = yts_fw_trace(conn, netjail, argv[2], seconds,
@@ -6718,7 +6922,7 @@ cmd_ipfw(cbl_conn *conn, int argc, char **argv)
 			    &sb) == -1 || (text = malloc((size_t)sb.st_size +
 			    1)) == NULL || read(fd, text, (size_t)sb.st_size) !=
 			    sb.st_size)
-				xo_err(1, "%s", from);
+				xo_err(1, "%s", txe(from));
 			close(fd);
 			text[sb.st_size] = '\0';
 		}
@@ -6840,17 +7044,18 @@ cmd_storage(cbl_conn *conn, int argc, char **argv)
 	if (ystore_read(conn, (int)i, argc == 3 ? argv[2] : NULL, netjail,
 	    &data, &total, &truncated, err, sizeof(err)) != 0) {
 		ytold_end(true);
-		xo_warnx("storage %s: %s", kinds[i], err);
+		xo_warnx("storage %s: %s", txe(kinds[i]), txe(err));
 		return (1);
 	}
 	ytold_end(true);
 	if ((json = ucl_object_emit(data, UCL_EMIT_JSON_COMPACT)) != NULL)
-		xo_emit("{:json/%s}\n", json);
+		xo_emit("{:json/%s}\n", txj(json));
 	free(json);
 	ucl_object_unref(data);
 	if (truncated)
 		xo_warnx("storage %s: there are %ju, more than a reply "
-		    "carries: these are the first", kinds[i], (uintmax_t)total);
+		    "carries: these are the first", txe(kinds[i]),
+		    (uintmax_t)total);
 	return (0);
 }
 
@@ -6937,10 +7142,10 @@ cmd_fstab(cbl_conn *conn, int argc, char **argv)
 	 * by its replace action. */
 	if ((error = ystore_fstab(conn, &cur, &sha, err, sizeof(err))) !=
 	    0)
-		xo_errx(1, "fstab: %s", err);
+		xo_errx(1, "fstab: %s", txe(err));
 	if (from == NULL) {
 		if (cur != NULL)
-			xo_emit("{:text/%s}", cur);
+			xo_emit("{:text/%s}", txl(cur));
 		free(cur);
 		free(sha);
 		return (0);
@@ -6950,7 +7155,7 @@ cmd_fstab(cbl_conn *conn, int argc, char **argv)
 		if ((fd = fileargs_open(files, from)) == -1 || fstat(fd, &sb) == -1 ||
 		    (text = malloc((size_t)sb.st_size + 1)) == NULL ||
 		    read(fd, text, (size_t)sb.st_size) != sb.st_size)
-			xo_err(1, "%s", from);
+			xo_err(1, "%s", txe(from));
 		close(fd);
 		text[sb.st_size] = '\0';
 	}
@@ -6962,7 +7167,7 @@ cmd_fstab(cbl_conn *conn, int argc, char **argv)
 		xo_emit("{:result/%s}\n", dry ? "it is an fstab; left as it "
 		    "was" : "in place; the one before is kept beside it");
 	else
-		xo_warnx("fstab: %s", err);
+		xo_warnx("fstab: %s", txe(err));
 	free(cur);
 	free(sha);
 	free(text);
@@ -7004,11 +7209,11 @@ cmd_stats(cbl_conn *conn)
 		for (i = 0; i < st->pool.n; i++) {
 			xo_open_instance("pool");
 			xo_emit("{Lwc:Pool}{:name/%s} {:alloc/%ju} of {:size/%ju} "
-			    "GiB, {:health/%s}\n", st->pool.v[i].name,
+			    "GiB, {:health/%s}\n", tx(st->pool.v[i].name),
 			    (uintmax_t)(st->pool.v[i].allocated >> 30),
 			    (uintmax_t)(st->pool.v[i].size >> 30),
-			    st->pool.v[i].health != NULL ?
-			    st->pool.v[i].health : "");
+			    tx(st->pool.v[i].health != NULL ?
+			    st->pool.v[i].health : ""));
 			xo_close_instance("pool");
 		}
 		xo_close_list("pool");
@@ -7036,9 +7241,9 @@ emit_packages(const ypkg *v, size_t n)
 	for (i = 0; i < n; i++) {
 		xo_open_instance("package");
 		xo_emit("{k:name/%-40s/%s} {:installed/%-20s/%s} "
-		    "{:available/%s}\n", v[i].name, v[i].installed != NULL ?
-		    v[i].installed : "", v[i].available != NULL ?
-		    v[i].available : "");
+		    "{:available/%s}\n", tx(v[i].name), tx(v[i].installed !=
+		    NULL ? v[i].installed : ""), tx(v[i].available != NULL ?
+		    v[i].available : ""));
 		xo_close_instance("package");
 	}
 	xo_close_list("package");
@@ -7056,11 +7261,11 @@ emit_installed(const ypkg *v, size_t n)
 	for (i = 0; i < n; i++) {
 		xo_open_instance("package");
 		xo_emit("{k:name/%-32s/%s} {:installed/%-18s/%s} "
-		    "{:how/%-9s/%s} {:size/%10ju} {:comment/%s}\n", v[i].name,
-		    v[i].installed != NULL ? v[i].installed : "",
-		    v[i].automatic ? "automatic" : "by hand",
-		    (uintmax_t)v[i].size, v[i].comment != NULL ?
-		    v[i].comment : "");
+		    "{:how/%-9s/%s} {:size/%10ju} {:comment/%s}\n",
+		    tx(v[i].name), tx(v[i].installed != NULL ? v[i].installed :
+		    ""), v[i].automatic ? "automatic" : "by hand",
+		    (uintmax_t)v[i].size, tx(v[i].comment != NULL ? v[i].comment
+		    : ""));
 		xo_close_instance("package");
 	}
 	xo_close_list("package");
@@ -7160,14 +7365,14 @@ cmd_packages(cbl_conn *conn, int argc, char **argv)
 		xo_open_list("repository");
 		xo_emit("{Lwc:Repositories}");
 		for (size_t i = 0; i < nrepos; i++)
-			xo_emit("{P: }{l:repository/%s}", repos[i]);
+			xo_emit("{P: }{l:repository/%s}", tx(repos[i]));
 		xo_close_list("repository");
 		xo_emit("\n");
 	}
 	ytold_end(true);
 	cbl_yarena_free(a);
 	if (error != 0) {
-		xo_warnx("packages: %s", why);
+		xo_warnx("packages: %s", txe(why));
 		return (1);
 	}
 	return (0);
@@ -7188,13 +7393,13 @@ cmd_jobs_set(cbl_conn *conn, const char *number)
 
 	n = (int)strtonum(number, 1, 32, &errstr);
 	if (errstr != NULL)
-		xo_errx(2, "lanes %s: %s", number, errstr);
+		xo_errx(2, "lanes %s: %s", txe(number), errstr);
 	if (yq_lanes(conn, n, err, sizeof(err)) != 0)
-		xo_errx(1, "jobs lanes: %s", err);
+		xo_errx(1, "jobs lanes: %s", txe(err));
 	if ((a = cbl_yarena_new()) == NULL)
 		xo_err(1, "jobs lanes");
 	if (yq_list(conn, a, &q, err, sizeof(err)) != 0)
-		xo_errx(1, "jobs: %s", err);
+		xo_errx(1, "jobs: %s", txe(err));
 	xo_emit("{T:Lanes}: {:lanes/%d} jobs of pkg in jails at once\n",
 	    q.lanes);
 	cbl_yarena_free(a);
@@ -7320,7 +7525,7 @@ cmd_pkg_clean(cbl_conn *conn, int argc, char **argv)
 		return (1);
 	}
 	if (yq_submit(conn, v, n, a, &jv, &nj, err, sizeof(err)) != 0)
-		xo_errx(1, "pkg-clean: %s", err);
+		xo_errx(1, "pkg-clean: %s", txe(err));
 	xo_open_list("job");
 	for (i = 0; i < nj; i++)
 		emit_job(&jv[i]);
@@ -7552,7 +7757,7 @@ cmd_pkg_upgrade(cbl_conn *conn, int argc, char **argv)
 	ytold_end(true);
 	cbl_yarena_free(a);
 	if (error != 0) {
-		xo_warnx("pkg-upgrade: %s", why);
+		xo_warnx("pkg-upgrade: %s", txe(why));
 		return (1);
 	}
 	return (0);
@@ -7569,9 +7774,9 @@ emit_job(const struct arc_job *j)
 		st = "failed";
 	xo_open_instance("job");
 	xo_emit("{k:id/%4ju} {:state/%-9s/%s} {:title/%s}", (uintmax_t)j->id,
-	    st, j->title);
+	    tx(st), tx(j->title));
 	if (j->error != NULL)
-		xo_emit(": {:error/%s}", j->error);
+		xo_emit(": {:error/%s}", tx(j->error));
 	if (j->user != NULL)
 		xo_emit("{e:user/%s}", j->user);
 	xo_emit("{e:peer/%s}{e:created/%jd}\n", j->peer != NULL ? j->peer : "",
@@ -7610,8 +7815,8 @@ submit(cbl_conn *conn, struct arc_job_spec *sp)
 		xo_err(1, "queue");
 	if (yq_submit(conn, sp, 1, a, &v, &n, err, sizeof(err)) != 0 ||
 	    n != 1) {
-		xo_warnx("%s", n != 1 && err[0] == '\0' ? "not accepted" :
-		    err);
+		xo_warnx("%s", txe(n != 1 && err[0] == '\0' ? "not accepted" :
+		    err));
 		cbl_yarena_free(a);
 		return (1);
 	}
@@ -7652,7 +7857,7 @@ dry_run(cbl_conn *conn, const struct arc_job_spec *v, size_t n,
 		xo_err(1, "dry run");
 	if (yq_dry_run(conn, v, n, undo, a, &steps, &nsteps, &notes, &nnotes,
 	    err, sizeof(err)) != 0) {
-		xo_warnx("dry run: %s", err);
+		xo_warnx("dry run: %s", txe(err));
 		cbl_yarena_free(a);
 		return (1);
 	}
@@ -7661,7 +7866,7 @@ dry_run(cbl_conn *conn, const struct arc_job_spec *v, size_t n,
 	emit_trace(steps, nsteps);
 	xo_open_list("note");
 	for (i = 0; i < nnotes; i++)
-		xo_emit("{Lwc:Note}{l:note/%s}\n", notes[i]);
+		xo_emit("{Lwc:Note}{l:note/%s}\n", tx(notes[i]));
 	xo_close_list("note");
 	xo_close_container("dry-run");
 	cbl_yarena_free(a);
@@ -7679,7 +7884,7 @@ cmd_jobs(cbl_conn *conn)
 	if ((a = cbl_yarena_new()) == NULL)
 		xo_err(1, "jobs");
 	if (yq_list(conn, a, &q, err, sizeof(err)) != 0)
-		xo_errx(1, "jobs: %s", err);
+		xo_errx(1, "jobs: %s", txe(err));
 	xo_emit("{T:/%4s} {T:/%-9s} {T:/%s}\n", "ID", "STATE", "JOB");
 	xo_open_list("job");
 	for (size_t i = 0; i < q.n; i++)
@@ -7691,7 +7896,7 @@ cmd_jobs(cbl_conn *conn)
 	/* What is under way that is not a job, and a stop that waits. */
 	if (q.activity != NULL)
 		xo_emit("{Lwc:Under way}{:activity/%s}{d:/ (%jd s)}"
-		    "{e:since/%jd}\n", q.activity, (intmax_t)(time(NULL) -
+		    "{e:since/%jd}\n", tx(q.activity), (intmax_t)(time(NULL) -
 		    q.since), (intmax_t)q.since);
 	if (q.stopping)
 		xo_emit("{Lwc:Stopping}{:stopping/%s}\n", q.activity !=
@@ -7735,7 +7940,7 @@ cmd_job(cbl_conn *conn, int argc, char **argv)
 	for (;;) {
 		if (yq_job(conn, id, a, &j, &steps, &nsteps, err,
 		    sizeof(err)) != 0) {
-			xo_warnx("job %s: %s", argv[optind], err);
+			xo_warnx("job %s: %s", argv[optind], txe(err));
 			cbl_yarena_free(a);
 			return (1);
 		}
@@ -7782,7 +7987,7 @@ cmd_job_cancel(cbl_conn *conn, int argc, char **argv)
 		xo_err(1, "job-cancel");
 	if (yq_cancel(conn, strtoull(argv[1], NULL, 10), a, &j, err,
 	    sizeof(err)) != 0) {
-		xo_warnx("job %s: %s", argv[1], err);
+		xo_warnx("job %s: %s", argv[1], txe(err));
 		cbl_yarena_free(a);
 		return (1);
 	}
@@ -7800,26 +8005,13 @@ main(int argc, char *argv[])
 	cbl_ctx			*ctx;
 	cbl_tls			*tls;
 	const char		*uri, *cafile, *certfile, *keyfile, *name, *errstr;
-	const char		*user;
+	const char		*user, *out;
 	cap_rights_t		 rd, wr;
 	char			**names;
 	int			 ch, error, rc, i, nnames;
 
 	if ((argc = xo_parse_args(argc, argv)) < 0)
 		exit(2);
-	/*
-	 * Any word of the command line may name a file to read, and the
-	 * file behind an @word: these, and no other, Casper opens for us
-	 * once in capability mode.
-	 */
-	if ((names = calloc((size_t)argc * 2 + 1, sizeof(*names))) == NULL)
-		xo_err(1, "calloc");
-	nnames = 0;
-	for (i = 0; i < argc; i++) {
-		names[nnames++] = argv[i];
-		if (argv[i][0] == '@' && argv[i][1] != '\0')
-			names[nnames++] = argv[i] + 1;
-	}
 	uri = PATH_SOCKET;
 	cafile = certfile = keyfile = name = user = NULL;
 	while ((ch = getopt(argc, argv, "+A:C:c:F:j:K:N:npqsT:tu:W:")) != -1) {
@@ -7888,6 +8080,41 @@ main(int argc, char *argv[])
 	if (argc < 1)
 		usage();
 	/*
+	 * What Casper opens for us once in capability mode, and no other
+	 * file: to read, the command's own words and the file behind an
+	 * @word (tls, -C's certificate too), never -K's key, read by TLS
+	 * before; agent-build reads none and writes its program alone
+	 * (-o's, or arcana-agent).
+	 */
+	if ((names = calloc((size_t)argc * 2 + 2, sizeof(*names))) == NULL)
+		xo_err(1, "calloc");
+	nnames = 0;
+	out = NULL;
+	if (strcmp(argv[0], "agent-build") == 0) {
+		out = "arcana-agent";
+		opterr = 0;
+		optreset = optind = 1;
+		while ((ch = getopt(argc, argv, "i:o:y")) != -1)
+			if (ch == 'o')
+				out = optarg;
+		opterr = 1;
+	} else {
+		for (i = 1; i < argc; i++) {
+			/* A word no path could be (inline JSON): none. */
+			if (strlen(argv[i]) >= MAXPATHLEN)
+				continue;
+			if (keyfile != NULL && (strcmp(argv[i], keyfile) == 0 ||
+			    (argv[i][0] == '@' && strcmp(argv[i] + 1,
+			    keyfile) == 0)))
+				continue;
+			names[nnames++] = argv[i];
+			if (argv[i][0] == '@' && argv[i][1] != '\0')
+				names[nnames++] = argv[i] + 1;
+		}
+		if (strcmp(argv[0], "tls") == 0 && certfile != NULL)
+			names[nnames++] = (char *)(uintptr_t)certfile;
+	}
+	/*
 	 * -n: only a verb that is a job the agent can run dry; any other
 	 * would do what it says.
 	 */
@@ -7922,41 +8149,44 @@ main(int argc, char *argv[])
 		    TIMEOUT_MS;
 	(void)cbl_ctx_set_limit(ctx, CBL_LIM_REQUEST_MS, request_ms);
 	if ((error = cbl_conn_new(ctx, uri, 0, &conn)) != 0)
-		xo_errx(1, "%s: %s", uri, strerror(error));
+		xo_errx(1, "%s: %s", txe(uri), strerror(error));
 	if (user != NULL && (error = cbl_conn_set_user(conn, user)) != 0)
-		xo_errx(2, "-u %s: %s", user, strerror(error));
+		xo_errx(2, "-u %s: %s", txe(user), strerror(error));
 	tls = NULL;
 	if (strncmp(uri, "unix:", 5) != 0) {
 		if (cafile == NULL || certfile == NULL || keyfile == NULL)
-			xo_errx(1, "%s: needs -A, -C and -K", uri);
+			xo_errx(1, "%s: needs -A, -C and -K", txe(uri));
 		if (cbl_tls_new(&tls) != 0 ||
 		    cbl_tls_set_cert(tls, certfile, keyfile) != 0 ||
 		    cbl_tls_set_ca(tls, cafile, NULL) != 0 ||
 		    (name != NULL && cbl_tls_set_peer_name(tls, name) != 0))
-			xo_errx(1, "TLS: %s", tls != NULL ?
-			    cbl_tls_errstr(tls) : "cbl_tls_new failed");
+			xo_errx(1, "TLS: %s", txe(tls != NULL ?
+			    cbl_tls_errstr(tls) : "cbl_tls_new failed"));
 		(void)cbl_conn_set_tls(conn, tls);
 	}
 	if ((error = cbl_conn_connect(conn)) != 0)
-		xo_errx(1, "%s: %s", uri, cbl_conn_errstr(conn));
+		xo_errx(1, "%s: %s", txe(uri), txe(cbl_conn_errstr(conn)));
 	/*
 	 * Capability mode from here (capsicum(4)): the agent's socket is
-	 * connected and TLS is up; the files named on the command line
-	 * come through Casper's fileargs, to read, or for agent-build's
-	 * program alone to write; the time zone and the message catalogs
-	 * are cached first.
+	 * connected and TLS is up, its key read; the command's files come
+	 * through Casper's fileargs (names, above), to read, or for
+	 * agent-build's program alone to write; the time zone, the
+	 * message catalogs and the patterns' locale are made first.
 	 */
-	cap_rights_init(&rd, CAP_READ, CAP_FSTAT, CAP_SEEK);
+	cap_rights_init(&rd, CAP_READ, CAP_FSTAT, CAP_SEEK, CAP_FCNTL);
 	cap_rights_init(&wr, CAP_WRITE, CAP_FSTAT);
-	if ((files = fileargs_init(nnames, names, O_RDONLY, 0, &rd,
-	    FA_OPEN)) == NULL)
+	if ((files = fileargs_init(nnames, nnames > 0 ? names : NULL,
+	    O_RDONLY, 0, &rd, FA_OPEN)) == NULL)
 		xo_err(1, "fileargs_init");
-	if (strcmp(argv[0], "agent-build") == 0 && (outfiles =
-	    fileargs_init(nnames, names, O_WRONLY | O_CREAT | O_TRUNC, 0755,
-	    &wr, FA_OPEN)) == NULL)
+	if (out != NULL && (outfiles = fileargs_init(1,
+	    (char **)(uintptr_t)&out, O_WRONLY | O_CREAT | O_TRUNC, 0755, &wr,
+	    FA_OPEN)) == NULL)
 		xo_err(1, "fileargs_init");
 	caph_cache_tzdata();
 	caph_cache_catpages();
+	/* The locale YANG patterns are matched in, which capability mode
+	 * cannot load: made by a first match. */
+	patterns_ready();
 	if (caph_enter_casper() == -1)
 		xo_err(1, "cap_enter");
 

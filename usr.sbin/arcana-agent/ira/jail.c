@@ -55,7 +55,7 @@ jail_record(struct work *w, struct arc_jail *j, const char *name,
 	const struct arc_param	*p;
 
 	memset(j, 0, sizeof(*j));
-	j->name = wtext(w, name);
+	j->name = wname(w, name);
 	j->has_state = true;
 	if (ji == NULL && cj == NULL) {
 		j->state = ARC_JAIL_STATE_ABSENT;
@@ -74,7 +74,7 @@ jail_record(struct work *w, struct arc_jail *j, const char *name,
 	if (ji != NULL) {
 		j->has_jid = true;
 		j->jid = (uint32_t)ji->jid;
-		j->hostname = wtext(w, ji->hostname);
+		j->hostname = wname(w, ji->hostname);
 		j->path = wtext(w, ji->path);
 		split_list(w, ji->ip4, &j->ip4.v, &j->ip4.n);
 		split_list(w, ji->ip6, &j->ip6.v, &j->ip6.n);

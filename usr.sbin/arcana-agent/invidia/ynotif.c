@@ -169,13 +169,26 @@ kept_decode(cbl_yarena *a)
 
 /*
  * An HTTPS URI: its host, port and path.  The scheme is https alone: a
- * receiver authenticates the agent by its certificate.
+ * receiver authenticates the agent by its certificate.  What goes into
+ * the request's line and headers has no blank and no control character
+ * (CR and LF would end a header and begin one of the URI's).
  */
 struct uri {
 	char	host[256];
 	char	port[8];
 	char	path[512];
 };
+
+/* Fit for an HTTP header: printable, no blank (a URI's, a token's). */
+static bool
+header_safe(const char *s)
+{
+
+	for (; *s != '\0'; s++)
+		if ((unsigned char)*s <= 0x20 || (unsigned char)*s >= 0x7f)
+			return (false);
+	return (true);
+}
 
 static bool
 uri_parse(const char *s, struct uri *u)
@@ -184,7 +197,7 @@ uri_parse(const char *s, struct uri *u)
 	size_t		 n;
 
 	memset(u, 0, sizeof(*u));
-	if (strncasecmp(s, "https://", 8) != 0)
+	if (strncasecmp(s, "https://", 8) != 0 || !header_safe(s))
 		return (false);
 	h = s + 8;
 	if (*h == '[') {
@@ -387,7 +400,7 @@ http_do(struct hconn *c, const char *method, const char *path,
 	char		 hdr[1024], *buf, *e, *l, *v;
 	size_t		 cap = 4096, len = 0, hlen, clen = 0;
 	int		 n, rc;
-	bool		 chunked = false;
+	bool		 chunked = false, sized = false;
 
 	n = snprintf(hdr, sizeof(hdr), "%s %s HTTP/1.1\r\nHost: %s\r\n"
 	    "User-Agent: arcana-agent/%s\r\nAccept: application/yang-data+json"
@@ -442,9 +455,10 @@ http_do(struct hconn *c, const char *method, const char *path,
 	for (l = strchr(buf, '\n'); l != NULL && l < e; l = strchr(l + 1,
 	    '\n')) {
 		l++;
-		if (strncasecmp(l, "content-length:", 15) == 0)
+		if (strncasecmp(l, "content-length:", 15) == 0) {
 			clen = strtoul(l + 15, NULL, 10);
-		else if (strncasecmp(l, "connection:", 11) == 0) {
+			sized = true;
+		} else if (strncasecmp(l, "connection:", 11) == 0) {
 			for (v = l + 11; *v == ' ' || *v == '\t'; v++)
 				;
 			if (strncasecmp(v, "close", 5) == 0)
@@ -454,8 +468,14 @@ http_do(struct hconn *c, const char *method, const char *path,
 		    "chunked") < e)
 			chunked = true;
 	}
-	/* A chunked body is not read: the connection is let go after. */
-	if (chunked || clen > HTTP_BODY_MAX) {
+	/*
+	 * A chunked body is not read: the connection is let go after; nor
+	 * one without a length, which ends with the connection (RFC 9112
+	 * 6.3), unless the status has none: what is left of it would be
+	 * read as the next reply.
+	 */
+	if (chunked || clen > HTTP_BODY_MAX || (!sized && *status >= 200 &&
+	    *status != 204 && *status != 304)) {
 		*closes = true;
 		clen = 0;
 	}
@@ -553,6 +573,11 @@ rcv_connect(struct cbl_ysub_rcv *r, void *arg)
 	strlcpy(rc->token, in->hnt_https_receiver->arcnf_token != NULL ?
 	    in->hnt_https_receiver->arcnf_token : "", sizeof(rc->token));
 	cbl_yarena_free(a);
+	if (!header_safe(rc->token)) {
+		logmsg(LOG_WARNING, "subscription %u: receiver %s: its token "
+		    "is not one a header carries", r->id, r->name);
+		return (EINVAL);
+	}
 	if ((error = hconn_open(&rc->c, &cap, err, sizeof(err))) != 0) {
 		logmsg(LOG_WARNING, "subscription %u: receiver %s: %s", r->id,
 		    r->name, err);
@@ -1013,7 +1038,13 @@ subs_check(const ysubs *s, uint64_t *sidp)
 			    in->hnt_https_receiver->relay_notification_endpoint->
 			    uri, &u))
 				return ("an endpoint's uri is https://host"
-				    "[:port]/path");
+				    "[:port]/path, with no blank or control "
+				    "character");
+			if (in->hnt_https_receiver->arcnf_token != NULL &&
+			    !header_safe(in->hnt_https_receiver->arcnf_token))
+				return ("a receiver's token is printable, with no "
+				    "blank or control character: it is sent as "
+				    "Authorization: Bearer");
 		}
 	for (size_t i = 0; i < s->subscription.n; i++) {
 		const ysubscription	*e = &s->subscription.v[i];

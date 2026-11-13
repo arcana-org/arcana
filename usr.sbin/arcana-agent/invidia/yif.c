@@ -88,6 +88,7 @@
 #include <unistd.h>
 
 #include "collect.h"
+#include "textfit.h"
 
 typedef struct ietf_interfaces_interfaces_interface yif;
 
@@ -248,11 +249,12 @@ ifreq_for(struct ifreq *ifr, const char *name)
 	strlcpy(ifr->ifr_name, name, sizeof(ifr->ifr_name));
 }
 
-/* What ifconfig(8) shows as its description, if any. */
+/* What ifconfig(8) shows as its description, if any: one line, a
+ * vnet jail's root sets its own. */
 static char *
 description(cbl_yarena *a, int s, const char *name)
 {
-	char buf[1024];
+	char buf[1024], vis[sizeof(buf) * 4];
 	struct ifreq ifr;
 
 	ifreq_for(&ifr, name);
@@ -262,7 +264,8 @@ description(cbl_yarena *a, int s, const char *name)
 	    ifr.ifr_buffer.buffer == NULL || buf[0] == '\0')
 		return (NULL);
 	buf[sizeof(buf) - 1] = '\0';
-	return (astrdup(a, buf));
+	return (astrdup(a, text_fit(buf, true) ? buf : text_vis(vis, buf,
+	    true)));
 }
 
 static int

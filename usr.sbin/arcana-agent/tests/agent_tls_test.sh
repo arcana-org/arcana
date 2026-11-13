@@ -301,8 +301,12 @@ renew_body()
 	# The host's own services out of reach: no rc.d script found, no
 	# service(8) or sysrc(8) run.
 	mkdir -p rc.d
+	# A key before, left by an agent that stopped while renewing: not
+	# kept, the files it starts with being the ones in use.
+	echo stale > server.key.before
 	DAEMON_ARGS="--smtpd-conf $(pwd)/smtpd.conf --smtpd-watch 0 -R $(pwd)/rc.d -s /usr/bin/false -y /usr/bin/false"
 	start_daemon
+	test -e server.key.before && atf_fail "the key before was left at the start"
 	URI="tcp://127.0.0.1:$PORT"
 	C1="-A ca.pem -C client.pem -K client.key"
 	sha() { openssl x509 -in "$1" -noout -fingerprint -sha256 | sed 's/.*=//'; }
@@ -331,6 +335,8 @@ renew_body()
 	cmp -s m1.json m2.json && atf_fail "the certificate's dates are the old ones"
 	test -f server.pem.before || atf_fail "the certificate before was not kept"
 	test -f server.key.next && atf_fail "the waiting key stayed"
+	# The key before, once the new one is read: not to be put back.
+	test -e server.key.before && atf_fail "the key before was kept"
 	# New connections are served with it.
 	echo | openssl s_client -connect "127.0.0.1:$PORT" -CAfile ca.pem \
 	    -cert client.pem -key client.key 2>/dev/null |
@@ -527,6 +533,73 @@ configured_cleanup()
 	true
 }
 
+atf_test_case configured_unsized cleanup
+configured_unsized_head()
+{
+	atf_set "descr" "A receiver's reply with neither Content-Length nor" \
+	    "chunking ends with its connection: the next record is POSTed on" \
+	    "another, not answered by what was left of the last; and a" \
+	    "receiver's URI with a blank or a control character is refused"
+	atf_set "require.progs" "openssl"
+}
+configured_unsized_body()
+{
+	start_daemon
+	URI="tcp://127.0.0.1:$PORT"
+	JC="$JGC -c $URI -A ca.pem -C client.pem -K client.key"
+	cert ca recv "IP:127.0.0.1" serverAuth
+	RPORT=
+	start_receiver
+	touch unsized
+	# A path that would end the request's line (inet:uri's pattern
+	# keeps CR and LF out already, not a blank or another control
+	# character; the token's, printable ASCII, keeps them all out).
+	for rel in "https://127.0.0.1:$RPORT/notif/relay-notification HTTP/1.0" \
+	    "https://127.0.0.1:$RPORT/notif/relay-notification\\u0001"; do
+		tok=t
+		cat > bad.json <<EOF
+{"ietf-subscribed-notifications:subscriptions":{"subscription":[{"id":7,
+"stream":"NETCONF","receivers":{"receiver":[{"name":"console",
+"ietf-subscribed-notif-receivers:receiver-instance-ref":"lab"}]}}],
+"ietf-subscribed-notif-receivers:receiver-instances":{"receiver-instance":[
+{"name":"lab","ietf-https-notif-transport:https-receiver":{
+"capabilities-endpoint":{"uri":"https://127.0.0.1:$RPORT/notif/capabilities"},
+"relay-notification-endpoint":{"uri":"$rel"},
+"arcana-notif:token":"$tok"}}]}}}
+EOF
+		atf_check $JC edit subscriptions @bad.json
+		atf_check -s exit:1 -e match:'no blank or control character' \
+		    $JC commit
+		atf_check $JC discard
+	done
+	cat > subs.json <<EOF
+{"ietf-subscribed-notifications:subscriptions":{"subscription":[{"id":7,
+"stream":"NETCONF","stream-xpath-filter":"/arcana-events:event",
+"configured-replay":[null],"receivers":{"receiver":[{"name":"console",
+"ietf-subscribed-notif-receivers:receiver-instance-ref":"lab"}]}}],
+"ietf-subscribed-notif-receivers:receiver-instances":{"receiver-instance":[
+{"name":"lab","ietf-https-notif-transport:https-receiver":{
+"capabilities-endpoint":{"uri":"https://127.0.0.1:$RPORT/notif/capabilities"},
+"relay-notification-endpoint":{"uri":"https://127.0.0.1:$RPORT/notif/relay-notification"},
+"arcana-notif:token":"lab-token-7"}}]}}}
+EOF
+	atf_check $JC edit subscriptions @subs.json
+	atf_check $JC commit
+	# subscription-started and replay-completed, each answered with no
+	# length: the second on a connection of its own.
+	wait_log '^POST ' 2 10
+	atf_check -o inline:'2\n' awk '/^accepted$/ { a++ }
+	    /^POST / { if (++p == 2) { print a; exit } }' recv.log
+	atf_check -o not-match:'"excluded-event-records":"[1-9]' \
+	    $JC get subscriptions
+}
+configured_unsized_cleanup()
+{
+	stop_daemon
+	[ -f recv.pid ] && kill "$(cat recv.pid)" 2>/dev/null
+	true
+}
+
 atf_test_case control_lane cleanup
 control_lane_head()
 {
@@ -632,12 +705,67 @@ signed_update_cleanup()
 	stop_daemon
 }
 
+# arcanactl's sandbox: of the files on the command line, the
+# command's own words alone, never -K's key.
+atf_test_case sandbox_files cleanup
+sandbox_files_head()
+{
+	atf_set "descr" "arcanactl in capability mode reads the command's own files, not -K's key even when a word names it"
+	atf_set "require.progs" "openssl"
+}
+sandbox_files_body()
+{
+	start_daemon
+	JC="$JGC -c tcp://127.0.0.1:$PORT -A ca.pem -C client.pem -K client.key"
+	atf_check -s exit:1 -e match:'client.key: ' -e not-match:'JSON' \
+	    $JC edit subscriptions @client.key
+	printf '{"ietf-subscribed-notifications:subscriptions":{}}' > s.json
+	atf_check $JC edit subscriptions @s.json
+	atf_check $JC discard
+}
+sandbox_files_cleanup()
+{
+	stop_daemon
+}
+
+# A snapshot received from a stream: zfs receive with the receiving
+# side's say over what the stream sets.
+atf_test_case zfs_receive cleanup
+zfs_receive_head()
+{
+	atf_set "descr" "A stream of zfs-receive: nothing mounted, now or at the next boot; mountpoint, setuid, exec, devices, jailed, overlay, sharenfs, sharesmb and keylocation the destination's, not the stream's"
+	atf_set "require.progs" "openssl"
+}
+zfs_receive_body()
+{
+	printf '#!/bin/sh\necho "zfs $*" >> %s/zfs.log\ncat > /dev/null\n' \
+	    "$(pwd)" > fake-zfs
+	chmod +x fake-zfs
+	DAEMON_ARGS="-z $(pwd)/fake-zfs"
+	start_daemon
+	atf_check -o match:'^opened' "$(atf_get_srcdir)/ystreamc" \
+	    "tcp://127.0.0.1:$PORT" ca.pem client.pem client.key 2 tank/replica
+	for i in $(seq 1 50); do
+		[ -s zfs.log ] && break
+		sleep 0.1
+	done
+	atf_check -o inline:'zfs receive -u -x mountpoint -o canmount=noauto -x setuid -x exec -x devices -x jailed -x overlay -x sharenfs -x sharesmb -x keylocation tank/replica\n' \
+	    cat zfs.log
+}
+zfs_receive_cleanup()
+{
+	stop_daemon
+}
+
 atf_init_test_cases()
 {
+	atf_add_test_case zfs_receive
+	atf_add_test_case sandbox_files
 	atf_add_test_case signed_update
 	atf_add_test_case tls_files
 	atf_add_test_case mtls
 	atf_add_test_case renew
 	atf_add_test_case configured
+	atf_add_test_case configured_unsized
 	atf_add_test_case control_lane
 }

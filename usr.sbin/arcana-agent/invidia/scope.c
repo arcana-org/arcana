@@ -806,6 +806,9 @@ scope_helper(int argc, char **argv)
 		return (run_wait(argc - 1, argv + 1));
 	if (jid == 0 && strcmp(argv[1], "service-detach") == 0)
 		return (service_detach(argc - 1, argv + 1));
+	/* A debugger on a core, as nobody (crashes.c). */
+	if (jid == 0 && strcmp(argv[1], "debug-as-nobody") == 0)
+		return (debug_as_nobody(argc - 1, argv + 1));
 	/* The jail's models served on standard input, its LNE root. */
 	if (strcmp(argv[1], "lne-serve") == 0 && argc == 2)
 		return (lne_serve());

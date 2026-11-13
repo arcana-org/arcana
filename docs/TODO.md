@@ -119,15 +119,6 @@
   err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
   root daemon when memory runs out, a change half done with it; a
   failure of one request's alone, said, is to come.
-- The cores' backtraces (gula/crashes.c): root runs lldb(1) and gdb(1)
-  on any `*.core` found in /, /root, /tmp, /var/tmp, the BIRD
-  directories and each /home/*, a file any local user can plant there.
-  To come: only a core the kernel wrote for a real crash (kern.corefile's
-  pattern, and a kmsg "exited on signal ... (core dumped)" record of
-  that pid and name), owned by the crashed process's uid, a regular
-  file, opened O_NOFOLLOW and passed by its descriptor where the
-  debugger takes one; the debugger run as the core's owner (or nobody),
-  with a time and a memory limit (rctl or setrlimit).
 - Faults whose owners are not held to what they watch yet (agent
   0.280.0 holds the prober's, the links', the sampler's, the crashes'
   and luxuria/birdwatch.c's by fault_reconcile()): sdbird.c's (bfd,
@@ -348,31 +339,39 @@ Written and tested with stand-ins only:
   and the VM's kernel match, or the tests have a kernel of their own,
   the build cannot go green; it runs by hand only.
 
-- Left of the review after agent 0.284.0: arcanactl prints the agent's
-  strings raw to the terminal (one strvis helper for every text field)
-  and its Casper fileargs allows every command-line word, -K's key
-  among them; work.c's wtext() leaves C1 controls; ssh.c authorize
-  appends a whole text of which only the first key is checked, and
-  takes options; tlsfiles.c keeps <key>.before for ever; kernel.c's
-  kld_list_set() writes into a fixed buffer unchecked; zfs receive of
-  a -R/-p stream takes its properties (mountpoint, setuid, exec,
-  jailed...) in xfer.c, health.c and storage.c; ynotif.c puts a
-  receiver's path and token in headers unchecked and keeps a reply
-  with no length on its connection; sdbird.c puts BGP info into faults
-  verbatim; sdids.c's jstr() is not events.c's json_quote(); the
-  speederv2 key is in argv. The page has no field for an agent
+- Left of the review after agent 0.285.0: the speederv2 key is in the
+  relay's command line (speederv2 takes it there alone, as far as
+  could be told: no config-file option known, the program not on the
+  build host) and in the file sysrc(8) writes the flags to, /etc/rc.conf
+  first of rc_conf_files, 0644.  To come: the relays' flags in
+  rc.subr's own file for the script, /usr/local/etc/rc.conf.d/
+  arcana_relay, 0600 (load_rc_config arcana_relay reads it), read
+  there first and from rc.conf for a relay an agent before wrote, moved
+  at its next conf (the read, the write, the safe undo and the move of
+  speeder.c, beneath a jail's root for a jail's, and the console's
+  tests that look in rc.conf).  The page has no field for an agent
   downgrade (the API's `downgrade`).
 - The console signs an update's program alone for an agent without
   `signed-update` (zprog.h): the one compatibility the update path
   keeps. It goes once no deployed agent predates 0.284.0.
 - The build of the agent runs as `_arcanabuild`, a user nothing else is,
   in its own 0700 directory, root taking the program and the deploy
-  key's public half through a pinned directory (agent 0.284.0). Left:
-  `make install` of a console update still runs as root in the tree the
-  build user made, so its makefiles run as root then; an install from
-  a root-owned copy of what was built, or `make install` itself as the
-  build user into a staging directory root then copies, would close
-  it. The host keys and the deploy key still sit where the build user
+  key's public half through a pinned directory (agent 0.284.0). A
+  console update's `make install` still runs as root in the build
+  user's tree, held to the commit fetched (agent 0.285.0,
+  tree_unchanged()); what an object directory holds (a `.depend` file
+  make reads, among them) is still the build user's.  The staged
+  install that would close it: the build user runs `make install
+  DESTDIR=<stage>` with `-DNO_ROOT` and a METALOG (install(1) `-U -M`),
+  which the tree's makefiles and the submodules' (cblink, jailconf,
+  stamp) do not do yet for their own install targets (`beforeinstall`'s
+  `${INSTALL} -d`, the rc.d scripts, the page's files); root then copies
+  out of the stage through a pinned directory, each name O_NOFOLLOW, a
+  path a METALOG line names only, under PREFIX, LOCALBASE's etc/rc.d,
+  WWWDIR or the man pages and nowhere else (no absolute name, no "..",
+  no link out), modes and owners from the METALOG, no setuid or setgid
+  bit at all (Arcana installs none), each program's SHA-256 logged.
+  The host keys and the deploy key still sit where the build user
   writes; the directory still outlives the build.
 - A security key is asked for its owner's presence, not for a PIN or a
   fingerprint: keys without either still work, and a key found works

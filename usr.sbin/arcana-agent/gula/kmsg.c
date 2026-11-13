@@ -27,7 +27,9 @@
  * and the kernel's reason; said anew at each crash, and cleared after
  * an hour without one.  The crash faults an agent before this one left
  * open are taken up at the start (faults_open()), each cleared an hour
- * after its last crash.
+ * after its last crash.  Each core the kernel says it dumped, from the
+ * lines read at the start too, is noted (its program, pid and uid, the
+ * last CORES_SEEN of them): crashes.c reads no core but one of those.
  *
  * A line not finished yet is left for the next read.  The end of the
  * last read is looked for where it must be if the buffer only grew (it
@@ -64,6 +66,7 @@
 #define	CRASH_TIMES	64		/* of each, the last ones' times */
 #define	CRASH_DAY	(24 * 3600)	/* how long a crash counts */
 #define	CRASH_QUIET	3600		/* without one, the fault is cleared */
+#define	CORES_SEEN	256		/* cores the kernel said it dumped */
 
 /* A program's crashes of the day, by what the fault is of. */
 struct crashes {
@@ -72,6 +75,13 @@ struct crashes {
 	time_t	times[CRASH_TIMES];	/* oldest first */
 	int	ntimes;
 	bool	beyond;			/* more in the day than kept */
+};
+
+/* A core the kernel said it dumped: whose (crashes.c reads no other). */
+struct core_seen {
+	char	comm[MAXCOMLEN + 2];
+	int	pid;
+	int	uid;
 };
 
 struct kline {
@@ -93,6 +103,8 @@ static bool		km_running;
 static bool		km_readable;	/* the last read was let */
 static struct crashes	cr[CRASH_MAX];	/* under km_lock */
 static int		ncr;
+static struct core_seen	cs[CORES_SEEN];	/* a ring, under km_lock */
+static int		ncs, cs_next;
 
 /* The buffer, without the priorities "<6>" that dmesg(8) leaves out. */
 static char *
@@ -208,9 +220,35 @@ crash_note(const char *object, const char *comm, time_t now)
 }
 
 /*
+ * Did the kernel say it dumped a core of comm's, pid's (-1: the latest
+ * of comm's)?  Its uid in *uidp.  Lines read at the start count: the
+ * kernel's message buffer is the kernel's alone.
+ */
+bool
+kmsg_core_dumped(const char *comm, int pid, int *uidp)
+{
+	int	i, k;
+	bool	found;
+
+	found = false;
+	pthread_mutex_lock(&km_lock);
+	for (i = 0; i < ncs && !found; i++) {
+		k = (cs_next - 1 - i + CORES_SEEN) % CORES_SEEN;
+		if (strcmp(cs[k].comm, comm) == 0 && (pid == -1 ||
+		    cs[k].pid == pid)) {
+			*uidp = cs[k].uid;
+			found = true;
+		}
+	}
+	pthread_mutex_unlock(&km_lock);
+	return (found);
+}
+
+/*
  * A process's crash, as the kernel says it, at now: an event of its
- * own, and the fault of its program set, or said anew.  false for a
- * line that is not one.  Under km_lock.
+ * own, and the fault of its program set, or said anew; a core dumped,
+ * noted for crashes.c.  now 0: a line from before the agent, noted
+ * alone.  false for a line that is not one.  Under km_lock.
  */
 bool
 kmsg_crash_line(const char *text, time_t now)
@@ -229,6 +267,16 @@ kmsg_crash_line(const char *text, time_t now)
 		return (false);
 	p = text + n;
 	core = strncmp(p, " (core dumped)", 14) == 0;
+	if (core) {
+		snprintf(cs[cs_next].comm, sizeof(cs[0].comm), "%s", comm);
+		cs[cs_next].pid = pid;
+		cs[cs_next].uid = uid;
+		cs_next = (cs_next + 1) % CORES_SEEN;
+		if (ncs < CORES_SEEN)
+			ncs++;
+	}
+	if (now == 0)
+		return (true);
 	/* "(no core dump - bad address)": the kernel's reason, as far as
 	 * its closing parenthesis. */
 	reason = NULL;
@@ -361,9 +409,10 @@ add_line(const char *s, size_t n, time_t t, int *events, int *more)
 	k->t = t;
 	k->text = text;
 	km_count++;
+	/* Before the agent (t 0): a core noted, no event, no fault. */
+	(void)kmsg_crash_line(text, t);
 	if (events == NULL)
 		return;
-	(void)kmsg_crash_line(text, t);
 	if (*events >= KMSG_EVENTS) {
 		(*more)++;
 		return;

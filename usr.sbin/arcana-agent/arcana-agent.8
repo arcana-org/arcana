@@ -125,6 +125,35 @@ a capture put for a Suricata instance to replay
 and a file of its pcap-log got
 .Pq Ic suricata-pcap-get ;
 its bodies are arcana-stream's structures.
+A replica, received from a stream or made by
+.Ic replicate
+on the host, takes from the stream what it holds of the data and of its
+properties but these, which are the receiving side's
+.Po
+.Xr zfs-receive 8
+.Fl u ,
+.Fl x
+and
+.Fl o
+.Pc :
+it is not mounted, and
+.Cm canmount
+is
+.Cm noauto ,
+so it is not mounted at the next boot either;
+.Cm mountpoint ,
+.Cm setuid ,
+.Cm exec ,
+.Cm devices ,
+.Cm jailed ,
+.Cm overlay ,
+.Cm sharenfs ,
+.Cm sharesmb
+and
+.Cm keylocation
+are inherited from the dataset it is received under (or, for one that
+is not inherited, its default), as if the stream had none of them
+.Pq Xr zfsprops 7 .
 They are the console's alone, as every request is, and refused unless
 NACM permits them.
 .Pp

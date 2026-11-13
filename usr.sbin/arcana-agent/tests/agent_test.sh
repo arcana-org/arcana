@@ -2430,6 +2430,83 @@ EOF
 	atf_check -o inline:'2\n' sh -c "grep -c '^set' out"
 }
 
+atf_test_case crash_cores
+crash_cores_head()
+{
+	atf_set "descr" "the cores the kernel said it dumped (kmsg.c), from" \
+	    "the start's lines too; a backtrace (crashes.c) only of one of" \
+	    "them, where kern.corefile puts it, no link, the program of its" \
+	    "name; the debugger as nobody through the helper, the core its" \
+	    "standard input, no script loaded"
+}
+crash_cores_body()
+{
+	local k="$(atf_get_srcdir)/kmsg" c="$(atf_get_srcdir)/crash" me
+
+	cat > lines <<'EOF'
+0 pid 77 (sh), jid 0, uid 1001: exited on signal 11 (core dumped)
+100 pid 13939 (bird), jid 0, uid 0: exited on signal 10 (no core dump - sugid process denied by kern.sugid_coredump)
+250 pid 812 (nginx), jid 7, uid 80: exited on signal 11 (core dumped)
+core sh 77
+core sh 78
+core sh -1
+core bird 13939
+core nginx 812
+EOF
+	atf_check -o save:out "$k" < lines
+	# Before the agent: noted, no event.
+	atf_check -o not-match:'"pid":77' cat out
+	atf_check -o inline:'core of sh 77: uid 1001\nno core of sh 78\ncore of sh -1: uid 1001\nno core of bird 13939\ncore of nginx 812: uid 80\n' \
+	    grep 'core of' out
+
+	me=$(id -u)
+	mkdir cores
+	printf 'CORE-A\n' > cores/sh.4242.core
+	printf 'CORE-B\n' > cores/sh.core
+	mkdir tmp
+	export COREFILE="$(pwd)/cores/%N.%P.core" LLDB=/usr/bin/true \
+	    TMPDIR="$(pwd)/tmp"
+	unset GDB KMSG
+	# None the kernel said it dumped: not read.
+	atf_check -o match:'^error the kernel was not seen to dump a core of sh, pid 4242' \
+	    -o not-match:'^exec' "$c" backtrace sh.4242.core
+	atf_check -o match:'^error the kernel was not seen' -o not-match:'^exec' \
+	    env KMSG="sh 4243 $me" "$c" backtrace sh.4242.core
+	# Not where kern.corefile puts one.
+	atf_check -o match:'^error .*/cores/sh.core is not where kern.corefile' \
+	    -o not-match:'^exec' env KMSG="sh 4242 $me" "$c" backtrace sh.core
+	# A program of another name.
+	atf_check -o match:'^error /bin/ls is not the program of sh.4242.core' \
+	    -o not-match:'^exec' env KMSG="sh 4242 $me" "$c" backtrace \
+	    sh.4242.core /bin/ls
+	# The one it dumped: gdb as nobody by the helper, no init file nor
+	# script, the core its standard input; lldb, which takes no core
+	# it cannot size by its path, the same with a copy of what was
+	# opened, 0400, gone after.
+	atf_check -o save:bt env KMSG="sh 4242 $me" GDB=/usr/bin/true "$c" \
+	    backtrace sh.4242.core
+	atf_check -o match:'^exec /helper --scope-helper 0 debug-as-nobody /usr/bin/true --batch --no-lldbinit -O settings set target.load-script-from-symbol-file false -O settings set target.load-cwd-lldbinit false .* -c [^ ]*/tmp/arcana-core\.[^/ ]*/core .* -- /bin/sh$' \
+	    -o match:'^exec /helper --scope-helper 0 debug-as-nobody /usr/bin/true -batch -nx -iex set auto-load off .* /bin/sh /dev/fd/0$' \
+	    -o match:'^core-file CORE-A 400$' \
+	    -o match:'^limit 300$' -o match:'^ok ' -o not-match:'stdin none' \
+	    -o not-match:'^exec .*/cores/' cat bt
+	atf_check -o inline:'stdin CORE-A\nstdin CORE-A\n' grep '^stdin' bt
+	atf_check -o empty sh -c 'ls -A tmp | grep arcana-core || true'
+	# A link where a core is, or a second name of one: not read.
+	ln -s sh.4242.core cores/sh.4244.core
+	atf_check -o match:'^error sh.4244.core: ' -o not-match:'^exec' \
+	    env KMSG="sh 4244 $me" "$c" backtrace sh.4244.core
+	ln cores/sh.4242.core cores/sh.4245.core
+	atf_check -o match:'^error sh.4245.core is not a core the kernel wrote' \
+	    -o not-match:'^exec' env KMSG="sh 4245 $me" "$c" backtrace \
+	    sh.4245.core
+	# Another user's: not read.
+	rm cores/sh.4245.core
+	[ "$me" = 0 ] || atf_check -o match:'^error sh.4242.core is not a core the kernel wrote for uid 4' \
+	    -o not-match:'^exec' env KMSG="sh 4242 4" "$c" backtrace \
+	    sh.4242.core
+}
+
 atf_test_case kmsg_tail
 kmsg_tail_head()
 {
@@ -3810,6 +3887,26 @@ list_body()
 	    cat list.out
 }
 list_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case list_names cleanup
+list_names_head()
+{
+	atf_set "descr" "A jail's name and hostname, its root's to set, listed fit for a terminal: a C1 control escaped, by the agent"
+}
+list_names_body()
+{
+	printf 'odd 9 new /nonexistent 16.0-CURRENT host.hostname=a\302\233[2Jb\n' > jails
+	start_daemon
+	atf_check -o save:list.out "$JGC" -c "$SOCK" list
+	atf_check -o match:'^odd +running +9 .* a\\302\\233\[2Jb$' \
+	    -o not-match:"$(printf '\302\233')" cat list.out
+	atf_check -o match:'"hostname":"a\\\\302\\\\233\[2Jb"' \
+	    "$JGC" --libxo json -c "$SOCK" list
+}
+list_names_cleanup()
 {
 	stop_daemon
 }
@@ -7808,7 +7905,10 @@ sock="\$2"; shift 2
 [ -e "\$sock" ] || { echo "birdc: Unable to connect to server control socket (\$sock): No such file or directory" >&2; exit 1; }
 case "\$*" in
 'show status') printf 'BIRD 3.3.2 ready.\nBIRD 3.3.2\nDaemon is up and running\n' ;;
-'show protocols') printf 'BIRD 3.3.2 ready.\nName       Proto      Table      State  Since         Info\ndevice1    Device     ---        up     21:00:00.000  \nuni_hq_0   BGP        ---        start  21:00:00.000  Active        Socket: Connection refused\n' ;;
+'show protocols') st='start  21:00:00.000  Active        Socket: Connection refused'
+	[ -e $(pwd)/bgp.up ] && st='up     21:00:00.000  Established'
+	[ -e $(pwd)/bgp.said ] && st=\$(cat $(pwd)/bgp.said)
+	printf 'BIRD 3.3.2 ready.\nName       Proto      Table      State  Since         Info\ndevice1    Device     ---        up     21:00:00.000  \nuni_hq_0   BGP        ---        %s\n' "\$st" ;;
 'show bfd sessions') st=Up; [ -e $(pwd)/bfd.down ] && st=Down; printf 'BIRD 3.3.2 ready.\nbfd1:\nIP address                Interface  State      Since         Interval  Timeout\n100.64.0.1                gre100     %s         21:00:00.000    0.200    0.600\n' "\$st" ;;
 configure) printf 'BIRD 3.3.2 ready.\nReading configuration from %s\nReconfigured\n' "\$sock" ;;
 down) rm -f "\$sock" ;;
@@ -7942,7 +8042,7 @@ r=\$(sed -n 's/^  - \(.*\/suricata.rules\)\$/\\1/p' "\$3")
 exit 0; }
 d=\$(sed -n 's/^default-log-dir: //p' "\$2")
 printf '%s\\n' '{"timestamp":"2026-10-12T18:00:00.000000+0000","event_type":"flow","src_ip":"10.30.0.2"}' \\
-    '{"timestamp":"2026-10-12T18:00:01.000000+0000","in_iface":"wg5","event_type":"alert","src_ip":"10.30.0.2","src_port":40000,"dest_ip":"10.20.0.1","dest_port":80,"proto":"TCP","alert":{"action":"allowed","signature_id":1000001,"rev":1,"signature":"ARCANA test \\"quoted\\"","category":"","severity":2}}' >> "\$d/eve.json"
+    '{"timestamp":"2026-10-12T18:00:01.000000+0000","in_iface":"wg5","event_type":"alert","src_ip":"10.30.0.2","src_port":40000,"dest_ip":"10.20.0.1","dest_port":80,"proto":"TCP","alert":{"action":"allowed","signature_id":1000001,"rev":1,"signature":"ARCANA test \\"quoted\\"","category":"x\\u009by","severity":2}}' >> "\$d/eve.json"
 # As Suricata does: a pid file there refuses the start, said in its log;
 # FAILSTART in the configuration fails it.
 [ -f "\$4" ] && { echo "[1 - Main] 2026-10-19 Error: pidfile: pid file '\$4' exists but appears stale" >> "\$d/suricata.log"; exit 1; }
@@ -9261,6 +9361,23 @@ sdwan_bird_body()
 	atf_check -o match:'"chosen":0' "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'"type":"bfd","severity":"Cleared","was":"Major","object":"t1","by":"bfd","description":"BFD to 100.64.0.1 on gre100 is up","cleared":true,"cleared_at":[0-9]+' \
 	    "$JGC" -c "$SOCK" sdwan
+	# A BGP neighbour up, then down with what BIRD says: its fault says
+	# it on one line, escapes for what a terminal acts on, 200 bytes of
+	# it at most (it goes to mail and Telegram as it is).
+	touch bgp.up
+	sleep 6
+	{ printf 'start  21:00:00.000  Active \033]52;c;ZXZpbA==\007 \302\23331m '
+	  printf '%0400d' 0; } > bgp.said
+	for i in $(seq 1 40); do
+		"$JGC" -c "$SOCK" events | grep -q '"type":"bgp-neighbor"' && break
+		sleep 0.5
+	done
+	"$JGC" -c "$SOCK" events | grep -o '"type":"bgp-neighbor"[^}]*' > bgp.ev
+	atf_check -o match:'"object":"sw1/uni_hq_0","by":"bird","description":"BGP uni_hq_0 of sw1 is start: 21:00:00.000  Active \\\\033\]52;c;ZXZpbA==\\\\007 \\\\302\\\\23331m 0+"' \
+	    cat bgp.ev
+	atf_check -o not-match:"$(printf '\033')" -o not-match:"$(printf '\302\233')" \
+	    -o not-match:"$(printf '%0200d' 0)" cat bgp.ev
+	rm -f bgp.up bgp.said
 	# The breakout's default route steered too: by the first candidate
 	# whose beacon is not down (none probed here: the first), put in its
 	# table in place of what was there; told in the read.
@@ -9609,8 +9726,12 @@ sdwan_ids_body()
 	atf_check -o match:'sid:1000001' cat "$(dirname "$f")/sdwan-ids-sw1.rules"
 	wait_match '"alerts_seen":1,' "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'"ids":\[\{"name":"sw1","interfaces":\["wg5"\],"mode":"detect","running":true,"alerts_seen":1,"alerts":\[\{"name":"sw1","time":"2026-10-12T18:00:01' \
-	    -o match:'"signature":"ARCANA test quoted","category":"","severity":2' "$JGC" -c "$SOCK" sdwan
+	    -o match:'"signature":"ARCANA test \\"quoted\\"","category":"x\\u009by","severity":2' "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'"kind":"sdwan-ids","data":\{"name":"sw1",.*"src":"10.30.0.2","sport":40000,"dst":"10.20.0.1","dport":80,"proto":"TCP","iface":"wg5","sid":1000001' \
+	    "$JGC" -c "$SOCK" events
+	# A C1 control (U+009B, a terminal's CSI) in what Suricata wrote:
+	# JSON still, as \u009b, whatever arcanactl prints it to.
+	atf_check -o match:'"category":"x\\u009by"' -o not-match:"$(printf '\302\233')" \
 	    "$JGC" -c "$SOCK" events
 	spid=$(cat "$(dirname "$f")/sdwan-ids-sw1.pid")
 	# The same again: nothing to commit, arcana-sdwan's apply sets it
@@ -10256,6 +10377,22 @@ EOS
 	atf_check -o match:'^Service avscan virus_scan.so$' -o match:'^client_access deny all$' cat "$c"
 	has_text "$c" "$(printf 'Port 10.1.0.1:1354\nacl squid src 10.1.0.1/255.255.255.255\n')" ||
 	    atf_fail "c-icap does not take Squid's address alone"
+	# An IPv6 address it is reached at, in brackets before its port;
+	# c-icap on the IPv4 one still; a table whose c-icap port would be
+	# none refused.
+	sed 's|{"end_point":"hq","address":"10.1.0.1"}|{"end_point":"v6","address":"2001:db8::1"},&|' \
+	    proxy.json > proxy6.json
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "$(cat proxy6.json)"
+	c=$(kept sdwan-proxy-sw1.conf)
+	atf_check -o match:'^http_port \[2001:db8::1\]:3128 intercept$' \
+	    -o match:'^https_port \[2001:db8::1\]:3129 intercept ' \
+	    -o match:'^icap_service sdwan_av respmod_precache bypass=off icap://10.1.0.1:1354/avscan$' cat "$c"
+	c=$(kept sdwan-icap-sw1.conf)
+	has_text "$c" "$(printf 'Port 10.1.0.1:1354\nacl squid src 10.1.0.1/255.255.255.255\n')" ||
+	    atf_fail "c-icap does not take the IPv4 address"
+	sed 's/"fib":1/"fib":7000/g' proxy.json > proxyf.json
+	atf_check -s exit:1 -e match:'fib is a routing table, 0 to 6419' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan proxy "$(cat proxyf.json)"
 	# A DNF's names with a * inside (R71), which unbound does not take:
 	# the zone's Squid ends them at the TLS name and refuses them by
 	# the request's host, before the rest of the zone's.
@@ -10490,6 +10627,12 @@ EOF
 	atf_check -s exit:1 -e match:'without a certificate' -o ignore "$JGC" -c "$SOCK" smtpd conf f3.json
 	printf '{"listeners":[{"on":"localhost"}],"own":"listen on 0.0.0.0\\n"}' > f4.json
 	atf_check -s exit:1 -e match:'may not listen' -o ignore "$JGC" -c "$SOCK" smtpd conf f4.json
+	# Nor after blanks or a tab, nor a word made of two lines by a
+	# backslash at the first's end.
+	printf '{"listeners":[{"on":"localhost"}],"own":"# x\\n \\tlisten\\ton 0.0.0.0\\n"}' > f4.json
+	atf_check -s exit:1 -e match:'may not listen' -o ignore "$JGC" -c "$SOCK" smtpd conf f4.json
+	printf '{"listeners":[{"on":"localhost"}],"own":"lis\\\\\\nten on 0.0.0.0\\n"}' > f4.json
+	atf_check -s exit:1 -e match:'not continued' -o ignore "$JGC" -c "$SOCK" smtpd conf f4.json
 	printf '{"listeners":[{"on":"localhost"}],"filters":[{"name":"nosuch"}]}' > f5.json
 	atf_check -s exit:1 -e match:'filter nosuch is not installed' -o ignore "$JGC" -c "$SOCK" smtpd conf f5.json
 	# What smtpd itself refuses is not put in place.
@@ -11269,6 +11412,8 @@ agent_build_body()
 [ "\$1" = -c ] && shift 2
 # The commit a clone is at, and the head of the repository's branch.
 [ "\$1" = -C ] && [ "\$3" = rev-parse ] && { echo 1111111111111111111111111111111111111111; exit 0; }
+# What changed of it: ./status.
+[ "\$1" = -C ] && [ "\$3" = status ] && { cat $(pwd)/status 2>/dev/null; exit 0; }
 # The log clone: made bare, fetched, read; what ./log and ./tags hold.
 [ "\$1" = -C ] && [ "\$3" = config ] && { echo "\$5" > "\$2/ORIGIN"; exit 0; }
 [ "\$1" = -C ] && [ "\$3" = fetch ] && exit 0
@@ -11294,6 +11439,7 @@ dir=\$2
 echo "\$*" >> $(pwd)/made
 echo "HOME=\$HOME" >> $(pwd)/made
 [ -f $(pwd)/make-fails ] && exit 1
+[ -f $(pwd)/make-taints ] && echo changed >> "\$dir/CLONED"
 case " \$* " in
 *" -V .OBJDIR "*) echo "\$dir/obj" ;;
 */usr.sbin/arcana-agent*) src="$JGD"; [ -f $(pwd)/big-agent ] && src=$(pwd)/big-agent
@@ -11436,6 +11582,23 @@ EOS
 	atf_check test ! -e running.arcana_console
 	atf_check test ! -e running.arcana_agent
 	rm make-fails
+	# make install runs as root in the tree the build user built: only
+	# in the commit fetched.  A file the build changed, or what git says
+	# is not the commit's, and nothing is installed or restarted.
+	rm made
+	touch make-taints
+	atf_check -s exit:1 -e match:'not installed: .*/build/src/CLONED changed since the tree was fetched' \
+	    -o ignore "$JGC" -c "$SOCK" console-update https://example.org/arcana.git
+	atf_check -o not-match:'install' cat made
+	rm make-taints made
+	echo ' M Makefile' > status
+	atf_check -s exit:1 -e match:'not installed: the tree is not the commit fetched:  M Makefile' \
+	    -o ignore "$JGC" -c "$SOCK" console-update https://example.org/arcana.git
+	atf_check -o not-match:'install' cat made
+	rm status
+	sleep 1.5
+	atf_check test ! -e running.arcana_console
+	atf_check test ! -e running.arcana_agent
 	# What git would take as an option is not a repository.
 	atf_check -s exit:1 -e match:'not a repository' -o ignore \
 	    "$JGC" -c "$SOCK" agent-build -- --upload-pack=x
@@ -11844,6 +12007,18 @@ EOS
 	    "$JGC" -c "$SOCK" kmod forget sctp
 	atf_check -o match:'^kld_list="if_bridge"$' cat rc.conf
 	atf_check -o empty cat kld.log
+	# A kld_list of 1020 bytes: the module kept at its end whole, the
+	# list not cut short.
+	long=if_bridge
+	while [ ${#long} -lt 1011 ]; do long="$long m${#long}"; done
+	long="$long $(printf '%*s' $((1020 - ${#long} - 1)) '' | tr ' ' x)"
+	[ ${#long} -eq 1020 ] || atf_fail "the long list is ${#long} bytes"
+	cp rc.conf rc.conf.short
+	printf 'kld_list="%s"\n' "$long" > rc.conf
+	atf_check -o match:'done +sctp into kld_list$' \
+	    "$JGC" -c "$SOCK" kmod keep sctp
+	atf_check -o inline:"kld_list=\"$long sctp\"\n" cat rc.conf
+	mv rc.conf.short rc.conf
 	atf_check -s exit:1 -o match:'Device busy' \
 	    "$JGC" -c "$SOCK" kmod unload zfs
 	atf_check -s exit:1 -o match:'No such file' \
@@ -14080,7 +14255,8 @@ EOS
 	atf_check -s exit:1 -e match:'a dataset is pool/name' -o ignore "$JGC" -c "$SOCK" zfs replicate fakepool/data backup/data
 	atf_check "$JGD" --scope-helper 0 zfs-pipe "$(pwd)/fake-zfs" fakepool/data@b backup/data fakepool/data@a r
 	atf_check -o match:'^zfs send -R -i fakepool/data@a fakepool/data@b$' \
-	    -o match:'^zfs receive -u backup/data$' cat storage.log
+	    -o match:'^zfs receive -u -x mountpoint -o canmount=noauto -x setuid -x exec -x devices -x jailed -x overlay -x sharenfs -x sharesmb -x keylocation backup/data$' \
+	    cat storage.log
 	# A file system made on a partition: not on one that has one, is
 	# a pool's, or is not a device; and one grown.
 	atf_check -o match:'done +newfs -U -L data /dev/ada0p4$' "$JGC" -c "$SOCK" gpart newfs ada0p4 data
@@ -15116,6 +15292,35 @@ EOT
 	    "$JGC" -c "$SOCK" sshd authorize daemon alice_key.pub
 	atf_check -o match:'done +sshd unauthorize of alice$' \
 	    "$JGC" -c "$SOCK" sshd unauthorize alice "$alicefp"
+	atf_check -o empty cat $R/home/alice/.ssh/authorized_keys
+	# Every line of what is authorized one public key, no options: a
+	# line that is not refuses them all, nothing written; what was
+	# checked is what is written, a key a line.
+	ssh-keygen -q -t ed25519 -N '' -C bob@lab -f bob_key
+	{ cat bob_key.pub; printf 'command="/bin/sh" %s\n' "$(cat alice_key.pub)"; } > two.pub
+	atf_check -s exit:1 -o match:'line 2 is not a public key' \
+	    "$JGC" -c "$SOCK" sshd authorize alice two.pub
+	atf_check -o empty cat $R/home/alice/.ssh/authorized_keys
+	printf 'from="10.0.0.0/8",environment="LD_PRELOAD=/tmp/x" %s\n' \
+	    "$(cat bob_key.pub)" > opt.pub
+	atf_check -s exit:1 -o match:'line 1 is not a public key' \
+	    "$JGC" -c "$SOCK" sshd authorize alice opt.pub
+	printf '%s\r\n%s\n' "$(cat bob_key.pub)" "$(cat bob_key.pub)" > twice.pub
+	atf_check -s exit:1 -o match:'line 2 is a key of line 1 again' \
+	    "$JGC" -c "$SOCK" sshd authorize alice twice.pub
+	printf '%s\033]0;x\007\n' "$(cat bob_key.pub)" > esc.pub
+	atf_check -s exit:1 -o match:'line 1: a comment is one line of printable' \
+	    "$JGC" -c "$SOCK" sshd authorize alice esc.pub
+	atf_check -o empty cat $R/home/alice/.ssh/authorized_keys
+	printf '  %s\r\n\n%s\n' "$(cat bob_key.pub)" "$(cat alice_key.pub)" > two.pub
+	atf_check -o match:'done +sshd authorize of alice$' \
+	    "$JGC" -c "$SOCK" sshd authorize alice two.pub
+	atf_check -o inline:"$(cat bob_key.pub)\n$(cat alice_key.pub)\n" \
+	    cat $R/home/alice/.ssh/authorized_keys
+	atf_check -o match:'done' "$JGC" -c "$SOCK" sshd unauthorize alice \
+	    "$(ssh-keygen -lf bob_key.pub | awk '{print $2}')"
+	atf_check -o match:'done' "$JGC" -c "$SOCK" sshd unauthorize alice \
+	    "$alicefp"
 	atf_check -o empty cat $R/home/alice/.ssh/authorized_keys
 	atf_check -s exit:1 -o match:'has no key' \
 	    "$JGC" -c "$SOCK" sshd unauthorize alice "$alicefp"
@@ -17367,6 +17572,7 @@ atf_init_test_cases()
 	atf_add_test_case certs
 	atf_add_test_case sshd
 	atf_add_test_case crashes
+	atf_add_test_case crash_cores
 	atf_add_test_case capture
 	atf_add_test_case vnet
 	atf_add_test_case traceroute
@@ -17430,6 +17636,7 @@ atf_init_test_cases()
 	atf_add_test_case yang_services
 	atf_add_test_case socket_mode
 	atf_add_test_case list
+	atf_add_test_case list_names
 	atf_add_test_case conf_errors
 	atf_add_test_case trace
 	atf_add_test_case start

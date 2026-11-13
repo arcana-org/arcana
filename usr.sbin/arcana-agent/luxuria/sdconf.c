@@ -1371,6 +1371,27 @@ squid_urlf(FILE *b, FILE *sb, FILE *hb, const char *zn,
 }
 
 /*
+ * The edge's own address in the service that c-icap takes and Squid
+ * reaches it at: the first IPv4 address of "listen" (c-icap's Port and
+ * acl are written for one), the loopback where there is none.
+ */
+static const char *
+icap_own(const ucl_object_t *spec)
+{
+	const ucl_object_t	*o;
+	ucl_object_iter_t	 it;
+	const char		*a;
+
+	it = NULL;
+	while ((o = ucl_object_iterate(ucl_object_lookup(spec, "listen"), &it,
+	    true)) != NULL)
+		if ((a = sstr(o, "address")) != NULL && addr_ok(a) &&
+		    strchr(a, ':') == NULL)
+			return (a);
+	return ("127.0.0.1");
+}
+
+/*
  * Squid's file for an SD-WAN service at this edge (MEF 138's URLF, MBSF
  * and MD+R), from its form: the service's "service" and "fib"; where
  * it is reached ("listen", each a UNI's or remote end point's
@@ -1402,6 +1423,7 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	FILE			*t;
 	int			 tlsmin;
 	intmax_t		 fib;
+	bool			 v6;
 
 	if (sstr(spec, "service") == NULL) {
 		*errp = "the form is an object: service, fib, listen and zones";
@@ -1420,6 +1442,11 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 			return (NULL);
 		}
 	fib = (intmax_t)sint(spec, "fib", 0);
+	if (fib < 0 || fib > SDWAN_ICAP_FIB_MAX) {
+		*errp = wfmt(w, "fib is a routing table, 0 to %d (its c-icap's "
+		    "port, 1344 and ten a table, is a port)", SDWAN_ICAP_FIB_MAX);
+		return (NULL);
+	}
 	if (!sq_open(&b) || !sq_open(&sb) || !sq_open(&hb)) {
 		sq_close(&b);
 		sq_close(&sb);
@@ -1446,11 +1473,15 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	it = NULL;
 	while ((o = ucl_object_iterate(ucl_object_lookup(spec, "listen"), &it,
 	    true)) != NULL) {
-		fprintf(b.fp, "# %s\nhttp_port %s:3128 intercept\nhttps_port "
-		    "%s:3129 intercept ssl-bump tls-cert=%s "
+		/* An IPv6 address in brackets, as Squid takes it with a
+		 * port. */
+		v6 = strchr(sstr(o, "address"), ':') != NULL;
+		fprintf(b.fp, "# %s\nhttp_port %s%s%s:3128 intercept\nhttps_port "
+		    "%s%s%s:3129 intercept ssl-bump tls-cert=%s "
 		    "generate-host-certificates=on dynamic_cert_mem_cache_size=4MB",
-		    sval(o, "end_point"), sstr(o, "address"), sstr(o, "address"),
-		    p->ca);
+		    conf_word(sval(o, "end_point")), v6 ? "[" : "",
+		    sstr(o, "address"), v6 ? "]" : "", v6 ? "[" : "",
+		    sstr(o, "address"), v6 ? "]" : "", p->ca);
 		if (tlsmin > 1)
 			fprintf(b.fp, " tls-min-version=1.%d", tlsmin - 1);
 		fprintf(b.fp, "\n");
@@ -1463,7 +1494,7 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	first = nth(ucl_object_lookup(spec, "listen"), 0);
 	if (sflag(spec, "resolver") && first != NULL)
 		fprintf(b.fp, "dns_nameservers %s\n", sstr(first, "address"));
-	own = first != NULL ? sstr(first, "address") : "127.0.0.1";
+	own = icap_own(spec);
 	fprintf(b.fp, "sslcrtd_program %s -s %s -M 4MB\nsslcrtd_children 3\n"
 	    "acl step1 at_step SslBump1\nacl plain localport 3128\n", p->certgen,
 	    p->ssldb);
@@ -1897,8 +1928,8 @@ static const char *const icap_scan =
  * c-icap's file of an instance whose form scans for malware: an ICAP
  * service avscan that scans with ClamAV's module (c-icap-modules),
  * taking its Squid alone.  An SD-WAN service's is on the edge's own
- * address in the service (its first "listen", the loopback where there
- * is none), at the service's port: the loopback is not the service's
+ * address in the service (icap_own(): its first IPv4 "listen", the
+ * loopback where there is none), at the service's port: the loopback is not the service's
  * table's (net.inet.tcp.bind_all_fibs is 0), so nothing in the table
  * can bind it.  The Security section's is on the loopback, at the
  * instance's port (by its place, idx).  c-icap has no checker of its
@@ -1908,7 +1939,6 @@ char *
 icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
     const char *host, int idx, const struct sqpaths *p, const char **errp)
 {
-	const ucl_object_t	*first;
 	const char		*own;
 	FILE			*b;
 	char			*buf;
@@ -1923,9 +1953,15 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 	}
 	if (strcmp(sval(spec, "flavor"), "sdwan") == 0) {
 		fib = (intmax_t)sint(spec, "fib", 0);
-		first = nth(ucl_object_lookup(spec, "listen"), 0);
-		own = first != NULL && addr_ok(sstr(first, "address")) ?
-		    sstr(first, "address") : "127.0.0.1";
+		if (fib < 0 || fib > SDWAN_ICAP_FIB_MAX) {
+			fclose(b);
+			free(buf);
+			*errp = wfmt(w, "fib is a routing table, 0 to %d (its "
+			    "c-icap's port, 1344 and ten a table, is a port)",
+			    SDWAN_ICAP_FIB_MAX);
+			return (NULL);
+		}
+		own = icap_own(spec);
 		fprintf(b, "# Written by arcana-agent for the Arcana console: "
 		    "SD-WAN service %s at %s, in routing table %jd.\n# Malware "
 		    "scanning of its security zones (MEF 138's MD+R), by c-icap "

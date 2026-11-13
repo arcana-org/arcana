@@ -146,7 +146,11 @@ module arcana-speeder {
     leaf key {
       type boolean;
       description
-        "A key is set; never what.";
+        "A key is set; never what.  speederv2 takes it on its
+         command line alone: while the relay runs any local user who
+         may see other users' processes reads it (ps(1)), and in the
+         rc.conf file that holds the flags unless that file is kept
+         from them.";
     }
     leaf extra {
       type string;

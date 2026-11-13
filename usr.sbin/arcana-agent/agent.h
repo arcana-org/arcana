@@ -21,7 +21,9 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.284.0"
+#include "textfit.h"
+
+#define	ARCANA_AGENT_VERSION	"0.285.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -294,6 +296,7 @@ char		*wstrndup(struct work *, const char *, size_t);
 char		*wfmt(struct work *, const char *, ...) __printflike(2, 3);
 char		*wvis(struct work *, const char *);
 const char	*wtext(struct work *, const char *);
+const char	*wname(struct work *, const char *);
 
 int		 step_begin(struct work *, uint8_t, const char *,
 		    const char *, ...) __printflike(4, 5);
@@ -906,6 +909,7 @@ void		 host_watch_start(void);
 bool		 kmsg_lines(struct work *, uint64_t, const char *, uint32_t,
 		    struct kmsg_line **, size_t *, uint64_t *);
 bool		 kmsg_crash_line(const char *, time_t);
+bool		 kmsg_core_dumped(const char *, int, int *);
 void		 kmsg_crash_sweep(time_t);
 void		 kmsg_crash_adopt(void);
 const char	*kmsg_find(const char *, size_t, const char *, size_t, size_t,
@@ -1008,6 +1012,8 @@ struct sqpaths {
  * Security section's i-th, on the loopback. */
 #define	SDWAN_ICAP_PORT(fib)	(1344 + 10 * (int)(fib))
 #define	SEC_ICAP_PORT(i)	(1345 + 10 * (int)(i))
+/* The last routing table whose c-icap port is a port. */
+#define	SDWAN_ICAP_FIB_MAX	((65535 - 1344) / 10)
 char		*dhcp_conf_render(struct work *, const struct ucl_object_s *,
 		    const char *, const char **);
 /* Where an unbound instance's files are, as its configuration names
@@ -1295,6 +1301,7 @@ int		 zfs_send_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 int		 zfs_receive_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
+extern const char *const zfs_recv_opts[];
 int		 pcap_put_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 int		 pcap_get_open(cbl_req *, const struct arcana_stream_open *,
@@ -1416,6 +1423,7 @@ bool		 network_part(struct cbl_dump_state *,
 /* invidia/parts.c: the arcana-parts family, its network-parts stream. */
 int		 parts_register(cbl_ctx *);
 int		 zfs_pipe(int, char **);
+int		 debug_as_nobody(int, char **);
 int		 run_wait(int, char **);
 int		 service_detach(int, char **);
 const char	*tool(struct work *, const char *);

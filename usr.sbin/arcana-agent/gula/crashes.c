@@ -13,15 +13,34 @@
  * which tells a SIGBUS of a fault the kernel could find no memory for
  * (BUS_OOMERR) from one of a bad address.  Nothing is changed: a core
  * is read, not moved nor taken away.
+ *
+ * A core is a file anybody may have put there, and what reads it runs
+ * what the file says, so a backtrace is only of a core the kernel wrote
+ * for a crash it said (kmsg.c: "exited on signal ... (core dumped)" of
+ * that program and pid, the pid where kern.corefile's pattern names
+ * it), at a path the pattern gives, a regular file of one link owned
+ * by the crashed process's user or root, opened here without a link
+ * and passed to the debugger as its standard input (/dev/fd/0: gdb
+ * reads it there; lldb takes no core it cannot size by its path, so
+ * it reads a copy root made of that descriptor, in a directory of its
+ * own, nobody's to read alone, gone after); the program named, one of
+ * that name.  The debugger runs as nobody, with
+ * no init file and no script of its own or of the symbols', within
+ * limits of CPU, memory and time: nothing it says is trusted.
  */
 
 #include <sys/param.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 
 #include <dirent.h>
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <limits.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +53,10 @@
 
 #define	CORES_MAX	200
 #define	BT_MAX		(512 * 1024)	/* lldb's words kept */
+#define	CORE_SIZE_MAX	((off_t)2 << 30)	/* a core read, at most */
+#define	DBG_CPU		120		/* a debugger's seconds of CPU */
+#define	DBG_AS		((rlim_t)6 << 30)	/* and its address space */
+#define	DBG_WALL	300		/* killed after so long */
 
 /* Where cores go: kern.corefile's directory; NULL when it names none
  * (each in its process's own directory). */
@@ -65,18 +88,17 @@ core_name_ok(const char *s)
 	    strcmp(s, "core") == 0));
 }
 
-/* The program a core is of, from its name (%N.%P.core, %N.core): its
- * first word; then the places a program of that name is. */
+/* The program of that name (the crashed process's, as the kernel
+ * names it), where programs are. */
 static const char *
-core_program(struct work *w, const char *core)
+core_program(struct work *w, const char *name)
 {
 	static const char *const dirs[] = { "/usr/local/sbin",
 	    "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
 	    "/usr/libexec", "/usr/local/libexec" };
-	const char	*name, *p;
+	const char	*p;
 	size_t		 i;
 
-	name = wstrndup(w, core, strcspn(core, "."));
 	for (i = 0; i < nitems(dirs); i++) {
 		p = wfmt(w, "%s/%s", dirs[i], name);
 		if (access(p, X_OK) == 0)
@@ -141,23 +163,262 @@ cores_list(struct work *w, const char *dir, ucl_object_t *arr, int *othersp,
 	return (true);
 }
 
+/*
+ * Does path match kern.corefile's pattern (core(5): %N the program's
+ * name, %P its pid, %U its uid, %H the host's name, %I an index)?  A
+ * pattern not absolute is where the process was: matched at the end of
+ * the path, after a slash.  The name in comm (MAXCOMLEN + 2 bytes), the
+ * pid in *pidp (-1 when the pattern names none).
+ */
+static bool
+pattern_at(const char *pat, const char *s, char *comm, int *pidp)
+{
+	const char	*e;
+	size_t		 n;
+
+	for (; *pat != '\0'; pat++, s++) {
+		if (*pat != '%' || pat[1] == '%') {
+			if (*pat == '%')
+				pat++;
+			if (*s != *pat)
+				return (false);
+			continue;
+		}
+		switch (*++pat) {
+		case 'N':
+		case 'H':
+			/* As long as the rest matches, shortest first. */
+			for (e = s + 1; *s != '\0' && *s != '/' && e <=
+			    s + strcspn(s, "/"); e++) {
+				n = (size_t)(e - s);
+				if (*pat == 'N' && n > MAXCOMLEN)
+					break;
+				if (pattern_at(pat + 1, e, comm, pidp)) {
+					if (*pat == 'N')
+						snprintf(comm, MAXCOMLEN + 2,
+						    "%.*s", (int)n, s);
+					return (true);
+				}
+			}
+			return (false);
+		case 'P':
+		case 'U':
+		case 'I':
+			if ((n = strspn(s, "0123456789")) == 0 || n > 10)
+				return (false);
+			if (*pat == 'P')
+				*pidp = atoi(s);
+			s += n - 1;
+			break;
+		default:
+			return (false);
+		}
+	}
+	return (*s == '\0');
+}
+
+static bool
+core_matches(const char *pattern, const char *path, char *comm, int *pidp)
+{
+	const char	*p;
+
+	comm[0] = '\0';
+	*pidp = -1;
+	if (pattern[0] == '/')
+		return (pattern_at(pattern, path, comm, pidp) && comm[0] !=
+		    '\0');
+	for (p = path; (p = strchr(p, '/')) != NULL; p++)
+		if (pattern_at(pattern, p + 1, comm, pidp) && comm[0] != '\0')
+			return (true);
+	return (false);
+}
+
+/*
+ * The helper's "debug-as-nobody program arg ...": the program run with
+ * limits of CPU, memory and no core of its own, as nobody when the
+ * agent is root, its standard input as given (a core it cannot open).
+ */
+int
+debug_as_nobody(int argc, char **argv)
+{
+	struct rlimit	 rl;
+	struct passwd	*pw;
+	gid_t		 g;
+
+	if (argc < 2 || argv[1][0] != '/')
+		return (2);
+	rl.rlim_cur = rl.rlim_max = DBG_CPU;
+	if (setrlimit(RLIMIT_CPU, &rl) == -1)
+		err(1, "RLIMIT_CPU");
+	rl.rlim_cur = rl.rlim_max = DBG_AS;
+	if (setrlimit(RLIMIT_AS, &rl) == -1)
+		err(1, "RLIMIT_AS");
+	rl.rlim_cur = rl.rlim_max = 0;
+	if (setrlimit(RLIMIT_CORE, &rl) == -1)
+		err(1, "RLIMIT_CORE");
+	if (geteuid() == 0) {
+		if ((pw = getpwnam("nobody")) == NULL)
+			errx(1, "no user nobody");
+		g = pw->pw_gid;
+		if (setgroups(1, &g) == -1 || setgid(g) == -1 ||
+		    setuid(pw->pw_uid) == -1)
+			err(1, "nobody");
+		if (setuid(0) != -1)
+			errx(1, "root again after nobody");
+	}
+	execv(argv[1], argv + 1);
+	err(127, "%s", argv[1]);
+}
+
+/*
+ * The core opened: beneath its directory, never through a link, a
+ * regular file of one link, the crashed process's user's or root's,
+ * not too large; -1 and why.
+ */
+static int
+core_open(struct work *w, const char *dir, const char *core, int uid,
+    const char **errp)
+{
+	struct stat	 sb;
+	int		 dfd, fd;
+
+	if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
+		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
+		return (-1);
+	}
+	fd = openat(dfd, core, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+	close(dfd);
+	if (fd == -1) {
+		*errp = wfmt(w, "%s: %s", core, strerror(errno));
+		return (-1);
+	}
+	if (fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode) || sb.st_nlink != 1 ||
+	    (sb.st_uid != (uid_t)uid && sb.st_uid != 0) || sb.st_size >
+	    CORE_SIZE_MAX) {
+		close(fd);
+		*errp = wfmt(w, "%s is not a core the kernel wrote for uid %d "
+		    "(a file of its own, of one link, 2 GiB at most): not "
+		    "read", core, uid);
+		return (-1);
+	}
+	return (fd);
+}
+
+/*
+ * A copy of the core opened, for lldb: in a new directory of root's
+ * beneath TMPDIR that others may pass through and not list, the file
+ * nobody's, 0400.  Its path, and the directory's in *dirp; NULL and why.
+ */
+static const char *
+core_copy(struct work *w, int cfd, const char **dirp, const char **errp)
+{
+	struct passwd	*pw;
+	const char	*path;
+	char		*dir;
+	off_t		 in, out;
+	ssize_t		 n;
+	int		 fd;
+
+	dir = wfmt(w, "%s/arcana-core.XXXXXXXX", tmp_dir());
+	if (mkdtemp(dir) == NULL || chmod(dir, 0711) == -1) {
+		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
+		return (NULL);
+	}
+	path = wfmt(w, "%s/core", dir);
+	in = out = 0;
+	if ((fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
+	    O_CLOEXEC, 0400)) == -1 || (geteuid() == 0 && ((pw =
+	    getpwnam("nobody")) == NULL || fchown(fd, pw->pw_uid, pw->pw_gid) ==
+	    -1))) {
+		*errp = wfmt(w, "%s: %s", path, strerror(errno));
+		goto fail;
+	}
+	while ((n = copy_file_range(cfd, &in, fd, &out, SSIZE_MAX, 0)) > 0)
+		;
+	if (n == -1 || close(fd) == -1) {
+		*errp = wfmt(w, "%s: %s", path, strerror(errno));
+		fd = -1;
+		goto fail;
+	}
+	*dirp = dir;
+	return (path);
+fail:
+	if (fd != -1)
+		close(fd);
+	(void)unlink(path);
+	(void)rmdir(dir);
+	return (NULL);
+}
+
+/* The debugger as nobody, the core its standard input, within limits. */
+static void
+debug_run(struct work *w, char **argv, int cfd, struct execres *res)
+{
+	char	*hv[40];
+	int	 n, i;
+
+	n = 0;
+	hv[n++] = (char *)(uintptr_t)opts.helper_bin;
+	hv[n++] = (char *)(uintptr_t)"--scope-helper";
+	hv[n++] = (char *)(uintptr_t)"0";
+	hv[n++] = (char *)(uintptr_t)"debug-as-nobody";
+	for (i = 0; argv[i] != NULL && n < (int)nitems(hv) - 1; i++)
+		hv[n++] = argv[i];
+	hv[n] = NULL;
+	(void)lseek(cfd, 0, SEEK_SET);
+	exec_set_fds(cfd, -1);
+	exec_set_limit(DBG_WALL);
+	(void)run_exec_max(w, hv, res, BT_MAX);
+}
+
 /* lldb's backtrace of every thread of a core, and the signal's code. */
 static int
 core_backtrace(struct work *w, const char *dir, const char *core,
     const char *program, ucl_object_t *top, const char **errp)
 {
 	struct execres	 res;
-	const char	*lldb, *gdb, *path;
-	char		*argv[20], *text;
-	int		 n, step;
+	const char	*lldb, *gdb, *path, *base, *copy, *cdir;
+	char		*argv[24], *text, pattern[MAXPATHLEN],
+			 comm[MAXCOMLEN + 2];
+	size_t		 len;
+	int		 n, step, pid, uid, cfd;
 
 	if (!core_name_ok(core)) {
 		*errp = "a core is named as the list has it";
 		return (-1);
 	}
 	path = wfmt(w, "%s/%s", strcmp(dir, "/") == 0 ? "" : dir, core);
+	len = sizeof(pattern);
+	if (sysctlbyname("kern.corefile", pattern, &len, NULL, 0) != 0) {
+		*errp = wfmt(w, "kern.corefile: %s", strerror(errno));
+		return (-1);
+	}
+	pattern[MIN(len, sizeof(pattern) - 1)] = '\0';
+	if (!core_matches(pattern, path, comm, &pid)) {
+		*errp = wfmt(w, "%s is not where kern.corefile (%s) puts a "
+		    "core: not read", path, pattern);
+		return (-1);
+	}
+	if (!kmsg_core_dumped(comm, pid, &uid)) {
+		*errp = pid != -1 ? wfmt(w, "the kernel was not seen to dump a "
+		    "core of %s, pid %d: %s not read", comm, pid, core) :
+		    wfmt(w, "the kernel was not seen to dump a core of %s: %s "
+		    "not read", comm, core);
+		return (-1);
+	}
+	/* The program the kernel named; another of its name named. */
 	if (program == NULL || program[0] == '\0')
-		program = core_program(w, core);
+		program = core_program(w, comm);
+	if (program != NULL) {
+		base = strrchr(program, '/') != NULL ? strrchr(program, '/') +
+		    1 : program;
+		if (strncmp(base, comm, strlen(comm)) != 0 || (strlen(base) !=
+		    strlen(comm) && strlen(comm) < MAXCOMLEN)) {
+			*errp = wfmt(w, "%s is not the program of %s, which is "
+			    "%s's", program, core, comm);
+			return (-1);
+		}
+	}
 	if (program == NULL || program[0] != '/' || access(program, X_OK) !=
 	    0) {
 		*errp = wfmt(w, "the program of %s is not found: name it", core);
@@ -168,17 +429,30 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 		    "without it";
 		return (-1);
 	}
+	if ((cfd = core_open(w, dir, core, uid, errp)) == -1)
+		return (-1);
+	if ((copy = core_copy(w, cfd, &cdir, errp)) == NULL) {
+		close(cfd);
+		return (-1);
+	}
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)lldb;
 	argv[n++] = (char *)(uintptr_t)"--batch";
 	argv[n++] = (char *)(uintptr_t)"--no-lldbinit";
+	/* No script of the symbols' own, none of the directory's. */
+	argv[n++] = (char *)(uintptr_t)"-O";
+	argv[n++] = (char *)(uintptr_t)"settings set target.load-script-from-"
+	    "symbol-file false";
+	argv[n++] = (char *)(uintptr_t)"-O";
+	argv[n++] = (char *)(uintptr_t)"settings set target.load-cwd-lldbinit "
+	    "false";
 	/* The symbols a port keeps apart (WITH_DEBUG): beside the base
 	 * system's. */
 	argv[n++] = (char *)(uintptr_t)"-O";
 	argv[n++] = (char *)(uintptr_t)"settings set target.debug-file-search-"
 	    "paths /usr/local/lib/debug /usr/lib/debug";
 	argv[n++] = (char *)(uintptr_t)"-c";
-	argv[n++] = (char *)(uintptr_t)path;
+	argv[n++] = (char *)(uintptr_t)copy;
 	argv[n++] = (char *)(uintptr_t)"-o";
 	argv[n++] = (char *)(uintptr_t)"thread list";
 	argv[n++] = (char *)(uintptr_t)"-o";
@@ -190,7 +464,9 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 	argv[n] = NULL;
 	step = step_begin(w, STEP_EXEC, "lldb", "%s of %s", core,
 	    program);
-	(void)run_exec_max(w, argv, &res, BT_MAX);
+	debug_run(w, argv, cfd, &res);
+	(void)unlink(copy);
+	(void)rmdir(cdir);
 	text = wfmt(w, "%.*s%.*s", (int)res.outlen, res.out != NULL ? res.out :
 	    "", (int)res.errlen, res.err != NULL ? res.err : "");
 	step_end(w, step, strstr(text, "error:") == NULL, NULL);
@@ -203,6 +479,9 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 		argv[n++] = (char *)(uintptr_t)gdb;
 		argv[n++] = (char *)(uintptr_t)"-batch";
 		argv[n++] = (char *)(uintptr_t)"-nx";
+		/* Before anything is read: no script of the symbols'. */
+		argv[n++] = (char *)(uintptr_t)"-iex";
+		argv[n++] = (char *)(uintptr_t)"set auto-load off";
 		argv[n++] = (char *)(uintptr_t)"-ex";
 		argv[n++] = (char *)(uintptr_t)"set debug-file-directory "
 		    "/usr/local/lib/debug:/usr/lib/debug";
@@ -213,16 +492,17 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 		argv[n++] = (char *)(uintptr_t)"-ex";
 		argv[n++] = (char *)(uintptr_t)"print $_siginfo";
 		argv[n++] = (char *)(uintptr_t)program;
-		argv[n++] = (char *)(uintptr_t)path;
+		argv[n++] = (char *)(uintptr_t)"/dev/fd/0";
 		argv[n] = NULL;
 		step = step_begin(w, STEP_EXEC, "gdb", "%s of %s",
 		    core, program);
-		(void)run_exec_max(w, argv, &res, BT_MAX);
+		debug_run(w, argv, cfd, &res);
 		text = wfmt(w, "%s\n%.*s%.*s", text, (int)res.outlen, res.out !=
 		    NULL ? res.out : "", (int)res.errlen, res.err != NULL ?
 		    res.err : "");
 		step_end(w, step, res.outlen > 0, NULL);
 	}
+	close(cfd);
 	if (text[0] == '\0') {
 		*errp = wtext(w, exec_error(w, &res, "lldb"));
 		return (-1);

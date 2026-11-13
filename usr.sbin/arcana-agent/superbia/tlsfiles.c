@@ -12,6 +12,12 @@
  * ones before kept beside, and cblink reads them again for the
  * connections made from then on.  The console that asks shows its own
  * certificate, and nothing is taken that would no longer trust it.
+ *
+ * The key before (<key>.before) is kept only while the new one may yet
+ * be put back: once cblink has read the new files again, which is what
+ * confirms them (no safe mode here), it is taken away; one an agent
+ * that stopped in between left is taken away at the start, the files
+ * the agent started with being the ones in use.
  */
 
 #include <sys/param.h>
@@ -30,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -66,7 +73,19 @@ tls_files_key(void)
 	return (f_key[0] != '\0' ? f_key : NULL);
 }
 
-/* At the start: which files, and the context to read them again. */
+/* The key before a renewal, no longer to be put back: gone. */
+static void
+key_before_drop(void)
+{
+	char	before[MAXPATHLEN + 8];
+
+	snprintf(before, sizeof(before), "%s.before", f_key);
+	if (unlink(before) == -1 && errno != ENOENT)
+		logmsg(LOG_WARNING, "%s: %s", before, strerror(errno));
+}
+
+/* At the start: which files, and the context to read them again; a
+ * key before left by an agent that stopped while renewing, gone. */
 void
 tls_files_init(cbl_tls *tls, const char *ca, const char *cert,
     const char *key)
@@ -79,6 +98,7 @@ tls_files_init(cbl_tls *tls, const char *ca, const char *cert,
 		snprintf(f_cert, sizeof(f_cert), "%s", cert);
 	if (realpath(key, f_key) == NULL)
 		snprintf(f_key, sizeof(f_key), "%s", key);
+	key_before_drop();
 }
 
 /* Is path one of the agent's own TLS files, or one made beside it? */
@@ -551,8 +571,11 @@ install(struct work *w, const char *certpem, const char *capem,
 		(void)cbl_tls_reload(t_tls);
 		goto out;
 	}
-	if (wrote_cert)
+	/* In use: the key before is not to be put back any more. */
+	if (wrote_cert) {
 		(void)unlink(pending_path(w));
+		key_before_drop();
+	}
 	rc = 0;
 out:
 	if (keytext != NULL)

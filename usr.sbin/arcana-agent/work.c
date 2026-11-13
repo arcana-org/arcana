@@ -17,7 +17,6 @@
 #include <string.h>
 #include <time.h>
 #include <vis.h>
-#include <wchar.h>
 
 #include "agent.h"
 
@@ -131,25 +130,25 @@ wvis(struct work *w, const char *s)
 
 /*
  * s, made fit for a CBOR text string: valid UTF-8 without control
- * characters is returned as is, anything else through vis(3).
+ * characters is returned as is, anything else escaped.
  */
 const char *
 wtext(struct work *w, const char *s)
 {
-	mbstate_t	 st;
-	const char	*p;
-	size_t		 n, len;
-	wchar_t		 wc;
 
 	if (s == NULL)
 		return (NULL);
-	memset(&st, 0, sizeof(st));
-	len = strlen(s);
-	for (p = s; *p != '\0'; p += n) {
-		n = mbrtowc(&wc, p, len - (size_t)(p - s), &st);
-		if (n == (size_t)-1 || n == (size_t)-2 || n == 0 ||
-		    (wc < 0x20 && wc != '\t' && wc != '\n') || wc == 0x7f)
-			return (wvis(w, s));
-	}
-	return (s);
+	return (text_fit(s, false) ? s : text_vis(wmalloc(w, strlen(s) * 4 +
+	    1), s, false));
+}
+
+/* The same for a name (a host's, a jail's): one line, no tab either. */
+const char *
+wname(struct work *w, const char *s)
+{
+
+	if (s == NULL)
+		return (NULL);
+	return (text_fit(s, true) ? s : text_vis(wmalloc(w, strlen(s) * 4 + 1),
+	    s, true));
 }

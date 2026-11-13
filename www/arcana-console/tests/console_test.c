@@ -7480,7 +7480,9 @@ ATF_TC_BODY(transfers, tc)
 	resp_free(&r);
 	ATF_CHECK(system("cmp -s zsend.data zrecv.data") == 0);
 	ATF_CHECK(system("grep -q '^zfs send tank/data@b$' storage.log && "
-	    "grep -q '^zfs receive -u tank/copy$' storage.log") == 0);
+	    "grep -q '^zfs receive -u -x mountpoint -o canmount=noauto -x "
+	    "setuid -x exec -x devices -x jailed -x overlay -x sharenfs -x "
+	    "sharesmb -x keylocation tank/copy$' storage.log") == 0);
 	ATF_CHECK(system("test \"$(stat -f %Lp data/transfers.json)\" = 600")
 	    == 0);
 
