@@ -751,6 +751,8 @@ action(struct http_request *req)
 	    !action_at(req->path, "threat-feeds", "feed", "fetch", key,
 	    sizeof(key)) &&
 	    !action_at(req->path, "threat-feeds", "feed", "preview", key,
+	    sizeof(key)) &&
+	    !action_at(req->path, "threat-feeds", "feed", "take", key,
 	    sizeof(key)))
 		return (-1);
 	if (!guard(req, true))
@@ -826,6 +828,9 @@ action(struct http_request *req)
 	} else if (action_at(req->path, "threat-feeds", "feed", "preview", key,
 	    sizeof(key))) {
 		rc = feeds_yang_ask(req, key, "preview", why, sizeof(why));
+	} else if (action_at(req->path, "threat-feeds", "feed", "take", key,
+	    sizeof(key))) {
+		rc = feeds_yang_ask(req, key, "take", why, sizeof(why));
 	} else if (action_at(req->path, "workflows", "workflow", "run", key,
 	    sizeof(key))) {
 		if ((rc = workflows_yang_run(req, key, in, &n, why,

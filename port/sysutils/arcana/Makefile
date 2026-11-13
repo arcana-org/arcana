@@ -23,9 +23,9 @@ GH_PROJECT=	arcana
 # libwebpush, linked in; stamp: stampd(8), the STAMP reflector the agent
 # runs in the FIBs of its services, built and installed with the rest.
 GH_TUPLE=	spmzt:jailconf:19c06d0a74a4d074414c4fd4010f4aa05c6f00c1:jailconf/jailconf \
-		spmzt:ipfeeds:db443b8a70b64f0fbf98cc5587ee13dbd9dbf6f6:ipfeeds/ipfeeds \
+		spmzt:ipfeeds:c1b04e5362bdb6f7584cb5a54faaddeb744c274e:ipfeeds/ipfeeds \
 		spmzt:libwebpush:e23bc37c0ad6d535b5be9ddb36d73e3d816e561c:libwebpush/libwebpush \
-		spmzt:stamp:43ea48a1dfbf3ae42ce3916314c48be7c3b75ae0:stamp/stamp
+		spmzt:stamp:1ac31b181f540915f2fa4e3a47b9fa0994181fe3:stamp/stamp
 
 # stampd gives up root to its own user once bound; the agent builds
 # itself as a user nothing else is (arcana-agent(8), BUILDS); not in

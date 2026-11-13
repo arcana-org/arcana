@@ -472,7 +472,11 @@ set_roles(struct html *h)
 		    "as it is\">%s</button>", us.sync_left > 0 ? " disabled" : "",
 		    us.sync_left > 0 ? "Synchronizing…" : "Synchronize roles to "
 		    "the hosts");
-	h_raw(h, "</div><p class=\"dim\">A role with a <b>directory group</b> is "
+	h_raw(h, "</div>");
+	/* The hosts' default for actions, written by the synchronization. */
+	if (!app.by_token && strcmp(app.console_role, "owner") == 0)
+		set_nacm(h);
+	h_raw(h, "<p class=\"dim\">A role with a <b>directory group</b> is "
 	    "given to the members of that LDAP group as they sign in by the "
 	    "directory: the console makes a user of their name, marked "
 	    "<i>directory</i>, with the roles of all their groups, brought up "

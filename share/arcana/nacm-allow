@@ -11,9 +11,9 @@
 arcana-console:*	the console's own module, its roles checked by the console
 arcana-cluster:*	the console nodes' family, between nodes by their certificates
 
-arcana-bird:/daemon/read	birdc -r (restricted) show status and protocols
-arcana-bird:/daemon/routes	birdc -r show route, its words checked (route_words()); a viewer's
-arcana-bird:/daemon/ospf	birdc -r show ospf, a protocol's name checked; a viewer's
+arcana-bird:/daemon/read	birdc -r (restricted) show status and protocols; in a vnet jail (its own birdc, jexec) an operator's (jail_prog_refused())
+arcana-bird:/daemon/routes	birdc -r show route, its words checked (route_words()); a viewer's on the host, an operator's in a vnet jail
+arcana-bird:/daemon/ospf	birdc -r show ospf, a protocol's name checked; a viewer's on the host, an operator's in a vnet jail
 arcana-crashes:/crashes/read	the cores' names; a backtrace (char * arguments of the core's memory) an operator's, of a crash kmsg recorded alone
 arcana-events:/events/read	the agent's own events after a number
 arcana-firewall:/firewall/firewall/trace	dtrace of ipfw's rule-matched for an address checked as one: the rule and the ports, no payload; a viewer's
@@ -29,11 +29,11 @@ arcana-network:/network/bridges	ifconfig of the bridges
 arcana-network:/network/connections	the kernel's connections (pcb)
 arcana-network:/network/geneve	ifconfig of the geneve interfaces
 arcana-network:/network/interfaces	the interfaces as the kernel has them
-arcana-network:/network/ipfw	a vnet jail's ipfw rules, read
-arcana-network:/network/ipsec	swanctl's connections and SAs, never a private key
+arcana-network:/network/ipfw	a vnet jail's ipfw rules, read by its own ipfw (jexec): an operator's
+arcana-network:/network/ipsec	swanctl's connections and SAs, never a private key; in a vnet jail (its own swanctl) an operator's
 arcana-network:/network/kept-routes	rc.conf's static routes, read
 arcana-network:/network/lookup	route get of an address checked as one
-arcana-network:/network/multicast	ifmcstat
+arcana-network:/network/multicast	ifmcstat; in a vnet jail (its own ifmcstat) an operator's
 arcana-network:/network/neighbours	ARP and NDP, read
 arcana-network:/network/nexthops	netstat -on
 arcana-network:/network/nhgroups	netstat -On
@@ -41,8 +41,8 @@ arcana-network:/network/routes	the routing tables
 arcana-network:/network/sockets	the kernel's sockets (pcb)
 arcana-probe:/probes/read	the probes' samples
 arcana-processes:/processes/process/read	a process's files and threads (procstat), no environment
-arcana-services:/services/service/read	service <name> enabled, status, describe, extracommands: what reads
-arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out, the rest's masked below an operator
+arcana-services:/services/service/read	service <name> enabled, status, describe, extracommands, an operator's; a viewer told what the collector saw, no script run (ira/services.c)
+arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out, the rest's masked below an operator; its state (service smtpd onestatus, smtpctl) an operator's, a viewer's what the watch last saw
 arcana-speeder:/speeder/read	the relays, read; their log's -k masked below an operator
 arcana-sshd:/sshd/read	sshd's configuration and keys' fingerprints, public; a key's command= masked below an operator
 arcana-storage:/storage/read	disks, pools, datasets, mounts, read; a keylocation's token, fstab's secrets masked below an operator
@@ -50,10 +50,10 @@ arcana-suricata:/suricata/command	one of the instance's read commands, from a fi
 arcana-suricata:/suricata/read-profiling	what profiling wrote, read
 arcana-suricata:/suricata/read-rules	a page of the ruleset's rules
 arcana-suricata:/suricata/read-sources	suricata-update's cached index and the sources' names and states, no secret code; a source's url its host alone below an operator
-arcana-sysctl:/sysctl/read	the kernel's values by name
+arcana-sysctl:/sysctl/read	the kernel's values by name; a vnet jail's by its own sysctl (jexec), an operator's
 arcana-troubleshoot:/troubleshoot/path-check	what the host would do with a packet, nothing sent
 arcana-troubleshoot:/troubleshoot/traceroute	one numeric traceroute to an address checked as one: probes, no connection, nothing fetched; a viewer's
-arcana-wireguard:/wireguard/read	wg show dump, the keys left out
+arcana-wireguard:/wireguard/read	wg show dump, the keys left out; in a vnet jail (its own wg) an operator's
 
 # The data nodes that hold a file's or a command line's text, read by
 # every role (nacm.awk): what is done of a secret in each.  A

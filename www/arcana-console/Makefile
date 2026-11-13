@@ -78,6 +78,19 @@ jobs_table.h: ${ARC_TOP}/share/arcana/jobs.yaml ${ARC_TOP}/share/arcana/jobs.awk
 	    ${ARC_TOP}/share/arcana/jobs.yaml > ${.TARGET}.tmp
 	mv ${.TARGET}.tmp ${.TARGET}
 workflows.o: jobs_table.h
+# The actions the hosts run by NACM's exec-default, share/arcana/
+# nacm-allow's held to the modules as make check-nacm holds them: the
+# permits nacm-sync writes for every user when the hosts' default for
+# actions is deny (ytrans.c), so that the list and the permits are one.
+DPSRCS+=	nacmallow.h
+CLEANFILES+=	nacmallow.h nacmallow.h.tmp
+_NACM_YANG!=	ls ${ARC_TOP}/share/yang/arcana-*.yang
+nacmallow.h: ${ARC_TOP}/share/arcana/nacm-allow ${ARC_TOP}/share/arcana/nacm.awk \
+    ${_NACM_YANG}
+	awk -v out=h -f ${ARC_TOP}/share/arcana/nacm.awk \
+	    ${ARC_TOP}/share/arcana/nacm-allow ${_NACM_YANG} > ${.TARGET}.tmp
+	mv ${.TARGET}.tmp ${.TARGET}
+ytrans.o ytrans.pieo: nacmallow.h
 # The parser of a job as the API takes it: the kinds' names and each
 # field's member, from the same files.
 DPSRCS+=	jobs_spec.h

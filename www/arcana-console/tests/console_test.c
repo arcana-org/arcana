@@ -48,6 +48,7 @@
 #include <unistd.h>
 
 #include "harness.h"
+#include "nacmallow.h"
 
 /* The page's YANG-CBOR reader (www/arcana-ui/src/ycbor.c). */
 ucl_object_t	*ycbor_json(const void *, size_t, const ucl_object_t *,
@@ -709,6 +710,199 @@ ATF_TC_BODY(nacm_user, tc)
 	http("POST", path, "{}", &r);
 	ATF_CHECK_MSG(r.status != 403 && strstr(r.body, "access denied") ==
 	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * A service read "as it is now" runs its rc.d script as root: for an
+ * operator of the host (its group operator) and the admin alone.  A
+ * viewer is told what the agent last saw (a list or a read an operator
+ * or the admin made, the agent's own look), no script run: running and
+ * its pid, no description; the list's running the same.
+ */
+ATF_TC_WITHOUT_HEAD(services_viewer);
+ATF_TC_BODY(services_viewer, tc)
+{
+	struct authn	 a, b, c;
+	struct resp	 r;
+	char		 id[16], sync[256], admin[160], bob[160], carol[160];
+	char		 rd[192], svcs[160];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(admin, sizeof(admin), "%s", cookie);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(sync, sizeof(sync), CC "hosts/host=%s/nacm-sync", id);
+	snprintf(rd, sizeof(rd), FLEET "%s/arcana-services:services/"
+	    "service=sshd/read", id);
+	snprintf(svcs, sizeof(svcs), FLEET "%s/arcana-services:services", id);
+	r1_role("ops", "member", "operator");
+	r1_role("views", "member", "viewer");
+	cc_user(&b, "bob", "\"role\":[\"ops\"]", -8);
+	snprintf(bob, sizeof(bob), "%s", cookie);
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	cc_user(&c, "carol", "\"role\":[\"views\"]", -7);
+	snprintf(carol, sizeof(carol), "%s", cookie);
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* The admin: sshd started and read, its script run. */
+	snprintf(svcs, sizeof(svcs), FLEET "%s/arcana-services:services/"
+	    "service=sshd/start", id);
+	rc_act(svcs, NULL, &r);
+	EXPECT(&r, 200);
+	snprintf(svcs, sizeof(svcs), FLEET "%s/arcana-services:services", id);
+	resp_free(&r);
+	ATF_REQUIRE(system(": > svc.log") == 0);
+	rc_act(rd, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("The sshd daemon.", jstr(&r, "description"));
+	resp_free(&r);
+	ATF_CHECK(system("grep -q '^sshd describe$' svc.log") == 0);
+	ATF_CHECK(system("grep -q '^sshd status$' svc.log") == 0);
+	/* The viewer: what was seen, nothing run. */
+	snprintf(cookie, sizeof(cookie), "%s", carol);
+	ATF_REQUIRE(system(": > svc.log") == 0);
+	rc_act(rd, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("true", jstr(&r, "running"));
+	ATF_CHECK_STREQ("7", jstr(&r, "pid"));
+	ATF_CHECK_STREQ("true", jstr(&r, "enabled"));
+	ATF_CHECK_MSG(jstr(&r, "description") == NULL, "%s", r.body);
+	resp_free(&r);
+	http("GET", svcs, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"sshd\"") != NULL &&
+	    strstr(r.body, "\"running\":true") != NULL, "%s", r.body);
+	resp_free(&r);
+	ATF_CHECK_MSG(system("test -s svc.log") != 0, "a script ran for a "
+	    "viewer");
+	/* Stopped behind the viewer's back: still what was seen, until an
+	 * operator's read sees it anew. */
+	ATF_REQUIRE(system("rm -f running.sshd") == 0);
+	rc_act(rd, NULL, &r);
+	ATF_CHECK_STREQ("true", jstr(&r, "running"));
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", bob);
+	rc_act(rd, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("false", jstr(&r, "running"));
+	ATF_CHECK_STREQ("The sshd daemon.", jstr(&r, "description"));
+	resp_free(&r);
+	ATF_CHECK(system("grep -q '^sshd describe$' svc.log") == 0);
+	snprintf(cookie, sizeof(cookie), "%s", carol);
+	rc_act(rd, NULL, &r);
+	ATF_CHECK_STREQ("false", jstr(&r, "running"));
+	resp_free(&r);
+}
+
+/*
+ * The hosts' default for actions (Settings, nacm-exec-default): deny,
+ * and the roles synchronized write exec-default deny on the host and
+ * the rule-list every-role, a permit of each action of
+ * share/arcana/nacm-allow for every user (nacmallow.h, the build's);
+ * a viewer still runs them, a marked action stays the group admin's,
+ * the admin, the console and the recovery session run what they ran.
+ * permit again: exec-default permit, every-role gone.
+ */
+ATF_TC_WITHOUT_HEAD(nacm_exec_default);
+ATF_TC_BODY(nacm_exec_default, tc)
+{
+	static const struct { const char *module, *path; } allowed[] =
+	    NACM_ALLOW_RULES;
+	struct authn	 a, c;
+	struct resp	 r;
+	char		 id[16], sync[256], admin[160], carol[160], nacm[160];
+	char		 path[256], want[300], cwd[MAXPATHLEN], cmd[2 * MAXPATHLEN];
+	const char	*ctl;
+	size_t		 i;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(admin, sizeof(admin), "%s", cookie);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(sync, sizeof(sync), CC "hosts/host=%s/nacm-sync", id);
+	snprintf(nacm, sizeof(nacm), FLEET "%s/ietf-netconf-acm:nacm", id);
+	r1_role("views", "member", "viewer");
+	cc_user(&c, "carol", "\"role\":[\"views\"]", -7);
+	snprintf(carol, sizeof(carol), "%s", cookie);
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	/* Saved, read back; nothing else but its value. */
+	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
+	    "\"nacm-exec-default\":\"deny\"}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
+	    "\"nacm-exec-default\":\"maybe\"}}", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", CC "settings", NULL, &r);
+	ATF_CHECK_STREQ("deny", jstr(&r,
+	    "arcana-console:settings.nacm-exec-default"));
+	resp_free(&r);
+	/* Synchronized: deny, and every permit of the list. */
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_STREQ("changed", jstr(&r, "data.result"));
+	resp_free(&r);
+	http("GET", nacm, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"exec-default\":\"deny\"") != NULL,
+	    "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"every-role\"") != NULL,
+	    "%s", r.body);
+	for (i = 0; i < nitems(allowed); i++) {
+		snprintf(want, sizeof(want), "\"path\":\"%s\"", allowed[i].path);
+		ATF_CHECK_MSG(strstr(r.body, want) != NULL, "no permit of %s",
+		    allowed[i].path);
+	}
+	resp_free(&r);
+	/* Again: nothing to change. */
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_STREQ("unchanged", jstr(&r, "data.result"));
+	resp_free(&r);
+	/* The viewer runs what the list lets every role run. */
+	snprintf(cookie, sizeof(cookie), "%s", carol);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-services:services/"
+	    "service=sshd/read", id);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-events:events/read", id);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* What the agent marks stays the admin group's. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-system:system/read", id);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* The admin runs it; the recovery session too. */
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	http("POST", path, "{}", &r);
+	ATF_CHECK_MSG(r.status != 403 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	ctl = locate(tc, "../../../usr.sbin/arcanactl/arcanactl", "arcanactl",
+	    "/usr/local/sbin/arcanactl");
+	snprintf(cmd, sizeof(cmd), "%s -c unix:%s/jgd.sock action system read "
+	    "> recovery.out 2>&1", ctl, cwd);
+	ATF_CHECK_MSG(system(cmd) == 0 && system("grep -q 'access denied' "
+	    "recovery.out") != 0, "%s", cmd);
+	/* permit again, by the console as itself: as it was. */
+	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
+	    "\"nacm-exec-default\":\"permit\"}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_STREQ("changed", jstr(&r, "data.result"));
+	resp_free(&r);
+	http("GET", nacm, NULL, &r);
+	ATF_CHECK_MSG(strstr(r.body, "\"exec-default\":\"permit\"") != NULL &&
+	    strstr(r.body, "every-role") == NULL, "%s", r.body);
 	resp_free(&r);
 }
 
@@ -21578,6 +21772,105 @@ ATF_TC_BODY(feeds_operator, tc)
 	resp_free(&r);
 }
 
+/* The case's feed served as /case/shrink.txt: n of the /24s 1.0.2i.0. */
+static void
+shrink_list(int n)
+{
+	FILE	*fp;
+	int	 i;
+
+	(void)mkdir("feedsrv", 0755);
+	ATF_REQUIRE((fp = fopen("feedsrv/shrink.txt", "w")) != NULL);
+	for (i = 0; i < n; i++)
+		fprintf(fp, "1.0.%d.0/24\n", 2 * i);
+	fclose(fp);
+}
+
+CONSOLE_TC(feeds_shrink, "Threat feeds: a list of fewer than half the "
+    "entries delivered last held back, both counts said, the last kept on "
+    "the hosts and fetched whole again; taken anyway by an owner, refused "
+    "to an operator who is not its author")
+ATF_TC_BODY(feeds_shrink, tc)
+{
+	struct authn	a, c;
+	struct resp	r;
+	char		body[1024], sa[16], sn[16], sg[16], k[96], invite[80];
+	int		port, i;
+
+	port = feeds_start(tc, &a, sa, sn, sg, sizeof(sa));
+	feeds_allow();
+	shrink_list(10);
+	snprintf(body, sizeof(body), "\"name\":\"Shrinks\",\"url\":\"http://"
+	    "127.0.0.1:%d/case/shrink.txt\",\"format\":\"plain\","
+	    "\"enabled\":true,\"host\":[\"%s\"]", port, sa);
+	snprintf(k, sizeof(k), "delivered=%s/count", sa);
+	feeds_put("shrink", body, k, "10", &r);
+	resp_free(&r);
+	/* Half of it and one less: still delivered. */
+	shrink_list(5);
+	ATF_CHECK_EQ(204, feed_ask("shrink", "fetch"));
+	feed_wait("shrink", k, "5", &r);
+	ATF_CHECK(jstr(&r, "held.count") == NULL);
+	resp_free(&r);
+	/* Two of five: held back, both counts said, the hosts' five kept. */
+	shrink_list(2);
+	ATF_REQUIRE(system(": > ipfw.log") == 0);
+	ATF_CHECK_EQ(204, feed_ask("shrink", "fetch"));
+	feed_wait("shrink", "held.count", "2", &r);
+	ATF_CHECK_STREQ("5", jstr(&r, "held.was"));
+	ATF_CHECK_MSG(jstr(&r, "held.text") != NULL && strstr(jstr(&r,
+	    "held.text"), "2 entries fetched, 5 delivered last") != NULL, "%s",
+	    r.body);
+	ATF_CHECK_STREQ("5", feed_str(&r, k));
+	ATF_CHECK_STREQ("5", jstr(&r, "count"));
+	resp_free(&r);
+	usleep(500000);
+	ATF_CHECK(system("grep -q 'swap' ipfw.log") != 0);
+	/* Fetched again: whole (no If-Modified-Since kept), held still. */
+	ATF_REQUIRE(system(": > feedsrv.log") == 0);
+	ATF_CHECK_EQ(204, feed_ask("shrink", "fetch"));
+	for (i = 0; i < 300 && system("grep -q 'shrink.txt 200' feedsrv.log") !=
+	    0; i++)
+		usleep(100000);
+	usleep(500000);
+	feed_get("shrink", &r);
+	ATF_CHECK_STREQ("2", jstr(&r, "held.count"));
+	ATF_CHECK_STREQ("5", feed_str(&r, k));
+	resp_free(&r);
+	/* Taken anyway by the owner: delivered, no longer held. */
+	ATF_CHECK_EQ(204, feed_ask("shrink", "take"));
+	feed_wait("shrink", k, "2", &r);
+	ATF_CHECK(jstr(&r, "held.count") == NULL);
+	resp_free(&r);
+	ATF_CHECK(system("grep -q 'table feed_shrink swap feed_shrink_load' "
+	    "ipfw.log") == 0);
+	/* Grown again, then held; an operator of the host, not its
+	 * author, may not take it. */
+	shrink_list(10);
+	ATF_CHECK_EQ(204, feed_ask("shrink", "fetch"));
+	feed_wait("shrink", k, "10", &r);
+	resp_free(&r);
+	shrink_list(3);
+	ATF_CHECK_EQ(204, feed_ask("shrink", "fetch"));
+	feed_wait("shrink", "held.count", "3", &r);
+	ATF_CHECK_STREQ("10", jstr(&r, "held.was"));
+	resp_free(&r);
+	snprintf(body, sizeof(body), "{\"id\":\"%s\",\"role\":\"operator\"}",
+	    sa);
+	cc_role("a-op", "operator", body);
+	cc_invite("carol", "a-op", invite, sizeof(invite));
+	cookie[0] = '\0';
+	authn_new(&c, -7);
+	do_register(&c, invite, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	snprintf(body, sizeof(body), CF "shrink/take");
+	http("POST", body, NULL, &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "the feed's author") !=
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
 /*
  * arcana-console (PLAN-SDN-YANG 4.4.1): the console's own configuration
  * and state through RESTCONF.
@@ -25348,6 +25641,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_apply_steer);
 	ATF_TP_ADD_TC(tp, notify_cooldown_held);
 	ATF_TP_ADD_TC(tp, feeds_operator);
+	ATF_TP_ADD_TC(tp, feeds_shrink);
 	ATF_TP_ADD_TC(tp, mtls_sctp);
 	ATF_TP_ADD_TC(tp, sdwan_apply_change);
 	ATF_TP_ADD_TC(tp, sdwan_apply);
@@ -25450,6 +25744,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, nacm_user);
 	ATF_TP_ADD_TC(tp, nacm_sync);
 	ATF_TP_ADD_TC(tp, nacm_sync_operator);
+	ATF_TP_ADD_TC(tp, services_viewer);
+	ATF_TP_ADD_TC(tp, nacm_exec_default);
 	ATF_TP_ADD_TC(tp, token_nacm);
 	ATF_TP_ADD_TC(tp, server_readdress);
 	ATF_TP_ADD_TC(tp, nacm_console);

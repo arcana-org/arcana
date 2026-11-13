@@ -1160,7 +1160,62 @@ sa_undo(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	return (rc);
 }
 
-/* A rotation that fails is a fault on the interface, until one is done. */
+/*
+ * The key-rotation faults held to the interfaces that have keys (their
+ * pairs beside the kept files, sa_keys_json()'s): one of an interface
+ * whose keys are gone cleared; with at_start, one of an interface no
+ * longer turning its keys (no next SPI kept) too, its cause gone with
+ * the agent before.  Between, a failed rotation's stays until one is
+ * done.
+ */
+static void
+sa_reconcile(struct work *w, bool at_start)
+{
+	struct fault_live	*v;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*top;
+	size_t			 n;
+
+	top = ucl_object_typed_new(UCL_OBJECT);
+	sa_keys_json(w, top);
+	n = ucl_array_size(ucl_object_lookup(top, "keys"));
+	if ((v = calloc(n + 1, sizeof(*v))) == NULL) {
+		ucl_object_unref(top);
+		return;
+	}
+	n = 0;
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(top, "keys"), &it,
+	    true)) != NULL) {
+		if (sstr(e, "interface") == NULL)
+			continue;
+		v[n].object = sstr(e, "interface");
+		v[n].well = at_start && !ucl_object_toboolean(ucl_object_lookup(e,
+		    "pending"));
+		if (v[n].well)
+			v[n].reason = "its keys turn no more: none pending";
+		n++;
+	}
+	(void)fault_reconcile("arcana-agent", "key-rotation", NULL, v, n,
+	    "its manual IPsec keys are gone");
+	free(v);
+	ucl_object_unref(top);
+}
+
+/* At the start: the rotations' faults held to the keys there are. */
+void
+sa_faults_start(void)
+{
+	struct work	w;
+
+	work_init(&w);
+	sa_reconcile(&w, true);
+	work_free(&w);
+}
+
+/* A rotation that fails is a fault on the interface, until one is done;
+ * the faults held to the keys there are after every job. */
 int
 do_sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
@@ -1176,5 +1231,7 @@ do_sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	else if (rotation && strcmp(sp->verb, "commit") == 0)
 		fault_clear("key-rotation", sp->interface, "the keys of %s turned",
 		    sp->interface);
+	if (!w->dry)
+		sa_reconcile(w, false);
 	return (rc);
 }

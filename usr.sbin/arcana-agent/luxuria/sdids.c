@@ -20,7 +20,9 @@
  * stays in the list, kept for the next start, but is not run until it
  * is started again. Like the proxies of sdproxy.c: those named are
  * started (again when their files changed), those not named any more
- * are stopped, and the list is kept for the next start.
+ * are stopped, and the list is kept for the next start.  The faults are
+ * held to the instances (ids_reconcile()): at the start, both groups
+ * read, and at each apply.
  */
 
 #include <sys/param.h>
@@ -125,6 +127,53 @@ struct was {
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 static bool		reading;
+static bool		ids_started;	/* both groups read at the start */
+
+static bool	running(const char *);
+
+/*
+ * The ids faults (by "suricata") held to the instances there are, at
+ * the start once both groups are read and whenever an apply changed
+ * them: one of an instance gone, or, at_start, of one that prevents and
+ * runs now or prevents no more (an agent before raised it, and its
+ * cause went with the restart), cleared; the others go on as guard()
+ * says, which clears its own.
+ */
+static void
+ids_reconcile(bool at_start)
+{
+	struct fault_live	*v;
+	char			(*names)[40];
+	bool			*ok;
+	int			 i, n;
+
+	v = calloc(INSTANCES_MAX, sizeof(*v));
+	names = calloc(INSTANCES_MAX, sizeof(*names));
+	ok = calloc(INSTANCES_MAX, sizeof(*ok));
+	if (v == NULL || names == NULL || ok == NULL) {
+		free(v);
+		free(names);
+		free(ok);
+		return;
+	}
+	pthread_mutex_lock(&lock);
+	for (i = n = 0; i < ninstances; i++) {
+		(void)strlcpy(names[n], instances[i].name, sizeof(names[n]));
+		ok[n++] = instances[i].divert == 0;
+	}
+	pthread_mutex_unlock(&lock);
+	for (i = 0; i < n; i++) {
+		v[i].object = names[i];
+		v[i].well = at_start && (ok[i] || running(names[i]));
+		if (v[i].well)
+			v[i].reason = "Suricata runs, or prevents nothing";
+	}
+	(void)fault_reconcile("suricata", "ids", NULL, v, (size_t)n,
+	    "the Suricata instance is taken away");
+	free(v);
+	free(names);
+	free(ok);
+}
 
 static bool
 name_ok(const char *s)
@@ -1576,6 +1625,9 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	pthread_mutex_unlock(&lock);
 	pthread_mutex_unlock(&apply_lock);
 	ucl_object_unref(top);
+	/* The set of instances changed: the faults held to it. */
+	if (ids_started)
+		ids_reconcile(false);
 	if (!ok)
 		return (-1);
 	e = NULL;
@@ -1608,6 +1660,9 @@ sdwan_ids_start(void)
 		free(json);
 	}
 	work_free(&w);
+	/* Both groups' read: the first full view. */
+	ids_started = true;
+	ids_reconcile(true);
 }
 
 /*

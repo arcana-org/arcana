@@ -11,9 +11,10 @@
  * a file beside the kept rules (feeds/<table>) and filled into a scratch
  * table of the same set that is then swapped in (ipfw table T swap S),
  * so that a lookup sees the old entries or the new ones, never half.
- * The prefixes, the table's name and the scratch's commands are
- * libipfeeds' (ipfeeds(3)); what a feed's table is, where it is kept and
- * when it is filled, Arcana's.
+ * The prefixes, the table's name and the script that loads it (under
+ * the lock ipfeeds(8)'s loads of the table take) are libipfeeds'
+ * (ipfeeds(3)); what a feed's table is, where it is kept and when it is
+ * filled, Arcana's.
  *
  * The file is the mark of a table a feed made: no other is replaced or
  * destroyed, but an empty one of type addr that a rule made by naming
@@ -325,24 +326,29 @@ fw(struct work *w, const char **errp, int set, ...)
 
 /*
  * The table filled whole with the list l, in set
- * (-1: tables_sets is 0 and a table is in every set): a scratch table
- * filled by one ipfw run of a file and swapped in, then destroyed.  A
- * scratch there already is destroyed first only when it is the feed's:
- * its load file left beside the feeds' by a fill cut short, or empty of
- * type addr, as the main table is checked; any other is the host's own,
- * and the feed is refused.
+ * (-1: tables_sets is 0 and a table is in every set), by libipfeeds'
+ * sh(1) script (ipf_ipfw_script()) run whole: under the lock of the
+ * table's loads, which ipfeeds(8)'s take too (lockf(1) on
+ * /var/run/ipfeeds.<table>.lock, --root's own under it), a scratch
+ * table filled by one ipfw run and swapped in, the table made when there
+ * is none, the scratch destroyed.  A scratch there already is the
+ * script's to destroy only when it is the feed's: its load file left
+ * beside the feeds' by a fill cut short, or empty of type addr, as the
+ * main table is checked; any other is the host's own, and the feed is
+ * refused before the script runs.  The script's file is closed when it
+ * runs: the agent holds no lock of its.
  */
 static int
 fill(struct work *w, const char *name, int set, const struct ipf_list *l,
-    bool exists, const char **errp)
+    const char **errp)
 {
 	struct execres	 res;
 	struct ktable	*kt;
 	const struct ktable *t;
 	struct stat	 sb;
 	FILE		*fp;
-	char		*buf, *argv[4];
-	const char	*scratch, *path;
+	char		*buf, *argv[3];
+	const char	*scratch, *path, *lockdir;
 	size_t		 len, nk;
 	int		 fd, rc;
 
@@ -357,15 +363,16 @@ fill(struct work *w, const char *name, int set, const struct ipf_list *l,
 		    "move that one", scratch);
 		return (-1);
 	}
-	(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
+	lockdir = opts.root != NULL ? wfmt(w, "%s/var/run", opts.root) : NULL;
 	if ((fp = open_memstream(&buf, &len)) == NULL) {
 		*errp = "out of memory";
 		return (-1);
 	}
-	rc = ipf_ipfw_script(fp, scratch, set, l);
+	rc = ipf_ipfw_script(fp, opts.ipfw_bin, name, set, l, lockdir);
 	if (fclose(fp) != 0 || rc != 0) {
 		free(buf);
-		*errp = "out of memory";
+		*errp = rc != 0 ? wfmt(w, "table %s: no script of libipfeeds' "
+		    "loads it", name) : "out of memory";
 		return (-1);
 	}
 	wadopt(w, buf);
@@ -377,24 +384,15 @@ fill(struct work *w, const char *name, int set, const struct ipf_list *l,
 		return (-1);
 	}
 	close(fd);
-	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
-	argv[1] = (char *)(uintptr_t)"-q";
-	argv[2] = (char *)(uintptr_t)path;
-	argv[3] = NULL;
+	argv[0] = (char *)(uintptr_t)"/bin/sh";
+	argv[1] = (char *)(uintptr_t)path;
+	argv[2] = NULL;
 	rc = run_exec(w, argv, &res);
 	(void)unlink(path);
 	if (rc != 0) {
 		*errp = wtext(w, exec_error(w, &res, "ipfw"));
-		(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
 		return (-1);
 	}
-	if ((!exists && fw(w, errp, set, "table", name, "create", "type",
-	    "addr", NULL) != 0) || fw(w, errp, set, "table", name, "swap",
-	    scratch, NULL) != 0) {
-		(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
-		return (-1);
-	}
-	(void)fw(w, NULL, set, "table", scratch, "destroy", NULL);
 	return (0);
 }
 
@@ -412,7 +410,7 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 	char			*buf, p[IPF_PREFIX_STRLEN];
 	size_t			 n, left, i, len, nk, add, rem;
 	int			 set, fd, step;
-	bool			 had, exists;
+	bool			 had;
 
 	memset(rs, 0, sizeof(*rs));
 	if (w->jail != NULL) {
@@ -451,11 +449,9 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 	rs->count = (uint32_t)n;
 	/* A table there that no feed made, with entries: the host's own. */
 	nk = ktables(w, &kt);
-	exists = false;
 	set = table_set(w, rq->name);
 	if ((t = ktable(kt, nk, rq->name, tables_sets(w) == 1 ? set : -1)) !=
 	    NULL) {
-		exists = true;
 		if (!had && (t->items != 0 || (t->type != NULL && strcmp(t->type,
 		    "addr") != 0))) {
 			pthread_mutex_unlock(&feeds_lock);
@@ -506,8 +502,7 @@ feed_load(struct work *w, const struct feed_req *rq, struct feed_rsp *rs,
 	step_end(w, step, true, NULL);
 	step = step_begin(w, STEP_DAEMON, "feed", "table %s, set %d", rq->name,
 	    set);
-	if (fill(w, rq->name, tables_sets(w) == 1 ? set : -1, &v, exists,
-	    errp) != 0) {
+	if (fill(w, rq->name, tables_sets(w) == 1 ? set : -1, &v, errp) != 0) {
 		step_end(w, step, false, "%s", *errp);
 		/* The file says what the table is to be; the next load or
 		 * start makes it so. */
@@ -625,7 +620,7 @@ feeds_fill_set1(struct work *w)
 	struct feedfile		 ff;
 	struct ipf_list		 l;
 	struct ktable		*kt;
-	const struct ktable	*t0, *t1;
+	const struct ktable	*t0;
 	const char		*names[256], *e;
 	size_t			 n, i, nk, left;
 	int			 step;
@@ -637,7 +632,6 @@ feeds_fill_set1(struct work *w)
 	nk = ktables(w, &kt);
 	for (i = 0; i < n; i++) {
 		t0 = ktable(kt, nk, names[i], 0);
-		t1 = ktable(kt, nk, names[i], 1);
 		if ((t0 == NULL && ktable(kt, nk, names[i], -1) != NULL) ||
 		    !file_of(w, names[i], &ff))
 			continue;
@@ -645,7 +639,7 @@ feeds_fill_set1(struct work *w)
 		    names[i]);
 		e = NULL;
 		if (entries_of(w, ff.body, 0, NULL, &l, &left, &e) != 0 ||
-		    fill(w, names[i], 1, &l, t1 != NULL, &e) != 0) {
+		    fill(w, names[i], 1, &l, &e) != 0) {
 			step_end(w, step, false, "%s", e);
 			continue;
 		}
@@ -688,7 +682,7 @@ feeds_start(void)
 			continue;
 		e = NULL;
 		if (entries_of(&w, ff.body, 0, NULL, &l, &left, &e) != 0 ||
-		    fill(&w, names[i], set, &l, t != NULL, &e) != 0)
+		    fill(&w, names[i], set, &l, &e) != 0)
 			logmsg(LOG_WARNING, "feed table %s not filled: %s",
 			    names[i], e);
 		else

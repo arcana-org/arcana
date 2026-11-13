@@ -33,7 +33,9 @@
  * feeds-asks.json: a fetch now, or a preview, every host's dry run.  A
  * feed failing FEED_FAILS times raises an alarm, by mail and Telegram
  * as Settings say, and its recovery clears it; an update with other
- * entries is an event of the feed's.  The same as arcana-console's
+ * entries is an event of the feed's; one of fewer than half the
+ * entries delivered last is held back until an owner or the feed's
+ * author takes it anyway (feed_run()).  The same as arcana-console's
  * threat-feeds (cyang.c), its view made of feed_json()'s and its
  * changes through feed_put() and feed_remove(), every protection
  * held.
@@ -816,8 +818,13 @@ feed_author(const ucl_object_t *f, struct principal *p)
  * One feed fetched, its entries kept when they changed and sent to each
  * of its hosts that has not them and its author may operate still (one
  * that it may not is skipped, logged and said in the feed's state); a
- * preview keeps nothing but what it says.  st is the feed's state,
- * changed.
+ * preview keeps nothing but what it says.  A list of fewer than
+ * IPF_SHRINK_PERCENT of the entries delivered last (ipf_list_shrunk(): a
+ * source that serves an empty list, or half of it, as whole) is held
+ * back, both counts in the state's "held", the last list kept and on
+ * the hosts, fetched whole again next time, until "take" (an owner or
+ * the feed's author, feeds_yang_ask()) lets the next one through.  st
+ * is the feed's state, changed.
  */
 static void
 feed_run(const ucl_object_t *f, ucl_object_t *st, int how)
@@ -832,7 +839,7 @@ feed_run(const ucl_object_t *f, ucl_object_t *st, int how)
 	size_t		 blen, tlen, ndropped, covered, np;
 	time_t		 lm, now;
 	int		 rc;
-	bool		 changed, dry;
+	bool		 changed, dry, held;
 
 	dry = how == RUN_PREVIEW;
 	id = str(f, "id");
@@ -928,6 +935,46 @@ feed_run(const ucl_object_t *f, ucl_object_t *st, int how)
 			put(st, "dropped", dropped);
 			put(st, "dropped_count", I((int64_t)ndropped));
 			put(st, "covered", I((int64_t)covered));
+			held = changed && kept != NULL && !ucl_flag(st, "take") &&
+			    ipf_list_shrunk(ucl_array_size(ucl_object_lookup(kept,
+			    "entries")), ucl_array_size(entries),
+			    IPF_SHRINK_PERCENT);
+			if (held) {
+				int64_t	 before;
+
+				before = (int64_t)ucl_array_size(
+				    ucl_object_lookup(kept, "entries"));
+				snprintf(err, sizeof(err), "%u entries fetched, "
+				    "%jd delivered last: fewer than %d%%, not "
+				    "delivered; the last list stays on the hosts "
+				    "until it is taken anyway", ucl_array_size(
+				    entries), (intmax_t)before,
+				    IPF_SHRINK_PERCENT);
+				if (str(ucl_object_lookup(st, "held"), "text") ==
+				    NULL || strcmp(str(ucl_object_lookup(st,
+				    "held"), "text"), err) != 0)
+					thread_log(LOG_WARNING, "feed %s: %s", id,
+					    err);
+				o = ucl_object_typed_new(UCL_OBJECT);
+				put(o, "at", I(now));
+				put(o, "count", I((int64_t)ucl_array_size(
+				    entries)));
+				put(o, "was", I(before));
+				put(o, "text", S(err));
+				put(st, "held", o);
+				/* Fetched whole again: a 304 would keep it. */
+				(void)ucl_object_delete_key(st, "last_modified");
+				ucl_object_unref(entries);
+				entries = ucl_object_lookup(kept, "entries") !=
+				    NULL ? ucl_object_ref(ucl_object_lookup(kept,
+				    "entries")) : NULL;
+				snprintf(sha, sizeof(sha), "%s", str(kept,
+				    "sha256") != NULL ? str(kept, "sha256") : "");
+				changed = false;
+			} else {
+				(void)ucl_object_delete_key(st, "held");
+				(void)ucl_object_delete_key(st, "take");
+			}
 			if (changed) {
 				int64_t	 before;
 
@@ -1187,6 +1234,15 @@ feeds_tick(bool due)
 			any = true;
 			continue;
 		}
+		/* A list held back taken anyway: fetched now, let through. */
+		if (a != NULL && strcmp(ucl_object_tostring(a), "take") == 0 &&
+		    ucl_flag(f, "enabled")) {
+			put(st, "take", B(true));
+			feed_run(f, st, RUN_FETCH);
+			any = true;
+			feed_unload(f, st);
+			continue;
+		}
 		if (!ucl_flag(f, "enabled") || (a != NULL && strcmp(
 		    ucl_object_tostring(a), "fetch") != 0)) {
 			feed_unload(f, st);
@@ -1419,6 +1475,8 @@ feed_json(struct http_request *req, const ucl_object_t *f,
 		put(o, "error", S(str(st, "error")));
 	if (ucl_object_lookup(st, "alarm") != NULL)
 		put(o, "alarm", ucl_object_copy(ucl_object_lookup(st, "alarm")));
+	if (ucl_object_lookup(st, "held") != NULL)
+		put(o, "held", ucl_object_copy(ucl_object_lookup(st, "held")));
 	put(o, "delivered", hosts_for(req, ucl_object_lookup(st, "hosts"),
 	    &hidden));
 	if (hidden > 0)
@@ -1647,6 +1705,25 @@ same_key(const ucl_object_t *a, const ucl_object_t *b, const char *key)
 	    ucl_object_tostring_forced(y)) == 0);
 }
 
+/* Is the request's principal who last saved f (its "author")? */
+static bool
+is_author(struct http_request *req, const ucl_object_t *f)
+{
+	struct principal	 p;
+	const ucl_object_t	*a;
+	ucl_object_t		*r;
+	bool			 same;
+
+	if ((a = ucl_object_lookup(f, "author")) == NULL)
+		return (false);
+	req_principal(req, &p);
+	r = principal_record(&p);
+	same = same_key(r, a, "kind") && same_key(r, a, "name") &&
+	    same_key(r, a, "id") && same_key(r, a, "write");
+	ucl_object_unref(r);
+	return (same);
+}
+
 /* The feed's hosts_denied(), as kept. */
 static const char *
 feed_denied(struct http_request *req, const char *id)
@@ -1842,7 +1919,7 @@ feeds_yang_ask(struct http_request *req, const char *id, const char *verb,
 	const ucl_object_t	*e;
 	const char		*who;
 	int			 fd;
-	bool			 custom;
+	bool			 custom, author;
 
 	if (!id_ok(id)) {
 		snprintf(err, errlen, "no such feed");
@@ -1858,6 +1935,7 @@ feeds_yang_ask(struct http_request *req, const char *id, const char *verb,
 	lock_give(fd);
 	e = feed_by(doc, id);
 	custom = e != NULL && feed_custom(e);
+	author = e != NULL && is_author(req, e);
 	ucl_object_unref(doc);
 	if (e == NULL) {
 		snprintf(err, errlen, "no such feed");
@@ -1866,6 +1944,11 @@ feeds_yang_ask(struct http_request *req, const char *id, const char *verb,
 	if (strcmp(verb, "preview") == 0 && custom && !is_owner(req)) {
 		snprintf(err, errlen, "a feed from a URL of one's own is "
 		    "previewed by a console owner alone");
+		return (403);
+	}
+	if (strcmp(verb, "take") == 0 && !author && !is_owner(req)) {
+		snprintf(err, errlen, "a list held back is taken anyway by a "
+		    "console owner or the feed's author (who last saved it)");
 		return (403);
 	}
 	ask(id, verb);
@@ -1995,6 +2078,16 @@ feed_yang(const ucl_object_t *j)
 		if (str(v, "text") != NULL)
 			put(x, "text", S(str(v, "text")));
 		put(o, "alarm", x);
+	}
+	if ((v = ucl_object_lookup(j, "held")) != NULL) {
+		x = ucl_object_typed_new(UCL_OBJECT);
+		if (ucl_object_lookup(v, "at") != NULL)
+			put(x, "at", yang_time((double)num(v, "at")));
+		put(x, "count", I(num(v, "count")));
+		put(x, "was", I(num(v, "was")));
+		if (str(v, "text") != NULL)
+			put(x, "text", S(str(v, "text")));
+		put(o, "held", x);
 	}
 	put(o, "delivered", yhosts(ucl_object_lookup(j, "delivered")));
 	x = ucl_object_typed_new(UCL_OBJECT);

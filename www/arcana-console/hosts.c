@@ -1275,7 +1275,7 @@ pending_sync(const char *uri, cbl_conn *conn)
 	(void)cbl_thread_set_user(NULL);
 	out = NULL;
 	if (ytrans_nacm_sync(conn, p->owners, p->nowners, p->users, p->nusers,
-	    p->ops, p->nops, &out, err, sizeof(err)) == 0)
+	    p->ops, p->nops, nacm_exec_deny(), &out, err, sizeof(err)) == 0)
 		log_msg(LOG_NOTICE, "%s: the console's roles synchronized to its "
 		    "access rules: %s", uri, ucl_str(out, "result") != NULL ?
 		    ucl_str(out, "result") : "?");
@@ -3036,7 +3036,8 @@ connected:
 		ysteps_begin(conn, c, &ys);
 		(void)cbl_thread_set_user(NULL);
 		ok = ytrans_nacm_sync(conn, c->names, c->nnames, c->others,
-		    c->nothers, c->ops, c->nops, &e, ywhy, sizeof(ywhy)) == 0;
+		    c->nothers, c->ops, c->nops, nacm_exec_deny(), &e, ywhy,
+		    sizeof(ywhy)) == 0;
 		(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ? ACTING_USER :
 	    NULL);
 		ysteps_end(conn, &ys, &steps, &nsteps);

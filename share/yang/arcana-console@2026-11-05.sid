@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 10,
+    "sid-file-version": 11,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -3298,6 +3298,51 @@
         "namespace": "data",
         "identifier": "/arcana-console:hosts/host/agent-update/input/downgrade",
         "sid": "92453"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:settings/nacm-exec-default",
+        "sid": "92454"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/held",
+        "sid": "92455"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/held/at",
+        "sid": "92456"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/held/count",
+        "sid": "92457"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/held/text",
+        "sid": "92458"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/held/was",
+        "sid": "92459"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/take",
+        "sid": "92460"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/take/input",
+        "sid": "92461"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:threat-feeds/feed/take/output",
+        "sid": "92462"
       }
     ]
   }

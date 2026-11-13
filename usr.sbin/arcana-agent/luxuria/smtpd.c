@@ -13,7 +13,10 @@
  * on the host and in each jail that has it: smtpctl's counters kept, a
  * day of them, for the read's graphs; a mail fault when smtpd is
  * enabled and not running (Major), or when more are queued than the
- * limit the tab set (watch.json beside the tables; Minor).
+ * limit the tab set (watch.json beside the tables; Minor).  The faults
+ * are held to the places watched (fault_reconcile()): one of a jail
+ * stopped or a place whose smtpd went, or one an agent before raised,
+ * does not stay open.
  */
 
 #include <sys/param.h>
@@ -1111,6 +1114,26 @@ ring_add(const char *place, const struct msample *m)
 	pthread_mutex_unlock(&rings_lock);
 }
 
+/* Whether the watch's last look at place saw smtpd running (a sample
+ * within three of its periods), and what was queued then. */
+static bool
+ring_running(const char *place, int64_t *queued)
+{
+	const struct msample	*m;
+	bool			 up = false;
+	int			 i;
+
+	*queued = 0;
+	pthread_mutex_lock(&rings_lock);
+	if ((i = ring_of(place, false)) != -1 && rings[i].n > 0) {
+		m = &rings[i].v[(rings[i].first + rings[i].n - 1) % WATCH_KEPT];
+		up = time(NULL) - m->t <= 3 * (time_t)opts.smtpd_watch_s;
+		*queued = m->queued;
+	}
+	pthread_mutex_unlock(&rings_lock);
+	return (up);
+}
+
 /* A place's samples, oldest first, as [t, queued, ok, tempfail,
  * permfail, sessions] each. */
 static ucl_object_t *
@@ -1225,23 +1248,61 @@ has_smtpd(struct work *w, int jid, const char *path)
 	return (false);
 }
 
+/*
+ * The mail faults (by "smtpd") held to the places watched (live, n of
+ * them, each "host:smtpd" or "jail:<name>/smtpd"): at the first full
+ * look and whenever the places change, one of a place gone (its jail
+ * stopped, its smtpd taken away), or one an agent before raised there,
+ * cleared; the others are place_watch()'s.
+ */
+static void
+places_reconcile(char (*live)[MAXHOSTNAMELEN + 16], size_t n)
+{
+	static char		 said[4096];
+	static bool		 once;
+	struct fault_live	*v;
+	char			 now[sizeof(said)];
+	size_t			 i, off;
+
+	for (i = off = 0; i < n && off < sizeof(now); i++)
+		off += (size_t)snprintf(now + off, sizeof(now) - off, "%s\n",
+		    live[i]);
+	if (once && strcmp(now, said) == 0)
+		return;
+	if ((v = calloc(n + 1, sizeof(*v))) == NULL)
+		return;
+	for (i = 0; i < n; i++)
+		v[i].object = live[i];
+	(void)fault_reconcile("smtpd", "mail", NULL, v, n, "smtpd is watched "
+	    "there no more (its jail stopped, or it is taken away)");
+	free(v);
+	(void)strlcpy(said, now, sizeof(said));
+	once = true;
+}
+
 static void *
 watch(void *arg __unused)
 {
 	struct work	 w;
 	struct jinfo	*list;
 	const char	*e;
-	size_t		 n, i;
+	char		 (*live)[MAXHOSTNAMELEN + 16];
+	size_t		 n, i, nl;
 	int		 k;
 	bool		 listed;
 
+	if ((live = calloc(WATCH_PLACES + 1, sizeof(*live))) == NULL)
+		return (NULL);
 	for (;;) {
 		sleep((unsigned int)opts.smtpd_watch_s);
 		work_init(&w);
 		/* A read: its programs in a jail end within JAIL_READ_SEC. */
 		w.nice = true;
-		if (has_smtpd(&w, 0, NULL))
+		nl = 0;
+		if (has_smtpd(&w, 0, NULL)) {
 			place_watch(&w, "");
+			(void)strlcpy(live[nl++], "host:smtpd", sizeof(live[0]));
+		}
 		list = NULL;
 		n = 0;
 		if ((listed = jails_running(&w, &list, &n, &e) == 0))
@@ -1252,7 +1313,13 @@ watch(void *arg __unused)
 					continue;
 				place_watch(&w, list[i].name);
 				(void)scope_enter(&w, NULL, &e);
+				if (nl <= WATCH_PLACES)
+					(void)snprintf(live[nl++], sizeof(live[0]),
+					    "jail:%s/smtpd", list[i].name);
 			}
+		/* Every place seen, the jails listed: a full view. */
+		if (listed)
+			places_reconcile(live, nl);
 		/* The rings of the places gone (a jail stopped) let go;
 		 * none when the jails could not be listed. */
 		pthread_mutex_lock(&rings_lock);
@@ -1322,8 +1389,14 @@ smtpd_cert_renewed(struct work *w)
 	step_end(w, step, restart(w, &e) == 0, e != NULL ? "%s" : NULL, e);
 }
 
+/*
+ * OpenSMTPD as it is, the configuration and the tables; with viewer, no
+ * program run for the state (service smtpd onestatus is its rc.d
+ * script, smtpctl smtpd's own word): running and queued as the watch
+ * last saw them.
+ */
 void
-do_smtpd(struct work *w, struct json_rsp *rsp)
+do_smtpd(struct work *w, struct json_rsp *rsp, bool viewer)
 {
 	ucl_object_t	*top, *o, *arr;
 	struct ucl_parser *p;
@@ -1342,12 +1415,21 @@ do_smtpd(struct work *w, struct json_rsp *rsp)
 	ucl_object_insert_key(top, ucl_object_frombool(installed), "installed",
 	    0, false);
 	enabled = running = false;
-	svc_state(w, &enabled, &running);
-	ucl_object_insert_key(top, ucl_object_frombool(enabled), "enabled", 0,
-	    false);
-	ucl_object_insert_key(top, ucl_object_frombool(running), "running", 0,
-	    false);
-	if (installed && running) {
+	if (viewer) {
+		running = ring_running(w->jail != NULL ? w->jail : "", &n);
+		ucl_object_insert_key(top, ucl_object_frombool(running),
+		    "running", 0, false);
+		if (running)
+			ucl_object_insert_key(top, ucl_object_fromint(n),
+			    "queued", 0, false);
+	} else {
+		svc_state(w, &enabled, &running);
+		ucl_object_insert_key(top, ucl_object_frombool(enabled),
+		    "enabled", 0, false);
+		ucl_object_insert_key(top, ucl_object_frombool(running),
+		    "running", 0, false);
+	}
+	if (installed && running && !viewer) {
 		ucl_object_insert_key(top, status_json(w, ctl(w, "show", "status",
 		    NULL)), "status", 0, false);
 		ucl_object_insert_key(top, stats_json(w, ctl(w, "show", "stats",

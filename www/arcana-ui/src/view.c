@@ -1967,6 +1967,21 @@ set_ldap(struct html *h)
 	    "</button></div></form>", app.modal_busy ? " disabled" : "");
 }
 
+/* What the hosts' access rules do with an action no rule names, as the
+ * roles synchronized write it: the AAA tab's Roles, an owner's. */
+void
+set_nacm(struct html *h)
+{
+
+	if (app.settings == NULL)
+		return;
+	h_raw(h, "<form data-form=\"settings-nacm\" class=\"settings set-form "
+	    "nacm-default\">");
+	settings_fields(h, SETG_NACM);
+	h_fmt(h, "<div class=\"actions\"><button class=\"primary\"%s>Save"
+	    "</button></div></form>", app.modal_busy ? " disabled" : "");
+}
+
 /*
  * The rollback timer each host has, by where it comes from: its own
  * (the host's System tab), the one above for every host, or its agent's
@@ -2160,6 +2175,17 @@ settings_fields(struct html *h, int group)
 			if (kl > 5 && (strcmp(key + kl - 5, "_jobs") == 0 ||
 			    strcmp(key + kl - 5, "_runs") == 0)) {
 				settings_select(h, k, which, NULL);
+				continue;
+			}
+			/* The hosts' default for actions. */
+			if (strcmp(key, "nacm_exec_default") == 0) {
+				static const char *const nd[] = { "permit",
+				    "deny", NULL }, *const ndt[] = { "permit "
+				    "(as an agent's own rules have it)", "deny "
+				    "(every role's actions permitted by name)",
+				    NULL };
+
+				settings_select(h, k, nd, ndt);
 				continue;
 			}
 			/* The host that sends: one of the console's. */
@@ -3911,7 +3937,12 @@ view_service_drawer(struct html *h, struct server *s)
 		h_raw(h, "<p class=\"dim\">");
 		h_txt(h, jstr(app.svc_config, "description"));
 		h_raw(h, "</p>");
-	}
+	} else
+		/* A viewer's read runs no script: what the agent collected. */
+		h_raw(h, "<p class=\"dim svc-collected\">No description: the "
+		    "script says none, or only an operator of the host has it "
+		    "run (a viewer is shown what the agent last saw of it, its "
+		    "status and its pid).</p>");
 	if (sv != NULL) {
 		h_raw(h, "<dl class=\"kv\"><dt>script</dt><dd class=\"mono\">");
 		h_txt(h, jstr(sv, "path"));

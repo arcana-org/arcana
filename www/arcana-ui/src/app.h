@@ -810,7 +810,8 @@ void		 load_tokens(void);
 void		 token_new(void);
 void		 token_del(const char *);
 /* The forms settings are in. */
-enum { SETG_CONSOLE, SETG_MAIL, SETG_TELEGRAM, SETG_LDAP, SETG_ALERTS };
+enum { SETG_CONSOLE, SETG_MAIL, SETG_TELEGRAM, SETG_LDAP, SETG_ALERTS,
+	SETG_NACM };
 int		 setting_group(const char *);
 void		 save_settings(const ucl_object_t *, int);
 ucl_object_t	*alert_cases(const char *);
@@ -1150,6 +1151,7 @@ const char	*aaatab_arg(int);
 int		 aaatab_of(const char *);
 void		 set_keys(struct html *);
 void		 set_ldap(struct html *);
+void		 set_nacm(struct html *);
 void		 set_tokens(struct html *);
 /* users.c: Settings, AAA: who signs in and what each may (RBAC). */
 void		 users_load(void);

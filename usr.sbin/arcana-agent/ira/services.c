@@ -14,6 +14,16 @@
  * not tell), whether the enabled ones run ("service x status"), and
  * their rc.conf variables read and written by sysrc(8).  Every program
  * run is a step in the trace with its output.
+ *
+ * A script's status, rcvar, describe and extracommands run the script
+ * as root, and it runs whatever it runs: never for a viewer's request
+ * (clearance()).  A viewer is answered from what the collector saw last
+ * (each enabled service running or not, its status line and pid, its
+ * rcvar once a read said it): a look of its own every COLLECT_S
+ * seconds, and every list or read an operator's, an admin's, the
+ * console's or the recovery session's request ran; the scripts there
+ * and whether each is enabled are read as ever (the rc.d directories,
+ * libvarconf, sysrc -A), which runs none.
  */
 
 #include <sys/param.h>
@@ -23,18 +33,39 @@
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "agent.h"
 #include "varconf.h"
 
+#define	COLLECT_S	300	/* between the collector's looks */
+
 struct script {
 	const char	*name;
 	const char	*path;
 };
+
+/* A service as the collector saw it last. */
+struct collected {
+	char		 name[65];
+	char		 rcvar[65];
+	char		 status[256];
+	uint32_t	 pid;
+	bool		 has_running;
+	bool		 running;
+	bool		 has_pid;
+};
+
+static pthread_mutex_t	 coll_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct collected	*coll;
+static size_t		 ncoll;
+static time_t		 coll_at;
 
 static int	cmp_script(const void *, const void *);
 static bool	valid_name(const char *);
@@ -54,6 +85,7 @@ static int	enabled_all(struct work *, const struct script *, size_t,
 static const char *last_line(struct work *, const char *, size_t);
 static void	svc_about(struct work *, const char *,
 		    struct service_config_rsp *);
+static void	collect_keep(const struct arc_service *, size_t, bool);
 
 static int
 cmp_script(const void *a, const void *b)
@@ -401,6 +433,7 @@ do_services(struct work *w, struct services_rsp *rsp)
 	}
 	rsp->services.v = v;
 	rsp->services.n = n;
+	collect_keep(v, n, true);
 	return (0);
 }
 
@@ -685,6 +718,207 @@ service_read(struct work *w, const char *name, struct service_config_rsp *rsp)
 	rsp->service_result = s;
 	svc_about(w, name, rsp);
 	rsp->ok = true;
+	collect_keep(s, 1, false);
 	return (0);
+}
+
+/*
+ * What a list or a read saw (v, n of them) kept for a viewer's
+ * requests: each one's running, status line, pid and rcvar; with all,
+ * v is every enabled service, and one not among them is forgotten.
+ */
+static void
+collect_keep(const struct arc_service *v, size_t n, bool all)
+{
+	struct collected	*c, *nc;
+	size_t			 i, k, m;
+
+	pthread_mutex_lock(&coll_lock);
+	if (all) {
+		/* Kept: those of v, and their rcvars said before. */
+		if ((nc = calloc(n + 1, sizeof(*nc))) == NULL) {
+			pthread_mutex_unlock(&coll_lock);
+			return;
+		}
+		for (i = m = 0; i < n; i++) {
+			if (!v[i].has_enabled || !v[i].enabled)
+				continue;
+			(void)strlcpy(nc[m].name, v[i].name, sizeof(nc[m].name));
+			for (k = 0; k < ncoll; k++)
+				if (strcmp(coll[k].name, v[i].name) == 0)
+					(void)strlcpy(nc[m].rcvar, coll[k].rcvar,
+					    sizeof(nc[m].rcvar));
+			m++;
+		}
+		free(coll);
+		coll = nc;
+		ncoll = m;
+		coll_at = time(NULL);
+	}
+	for (i = 0; i < n; i++) {
+		if (all && (!v[i].has_enabled || !v[i].enabled))
+			continue;
+		for (k = 0; k < ncoll && strcmp(coll[k].name, v[i].name) != 0;
+		    k++)
+			;
+		if (k == ncoll) {
+			if ((nc = reallocarray(coll, ncoll + 1,
+			    sizeof(*coll))) == NULL)
+				break;
+			coll = nc;
+			memset(&coll[ncoll], 0, sizeof(coll[ncoll]));
+			(void)strlcpy(coll[ncoll].name, v[i].name,
+			    sizeof(coll[ncoll].name));
+			ncoll++;
+		}
+		c = &coll[k];
+		c->has_running = v[i].has_running;
+		c->running = v[i].running;
+		c->has_pid = v[i].has_pid;
+		c->pid = v[i].pid;
+		(void)strlcpy(c->status, v[i].status != NULL ? v[i].status : "",
+		    sizeof(c->status));
+		if (v[i].rcvar != NULL)
+			(void)strlcpy(c->rcvar, v[i].rcvar, sizeof(c->rcvar));
+	}
+	pthread_mutex_unlock(&coll_lock);
+}
+
+/* Service s as the collector saw it last, into s; true when it did.
+ * The trace says how old it is. */
+static bool
+collected_of(struct work *w, struct arc_service *s)
+{
+	size_t	k;
+	bool	seen = false;
+	int	step;
+
+	step = step_begin(w, STEP_DAEMON, "collected", "%s, as last seen: no "
+	    "rc.d script run for a viewer", s->name);
+	pthread_mutex_lock(&coll_lock);
+	for (k = 0; k < ncoll; k++) {
+		if (strcmp(coll[k].name, s->name) != 0)
+			continue;
+		s->has_running = coll[k].has_running;
+		s->running = coll[k].running;
+		s->has_pid = coll[k].has_pid;
+		s->pid = coll[k].pid;
+		if (coll[k].status[0] != '\0')
+			s->status = wtext(w, coll[k].status);
+		if (coll[k].rcvar[0] != '\0')
+			s->rcvar = wtext(w, coll[k].rcvar);
+		seen = coll[k].has_running;
+		break;
+	}
+	if (coll_at > 0)
+		step_end(w, step, true, "%jd s ago", (intmax_t)(time(NULL) -
+		    coll_at));
+	else
+		step_end(w, step, true, "not seen yet");
+	pthread_mutex_unlock(&coll_lock);
+	return (seen);
+}
+
+/* The list for a viewer: the scripts and whether each is enabled, as
+ * ever; running from what was collected (collected_of()). */
+int
+do_services_collected(struct work *w, struct services_rsp *rsp)
+{
+	struct arc_service	*v;
+	struct script		*sc;
+	const char		*e;
+	size_t			 n, i;
+	bool			*on;
+
+	rsp->has_ok = true;
+	rsp->ok = true;
+	scan_scripts(w, &sc, &n);
+	on = wcalloc(w, n + 1, sizeof(*on));
+	if (enabled_all(w, sc, n, on, &e) != 0) {
+		rsp->ok = false;
+		rsp->error = e;
+		return (0);
+	}
+	v = wcalloc(w, n + 1, sizeof(*v));
+	for (i = 0; i < n; i++) {
+		v[i].name = wtext(w, sc[i].name);
+		v[i].path = wtext(w, sc[i].path);
+		v[i].has_enabled = true;
+		v[i].enabled = on[i];
+		if (v[i].enabled)
+			(void)collected_of(w, &v[i]);
+	}
+	rsp->services.v = v;
+	rsp->services.n = n;
+	return (0);
+}
+
+/* A service read for a viewer: as do_services_collected() has it, no
+ * description nor extra commands (the script's to say, run). */
+int
+service_read_collected(struct work *w, const char *name,
+    struct service_config_rsp *rsp)
+{
+	const struct script	*sc;
+	struct script		*all;
+	struct arc_service	*s;
+	const char		*e;
+	size_t			 n;
+	bool			 on;
+
+	rsp->has_ok = true;
+	rsp->ok = false;
+	if (name == NULL || !valid_service(name)) {
+		rsp->error = "invalid service name";
+		return (0);
+	}
+	scan_scripts(w, &all, &n);
+	if ((sc = script_find(all, n, name)) == NULL) {
+		rsp->error = wfmt(w, "no rc.d script '%s' in %s", name,
+		    opts.rc_dirs);
+		return (0);
+	}
+	s = wcalloc(w, 1, sizeof(*s));
+	s->name = wtext(w, sc->name);
+	s->path = wtext(w, sc->path);
+	if (enabled_all(w, sc, 1, &on, &e) == 0) {
+		s->has_enabled = true;
+		s->enabled = on;
+	}
+	(void)collected_of(w, s);
+	rsp->service_result = s;
+	rsp->ok = true;
+	return (0);
+}
+
+/* The collector: every COLLECT_S, the list as an operator's read has
+ * it, kept (collect_keep()). */
+static void *
+collector(void *arg __unused)
+{
+	struct services_rsp	 r;
+	struct work		 w;
+
+	for (;;) {
+		(void)sleep(COLLECT_S);
+		work_init(&w);
+		w.nice = true;
+		memset(&r, 0, sizeof(r));
+		(void)do_services(&w, &r);
+		work_free(&w);
+	}
+	return (NULL);
+}
+
+void
+services_collect_start(void)
+{
+	pthread_t	tid;
+	int		error;
+
+	if ((error = pthread_create(&tid, NULL, collector, NULL)) != 0)
+		logmsg(LOG_ERR, "services: no collector: %s", strerror(error));
+	else
+		(void)pthread_detach(tid);
 }
 

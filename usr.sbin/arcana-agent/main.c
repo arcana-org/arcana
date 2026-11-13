@@ -877,6 +877,8 @@ main(int argc, char *argv[])
 	host_watch_start();
 	bird_watch_start();
 	smtpd_watch_start();
+	services_collect_start();
+	sa_faults_start();
 	logmsg(LOG_INFO, "version %s ready", ARCANA_AGENT_VERSION);
 	stop_loop = loop;
 	stop_pfh = pfh;

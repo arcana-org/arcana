@@ -419,7 +419,7 @@ arcana_smtpd_smtpd_read_action(cbl_req *req, const struct cbl_bytes *target,
 		return (error);
 	}
 	memset(&r, 0, sizeof(r));
-	do_smtpd(w, &r);
+	do_smtpd(w, &r, clearance(req) < CLEAR_OPERATOR);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));

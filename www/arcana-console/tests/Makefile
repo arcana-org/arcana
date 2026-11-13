@@ -7,6 +7,9 @@ ATF_TESTS_C=	pwa_test \
 
 # The page's YANG-CBOR reader, for the pass-through's case.
 SRCS.console_test=	console_test.c harness.c ycbor.c
+# The permits nacm-sync writes with deny, as the console's build made
+# them (nacmallow.h).
+CFLAGS.console_test.c+=	-I${.OBJDIR}/..
 SRCS.pwa_test=		pwa_test.c harness.c
 # The cluster's Raft (craft.c), left out with the cluster: the cluster's
 # cases skip then, and arcana-console:cluster says the build has none.

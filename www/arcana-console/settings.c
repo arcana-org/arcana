@@ -65,6 +65,7 @@ static const char	*v_chats(const char *);
 static const char	*v_sender(const char *);
 static const char	*v_prefixes(const char *);
 static const char	*v_cooldown(const char *);
+static const char	*v_nacmdef(const char *);
 static void		 put(ucl_object_t *, const char *, ucl_object_t *);
 
 static struct setting {
@@ -220,6 +221,16 @@ static struct setting {
 	{ "ldap_bind_password", K_SECRET, "LDAP reader's password",
 	    "Kept in the data directory, readable by the console alone; "
 	    "never shown again.", v_secret, NULL, NULL },
+	{ "nacm_exec_default", K_TEXT, "Hosts' default for actions",
+	    "What a host's access rules (NACM) do with an action or rpc no "
+	    "rule names: permit, as an agent's own rules have it, or deny. "
+	    "With deny, the roles synchronized to a host write exec-default "
+	    "deny there and, for every user, a permit of each action Arcana "
+	    "lets every role run (share/arcana/nacm-allow), so a viewer keeps "
+	    "every read it has; the group admin keeps everything. Written at "
+	    "each host's next synchronization (Roles: Synchronize roles to "
+	    "the hosts). Reads stay permit: the data every role reads is "
+	    "named by no list of the agent's.", v_nacmdef, NULL, NULL },
 	{ "safe_wait", K_TEXT, "Rollback timer, every host, in seconds",
 	    "How long a change made in safe mode waits for the console to be "
 	    "heard from again before the host undoes it, for every host "
@@ -320,6 +331,29 @@ v_which(const char *s)
 
 	return (strcmp(s, "failed") == 0 || strcmp(s, "all") == 0 ||
 	    strcmp(s, "none") == 0 ? NULL : "failed, all or none");
+}
+
+static const char *
+v_nacmdef(const char *s)
+{
+
+	return (strcmp(s, "permit") == 0 || strcmp(s, "deny") == 0 ? NULL :
+	    "permit or deny");
+}
+
+/* Is the hosts' default for actions deny (nacm_exec_default), as the
+ * roles synchronized write it (ytrans_nacm_sync())? */
+bool
+nacm_exec_deny(void)
+{
+	char	*v;
+	bool	 deny;
+
+	if ((v = settings_peek("nacm_exec_default")) == NULL)
+		return (false);
+	deny = strcmp(v, "deny") == 0;
+	free(v);
+	return (deny);
 }
 
 static const char *
@@ -856,6 +890,7 @@ settings_init(const char *update_check, const char *update_url)
 	find("telegram_runs")->base = xstrdup("failed");
 	find("telegram_limits")->base = xstrdup("false");
 	find("notify_cooldown")->base = xstrdup("30");
+	find("nacm_exec_default")->base = xstrdup("permit");
 	find("mail_to")->base = cfg.mail_to;
 	find("mail_from")->base = cfg.mail_from;
 	find("mail_faults")->base = cfg.mail_faults;

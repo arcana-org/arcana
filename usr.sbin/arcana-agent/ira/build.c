@@ -6,8 +6,10 @@
 
 /*
  * arcana-agent built from a git repository, for the console to hand to
- * the other hosts.  The tree is cloned afresh into the build directory
- * and built there with make(1); as root, git, make and ssh-keygen run as
+ * the other hosts.  The tree is cloned afresh into the build directory,
+ * shallow, its submodules too (a submodule pinned at a commit no branch
+ * ends at any more fetched whole: submodules_mend()), and built there
+ * with make(1); as root, git, make and ssh-keygen run as
  * the build user, _arcanabuild (--build-user), so what a repository's
  * makefiles do is done without privilege.  Nothing is installed: the
  * program goes back in the reply, compressed when asked (zprog.c).
@@ -771,10 +773,91 @@ commit_of(struct work *w, const char *out, size_t len)
 }
 
 /*
+ * The submodules a shallow clone left without their pinned commits,
+ * fetched whole: a commit pinned that is no longer a branch's tip is
+ * not advertised, and a server refuses it to a shallow fetch ("does not
+ * allow request for unadvertised object"), though it is in the
+ * branch's history.  Each submodule git submodule status says is not
+ * at its commit is updated again with its history whole (every branch
+ * the server shows, its default's among them); true when there was one
+ * and every one is at its commit now, else false, and why in *errp
+ * when a commit is in none of that history, the submodule and the
+ * commit named.  git runs as the build user, sshcmd as the clone had
+ * it; nothing of the tree is opened by root.
+ */
+static bool
+submodules_mend(struct work *w, const char *src, const char *sshcmd,
+    bool unpriv, const char **errp)
+{
+	struct execres	 res;
+	const char	*argv[MAX_ARGS], *path, *commit;
+	char		*text, *line, *p;
+	int		 n, s;
+	bool		 mended = false;
+
+	n = 0;
+	argv[n++] = opts.git_bin;
+	argv[n++] = "-C";
+	argv[n++] = src;
+	argv[n++] = "submodule";
+	argv[n++] = "status";
+	argv[n] = NULL;
+	if (run_as(w, unpriv, argv, &res) != 0 || res.out == NULL)
+		return (false);
+	text = wstrndup(w, res.out, res.outlen);
+	for (p = text; (line = strsep(&p, "\n")) != NULL; ) {
+		/* " <commit> <path> (<describe>)", '-' not checked out, '+'
+		 * another commit, 'U' a conflict. */
+		if (line[0] == '\0' || line[0] == ' ')
+			continue;
+		commit = wstrndup(w, line + 1, strcspn(line + 1, " "));
+		path = line + 1 + strlen(commit);
+		path += strspn(path, " ");
+		path = wstrndup(w, path, strcspn(path, " "));
+		if (*path == '\0' || strstr(path, "..") != NULL)
+			continue;
+		mended = true;
+		s = step_begin(w, STEP_DAEMON, "submodule", "%s at %s, fetched "
+		    "whole", path, commit);
+		/* fetch's --depth at its greatest is --unshallow: what the
+		 * shallow clone fetched made whole, or cloned whole when it
+		 * fetched none. */
+		n = 0;
+		argv[n++] = opts.git_bin;
+		if (sshcmd != NULL) {
+			argv[n++] = "-c";
+			argv[n++] = sshcmd;
+		}
+		argv[n++] = "-C";
+		argv[n++] = src;
+		argv[n++] = "submodule";
+		argv[n++] = "update";
+		argv[n++] = "--init";
+		argv[n++] = "--depth";
+		argv[n++] = "2147483647";
+		argv[n++] = "--";
+		argv[n++] = path;
+		argv[n] = NULL;
+		if (run_as(w, unpriv, argv, &res) != 0) {
+			*errp = wfmt(w, "submodule %s: commit %s, which the tree "
+			    "pins, is in none of the history its repository "
+			    "shows, fetched whole: %s", path, commit,
+			    git_error(w, &res));
+			step_end(w, s, false, "%s", *errp);
+			return (false);
+		}
+		step_end(w, s, true, NULL);
+	}
+	return (mended);
+}
+
+/*
  * A fresh clone of the repository in the build directory, with this
  * host's config.mk in it.  False with f->error when there is none; over
  * SSH that may be for want of a person: f then has the server's host
- * keys to confirm, or this host's key to allow there.
+ * keys to confirm, or this host's key to allow there.  A submodule the
+ * shallow clone could not have at its pinned commit is fetched whole
+ * (submodules_mend()).
  */
 static bool
 tree_fetch(struct work *w, const char *source, const char *ref,
@@ -832,7 +915,16 @@ tree_fetch(struct work *w, const char *source, const char *ref,
 	argv[n++] = src;
 	argv[n] = NULL;
 	if (run_as(w, unpriv, argv, &res) != 0) {
+		const char	*why = NULL;
+
 		rsp->error = git_error(w, &res);
+		/* The tree there, a submodule not: fetched whole. */
+		if (submodules_mend(w, src, sshcmd, unpriv, &why))
+			goto cloned;
+		if (why != NULL) {
+			rsp->error = why;
+			return (false);
+		}
 		if (!ssh || res.err == NULL)
 			return (false);
 		/*
@@ -864,6 +956,7 @@ tree_fetch(struct work *w, const char *source, const char *ref,
 		return (false);
 	}
 
+cloned:
 	/* Which commit it is, for whoever asks what was built. */
 	n = 0;
 	argv[n++] = opts.git_bin;

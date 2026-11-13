@@ -542,7 +542,12 @@ arcana_network_network_multicast_action(cbl_req *req,
     struct arcana_network_network_multicast_output *out, cbl_yarena *a)
 {
 
+	char	 why[160];
+
 	(void)target;
+	if (jail_prog_refused(req, in->jail, "ifmcstat", why, sizeof(why)) !=
+	    NULL)
+		return (said(req, why));
 	return (net_read(req, "multicast", "IGMP and MLD", in->jail,
 	    ARC_NET_KIND_MULTICAST, ARC_NET_FAMILY_ALL, NULL, 0, 0, out, a));
 }
@@ -566,7 +571,12 @@ arcana_network_network_ipsec_action(cbl_req *req,
     struct arcana_network_network_ipsec_output *out, cbl_yarena *a)
 {
 
+	char	 why[160];
+
 	(void)target;
+	if (jail_prog_refused(req, in->jail, "swanctl", why, sizeof(why)) !=
+	    NULL)
+		return (said(req, why));
 	return (net_read(req, "ipsec", "IPsec", in->jail, ARC_NET_KIND_IPSEC,
 	    ARC_NET_FAMILY_ALL, NULL, 0, 0, out, a));
 }
@@ -587,9 +597,12 @@ arcana_network_network_ipfw_action(cbl_req *req,
 	ucl_object_t			*o, *top;
 	struct work			*w;
 	const char			*e;
+	char				 why[160];
 	int				 error, root;
 
 	(void)target;
+	if (jail_prog_refused(req, in->jail, "ipfw", why, sizeof(why)) != NULL)
+		return (said(req, why));
 	if ((w = ywork_told(req, a, "the firewall", &root)) == NULL)
 		return (ENOMEM);
 	e = NULL;

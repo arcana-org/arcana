@@ -1256,8 +1256,11 @@ bird_read(cbl_req *req, const char *jail, struct arcana_bird_state *out,
 {
 	struct net_rsp	 r;
 	struct work		*w;
+	char			 why[160];
 	int			 error, root;
 
+	if (jail_prog_refused(req, jail, "birdc", why, sizeof(why)) != NULL)
+		return (said(req, why));
 	if ((w = ywork_told(req, a, "BIRD", &root)) == NULL)
 		return (ENOMEM);
 	if ((error = yjail_in(req, jail, w)) != 0) {
@@ -1290,8 +1293,11 @@ bird_routes(cbl_req *req, const char *jail, const char *filter,
 {
 	struct net_rsp	 r;
 	struct work		*w;
+	char			 why[160];
 	int			 error, root;
 
+	if (jail_prog_refused(req, jail, "birdc", why, sizeof(why)) != NULL)
+		return (said(req, why));
 	if ((w = ywork_told(req, a, "BIRD's routes", &root)) == NULL)
 		return (ENOMEM);
 	if ((error = yjail_in(req, jail, w)) != 0) {
@@ -1325,8 +1331,11 @@ bird_ospf(cbl_req *req, const char *jail, bool topology, const char *protocol,
 	struct arcana_bird_ospf_protocol	*v;
 	struct work			*w;
 	size_t				 n = 0;
+	char				 why[160];
 	int				 error, root;
 
+	if (jail_prog_refused(req, jail, "birdc", why, sizeof(why)) != NULL)
+		return (said(req, why));
 	if ((w = ywork_told(req, a, "BIRD's OSPF", &root)) == NULL)
 		return (ENOMEM);
 	if ((error = yjail_in(req, jail, w)) != 0) {
@@ -3962,7 +3971,12 @@ arcana_services_services_service_read_action(cbl_req *req,
 	    NULL)
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
-	(void)service_read(w, name, &r);
+	/* The script run for an operator and above; a viewer told what
+	 * the collector saw (ira/services.c). */
+	if (clearance(req) < CLEAR_OPERATOR)
+		(void)service_read_collected(w, name, &r);
+	else
+		(void)service_read(w, name, &r);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
@@ -4513,9 +4527,12 @@ arcana_wireguard_wireguard_read_action(cbl_req *req,
 {
 	struct net_rsp	 r;
 	struct work		*w;
+	char			 why[160];
 	int			 error, root;
 
 	(void)target;
+	if (jail_prog_refused(req, in->jail, "wg", why, sizeof(why)) != NULL)
+		return (said(req, why));
 	if ((w = ywork_told(req, a, "the WireGuard interfaces", &root)) == NULL)
 		return (ENOMEM);
 	if ((error = yjail_in(req, in->jail, w)) != 0) {

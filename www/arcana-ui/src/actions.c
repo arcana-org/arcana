@@ -4604,7 +4604,8 @@ setting_group(const char *key)
 	return (strncmp(key, "mail_", 5) == 0 ?
 	    SETG_MAIL : strncmp(key, "telegram_", 9) == 0 ? SETG_TELEGRAM :
 	    strncmp(key, "ldap_", 5) == 0 ? SETG_LDAP : strncmp(key,
-	    "notify_", 7) == 0 ? SETG_ALERTS : SETG_CONSOLE);
+	    "notify_", 7) == 0 ? SETG_ALERTS : strncmp(key, "nacm_", 5) == 0 ?
+	    SETG_NACM : SETG_CONSOLE);
 }
 
 /* The cases the alerts know, named for the page: the agent's fault

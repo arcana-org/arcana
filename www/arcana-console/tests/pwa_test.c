@@ -10093,14 +10093,62 @@ ATF_TC_WITH_CLEANUP(pwa_aaa_forms);
 ATF_TC_HEAD(pwa_aaa_forms, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "The console's role and user forms submitted, a role of a dotted name given to a user by its box; users.json has both");
-	atf_tc_set_md_var(tc, "timeout", "180");
+	atf_tc_set_md_var(tc, "descr", "The console's role and user forms submitted, a role of a dotted name given to a user by its box; users.json has both; the hosts' default for actions set to deny in the Roles tab and synchronized: the host's access rules say so; permit again");
+	atf_tc_set_md_var(tc, "timeout", "240");
 }
+
+/*
+ * The hosts' default for actions (AAA, Roles), chosen and saved, the
+ * roles synchronized by the button: the host's access rules (read by
+ * the recovery session) have exec-default deny and every-role; permit
+ * again, and they have neither.
+ */
+static void
+part_nacm_default(const atf_tc_t *tc)
+{
+	const char	*ctl;
+	char		 cmd[3 * MAXPATHLEN];
+	int		 i;
+
+	ctl = locate(tc, "../../../usr.sbin/arcanactl/arcanactl", "arcanactl",
+	    "/usr/local/sbin/arcanactl");
+	run("document.querySelector('button[data-act=aaa-tab][data-arg=roles]')"
+	    ".click()");
+	wait_js("document.querySelector('form[data-form=settings-nacm] "
+	    "select[name=nacm_exec_default]')", 10);
+	for (i = 0; i < 2; i++) {
+		snprintf(cmd, sizeof(cmd), "const f = document.querySelector("
+		    "'form[data-form=settings-nacm]'); f.nacm_exec_default."
+		    "value = '%s'; f.requestSubmit();", i == 0 ? "deny" :
+		    "permit");
+		run(cmd);
+		/* permit, the default, kept as no override. */
+		ATF_CHECK_MSG(host_has(i == 0 ? "grep -q "
+		    "'\"nacm_exec_default\": *\"deny\"' data/settings.json" :
+		    "! grep -q '\"nacm_exec_default\": *\"deny\"' "
+		    "data/settings.json"), "the default is not kept");
+		wait_js("document.querySelector('button[data-act=roles-sync]"
+		    ":not([disabled])')", 10);
+		run("document.querySelector('button[data-act=roles-sync]')"
+		    ".click()");
+		snprintf(cmd, sizeof(cmd), "%s -c unix:%s/jgd.sock get nacm | "
+		    "grep -q '\"exec-default\": *\"%s\"'", ctl, cwd, i == 0 ?
+		    "deny" : "permit");
+		ATF_CHECK_MSG(host_has(cmd), "the host's rules do not say %s",
+		    i == 0 ? "deny" : "permit");
+		snprintf(cmd, sizeof(cmd), "%s -c unix:%s/jgd.sock get nacm | "
+		    "grep -q every-role", ctl, cwd);
+		ATF_CHECK_MSG(i == 0 ? host_has(cmd) : system(cmd) != 0,
+		    "every-role %s", i == 0 ? "missing" : "left");
+	}
+}
+
 ATF_TC_BODY(pwa_aaa_forms, tc)
 {
 
 	prologue(tc, 1);
 	part_aaa_forms();
+	part_nacm_default(tc);
 }
 ATF_TC_CLEANUP(pwa_aaa_forms, tc)
 {

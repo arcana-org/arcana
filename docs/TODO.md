@@ -119,12 +119,23 @@
   err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
   root daemon when memory runs out, a change half done with it; a
   failure of one request's alone, said, is to come.
-- Faults whose owners are not held to what they watch yet (agent
-  0.280.0 holds the prober's, the links', the sampler's, the crashes'
-  and luxuria/birdwatch.c's by fault_reconcile()): sdbird.c's (bfd,
-  bird-instance, bgp-neighbor of SD-WAN's instances, its was_up() in
-  memory), sdids.c's, smtpd.c's, sa.c's key-rotation; each the same
-  way, at its start and when what it watches changes.
+- Faults held to what they watch (agent 0.287.0 adds sdbird.c's,
+  sdids.c's, smtpd.c's and sa.c's to the prober's, the links', the
+  sampler's, the crashes' and birdwatch.c's): the tests seed faults an
+  agent before left and see each owner's first view clear them; a
+  subject removed while the agent runs is tested for none of the four
+  (an SD-WAN BIRD instance or a Suricata needs the real programs), nor
+  an IDS instance or a BGP neighbour whose cause went over a restart.
+- The hosts' default for reads stays permit (Settings, AAA, Roles has
+  the default for actions alone, agent 0.287.0): read-default deny
+  would want a permit of every data node a viewer reads today, and no
+  list of the agent's names them (nacm-allow names actions and the
+  text leaves); the page and RESTCONF would have to be gone through
+  for a viewer node by node first.
+- A viewer's service read is what the agent last saw (ira/services.c,
+  every five minutes and every operator's read): a service started or
+  stopped by hand shows so to a viewer within five minutes, not at
+  once.
 - The kernel message buffer's end found by its contents
   (gula/kmsg.c): when the ring wrapped and the kernel said the last
   line read again, which of its places is the old one stays a guess (the

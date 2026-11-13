@@ -14,7 +14,9 @@
  * ctladm(8)) and HAST (hastd(8), hast.conf(5), hastctl(8)).  Read
  * whole (the netstore operation), changed by jobs of the nfs, iscsi and
  * hast kinds.  ctl.conf's CHAP secrets are read as a marker, and kept
- * where a write gives the marker back.
+ * where a write gives the marker back.  A HAST resource whose local
+ * provider is the system's (storage_protected()) is neither created nor
+ * given a role.
  */
 
 #include <sys/param.h>
@@ -1067,12 +1069,70 @@ nfs_server(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	return (0);
 }
 
+/*
+ * Why resource name's local provider is the system's own
+ * (storage_protected()), each local hast.conf gives it looked at, its
+ * own block's and its on blocks' (whichever host this is); NULL when
+ * none is, or hast.conf names no such resource.  hastctl create writes
+ * HAST's metadata over the provider's end, and a role makes hastd take
+ * it.
+ */
+static const char *
+hast_protected(struct work *w, const char *name)
+{
+	const char	*text, *p, *why;
+	char		 tok[MAXPATHLEN], prev[MAXPATHLEN];
+	size_t		 n;
+	int		 depth, res;
+	bool		 named;
+
+	if ((text = slurp(w, opts.hast_conf)) == NULL)
+		return (NULL);
+	depth = 0;
+	res = -1;		/* the depth our resource's block opened at */
+	named = false;
+	prev[0] = '\0';
+	for (p = text; *p != '\0'; ) {
+		if (isspace((unsigned char)*p)) {
+			p++;
+			continue;
+		}
+		if (*p == '#') {
+			p += strcspn(p, "\n");
+			continue;
+		}
+		if (*p == '{' || *p == '}')
+			n = 1;
+		else
+			n = strcspn(p, " \t\r\n{}#");
+		(void)snprintf(tok, sizeof(tok), "%.*s", (int)n, p);
+		p += n;
+		if (strcmp(tok, "{") == 0) {
+			if (depth == 0 && named)
+				res = 1;
+			depth++;
+		} else if (strcmp(tok, "}") == 0) {
+			if (--depth <= 0) {
+				depth = 0;
+				res = -1;
+			}
+			named = false;
+		} else if (depth == 0 && strcmp(prev, "resource") == 0)
+			named = strcmp(tok, name) == 0;
+		else if (res > 0 && strcmp(prev, "local") == 0 &&
+		    (why = storage_protected(w, tok, true)) != NULL)
+			return (wfmt(w, "its local provider %s: %s", tok, why));
+		(void)strlcpy(prev, tok, sizeof(prev));
+	}
+	return (NULL);
+}
+
 int
 do_netstore_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
 {
 	static const char *const create[] = { "create", NULL, NULL };
-	const char	*v, *bin;
+	const char	*v, *bin, *why;
 	struct execres	 res;
 	char		*argv[6];
 	int		 step;
@@ -1096,7 +1156,7 @@ do_netstore_job(struct work *w, const struct arc_job_spec *sp,
 			return (0);
 		}
 		if (strcmp(sp->verb, "exports") == 0) {
-			const char	*root, *why;
+			const char	*root;
 			bool		 any;
 
 			/* NFSv4 alone: nothing is served without the V4:
@@ -1146,6 +1206,12 @@ do_netstore_job(struct work *w, const struct arc_job_spec *sp,
 			return (-1);
 		}
 		v = word(sp, "resource");
+		/* Nothing of the system's storage taken by HAST. */
+		if ((why = hast_protected(w, v)) != NULL) {
+			*errp = wfmt(w, "hast %s %s: %s: it is not touched from "
+			    "here", sp->verb, v, why);
+			return (-1);
+		}
 		argv[0] = (char *)(uintptr_t)bin;
 		if (strcmp(sp->verb, "role") == 0) {
 			argv[1] = (char *)(uintptr_t)"role";

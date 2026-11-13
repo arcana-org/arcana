@@ -369,6 +369,25 @@ module arcana-console {
       description
         "Whether ldap-bind-password is set.";
     }
+    leaf nacm-exec-default {
+      type enumeration {
+        enum permit {
+          description
+            "An action or rpc no rule names is permitted, as an
+             agent's own rules have it.";
+        }
+        enum deny {
+          description
+            "exec-default deny on each host, and for every user a
+             permit of each action share/arcana/nacm-allow lets every
+             role run; the group admin keeps everything.";
+        }
+      }
+      description
+        "What the roles synchronized to a host (nacm-sync) write of
+         its access rules' exec-default; permit unless set.  Reads stay
+         permit.";
+    }
     leaf safe-wait {
       type uint16 {
         range "10..3600";
@@ -1982,6 +2001,36 @@ module arcana-console {
             "Why.";
         }
       }
+      container held {
+        config false;
+        presence "A list fetched is held back.";
+        description
+          "The last list fetched had fewer than half the entries of the
+           one delivered last (libipfeeds' ipf_list_shrunk(),
+           IPF_SHRINK_PERCENT): not delivered, the last list kept on
+           the hosts, fetched whole again at each fetch until one is
+           not so small or the take action lets the next through.";
+        leaf at {
+          type yang:date-and-time;
+          description
+            "When it was fetched.";
+        }
+        leaf count {
+          type uint32;
+          description
+            "Its entries.";
+        }
+        leaf was {
+          type uint32;
+          description
+            "The entries of the list delivered last.";
+        }
+        leaf text {
+          type string;
+          description
+            "Why it was held back, as the console logged it.";
+        }
+      }
       list delivered {
         key "host";
         config false;
@@ -2085,6 +2134,12 @@ module arcana-console {
         description
           "Fetched whole and each host's dry run asked; nothing kept.
            A feed from a URL of one's own, an owner's alone.";
+      }
+      action take {
+        description
+          "Fetched now, and the list delivered however small it is
+           against the last (what held keeps back): a console owner's,
+           or the feed's author's, who last saved it.";
       }
     }
   }

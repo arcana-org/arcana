@@ -35,7 +35,10 @@
  * agent before it raised, is not open for ever; what is still open of
  * the objects it watches is told back, for it to go on from (a
  * threshold crossed before a restart is cleared when the figure is
- * back under it).  faults_open() tells an owner its open faults, for
+ * back under it).  Two owners of one name keep apart by the objects'
+ * prefixes: one names its own, the other "!" before each of those it
+ * leaves alone (sdbird.c beside birdwatch.c, both "bird").
+ * faults_open() tells an owner its open faults, for
  * one whose objects are the faults themselves (kmsg.c's crashes).
  *
  * Their control is ietf-alarms' (RFC 8632, PLAN-SDN-YANG 5.4.2), the
@@ -580,17 +583,30 @@ fault_clear(const char *type, const char *object, const char *fmt, ...)
 	say(&tr);
 }
 
-/* object begins with one of scope's (NULL ends them; scope NULL: any). */
+/*
+ * object begins with one of scope's (NULL ends them; scope NULL: any),
+ * and with none of those written "!<prefix>" (another owner's of the
+ * same by); only such: any but those.
+ */
 static bool
 in_scope(const char *const *scope, const char *object)
 {
+	bool	any, in;
 
 	if (scope == NULL)
 		return (true);
-	for (; *scope != NULL; scope++)
+	any = in = false;
+	for (; *scope != NULL; scope++) {
+		if ((*scope)[0] == '!') {
+			if (strncmp(object, *scope + 1, strlen(*scope + 1)) == 0)
+				return (false);
+			continue;
+		}
+		any = true;
 		if (strncmp(object, *scope, strlen(*scope)) == 0)
-			return (true);
-	return (false);
+			in = true;
+	}
+	return (!any || in);
 }
 
 /*

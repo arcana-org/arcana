@@ -93,6 +93,43 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Feeds held back, viewers' reads, the hosts' default for actions, console 0.435.0, agent 0.287.0
+
+- **Threat feeds.**  The agent loads a feed's table by libipfeeds' own
+  sh(1) script, under the same lock as `ipfeeds(8)`
+  (`/var/run/ipfeeds.<table>.lock`, lockf(1)): a cron job of
+  ipfeeds(8) on the same table waits for the agent's load and the
+  agent for it.  The console no longer delivers a list of fewer than
+  half the entries of the one delivered last: the feed says *held
+  back* with both counts, the hosts keep the last list, and a console
+  owner, or whoever last saved the feed, presses **Take it anyway**
+  (arcana-console's `threat-feeds/feed=<id>/take`).
+- **Viewers and the hosts' programs.**  A viewer's service read, and
+  the services list's running state, come from what the agent last saw
+  (an operator's or the admin's read, or the agent's own look every
+  five minutes): no rc.d script runs for a viewer, and the detail has
+  no description for one.  A vnet jail's own ipfw, swanctl, ifmcstat,
+  birdc, wg and sysctl are run for an operator of the host alone.
+  Viewers who read those in jails now see why they are refused; give
+  them an operator's role on the host where they need them.
+- **The hosts' default for actions** (Settings, AAA, Roles): permit, as
+  before, or deny, written by the next **Synchronize roles to the
+  hosts**: exec-default deny, and every action Arcana lets every role
+  run permitted by name for every user.  Nothing changes on a host
+  until its roles are synchronized; reads stay permit.
+- **stampd's keys.**  A tunnel whose derived SSID already has four
+  keys in the key file (the admin's counted) has none written: logged,
+  and a Warning fault `stamp-unauthenticated` on `reflector:<target>`.
+  A key file stampd would refuse (an admin's fifth key of an SSID) is
+  not written, nor stampd told: a fault on `reflector:<key file>` until
+  it is mended.
+- **HAST.**  `hastctl create` and a role are refused for a resource
+  whose local provider is the system's (mounted, swapped on, a pool's).
+- **Faults** of SD-WAN BIRD instances, their neighbours and BFD
+  sessions, IDS instances, the mail watch and manual IPsec key
+  rotation that an agent before left open for a subject since gone
+  are cleared at the new agent's first look.
+
 ### Tokens as themselves, sign-in, enrolment, console 0.434.0, agent 0.286.0
 
 - **API tokens on the hosts.**  A read token is said to a host as the

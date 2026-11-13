@@ -22,6 +22,14 @@
 # (the path as an operation's, then the leaf's name) with what is done
 # of its secrets (masked below an operator: wmask()), or why it has
 # none.
+#
+#	awk -v out=h -f nacm.awk nacm-allow share/yang/arcana-*.yang
+#
+# writes, the same checks passing, the allow-list's actions and rpcs of
+# the agent's modules as NACM rules' module and data-node path, for the
+# console's nacm-sync (www/arcana-console/ytrans.c, nacmallow.h): an
+# augment's target by its modules' names, the module's own node after
+# it named by its module.
 
 # Leaves whose text may be a file's or a command line's.
 function texty(s) {
@@ -34,6 +42,59 @@ function denied_at(d,	i) {
 		if (deny[i])
 			return (1)
 	return (0)
+}
+
+# Path p of module m whose first step is a grouping's: the paths where
+# its uses put it ("|" before each), a grouping's within a grouping
+# followed, none that uses itself.
+function expand(m, p, lvl,	g, rest, ns, s, j, r, w) {
+	g = p
+	sub(/^\//, "", g)
+	sub(/\/.*/, "", g)
+	if (lvl > 4)
+		return ("")
+	rest = substr(p, length(g) + 2)
+	ns = split(sites[m SUBSEP g], s, "|")
+	r = ""
+	for (j = 2; j <= ns; j++) {
+		w = substr(s[j], 2)
+		if (substr(s[j], 1, 1) == "C")
+			r = r "|" w rest
+		else if (index(w "/", "/" g "/") == 0)
+			r = r expand(m, w rest, lvl + 1)
+	}
+	return (r)
+}
+
+# Operation o (<module>:<path>) as a NACM data-node path: each step
+# named by its module, the prefixes of an augment's target its imports'.
+function datapath(o,	m, p, n, seg, i, out, pfx, own) {
+	m = o
+	sub(/:.*/, "", m)
+	p = o
+	sub(/^[^:]*:/, "", p)
+	sub(/^\/+/, "", p)
+	n = split(p, seg, "/")
+	out = ""
+	own = 0
+	for (i = 1; i <= n; i++) {
+		if (seg[i] ~ /:/) {
+			pfx = seg[i]
+			sub(/:.*/, "", pfx)
+			if (!((m SUBSEP pfx) in pmap)) {
+				printf("%s: no module of prefix %s\n", o, pfx) \
+				    > "/dev/stderr"
+				bad = 1
+			}
+			sub(/^[^:]*:/, pmap[m SUBSEP pfx] ":", seg[i])
+			out = out "/" seg[i]
+		} else if (!own) {
+			out = out "/" m ":" seg[i]
+			own = 1
+		} else
+			out = out "/" seg[i]
+	}
+	return (out)
 }
 
 function strip(s) {
@@ -118,13 +179,32 @@ FNR == 1 {
 				leaf[depth] = starg
 			if (stkw == "input" && input == 0)
 				input = depth
+			if (stkw == "import")
+				imp[depth] = starg
+			if (stkw == "grouping")
+				groupings[mod SUBSEP starg] = 1
 			if ((stkw == "action" || stkw == "rpc") && op == 0) {
 				op = depth
 				opname = mod ":" path()
 				ops[opname] = 1
+				for (k = 1; k < depth; k++)
+					if (kind[k] == "grouping")
+						grouped[opname] = 1
 			}
 		} else if (c == ";") {
 			statement()
+			if (stkw == "prefix" && kind[depth] == "import")
+				pmap[mod SUBSEP starg] = imp[depth]
+			# Where a grouping is used: within another grouping
+			# (G) or in the module's data (C).
+			if (stkw == "uses") {
+				gk = "C"
+				for (k = 1; k <= depth; k++)
+					if (kind[k] == "grouping")
+						gk = "G"
+				sites[mod SUBSEP starg] = sites[mod SUBSEP \
+				    starg] "|" gk path()
+			}
 			if (op > 0 && depth == op && stkw == "nacm:default-deny-all")
 				denied[opname] = 1
 			if (stkw == "nacm:default-deny-all")
@@ -181,5 +261,45 @@ END {
 			bad = 1
 		}
 	}
+	if (out != "h" || bad)
+		exit (bad)
+	# The allow-list's operations, sorted: their permits.
+	n = 0
+	for (a in allow) {
+		if (!(a in ops) || (a in denied))
+			continue
+		# In a grouping: a permit where each of its uses puts it.
+		m = a
+		sub(/:.*/, "", m)
+		p = substr(a, length(m) + 2)
+		ns = split((a in grouped) ? expand(m, p, 0) : "|" p, site, "|")
+		k = 0
+		for (j = 2; j <= ns; j++)
+			if (site[j] != "") {
+				v[++n] = m ":" site[j]
+				k++
+			}
+		if (k == 0) {
+			printf("%s: in a grouping, no data-node path for its " \
+			    "permit\n", a) > "/dev/stderr"
+			exit (1)
+		}
+	}
+	for (i = 2; i <= n; i++)
+		for (k = i; k > 1 && v[k - 1] > v[k]; k--) {
+			t = v[k]
+			v[k] = v[k - 1]
+			v[k - 1] = t
+		}
+	print "/* Written by share/arcana/nacm.awk from share/arcana/nacm-allow: */"
+	print "/* the actions and rpcs the agents run by NACM's exec-default, */"
+	print "/* each its module and its data-node path. */"
+	print "#define\tNACM_ALLOW_RULES { \\"
+	for (i = 1; i <= n; i++) {
+		m = v[i]
+		sub(/:.*/, "", m)
+		printf("\t{ \"%s\", \"%s\" }, \\\n", m, datapath(v[i]))
+	}
+	print "}"
 	exit (bad)
 }

@@ -16,7 +16,9 @@
  * nacm:default-deny-all or -write.  Deleting the rules brings the
  * default back.  A file that cannot be read denies everything but the
  * recovery session (root, or the agent's own user, on the unix socket),
- * which can write it anew.
+ * which can write it anew.  How far a request is trusted by its groups
+ * (clearance()) also decides what a read runs: a vnet jail's own
+ * program, by jexec, for an operator and above (jail_prog_refused()).
  */
 
 #include <sys/param.h>
@@ -324,4 +326,26 @@ clearance(cbl_req *req)
 			}
 	cbl_yarena_free(a);
 	return (c);
+}
+
+/*
+ * A read that runs a vnet jail's own program in it (jexec(8): the
+ * jail's ipfw, birdc, wg, swanctl, sysctl or ifmcstat, whatever the
+ * jail put at that path) is run for an operator and above: a viewer's
+ * request runs nothing a jail controls, and nothing of it is collected
+ * for one.  NULL when it may run (no jail: the host's own fixed tool),
+ * else why not, into buf.
+ */
+const char *
+jail_prog_refused(cbl_req *req, const char *jail, const char *prog,
+    char *buf, size_t len)
+{
+
+	if (jail == NULL || jail[0] == '\0' || clearance(req) >=
+	    CLEAR_OPERATOR)
+		return (NULL);
+	(void)snprintf(buf, len, "%s in the jail %s is the jail's own "
+	    "program, run there as its root: read by an operator of the "
+	    "host, not a viewer", prog, jail);
+	return (buf);
 }

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.286.0"
+#define	ARCANA_AGENT_VERSION	"0.287.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -710,6 +710,11 @@ int		 do_service_config(struct work *,
 int		 service_read(struct work *, const char *,
 		    struct service_config_rsp *);
 void		 service_state(struct work *, const char *, bool *, bool *);
+/* A viewer's: what the collector saw, no rc.d script run for it. */
+int		 do_services_collected(struct work *, struct services_rsp *);
+int		 service_read_collected(struct work *, const char *,
+		    struct service_config_rsp *);
+void		 services_collect_start(void);
 /*
  * ira/ysvcedit.c: a job's service-action enable or disable, or its
  * service-config, written as a commit writes it, to Arcana's rc.conf
@@ -947,7 +952,10 @@ void		 stampd_nudge(void);
 void		 stampd_state(bool *, char *, size_t, const char **, int *,
 		    char *, size_t);
 struct stamp_key;
-int		 probe_stamp_keys(struct stamp_key *, int);
+/* A target's name (gula/probe.c's TNAME_MAX), with its NUL. */
+#define	PROBE_NAME_MAX	(128 + 1 + 64 + 1 + 33)
+int		 probe_stamp_keys(struct stamp_key *, char (*)[PROBE_NAME_MAX],
+		    int);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);
@@ -1093,7 +1101,7 @@ struct speeder_rate {
 size_t		 speeder_rates(struct speeder_rate *, size_t, unsigned int);
 
 /* luxuria/smtpd.c: OpenSMTPD, a plugin: its read, and its job. */
-void		 do_smtpd(struct work *, struct json_rsp *);
+void		 do_smtpd(struct work *, struct json_rsp *, bool);
 const char	*smtpd_check(const struct arc_job_spec *);
 char		*smtpd_title(const struct arc_job_spec *);
 int		 do_smtpd_job(struct work *, const struct arc_job_spec *,
@@ -1140,6 +1148,7 @@ const char	*sa_undo_check(struct work *, const struct arc_job_spec *);
 int		 sa_undo(struct work *, const struct arc_job_spec *,
 		    const char **);
 void		 sa_keys_json(struct work *, struct ucl_object_s *);
+void		 sa_faults_start(void);
 int		 tunnel_key_derive(struct work *, const char *, const char *,
 		    const char *, unsigned char *, size_t, const char **);
 bool		 rtadvd_prefix_ok(const char *);
@@ -1508,6 +1517,8 @@ const char	*conf_word(const char *);
 #define	CLEAR_ADMIN	2
 #define	NACM_OPERATOR	"operator"
 int		 clearance(cbl_req *);
+const char	*jail_prog_refused(cbl_req *, const char *, const char *, char *,
+		    size_t);
 
 /* superbia/admit.c, ynacm.c: NACM (RFC 8341).  The console's users in
  * group admin by default: its admin, and the console itself for the

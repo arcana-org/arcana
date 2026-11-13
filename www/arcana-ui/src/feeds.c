@@ -7,10 +7,11 @@
  * Threat feeds: the Network section's tab of the lists of scanners',
  * spammers' and abusers' prefixes the console fetches from the internet
  * and keeps on the hosts chosen as ipfw(8) tables (arcana-console's
- * threat-feeds, their fetch and preview actions).  The presets
+ * threat-feeds, their fetch, preview and take actions).  The presets
  * with their sources and terms, each enabled by an operator; every feed
- * with its last fetch, its entries and what it dropped and why; a
- * feed's preview, each host's dry run.  No rule is made here: the
+ * with its last fetch, its entries and what it dropped and why, a list
+ * held back for being far smaller than the last and its Take it anyway;
+ * a feed's preview, each host's dry run.  No rule is made here: the
  * host's Firewall page offers one for each feed's table.
  */
 
@@ -154,6 +155,14 @@ feed_of(const ucl_object_t *y)
 		if (jstr(v, "text") != NULL)
 			put(x, "text", ucl_object_fromstring(jstr(v, "text")));
 		put(o, "alarm", x);
+	}
+	if ((v = jget(y, "held")) != NULL) {
+		x = ucl_object_typed_new(UCL_OBJECT);
+		if (jstr(v, "at") != NULL)
+			put(x, "at", ucl_object_fromint(rc_time(jstr(v, "at"))));
+		put(x, "count", ucl_object_fromint(jint(v, "count", 0)));
+		put(x, "was", ucl_object_fromint(jint(v, "was", 0)));
+		put(o, "held", x);
 	}
 	put(o, "delivered", hosts_of(jget(y, "delivered")));
 	dropped_of(o, jget(y, "last-fetch"));
@@ -506,6 +515,16 @@ detail(struct html *h, const ucl_object_t *f)
 		h_txt(h, jstr(d, "alarm.text"));
 		h_raw(h, ". The hosts keep its last entries.</div>");
 	}
+	if (jget(d, "held") != NULL) {
+		h_fmt(h, "<div class=\"notice warn\"><b>Held back:</b> the list "
+		    "fetched has %jd entries, the one delivered last %jd: "
+		    "fewer than half, so the hosts keep the last until a list "
+		    "of its size comes again, or it is taken anyway (a console "
+		    "owner, or who last saved the feed). <button class=\"ghost "
+		    "small\" data-act=\"fd-take\" data-arg=\"%s\">Take it "
+		    "anyway</button></div>", (intmax_t)jint(d, "held.count", 0),
+		    (intmax_t)jint(d, "held.was", 0), jstr(f, "id"));
+	}
 	/* The preview, when one was asked. */
 	if ((pv = jget(d, "preview")) != NULL) {
 		h_raw(h, "<div class=\"notice info\"><b>Preview</b>, ");
@@ -701,7 +720,8 @@ view_feeds(struct html *h)
 		ucl_object_replace_key(row, ucl_object_fromint((int64_t)
 		    ucl_array_size(jget(f, "hosts"))), "nhosts", 0, false);
 		status = jget(f, "alarm") != NULL ? "alarm" : jstr(f, "error") !=
-		    NULL ? "failing" : !jbool(f, "enabled") ? "off" :
+		    NULL ? "failing" : jget(f, "held") != NULL ? "held back" :
+		    !jbool(f, "enabled") ? "off" :
 		    jint(f, "fetched_at", 0) == 0 ? "to fetch" : "ok";
 		ucl_object_replace_key(row, ucl_object_fromstring(status),
 		    "status", 0, false);
@@ -905,6 +925,9 @@ feeds_action(const char *act, const char *arg, const char *value)
 	    0) {
 		rc_c(url, sizeof(url), "threat-feeds/feed=%s/%s", rc_key(arg),
 		    strcmp(act, "fd-fetch") == 0 ? "fetch" : "preview");
+		rc_action(url, NULL, NULL, saved_cb, NULL);
+	} else if (strcmp(act, "fd-take") == 0) {
+		rc_c(url, sizeof(url), "threat-feeds/feed=%s/take", rc_key(arg));
 		rc_action(url, NULL, NULL, saved_cb, NULL);
 	} else if (strcmp(act, "fd-del") == 0) {
 		snprintf(body, sizeof(body), "The feed %s goes, and the hosts "

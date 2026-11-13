@@ -25,6 +25,21 @@ UCL_SRCS=	ucl_emitter_streamline.c ucl_emitter_utils.c ucl_emitter.c \
 .if exists(${LIBUCL_SRC}/src/ucl_cbor.c)
 UCL_SRCS+=	ucl_cbor.c
 .endif
+# The tree's own sources held to that list when it is read: one libucl
+# gained, or lost, said here by its name, not as a link error after.
+.if exists(${LIBUCL_SRC}/src)
+_UCL_TREE!=	cd ${LIBUCL_SRC}/src && ls *.c 2>/dev/null || true
+.for _s in ${UCL_SRCS}
+.if empty(_UCL_TREE:M${_s})
+.error ${LIBUCL_SRC}/src/${_s} is gone from this libucl (LIBUCL_SRC): UCL_SRCS in ${.CURDIR}/Makefile is to follow it
+.endif
+.endfor
+.for _s in ${_UCL_TREE}
+.if empty(UCL_SRCS:M${_s})
+.error ${LIBUCL_SRC}/src/${_s} is new in this libucl (LIBUCL_SRC): UCL_SRCS in ${.CURDIR}/Makefile is to follow it
+.endif
+.endfor
+.endif
 YAML_SRCS=	api.c dumper.c emitter.c loader.c parser.c reader.c scanner.c \
 		writer.c
 
@@ -61,17 +76,21 @@ ICONS=		icon.svg icon-192.png icon-512.png icon-maskable-512.png
 STATIC=		index.html style.css manifest.webmanifest fx.js
 
 # Objects by their full path, so none is picked up from the source
-# directory through .PATH.
+# directory through .PATH.  Each with the headers it read, as the native
+# objects have them (emcc -MD into .depend.<object>, read below): a
+# libucl or libyaml of a base source update, or another tree named,
+# rebuilds what read its headers.
+_EMDEP=		-MD -MF ${.OBJDIR}/.depend.${.TARGET:T} -MT ${.TARGET}
 OBJS=
 .for _s in ${APP_SRCS}
 OBJS+=		${.OBJDIR}/${_s:R}.wo
 ${.OBJDIR}/${_s:R}.wo: ${.CURDIR}/src/${_s} ${.CURDIR}/src/app.h
-	${EMCC} ${EMCFLAGS} -c ${.CURDIR}/src/${_s} -o ${.TARGET}
+	${EMCC} ${EMCFLAGS} ${_EMDEP} -c ${.CURDIR}/src/${_s} -o ${.TARGET}
 .endfor
 .for _s in ${UCL_SRCS}
 OBJS+=		${.OBJDIR}/${_s:R}.wo
 ${.OBJDIR}/${_s:R}.wo: ${LIBUCL_SRC}/src/${_s}
-	${EMCC} ${UCLFLAGS} -c ${LIBUCL_SRC}/src/${_s} -o ${.TARGET}
+	${EMCC} ${UCLFLAGS} ${_EMDEP} -c ${LIBUCL_SRC}/src/${_s} -o ${.TARGET}
 .endfor
 # libyaml's api.c and the panel's would have one object: its are
 # yaml-*.wo.  The defines are lib/libyaml's.
@@ -81,14 +100,20 @@ YAMLFLAGS=	-O2 -w -I${LIBYAML_SRC}/include -I${LIBYAML_SRC}/src \
 .for _s in ${YAML_SRCS}
 OBJS+=		${.OBJDIR}/yaml-${_s:R}.wo
 ${.OBJDIR}/yaml-${_s:R}.wo: ${LIBYAML_SRC}/src/${_s}
-	${EMCC} ${YAMLFLAGS} -c ${LIBYAML_SRC}/src/${_s} -o ${.TARGET}
+	${EMCC} ${YAMLFLAGS} ${_EMDEP} -c ${LIBYAML_SRC}/src/${_s} -o ${.TARGET}
 .endfor
 
 # Project Nayuki's QR code generator, unmodified (vendor/README).
 OBJS+=		${.OBJDIR}/qrcodegen.wo
 ${.OBJDIR}/qrcodegen.wo: ${.CURDIR}/vendor/qrcodegen/qrcodegen.c
-	${EMCC} -O2 -std=gnu17 -w -c ${.CURDIR}/vendor/qrcodegen/qrcodegen.c \
-	    -o ${.TARGET}
+	${EMCC} -O2 -std=gnu17 -w ${_EMDEP} \
+	    -c ${.CURDIR}/vendor/qrcodegen/qrcodegen.c -o ${.TARGET}
+
+# What each object read, as emcc said; a header since gone ignored
+# (.dinclude), as bsd.dep.mk reads the native objects'.
+.for _o in ${OBJS}
+.dinclude "${.OBJDIR}/.depend.${_o:T}"
+.endfor
 
 all: ${DIST}/sw.js
 

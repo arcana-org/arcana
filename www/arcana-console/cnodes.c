@@ -73,6 +73,7 @@ static const struct cnode	cnodes[] = {
 	{ CD "threat-feeds", false, O, O, T_ALL, TK_WRITE },
 	{ CD "threat-feeds/feed=*/fetch", false, O, O, T_ALL, TK_WRITE },
 	{ CD "threat-feeds/feed=*/preview", false, O, O, T_ALL, TK_WRITE },
+	{ CD "threat-feeds/feed=*/take", false, O, O, T_ALL, TK_WRITE },
 	{ CD "transfers", false, O, O, T_ANY, TK_WRITE },
 	{ CD "transfers/transfer=*/stop", false, O, O, T_ANY, TK_WRITE },
 	{ CD "transfers/start", false, O, O, T_ANY, TK_WRITE },

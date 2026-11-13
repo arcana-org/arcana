@@ -38,7 +38,9 @@
  * And the pages' /sysctl and /kernel from arcana-sysctl and
  * arcana-kernel, their jails, packages and services from their modules,
  * their shapes kept; a change of a host's configuration committed
- * confirmed (the end of this file).
+ * confirmed (the end of this file); the console's roles synchronized to
+ * a host's access rules, its default for actions with them
+ * (ytrans_nacm_sync(), the permits of nacmallow.h).
  */
 
 #include <sys/param.h>
@@ -66,6 +68,7 @@
 #include "ymodel.h"
 #include "ytrans.h"
 #include "oprules.h"
+#include "nacmallow.h"
 
 typedef struct ietf_interfaces_interfaces_interface yif;
 
@@ -1434,6 +1437,80 @@ op_list(cbl_yarena *a)
 	return (l);
 }
 
+/*
+ * With the hosts' default for actions deny (Settings, nacm_exec_default):
+ * the rule-list every-role, for every user (group "*", a user in no
+ * group among them), a permit of each action Arcana lets every role run
+ * (share/arcana/nacm-allow, as nacm.awk writes it into nacmallow.h at
+ * the build, so the list and the permits cannot differ), so that
+ * exec-default deny takes no read from anyone; the group admin keeps
+ * its permit-all, and the recovery session is NACM's no more than ever.
+ */
+#define	ALLOW_LIST	"every-role"
+
+struct allow_rule {
+	const char	*module, *path;
+};
+static const struct allow_rule	allow_rules[] = NACM_ALLOW_RULES;
+
+static struct ietf_netconf_acm_nacm_rule_list *
+allow_list(cbl_yarena *a)
+{
+	struct ietf_netconf_acm_nacm_rule_list_group	*lg;
+	struct ietf_netconf_acm_nacm_rule_list_rule	*r;
+	struct ietf_netconf_acm_nacm_rule_list		*l;
+	size_t						 i;
+
+	if ((l = cbl_yarena_alloc(a, sizeof(*l))) == NULL ||
+	    (lg = cbl_yarena_alloc(a, sizeof(*lg))) == NULL ||
+	    (r = cbl_yarena_alloc(a, nitems(allow_rules) * sizeof(*r))) ==
+	    NULL)
+		return (NULL);
+	memset(l, 0, sizeof(*l));
+	memset(r, 0, nitems(allow_rules) * sizeof(*r));
+	for (i = 0; i < nitems(allow_rules); i++) {
+		r[i].name = allow_rules[i].path;
+		r[i].has_module_name = true;
+		r[i].module_name.which = 1;
+		r[i].module_name.v.m1 = allow_rules[i].module;
+		r[i].rule_type =
+		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+		r[i].path = allow_rules[i].path;
+		r[i].has_access_operations = true;
+		r[i].access_operations.which = 1;
+		r[i].access_operations.v.m1.p = op_exec;
+		r[i].access_operations.v.m1.len = 1;
+		r[i].has_action = true;
+		r[i].action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
+		r[i].comment = "Every role runs it: share/arcana/nacm-allow.";
+	}
+	lg->which = 1;
+	lg->v.m1 = "*";
+	l->name = ALLOW_LIST;
+	l->group.n = 1;
+	l->group.v = lg;
+	l->rule.n = nitems(allow_rules);
+	l->rule.v = r;
+	return (l);
+}
+
+/* Is l every-role as allow_list() makes it, each permit there in order? */
+static bool
+allow_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
+{
+	size_t	i;
+
+	if (l->rule.n != nitems(allow_rules))
+		return (false);
+	for (i = 0; i < nitems(allow_rules); i++)
+		if (l->rule.v[i].path == NULL || strcmp(l->rule.v[i].path,
+		    allow_rules[i].path) != 0 || !l->rule.v[i].has_action ||
+		    l->rule.v[i].action !=
+		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT)
+			return (false);
+	return (true);
+}
+
 /* Has the rule-list operator every rule op_list() makes?  One of a
  * console before is made anew. */
 static bool
@@ -1459,15 +1536,17 @@ op_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
  * group operator the users whose role on the host is an operator's or
  * an admin's, owners aside (ops), with the rule-list operator (op_list())
  * made beside it once; names the console does not know, admin and
- * console stay.  Nothing else of the rules is touched, and rules with
- * no group admin are left as they are.  *out: {"result": "changed",
- * "unchanged" or "no-admin-group", "admin": [the group's names],
- * "operator": [its names]}.
+ * console stay; exec-default deny with the rule-list every-role
+ * (allow_list()) when deny, else exec-default permit and no every-role.
+ * Nothing else of the rules is touched, and rules with no group admin
+ * are left as they are.  *out: {"result": "changed", "unchanged" or
+ * "no-admin-group", "admin": [the group's names], "operator": [its
+ * names]}.
  */
 int
 ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
     char *const *users, size_t nusers, char *const *ops, size_t nops,
-    ucl_object_t **out, char *err, size_t errlen)
+    bool deny, ucl_object_t **out, char *err, size_t errlen)
 {
 	const struct cbl_ymodule			*m;
 	const struct cbl_ynode				*n;
@@ -1480,10 +1559,12 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	const char					**v, **ov;
 	ucl_object_t					*names, *onames;
 	cbl_yarena					*a;
+	struct ietf_netconf_acm_nacm_rule_list		*al;
 	const char					*result;
 	char						 tag[64];
 	size_t						 i, k, nv, nov, ngroups;
 	bool						 changed, has_list, stale;
+	bool						 has_allow, allow_ok, exec_deny;
 	int						 error;
 
 	*out = NULL;
@@ -1579,6 +1660,17 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 		}
 	if ((!has_list && (og != NULL || nov > 0)) || stale)
 		changed = true;
+	/* The default for actions, and every-role with deny alone. */
+	has_allow = allow_ok = false;
+	for (i = 0; i < d.nacm->rule_list.n; i++)
+		if (strcmp(d.nacm->rule_list.v[i].name, ALLOW_LIST) == 0) {
+			has_allow = true;
+			allow_ok = allow_list_whole(&d.nacm->rule_list.v[i]);
+		}
+	exec_deny = d.nacm->has_exec_default && d.nacm->exec_default ==
+	    IETF_NETCONF_ACM_NACM_EXEC_DEFAULT_DENY;
+	if (exec_deny != deny || has_allow != deny || (deny && !allow_ok))
+		changed = true;
 	if (!changed) {
 		result = "unchanged";
 		goto reply;
@@ -1590,8 +1682,9 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	if ((nn = cbl_yarena_alloc(a, sizeof(*nn))) == NULL ||
 	    (ngs = cbl_yarena_alloc(a, sizeof(*ngs))) == NULL ||
 	    (ng = cbl_yarena_alloc(a, ngroups * sizeof(*ng))) == NULL ||
-	    (nl = cbl_yarena_alloc(a, (d.nacm->rule_list.n + 1) *
-	    sizeof(*nl))) == NULL || (ol = op_list(a)) == NULL) {
+	    (nl = cbl_yarena_alloc(a, (d.nacm->rule_list.n + 2) *
+	    sizeof(*nl))) == NULL || (ol = op_list(a)) == NULL ||
+	    (al = allow_list(a)) == NULL) {
 		ucl_object_unref(names);
 		ucl_object_unref(onames);
 		error = ENOMEM;
@@ -1620,16 +1713,25 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	ngs->group.n = ngroups;
 	ngs->group.v = ng;
 	nn->groups = ngs;
-	for (i = 0; i < d.nacm->rule_list.n; i++) {
-		nl[i] = d.nacm->rule_list.v[i];
+	for (i = k = 0; i < d.nacm->rule_list.n; i++) {
+		/* every-role: made anew below, or gone with permit. */
+		if (strcmp(d.nacm->rule_list.v[i].name, ALLOW_LIST) == 0)
+			continue;
+		nl[k] = d.nacm->rule_list.v[i];
 		/* The console's own list, of a console before: anew. */
-		if (stale && strcmp(nl[i].name, OP_GROUP) == 0)
-			nl[i] = *ol;
+		if (stale && strcmp(nl[k].name, OP_GROUP) == 0)
+			nl[k] = *ol;
+		k++;
 	}
 	if (!has_list && (og != NULL || nov > 0))
-		nl[i++] = *ol;
-	nn->rule_list.n = i;
+		nl[k++] = *ol;
+	if (deny)
+		nl[k++] = *al;
+	nn->rule_list.n = k;
 	nn->rule_list.v = nl;
+	nn->has_exec_default = true;
+	nn->exec_default = deny ? IETF_NETCONF_ACM_NACM_EXEC_DEFAULT_DENY :
+	    IETF_NETCONF_ACM_NACM_EXEC_DEFAULT_PERMIT;
 	d.nacm = nn;
 	if ((error = ycommit(conn, n, &d, NULL, 0, err, errlen, tag,
 	    sizeof(tag))) != 0) {

@@ -568,7 +568,9 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "esac\n", cwd, cwd, cwd);
 	put("fake-sysrc", buf);
 	ATF_REQUIRE(chmod("fake-sysrc", 0755) == 0);
+	/* service(8): what it is asked, a line each in svc.log. */
 	snprintf(buf, sizeof(buf), "#!/bin/sh\nconf=%s/rc.conf\n"
+	    "echo \"$*\" >> ${conf%%/rc.conf}/svc.log\n"
 	    "if [ \"$1\" = -e ]; then for f in %s/rc.d/*; do n=${f##*/}; "
 	    "grep -q \"^${n}_enable=\\\"YES\\\"\" \"$conf\" && echo \"$f\"; "
 	    "done; exit 0; fi\n"
@@ -1662,6 +1664,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 
 		snprintf(etc, sizeof(etc), "%s/root/etc", cwd);
 		(void)mkdir(etc, 0755);
+		/* The threat feeds' loads lock their tables there, as
+		 * ipfeeds(8)'s do in /var/run. */
+		snprintf(etc, sizeof(etc), "%s/root/var", cwd);
+		(void)mkdir(etc, 0755);
+		snprintf(etc, sizeof(etc), "%s/root/var/run", cwd);
+		(void)mkdir(etc, 0755);
 	}
 	put("root/etc/hosts", "127.0.0.1 localhost\n");
 	(void)mkdir("root/etc/defaults", 0755);
@@ -2647,7 +2655,8 @@ ts_net(const char *cwd, const char *r2routes, const char *r2fw)
 /*
  * A stand-in for the feeds' sources: the fixtures in tests/feeds served
  * over HTTP/1.0 on 127.0.0.1, each with a Last-Modified and an ETag, a
- * 304 to an If-Modified-Since of that time; /redirect a 302 to
+ * 304 to an If-Modified-Since of that time; /case/<name> the case's
+ * own feedsrv/<name>, never a 304; /redirect a 302 to
  * /drop_v4.json, /redirect-private one to 169.254.169.254; each
  * request (but a redirect) a line of
  * feedsrv.log, "GET /path code".  Its port; it ends with the case.
@@ -2695,7 +2704,12 @@ feeds_server(const atf_tc_t *tc)
 		req[len] = '\0';
 		p = req + 4;
 		p[strcspn(p, " ")] = '\0';
-		snprintf(path, sizeof(path), "%s%s", dir, p);
+		/* /case/<name>: the case's own feedsrv/<name>, as it changes
+		 * it, never a 304. */
+		if (strncmp(p, "/case/", 6) == 0)
+			snprintf(path, sizeof(path), "feedsrv/%s", p + 6);
+		else
+			snprintf(path, sizeof(path), "%s%s", dir, p);
 		body = NULL;
 		len = 0;
 		if (strstr(p, "..") == NULL && (fp = fopen(path, "r")) != NULL) {
@@ -2717,8 +2731,8 @@ feeds_server(const atf_tc_t *tc)
 		}
 		if (body == NULL)
 			code = 404;
-		else if (strstr(p + strlen(p) + 1, "If-Modified-Since: " FEEDS_LM)
-		    != NULL)
+		else if (strncmp(p, "/case/", 6) != 0 && strstr(p + strlen(p) +
+		    1, "If-Modified-Since: " FEEDS_LM) != NULL)
 			code = 304;
 		else
 			code = 200;

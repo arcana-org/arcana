@@ -156,7 +156,13 @@ arcana_services_services_get(cbl_req *req, struct arcana_services *data,
 	    "(configuration only)", &root)) == NULL)
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
-	if (state) {
+	/* A viewer's: what was collected, no rc.d script run for it. */
+	if (state && clearance(req) < CLEAR_OPERATOR) {
+		(void)do_services_collected(w, &r);
+		step_end(w, root, r.ok, NULL);
+		if (!r.ok)
+			return (EIO);
+	} else if (state) {
 		(void)do_services(w, &r);
 		step_end(w, root, r.ok, NULL);
 		if (!r.ok) {

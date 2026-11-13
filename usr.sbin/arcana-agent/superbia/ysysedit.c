@@ -238,6 +238,7 @@ arcana_sysctl_sysctl_read_action(cbl_req *req, const struct cbl_bytes *target,
 	struct values	 c;
 	struct work	*w;
 	const char	*e, *next, *prefix;
+	char		 why[160];
 	uint64_t	 total;
 
 	(void)target;
@@ -263,6 +264,9 @@ arcana_sysctl_sysctl_read_action(cbl_req *req, const struct cbl_bytes *target,
 		if (prefix == NULL || strncmp(prefix, "net.", 4) != 0)
 			return (said(req, "a jail's sysctls are read under its "
 			    "network's, net."));
+		if ((e = jail_prog_refused(req, in->jail, "sysctl", why,
+		    sizeof(why))) != NULL)
+			return (said(req, e));
 		if (scope_enter(w, in->jail, &e) != 0 ||
 		    sysctl_read_jail(w, prefix, value_in, &c, &e) == -1)
 			return (said(req, e));

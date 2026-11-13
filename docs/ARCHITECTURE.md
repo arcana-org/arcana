@@ -69,7 +69,7 @@ The core operations, and what each runs on the host (the rest are in
 | arcana-jails' `start`, `stop`, `restart`, `kill` | a jail's actions | jail(8) `-c`, `-r`, `-rc`; jail_remove(2) for kill |
 | arcana-network's `address` | add or remove an IP, live and/or persistent | jail_setv(3), SIOCAIFADDR ioctls, libjailconf |
 | arcana-services `services` | the host's rc.d scripts, enabled and running; in running, each one's rcvar and variables | the rc.d directories, `<name>_enable` in `sysrc -A`, `service <name> status`; the files rc(8) reads (libvarconf) |
-| arcana-services' `start`, `stop`, `restart`, `reload`, `read` | a service's actions; one read as it is now | `service <name> <verb>`; `service <name> enabled`, `describe`, `extracommands` |
+| arcana-services' `start`, `stop`, `restart`, `reload`, `read` | a service's actions; one read as it is now (an operator's; a viewer's what the agent last saw) | `service <name> <verb>`; `service <name> enabled`, `describe`, `extracommands` |
 | arcana-services, committed | enabled or not, its rc.conf variables | Arcana's rc.conf file (`/usr/local/etc/rc.conf.d/arcana`), yours commented out where accepted |
 | arcana-network's read actions | routes, nexthops, connections, sockets | `netstat --libxo json -rnW / -onW / -nW -f <family>`, `sockstat --libxo json -w -4/-6`; one run per family, joined |
 | arcana-host `stats` | CPU, load, memory, swap, ZFS pools | `kern.cp_time` between requests, `vm.loadavg`, `vm.stats.vm.*`, `swapinfo -k`, `zpool list -Hp` |
@@ -90,7 +90,16 @@ Arcana's modules to it, or to `share/arcana/nacm-allow` with why it
 only reads).  The console's nacm-sync puts its owners in the host's
 group admin, and its operators of the host in its group operator, with
 a rule-list that lets them what an operator may and the host marks
-(arcana-system's read).  A refusal comes back with its words, and the
+(arcana-system's read).  With the hosts' default for actions deny
+(Settings, AAA, Roles), it also writes exec-default deny and the
+rule-list every-role: for every user, a permit of each action of
+nacm-allow, which nacm.awk writes into the console's nacmallow.h at
+the build, so the list and the permits are one; the group admin keeps
+its permit-all, and the recovery session is no NACM's.  A read that
+runs a program a jail or a local user controls (a service's rc.d
+script, a vnet jail's own ipfw, swanctl, ifmcstat, birdc, wg or sysctl
+by jexec) is an operator's: a viewer gets what the agent collected, or
+the refusal.  A refusal comes back with its words, and the
 steps told while it ran, so a failed jail(8) run still comes back with
 its output.
 
@@ -488,6 +497,10 @@ names can be set, and nothing is passed through a shell.  Every program
 run is a step in the trace with its output; listing a host with many
 enabled services takes one `status` run per service, so the console
 fetches the list only when the Services tab is opened or refreshed.
+A script runs whatever it runs, as root: for a viewer's request none
+is run, and the list's running state and a service's read are what
+the agent last saw (its own look every five minutes, and every list
+or read of an operator's, the admin's or the console's).
 
 ## Addresses and aliases
 

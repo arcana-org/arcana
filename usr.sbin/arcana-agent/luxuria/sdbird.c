@@ -12,7 +12,11 @@
  * beside the probes and the rules and started again with the agent.
  * It talks BGP or OSPF with the subscriber at the UNI, and iBGP with
  * the other edges by the tunnels, so what one UNI learns reaches them
- * all.
+ * all.  Its faults (bird-instance and bgp-neighbor by "bird", bfd by
+ * "bfd") are held to what it watches (fault_reconcile()): the sessions
+ * at its first look and whenever the instances change, the instances
+ * and their neighbours whenever either changes; birdwatch.c's of the
+ * host's BIRD ("host:", "jail:") are not its.
  */
 
 #include <sys/param.h>
@@ -69,7 +73,8 @@ struct bfd {
 #define	BFD_MAX		512
 #define	BFD_EVERY_S	1
 
-static void	 protocols_watch(struct work *, const struct instance *);
+static bool	 protocols_watch(struct work *, const struct instance *,
+		    char (*)[160], int *);
 static int	 inst_start(struct work *, const struct instance *,
 		    const char **);
 
@@ -487,6 +492,103 @@ bfd_read(struct work *w, const struct instance *in, struct bfd *out,
 }
 
 /*
+ * The faults held to what is watched (fault_reconcile()), so that one
+ * of an instance, a neighbour or a session gone, or one an agent before
+ * raised whose cause went with the restart, does not stay open.
+ * birdwatch.c's of the host's BIRD share the owner "bird" ("host:" and
+ * "jail:" objects): not these.
+ */
+static const char *const bird_scope[] = { "!host:", "!jail:", NULL };
+
+/* The BFD sessions listed now (now, m of them), each by its tunnel or
+ * address, one up well: at the first look and whenever the instances
+ * change.  Between those a session no longer listed is a fault (it went
+ * with the session that asked for it), not one gone. */
+static void
+bfd_reconcile(const struct bfd *now, int m)
+{
+	struct fault_live	*v;
+	char			(*obj)[64];
+	const char		*id;
+	int			 k;
+
+	if ((v = calloc((size_t)m + 1, sizeof(*v))) == NULL ||
+	    (obj = calloc((size_t)m + 1, sizeof(*obj))) == NULL) {
+		free(v);
+		return;
+	}
+	for (k = 0; k < m; k++) {
+		id = sdwan_tunnel_by_via(now[k].address);
+		(void)strlcpy(obj[k], id != NULL ? id : now[k].address,
+		    sizeof(obj[k]));
+		v[k].object = obj[k];
+		v[k].well = now[k].state == PROBE_UP;
+	}
+	(void)fault_reconcile("bfd", "bfd", NULL, v, (size_t)m, "no BFD "
+	    "session of an SD-WAN BIRD instance is there");
+	free(v);
+	free(obj);
+}
+
+/* The instances (in, n of them) and the BGP neighbours their last look
+ * listed (bgp, nb of them): when either changed, or at the first. */
+static void
+bird_reconcile(const struct instance *in, int n, char (*bgp)[160], int nb)
+{
+	static char		 said[8192];
+	static bool		 once;
+	struct fault_live	*v;
+	char			 now[sizeof(said)];
+	size_t			 off;
+	int			 i;
+
+	for (i = 0, off = 0; i < n && off < sizeof(now); i++)
+		off += (size_t)snprintf(now + off, sizeof(now) - off, "%s\n",
+		    in[i].name);
+	for (i = 0; i < nb && off < sizeof(now); i++)
+		off += (size_t)snprintf(now + off, sizeof(now) - off, "%s\n",
+		    bgp[i]);
+	if (once && strcmp(now, said) == 0)
+		return;
+	if ((v = calloc((size_t)(n + nb) + 1, sizeof(*v))) == NULL)
+		return;
+	for (i = 0; i < n; i++) {
+		v[i].type = "bird-instance";
+		v[i].object = in[i].name;
+	}
+	for (i = 0; i < nb; i++) {
+		v[n + i].type = "bgp-neighbor";
+		v[n + i].object = bgp[i];
+	}
+	(void)fault_reconcile("bird", NULL, bird_scope, v, (size_t)(n + nb),
+	    "the SD-WAN BIRD instance or its neighbour is taken away");
+	free(v);
+	(void)strlcpy(said, now, sizeof(said));
+	once = true;
+}
+
+/* The instances' names, a line each: whether they changed. */
+static bool
+insts_changed(const struct instance *in, int n)
+{
+	static char	said[INSTANCES_MAX * 41 + 1];
+	static bool	once;
+	char		now[sizeof(said)];
+	size_t		off;
+	int		i;
+
+	for (i = 0, off = 0; i < n; i++)
+		off += (size_t)snprintf(now + off, sizeof(now) - off, "%s\n",
+		    in[i].name);
+	now[off] = '\0';
+	if (once && strcmp(now, said) == 0)
+		return (false);
+	(void)strlcpy(said, now, sizeof(said));
+	once = true;
+	return (true);
+}
+
+/*
  * The sessions read again every second, each change an event
  * (sdwan-tunnel, by bfd, R60), and the steering told, which takes
  * BFD's word over the probe's where there is a session.
@@ -497,11 +599,13 @@ bfd_watch(void *arg __unused)
 	struct work	 w;
 	struct instance	 in[INSTANCES_MAX];
 	struct bfd	*now, *chg;
-	int		 n, i, k, m, r, was, nchg, round;
-	bool		 changed;
+	char		 (*bgp)[160];
+	int		 n, i, k, m, r, was, nchg, round, nb;
+	bool		 changed, whole;
 
 	if ((now = calloc(BFD_MAX, sizeof(*now))) == NULL || (chg = calloc(
-	    BFD_MAX, sizeof(*chg))) == NULL)
+	    BFD_MAX, sizeof(*chg))) == NULL || (bgp = calloc(SEEN_MAX,
+	    sizeof(*bgp))) == NULL)
 		return (NULL);
 	round = 0;
 	for (;;) {
@@ -510,8 +614,14 @@ bfd_watch(void *arg __unused)
 		n = ninstances;
 		memcpy(in, instances, sizeof(*in) * (size_t)n);
 		pthread_mutex_unlock(&lock);
-		if (n == 0)
+		/* None left: what the last of them raised cleared. */
+		if (n == 0) {
+			if (insts_changed(in, 0)) {
+				bfd_reconcile(now, 0);
+				bird_reconcile(in, 0, bgp, 0);
+			}
 			continue;
+		}
 		work_init(&w);
 		w.nice = true;
 		m = 0;
@@ -595,10 +705,20 @@ bfd_watch(void *arg __unused)
 				    chg[k].iface);
 			}
 		}
-		/* Every five seconds, the instances and their BGP neighbours. */
-		if (++round % 5 == 0)
+		/* The sessions' faults held to them: at the first look and
+		 * when the instances change. */
+		if (insts_changed(in, n) || round == 0)
+			bfd_reconcile(now, m);
+		/* Every five seconds, the instances and their BGP neighbours;
+		 * every one answering, a full view of them. */
+		if (++round % 5 == 0) {
+			whole = true;
+			nb = 0;
 			for (i = 0; i < n; i++)
-				protocols_watch(&w, &in[i]);
+				whole &= protocols_watch(&w, &in[i], bgp, &nb);
+			if (whole)
+				bird_reconcile(in, n, bgp, nb);
+		}
 		work_free(&w);
 		if (changed)
 			sdwan_probe_changed();
@@ -630,10 +750,13 @@ bird_said(struct work *w, const char *s, size_t max)
 /*
  * An instance that does not answer is a fault (Critical: nothing is
  * routed by it), and each BGP neighbour of it that is not up is one
- * (Major), cleared when it is (Table 4).
+ * (Major), cleared when it is (Table 4).  Each neighbour listed added
+ * to bgp (*nb of them, SEEN_MAX at most); false when the instance did
+ * not answer.
  */
-static void
-protocols_watch(struct work *w, const struct instance *in)
+static bool
+protocols_watch(struct work *w, const struct instance *in, char (*bgp)[160],
+    int *nb)
 {
 	struct execres	 res;
 	const char	*name = in->name, *e;
@@ -646,7 +769,7 @@ protocols_watch(struct work *w, const struct instance *in)
 		fault_set("bird-instance", "Critical", name, "bird", "the BIRD "
 		    "instance %s does not answer within %d s", name,
 		    JAIL_READ_SEC);
-		return;
+		return (false);
 	}
 	if (res.status != 0 || res.out == NULL) {
 		struct instance	again = *in;
@@ -663,7 +786,7 @@ protocols_watch(struct work *w, const struct instance *in)
 				logmsg(LOG_WARNING, "sdwan bird: %s not started "
 				    "again: %s", name, e != NULL ? e : "the jail's "
 				    "path");
-				return;
+				return (false);
 			}
 			again.jid = w->jid;
 			snprintf(again.jroot, sizeof(again.jroot), "%s", w->jroot);
@@ -677,7 +800,7 @@ protocols_watch(struct work *w, const struct instance *in)
 		if (inst_start(w, &again, &e) != 0)
 			logmsg(LOG_WARNING, "sdwan bird: %s not started again: %s",
 			    name, e);
-		return;
+		return (false);
 	}
 	fault_clear("bird-instance", name, "the BIRD instance %s answers again",
 	    name);
@@ -701,6 +824,8 @@ protocols_watch(struct work *w, const struct instance *in)
 		if (rest != NULL)
 			rest = (char *)(uintptr_t)bird_said(w, rest, 200);
 		snprintf(obj, sizeof(obj), "%s/%s", name, f[0]);
+		if (*nb < SEEN_MAX)
+			(void)strlcpy(bgp[(*nb)++], obj, sizeof(bgp[0]));
 		if (strcmp(f[3], "up") == 0) {
 			(void)was_up(obj, true);
 			fault_clear("bgp-neighbor", obj, "BGP %s of %s is up", f[0],
@@ -710,6 +835,7 @@ protocols_watch(struct work *w, const struct instance *in)
 			    "is %s%s%s", f[0], name, f[3], rest != NULL && rest[0]
 			    != '\0' ? ": " : "", rest != NULL ? rest : "");
 	}
+	return (true);
 }
 
 /* What BFD says of the tunnel whose far address this is; NONE without. */

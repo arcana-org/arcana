@@ -3123,11 +3123,14 @@ probe_start(void)
 		logmsg(LOG_ERR, "sdwan probes: no thread: %s", strerror(errno));
 }
 
-/* The STAMP keys of the host's plain tunnels' targets, each once, into
- * v (max of them): the reflector's copies, stampd's key file
- * (gula/stampd.c).  The caller zeroes them. */
+/* The STAMP keys of the host's plain tunnels' targets, each once, in
+ * the targets' order, into v (max of them), and with names the name of
+ * the first target of each into names[] (PROBE_NAME_MAX each): the
+ * reflector's copies, stampd's key file (gula/stampd.c).  The caller
+ * zeroes them. */
 int
-probe_stamp_keys(struct stamp_key *v, int max)
+probe_stamp_keys(struct stamp_key *v, char (*names)[PROBE_NAME_MAX],
+    int max)
 {
 	int	i, k, n;
 
@@ -3139,8 +3142,11 @@ probe_stamp_keys(struct stamp_key *v, int max)
 		for (k = 0; k < n && memcmp(&v[k], &targets[i].key,
 		    sizeof(v[k])) != 0; k++)
 			;
-		if (k == n)
-			v[n++] = targets[i].key;
+		if (k < n)
+			continue;
+		if (names != NULL)
+			(void)target_name(&targets[i], names[n], PROBE_NAME_MAX);
+		v[n++] = targets[i].key;
 	}
 	pthread_mutex_unlock(&lock);
 	return (n);

@@ -38,6 +38,16 @@
  * admin's, kept.  A file made while stampd runs is one it never
  * opened: then it is restarted rather than told.  The keys are never
  * logged; what is compared from one look to the next is their digest.
+ * stampd takes STAMP_KEYS_SSID_MAX keys an SSID, the admin's counted,
+ * and refuses a whole file with more (keeping the keys it had, said in
+ * its own log alone): of the tunnels whose derived SSIDs are the same,
+ * the first in the targets' order are written, each other logged and a
+ * fault of its (stamp-unauthenticated, Warning, "reflector:<target>");
+ * a file stampd would refuse still (libstamp's parser says so: the
+ * admin's lines) is not written, and a reload that fails after the keys
+ * changed is not taken: both a fault of the file's, "reflector:<file>",
+ * tried again at every look.  The faults are held to what is so at
+ * each look (fault_reconcile()).
  */
 
 #include <sys/param.h>
@@ -70,6 +80,19 @@
 #define	KEYS_MAX	256	/* as many as the prober has targets */
 #define	KEYS_MARK	"# arcana-agent: the lines below are its own, the " \
 			"plain tunnels' STAMP keys (rewritten)\n"
+#define	OVER_MAX	32	/* targets whose key is not written, said */
+#define	FAULT_BY	"stampd"
+#define	FAULT_TYPE	"stamp-unauthenticated"
+#define	FAULT_SCOPE	"reflector:"
+
+/* A target whose key is not written: its SSID has so many already. */
+struct over {
+	char	target[PROBE_NAME_MAX];
+	int	ssid;
+	int	same;
+};
+
+static const char *keys_file(void);
 
 static pthread_mutex_t	 mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t	 cv = PTHREAD_COND_INITIALIZER;
@@ -81,6 +104,10 @@ static bool		 known;
 static char		 said[512];		/* the last thing said */
 static unsigned char	 kdig[32];		/* the keys written last */
 static bool		 kknown;
+/* Why stampd does not take its key file, as the agent last saw: a file
+ * it would refuse (not written), a reload that failed; "" when it does.
+ * While it is said, every look tries again. */
+static char		 kfault[512];
 
 /* The FIBs of the services changed: looked at again, soon. */
 void
@@ -203,35 +230,107 @@ cmp_key(const void *a, const void *b)
 	return (memcmp(x->key, y->key, sizeof(x->key)));
 }
 
+/* stampd's key file read whole, into a buffer of the caller's to zero
+ * and free (*lenp its length); NULL when there is none or it cannot be
+ * read. */
+static char *
+keys_read(size_t *lenp)
+{
+	struct stat	 st;
+	char		*buf;
+	size_t		 len = 0;
+	ssize_t		 r;
+	int		 fd;
+
+	*lenp = 0;
+	if ((fd = open(keys_file(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)) == -1)
+		return (NULL);
+	if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode) || st.st_size >
+	    1024 * 1024 || (buf = malloc((size_t)st.st_size + 1)) == NULL) {
+		close(fd);
+		return (NULL);
+	}
+	while (len < (size_t)st.st_size && (r = pread(fd, buf + len,
+	    (size_t)st.st_size - len, (off_t)len)) > 0)
+		len += (size_t)r;
+	close(fd);
+	buf[len] = '\0';
+	*lenp = len;
+	return (buf);
+}
+
 /*
  * The keys as Arcana's lines of stampd's key file, "ssid key" each,
  * sorted, into a buffer of the caller's to zero and free (*lenp its
- * length; NULL with none); their digest into dig.
+ * length; NULL with none); their digest into dig.  stampd takes
+ * STAMP_KEYS_SSID_MAX keys an SSID, the admin's lines' among them, and
+ * refuses a file with more: of the tunnels whose derived SSIDs are the
+ * same, the first in the targets' order are written, the others not,
+ * each into over (OVER_MAX of them, *nover).
  */
 static char *
-keys_text(size_t *lenp, unsigned char *dig)
+keys_text(size_t *lenp, unsigned char *dig, struct over *over, int *nover)
 {
-	struct stamp_key	*k;
+	struct stamp_key	*k, *ak;
+	char			 (*names)[PROBE_NAME_MAX], *text, *m, why[128];
 	char			*buf;
-	size_t			 off = 0, cap;
+	size_t			 off = 0, cap, nak, tl, j;
 	unsigned int		 dl = 32;
-	int			 n, i;
+	int			 n, i, kept, same;
 
 	*lenp = 0;
+	*nover = 0;
 	memset(dig, 0, 32);
 	if ((k = calloc(KEYS_MAX, sizeof(*k))) == NULL)
 		return (NULL);
-	n = probe_stamp_keys(k, KEYS_MAX);
+	if ((names = calloc(KEYS_MAX, sizeof(*names))) == NULL) {
+		free(k);
+		return (NULL);
+	}
+	n = probe_stamp_keys(k, names, KEYS_MAX);
+	/* The admin's: the lines before Arcana's marker (none when they do
+	 * not parse: the file's check says why). */
+	ak = NULL;
+	nak = 0;
+	if ((text = keys_read(&tl)) != NULL) {
+		if ((m = strstr(text, KEYS_MARK)) != NULL)
+			tl = (size_t)(m - text);
+		if (stamp_keys_parse(text, tl, &ak, &nak, why, sizeof(why)) != 0)
+			nak = 0;
+		explicit_bzero(text, strlen(text));
+		free(text);
+	}
+	for (i = kept = 0; i < n; i++) {
+		for (j = 0, same = 0; j < nak; j++)
+			same += ak[j].ssid == k[i].ssid;
+		for (j = 0; j < (size_t)kept; j++)
+			same += k[j].ssid == k[i].ssid;
+		if (same >= STAMP_KEYS_SSID_MAX) {
+			if (*nover < OVER_MAX) {
+				(void)strlcpy(over[*nover].target, names[i],
+				    sizeof(over[*nover].target));
+				over[*nover].ssid = k[i].ssid;
+				over[*nover].same = same;
+				(*nover)++;
+			}
+			continue;
+		}
+		k[kept++] = k[i];
+	}
+	n = kept;
+	if (ak != NULL)
+		stamp_keys_free(ak, nak);
+	free(names);
 	qsort(k, (size_t)n, sizeof(*k), cmp_key);
 	cap = (size_t)n * (8 + 2 * STAMP_KEY_MAX + 2) + 1;
-	if (n == 0 || (buf = malloc(cap)) == NULL) {
+	if (n <= 0 || (buf = malloc(cap)) == NULL) {
 		explicit_bzero(k, KEYS_MAX * sizeof(*k));
 		free(k);
 		return (NULL);
 	}
 	for (i = 0; i < n; i++) {
 		off += (size_t)snprintf(buf + off, cap - off, "%d ", k[i].ssid);
-		for (size_t j = 0; j < k[i].len; j++)
+		for (j = 0; j < k[i].len; j++)
 			off += (size_t)snprintf(buf + off, cap - off, "%02x",
 			    k[i].key[j]);
 		off += (size_t)snprintf(buf + off, cap - off, "\n");
@@ -260,15 +359,18 @@ keys_file(void)
  * Arcana's marker) and Arcana's (text, len octets; none: the marker and
  * its lines taken out), rewritten in place, root's and 0600; *made when
  * there was no file (one is made only for keys), *changed when it was
- * written.  0, or -1 and why.
+ * written.  0, or -1 and why; -2 and why when stampd would refuse the
+ * file so made (the admin's lines and Arcana's past its bounds), which
+ * is then not written.
  */
 static int
 keys_write(const char *text, size_t len, bool *made, bool *changed,
     char *err, size_t errlen)
 {
 	struct stat	 st;
-	char		*old = NULL, *nw = NULL, *m;
-	size_t		 olen = 0, keep, nlen = 0;
+	struct stamp_key *pk;
+	char		*old = NULL, *nw = NULL, *m, why[128];
+	size_t		 olen = 0, keep, nlen = 0, npk;
 	ssize_t		 r;
 	const char	*path;
 	int		 fd, rc = -1;
@@ -328,6 +430,16 @@ keys_write(const char *text, size_t len, bool *made, bool *changed,
 		memcpy(nw + nlen, text, len);
 		nlen += len;
 	}
+	/* Never a file stampd refuses (libstamp's own parser): it would
+	 * keep the keys as they were, and say so in its log alone. */
+	if (stamp_keys_parse(nw, nlen, &pk, &npk, why, sizeof(why)) != 0) {
+		(void)snprintf(err, errlen, "%s: stampd would refuse it (%s), "
+		    "so it is not written: stampd keeps the keys it has", path,
+		    why);
+		rc = -2;
+		goto out;
+	}
+	stamp_keys_free(pk, npk);
 	if (nlen == olen && memcmp(nw, old, olen) == 0) {
 		rc = 0;
 		goto out;
@@ -414,6 +526,7 @@ apply(struct work *w, const char *want, int n, const char *keys,
 	const char	*en, *fb, *verb;
 	char		 err[1024];
 	bool		 ours, made = false, kchanged = false;
+	int		 rc;
 
 	if (rca_open(&x, STAMPD, err, sizeof(err)) != 0) {
 		tell(LOG_WARNING, "stampd: rc.conf: %s", err);
@@ -430,25 +543,32 @@ apply(struct work *w, const char *want, int n, const char *keys,
 		known = true;
 		memcpy(kdig, dig, sizeof(kdig));
 		kknown = true;
+		kfault[0] = '\0';
 		rca_close(&x);
 		return;
 	}
 	/* The keys before stampd is told: a new instance reads them. */
-	if (keys_write(n > 0 ? keys : NULL, n > 0 ? klen : 0, &made, &kchanged,
-	    err, sizeof(err)) != 0) {
+	if ((rc = keys_write(n > 0 ? keys : NULL, n > 0 ? klen : 0, &made,
+	    &kchanged, err, sizeof(err))) != 0) {
 		tell(LOG_WARNING, "stampd: its keys not written: %s", err);
+		if (rc == -2)
+			(void)strlcpy(kfault, err, sizeof(kfault));
 		rca_close(&x);
 		return;
 	}
 	memcpy(kdig, dig, sizeof(kdig));
 	kknown = true;
+	kfault[0] = '\0';
 	/* A file stampd never opened: started again to open it. */
 	verb = made ? "restart" : "reload";
 	if (n > 0 && yes(en) && fb != NULL && said_already(&x, fb, want)) {
-		if (kchanged && service(w, verb, err, sizeof(err)) != 0)
+		if (kchanged && service(w, verb, err, sizeof(err)) != 0) {
 			tell(LOG_WARNING, "stampd: its keys written to %s, but "
 			    "%s", keys_file(), err);
-		else if (kchanged)
+			/* Not taken: said as a fault, and tried again. */
+			(void)snprintf(kfault, sizeof(kfault), "%s written, but "
+			    "%s", keys_file(), err);
+		} else if (kchanged)
 			tell(LOG_INFO, "stampd: its keys rewritten in %s, stampd "
 			    "told (%s)", keys_file(), verb);
 		(void)strlcpy(applied, want, sizeof(applied));
@@ -488,6 +608,9 @@ apply(struct work *w, const char *want, int n, const char *keys,
 			 * again with the next change. */
 			tell(LOG_WARNING, "stampd: stampd_fibs=\"%s\" in %s, but "
 			    "%s", want, rca_where(&x), err);
+			if (kchanged)
+				(void)snprintf(kfault, sizeof(kfault), "%s "
+				    "written, but %s", keys_file(), err);
 			rca_close(&x);
 			return;
 		}
@@ -499,15 +622,66 @@ apply(struct work *w, const char *want, int n, const char *keys,
 	rca_close(&x);
 }
 
+/*
+ * The reflector's faults (stamp-unauthenticated, its own, Warning):
+ * each target whose key is not written (over, nover of them), its far
+ * end's authenticated STAMP to this host failing; the key file while
+ * stampd does not take it (kfault).  Every other of its own cleared
+ * (fault_reconcile()), so that one of a target gone or of a file
+ * mended, or one an agent before raised, does not stay open.
+ */
+static void
+key_faults(const struct over *over, int nover)
+{
+	static const char *const scope[] = { FAULT_SCOPE, NULL };
+	struct fault_live	 v[OVER_MAX + 1];
+	char			 obj[OVER_MAX + 1][PROBE_NAME_MAX + 16];
+	size_t			 n, k;
+
+	memset(v, 0, sizeof(v));
+	for (n = 0; n < (size_t)nover; n++) {
+		(void)snprintf(obj[n], sizeof(obj[n]), FAULT_SCOPE "%s",
+		    over[n].target);
+		v[n].object = obj[n];
+	}
+	if (kfault[0] != '\0') {
+		(void)snprintf(obj[n], sizeof(obj[n]), FAULT_SCOPE "%s",
+		    keys_file());
+		v[n].object = obj[n];
+		n++;
+	}
+	(void)fault_reconcile(FAULT_BY, FAULT_TYPE, scope, v, n, "stampd has "
+	    "its key, or takes its key file, again");
+	for (k = 0; k < n; k++) {
+		if (v[k].open)
+			continue;
+		if (k < (size_t)nover) {
+			logmsg(LOG_WARNING, "stampd: target %s's STAMP key not "
+			    "written: SSID %d has %d keys in %s already, and "
+			    "stampd takes %d an SSID", over[k].target,
+			    over[k].ssid, over[k].same, keys_file(),
+			    STAMP_KEYS_SSID_MAX);
+			fault_set(FAULT_TYPE, "Warning", obj[k], FAULT_BY,
+			    "the reflector has no key for target %s: SSID %d "
+			    "has %d keys already, stampd takes %d; its far "
+			    "end's authenticated STAMP fails", over[k].target,
+			    over[k].ssid, over[k].same, STAMP_KEYS_SSID_MAX);
+		} else
+			fault_set(FAULT_TYPE, "Warning", obj[k], FAULT_BY,
+			    "stampd does not take its keys: %s", kfault);
+	}
+}
+
 static void *
 watch(void *arg __unused)
 {
 	struct work	 w;
 	struct timespec	 ts, settle = { 0, SETTLE_MS * 1000000L };
+	struct over	 over[OVER_MAX];
 	char		 want[sizeof(applied)], *keys;
 	unsigned char	 dig[32];
 	size_t		 klen;
-	int		 n;
+	int		 n, nover;
 
 	for (;;) {
 		pthread_mutex_lock(&mtx);
@@ -520,9 +694,9 @@ watch(void *arg __unused)
 		pthread_mutex_unlock(&mtx);
 		(void)nanosleep(&settle, NULL);
 		n = wanted(want, sizeof(want));
-		keys = keys_text(&klen, dig);
+		keys = keys_text(&klen, dig, over, &nover);
 		if (known && strcmp(want, applied) == 0 && kknown && memcmp(dig,
-		    kdig, sizeof(dig)) == 0)
+		    kdig, sizeof(dig)) == 0 && kfault[0] == '\0')
 			goto next;
 		if (!installed()) {
 			if (n > 0)
@@ -542,6 +716,9 @@ watch(void *arg __unused)
 		(void)change_note(NULL);
 		pthread_mutex_unlock(&change_lock);
 next:
+		/* Each look, the first a full view: what it raised held to
+		 * what is so now. */
+		key_faults(over, nover);
 		if (keys != NULL) {
 			explicit_bzero(keys, klen);
 			free(keys);
@@ -567,7 +744,7 @@ stampd_state(bool *inst, char *fibs, size_t flen, const char **kfile,
 	(void)strlcpy(status, said, slen);
 	*nkeys = 0;
 	if ((k = calloc(KEYS_MAX, sizeof(*k))) != NULL) {
-		*nkeys = probe_stamp_keys(k, KEYS_MAX);
+		*nkeys = probe_stamp_keys(k, NULL, KEYS_MAX);
 		explicit_bzero(k, KEYS_MAX * sizeof(*k));
 		free(k);
 	}

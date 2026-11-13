@@ -2539,6 +2539,97 @@ EOF
 	    cat out
 }
 
+atf_test_case viewer_programs cleanup
+viewer_programs_head()
+{
+	atf_set "descr" "a viewer's request runs no program a jail or a" \
+	    "local user controls: OpenSMTPD's state as the watch last saw" \
+	    "it (no service smtpd onestatus, no smtpctl), a vnet jail's own" \
+	    "ipfw, wg, swanctl, ifmcstat refused, saying an operator reads" \
+	    "them; the recovery session runs them as before"
+}
+viewer_programs_body()
+{
+	mkdir -p tools
+	printf '#!/bin/sh\necho "smtpctl $*" >> %s/smtpctl.log\n' "$(pwd)" > tools/smtpctl
+	chmod +x tools/smtpctl
+	DAEMON_ARGS="-2 $(pwd)/tools --smtpd-conf $(pwd)/smtpd.conf --smtpd-dir $(pwd)/smtpd.d --smtpd-watch 0"
+	start_daemon
+	printf '#!/bin/sh\n' > rc.d/smtpd
+	chmod +x rc.d/smtpd
+	touch service.log
+	# The recovery session: its rc.d script asked.
+	atf_check -o match:'"running":false' "$JGC" -c "$SOCK" smtpd
+	atf_check -o match:'^smtpd ' cat service.log
+	# bob, in no group: a viewer; nothing run.
+	: > service.log
+	atf_check -o match:'"running":false' -o not-match:'"enabled"' \
+	    "$JGC" -u bob -c "$SOCK" smtpd
+	atf_check -o empty cat service.log
+	for a in "network ipfw" "network ipsec" "network multicast" \
+	    "wireguard read"; do
+		atf_check -s exit:1 \
+		    -e match:"in the jail web is the jail's own program, run there as its root: read by an operator of the host, not a viewer" \
+		    -o ignore "$JGC" -u bob -c "$SOCK" action $a jail=web
+	done
+}
+viewer_programs_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case faults_owners_gone cleanup
+faults_owners_gone_head()
+{
+	atf_set "descr" "faults an agent before left open, their subjects" \
+	    "gone or their cause: SD-WAN BIRD's instance, BGP neighbour and" \
+	    "BFD session, an IDS instance, the mail watch's jail, an" \
+	    "interface's key rotation, each cleared by its owner's first" \
+	    "full view (fault_reconcile()); birdwatch's of the host's BIRD," \
+	    "of the same owner, left open; a rotation whose keys are there" \
+	    "and turn no more cleared, its cause gone with the restart"
+	atf_set "timeout" "120"
+}
+faults_owners_gone_body()
+{
+	local now
+
+	now=$(date +%s)
+	programs
+	# gre9's pair, with no rotation pending.
+	start_daemon
+	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	stop_daemon
+	f=$(find . -name 'sdwan-key-gre9.pem' | head -1)
+	[ -n "$f" ] || atf_fail "no pair for gre9"
+	d=${f%/*}
+	cat > "$d/sdwan-faults.json" <<EOF
+[{"t":$((now - 90)),"type":"bird-instance","was":"Critical","object":"svc9","by":"bird","description":"the BIRD instance svc9 does not answer","cleared":false},{"t":$((now - 80)),"type":"bgp-neighbor","was":"Major","object":"svc9/peer1","by":"bird","description":"BGP peer1 of svc9 is down","cleared":false},{"t":$((now - 70)),"type":"bfd","was":"Major","object":"t9","by":"bfd","description":"BFD to 192.0.2.9 on gre9 is down","cleared":false},{"t":$((now - 60)),"type":"ids","was":"Critical","object":"ips9","by":"suricata","description":"Suricata ips9, which prevents, is not running","cleared":false},{"t":$((now - 50)),"type":"mail","was":"Major","object":"jail:old/smtpd","by":"smtpd","description":"smtpd in old is enabled and not running","cleared":false},{"t":$((now - 40)),"type":"key-rotation","was":"Major","object":"ipsec9","by":"arcana-agent","description":"the keys of ipsec9 were not turned","cleared":false},{"t":$((now - 30)),"type":"key-rotation","was":"Major","object":"gre9","by":"arcana-agent","description":"the keys of gre9 were not turned","cleared":false},{"t":$((now - 20)),"type":"bgp-neighbor","was":"Minor","object":"host:bird bgp_edge","by":"bird","description":"BGP bgp_edge is Active","cleared":false}]
+EOF
+	DAEMON_ARGS="--smtpd-watch 1 --bird-watch 0" start_daemon
+	for i in $(seq 1 100); do
+		"$JGC" -c "$SOCK" sdwan > s.json
+		[ "$(grep -o '"cleared":true' s.json | wc -l)" -ge 7 ] && break
+		sleep 0.1
+	done
+	for o in svc9 svc9/peer1 t9 ips9 jail:old/smtpd ipsec9 gre9; do
+		atf_check -o match:"\"object\":\"$o\",\"by\":\"[a-z-]*\",\"description\":\"[^\"]*\",\"cleared\":true" \
+		    cat s.json
+	done
+	atf_check -o match:'"object":"gre9","by":"arcana-agent","description":"[^"]*","cleared":true' \
+	    -o match:'"object":"host:bird bgp_edge","by":"bird","description":"BGP bgp_edge is Active","cleared":false' \
+	    cat s.json
+	atf_check -o match:'gre9: its keys turn no more|its keys turn no more' \
+	    -o match:'ipsec9: its manual IPsec keys are gone' \
+	    -o match:'svc9: the SD-WAN BIRD instance or its neighbour is taken away' \
+	    -o match:'ips9: the Suricata instance is taken away' \
+	    "$JGC" -c "$SOCK" events
+}
+faults_owners_gone_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case alarm_shelving cleanup
 alarm_shelving_head()
 {
@@ -8307,6 +8398,120 @@ stampd_keys_cleanup()
 	stop_daemon
 }
 
+atf_test_case stampd_keys_bounded cleanup
+stampd_keys_bounded_head()
+{
+	atf_set "descr" "stampd takes four keys an SSID: a tunnel's key past" \
+	    "them (the admin's counted) not written, logged and a fault of" \
+	    "its target's; a key file stampd would refuse (the admin's" \
+	    "fifth key of an SSID) not written, stampd not told, a fault of" \
+	    "the file's; each cleared once it is so no more"
+	atf_set "timeout" "180"
+}
+stampd_keys_bounded_body()
+{
+	local F1 F2 k admin s l1 i
+
+	command -v openssl >/dev/null || atf_skip "no openssl(1) for the far end"
+	umask 077
+	stampd_root
+	stampd_script
+	start_daemon
+	k=root/usr/local/etc/stampd.keys
+	admin='# the admin'"'"'s'
+	printf '%s\n42 %s\n' "$admin" "$(openssl rand -hex 16)" > $k
+	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre8
+	openssl genpkey -algorithm X25519 -out far1.pem 2>/dev/null
+	openssl genpkey -algorithm X25519 -out far2.pem 2>/dev/null
+	F1=$(openssl pkey -in far1.pem -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A)
+	F2=$(openssl pkey -in far2.pem -pubout -outform DER | tail -c 32 |
+	    openssl base64 -A)
+	T1="{\"id\":\"t1\",\"address\":\"127.0.0.1\",\"fib\":1,\"stamp_interface\":\"gre9\",\"stamp_peer\":\"$F1\"}"
+	T2="{\"id\":\"t2\",\"address\":\"::1\",\"fib\":1,\"stamp_interface\":\"gre8\",\"stamp_peer\":\"$F2\"}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[$T1]"
+	wait_match '^# arcana-agent: ' cat $k || atf_fail "$(cat daemon.out)"
+	l1=$(grep -E '^[0-9]+ [0-9a-f]{64}$' $k)
+	s=${l1%% *}
+	# The admin keeps four keys of t1's SSID: t1's not written, said,
+	# a fault of its; t2's written.
+	{
+		printf '%s\n42 %s\n' "$admin" "$(openssl rand -hex 16)"
+		for i in 1 2 3 4; do
+			printf '%s %s\n' "$s" "$(openssl rand -hex 16)"
+		done
+		sed -n '/^# arcana-agent: /,$p' $k
+	} > keys.new
+	cat keys.new > $k
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[$T1,$T2]"
+	wait_match "stampd: target t1's STAMP key not written: SSID $s has 4 keys" \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -o inline:'4\n' grep -c "^$s " $k
+	atf_check -s exit:1 grep -qxF -e "$l1" $k
+	atf_check -o inline:'1\n' grep -cE '^[0-9]+ [0-9a-f]{64}$' $k
+	atf_check -o match:'"type":"stamp-unauthenticated","severity":"Warning",("was":"Warning",)?"object":"reflector:t1","by":"stampd","description":"the reflector has no key for target t1: SSID [0-9]+ has 4 keys already, stampd takes 4[^"]*","cleared":false' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The admin's taken out: t1's written again, its fault cleared.
+	{
+		printf '%s\n42 %s\n' "$admin" "$(openssl rand -hex 16)"
+		sed -n '/^# arcana-agent: /,$p' $k
+	} > keys.new
+	cat keys.new > $k
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[$T1]"
+	for i in $(seq 1 100); do
+		grep -qxF -e "$l1" $k && break
+		sleep 0.1
+	done
+	atf_check -o inline:'1\n' grep -cxF -e "$l1" $k
+	for i in $(seq 1 100); do
+		"$JGC" -c "$SOCK" sdwan | grep -q '"object":"reflector:t1","by":"stampd","description":"[^"]*","cleared":true' && break
+		sleep 0.1
+	done
+	atf_check -o match:'"object":"reflector:t1","by":"stampd","description":"[^"]*","cleared":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The admin's fifth key of an SSID: a file stampd refuses, not
+	# written, stampd not told, a fault of the file's.
+	touch service.log
+	n=$(grep -c '^stampd ' service.log)
+	{
+		printf '%s\n' "$admin"
+		for i in 1 2 3 4 5; do
+			printf '7 %s\n' "$(openssl rand -hex 16)"
+		done
+		sed -n '/^# arcana-agent: /,$p' $k
+	} > keys.new
+	cat keys.new > $k
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[$T2]"
+	wait_match 'stampd: its keys not written: .*stampd would refuse it \(line 6: more than 4 keys for SSID 7\)' \
+	    cat daemon.out || atf_fail "$(cat daemon.out)"
+	atf_check -o inline:"$n\n" grep -c '^stampd ' service.log
+	atf_check -o inline:'1\n' grep -cxF -e "$l1" $k
+	atf_check -o match:"\"object\":\"reflector:$(pwd)/$k\",\"by\":\"stampd\",\"description\":\"stampd does not take its keys: [^\"]*would refuse it[^\"]*\",\"cleared\":false" \
+	    "$JGC" -c "$SOCK" sdwan
+	# Mended by the admin: written at the next look, told, cleared.
+	{
+		printf '%s\n' "$admin"
+		for i in 1 2 3 4; do
+			printf '7 %s\n' "$(openssl rand -hex 16)"
+		done
+		sed -n '/^# arcana-agent: /,$p' $k
+	} > keys.new
+	cat keys.new > $k
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[$T1,$T2]"
+	for i in $(seq 1 100); do
+		"$JGC" -c "$SOCK" sdwan | grep -q "\"object\":\"reflector:$(pwd)/$k\",\"by\":\"stampd\",\"description\":\"[^\"]*\",\"cleared\":true" && break
+		sleep 0.1
+	done
+	atf_check -o match:"\"object\":\"reflector:$(pwd)/$k\",\"by\":\"stampd\",\"description\":\"[^\"]*\",\"cleared\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o inline:'2\n' grep -cE '^[0-9]+ [0-9a-f]{64}$' $k
+}
+stampd_keys_bounded_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case stampd_refused cleanup
 stampd_refused_head()
 {
@@ -11143,9 +11348,14 @@ netstore_body()
 	printf '#!/bin/sh\necho "Exports list on localhost:"\necho "/export 10.0.0.0"\n' > tools/showmount
 	printf '#!/bin/sh\necho "sysctl $*" >> %s/sysctl.log\n' "$(pwd)" > fake-sysctl
 	printf '#!/bin/sh\necho "zfs $*" >> %s/zfs.log\ncase "$1" in\nlist) printf "zroot/export\\t/export\\t-maproot=root\\nzroot/home\\t/home\\toff\\n" ;;\nesac\n' "$(pwd)" > fake-zfs
-	chmod +x tools/ctladm tools/hastctl tools/showmount fake-sysctl fake-zfs
+	# The system's storage, stood in for: the host swaps on hasttest9p2,
+	# no pool.
+	printf '#!/bin/sh\necho "Device 1K-blocks Used Avail Capacity"\necho "/dev/hasttest9p2 2097152 0 2097152 0%%"\n' > fake-swapinfo
+	printf '#!/bin/sh\necho "{\\"pools\\":{}}"\n' > fake-zpool
+	chmod +x tools/ctladm tools/hastctl tools/showmount fake-sysctl fake-zfs \
+	    fake-swapinfo fake-zpool
 	printf '/export -network 10.0.0.0/24\n' > exports
-	DAEMON_ARGS="-2 $(pwd)/tools -z $(pwd)/fake-zfs --exports $(pwd)/exports --ctl-conf $(pwd)/ctl.conf --hast-conf $(pwd)/hast.conf -Q $(pwd)/fake-sysctl -O $(pwd)/sysctl.conf"
+	DAEMON_ARGS="-2 $(pwd)/tools -z $(pwd)/fake-zfs --exports $(pwd)/exports --ctl-conf $(pwd)/ctl.conf --hast-conf $(pwd)/hast.conf -Q $(pwd)/fake-sysctl -O $(pwd)/sysctl.conf -W $(pwd)/fake-swapinfo -Z $(pwd)/fake-zpool"
 	start_daemon
 	for d in nfsd mountd ctld hastd; do
 		printf '#!/bin/sh\n' > rc.d/$d
@@ -11239,7 +11449,7 @@ netstore_body()
 	atf_check -o match:'secret = "uclsecret0000"' -o match:'secret: "uclmut00001"' \
 	    -o match:'mutual-secret = "uclmut00002"' cat ctl.conf
 	# HAST: hast.conf; a resource made, its role set.
-	printf 'resource shared {\n\ton a { local /dev/ada1\n\t\tremote 10.0.0.2 }\n}\n' > hast.new
+	printf 'resource shared {\n\ton a { local /dev/hasttest1\n\t\tremote 10.0.0.2 }\n}\n# the system'"'"'s swap\nresource sys {\n\tlocal /dev/hasttest9p2\n\ton a {\n\t\tremote 10.0.0.2\n\t}\n}\nresource other { on b { local /dev/hasttest9p2 } }\n' > hast.new
 	atf_check -o match:'done +hast conf' "$JGC" -c "$SOCK" hast conf hast.new
 	atf_check -o match:'resource shared' cat hast.conf
 	atf_check -o match:'done +hast create shared' "$JGC" -c "$SOCK" hast create shared
@@ -11247,6 +11457,16 @@ netstore_body()
 	atf_check -o match:'^hastctl create shared$' -o match:'^hastctl role primary shared$' cat hastctl.log
 	atf_check -s exit:1 -e match:'role is init, primary or secondary' "$JGC" -c "$SOCK" hast role leader shared
 	atf_check -s exit:1 -e match:'a hast resource is named' "$JGC" -c "$SOCK" hast create '../x'
+	# One whose local provider the host swaps on: neither created nor
+	# given a role, what is protected said; hastctl not run.  Its on
+	# blocks' local too.
+	atf_check -s exit:1 -o match:'failed.*hast create sys: its local provider /dev/hasttest9p2: the host swaps on /dev/hasttest9p2: it is not touched from here' \
+	    "$JGC" -c "$SOCK" hast create sys
+	atf_check -s exit:1 -o match:'failed.*hast role sys: its local provider /dev/hasttest9p2: the host swaps on' \
+	    "$JGC" -c "$SOCK" hast role primary sys
+	atf_check -s exit:1 -o match:'failed.*hast create other: its local provider /dev/hasttest9p2' \
+	    "$JGC" -c "$SOCK" hast create other
+	atf_check -o not-match:'sys|other' cat hastctl.log
 	# The host's alone.
 	atf_check -s exit:1 -e match:'iscsi takes no jail' \
 	    "$JGC" -j web -c "$SOCK" iscsi enable yes
@@ -11696,6 +11916,76 @@ EOS
 	atf_check test ! -e other
 }
 agent_build_trust_cleanup()
+{
+	stop_daemon
+}
+
+# A submodule pinned at a commit that is no longer a branch's tip: the
+# shallow clone's fetch of it refused, the submodule fetched whole.
+atf_test_case agent_build_submodule cleanup
+agent_build_submodule_head()
+{
+	atf_set "descr" "A submodule the shallow clone cannot have at its" \
+	    "pinned commit (an unadvertised object) fetched whole and the" \
+	    "build goes on; one whose commit is in none of the history" \
+	    "refused, the submodule and the commit named"
+}
+agent_build_submodule_body()
+{
+	programs
+	c=4444444444444444444444444444444444444444
+	cat > fake-git <<EOS
+#!/bin/sh
+echo "\$*" >> $(pwd)/git.log
+[ "\$1" = -c ] && shift 2
+[ "\$1" = -C ] && [ "\$3" = rev-parse ] && { echo 1111111111111111111111111111111111111111; exit 0; }
+# stamp not checked out by the clone, '-' before its pinned commit.
+[ "\$1" = -C ] && [ "\$3" = submodule ] && [ "\$4" = status ] && {
+	[ -f "\$2/stamp/DEEP" ] && echo " $c stamp (heads/main)" || echo "-$c stamp"
+	exit 0
+}
+# Deep: the commit is in the history, or (./gone) in none of it.
+if [ "\$1" = -C ] && [ "\$3" = submodule ] && [ "\$4" = update ]; then
+	case " \$* " in *" --depth 2147483647 -- stamp "*) ;; *) exit 2 ;; esac
+	[ -f $(pwd)/gone ] && { echo "fatal: remote error: upload-pack: not our ref $c" >&2; echo "fatal: Fetched in submodule path 'stamp', but it did not contain $c. Direct fetching of that commit failed." >&2; exit 1; }
+	mkdir -p "\$2/stamp" && touch "\$2/stamp/DEEP"
+	exit 0
+fi
+[ "\$1" = clone ] || exit 2
+for a; do last=\$a; done
+mkdir -p "\$last/.git" "\$last/jailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent" "\$last/stamp"
+# The shallow clone: the tree made, stamp's commit refused.
+echo "error: Server does not allow request for unadvertised object $c" >&2
+echo "fatal: Fetched in submodule path 'stamp', but it did not contain $c. Direct fetching of that commit failed." >&2
+echo "fatal: clone of 'https://example.org/stamp.git' into submodule path 'stamp' failed" >&2
+exit 1
+EOS
+	cat > fake-make <<EOS
+#!/bin/sh
+dir=\$2
+case " \$* " in
+*" -V .OBJDIR "*) echo "\$dir/obj" ;;
+*/usr.sbin/arcana-agent*) [ -f "\$dir/../../stamp/DEEP" ] || exit 1
+	mkdir -p "\$dir/obj" && cp "$JGD" "\$dir/obj/arcana-agent" ;;
+esac
+EOS
+	chmod +x fake-git fake-make
+	start_daemon
+	atf_check -o match:'^Built: ' \
+	    -o match:"submodule: stamp at $c, fetched whole" \
+	    "$JGC" -t -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	atf_check cmp -s "$JGD" built
+	atf_check -o match:'submodule update --init --depth 2147483647 -- stamp$' \
+	    cat git.log
+	# In none of the history: refused, the submodule and its commit said.
+	touch gone
+	rm built
+	atf_check -s exit:1 \
+	    -e match:"submodule stamp: commit $c, which the tree pins, is in none of the history its repository shows" \
+	    -o ignore "$JGC" -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	atf_check test ! -e built
+}
+agent_build_submodule_cleanup()
 {
 	stop_daemon
 }
@@ -13359,7 +13649,7 @@ firewall_apply_cleanup()
 atf_test_case firewall_feeds cleanup
 firewall_feeds_head()
 {
-	atf_set "descr" "threat feeds: a feed's prefixes made an ipfw table whole by a scratch table swapped in, kept in a file; a dry run changes nothing; the host's own table never replaced nor dropped; Apply makes the feed's table again in set 1 before its swap; the start fills it again"
+	atf_set "descr" "threat feeds: a feed's prefixes made an ipfw table whole by a scratch table swapped in, kept in a file; a dry run changes nothing; the host's own table never replaced nor dropped; Apply makes the feed's table again in set 1 before its swap; the start fills it again; a load is libipfeeds' sh(1) script, under the lock ipfeeds(8)'s loads of the table take"
 }
 firewall_feeds_body()
 {
@@ -13378,7 +13668,7 @@ if [ "\$1" = set ] && [ "\$2" != swap ] && [ "\$2" != disable ] &&
 fi
 case "\$*" in
 *.arcana-load) cat "\$1" > \$d/loaded.rules ;;
-*.load)
+*.load|/dev/stdin)
 	while read -r a b c d2 rest; do
 		if [ "\$a" = set ]; then ls=\$b; n=\$d2; v=\$(echo "\$rest" | cut -d' ' -f1); r=\$(echo "\$rest" | cut -d' ' -f2-)
 		else ls=0; n=\$b; v=\$c; r="\$d2 \$rest"; fi
@@ -13395,6 +13685,7 @@ case "\$*" in
 		printf -- '--- table(%s), set(%s) ---\n kindex: 1, type: addr\n items: %d, size: 0\n' \
 		    "\${b#*.}" "\${b%%.*}" "\$(wc -l < \$f)"
 	done ;;
+"table "*" info") [ -f \$d/t/\$s.\$2 ] || exit 71 ;;
 "table "*" list") [ -f \$d/t/\$s.\$2 ] && sed 's/\$/ 0/' \$d/t/\$s.\$2 ;;
 "table "*" create type addr") : > \$d/t/\$s.\$2 ;;
 "table "*" destroy")
@@ -13414,8 +13705,10 @@ EOS
 	chmod +x fake-ipfw
 	fw_sysctl 1 0
 	mkdir fw
+	# The loads' locks under the root's /var/run, as ipfeeds(8)'s are.
+	mkdir -p root/var/run
 	printf '10.9.0.0/16\n' > t/0.own
-	DAEMON_ARGS="-h $(pwd)/fake-ipfw -J $(pwd)/fw/ipfw.rules -Q $(pwd)/fake-sysctl"
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -J $(pwd)/fw/ipfw.rules -Q $(pwd)/fake-sysctl --root $(pwd)/root"
 	start_daemon
 
 	printf '# a feed\n192.0.2.0/24\n2001:db8::/32\n198.51.100.7\n192.0.2.9/24 ; again\n\n' > list
@@ -13435,16 +13728,31 @@ EOS
 	    dry-run=true
 	atf_check test ! -e fw/feeds/feed_drop
 	atf_check test ! -e t/0.feed_drop
-	# Loaded: a scratch table filled by one run of a file, swapped in.
+	# Loaded: libipfeeds' script, under the table's lock: a scratch
+	# table filled by one ipfw run of its standard input, swapped in.
 	: > ipfw.log
 	atf_check -o match:'"count":3' "$JGC" -c "$SOCK" action firewall \
 	    feed-load name=feed_drop feed=spamhaus-drop entries="$(cat list)"
 	atf_check -o inline:'192.0.2.0/24\n198.51.100.7/32\n2001:db8::/32\n' \
 	    sort t/0.feed_drop
 	atf_check test ! -e t/0.feed_drop_load
-	atf_check -o match:'^ipfw -q .*/fw/feeds/.feed_drop.load$' \
+	atf_check -o match:'^ipfw -q /dev/stdin$' \
+	    -o match:'^ipfw -q table feed_drop_load destroy$' \
 	    -o match:'^ipfw -q table feed_drop swap feed_drop_load$' \
 	    -o not-match:'table feed_drop add' cat ipfw.log
+	atf_check test ! -e fw/feeds/.feed_drop.load
+	atf_check test -f root/var/run/ipfeeds.feed_drop.lock
+	# The lock held (ipfeeds(8) loading the table): the load waits.
+	lockf -k root/var/run/ipfeeds.feed_drop.lock sh -c \
+	    'sleep 2; echo released >> ipfw.log' &
+	held=$!
+	sleep 0.5
+	: > ipfw.log
+	atf_check -o match:'"count":3' "$JGC" -c "$SOCK" action firewall \
+	    feed-load name=feed_drop feed=spamhaus-drop entries="$(cat list)"
+	wait $held
+	atf_check -o inline:'released\nipfw -q /dev/stdin\n' \
+	    grep -e '^released$' -e '^ipfw -q /dev/stdin$' ipfw.log
 	atf_check -o match:'^# arcana feed spamhaus-drop$' \
 	    -o match:'^198.51.100.7/32$' cat fw/feeds/feed_drop
 	atf_check -o match:'"name":"feed_drop","type":"addr","feed":"spamhaus-drop"' \
@@ -17476,6 +17784,7 @@ atf_init_test_cases()
 	atf_add_test_case secrets_mask
 	atf_add_test_case viewer_reads
 	atf_add_test_case agent_build_trust
+	atf_add_test_case agent_build_submodule
 	atf_add_test_case sdwan_ids
 	atf_add_test_case vpn_bird_gone
 	atf_add_test_case safe_mode_restore
@@ -17503,6 +17812,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_probes
 	atf_add_test_case stampd_conf
 	atf_add_test_case stampd_keys
+	atf_add_test_case stampd_keys_bounded
 	atf_add_test_case stampd_refused
 	atf_add_test_case stamp_kind
 	atf_add_test_case stamp_rekey
@@ -17537,6 +17847,8 @@ atf_init_test_cases()
 	atf_add_test_case fw_walk
 	atf_add_test_case crash_fault
 	atf_add_test_case kmsg_tail
+	atf_add_test_case faults_owners_gone
+	atf_add_test_case viewer_programs
 	atf_add_test_case alarm_shelving
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
