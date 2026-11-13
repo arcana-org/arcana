@@ -161,7 +161,9 @@ state_name(const struct kinfo_proc *kp)
 	}
 }
 
-/* The command line of a process, its words a space apart. */
+/* The command line of a process, its words a space apart; a secret's
+ * value in it (--password x, -k x, token=x) masked for a principal
+ * below an operator (wmask()). */
 static const char *
 args_of(struct work *w, pid_t pid)
 {
@@ -180,7 +182,7 @@ args_of(struct work *w, pid_t pid)
 		if (buf[i] == '\0' || (unsigned char)buf[i] < 0x20)
 			buf[i] = ' ';
 	buf[len] = '\0';
-	return (wtext(w, buf));
+	return (wtext(w, w->clear < CLEAR_OPERATOR ? wmask(w, buf) : buf));
 }
 
 static void

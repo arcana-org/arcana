@@ -5,7 +5,7 @@ SRCS=		main.c handlers.c work.c
 # what the collectors (y*.c) read into their structs.
 SRCS+=		yjson.c
 # Superbia: identity, configuration, what is true of the host.
-SRCS+=		admit.c ynacm.c certs.c ssh.c tlsfiles.c confedit.c confread.c host.c kernel.c ntp.c rtadvd.c sysctl.c transport.c bundle.c l2.c ipfw.c netstore.c sysfiles.c geomjob.c \
+SRCS+=		admit.c ynacm.c secrets.c certs.c ssh.c tlsfiles.c confedit.c confread.c host.c kernel.c ntp.c rtadvd.c sysctl.c transport.c bundle.c l2.c ipfw.c netstore.c sysfiles.c geomjob.c \
 		yagent.c yhost.c yhw.c ysshd.c ysystem.c ysysedit.c yboot.c yreads.c
 # Invidia: the network.
 SRCS+=		sa.c address.c interfaces.c netgraph.c network.c netdump.c nlroute.c fwmatch.c pathcheck.c neigh.c carp.c capture.c parts.c pcb.c rcconf.c \

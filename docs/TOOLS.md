@@ -190,7 +190,7 @@ cat /var/db/arcana/setup-token   # for the first login
 | `sessions/` in `datadir` | The logins that have not run out, a document each (`sessions/<hash>.json`), the hash of its cookie with its times, so that a restart of the console does not log anyone out, and a cluster's nodes each write their own sign-ins. Mode 0600. | none |
 | `settings.json` in `datadir` | What **Settings** in the console changed: `rp_name`, `update_check`, `update_url`, `agent_binary`, `agent_source`, `agent_ref`. It overrides `web.conf` for those. | none |
 | `agent_source`, `agent_ref` | A git repository, and a branch or tag, a host can be asked to build `arcana-agent` from; what it builds is sent instead of `agent_binary`. | none |
-| `agent_ssh_key` | For a repository over SSH: a private key on the build host for git, readable by `nobody`. | a key the host makes |
+| `agent_ssh_key` | For a repository over SSH: a private key on the build host for git, readable by `_arcanabuild`. | a key the host makes |
 
 rc.conf variables: `arcana_console_enable`, `arcana_console_web_conf`,
 `arcana_console_pidfile`. The API is RESTCONF (RFC 8040), described

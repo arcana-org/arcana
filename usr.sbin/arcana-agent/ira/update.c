@@ -12,9 +12,19 @@
  * <path>.old.  A program sent compressed is inflated first, to no more
  * than max-program bytes: what is checked, signed and installed is the
  * program, as it runs.
+ *
+ * What the console's CA key signs is the update's statement (update_
+ * statement(), zprog.h): the host it is for, the version and the
+ * SHA-256 it stands for, and whether it may go back; the program is
+ * bound by its SHA-256 and has to report that version.  A version
+ * older than the running agent's is refused unless the statement says
+ * downgrade yes: a program signed once is not sent again to take a fix
+ * back, nor to another host.  Root on the local socket is root
+ * already: its program is taken unsigned, the version's check its
+ * alone, downgrade by its own word.
  */
 
-#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -54,8 +64,46 @@ sha256_is(const uint8_t *data, size_t len, const char *hex)
 	return (strcasecmp(got, hex) == 0);
 }
 
+/* What the console signs of an update: www/arcana-console/hosts.c makes
+ * the same. */
+static char *
+update_statement(struct work *w, const char *version, const char *sha256,
+    bool downgrade)
+{
+	char	 host[MAXHOSTNAMELEN], *sha, *p;
+
+	if (gethostname(host, sizeof(host)) != 0)
+		host[0] = '\0';
+	sha = wstrdup(w, sha256);
+	for (p = sha; *p != '\0'; p++)
+		if (*p >= 'A' && *p <= 'F')
+			*p = (char)(*p - 'A' + 'a');
+	return (wfmt(w, UPDATE_STATEMENT, host, version, sha, downgrade ?
+	    "yes" : "no"));
+}
+
 /*
- * Is the program signed by a CA this host trusts (-A)?  The console's
+ * a.b.c against x.y.z, as numbers: <0, 0 or >0; a version that is no
+ * such triple is the oldest.
+ */
+static int
+version_cmp(const char *a, const char *b)
+{
+	unsigned long	 x[3], y[3];
+	int		 i;
+
+	if (sscanf(a, "%lu.%lu.%lu", &x[0], &x[1], &x[2]) != 3)
+		return (-1);
+	if (sscanf(b, "%lu.%lu.%lu", &y[0], &y[1], &y[2]) != 3)
+		return (1);
+	for (i = 0; i < 3; i++)
+		if (x[i] != y[i])
+			return (x[i] < y[i] ? -1 : 1);
+	return (0);
+}
+
+/*
+ * Is the statement signed by a CA this host trusts (-A)?  The console's
  * CA key signs what it sends (SHA-256; Ed25519 with its own hash), and
  * any certificate of the CA file verifies.
  */
@@ -89,22 +137,24 @@ signed_by_ca(const uint8_t *data, size_t len, const uint8_t *sig,
 	}
 	fclose(fp);
 	if (!ok)
-		*why = any ? "the program is not signed by a CA this host trusts" :
-		    "the CA file holds no certificate";
+		*why = any ? "the update is not signed by a CA this host trusts "
+		    "(its version and SHA-256, as a console of 0.433.0 or later "
+		    "signs them)" : "the CA file holds no certificate";
 	return (ok);
 }
 
 static int
 agent_install(struct work *w, const uint8_t *data, size_t len,
-    const char *sha256, const uint8_t *sig, size_t siglen, bool local,
-    struct build_rsp *rsp)
+    const struct agent_update *u, struct build_rsp *rsp)
 {
 	struct execres	 res;
-	const char	*path, *nl;
-	char		*new, *old, *argv[3];
+	const char	*path, *nl, *sha256;
+	char		*new, *old, *argv[3], *st;
 	ssize_t		 n;
 	size_t		 off;
 	int		 fd, s;
+
+	sha256 = u->sha256;
 
 	rsp->has_ok = true;
 	rsp->ok = false;
@@ -113,24 +163,37 @@ agent_install(struct work *w, const uint8_t *data, size_t len,
 	old = wfmt(w, "%s.old", path);
 
 	/* Signed by the CA, unless asked by the local socket, whose root
-	 * could replace the program by hand. */
-	if (!local) {
+	 * could replace the program by hand: the statement of its version
+	 * and SHA-256. */
+	if (!u->local) {
 		const char	*why;
 
 		s = step_begin(w, STEP_LIB, "signature", "%zu bytes by "
-		    "the CA's key", siglen);
-		if (siglen == 0) {
+		    "the CA's key, of version %s and the SHA-256", u->siglen,
+		    u->version != NULL ? u->version : "(none)");
+		if (u->siglen == 0) {
 			step_end(w, s, false, "none");
 			rsp->error = "the program is not signed: a console signs "
 			    "what it sends with its CA key";
 			return (0);
 		}
-		if (!signed_by_ca(data, len, sig, siglen, &why)) {
+		if (u->version == NULL) {
+			step_end(w, s, false, "no version");
+			rsp->error = "the update says no version: a console of "
+			    "0.433.0 or later signs the version with the program";
+			return (0);
+		}
+		/* Rebuilt from this host and what was sent: a flag flipped,
+		 * or a statement for another host, is not what was signed. */
+		st = update_statement(w, u->version, sha256, u->downgrade);
+		if (!signed_by_ca((const uint8_t *)st, strlen(st), u->sig,
+		    u->siglen, &why)) {
 			step_end(w, s, false, "%s", why);
 			rsp->error = why;
 			return (0);
 		}
-		step_end(w, s, true, "verified");
+		step_end(w, s, true, "verified: version %s and the SHA-256",
+		    u->version);
 	}
 	s = step_begin(w, STEP_LIB, "SHA-256", "%zu bytes", len);
 	if (!sha256_is(data, len, sha256)) {
@@ -177,6 +240,29 @@ agent_install(struct work *w, const uint8_t *data, size_t len,
 	rsp->agent_version = wstrndup(w, res.out + strlen(VERSION_PREFIX),
 	    (nl != NULL ? (size_t)(nl - res.out) : res.outlen) -
 	    strlen(VERSION_PREFIX));
+	/* What was signed is what runs; an older one only when asked. */
+	s = step_begin(w, STEP_LIB, "version", "%s, running %s",
+	    rsp->agent_version, ARCANA_AGENT_VERSION);
+	if (u->version != NULL && strcmp(u->version, rsp->agent_version) !=
+	    0) {
+		step_end(w, s, false, "not %s", u->version);
+		rsp->error = wfmt(w, "the program reports %s, not the version "
+		    "%s it was sent as", wtext(w, rsp->agent_version),
+		    u->version);
+		(void)unlink(new);
+		return (0);
+	}
+	if (version_cmp(rsp->agent_version, ARCANA_AGENT_VERSION) < 0 &&
+	    !u->downgrade) {
+		step_end(w, s, false, "older");
+		rsp->error = wfmt(w, "the program is %s, older than the running "
+		    "%s: an update that goes back says downgrade",
+		    wtext(w, rsp->agent_version), ARCANA_AGENT_VERSION);
+		rsp->has_older = true;
+		(void)unlink(new);
+		return (0);
+	}
+	step_end(w, s, true, NULL);
 
 	s = step_begin(w, STEP_FILE, "replace", "%s", path);
 	(void)unlink(old);
@@ -198,16 +284,14 @@ agent_install(struct work *w, const uint8_t *data, size_t len,
  */
 int
 do_agent_update(struct work *w, const uint8_t *data, size_t len,
-    size_t size, const char *sha256, const uint8_t *sig, size_t siglen,
-    bool local, struct build_rsp *rsp)
+    size_t size, const struct agent_update *u, struct build_rsp *rsp)
 {
 	const char	*why;
 	uint8_t		*prog;
 	int		 rc, s;
 
 	if (size == 0)
-		return (agent_install(w, data, len, sha256, sig, siglen, local,
-		    rsp));
+		return (agent_install(w, data, len, u, rsp));
 	rsp->has_ok = true;
 	rsp->ok = false;
 	s = step_begin(w, STEP_LIB, "inflate(3)", "%zu bytes of "
@@ -219,7 +303,7 @@ do_agent_update(struct work *w, const uint8_t *data, size_t len,
 		return (0);
 	}
 	step_end(w, s, true, "%zu bytes", size);
-	rc = agent_install(w, prog, size, sha256, sig, siglen, local, rsp);
+	rc = agent_install(w, prog, size, u, rsp);
 	free(prog);
 	return (rc);
 }

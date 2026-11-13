@@ -150,7 +150,7 @@ on the wire.
 | 80 400 | 300 | `arcana-bird`, its second range: the read, ospf and check actions, a protocol's detail, the jails' configuration | `share/yang/arcana-bird@2026-10-15.sid` (153 used) |
 | 81 000 | 200 | `arcana-sdwan`, its second range: the forms (spec, host), the jails' edges, the breakout's routes, a rule's place, the IDS' and the proxies' settings, the apply action, the state's routes, bfd, ClamAV and the IDS' build, host, ruleset, statistics and captures | `share/yang/arcana-sdwan@2026-10-15.sid` (122 used) |
 | 82 000 | 100 | `arcana-host`, its second range: the read-certificates action, the plugins poudriere, smtpd and speederv2 | `share/yang/arcana-host@2026-10-15.sid` (17 used) |
-| 82 100 | 100 | `arcana-agent`, its second range: the transport's time, the TLS chain's certificates, config-files (82 107 on) | `share/yang/arcana-agent@2026-10-15.sid` (61 used) |
+| 82 100 | 100 | `arcana-agent`, its second range: the transport's time, the TLS chain's certificates, config-files (82 107 on), update's downgrade and version (82 161, 82 162) | `share/yang/arcana-agent@2026-10-15.sid` (63 used) |
 | 83 000 | 100 | `arcana-host`, its third range: the agent's features and safe-wait, what hello said | `share/yang/arcana-host@2026-10-15.sid` (2 used) |
 | 83 100 | 100 | `arcana-agent`, its third range: update's program-size, build's compress and program-size, a fetch's refusal, console-update's commit | `share/yang/arcana-agent@2026-10-15.sid` (8 used) |
 | 83 200 | 100 | `arcana-jobs`, its second range: the steps notification, a request's trace told to its peer as it runs | `share/yang/arcana-jobs@2026-10-14.sid` (13 used) |
@@ -181,7 +181,7 @@ on the wire.
 | 91 700 | 100 | `arcana-sdwan-underlay`, the VN view's bounds and underlay, the console's | `share/yang/arcana-sdwan-underlay@2026-11-05.sid` (39 used) |
 | 91 800 | 300 | `arcana-console`, the console's own configuration and state: its settings (each way's alert cases among them), tokens, users, roles, groups, enrolment, workflows, runs, templates, labels, prefix lists, threat feeds, transfers, Web Push subscriptions, hosts, the SD-WAN's verbs, update, notes, cluster, CA, plugins, security keys, the path finder and the WireGuard key pair, numbered again in path order over its three ranges | `share/yang/arcana-console@2026-11-05.sid` (300 used) |
 | 92 100 | 200 | `arcana-console`, its second range, for what did not fit the first | `share/yang/arcana-console@2026-11-05.sid` (200 used) |
-| 92 300 | 300 | `arcana-console`, its third range | `share/yang/arcana-console@2026-11-05.sid` (153 used) |
+| 92 300 | 300 | `arcana-console`, its third range | `share/yang/arcana-console@2026-11-05.sid` (154 used) |
 | 92 600 | 100 | `arcana-stamp`, STAMP's sessions, the sender's settings and stampd as the agent sets it | `share/yang/arcana-stamp@2026-11-10.sid` (63 used, numbered again in path order with a session's class) |
 | 92 700 | 100 | `arcana-probe`, its fourth range: the measurement intervals (PLAN-SDN-YANG 5.2), the edges' counters and routes (5.3.2), the underlay's targets (5.3.3) | `share/yang/arcana-probe@2026-10-15.sid` (79 used) |
 | 92 800 | 200 | `ietf-network-vpn-pm@2023-03-20`, RFC 9375 (no IETF range): the services' performance view, the console's | `share/yang/ietf-network-vpn-pm@2023-03-20.sid` (116 used) |

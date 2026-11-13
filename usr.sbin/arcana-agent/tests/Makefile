@@ -167,6 +167,12 @@ LDADD.ylane+=	${CBLINK_LIBS}
 PROGS+=		zupdate
 SRCS.zupdate=	zupdate.c ymodel_schema.c
 LDADD.zupdate+=	${CBLINK_LIBS}
+# mask: secrets.c's masking of a text, a URL, alone.
+PROGS+=		mask
+SRCS.mask=	mask_test.c secrets.c
+CFLAGS.mask_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+CFLAGS.secrets.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.mask+=	${CBLINK_LIBS} ${UCL_LIBS}
 # fwmatch: a packet walked through an ipfw ruleset.
 PROGS+=		fwmatch
 SRCS.fwmatch=	fwmatch_test.c fwmatch.c

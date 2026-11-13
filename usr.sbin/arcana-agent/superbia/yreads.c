@@ -68,11 +68,12 @@ flat_in(const char *mod, const char *path, const ucl_object_t *top,
 	return (yflat_in(n, top, out, a, names));
 }
 
-/* The read r ended as told; its JSON into out. */
+/* The read r ended as told; its JSON into out, each string's secrets
+ * masked (ucl_mask()) when mask says so. */
 static int
 answer(cbl_req *req, struct work *w, int root, const struct json_rsp *r,
     const char *mod, const char *path, void *out, cbl_yarena *a,
-    const char *const *names)
+    const char *const *names, bool mask)
 {
 	ucl_object_t	*top;
 	int		 error;
@@ -82,6 +83,8 @@ answer(cbl_req *req, struct work *w, int root, const struct json_rsp *r,
 		return (said(req, r->error));
 	if ((top = yj_parse(r->json)) == NULL)
 		return (EIO);
+	if (mask)
+		ucl_mask(top);
 	error = flat_in(mod, path, top, out, a, names);
 	ucl_object_unref(top);
 	return (error);
@@ -128,6 +131,14 @@ arcana_crashes_crashes_read_action(cbl_req *req, const struct cbl_bytes *target,
 	if ((w = ywork_told(req, a, "the cores dumped", &root)) == NULL)
 		return (ENOMEM);
 	n = 0;
+	/* A backtrace has what the core's memory held (char * arguments:
+	 * a password read, a key): an operator's, masking would leave
+	 * nothing of it. */
+	if (in->backtrace != NULL && clearance(req) < CLEAR_OPERATOR) {
+		step_end(w, root, false, NULL);
+		return (said(req, "a core's backtrace is an operator's to "
+		    "read"));
+	}
 	if (in->backtrace != NULL) {
 		names[n++] = "backtrace";
 		names[n++] = in->backtrace;
@@ -137,7 +148,7 @@ arcana_crashes_crashes_read_action(cbl_req *req, const struct cbl_bytes *target,
 	memset(&r, 0, sizeof(r));
 	do_crashes(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-crashes",
-	    "crashes/read/output", out, a, yfn_crashes));
+	    "crashes/read/output", out, a, yfn_crashes, false));
 }
 
 int
@@ -168,8 +179,10 @@ arcana_system_system_read_action(cbl_req *req, const struct cbl_bytes *target,
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
 	do_system(w, in->name.v, in->name.n, &r);
+	/* Read by an operator's rule too: ipsec.conf's manual keys, dma's
+	 * credentials, an admin's alone. */
 	return (answer(req, w, root, &r, "arcana-system", "system/read/output",
-	    out, a, yfn_system));
+	    out, a, yfn_system, clearance(req) < CLEAR_ADMIN));
 }
 
 int
@@ -210,7 +223,7 @@ arcana_netstore_netstore_read_action(cbl_req *req,
 	memset(&r, 0, sizeof(r));
 	do_netstore(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-netstore",
-	    "netstore/read/output", out, a, yfn_netstore));
+	    "netstore/read/output", out, a, yfn_netstore, false));
 }
 
 int
@@ -258,7 +271,7 @@ arcana_suricata_suricata_read_rules_action(cbl_req *req,
 	memset(&r, 0, sizeof(r));
 	do_suricata_rules(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-suricata",
-	    "suricata/read-rules/output", out, a, yfn_suricata));
+	    "suricata/read-rules/output", out, a, yfn_suricata, false));
 }
 
 int
@@ -277,10 +290,14 @@ arcana_suricata_suricata_read_sources_action(cbl_req *req,
 	if ((w = ywork_told(req, a, "Suricata's rule sources read", &root)) ==
 	    NULL)
 		return (ENOMEM);
+	/* A source's url may hold its secret code in its path: a viewer
+	 * has its host alone (wurl()). */
+	w->clear = clearance(req);
 	memset(&r, 0, sizeof(r));
 	do_suricata_rules(w, names, nitems(names), &r);
 	return (answer(req, w, root, &r, "arcana-suricata",
-	    "suricata/read-sources/output", out, a, yfn_suricata));
+	    "suricata/read-sources/output", out, a, yfn_suricata,
+	    w->clear < CLEAR_OPERATOR));
 }
 
 int
@@ -408,6 +425,10 @@ arcana_smtpd_smtpd_read_action(cbl_req *req, const struct cbl_bytes *target,
 		return (said(req, r.error));
 	if ((top = yj_parse(r.json)) == NULL)
 		return (EIO);
+	/* smtpd.conf's inline tables and the like, and a table's text,
+	 * masked for a viewer. */
+	if (clearance(req) < CLEAR_OPERATOR)
+		ucl_mask(top);
 	/* The form is the console's JSON, a text; a table its text, or a
 	 * secret one its names. */
 	as_text(top, "spec", "spec");
@@ -461,6 +482,8 @@ arcana_speeder_speeder_read_action(cbl_req *req,
 	}
 	memset(&r, 0, sizeof(r));
 	do_speeder(w, &r);
+	/* Its log's lines and flags may carry -k <key>. */
 	return (answer(req, w, root, &r, "arcana-speeder",
-	    "speeder/read/output", out, a, yfn_speeder));
+	    "speeder/read/output", out, a, yfn_speeder, clearance(req) <
+	    CLEAR_OPERATOR));
 }

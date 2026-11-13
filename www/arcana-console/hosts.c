@@ -240,6 +240,7 @@ struct call {
 	size_t			 nspecs;
 	uint64_t		 jobid;		/* job, job-cancel */
 	bool			 restart;	/* agent-update */
+	bool			 downgrade;	/* agent-update: an older one */
 	char			*host_keys;	/* agent-build: confirmed */
 	char			*text;		/* bird-config: the new text */
 	struct rcreq		*rc;		/* restconf: what is asked */
@@ -2206,11 +2207,12 @@ call_run(struct task *t)
 	ucl_object_t		*top, *srv, *a, *e;
 	cbl_conn		*conn;
 	cbl_tls			*tls;
-	const char		*msg;
-	char			 detail[512];
+	const char		*msg, *ver;
+	char			 detail[512], stmt[512], hname[256];
 	uint64_t		 t1, us;
 	size_t			 nsteps, i;
-	bool			 local, ok, reused, again, gz, jobkeep, jobended;
+	bool			 local, ok, reused, again, gz, signs, jobkeep;
+	bool			 jobended;
 	int			 error;
 
 	c = (struct call *)t;
@@ -3403,28 +3405,49 @@ connected:
 			put_str(top, "error", msg);
 			break;
 		}
-		/* Signed by the CA key: the host takes no other. */
-		if ((msg = pki_sign_data(bin, binlen, &sig, &siglen)) != NULL) {
-			ok = false;
-			put_str(top, "error", msg);
-			break;
-		}
 		/*
 		 * arcana-agent's update (yhostjson.c): compressed for an agent
 		 * whose features in arcana-host say it takes it so, as it is
-		 * for one before.  Not waited for without end: an agent that
-		 * restarts as its answer leaves can leave the connection open
-		 * with no answer on it, and the update would show as under
-		 * way for ever.
+		 * for one before.  Signed by the CA key, the host takes no
+		 * other: the update's statement, its version and SHA-256
+		 * (zprog.h), to an agent that takes it so, which runs no
+		 * older version unless asked; the program to one before.
+		 * Not waited for without end: an agent that restarts as its
+		 * answer leaves can leave the connection open with no answer
+		 * on it, and the update would show as under way for ever.
 		 */
 		ysteps_begin(conn, c, &ys);
 		if ((error = yh_hello(conn, &e, ywhy, sizeof(ywhy))) == 0) {
 			gz = yh_takes_gzip(e);
+			signs = yh_takes_signed(e);
+			/* The host it is for, as its hello says. */
+			snprintf(hname, sizeof(hname), "%s", ucl_str(e,
+			    "hostname") != NULL ? ucl_str(e, "hostname") : "");
 			ucl_object_unref(e);
 			e = NULL;
+			ver = agent_version();
+			if (signs && (ver == NULL || hname[0] == '\0'))
+				msg = "the console cannot say the version of the "
+				    "arcana-agent it sends, or the host's name";
+			else if (signs) {
+				/* downgrade yes only when asked of this action,
+				 * an admin's of the host (call_open()). */
+				snprintf(stmt, sizeof(stmt), UPDATE_STATEMENT, hname,
+				    ver, sha, c->downgrade ? "yes" : "no");
+				msg = pki_sign_data((const uint8_t *)stmt,
+				    strlen(stmt), &sig, &siglen);
+			} else
+				msg = pki_sign_data(bin, binlen, &sig, &siglen);
+			if (msg != NULL) {
+				ysteps_end(conn, &ys, &steps, &nsteps);
+				ok = false;
+				put_str(top, "error", msg);
+				break;
+			}
 			error = yh_agent_update(conn, bin, binlen, sha, sig,
-			    siglen, c->restart, gz, AGENT_UPDATE_WAIT_MS, &e,
-			    ywhy, sizeof(ywhy));
+			    siglen, signs ? ver : NULL, signs && c->downgrade,
+			    c->restart, gz, AGENT_UPDATE_WAIT_MS, &e, ywhy,
+			    sizeof(ywhy));
 		}
 		ysteps_end(conn, &ys, &steps, &nsteps);
 		free(sig);
@@ -3814,6 +3837,8 @@ api_agent_build(struct http_request *req)
 /*
  * POST hosts/host=<id>/agent-update, {"restart": true}: send the host
  * the console's arcana-agent; with restart, have it restart its service.
+ * {"downgrade": true}: one older than the host's, which the host
+ * refuses otherwise, saying so.
  */
 int
 api_agent_update(struct http_request *req)
@@ -3828,6 +3853,8 @@ api_agent_update(struct http_request *req)
 	if ((body = read_json(req)) != NULL) {
 		c->restart = ucl_object_toboolean(ucl_object_lookup(body,
 		    "restart"));
+		c->downgrade = ucl_object_toboolean(ucl_object_lookup(body,
+		    "downgrade"));
 		ucl_object_unref(body);
 	}
 	return (call_start(req, c));

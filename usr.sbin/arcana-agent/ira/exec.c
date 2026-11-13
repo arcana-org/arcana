@@ -247,95 +247,12 @@ agent_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
 }
 
 /*
- * Does the variable name, n bytes of it, say it holds a secret: a
- * password, a key, a token (rc.conf's, a form's)?
- */
-bool
-secret_name(const char *s, size_t n)
-{
-	static const char *const says[] = { "pass", "secret", "key", "token",
-	    "psk", "cred" };
-	char	name[128];
-	size_t	i;
-
-	(void)snprintf(name, sizeof(name), "%.*s", (int)n, s);
-	for (i = 0; i < nitems(says); i++)
-		if (strcasestr(name, says[i]) != NULL)
-			return (true);
-	return (false);
-}
-
-/*
- * Is a NAME=value (or += and -=) whose NAME says it holds a secret
- * (sysrc of a password, a key, a token)?  *keep is how much of it is
- * shown, the name and its = sign.
- */
-static bool
-secret_assign(const char *a, size_t *keep)
-{
-	const char	*eq;
-	size_t		 n, i;
-
-	if ((eq = strchr(a, '=')) == NULL || eq == a)
-		return (false);
-	n = (size_t)(eq - a);
-	*keep = n + 1;
-	if (a[n - 1] == '+' || a[n - 1] == '-')
-		n--;
-	for (i = 0; i < n; i++)
-		if (!isalnum((unsigned char)a[i]) && a[i] != '_' && a[i] != '.' &&
-		    a[i] != '-')
-			return (false);
-	return (secret_name(a, n));
-}
-
-/*
- * s, words separated by spaces, with the value of each NAME=value that
- * secret_assign() takes shown as <hidden>: a job's title.  Allocated;
- * NULL when out of memory.
- */
-char *
-mask_secrets(const char *s)
-{
-	const char	*p, *e;
-	char		*out, *t, word[256];
-	size_t		 keep, len;
-
-	if ((out = strdup("")) == NULL)
-		return (NULL);
-	for (p = s; *p != '\0'; p = e) {
-		e = p + strcspn(p, " ");
-		len = (size_t)(e - p);
-		(void)snprintf(word, sizeof(word), "%.*s", (int)len, p);
-		if (len < sizeof(word) && secret_assign(word, &keep))
-			len = keep;
-		else
-			keep = 0;
-		if (asprintf(&t, "%s%.*s%s", out, (int)len, p, keep > 0 ?
-		    "<hidden>" : "") == -1) {
-			free(out);
-			return (NULL);
-		}
-		free(out);
-		out = t;
-		if (*e == ' ') {
-			if (asprintf(&t, "%s ", out) == -1) {
-				free(out);
-				return (NULL);
-			}
-			free(out);
-			out = t;
-			e++;
-		}
-	}
-	return (out);
-}
-
-/*
  * argv as the trace has it: the hidden word (exec_set_hide()) shown as
- * <hidden> in every argument, and the value of a variable whose name
- * says it is a secret; *secretp says there was one, and then what the
- * program prints (sysrc's "name: old -> new") is not kept either.
+ * <hidden> in every argument, the value of a variable whose name says
+ * it is a secret and the argument after one that announces a secret
+ * (secret_word(): -k, --password); *secretp says there was one, and
+ * then what the program prints (sysrc's "name: old -> new") is not
+ * kept either.
  */
 static char **
 trace_argv(struct work *w, char *const argv[], bool *secretp)
@@ -350,7 +267,11 @@ trace_argv(struct work *w, char *const argv[], bool *secretp)
 	for (i = 0; i < n; i++) {
 		v[i] = (char *)(uintptr_t)traced(w, argv[i]);
 		if (i > 0 && secret_assign(argv[i], &keep)) {
-			v[i] = wfmt(w, "%.*s<hidden>", (int)keep, argv[i]);
+			v[i] = wfmt(w, "%.*s%s", (int)keep, argv[i], MASK_MARK);
+			*secretp = true;
+		} else if (i > 1 && secret_word(argv[i - 1]) && argv[i][0] !=
+		    '\0' && strncmp(argv[i], "--", 2) != 0) {
+			v[i] = (char *)(uintptr_t)MASK_MARK;
 			*secretp = true;
 		}
 	}

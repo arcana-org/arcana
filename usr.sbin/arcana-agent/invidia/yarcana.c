@@ -900,6 +900,7 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
     struct arcana_agent_agent_update_output *out, cbl_yarena *a)
 {
 	struct build_rsp	 r;
+	struct agent_update	 u;
 	struct work			*w;
 	bool				 local, restart;
 	int				 root;
@@ -929,16 +930,24 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
 		step_end(w, root, false, NULL);
 		return (said(req, change_busy(w)));
 	}
+	u.sha256 = in->sha256;
+	u.version = in->version;
+	u.sig = in->signature.p;
+	u.siglen = in->signature.len;
+	u.local = local;
+	u.downgrade = in->has_downgrade && in->downgrade;
 	if (change_note("agent update"))
 		(void)do_agent_update(w, in->binary.p, in->binary.len,
-		    in->has_program_size ? in->program_size : 0, in->sha256,
-		    in->signature.p, in->signature.len, local, &r);
+		    in->has_program_size ? in->program_size : 0, &u, &r);
 	else
 		r.error = "not done: arcana-agent is stopping";
 	change_end();
 	step_end(w, root, r.ok, NULL);
-	if (!r.ok)
+	if (!r.ok) {
+		if (r.has_older)
+			(void)cbl_req_set_yapptag(req, "downgrade");
 		return (said(req, r.error));
+	}
 	out->version = r.agent_version;
 	out->has_restarting = true;
 	out->restarting = restart;
@@ -1400,13 +1409,17 @@ arcana_builder_builder_get(cbl_req *req, struct arcana_builder *data,
 	struct work			*w;
 	int				 error;
 
-	(void)req;
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
 	(void)do_builder(w, &r);
 	if (!r.ok)
 		return (failed("builder", r.error));
+	/* A make.conf's site with its password, a run's argv: masked
+	 * for a viewer; state alone. */
+	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
+	    r.json)) == NULL)
+		return (EIO);
 	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
 		return (ENOMEM);
 	if ((error = ybuilder_from_json(r.json, a, o)) != 0)
@@ -2154,6 +2167,10 @@ arcana_jails_jails_arcjf_read_files_action(cbl_req *req,
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
+	/* exec.* lines may hold a token: masked for a viewer. */
+	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
+	    r.json)) == NULL)
+		return (EIO);
 	return (yjf_from_json(r.json, a, out));
 }
 
@@ -2455,6 +2472,7 @@ arcana_log_logs_read_action(cbl_req *req, const struct cbl_bytes *target,
 		return (said(req, "invalid jail name"));
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
+	w->clear = clearance(req);
 	/* A jail's own log directory, under its root. */
 	e = NULL;
 	if (scope_enter_jail(w, in->jail, &e, false) != 0)
@@ -3002,9 +3020,9 @@ arcana_processes_processes_get(cbl_req *req, struct arcana_processes *data,
 	struct work			*w;
 	int				 error;
 
-	(void)req;
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
+	w->clear = clearance(req);
 	memset(&r, 0, sizeof(r));
 	(void)do_processes(w, NULL, &r);
 	if (!r.ok)
@@ -4006,13 +4024,17 @@ arcana_sshd_sshd_get(cbl_req *req, struct arcana_sshd *data, cbl_yarena *a)
 	struct work		*w;
 	int			 error;
 
-	(void)req;
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
 	do_ssh(w, &r);
 	if (!r.ok)
 		return (failed("ssh", r.error));
+	/* A key's options (command="..."): masked for a viewer; state, no
+	 * candidate is made of it. */
+	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
+	    r.json)) == NULL)
+		return (EIO);
 	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
 		return (ENOMEM);
 	if ((error = ysshd_from_json(r.json, a, o)) != 0)
@@ -4048,6 +4070,9 @@ arcana_sshd_sshd_read_action(cbl_req *req, const struct cbl_bytes *target,
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
+	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
+	    r.json)) == NULL)
+		return (EIO);
 	if ((error = ysshd_from_json(r.json, a, &d)) != 0)
 		return (error);
 	out->setting.n = d.setting.n;
@@ -4213,10 +4238,13 @@ arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
 	struct work			*w;
 	size_t				 i;
 	int				 error;
+	bool				 mask;
 
-	(void)req;
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
+	/* A keylocation's URL may carry a token, fstab's options a
+	 * password: masked for a viewer. */
+	mask = clearance(req) < CLEAR_OPERATOR;
 	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
 		return (ENOMEM);
 	memset(o, 0, sizeof(*o));
@@ -4227,6 +4255,8 @@ arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
 		(void)do_storage(w, kinds[i], NULL, &r);
 		if (!r.ok)
 			return (failed("storage", r.error));
+		if (mask && (r.json = wjson_mask(w, r.json)) == NULL)
+			return (EIO);
 		if ((error = ystorage_from_json(kinds[i], r.json, r.total,
 		    r.truncated, a, o)) != 0)
 			return (error);
@@ -4275,6 +4305,9 @@ arcana_storage_storage_read_action(cbl_req *req, const struct cbl_bytes *target,
 	    '\0' ? in->filter : NULL, &r);
 	if (!r.ok)
 		return (said(req, r.error != NULL ? r.error : "not read"));
+	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
+	    r.json)) == NULL)
+		return (EIO);
 	memset(&st, 0, sizeof(st));
 	if ((error = ystorage_from_json(kind, r.json, r.total, r.truncated, a,
 	    &st)) != 0)
@@ -4288,8 +4321,9 @@ arcana_storage_storage_read_action(cbl_req *req, const struct cbl_bytes *target,
 		memset(&fq, 0, sizeof(fq));
 		memset(&fr, 0, sizeof(fr));
 		(void)do_fstab(w, &fq, &fr);
-		if (fr.ok && (error = ystorage_fstab(fr.conf_text, fr.sha256,
-		    a, &st)) != 0)
+		if (fr.ok && (error = ystorage_fstab(clearance(req) <
+		    CLEAR_OPERATOR ? wmask(w, fr.conf_text) : fr.conf_text,
+		    fr.sha256, a, &st)) != 0)
 			return (error);
 	}
 	out->disk.n = st.disk.n;

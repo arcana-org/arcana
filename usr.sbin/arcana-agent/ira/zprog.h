@@ -21,6 +21,23 @@
 #define	ZPROG_FEATURE	"gzip-update"
 
 /*
+ * The feature of an agent whose update's signature is of the update's
+ * statement, not of the program: what the console signs and the agent
+ * verifies, rebuilt by the agent from what it was sent and what it is.
+ * The host it is for (its hostname, gethostname(3), as hello says it:
+ * a statement for one host is refused by another), the version and
+ * the program's SHA-256 (lower-case hex), and whether it may replace a
+ * newer agent (downgrade yes or no: the intent signed, not a flag that
+ * travels beside).  Sent to an agent without the feature, the console
+ * signs the program alone: the one compatibility the update path keeps,
+ * so that a console of 0.433.0 updates the agents before it; it goes
+ * when no deployed agent predates 0.284.0 (docs/TODO.md).
+ */
+#define	SIGNED_UPDATE_FEATURE	"signed-update"
+#define	UPDATE_STATEMENT	"arcana-agent update\nhost %s\nversion %s\n" \
+				"sha256 %s\ndowngrade %s\n"
+
+/*
  * The most bytes of program an update carries, compressed or not: an
  * agent's frame is 8 MiB, the rest of the request well within the
  * 64 KiB left.  An agent without ZPROG_FEATURE takes the program as it

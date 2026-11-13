@@ -639,6 +639,7 @@ ATF_TC_BODY(nacm_sync_operator, tc)
 	struct authn	 a, b;
 	struct resp	 r;
 	char		 id[16], sync[256], admin[160], bob[160], path[160];
+	char		 bird[160], svcs[160];
 
 	start(tc, 0, NULL);
 	enrol(&a);
@@ -652,6 +653,19 @@ ATF_TC_BODY(nacm_sync_operator, tc)
 	http("POST", path, "{}", &r);
 	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
 	    r.status, r.body);
+	resp_free(&r);
+	/* BIRD's texts and services' values: an operator's by the
+	 * rule-list operator, which bob is in no group of yet. */
+	snprintf(bird, sizeof(bird), FLEET "%s/arcana-bird:bird", id);
+	snprintf(svcs, sizeof(svcs), FLEET "%s/arcana-services:services", id);
+	http("GET", bird, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "router id") == NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", svcs, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "sshd_flags") !=
+	    NULL && strstr(r.body, "\"value\"") == NULL, "%d %s", r.status,
+	    r.body);
 	resp_free(&r);
 	snprintf(cookie, sizeof(cookie), "%s", admin);
 	rc_act(sync, NULL, &r);
@@ -668,6 +682,14 @@ ATF_TC_BODY(nacm_sync_operator, tc)
 	http("POST", path, "{}", &r);
 	ATF_CHECK_MSG(r.status != 403 && strstr(r.body, "access denied") ==
 	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", bird, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "router id") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", svcs, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "\"value\"") != NULL,
+	    "%d %s", r.status, r.body);
 	resp_free(&r);
 	r1_submit(id, R1_MONITOR, &r);
 	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
@@ -10450,12 +10472,15 @@ mtls_start(const atf_tc_t *tc, struct authn *a, int *portp, char *sid,
 	*portp = port;
 }
 
-CONSOLE_TC(mtls, "A host over TCP with mutual TLS")
+CONSOLE_TC(mtls, "A host over TCP with mutual TLS; an update signed "
+    "with its version, an older one sent only as a downgrade")
 ATF_TC_BODY(mtls, tc)
 {
 	struct authn	 a;
 	struct resp	 r;
-	char		 sid[16];
+	struct stat	 sb, sb2;
+	char		 sid[16], cwd[MAXPATHLEN], body[MAXPATHLEN + 64];
+	FILE		*fp;
 	int		 port;
 
 	mtls_start(tc, &a, &port, sid, sizeof(sid));
@@ -10475,10 +10500,43 @@ ATF_TC_BODY(mtls, tc)
 	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
 	    "true") == 0, "%s", r.body);
 	ATF_CHECK_MSG(strstr(r.body, "verified") != NULL, "%s", r.body);
+	/* The signature of its version and SHA-256 (the update's
+	 * statement), the program bound by the SHA-256. */
+	ATF_CHECK_MSG(strstr(r.body, "verified: version 0.") != NULL,
+	    "%s", r.body);
 	/* Compressed, and the signature the program's, inflated. */
 	ATF_CHECK_MSG(strstr(r.body, "inflate(3)") != NULL, "%s", r.body);
 	ATF_CHECK(access("installed-agent2", X_OK) == 0);
 	resp_free(&r);
+	/*
+	 * An older agent, signed as the console signs any: refused unless
+	 * the request says downgrade, the one in place left as it was.
+	 */
+	ATF_REQUIRE((fp = fopen("old-agent", "w")) != NULL);
+	fprintf(fp, "#!/bin/sh\necho arcana-agent 0.1.0\n");
+	fclose(fp);
+	ATF_REQUIRE(chmod("old-agent", 0755) == 0);
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	snprintf(body, sizeof(body), "{\"arcana-console:agent-binary\":"
+	    "\"%s/old-agent\"}", cwd);
+	http("PUT", CC "settings/agent-binary", body, &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	ATF_REQUIRE(stat("installed-agent2", &sb) == 0);
+	r3_verb(sid, "agent-update", NULL, &r);
+	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
+	    "false") == 0 && strstr(r.body, "0.1.0, older than the running")
+	    != NULL, "%s", r.body);
+	resp_free(&r);
+	ATF_CHECK(stat("installed-agent2", &sb2) == 0 && sb2.st_size ==
+	    sb.st_size);
+	r3_verb(sid, "agent-update", "\"downgrade\":true", &r);
+	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
+	    "true") == 0, "%s", r.body);
+	resp_free(&r);
+	ATF_CHECK(stat("installed-agent2", &sb2) == 0 && sb2.st_size !=
+	    sb.st_size);
 
 	/* The certificate has to name the host the console expects: the
 	 * agent said to be another (an agent is one host: not added again

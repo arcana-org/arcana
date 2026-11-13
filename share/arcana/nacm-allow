@@ -1,4 +1,5 @@
-# The actions and rpcs of Arcana's modules that run by NACM's
+# The actions and rpcs of Arcana's modules (and below, the data nodes
+# that hold a file's or a command line's text) that run by NACM's
 # exec-default (RFC 8341), not nacm:default-deny-all: each reads what
 # the host has, gives out nothing that should stay on it, runs nothing
 # with arguments its caller chooses and makes the host reach nowhere.
@@ -13,15 +14,15 @@ arcana-cluster:*	the console nodes' family, between nodes by their certificates
 arcana-bird:/daemon/read	birdc -r (restricted) show status and protocols
 arcana-bird:/daemon/routes	birdc -r show route, its words checked (route_words()); a viewer's
 arcana-bird:/daemon/ospf	birdc -r show ospf, a protocol's name checked; a viewer's
-arcana-crashes:/crashes/read	the cores' names and a backtrace (kgdb bt), no memory given out
+arcana-crashes:/crashes/read	the cores' names; a backtrace (char * arguments of the core's memory) an operator's, of a crash kmsg recorded alone
 arcana-events:/events/read	the agent's own events after a number
 arcana-firewall:/firewall/firewall/trace	dtrace of ipfw's rule-matched for an address checked as one: the rule and the ports, no payload; a viewer's
 arcana-firewall:/kept-host/from-rc	the firewall script read and turned into kept rules, nothing written; a viewer's
 arcana-history:/history/read	the agent's own samples
 arcana-host:/host/read-certificates	the trusted certificates, public, parsed
-arcana-jail-files://arcj:jails/read-files	jail.conf(5)'s files, as a read of running has the jails
-arcana-jobs:/jobs/job/read	a job's trace, keys kept out of it
-arcana-log:/logs/read	a log of the log directory or the audit trail, opened beneath a jail's root; read-only, a viewer's
+arcana-jail-files://arcj:jails/read-files	jail.conf(5)'s files, as a read of running has the jails, each secret masked below an operator
+arcana-jobs:/jobs/job/read	a job's trace, keys kept out of it: its argv, title and steps' details masked for every role
+arcana-log:/logs/read	a log of the log directory, opened beneath a jail's root, read-only: a viewer's of the logs every user on the host may read (mode o+r) and @dmesg; the others and the audit trail an operator's
 arcana-netgraph:/netgraph/read	ngctl list
 arcana-netstore:/netstore/read	NFS, iSCSI and HAST as they are
 arcana-network:/network/bridges	ifconfig of the bridges
@@ -41,15 +42,52 @@ arcana-network:/network/sockets	the kernel's sockets (pcb)
 arcana-probe:/probes/read	the probes' samples
 arcana-processes:/processes/process/read	a process's files and threads (procstat), no environment
 arcana-services:/services/service/read	service <name> enabled, status, describe, extracommands: what reads
-arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out
-arcana-speeder:/speeder/read	the relays, read
-arcana-sshd:/sshd/read	sshd's configuration and keys' fingerprints, public
-arcana-storage:/storage/read	disks, pools, datasets, mounts, read
+arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out, the rest's masked below an operator
+arcana-speeder:/speeder/read	the relays, read; their log's -k masked below an operator
+arcana-sshd:/sshd/read	sshd's configuration and keys' fingerprints, public; a key's command= masked below an operator
+arcana-storage:/storage/read	disks, pools, datasets, mounts, read; a keylocation's token, fstab's secrets masked below an operator
 arcana-suricata:/suricata/command	one of the instance's read commands, from a fixed list
 arcana-suricata:/suricata/read-profiling	what profiling wrote, read
 arcana-suricata:/suricata/read-rules	a page of the ruleset's rules
-arcana-suricata:/suricata/read-sources	suricata-update's cached index and the sources' names and states, no secret code
+arcana-suricata:/suricata/read-sources	suricata-update's cached index and the sources' names and states, no secret code; a source's url its host alone below an operator
 arcana-sysctl:/sysctl/read	the kernel's values by name
 arcana-troubleshoot:/troubleshoot/path-check	what the host would do with a packet, nothing sent
 arcana-troubleshoot:/troubleshoot/traceroute	one numeric traceroute to an address checked as one: probes, no connection, nothing fetched; a viewer's
 arcana-wireguard:/wireguard/read	wg show dump, the keys left out
+
+# The data nodes that hold a file's or a command line's text, read by
+# every role (nacm.awk): what is done of a secret in each.  A
+# configuration node is not masked, its read making a candidate the
+# mask would be written back from: it is nacm:default-deny-all.
+arcana-jobs-kinds:*	the job kinds' changes: submit's and dry-run's input alone (both nacm:default-deny-all), never read back
+arcana-agent:/bundle/file/text	the bundle grouping: config-export's output and config-apply's input, both nacm:default-deny-all
+arcana-builder:/builder/make-conf/text	poudriere's make.conf files, each secret masked below an operator (wmask())
+arcana-builder:/builder/run/argv	a poudriere run's command line, each secret masked below an operator (wmask())
+arcana-events:/event/kmsg/text	the kernel's messages, which the host lets every user read (dmesg)
+arcana-firewall:/firewall-data/kept/rule/text	an ipfw rule: addresses, ports and actions, no secret
+arcana-firewall:/firewall-data/kept/text	the kept ipfw rules: addresses, ports and actions, no secret
+arcana-firewall:/firewall-data/state/rule/text	an ipfw rule as the kernel has it, no secret
+arcana-firewall:/kept-host/from-rc/text	the firewall script's ipfw rules, no secret
+arcana-firewall:/kept-host/jail/text	a jail's kept ipfw rules, no secret
+arcana-jail-files://arcj:jails/read-files/defaults/text	jail.conf's text, each secret (an exec.* token) masked below an operator (wmask())
+arcana-jail-files://arcj:jails/read-files/jail/text	a jail's file, each secret masked below an operator (wmask())
+arcana-jail-files://arcj:jails/read-files/template/text	a template's file, each secret masked below an operator (wmask())
+arcana-jobs:/step/argv	a step's command line, each secret masked for every role (trace_argv())
+arcana-log:/logs/read/line/text	a log's line: a viewer reads only the logs every user on the host may read (log.c)
+arcana-network:/socket/command	a socket's process's command name (ki_comm), no argument
+arcana-sdwan:/edge-config/rules/rule/text	an SD-WAN ipfw rule the console wrote, no secret
+arcana-sdwan:/edge-state/rules/counter/text	an SD-WAN ipfw rule's counters, no secret
+arcana-sdwan:/sdwan/ids-instance/lua/text	a Suricata Lua script the console sent: a detection, no credential
+arcana-sdwan:/sdwan/proxy-instance/named-list/text	a proxy's list of names or addresses, no secret
+arcana-services:/services/service/command	the names of a script's commands (extracommands)
+arcana-services:/services/service/read/command	the names of a script's commands (extracommands)
+arcana-smtpd:/smtpd/read/table/text	a table's text, a secret table its names alone; each secret masked below an operator (ucl_mask())
+arcana-sshd:/sshd/config	sshd_config's text, each secret masked below an operator (wmask())
+arcana-sshd:/sshd/user-ca-key/options	a CA key's options, command= and environment= masked below an operator (wmask())
+arcana-sshd:/sshd/user/key/options	a key's options, command= and environment= masked below an operator (wmask())
+arcana-storage:/storage-state/fstab/text	fstab(5)'s text, each secret masked below an operator (wmask())
+arcana-storage:/storage-state/mount/options	a mount's options, each secret masked below an operator (wmask())
+arcana-suricata:/logged/text	the end of a profiling log of Suricata's: rules' and locks' timings
+arcana-troubleshoot:/walk/step/text	what the host would do with a packet, said by the agent
+arcana-troubleshoot:/walk/text	what the host would do with a packet, said by the agent
+arcana-troubleshoot:/walk/uncertain/text	what the host would do with a packet, said by the agent

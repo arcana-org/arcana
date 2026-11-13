@@ -9196,6 +9196,25 @@ sdwan_bird_body()
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"a\";\nprotocol x","router_id":"1.1.1.1"}}]}'
 	atf_check -s exit:1 -e match:'does not take it' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"BROKEN","router_id":"1.1.1.1"}}]}'
+	# What BIRD takes bare, each by its type: a neighbour that would
+	# close its protocol and open one exporting into the host's table,
+	# a peer's address, an AS out of range, an interface's name.
+	atf_check -s exit:1 -e match:'sw1: the form.s a BGP neighbor is an address' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","unis":[{"id":"u1","end_point":"e1","interface":"vtnet1","bgp":{"as":65001,"neighbors":["192.0.2.1 as 1; } protocol static evil { ipv4; route 0.0.0.0/0 blackhole; } protocol bgp x { neighbor 192.0.2.1"]}}]}}]}'
+	atf_check -s exit:1 -e match:'sw1: the form.s a peer.s local and neighbor are addresses' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","peers":[{"tunnel":"t","to":"b","local":"10.0.0.1","neighbor":"10.0.0.2; }"}]}}]}'
+	atf_check -s exit:1 -e match:'sw1: the form.s as is a number' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","as":4294967296}}]}'
+	atf_check -s exit:1 -e match:'sw1: the form.s interface is an interface.s name' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","unis":[{"id":"u1","interface":"a b"}]}}]}'
+	atf_check -s exit:1 -e match:'sw1: the form.s an origin.s route is a prefix' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","loopback":true,"loop":{"origins":[{"id":"o","ipv4":[{"prefix":"10.0.0.0/8 via 1.1.1.1; }"}]}]}}}]}'
+	# The host in the first comment line: a word, or - (a line's end
+	# there would begin a statement).
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"host":"edge a\nprotocol device x {","spec":{"service":"acme","fib":1,"table":1,"router_id":"100.64.0.0"}}]}'
+	atf_check -o match:'^# Written by arcana-agent for the Arcana console: SD-WAN service acme at -, ' \
+	    -o not-match:'device x' cat "$(dirname "$f")/sdwan-bird-sw1.conf"
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"table":1,"router_id":"100.64.0.0"}}]}'
 	atf_check -o match:'^setfib -F 1 .*fake-bird -c .*sdwan-bird-sw1.conf -s .*sdwan-bird-sw1.ctl -P .*sdwan-bird-sw1.pid$' cat setfib.log
@@ -9342,6 +9361,14 @@ sdwan_dhcp_dns_body()
 	    '{"instances":[{"name":"sw1","fib":1,"conf":"port=0\n"}]}'
 	atf_check -s exit:1 -e match:'does not take it' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"BROKEN","unis":[]}}]}'
+	# What dnsmasq takes bare, by its type: an interface's name (not
+	# em0,em1 or em*), addresses, a lease.
+	atf_check -s exit:1 -e match:"UNI u: its interface is an interface's name" -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1,em0","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24"}}]}}]}'
+	atf_check -s exit:1 -e match:'UNI u: its provider and DNS servers are addresses' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","dns":["10.1.0.1,10.9.9.9"]}}]}}]}'
+	atf_check -s exit:1 -e match:'UNI u: a lease is a number' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","lease":"12h,x"}}]}}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","provider":["10.1.0.1"]}}]}}]}'
 	atf_check -o match:'^setfib -F 1 .*fake-dnsmasq -C .*sdwan-dhcp-sw1.conf -x .*sdwan-dhcp-sw1.pid$' cat setfib.log
@@ -9363,6 +9390,10 @@ sdwan_dhcp_dns_body()
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"BROKEN"}}]}'
 	atf_check -s exit:1 -e match:'a zone is named' -o ignore "$JGC" -c "$SOCK" sdwan dns \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","zones":[{"name":"z 0"}]}}]}'
+	# unbound's lexer takes a keyword anywhere: a UNI's address and
+	# prefix by their types, no remote-control of its own.
+	atf_check -s exit:1 -e match:'UNI u: its address is an address' -o ignore "$JGC" -c "$SOCK" sdwan dns \
+	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","address":"10.1.0.1 remote-control: control-enable: yes","prefix":"10.1.0.0/24"}]}}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns \
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","address":"10.1.0.1","prefix":"10.1.0.0/24"}],"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":{"no-match":"allow","block":["ads.example"]}}]}}]}'
 	atf_check -o match:'^setfib -F 1 .*fake-local-unbound -c .*sdwan-dns-sw1.conf$' cat setfib.log
@@ -10056,8 +10087,33 @@ sdwan_ids_forms_body()
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"profiling":["cpu"]},"rules":"x"}]}'
 	atf_check -s exit:1 -e match:"sec-x: profiling's sample rate is a power of 2" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"profiling":["rules"],"profiling_sample_rate":3},"rules":"x"}]}'
-	atf_check -s exit:1 -e match:'sec-x: its own YAML may not set profiling' -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	atf_check -s exit:1 -e match:"sec-x: its own YAML, line 1: profiling is the form's to set" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"yaml":"profiling:\n  rules:\n"},"rules":"x"}]}'
+	# The owned keys in any style, and what YAML would read past the
+	# check: refused, the grammar narrower than YAML's.
+	for y in '\"plugins\":\n  - /tmp/x.so\n' "'run-as':\n  user: root\n" 'outputs :\n  - x: y\n' \
+	    'a: 1\n\"plugins\" : [ /tmp/x.so ]\n'; do
+		atf_check -s exit:1 -e match:"sec-x: its own YAML, line [12]: (plugins|run-as|outputs) is the form's to set" -o ignore "$JGC" -c "$SOCK" sdwan ids \
+		    "{\"group\":\"security\",\"instances\":[{\"name\":\"sec-x\",\"interfaces\":[\"lo0\"],\"spec\":{\"interfaces\":[\"lo0\"],\"yaml\":\"$y\"},\"rules\":\"x\"}]}"
+	done
+	for y in '? plugins\n: [x]\n' '{plugins: [x]}\n' 'include: /tmp/x.yaml\n' 'vars:\n  x: !include /tmp/x.yaml\n' \
+	    'a: &p /tmp/x.so\n' 'b: *p\n' 'x:\n  include: y\n' 'x: [plugins]\n' 'x: |\n  y\n' '---\nplugins: [x]\n' \
+	    '\"\\x70lugins\":\n  - x\n' 'x: \"a\\\"b\"\n' '\"pl\\\nugins\": x\n' '%YAML 1.1\n' '!!str plugins: x\n' \
+	    '\"plügins\": x\n' 'Plugins:\n  - x\n' 'INCLUDE: x\n'; do
+		atf_check -s exit:1 -e match:"sec-x: its own YAML, line [12]: " -o ignore "$JGC" -c "$SOCK" sdwan ids \
+		    "{\"group\":\"security\",\"instances\":[{\"name\":\"sec-x\",\"interfaces\":[\"lo0\"],\"spec\":{\"interfaces\":[\"lo0\"],\"yaml\":\"$y\"},\"rules\":\"x\"}]}"
+	done
+	# Lines YAML breaks that a split at newlines would not see, and
+	# what is no text of ours: the whole refused.
+	for y in 'x:\n\t- y\n' 'a: b\rplugins: [x]\n' 'a: b\u0085plugins: [x]\n' 'a: b\u2028plugins: [x]\n' \
+	    'a: b\u2029plugins: [x]\n' '\ufeffa: b\n'; do
+		atf_check -s exit:1 -e match:"sec-x: its own YAML, it holds " -o ignore "$JGC" -c "$SOCK" sdwan ids \
+		    "{\"group\":\"security\",\"instances\":[{\"name\":\"sec-x\",\"interfaces\":[\"lo0\"],\"spec\":{\"interfaces\":[\"lo0\"],\"yaml\":\"$y\"},\"rules\":\"x\"}]}"
+	done
+	# What the grammar takes: nested mappings, sequences, comments,
+	# quoted scalars of their own ('' in single quotes).
+	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    "{\"group\":\"security\",\"instances\":[{\"name\":\"sec-x\",\"interfaces\":[\"lo0\"],\"spec\":{\"interfaces\":[\"lo0\"],\"yaml\":\"# own\\nflow:\\n  memcap: 64mb\\n  hash-size: 65536\\napp-layer:\\n  protocols:\\n    tls:\\n      ports: '443'\\n      note: 'it''s'\\nvars:\\n  list:\\n    - a\\n    - \\\"b c\\\"\\n\"},\"rules\":\"x\"}]}"
 	# netmap's pair of a bridge's member: refused, the bridge would
 	# carry its packets around the pair.
 	cp fake-ifconfig fake-ifconfig.was
@@ -10065,7 +10121,7 @@ sdwan_ids_forms_body()
 	atf_check -s exit:1 -e match:'sec-y: wg6 is a member of bridge0' -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-y","interfaces":["wg6","wg7"],"spec":{"pairs":["wg6:wg7"],"capture":"netmap","home":["any"]},"rules":"x"}]}'
 	mv fake-ifconfig.was fake-ifconfig
-	atf_check -s exit:1 -e match:'sec-x: its own YAML may not set plugins' -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	atf_check -s exit:1 -e match:"sec-x: its own YAML, line 1: plugins is the form's to set" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"yaml":"plugins:\n  - /tmp/x.so\n"},"rules":"x"}]}'
 	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
 	# Many placeholders: the configuration comes out whole, as long as
@@ -11400,6 +11456,87 @@ agent_build_cleanup()
 	stop_daemon
 }
 
+# Whom a build runs as, and what root takes of what it built: a user
+# nothing else is, or none (the line that makes it said); the program
+# beneath the build directory, no link, the directory its alone.
+atf_test_case agent_build_trust cleanup
+agent_build_trust_head()
+{
+	atf_set "descr" "A build refused as nobody, a user with processes" \
+	    "or none; the program not taken through a link or from outside" \
+	    "the build directory; the directory 0700"
+}
+agent_build_trust_body()
+{
+	programs
+	cat > fake-git <<EOS
+#!/bin/sh
+[ "\$1" = -c ] && shift 2
+[ "\$1" = -C ] && [ "\$3" = rev-parse ] && { echo 1111111111111111111111111111111111111111; exit 0; }
+[ "\$1" = clone ] || exit 2
+for a; do last=\$a; done
+mkdir -p "\$last/jailconf" "\$last/lib/libvarconf" "\$last/usr.sbin/arcana-agent"
+EOS
+	# The program where ./how says: a file, a link to one, or a
+	# directory make names outside the build directory.
+	cat > fake-make <<EOS
+#!/bin/sh
+dir=\$2
+how=\$(cat $(pwd)/how 2>/dev/null)
+case " \$* " in
+*" -V .OBJDIR "*) [ "\$how" = outside ] && echo $(pwd)/elsewhere || echo "\$dir/obj" ;;
+*/usr.sbin/arcana-agent*) mkdir -p "\$dir/obj" $(pwd)/elsewhere
+	cp "$JGD" $(pwd)/elsewhere/arcana-agent
+	if [ "\$how" = link ]; then ln -sf "$JGD" "\$dir/obj/arcana-agent"
+	else cp "$JGD" "\$dir/obj/arcana-agent"; fi ;;
+esac
+EOS
+	chmod +x fake-git fake-make
+	# nobody: every daemon's processes are its.
+	DAEMON_ARGS="--build-user nobody"
+	start_daemon
+	atf_check -s exit:1 -e match:"nobody is no user to build as: nobody's processes are every daemon's" \
+	    -o ignore "$JGC" -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	atf_check test ! -e built
+	stop_daemon
+	# None: refused with the line that makes it; the agent makes none.
+	DAEMON_ARGS="--build-user _arcanabuild_nosuch"
+	start_daemon
+	atf_check -s exit:1 \
+	    -e match:'no user _arcanabuild_nosuch to build as: the agent makes no user itself; make it with: pw useradd _arcanabuild_nosuch -u 863 ' \
+	    -o ignore "$JGC" -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	stop_daemon
+	# This test's own user: it runs processes (this one), or has a home.
+	DAEMON_ARGS="--build-user $(id -un)"
+	start_daemon
+	atf_check -s exit:1 -e match:"$(id -un) (runs other processes|has a home of its own)" \
+	    -o ignore "$JGC" -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	stop_daemon
+	# Unprivileged and none named: built as the agent itself.
+	DAEMON_ARGS=
+	start_daemon
+	atf_check -o match:'^Built: ' \
+	    "$JGC" -c "$SOCK" agent-build -o built https://example.org/arcana.git main
+	atf_check cmp -s "$JGD" built
+	atf_check -o inline:'700\n' stat -f %Lp build
+	# A link in the program's place: not followed.
+	echo link > how
+	atf_check -s exit:1 -e match:'arcana-agent: no program to send back' \
+	    -o not-match:'SHA-256' \
+	    "$JGC" -t -c "$SOCK" agent-build -o other https://example.org/arcana.git main
+	atf_check test ! -e other
+	# An object directory make names outside the build directory.
+	echo outside > how
+	atf_check -s exit:1 -e match:'elsewhere/arcana-agent: no program to send back' \
+	    -o match:'not beneath the build directory' \
+	    "$JGC" -t -c "$SOCK" agent-build -o other https://example.org/arcana.git main
+	atf_check test ! -e other
+}
+agent_build_trust_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case stop cleanup
 stop_head()
 {
@@ -11503,6 +11640,16 @@ agent_update_body()
 	    "$JGC" -c "$SOCK" agent-update bogus
 	atf_check -o inline:'old\n' cat installed-agent
 	atf_check test ! -e installed-agent.new
+	# An older version: refused unless the update says downgrade.
+	printf '#!/bin/sh\necho arcana-agent 0.1.0\n' > older
+	atf_check -s exit:1 -e match:'the program is 0.1.0, older than the running .*says downgrade' \
+	    -o ignore "$JGC" -c "$SOCK" agent-update older
+	atf_check -o inline:'old\n' cat installed-agent
+	atf_check test ! -e installed-agent.new
+	atf_check -o match:'^Agent: +0.1.0 in place' \
+	    "$JGC" -c "$SOCK" agent-update -d older
+	atf_check cmp -s older installed-agent
+	rm -f installed-agent installed-agent.old && echo old > installed-agent
 	# The real one does, sent compressed, and the one before is kept.
 	atf_check -o match:'^Agent: +[0-9]+\.[0-9]+.* in place' \
 	    -o match:'inflate\(3\)' \
@@ -14477,7 +14624,7 @@ EOS
 	# path is not the dataset's: nothing made, the dataset taken back.
 	atf_check -s exit:1 -o match:'is there already' "$JGC" -c "$SOCK" jailconf make www www.conf
 	printf '.include "%s/jail.conf";\nmail {\n}\n' "$d" > mail.conf
-	atf_check -s exit:1 -o match:'the file defines mail, not the one jail web2' "$JGC" -c "$SOCK" jailconf make web2 mail.conf tank/jails/web2 tank/jails/base@15.0 send /usr/jails/web2
+	atf_check -s exit:1 -o match:'the file has a block of mail' "$JGC" -c "$SOCK" jailconf make web2 mail.conf tank/jails/web2 tank/jails/base@15.0 send /usr/jails/web2
 	test -e ds.tank_jails_web2 && atf_fail "the dataset made for a refused jail stayed"
 	test -e "$d/jail.conf.d/web2.conf" && atf_fail "a refused jail's file stayed"
 	printf '.include "%s/jail.conf";\nweb2 {\n\tpath = /elsewhere;\n}\n' "$d" > web2.conf
@@ -14496,7 +14643,16 @@ EOS
 	atf_check -o match:'done +jail edit www$' "$JGC" -c "$SOCK" jailconf edit www www2.conf
 	atf_check cmp -s www2.conf "$d/jail.conf.d/www.conf"
 	atf_check cmp -s www.conf "$d/jail.conf.d/www.conf.arcana.bak"
-	atf_check -s exit:1 -o match:'the file defines mail, not the one jail www' "$JGC" -c "$SOCK" jailconf edit www mail.conf
+	atf_check -s exit:1 -o match:'the file has a block of mail' "$JGC" -c "$SOCK" jailconf edit www mail.conf
+	atf_check cmp -s www2.conf "$d/jail.conf.d/www.conf"
+	# One jail's file is its block alone: a parameter outside it, a *
+	# block or another jail's would change every jail read after it.
+	printf '.include "%s/jail.conf";\nexec.prestart = "touch /tmp/x";\nwww {\n\tip4.addr = "lo0|127.0.0.9";\n}\n' "$d" > top.conf
+	atf_check -s exit:1 -o match:'sets a parameter outside the jail.s block' "$JGC" -c "$SOCK" jailconf edit www top.conf
+	printf '.include "%s/jail.conf";\n* {\n\tallow.raw_sockets;\n}\nwww {\n\tip4.addr = "lo0|127.0.0.9";\n}\n' "$d" > star.conf
+	atf_check -s exit:1 -o match:'a block of every jail \(\*\)' "$JGC" -c "$SOCK" jailconf edit www star.conf
+	printf '.include "%s/jail.conf";\nwww {\n\tip4.addr = "lo0|127.0.0.9";\n}\nmail {\n\tpersist;\n}\n' "$d" > two.conf
+	atf_check -s exit:1 -o match:'a block of mail' "$JGC" -c "$SOCK" jailconf edit www two.conf
 	atf_check cmp -s www2.conf "$d/jail.conf.d/www.conf"
 	atf_check -s exit:1 -o match:'nosuch.conf: No such file' "$JGC" -c "$SOCK" jailconf edit nosuch www2.conf
 	test -e "$d/jail.conf.d/nosuch.conf" && atf_fail "edit made a jail"
@@ -16362,6 +16518,18 @@ datastores_jails_body()
 	atf_check "$JGC" -c "$SOCK" commit
 	atf_check -o inline:'cache {\n\tpath = /jails/cache;\n\tpersist;\n}\n' \
 	    cat etc/jail.conf.d/cache.conf
+	# Values as libjailconf writes them: "//" quoted (a comment bare),
+	# a $ that is no "${name}" itself; jail(8) reads them so.
+	atf_check -o save:run3.json "$JGC" -c "$SOCK" get -d running jails
+	sed -e 's|"jail":\[|"jail":[{"name":"odd","param":[{"name":"path","value":["/jails/odd"]},{"name":"host.hostname","value":["x//y"]},{"name":"exec.prestart","value":["echo a//b $HOME"]}]},|' \
+	    run3.json > e5.json
+	atf_check "$JGC" -c "$SOCK" edit jails @e5.json
+	atf_check "$JGC" -c "$SOCK" commit
+	atf_check -o match:'^	host.hostname = "x//y";$' \
+	    -o match:'^	exec.prestart = "echo a//b \\\$HOME";$' \
+	    cat etc/jail.conf.d/odd.conf
+	atf_check -o match:'host.hostname=x//y' -o match:'exec.prestart="echo a//b \$HOME"' \
+	    /usr/sbin/jail -f etc/jail.conf.d/odd.conf -e ' '
 	atf_check -o match:'^cache +stopped' "$JGC" -c "$SOCK" list -c
 	atf_check "$JGC" -c "$SOCK" edit jails @run2.json
 	atf_check "$JGC" -c "$SOCK" commit
@@ -16977,8 +17145,132 @@ datastores_syslog_cleanup()
 	stop_daemon
 }
 
+# secrets.c's masking, alone: each rule, and what it leaves.
+atf_test_case secrets_mask
+secrets_mask_head()
+{
+	atf_set "descr" "A text's secrets masked: BIRD's password, carp's" \
+	    "pass, rc.conf's NAME=value, -k, setkey's keys, a URL's" \
+	    "password and code, an inline table, command=; prose left"
+}
+secrets_mask_body()
+{
+	local m="$(atf_get_srcdir)/mask"
+
+	cat > in <<'EOF'
+	password "s3cret-bgp";
+ifconfig_em0_alias0="inet vhid 1 pass carpsecret alias 192.0.2.5/32"
+foo_token="abc123" foo_flags="-v" empty_pass=""
+arcana_relay0_flags="-r 192.0.2.9:4096 -k relaykey -f20:10"
+add 192.0.2.1 192.0.2.2 esp 0x1000 -E aes-cbc 0x0123456789abcdef0123456789abcdef;
+PrivateKey = wgprivatekeyvalue
+url: https://user:pw@rules.example.org/x.tar.gz?oinkcode=deadbeef&v=1
+table creds { "joe" = "joe:hash" }
+command="/usr/local/bin/backup --to there" ssh-ed25519 AAAAC3Nza key comment
+/usr/local/bin/tool --password hunter2 --verbose
+nothing secret here, a key word at the end: key
+EOF
+	cat > want <<'EOF'
+	password "<hidden>";
+ifconfig_em0_alias0="inet vhid 1 pass <hidden> alias 192.0.2.5/32"
+foo_token="<hidden>" foo_flags="-v" empty_pass=""
+arcana_relay0_flags="-r 192.0.2.9:4096 -k <hidden> -f20:10"
+add 192.0.2.1 192.0.2.2 esp 0x1000 -E aes-cbc <hidden>;
+PrivateKey = <hidden>
+url: https://user:<hidden>@rules.example.org/x.tar.gz?oinkcode=<hidden>&v=1
+table creds { <hidden> }
+command="<hidden>" ssh-ed25519 AAAAC3Nza key comment
+/usr/local/bin/tool --password <hidden> --verbose
+nothing secret here, a key word at the end: key
+EOF
+	atf_check -o file:want "$m" < in
+	# A source's url: its host alone, its path being its code.
+	printf 'https://rules.example.org/abc123/etpro.tar.gz\nhttps://rules.example.org/\n' > urls
+	atf_check -o inline:'https://rules.example.org/<hidden>\nhttps://rules.example.org/\n' \
+	    "$m" -u < urls
+	atf_check -o inline:'secret\n' "$m" -s < in
+	printf 'a key word, a secret here: nothing kept\n' > plain
+	atf_check -o inline:'none\n' "$m" -s < plain
+}
+
+# The reads open to every role, as a viewer has them: the logs every
+# user may read, argv masked, BIRD's texts and services' values left
+# out (nacm:default-deny-all), a core's backtrace refused; an operator
+# reads the rest.
+atf_test_case viewer_reads cleanup
+viewer_reads_head()
+{
+	atf_set "descr" "A viewer reads world-readable logs alone, argv" \
+	    "masked, no BIRD text, service value or backtrace; an" \
+	    "operator the rest"
+}
+viewer_reads_body()
+{
+	mkdir logs bird
+	printf 'one\n' > logs/messages
+	chmod 644 logs/messages
+	printf 'sshd: Accepted password for root\n' > logs/auth.log
+	chmod 600 logs/auth.log
+	printf 'protocol bgp p1 {\n\tneighbor 192.0.2.1 as 65001;\n\tpassword "bgpsecret1";\n}\n' \
+	    > bird/bird.conf
+	mkdir -p root/etc/defaults root/etc/rc.conf.d root/usr/local/etc
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'sshd_enable="YES"\nsshd_flags="-4"\n' > root/etc/rc.conf
+	DAEMON_ARGS="-v $(pwd)/logs --root $(pwd)/root"
+	start_daemon
+	# A viewer: what the host lets every user read, and @dmesg's
+	# kind; auth.log and the audit trail an operator's.
+	atf_check -o match:'"text":"one"' \
+	    "$JGC" -c "$SOCK" -u viewer action logs read name=messages
+	atf_check -s exit:1 -e match:"auth.log is not readable by every user.*an operator's" \
+	    -o ignore "$JGC" -c "$SOCK" -u viewer action logs read name=auth.log
+	atf_check -s exit:1 -e match:"the audit trail is an operator's" \
+	    -o ignore "$JGC" -c "$SOCK" -u viewer action logs read name=@audit
+	# The recovery session, and the console's operator, read it.
+	atf_check -o match:'Accepted password' \
+	    "$JGC" -c "$SOCK" action logs read name=auth.log
+	atf_check -o ignore "$JGC" -c "$SOCK" set \
+	    /ietf-netconf-acm:nacm/groups/group=operator '{"user-name":["op"]}'
+	atf_check -o match:'Accepted password' \
+	    "$JGC" -c "$SOCK" -u op action logs read name=auth.log
+	# A process's argv: its secret masked for a viewer alone.
+	sh -c 'sleep 60; :' viewer-arg --password hunter2pw &
+	echo $! > sh.pid
+	sleep 0.3
+	# (Saved first: atf-check's own argv is one of the processes.)
+	atf_check -o save:v.json "$JGC" -c "$SOCK" -u viewer get processes
+	atf_check -o match:'"viewer-arg","--password","<hidden>"' \
+	    -o not-match:'hunter2pw' cat v.json
+	atf_check -o save:o.json "$JGC" -c "$SOCK" -u op get processes
+	atf_check -o match:'"viewer-arg","--password","hunter2pw"' cat o.json
+	kill "$(cat sh.pid)" 2>/dev/null
+	# BIRD's texts and services' values: nacm:default-deny-all.
+	atf_check -o match:'bgpsecret1' "$JGC" -c "$SOCK" get bird
+	atf_check -o match:'"path":".*bird.conf"' -o not-match:'bgpsecret1' \
+	    -o not-match:'"text"' "$JGC" -c "$SOCK" -u viewer get bird
+	atf_check -o match:'"name":"sshd_flags","value":"-4"' \
+	    "$JGC" -c "$SOCK" get services
+	atf_check -o match:'"name":"sshd_flags"' -o not-match:'"value"' \
+	    "$JGC" -c "$SOCK" -u viewer get services
+	# The operator's rule-list permits them (oprules.h).
+	atf_check -o match:'bgpsecret1' "$JGC" -c "$SOCK" -u op get bird
+	atf_check -o match:'"name":"sshd_flags","value":"-4"' \
+	    "$JGC" -c "$SOCK" -u op get services
+	# A core's backtrace: an operator's.
+	atf_check -s exit:1 -e match:"backtrace is an operator's" -o ignore \
+	    "$JGC" -c "$SOCK" -u viewer action crashes read backtrace=x.core
+}
+viewer_reads_cleanup()
+{
+	[ -f sh.pid ] && kill "$(cat sh.pid)" 2>/dev/null
+	stop_daemon
+}
+
 atf_init_test_cases()
 {
+	atf_add_test_case secrets_mask
+	atf_add_test_case viewer_reads
+	atf_add_test_case agent_build_trust
 	atf_add_test_case sdwan_ids
 	atf_add_test_case vpn_bird_gone
 	atf_add_test_case safe_mode_restore

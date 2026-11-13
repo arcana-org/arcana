@@ -259,46 +259,6 @@ put_int(ucl_object_t *o, const char *k, int64_t v)
 	ucl_object_insert_key(o, ucl_object_fromint(v), k, 0, true);
 }
 
-/*
- * Does a file's text hold a secret by what it says, beside the places
- * that are secrets: an rc.conf variable whose name says it is one
- * (secret_name()) with a value, a carp(4) key in an ifconfig_ line
- * ("pass key"), speederv2's -k in a relay's flags, BIRD's password
- * "...".  Such a file is withheld unless secrets are asked for, as a
- * secret's place is: its text is no use with the secret masked.
- */
-static bool
-text_secret(const char *text)
-{
-	const char	*p, *e, *v;
-	size_t		 n;
-
-	for (p = text; *p != '\0'; p = *e != '\0' ? e + 1 : e) {
-		e = p + strcspn(p, "\n");
-		p += strspn(p, " \t");
-		if (strncmp(p, "password", 8) == 0 && (p[8] == ' ' || p[8] ==
-		    '\t'))
-			return (true);
-		n = strspn(p, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-		    "0123456789_");
-		if (n == 0 || p + n >= e || p[n] != '=')
-			continue;
-		v = p + n + 1;
-		if (*v == '"' || *v == '\'')
-			v++;
-		if (secret_name(p, n) && v < e && *v != '"' && *v != '\'' &&
-		    *v != '\n')
-			return (true);
-		if (strncmp(p, "ifconfig_", 9) == 0 && memmem(v, (size_t)(e - v),
-		    " pass ", 6) != NULL)
-			return (true);
-		if (strncmp(p, "arcana_relay", 12) == 0 && memmem(v, (size_t)(e -
-		    v), "-k ", 3) != NULL)
-			return (true);
-	}
-	return (false);
-}
-
 /* One file of the bundle, when it is there. */
 static void
 file_add(struct work *w, ucl_object_t *arr, const char *path,

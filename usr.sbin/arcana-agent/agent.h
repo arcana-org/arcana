@@ -21,7 +21,7 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
-#define	ARCANA_AGENT_VERSION	"0.283.0"
+#define	ARCANA_AGENT_VERSION	"0.284.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -181,6 +181,8 @@ struct opts {
 	const char	*make_bin;
 	const char	*build_dir;	/* where a tree is cloned and built */
 	const char	*build_conf;	/* this host's config.mk for it */
+	const char	*build_user;	/* --build-user: whom a build runs as */
+	bool		 build_user_set; /* named: checked, root or not */
 	const char	*root;		/* --root: the system's files under it */
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
 	int		 routes_cache_s;	/* --routes-cache: a FIB's count kept */
@@ -275,6 +277,11 @@ struct work {
 	 * changed or a signal sent is a step saying so (work_dry()).
 	 */
 	bool		 dry;
+	/*
+	 * A read's: how far whom it is for is trusted with what it gives
+	 * out (clearance()); a work made for no request a viewer's.
+	 */
+	int		 clear;
 };
 
 void		 work_init(struct work *);
@@ -332,12 +339,10 @@ void		 exec_set_secret(bool);
 void		 exec_set_hide(const char *);
 void		 exec_set_watch(int);
 void		 exec_set_limit(int);
-char		*mask_secrets(const char *);
 int		 mkdir_mode(const char *, mode_t);
 const char	*storage_protected(struct work *, const char *, bool);
 int		 agent_spawn(pid_t *, const char *, const posix_spawn_file_actions_t *,
 		    const posix_spawnattr_t *, char *const [], char *const []);
-bool		 secret_name(const char *, size_t);
 int		 run_exec_lines(struct work *, char *const [],
 		    void (*)(const char *, void *), void *);
 int		 run_exec_max(struct work *, char *const [], struct execres *,
@@ -1461,6 +1466,41 @@ void		 lne_bound(const char *, const char *, bool);
  * their receivers reached over HTTPS-notif; at the start. */
 int		 ysubs_init(struct cbl_ctx *);
 
+/*
+ * superbia/secrets.c: what says it is a secret, and a text with each
+ * secret's value as MASK_MARK: the one place a trace, a job, a bundle
+ * and a read open to every role mask by.
+ */
+#define	MASK_MARK	"<hidden>"
+bool		 secret_name(const char *, size_t);
+bool		 secret_assign(const char *, size_t *);
+bool		 secret_word(const char *);
+char		*text_mask(const char *, bool *);
+const char	*wmask(struct work *, const char *);
+const char	*wurl(struct work *, const char *);
+const char	*wjson_mask(struct work *, const char *);
+bool		 text_secret(const char *);
+char		*mask_secrets(const char *);
+struct ucl_object_s;
+void		 ucl_mask(struct ucl_object_s *);
+/* luxuria/sdconf.c: a word for a rendered file's comment, or "-". */
+const char	*conf_word(const char *);
+
+/*
+ * superbia/ynacm.c: how far a request's user is trusted with what a
+ * read gives out, by its groups in the host's access rules: the
+ * console's operators of the host are in group operator, its owners
+ * (and the console itself, and the recovery session) in group admin;
+ * anyone else a viewer.  A read open to every role gives a secret's
+ * value to CLEAR_OPERATOR and above alone, masked (wmask()) or refused
+ * below.
+ */
+#define	CLEAR_VIEWER	0
+#define	CLEAR_OPERATOR	1
+#define	CLEAR_ADMIN	2
+#define	NACM_OPERATOR	"operator"
+int		 clearance(cbl_req *);
+
 /* superbia/admit.c, ynacm.c: NACM (RFC 8341).  The console's users in
  * group admin by default: its admin, and the console itself for the
  * requests it makes for nobody. */
@@ -1648,6 +1688,16 @@ struct build_rsp {
 		const char	*const *v;
 	}		 fingerprints;
 	const char	*deploy_key;
+	bool		 has_older;	/* update: refused, a version before */
+};
+/* An update as sent: what its signature stands for (ira/update.c). */
+struct agent_update {
+	const char	*sha256;
+	const char	*version;	/* NULL: none said */
+	const uint8_t	*sig;
+	size_t		 siglen;
+	bool		 local;		/* root on the local socket: unsigned */
+	bool		 downgrade;
 };
 int		 do_agent_build(struct work *, const char *, const char *,
 		    const char *, const char *, bool,
@@ -1682,8 +1732,7 @@ int		 do_console_update(struct work *, const char *, const char *,
 
 /* ira/update.c */
 int		 do_agent_update(struct work *, const uint8_t *, size_t,
-		    size_t, const char *, const uint8_t *, size_t, bool,
-		    struct build_rsp *);
+		    size_t, const struct agent_update *, struct build_rsp *);
 void		 service_restart(const char *);
 void		 service_detached(const char *, const char *);
 

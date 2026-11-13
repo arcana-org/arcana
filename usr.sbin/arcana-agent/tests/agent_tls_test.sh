@@ -190,7 +190,8 @@ mtls_body()
 	# NACM's (RFC 8341) default: the console, which asks for nobody,
 	# and its admin may do anything; another user reads, and asks what
 	# changes nothing, but what changes the host is denied, counted.
-	atf_check -o match:'"group":\[\{"name":"admin","user-name":\["admin","console"\]\}\]' \
+	# Group operator beside it, empty until the console fills it.
+	atf_check -o match:'"group":\[\{"name":"admin","user-name":\["admin","console"\]\},\{"name":"operator"\}\]' \
 	    -o match:'"write-default":"deny"' \
 	    "$JGC" -c "$URI" -A ca.pem -C client.pem -K client.key get nacm
 	atf_check -o match:'^Host:' "$JGC" -c "$URI" -A ca.pem -C client.pem \
@@ -571,8 +572,69 @@ control_lane_cleanup()
 	stop_daemon
 }
 
+# An update over TLS is signed as its statement: the host it is for,
+# the version, the SHA-256 and whether it may go back, rebuilt by the
+# agent; a flag flipped, or a statement for another host, is refused.
+atf_test_case signed_update cleanup
+signed_update_head()
+{
+	atf_set "descr" "An update's statement signed by the CA: the" \
+	    "downgrade intent and the host in it, refused when changed"
+	atf_set "require.progs" "openssl"
+}
+# stmt HOST DOWNGRADE: the program's statement into stmt, its signature
+# by the CA's key, base64, into sig.b64.
+stmt()
+{
+	printf 'arcana-agent update\nhost %s\nversion 0.1.0\nsha256 %s\ndowngrade %s\n' \
+	    "$1" "$(sha256 -q older)" "$2" > stmt
+	openssl dgst -sha256 -sign ca.key -out sig stmt >/dev/null 2>&1 ||
+	    atf_fail "openssl: cannot sign the statement"
+	b64encode -r sig - < sig | tr -d '\n' > sig.b64
+}
+signed_update_body()
+{
+	printf '#!/bin/sh\necho arcana-agent 0.1.0\n' > older
+	echo old > installed
+	DAEMON_ARGS="-U $(pwd)/installed"
+	start_daemon
+	URI="tcp://127.0.0.1:$PORT"
+	prog=$(b64encode -r older - < older | tr -d '\n')
+	sha=$(sha256 -q older)
+	# The update sent, with the signature of the last statement made.
+	cat > up <<EOS
+#!/bin/sh
+exec "$JGC" -c "$URI" -A ca.pem -C client.pem -K client.key action \
+    agent update "binary=$prog" "sha256=$sha" \
+    "signature=\$(cat sig.b64)" version=0.1.0 "\$@"
+EOS
+	chmod +x up
+	# Signed "no": sent with downgrade, the statement is not what was
+	# signed; without, the version older than the running one.
+	stmt "$(hostname)" no
+	atf_check -s exit:1 -e match:'not signed by a CA this host trusts' \
+	    -o ignore ./up downgrade=true
+	atf_check -s exit:1 -e match:'0.1.0, older than the running' \
+	    -o ignore ./up
+	atf_check -o inline:'old\n' cat installed
+	# Signed for another host: refused here.
+	stmt other.example yes
+	atf_check -s exit:1 -e match:'not signed by a CA this host trusts' \
+	    -o ignore ./up downgrade=true
+	atf_check -o inline:'old\n' cat installed
+	# For this host, downgrade yes: taken.
+	stmt "$(hostname)" yes
+	atf_check -o match:0.1.0 ./up downgrade=true
+	atf_check cmp -s older installed
+}
+signed_update_cleanup()
+{
+	stop_daemon
+}
+
 atf_init_test_cases()
 {
+	atf_add_test_case signed_update
 	atf_add_test_case tls_files
 	atf_add_test_case mtls
 	atf_add_test_case renew

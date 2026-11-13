@@ -13,6 +13,28 @@
 # is the whole module's, one served by another program than the agent.
 # Prints each operation that is neither, and one the list names that no
 # module has; exits 1 for either.
+#
+# The same of the data a read gives out: a leaf that holds the text of a
+# file or a command line (named text, argv, args, cmdline, command,
+# config, content or options, the module's state, an output or a
+# notification, not an input) is nacm:default-deny-all, itself or
+# beneath a node that is, or is named in the list as <module>:<path>
+# (the path as an operation's, then the leaf's name) with what is done
+# of its secrets (masked below an operator: wmask()), or why it has
+# none.
+
+# Leaves whose text may be a file's or a command line's.
+function texty(s) {
+	return (s ~ /^(text|argv|args|cmdline|command|config|content|options)$/)
+}
+
+# Is a node from depth 1 to d nacm:default-deny-all?
+function denied_at(d,	i) {
+	for (i = 1; i <= d; i++)
+		if (deny[i])
+			return (1)
+	return (0)
+}
 
 function strip(s) {
 	sub(/^[ \t\n]+/, "", s)
@@ -60,6 +82,7 @@ FNR == 1 {
 	sub(/@.*/, "", mod)
 	depth = 0
 	op = 0
+	input = 0
 	quote = ""
 	word = ""
 	mods[mod] = 1
@@ -86,8 +109,15 @@ FNR == 1 {
 			statement()
 			depth++
 			name[depth] = ""
+			kind[depth] = stkw
+			deny[depth] = 0
+			leaf[depth] = ""
 			if (stkw ~ /^(container|list|grouping|augment|action|rpc)$/)
 				name[depth] = starg
+			if ((stkw == "leaf" || stkw == "leaf-list") && texty(starg))
+				leaf[depth] = starg
+			if (stkw == "input" && input == 0)
+				input = depth
 			if ((stkw == "action" || stkw == "rpc") && op == 0) {
 				op = depth
 				opname = mod ":" path()
@@ -97,8 +127,17 @@ FNR == 1 {
 			statement()
 			if (op > 0 && depth == op && stkw == "nacm:default-deny-all")
 				denied[opname] = 1
+			if (stkw == "nacm:default-deny-all")
+				deny[depth] = 1
 		} else if (c == "}") {
 			word = ""
+			if (leaf[depth] != "" && input == 0 &&
+			    !denied_at(depth)) {
+				tn = mod ":" path() "/" leaf[depth]
+				texts[tn] = 1
+			}
+			if (depth == input)
+				input = 0
 			if (depth == op)
 				op = 0
 			depth--
@@ -109,6 +148,16 @@ FNR == 1 {
 }
 
 END {
+	for (t in texts) {
+		m = t
+		sub(/:.*/, "", m)
+		if (!(t in allow) && !((m ":*") in allow)) {
+			printf("%s: a file's or a command line's text, " \
+			    "neither nacm:default-deny-all nor in " \
+			    "share/arcana/nacm-allow\n", t)
+			bad = 1
+		}
+	}
 	for (o in ops) {
 		m = o
 		sub(/:.*/, "", m)
@@ -121,7 +170,7 @@ END {
 	for (a in allow) {
 		m = a
 		sub(/:.*/, "", m)
-		if (a ~ /:\*$/ ? !(m in mods) : !(a in ops)) {
+		if (a ~ /:\*$/ ? !(m in mods) : !(a in ops) && !(a in texts)) {
 			printf("share/arcana/nacm-allow: %s: no such operation\n",
 			    a)
 			bad = 1

@@ -18,6 +18,13 @@
  * file and not packed), then the new one from its start, so that no
  * line is lost to the turn nor read from its middle.
  *
+ * A viewer (clearance()) reads the logs the host lets every user read
+ * (mode o+r: messages, and what the admin makes so) and the kernel's
+ * messages; a log that is not world-readable on disk (auth.log,
+ * security, cron, a daemon's own) and the audit trail, whose records
+ * carry every command's arguments, are an operator's.  The file's own
+ * mode is the rule: it says what the host's administrator meant.
+ *
  * A jail's logs and audit trail are opened beneath its root; what
  * unpacks a log, and praudit(1), read the file so opened on their
  * standard input, never a path of the jail's, which its links could
@@ -411,6 +418,10 @@ special(struct work *w, const char *name, const char *filter, bool from,
 		return (lines_reply(w, name, buf, len, filter, max, rsp));
 	}
 	if (strcmp(name, "@audit") == 0) {
+		if (w->clear < CLEAR_OPERATOR) {
+			rsp->error = "the audit trail is an operator's to read";
+			return (0);
+		}
 		if ((bin = tool(w, "praudit")) == NULL) {
 			rsp->error = "the host has no praudit";
 			return (0);
@@ -493,6 +504,16 @@ do_log(struct work *w, const char *name, const char *filter, bool from,
 		step_end(w, step, false, NULL);
 		if (fd != -1)
 			close(fd);
+		close(dfd);
+		return (0);
+	}
+	/* What the host lets every user read, a viewer reads; the rest
+	 * (auth.log, security, cron, ...) is an operator's. */
+	if (w->clear < CLEAR_OPERATOR && (sb.st_mode & S_IROTH) == 0) {
+		rsp->error = wfmt(w, "%s is not readable by every user on the "
+		    "host: an operator's to read", name);
+		step_end(w, step, false, "an operator's");
+		close(fd);
 		close(dfd);
 		return (0);
 	}

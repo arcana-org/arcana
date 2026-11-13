@@ -7,14 +7,30 @@
 /*
  * arcana-agent built from a git repository, for the console to hand to
  * the other hosts.  The tree is cloned afresh into the build directory
- * and built there with make(1); as root, git and make run as nobody, so
- * what a repository's makefiles do is done without privilege.  Nothing
- * is installed: the program goes back in the reply, compressed when
- * asked (zprog.c).
+ * and built there with make(1); as root, git, make and ssh-keygen run as
+ * the build user, _arcanabuild (--build-user), so what a repository's
+ * makefiles do is done without privilege.  Nothing is installed: the
+ * program goes back in the reply, compressed when asked (zprog.c).
+ *
+ * What the build user makes is the build user's, and what it built is
+ * signed by the console and run as root on every host: so it is a user
+ * nothing else is (build_user_ok(): not root, not nobody, whose
+ * processes are every daemon's, none of its own running, no home of
+ * its own), which the agent never makes itself (the port does, and
+ * docs/UPDATING.md says how on a host before it).  The build directory
+ * is its alone, 0700, the deploy key in it; root opens nothing there by
+ * name: the directory pinned (O_DIRECTORY | O_NOFOLLOW, owner and mode
+ * checked), every name beneath it a component at a time with
+ * O_NOFOLLOW (open_beneath()), the program and id_ed25519.pub fstat'ed
+ * (a regular file of the build user's, one link) and read through that
+ * descriptor, the program's SHA-256 logged before it goes back.
  */
 
 #include <sys/types.h>
+#include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -23,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include <openssl/evp.h>
@@ -32,9 +49,9 @@
 #include "agent.h"
 #include "zprog.h"
 
-#define	BUILD_USER	"nobody"
 #define	VERSION_PREFIX	"arcana-agent "
 #define	MAX_ARGS	20
+#define	PUB_MAX		4096		/* a .pub's line, and more */
 
 /* What fetching a tree came to, when it did not come to a tree. */
 /* How git reaches a repository over SSH; ssh false when it does not. */
@@ -99,7 +116,7 @@ run_as(struct work *w, bool unpriv, const char *const *argv,
 	if (unpriv) {
 		full[n++] = (char *)(uintptr_t)"/usr/sbin/chroot";
 		full[n++] = (char *)(uintptr_t)"-u";
-		full[n++] = (char *)(uintptr_t)BUILD_USER;
+		full[n++] = (char *)(uintptr_t)opts.build_user;
 		full[n++] = (char *)(uintptr_t)"/";
 	}
 	for (i = 0; argv[i] != NULL && i < MAX_ARGS; i++)
@@ -206,20 +223,203 @@ key_lines(struct work *w, const char *out, size_t len, const char *name)
 	return (buf);
 }
 
+/*
+ * Is the build user one nothing else is?  Not root; not nobody, whose
+ * processes are every daemon's that gives up root; no process of its
+ * own running now (a user that runs something else can be reached by
+ * it, and reach what it builds); no home of its own (nonexistent,
+ * /var/empty or the build directory).  *pwp its entry; NULL and why,
+ * with the line that makes it when there is none.  The agent never
+ * makes a user itself.
+ */
+static const char *
+build_user_ok(struct work *w, struct passwd *pwp, char *buf, size_t len)
+{
+	struct kinfo_proc	*kp;
+	struct passwd		*pw;
+	size_t			 sz, i;
+	int			 mib[4];
+
+	if (getpwnam_r(opts.build_user, pwp, buf, len, &pw) != 0 || pw ==
+	    NULL)
+		return (wfmt(w, "no user %s to build as: the agent makes no "
+		    "user itself; make it with: pw useradd %s -u 863 -c "
+		    "\"Arcana agent builds\" -d /nonexistent -s "
+		    "/usr/sbin/nologin (docs/UPDATING.md)", opts.build_user,
+		    opts.build_user));
+	/* nobody by its name, or by its number (65534, the system's). */
+	if (pw->pw_uid == 0 || pw->pw_uid == 65534 ||
+	    strcmp(pw->pw_name, "nobody") == 0)
+		return (wfmt(w, "%s is no user to build as: %s; builds run as "
+		    "a user of their own (pw useradd _arcanabuild, "
+		    "docs/UPDATING.md)", opts.build_user, pw->pw_uid == 0 ?
+		    "it is root" : "nobody's processes are every daemon's"));
+	if (strcmp(pw->pw_dir, "/nonexistent") != 0 && strcmp(pw->pw_dir,
+	    "/var/empty") != 0 && strcmp(pw->pw_dir, opts.build_dir) != 0)
+		return (wfmt(w, "%s has a home of its own, %s: a user that "
+		    "builds owns nothing but the build directory (-d "
+		    "/nonexistent)", opts.build_user, pw->pw_dir));
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC;
+	mib[2] = KERN_PROC_UID;
+	mib[3] = (int)pw->pw_uid;
+	sz = 0;
+	if (sysctl(mib, 4, NULL, &sz, NULL, 0) == -1)
+		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
+	kp = wmalloc(w, sz + sizeof(*kp));
+	if (sysctl(mib, 4, kp, &sz, NULL, 0) == -1)
+		return (wfmt(w, "kern.proc.uid: %s", strerror(errno)));
+	for (i = 0; i < sz / sizeof(*kp); i++)
+		if (kp[i].ki_pid != getpid())
+			return (wfmt(w, "%s runs other processes (%s, pid "
+			    "%d): builds run as a user nothing else is",
+			    opts.build_user, wtext(w, kp[i].ki_comm),
+			    (int)kp[i].ki_pid));
+	return (NULL);
+}
+
+/*
+ * The build directory, pinned: a directory, not a link, owned by uid
+ * and written by nobody else.  -1 and errno.
+ */
 static int
-write_text(const char *path, const char *text)
+build_dirfd(uid_t uid)
+{
+	struct stat	sb;
+	int		fd;
+
+	if ((fd = open(opts.build_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC)) == -1)
+		return (-1);
+	if (fstat(fd, &sb) == -1 || sb.st_uid != uid || (sb.st_mode &
+	    (S_IWGRP | S_IWOTH)) != 0) {
+		close(fd);
+		errno = EPERM;
+		return (-1);
+	}
+	return (fd);
+}
+
+/*
+ * rel, a path beneath the directory dfd, opened a component at a time,
+ * none of them a link, nor . or ..; the last with flags.  -1 and errno.
+ */
+static int
+open_beneath(int dfd, const char *rel, int flags)
+{
+	char	 buf[PATH_MAX], *p, *c, *next;
+	int	 fd, nfd;
+
+	if (strlcpy(buf, rel, sizeof(buf)) >= sizeof(buf)) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
+	if ((fd = dup(dfd)) == -1)
+		return (-1);
+	for (p = buf; (c = strsep(&p, "/")) != NULL; ) {
+		if (c[0] == '\0' || strcmp(c, ".") == 0 || strcmp(c, "..") ==
+		    0) {
+			close(fd);
+			errno = EINVAL;
+			return (-1);
+		}
+		next = p;
+		nfd = openat(fd, c, next != NULL ? O_RDONLY | O_DIRECTORY |
+		    O_NOFOLLOW | O_CLOEXEC : flags | O_NOFOLLOW | O_CLOEXEC);
+		close(fd);
+		if (nfd == -1)
+			return (-1);
+		fd = nfd;
+	}
+	return (fd);
+}
+
+/* Whom the build directory's files are: the build user's as root, the
+ * daemon's own else. */
+static uid_t
+build_uid(bool unpriv)
+{
+	struct passwd	*pw;
+
+	if (!unpriv)
+		return (geteuid());
+	return ((pw = getpwnam(opts.build_user)) != NULL ? pw->pw_uid :
+	    (uid_t)-1);
+}
+
+/*
+ * A regular file of uid's, one link, at most max bytes, beneath the
+ * build directory, read whole through the descriptor that names it:
+ * w's, *lenp long.  NULL and errno.
+ */
+static uint8_t *
+read_beneath(struct work *w, int dfd, const char *rel, uid_t uid, size_t max,
+    size_t *lenp)
+{
+	struct stat	 sb;
+	uint8_t		*p;
+	size_t		 off;
+	ssize_t		 r;
+	int		 fd;
+
+	if ((fd = open_beneath(dfd, rel, O_RDONLY | O_NONBLOCK)) == -1)
+		return (NULL);
+	if (fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode) || sb.st_uid != uid ||
+	    sb.st_nlink != 1 || sb.st_size <= 0 || (size_t)sb.st_size > max) {
+		close(fd);
+		errno = EPERM;
+		return (NULL);
+	}
+	p = wmalloc(w, (size_t)sb.st_size + 1);
+	for (off = 0; off < (size_t)sb.st_size; off += (size_t)r)
+		if ((r = read(fd, p + off, (size_t)sb.st_size - off)) <= 0)
+			break;
+	close(fd);
+	if (off != (size_t)sb.st_size) {
+		errno = EIO;
+		return (NULL);
+	}
+	p[off] = '\0';
+	*lenp = off;
+	return (p);
+}
+
+/* Is there a file at rel beneath the build directory, no link on the
+ * way? */
+static bool
+beneath(bool unpriv, const char *rel)
+{
+	int	dfd, fd;
+
+	if ((dfd = build_dirfd(build_uid(unpriv))) == -1)
+		return (false);
+	fd = open_beneath(dfd, rel, O_RDONLY | O_NONBLOCK);
+	close(dfd);
+	if (fd == -1)
+		return (false);
+	close(fd);
+	return (true);
+}
+
+/*
+ * A name of the build directory written whole: the directory is one
+ * the build user writes in, so a name that is there, or put there
+ * meanwhile, a link above all, is not written through.
+ */
+static int
+write_text(const char *name, const char *text)
 {
 	FILE	*fp;
-	int	 fd;
+	int	 dfd, fd;
 
-	/*
-	 * The directory is one the build user writes in: a name that is
-	 * there, or put there meanwhile, a link above all, is not written
-	 * through.
-	 */
-	(void)unlink(path);
-	if ((fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
-	    O_CLOEXEC, 0644)) == -1)
+	if ((dfd = open(opts.build_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC)) == -1)
+		return (-1);
+	(void)unlinkat(dfd, name, 0);
+	fd = openat(dfd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
+	    O_CLOEXEC, 0644);
+	close(dfd);
+	if (fd == -1)
 		return (-1);
 	if ((fp = fdopen(fd, "w")) == NULL) {
 		close(fd);
@@ -272,7 +472,7 @@ offer_host_keys(struct work *w, bool unpriv, const char *name,
 		return;
 	}
 	scan = wfmt(w, "%s/scan", opts.build_dir);
-	if (write_text(scan, rsp->host_keys) == 0) {
+	if (write_text("scan", rsp->host_keys) == 0) {
 		n = 0;
 		argv[n++] = opts.keygen_bin;
 		argv[n++] = "-l";
@@ -349,12 +549,14 @@ git_ssh(struct work *w, const char *source, const char *accepted,
     const char *sshkey, bool unpriv, struct gitssh *g, struct fetched *rsp)
 {
 	struct execres	 res;
+	struct stat	 sb;
 	const char	*argv[MAX_ARGS], *name, *host, *port, *sshcmd;
 	char		*kh, *key, *pub;
 	char		 line[1024];
-	FILE		*fp;
-	bool		 ssh;
-	int		 n, s;
+	uint8_t		*text;
+	size_t		 len;
+	bool		 ssh, own;
+	int		 n, s, dfd, fd;
 
 	sshcmd = NULL;
 	ssh = ssh_source(w, source, &name, &host, &port);
@@ -378,14 +580,26 @@ git_ssh(struct work *w, const char *source, const char *accepted,
 			if (run_as(w, unpriv, argv, &res) != 0) {
 				rsp->error = wfmt(w, "the SSH key %s is not "
 				    "there, or not readable by %s, whom git "
-				    "runs as", sshkey, unpriv ? BUILD_USER :
+				    "runs as", sshkey, unpriv ? opts.build_user :
 				    "the agent");
 				return (false);
 			}
 			key = wstrdup(w, sshkey);
 		}
 		pub = wfmt(w, "%s.pub", key);
-		if (access(key, F_OK) == -1) {
+		own = sshkey == NULL || sshkey[0] == '\0';
+		dfd = -1;
+		if (own && ((dfd = build_dirfd(build_uid(unpriv))) == -1 ||
+		    faccessat(dfd, "id_ed25519", F_OK, AT_SYMLINK_NOFOLLOW) ==
+		    -1)) {
+			if (dfd == -1) {
+				rsp->error = wfmt(w, "%s: not the build user's "
+				    "own directory: %s", opts.build_dir,
+				    strerror(errno));
+				return (false);
+			}
+			close(dfd);
+			dfd = -1;
 			n = 0;
 			argv[n++] = opts.keygen_bin;
 			argv[n++] = "-q";
@@ -404,17 +618,34 @@ git_ssh(struct work *w, const char *source, const char *accepted,
 				return (false);
 			}
 		}
-		if ((fp = fopen(pub, "r")) != NULL) {
-			if (fgets(line, sizeof(line), fp) != NULL) {
-				line[strcspn(line, "\n")] = '\0';
-				rsp->deploy_key = wtext(w, wstrdup(w, line));
+		if (dfd != -1)
+			close(dfd);
+		/* This host's: the build user's, read through the pinned
+		 * directory; one named, the administrator's, not through a
+		 * link either. */
+		text = NULL;
+		if (own && (dfd = build_dirfd(build_uid(unpriv))) != -1) {
+			text = read_beneath(w, dfd, "id_ed25519.pub",
+			    build_uid(unpriv), PUB_MAX, &len);
+			close(dfd);
+		} else if (!own && (fd = open(pub, O_RDONLY | O_NOFOLLOW |
+		    O_NONBLOCK | O_CLOEXEC)) != -1) {
+			if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) &&
+			    (len = (size_t)read(fd, line, sizeof(line) - 1)) <
+			    sizeof(line)) {
+				line[len] = '\0';
+				text = (uint8_t *)wstrdup(w, line);
 			}
-			fclose(fp);
+			close(fd);
+		}
+		if (text != NULL) {
+			text[strcspn((char *)text, "\n")] = '\0';
+			rsp->deploy_key = wtext(w, (char *)text);
 		}
 		if (accepted != NULL && accepted[0] != '\0') {
 			s = step_begin(w, STEP_FILE, "write", "%s", kh);
-			if (!valid_host_keys(accepted, name) || write_text(kh,
-			    accepted) == -1) {
+			if (!valid_host_keys(accepted, name) || write_text(
+			    "known_hosts", accepted) == -1) {
 				step_end(w, s, false, "not host keys of %s",
 				    name);
 				rsp->error = wfmt(w, "those are not host keys "
@@ -455,16 +686,20 @@ git_ssh(struct work *w, const char *source, const char *accepted,
 }
 
 /*
- * What a fetch needs first: a source and a ref it can take, and the
- * build directory, the build user's when there is one.
+ * What a fetch needs first: a source and a ref it can take, a build
+ * user nothing else is (as root, or when one is named), and the build
+ * directory, the build user's alone, 0700.
  */
 static bool
 fetch_ready(struct work *w, const char *source, const char *ref,
     bool unpriv, struct fetched *rsp)
 {
-	struct passwd	*pw;
+	struct passwd	 pwd;
+	const char	*why;
+	char		 buf[1024];
 	int		 s;
 
+	memset(&pwd, 0, sizeof(pwd));
 	if (!valid_source(source)) {
 		rsp->error = "not a repository git clone can take";
 		return (false);
@@ -473,19 +708,33 @@ fetch_ready(struct work *w, const char *source, const char *ref,
 		rsp->error = "not a branch or tag name";
 		return (false);
 	}
+	if (unpriv || opts.build_user_set) {
+		s = step_begin(w, STEP_LIB, "getpwnam(3)", "%s, the build user",
+		    opts.build_user);
+		if ((why = build_user_ok(w, &pwd, buf, sizeof(buf))) != NULL) {
+			step_end(w, s, false, "%s", why);
+			rsp->error = why;
+			return (false);
+		}
+		step_end(w, s, true, "uid %u, no process, no home",
+		    (unsigned)pwd.pw_uid);
+	}
 	s = step_begin(w, STEP_FILE, "mkdir", "%s", opts.build_dir);
-	if (mkdir_mode(opts.build_dir, 0755) == -1 && errno != EEXIST) {
+	if (mkdir_mode(opts.build_dir, 0700) == -1 && errno != EEXIST) {
 		step_end(w, s, false, "%s", strerror(errno));
 		rsp->error = wfmt(w, "%s: %s", opts.build_dir, strerror(errno));
 		return (false);
 	}
-	if (unpriv && ((pw = getpwnam(BUILD_USER)) == NULL ||
-	    chown(opts.build_dir, pw->pw_uid, pw->pw_gid) == -1)) {
-		step_end(w, s, false, "no user %s to build as", BUILD_USER);
-		rsp->error = "no user to build as";
+	/* The build user's alone, its deploy key in it: one of a release
+	 * before was nobody's and 0755. */
+	if ((unpriv && lchown(opts.build_dir, pwd.pw_uid, pwd.pw_gid) == -1) ||
+	    lchmod(opts.build_dir, 0700) == -1) {
+		step_end(w, s, false, "%s", strerror(errno));
+		rsp->error = wfmt(w, "%s: %s", opts.build_dir, strerror(errno));
 		return (false);
 	}
-	step_end(w, s, true, unpriv ? "owned by " BUILD_USER : NULL);
+	step_end(w, s, true, "%s0700", unpriv ? wfmt(w, "%s's, ",
+	    opts.build_user) : "");
 	return (true);
 }
 
@@ -630,16 +879,14 @@ agent_build(struct work *w, const char *source, const char *ref,
 {
 	struct fetched	 f;
 	struct execres	 res;
-	struct stat	 sb;
 	unsigned char	 md[EVP_MAX_MD_SIZE];
-	const char	*argv[MAX_ARGS], *nl;
-	char		*src, *objdir, *prog, *sha;
+	const char	*argv[MAX_ARGS], *nl, *rel;
+	char		*src, *objdir, *prog, *sha, real[PATH_MAX];
 	uint8_t		*bin, *z;
-	ssize_t		 r;
 	size_t		 off, zlen;
 	unsigned int	 i, mdlen;
 	bool		 unpriv;
-	int		 fd, n, s;
+	int		 dfd, n, s;
 
 	rsp->has_ok = true;
 	rsp->ok = false;
@@ -658,8 +905,7 @@ agent_build(struct work *w, const char *source, const char *ref,
 	 * arcana.h from the spec.  A tree without it builds with the
 	 * cblink installed, as the top-level make does.
 	 */
-	if (access(wfmt(w, "%s/cblink/share/cblink/cblink.mk", src), R_OK) ==
-	    0) {
+	if (beneath(unpriv, "src/cblink/share/cblink/cblink.mk")) {
 		n = 0;
 		argv[n++] = opts.make_bin;
 		argv[n++] = "-C";
@@ -689,8 +935,7 @@ agent_build(struct work *w, const char *source, const char *ref,
 	 * tree without it builds with the libipfeeds installed, as the
 	 * top-level make does.
 	 */
-	if (access(wfmt(w, "%s/ipfeeds/lib/libipfeeds/ipfeeds.h", src),
-	    R_OK) == 0) {
+	if (beneath(unpriv, "src/ipfeeds/lib/libipfeeds/ipfeeds.h")) {
 		argv[3] = "ipfeeds-build";
 		if (run_as(w, unpriv, argv, &res) != 0) {
 			rsp->error = wtext(w, exec_error(w, &res,
@@ -733,32 +978,43 @@ agent_build(struct work *w, const char *source, const char *ref,
 	    res.outlen);
 	prog = wfmt(w, "%s/arcana-agent", objdir);
 
+	/*
+	 * Where make says it is, the build user's word: beneath the build
+	 * directory or nowhere, opened through the directory root pinned,
+	 * no link followed, a regular file of the build user's with one
+	 * link (not one of root's linked in), read through that
+	 * descriptor.
+	 */
 	s = step_begin(w, STEP_FILE, "read", "%s", prog);
-	if ((fd = open(prog, O_RDONLY | O_CLOEXEC)) == -1 || fstat(fd,
-	    &sb) == -1 || sb.st_size == 0 || sb.st_size > (compress ?
-	    ZPROG_MAX_PROGRAM : ZPROG_MAX_BINARY)) {
-		step_end(w, s, false, "%s", fd == -1 ? strerror(errno) :
-		    "not a program an update can carry");
+	rel = NULL;
+	if (strncmp(prog, opts.build_dir, strlen(opts.build_dir)) == 0 &&
+	    prog[strlen(opts.build_dir)] == '/')
+		rel = prog + strlen(opts.build_dir) + 1;
+	else if (realpath(opts.build_dir, real) != NULL && strncmp(prog, real,
+	    strlen(real)) == 0 && prog[strlen(real)] == '/')
+		rel = prog + strlen(real) + 1;
+	bin = NULL;
+	off = 0;
+	if (rel != NULL && (dfd = build_dirfd(build_uid(unpriv))) != -1) {
+		bin = read_beneath(w, dfd, rel, build_uid(unpriv), compress ?
+		    ZPROG_MAX_PROGRAM : ZPROG_MAX_BINARY, &off);
+		close(dfd);
+	} else if (rel == NULL)
+		errno = EXDEV;
+	if (bin == NULL || EVP_Digest(bin, off, md, &mdlen, EVP_sha256(),
+	    NULL) != 1) {
+		step_end(w, s, false, "%s", bin != NULL ? "no digest" : errno ==
+		    EXDEV ? "not beneath the build directory" : errno == EPERM ?
+		    "not a regular file of the build user's, alone, of a size "
+		    "an update carries" : strerror(errno));
 		rsp->error = wfmt(w, "%s: no program to send back", prog);
-		if (fd != -1)
-			close(fd);
-		return (0);
-	}
-	bin = wmalloc(w, (size_t)sb.st_size);
-	for (off = 0; off < (size_t)sb.st_size; off += (size_t)r)
-		if ((r = read(fd, bin + off, (size_t)sb.st_size - off)) <= 0)
-			break;
-	close(fd);
-	if (off < (size_t)sb.st_size || EVP_Digest(bin, off, md, &mdlen,
-	    EVP_sha256(), NULL) != 1) {
-		step_end(w, s, false, "short read");
-		rsp->error = wfmt(w, "%s: cannot read", prog);
 		return (0);
 	}
 	sha = wmalloc(w, 2 * mdlen + 1);
 	for (i = 0; i < mdlen; i++)
 		snprintf(sha + 2 * i, 3, "%02x", md[i]);
 	step_end(w, s, true, "%zu bytes, SHA-256 %s", off, sha);
+	logmsg(LOG_NOTICE, "built %s: %zu bytes, SHA-256 %s", prog, off, sha);
 
 	/* What it says it is. */
 	argv[0] = prog;
@@ -991,7 +1247,7 @@ source_log(struct work *w, const char *source, const char *ref,
 	}
 	dir = wfmt(w, "%s/log.git", opts.build_dir);
 	refname = ref != NULL && ref[0] != '\0' ? ref : "HEAD";
-	if (access(wfmt(w, "%s/HEAD", dir), F_OK) != 0) {
+	if (!beneath(unpriv, "log.git/HEAD")) {
 		n = 0;
 		argv[n++] = opts.git_bin;
 		if (g.cmd != NULL) {

@@ -29,7 +29,9 @@ struct arcana_jobs_step;
  * "securelevel", "privileged", "version", "build", "plugins",
  * "safe_wait", "features"}, the times seconds of the epoch; an agent
  * that has no features has none.  yh_takes_gzip(): whether that host's
- * agent takes its program compressed (zprog.h's feature).
+ * agent takes its program compressed (zprog.h's feature);
+ * yh_takes_signed(): whether it takes an update signed by its statement
+ * (zprog.h's SIGNED_UPDATE_FEATURE).
  * yh_agent_before(): whether that host's agent is of a version before
  * version ("0.248.0"); one that says none is.
  *
@@ -47,6 +49,7 @@ struct arcana_jobs_step;
 int	yh_hello(cbl_conn *conn, ucl_object_t **data, char *err,
 	    size_t errlen);
 bool	yh_takes_gzip(const ucl_object_t *host);
+bool	yh_takes_signed(const ucl_object_t *host);
 bool	yh_agent_before(const ucl_object_t *host, const char *version);
 int	yh_stats(cbl_conn *conn, ucl_object_t **data, char *err,
 	    size_t errlen);
@@ -88,10 +91,13 @@ int	yh_source_log(cbl_conn *conn, const char *source, const char *ref,
  * compressed with compress (to an agent that takes it so, yh_hello())
  * and inflated here; its SHA-256 is the caller's to check.
  * yh_agent_update(): the program, len bytes, put in place, sha256 its
- * SHA-256, sig its signature by the CA key; sent compressed with gzip,
- * as it is otherwise, waited for timeout_ms (-1: the connection's
- * longest); {"version", "restarting"}.  EFBIG and err: too big for an
- * update to carry.
+ * SHA-256, sig its signature by the CA key (of the update's statement
+ * with version, to an agent that takes it so, yh_takes_signed(); of the
+ * program to one before), version what it reports (NULL: not said),
+ * downgrade whether an older one may replace the agent's; sent
+ * compressed with gzip, as it is otherwise, waited for timeout_ms (-1:
+ * the connection's longest); {"version", "restarting"}.  EFBIG and err:
+ * too big for an update to carry.
  */
 int	yh_source_head(cbl_conn *conn, const char *source, const char *ref,
 	    const char *host_keys, const char *ssh_key, ucl_object_t **data,
@@ -105,8 +111,8 @@ int	yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 	    size_t errlen);
 int	yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
 	    const char *sha256, const uint8_t *sig, size_t siglen,
-	    bool restart, bool gzip, int timeout_ms, ucl_object_t **data,
-	    char *err, size_t errlen);
+	    const char *version, bool downgrade, bool restart, bool gzip,
+	    int timeout_ms, ucl_object_t **data, char *err, size_t errlen);
 /*
  * The steps of a request as the agent tells them (arcana-jobs' steps,
  * on group notify), msg one notification heard: NULL where it is

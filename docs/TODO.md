@@ -348,12 +348,32 @@ Written and tested with stand-ins only:
   and the VM's kernel match, or the tests have a kernel of their own,
   the build cannot go green; it runs by hand only.
 
-- The build of the agent on a host runs as `nobody`, in a directory
-  `nobody` owns and that outlives the build, and `make install` of a
-  console update then runs as root from that tree. Any other process
-  running as `nobody` on that host can change what is built. A user of
-  its own for the build, a fresh directory for each, and the host keys
-  and deploy key kept where the build cannot write would close it.
+- Left of the review after agent 0.284.0: arcanactl prints the agent's
+  strings raw to the terminal (one strvis helper for every text field)
+  and its Casper fileargs allows every command-line word, -K's key
+  among them; work.c's wtext() leaves C1 controls; ssh.c authorize
+  appends a whole text of which only the first key is checked, and
+  takes options; tlsfiles.c keeps <key>.before for ever; kernel.c's
+  kld_list_set() writes into a fixed buffer unchecked; zfs receive of
+  a -R/-p stream takes its properties (mountpoint, setuid, exec,
+  jailed...) in xfer.c, health.c and storage.c; ynotif.c puts a
+  receiver's path and token in headers unchecked and keeps a reply
+  with no length on its connection; sdbird.c puts BGP info into faults
+  verbatim; sdids.c's jstr() is not events.c's json_quote(); the
+  speederv2 key is in argv. The page has no field for an agent
+  downgrade (the API's `downgrade`).
+- The console signs an update's program alone for an agent without
+  `signed-update` (zprog.h): the one compatibility the update path
+  keeps. It goes once no deployed agent predates 0.284.0.
+- The build of the agent runs as `_arcanabuild`, a user nothing else is,
+  in its own 0700 directory, root taking the program and the deploy
+  key's public half through a pinned directory (agent 0.284.0). Left:
+  `make install` of a console update still runs as root in the tree the
+  build user made, so its makefiles run as root then; an install from
+  a root-owned copy of what was built, or `make install` itself as the
+  build user into a staging directory root then copies, would close
+  it. The host keys and the deploy key still sit where the build user
+  writes; the directory still outlives the build.
 - A security key is asked for its owner's presence, not for a PIN or a
   fingerprint: keys without either still work, and a key found works
   for whoever found it. Sessions are not tied to the key they were made

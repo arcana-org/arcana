@@ -27,7 +27,8 @@ itself, past the browser's own cache.
 With a repository set (`agent_source`, under **Settings**), the header
 of the host the console runs on, the one added by its local socket
 (`unix:/var/run/arcana-agent.sock`), has **Update console**. The agent
-there clones the repository, builds all of Arcana as `nobody`, runs
+there clones the repository, builds all of Arcana as the build user
+(`_arcanabuild`, below), runs
 `make install` as root over what is installed (the console's module,
 the page, the agent and the tools), and restarts the `arcana_console`
 service and then itself, `arcana_agent`: the console and the agent of
@@ -99,6 +100,48 @@ into rtadvd.conf holds no control character, and after a ":" (where
 rtadvd splits a field) addresses' hex digits, dots, "/" and ","
 alone, never another field. The agent and the console are built with
 `_FORTIFY_SOURCE=2` and full RELRO.
+
+### The build user, reads by role, signed versions, agent 0.284.0
+
+Update the console first, to 0.433.0 or later, then the agents: from
+agent 0.284.0 on, an update's signature covers the host it is for (its
+hostname), its version, its SHA-256 and whether it may replace a newer
+agent (downgrade), and an agent refuses a program a console before
+signed. The console of 0.433.0 signs the new way.
+
+An agent builds (**Build agent here**, **Update console**, `arcanactl
+agent-build`) as `_arcanabuild`, a user of its own, no longer as
+`nobody`, whose processes are every daemon's; what it builds is signed
+by the console and run as root on every host. The agent makes no user:
+the package makes it (UID and GID 863); on a host whose arcana was
+installed before 0.284.0, or by `make install` from a tree, make it
+once, as root:
+
+```
+pw groupadd _arcanabuild -g 863
+pw useradd _arcanabuild -u 863 -g _arcanabuild -c "Arcana agent builds" \
+    -d /nonexistent -s /usr/sbin/nologin
+```
+
+A build is refused until it exists, with that line. It is refused as
+well as `nobody` or root, as a user with a process of its own running,
+or with a home of its own (`--build-user` names another). The build
+directory, `/var/cache/arcana-build`, becomes `_arcanabuild`'s, mode
+0700, at the next build; the deploy key in it stays as it was (its
+public half needs no change on the repository's server). A key of your
+own for git (`agent_ssh_key`) must be readable by `_arcanabuild`.
+
+The reads every role has give a viewer less: a log that is not
+world-readable on the host (auth.log, security, cron's) and the audit
+trail are an operator's; BIRD's configuration texts and services'
+variable values are left out of a viewer's GET (`nacm:default-deny-all`;
+an operator's too, unless the host's rules permit them); a process's
+argv, jail.conf's text, sshd's key options, smtpd.conf and its tables,
+a relay's log, a storage keylocation, a rule source's url and a
+poudriere make.conf have their secrets masked (`<hidden>`) below an
+operator, and a job's steps for everyone; a core's backtrace is an
+operator's; ipsec.conf's keys are masked below an admin. Nothing is to
+be done by hand.
 
 ### Modes, secrets and guards, agent 0.283.0
 
@@ -241,7 +284,7 @@ key:
   half: add it to the repository's server as a read-only deploy key.
   To use a key of your own instead, put its path on the build host in
   **Settings**, "SSH key for git" (`agent_ssh_key`); it has to be
-  readable by `nobody`, whom git runs as.
+  readable by `_arcanabuild`, whom git runs as.
 
 From a shell, `arcanactl agent-build -y` confirms the keys shown, and
 `-i key` names the key.
@@ -251,9 +294,10 @@ compiler, `devel/libcbor` and `net/libyang3` (for cblink-gen, which
 reads the wire's YANG modules); cblink is cloned with the tree, a
 submodule, and built with it. If the linker or a library is somewhere
 else on it, `/usr/local/etc/arcana/config.mk` there is copied into the
-tree as its `config.mk`. When the agent is root, git and make run as
-`nobody`. From a shell, `arcanactl agent-build [-o file] repository
-[ref]` builds and saves the program.
+tree as its `config.mk`. When the agent is root, git, make and
+ssh-keygen run as `_arcanabuild`, a user nothing else is (below). From
+a shell, `arcanactl agent-build [-o file] repository [ref]` builds and
+saves the program.
 
 ## Versions
 

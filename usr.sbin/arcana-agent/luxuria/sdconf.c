@@ -21,6 +21,7 @@
 
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -148,6 +149,121 @@ ident_ok(const char *s)
 	n = s != NULL ? strlen(s) : 0;
 	return (n > 0 && n <= 32 && strspn(s, "abcdefghijklmnopqrstuvwxyz"
 	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == n);
+}
+
+/*
+ * The values a file holds where its grammar takes them bare, not
+ * quoted (BIRD's neighbor, route, via, as; dnsmasq's and unbound's
+ * addresses): each checked by its type before it is printed, by these
+ * alone.  word_ok() keeps a quoted word in its quotes; a bare one could
+ * close the block it is in (";", "}") and open another.
+ */
+
+/* An interface's name: what ifconfig(8) takes, IFNAMSIZ less one. */
+static bool
+ifname_ok(const char *s)
+{
+	size_t	n;
+
+	n = s != NULL ? strlen(s) : 0;
+	return (n > 0 && n < IFNAMSIZ && strspn(s, "abcdefghijklmnopqrstuvwxyz"
+	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n);
+}
+
+/* A number of o's key, absent or an integer from lo to hi. */
+static bool
+num_ok(const ucl_object_t *o, const char *k, int64_t lo, int64_t hi)
+{
+	const ucl_object_t	*v;
+
+	if ((v = ucl_object_lookup(o, k)) == NULL || ucl_object_type(v) ==
+	    UCL_NULL)
+		return (true);
+	return (ucl_object_type(v) == UCL_INT && ucl_object_toint(v) >= lo &&
+	    ucl_object_toint(v) <= hi);
+}
+
+/* A string of o's key, absent or what ok takes. */
+static bool
+str_ok(const ucl_object_t *o, const char *k, bool (*ok)(const char *))
+{
+	const ucl_object_t	*v;
+
+	if ((v = ucl_object_lookup(o, k)) == NULL || ucl_object_type(v) ==
+	    UCL_NULL)
+		return (true);
+	return (ucl_object_type(v) == UCL_STRING && ok(ucl_object_tostring(v)));
+}
+
+/* Each string of o's list k what ok takes; none is none. */
+static bool
+list_ok(const ucl_object_t *o, const char *k, bool (*ok)(const char *))
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(o, k), &it, true)) !=
+	    NULL)
+		if (ucl_object_type(e) != UCL_STRING || !ok(ucl_object_tostring(
+		    e)))
+			return (false);
+	return (true);
+}
+
+/* dnsmasq's lease time: a number with s, m, h, d or w, or infinite. */
+static bool
+lease_ok(const char *s)
+{
+	size_t	n;
+
+	if (strcmp(s, "infinite") == 0)
+		return (true);
+	n = strspn(s, "0123456789");
+	return (n > 0 && n <= 9 && (s[n] == '\0' || (strchr("smhdw", s[n]) !=
+	    NULL && s[n + 1] == '\0')));
+}
+
+static bool	addr_ok(const char *);
+
+/* A UNI's values dnsmasq takes bare (dhcp_conf_render()); NULL, or what
+ * is wrong. */
+static const char *
+dhcp_wrong(const ucl_object_t *u)
+{
+	const ucl_object_t	*v;
+	int			 i;
+
+	if (!str_ok(u, "interface", ifname_ok))
+		return ("its interface is an interface's name");
+	for (i = 0; i < 2; i++) {
+		v = ucl_object_lookup(u, i == 0 ? "ipv4" : "ipv6");
+		if (!list_ok(v, "provider", addr_ok) || !list_ok(v, "dns",
+		    addr_ok))
+			return ("its provider and DNS servers are addresses");
+		if (!str_ok(v, "lease", lease_ok))
+			return ("a lease is a number of s, m, h, d or w, or "
+			    "infinite");
+	}
+	return (NULL);
+}
+
+/*
+ * A word for a comment (the host, the service, an object's name): no
+ * blank or control character, or "-" in its place.  word_ok() has kept
+ * the line's end out already.
+ */
+const char *
+conf_word(const char *s)
+{
+	size_t	i;
+
+	if (s == NULL || s[0] == '\0' || strlen(s) > 255)
+		return ("-");
+	for (i = 0; s[i] != '\0'; i++)
+		if (!isgraph((unsigned char)s[i]))
+			return ("-");
+	return (s);
 }
 
 /* The text so far, the stream closed (which may move the buffer: it is
@@ -439,13 +555,20 @@ dhcp_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	    "service %s at %s, in routing table %jd.\n# The hosts' addresses at "
 	    "the UNIs (MEF 70.2 §11.4, §11.5); no DNS served here.\nport=0\n"
 	    "bind-interfaces\nno-resolv\nno-hosts\ndhcp-authoritative\n",
-	    sstr(spec, "service"), host, (intmax_t)sint(spec, "fib", 0));
+	    conf_word(sstr(spec, "service")), conf_word(host), (intmax_t)sint(spec,
+	    "fib", 0));
 	it = NULL;
 	while ((u = ucl_object_iterate(ucl_object_lookup(spec, "unis"), &it,
 	    true)) != NULL) {
-		if ((ifn = sstr(u, "interface")) == NULL) {
+		if ((ifn = sstr(u, "interface")) == NULL || dhcp_wrong(u) !=
+		    NULL) {
 			fclose(b);
 			free(buf);
+			if (ifn != NULL) {
+				*errp = wfmt(w, "UNI %s: %s", sval(u, "id"),
+				    dhcp_wrong(u));
+				return (NULL);
+			}
 			*errp = wfmt(w, "UNI %s: no interface", sval(u, "id"));
 			return (NULL);
 		}
@@ -773,10 +896,20 @@ dns_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	    "protective DNS of its zones (MEF 138), by the base system's "
 	    "unbound.\nserver:\n\tverbosity: 0\n\tdo-daemonize: yes\n\t"
 	    "module-config: \"respip iterator\"\n\tdo-not-query-localhost: no\n",
-	    sstr(spec, "service"), host, (intmax_t)sint(spec, "fib", 0));
+	    conf_word(sstr(spec, "service")), conf_word(host), (intmax_t)sint(spec,
+	    "fib", 0));
 	it = NULL;
 	while ((u = ucl_object_iterate(ucl_object_lookup(spec, "unis"), &it,
 	    true)) != NULL) {
+		/* Bare to unbound, whose lexer takes a keyword anywhere. */
+		if (!addr_ok(sstr(u, "address")) || !prefix_ok(sstr(u,
+		    "prefix"))) {
+			fclose(b);
+			free(buf);
+			*errp = wfmt(w, "UNI %s: its address is an address, its "
+			    "prefix a prefix", sval(u, "id"));
+			return (NULL);
+		}
 		fprintf(b, "\t# UNI %s\n\tinterface: %s\n\taccess-control: %s "
 		    "allow\n", sval(u, "id"), sval(u, "address"), sval(u,
 		    "prefix"));
@@ -894,6 +1027,9 @@ dns_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 					continue;
 				ucl_object_insert_key(seen, ucl_object_frombool(
 				    true), n, 0, true);
+				/* Bare: an address or a prefix alone. */
+				if (!prefix_ok(n))
+					continue;
 				fprintf(b, "\tresponse-ip: %s%s %s\n", n, strchr(n,
 				    '/') == NULL ? (strchr(n, ':') != NULL ? "/128" :
 				    "/32") : "", zt[k]);
@@ -976,12 +1112,34 @@ uentry_cmp(const void *a, const void *b)
 	return (x->at - y->at);
 }
 
+/* A host n bytes long, *. before it or not, as Squid takes it bare: a
+ * domain's letters, digits, - and . alone (a space would be another
+ * value of the acl, a regex's characters another pattern). */
+static bool
+squid_host_ok(const char *h, size_t n)
+{
+	char	buf[256];
+
+	if (n > 2 && strncmp(h, "*.", 2) == 0) {
+		h += 2;
+		n -= 2;
+	}
+	if (n == 0 || n >= sizeof(buf))
+		return (false);
+	memcpy(buf, h, n);
+	buf[n] = '\0';
+	return (domain_ok(buf));
+}
+
 /* A host as Squid's dstdomain and ssl::server_name take it: *.host as
- * .host, the host and the names beneath it. */
+ * .host, the host and the names beneath it; one that is no host left
+ * out. */
 static void
 squid_host(FILE *b, const char *h, size_t n)
 {
 
+	if (!squid_host_ok(h, n))
+		return;
 	if (n > 2 && strncmp(h, "*.", 2) == 0)
 		fprintf(b, " .%.*s", (int)(n - 2), h + 2);
 	else
@@ -1009,12 +1167,18 @@ squid_wild(FILE *b, const char *s)
 }
 
 /* A host and a path as Squid's url_regex takes it, anchored, its *
- * anything, both schemes. */
+ * anything, both schemes; one whose host is none, or whose path has a
+ * blank (another pattern), left out. */
 static void
 squid_regex(FILE *b, const char *h, size_t n, const char *path)
 {
 	const char	*p;
 
+	if (!squid_host_ok(h, n))
+		return;
+	for (p = path; *p != '\0'; p++)
+		if (!isgraph((unsigned char)*p))
+			return;
 	fprintf(b, " ^https?://");
 	if (n > 2 && strncmp(h, "*.", 2) == 0) {
 		fprintf(b, "([^/]*\\.)?");
@@ -1268,7 +1432,8 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	    "middlebox and malware scanning of its zones (MEF 138), by Squid.\n"
 	    "pid_filename %s\naccess_log /var/log/squid/sdwan-sw%jd-access.log\n"
 	    "cache_log /var/log/squid/sdwan-sw%jd-cache.log\ncache deny all\n"
-	    "visible_hostname sdwan-sw%jd\n", sstr(spec, "service"), host, fib,
+	    "visible_hostname sdwan-sw%jd\n", conf_word(sstr(spec, "service")),
+	    conf_word(host), fib,
 	    p->pid, fib, fib, fib);
 	/* The oldest TLS let through: the strictest zone's MBSF. */
 	tlsmin = 0;
@@ -1507,7 +1672,8 @@ squid_security(struct work *w, const ucl_object_t *in, const char *name,
 	    "Security section's URL filter %s at %s,\n# by Squid, mode %s, in "
 	    "routing table %jd.\npid_filename %s\naccess_log /var/log/squid/%s-"
 	    "access.log\ncache_log /var/log/squid/%s-cache.log\ncache deny all\n"
-	    "visible_hostname %s\n", name, host, mode, (intmax_t)fib, p->pid,
+	    "visible_hostname %s\n", name, conf_word(host), mode, (intmax_t)fib,
+	    p->pid,
 	    name, name, name);
 	/* Where the clients reach it: each address told, its port. */
 	it = NULL;
@@ -1766,8 +1932,8 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 		    "and ClamAV, for its Squid.\nPidFile %s\nCommandsSocket %s\n"
 		    "Port %s:%d\nacl squid src %s/255.255.255.255\n%sServerLog "
 		    "/var/log/c-icap/sdwan-sw%jd-server.log\nAccessLog "
-		    "/var/log/c-icap/sdwan-sw%jd-access.log\n%s", sval(spec,
-		    "service"), host, fib, p->icap_pid, p->icap_cmd, own,
+		    "/var/log/c-icap/sdwan-sw%jd-access.log\n%s", conf_word(sstr(spec,
+		    "service")), conf_word(host), fib, p->icap_pid, p->icap_cmd, own,
 		    SDWAN_ICAP_PORT(fib), own, icap_tail, fib, fib, icap_scan);
 	} else
 		fprintf(b, "# Written by arcana-agent for the Arcana console: the "
@@ -1776,7 +1942,7 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 		    "CommandsSocket %s\nPort 127.0.0.1:%d\nacl squid src "
 		    "127.0.0.1/255.255.255.255\n%sServerLog /var/log/c-icap/%s-"
 		    "server.log\nAccessLog /var/log/c-icap/%s-access.log\n%s",
-		    name, host, p->icap_pid, p->icap_cmd, SEC_ICAP_PORT(idx),
+		    name, conf_word(host), p->icap_pid, p->icap_cmd, SEC_ICAP_PORT(idx),
 		    icap_tail, name, name, icap_scan);
 	return (closed(w, b, &buf, errp));
 }
@@ -1906,9 +2072,9 @@ bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
 		while ((m = ucl_object_iterate(ucl_object_lookup(r, "neighbors"),
 		    &nit, true)) != NULL) {
 			fprintf(b, "# %s %s, the neighbour's %s%s%s\nprotocol "
-			    "bgp %s_%s_%d {\n", what, id, ucl_object_tostring_forced(
-			    m), ibgp ? ", iBGP" : "", mh ? ", multihop" : "", pfx,
-			    sym, n++);
+			    "bgp %s_%s_%d {\n", what, conf_word(id),
+			    ucl_object_tostring_forced(m), ibgp ? ", iBGP" : "",
+			    mh ? ", multihop" : "", pfx, sym, n++);
 			if (src != NULL)
 				fprintf(b, "\tlocal %s as %jd;\n", src, (intmax_t)as);
 			else
@@ -1948,7 +2114,7 @@ bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
 			    strcmp(fam, "ipv4") == 0))
 				continue;
 			fprintf(b, "# %s %s, OSPF%s with the neighbour\nprotocol "
-			    "ospf %s %s_%s_%s", what, id, vi == 0 ? "v2" : "v3",
+			    "ospf %s %s_%s_%s", what, conf_word(id), vi == 0 ? "v2" : "v3",
 			    vi == 0 ? "v2" : "v3", pfx, sym, vi == 0 ? "v2" : "v3");
 			if (k > 0)
 				fprintf(b, "_%d", k);
@@ -2002,8 +2168,8 @@ bird_sets(FILE *b, const ucl_object_t *sets, bool loop)
 			gw = sval(set, "gateway");
 			if ((family(gw) == AF_INET) != (fam == 4))
 				continue;
-			fprintf(b, "\t# %s, by %s\n\tif ", sval(set, "name"),
-			    sval(set, "via"));
+			fprintf(b, "\t# %s, by %s\n\tif ", conf_word(sstr(set, "name")),
+			    conf_word(sstr(set, "via")));
 			n = 0;
 			if (ucl_array_size(ucl_object_lookup(set, "as_path")) > 0) {
 				fprintf(b, "bgp_path ~ [");
@@ -2068,7 +2234,7 @@ bird_loop(struct work *w, FILE *b, const ucl_object_t *lp, int64_t as)
 					continue;
 				fprintf(b, "# %s's loopback, by %s tunnel to it, each "
 				    "path watched by BFD\nprotocol static loop%d%s_%d "
-				    "{\n\t%s%s;\n\troute %s/%d", sval(fe, "name"),
+				    "{\n\t%s%s;\n\troute %s/%d", conf_word(sstr(fe, "name")),
 				    pass == 0 ? "every" : "every backup", i == 0 ? 4 :
 				    6, pass == 0 ? "" : "b", k, i == 0 ? "ipv4" :
 				    "ipv6", pass == 0 ? "" : " { preference 150; }", fa,
@@ -2081,14 +2247,14 @@ bird_loop(struct work *w, FILE *b, const ucl_object_t *lp, int64_t as)
 		if (me4 != NULL && sstr(fe, "ipv4") != NULL)
 			fprintf(b, "# to %s, loopback to loopback%s\nprotocol bgp "
 			    "edge%d from edge {\n\tlocal %s as %jd;\n\tneighbor %s "
-			    "as %jd;\n\tmultihop;\n%s}\n\n", sval(fe, "name"),
+			    "as %jd;\n\tmultihop;\n%s}\n\n", conf_word(sstr(fe, "name")),
 			    transit ? ", a client of this edge's reflection" : "", k,
 			    me4, (intmax_t)as, sstr(fe, "ipv4"), (intmax_t)as,
 			    transit ? "\trr client;\n" : "");
 		else if (me6 != NULL && sstr(fe, "ipv6") != NULL)
 			fprintf(b, "# to %s, loopback to loopback%s\nprotocol bgp "
 			    "edge%d from edge {\n\tlocal %s as %jd;\n\tneighbor %s "
-			    "as %jd;\n\tmultihop;\n%s}\n\n", sval(fe, "name"),
+			    "as %jd;\n\tmultihop;\n%s}\n\n", conf_word(sstr(fe, "name")),
 			    transit ? ", a client of this edge's reflection" : "", k,
 			    me6, (intmax_t)as, sstr(fe, "ipv6"), (intmax_t)as,
 			    transit ? "\trr client;\n" : "");
@@ -2105,7 +2271,7 @@ bird_loop(struct work *w, FILE *b, const ucl_object_t *lp, int64_t as)
 			    "ipv6")) == 0)
 				continue;
 			fprintf(b, "# %s's own\nprotocol static orig%d_%s {\n\t%s;\n",
-			    sval(og, "id"), i == 0 ? 4 : 6, sym, i == 0 ? "ipv4" :
+			    conf_word(sstr(og, "id")), i == 0 ? 4 : 6, sym, i == 0 ? "ipv4" :
 			    "ipv6");
 			pit = NULL;
 			while ((rt = ucl_object_iterate(ucl_object_lookup(og, i ==
@@ -2119,6 +2285,177 @@ bird_loop(struct work *w, FILE *b, const ucl_object_t *lp, int64_t as)
 			fprintf(b, "}\n\n");
 		}
 	}
+}
+
+/* BGP's AS numbers, 4 bytes (RFC 6793); a community's halves. */
+#define	AS_MAX		INT64_C(4294967295)
+#define	HALF_MAX	65535
+
+/* A community, [a, b] of halves. */
+static bool
+community_ok(const ucl_object_t *c)
+{
+
+	return (ucl_object_type(c) == UCL_ARRAY && ucl_array_size(c) == 2 &&
+	    ucl_object_type(nth(c, 0)) == UCL_INT && ucl_object_type(nth(c,
+	    1)) == UCL_INT && ucl_object_toint(nth(c, 0)) >= 0 &&
+	    ucl_object_toint(nth(c, 0)) <= HALF_MAX && ucl_object_toint(nth(c,
+	    1)) >= 0 && ucl_object_toint(nth(c, 1)) <= HALF_MAX);
+}
+
+/* Each of o's list k a community. */
+static bool
+communities_ok(const ucl_object_t *o, const char *k)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(o, k), &it, true)) !=
+	    NULL)
+		if (!community_ok(e))
+			return (false);
+	return (true);
+}
+
+/* BIRD's rr cluster id: an IPv4 address, or a number of 32 bits. */
+static bool
+cluster_ok(const char *s)
+{
+	unsigned char	 a[4];
+	const char	*e;
+
+	if (inet_pton(AF_INET, s, a) == 1)
+		return (true);
+	(void)strtonum(s, 0, UINT32_MAX, &e);
+	return (e == NULL);
+}
+
+/*
+ * A UNI's or a UCS End Point's routing (bird_routing()): each value it
+ * prints bare by its type.  NULL, or what is wrong.
+ */
+static const char *
+routing_wrong(const ucl_object_t *u)
+{
+	const ucl_object_t	*r;
+	int			 k;
+
+	if (!str_ok(u, "interface", ifname_ok))
+		return ("interface is an interface's name");
+	for (k = 0; (r = entry_at(ucl_object_lookup(u, "bgp"), k)) != NULL;
+	    k++) {
+		if (!list_ok(r, "neighbors", addr_ok))
+			return ("a BGP neighbor is an address");
+		if (!str_ok(r, "source", addr_ok))
+			return ("a BGP source is an address");
+		if (!num_ok(r, "as", 1, AS_MAX))
+			return ("a BGP as is a number from 1 to 4294967295");
+		if (!num_ok(r, "distance", 1, 255))
+			return ("a distance is from 1 to 255");
+		if (!num_ok(r, "hold_time", 0, 65535))
+			return ("a hold time is from 0 to 65535");
+		if (!communities_ok(r, "communities"))
+			return ("a community is two numbers to 65535");
+	}
+	for (k = 0; (r = entry_at(ucl_object_lookup(u, "ospf"), k)) != NULL;
+	    k++)
+		if (!num_ok(r, "area", 0, UINT32_MAX) || !num_ok(r, "cost", 1,
+		    65535) || !num_ok(r, "hello", 1, 65535) || !num_ok(r, "dead",
+		    1, 65535) || !num_ok(r, "distance", 1, 255))
+			return ("an OSPF area, cost, hello, dead or distance "
+			    "out of its range");
+	return (NULL);
+}
+
+/*
+ * Every value bird_conf_render() prints bare, by its type: an address,
+ * a prefix, an AS or another number in its range, an interface's name
+ * (symbols are made of identifiers by symbol(), comments' words by
+ * conf_word()).  A neighbor of "x; }" would close the protocol and begin
+ * another, exporting into the host's table.  NULL, or what is wrong.
+ */
+static const char *
+bird_wrong(const ucl_object_t *spec)
+{
+	const ucl_object_t	*o, *e, *f;
+	ucl_object_iter_t	 it, fit;
+	const char		*why;
+	int			 i;
+
+	if (!num_ok(spec, "as", 1, AS_MAX))
+		return ("as is a number from 1 to 4294967295");
+	if (!num_ok(spec, "table", 0, INT32_MAX) || !num_ok(spec, "fib", 0,
+	    INT32_MAX))
+		return ("table and fib are numbers");
+	if (!list_ok(spec, "direct", ifname_ok))
+		return ("direct is a list of interfaces' names");
+	if (!list_ok(spec, "reject", prefix_ok))
+		return ("reject is a list of prefixes");
+	if ((o = ucl_object_lookup(spec, "bfd")) != NULL && (!list_ok(o,
+	    "interfaces", ifname_ok) || !num_ok(o, "interval", 1, 60000) ||
+	    !num_ok(o, "multiplier", 1, 255)))
+		return ("bfd's interfaces are names, its interval and "
+		    "multiplier numbers in range");
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(ucl_object_lookup(
+	    spec, "sets"), "sets"), &it, true)) != NULL) {
+		if (!addr_ok(sstr(e, "gateway")))
+			return ("a set's gateway is an address");
+		if (!communities_ok(e, "communities"))
+			return ("a set's community is two numbers to 65535");
+		fit = NULL;
+		while ((f = ucl_object_iterate(ucl_object_lookup(e, "as_path"),
+		    &fit, true)) != NULL)
+			if (ucl_object_type(f) != UCL_INT || ucl_object_toint(f) <
+			    0 || ucl_object_toint(f) > AS_MAX)
+				return ("a set's as_path is of AS numbers");
+	}
+	if ((o = ucl_object_lookup(spec, "loop")) != NULL) {
+		if (!str_ok(o, "local4", addr_ok) || !str_ok(o, "local6",
+		    addr_ok))
+			return ("the loopbacks are addresses");
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(o, "edges"),
+		    &it, true)) != NULL)
+			if (!str_ok(e, "ipv4", addr_ok) || !str_ok(e, "ipv6",
+			    addr_ok) || !list_ok(e, "paths4", addr_ok) ||
+			    !list_ok(e, "backup4", addr_ok) || !list_ok(e,
+			    "paths6", addr_ok) || !list_ok(e, "backup6", addr_ok))
+				return ("an edge's loopbacks and paths are "
+				    "addresses");
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(o, "origins"),
+		    &it, true)) != NULL) {
+			if (!str_ok(e, "interface", ifname_ok))
+				return ("an origin's interface is a name");
+			for (i = 0; i < 2; i++) {
+				fit = NULL;
+				while ((f = ucl_object_iterate(ucl_object_lookup(e,
+				    i == 0 ? "ipv4" : "ipv6"), &fit, true)) != NULL)
+					if (!prefix_ok(sstr(f, "prefix")) ||
+					    !str_ok(f, "next_hop", addr_ok))
+						return ("an origin's route is a "
+						    "prefix by an address");
+			}
+		}
+	}
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(spec, "peers"), &it,
+	    true)) != NULL)
+		if (!addr_ok(sstr(e, "local")) || !addr_ok(sstr(e, "neighbor")) ||
+		    !str_ok(e, "cluster_id", cluster_ok))
+			return ("a peer's local and neighbor are addresses, its "
+			    "cluster_id an address or a number");
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(spec, "unis"), &it,
+	    true)) != NULL)
+		if ((why = routing_wrong(e)) != NULL)
+			return (why);
+	if (strcmp(sval(spec, "flavor"), "ucs") == 0 && (why = routing_wrong(
+	    spec)) != NULL)
+		return (why);
+	return (NULL);
 }
 
 /* A UCS End Point's file: routing with the underlay in its table. */
@@ -2140,8 +2477,8 @@ bird_ucs(struct work *w, FILE *b, const ucl_object_t *spec, const char *host)
 	    "RTD_UNICAST;\n\t};\n}\n\nprotocol kernel kernel6 {\n%s\tlearn;\n\t"
 	    "persist;\n\tipv6 {\n\t\timport all;\n\t\texport where source != "
 	    "RTS_DEVICE && source != RTS_INHERIT && dest = RTD_UNICAST;\n\t};\n}"
-	    "\n\n", sval(spec, "end_point"), host, (intmax_t)vrf, sval(spec,
-	    "router_id"), sval(spec, "interface"), ktab, ktab);
+	    "\n\n", conf_word(sstr(spec, "end_point")), conf_word(host), (intmax_t)vrf,
+	    sval(spec, "router_id"), sval(spec, "interface"), ktab, ktab);
 	bird_routing(w, b, spec, "UCS", sval(spec, "end_point"), symbol(w,
 	    sstr(spec, "end_point")), sval(spec, "interface"), sint(spec, "as",
 	    DEFAULT_AS));
@@ -2174,7 +2511,7 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 {
 	const ucl_object_t	*bfd, *pe, *u;
 	ucl_object_iter_t	 it;
-	const char		*ktab, *kexp, *kexp6, *role;
+	const char		*ktab, *kexp, *kexp6, *role, *why;
 	FILE			*b;
 	char			*buf;
 	size_t			 len;
@@ -2192,6 +2529,10 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 		*errp = "the form's router_id is an IPv4 address";
 		return (NULL);
 	}
+	if ((why = bird_wrong(spec)) != NULL) {
+		*errp = wfmt(w, "the form's %s", why);
+		return (NULL);
+	}
 	buf = NULL;
 	len = 0;
 	if ((b = open_memstream(&buf, &len)) == NULL) {
@@ -2207,8 +2548,9 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	fprintf(b, "# Written by arcana-agent for the Arcana console: SD-WAN "
 	    "service %s at %s, in routing table %jd.\n# Changed by the console's "
 	    "next apply.\nrouter id %s;\nlog syslog { warning, error };\n\n"
-	    "protocol device {\n}\n\n", sval(spec, "service"), host, (intmax_t)
-	    sint(spec, "fib", 0), sval(spec, "router_id"));
+	    "protocol device {\n}\n\n", conf_word(sstr(spec, "service")),
+	    conf_word(host), (intmax_t)sint(spec, "fib", 0), sval(spec,
+	    "router_id"));
 	if (ucl_array_size(ucl_object_lookup(spec, "direct")) > 0) {
 		fprintf(b, "protocol direct {\n\tipv4;\n\tipv6;\n\tinterface ");
 		words(b, ucl_object_lookup(spec, "direct"), "\"%s\"", ", ");
@@ -2300,8 +2642,9 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	    "peers"), &it, true)) != NULL) {
 		role = sval(pe, "role");
 		fprintf(b, "# %s, to %s%s\nprotocol bgp edge%d from edge {\n\t"
-		    "local %s as %jd;\n\tneighbor %s as %jd;\n", sval(pe, "tunnel"),
-		    sval(pe, "to"), strcmp(role, "client") == 0 ? ", a client of "
+		    "local %s as %jd;\n\tneighbor %s as %jd;\n", conf_word(sstr(pe,
+		    "tunnel")), conf_word(sstr(pe, "to")), strcmp(role, "client") ==
+		    0 ? ", a client of "
 		    "this reflector" : strcmp(role, "control") == 0 ? ", the "
 		    "control plane" : "", k++, sval(pe, "local"), (intmax_t)as,
 		    sval(pe, "neighbor"), (intmax_t)as);

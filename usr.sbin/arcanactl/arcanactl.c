@@ -384,7 +384,7 @@ usage(void)
 	    "    jobs [lanes number]\n"
 	    "    job [-w] id\n"
 	    "    job-cancel id\n"
-	    "    agent-update [-pr] program\n"
+	    "    agent-update [-dpr] program\n"
 	    "    agent-build [-y] [-i key] [-o file] repository [ref]\n"
 	    "    console-update [-y] [-i key] repository [ref]\n"
 	    "    source-head [-y] [-i key] repository [ref]\n"
@@ -3536,10 +3536,10 @@ cmd_source_log(cbl_conn *conn, int argc, char **argv)
 }
 
 /*
- * agent-update [-pr] program: put a new arcana-agent in place, sent
+ * agent-update [-dpr] program: put a new arcana-agent in place, sent
  * compressed to an agent that takes it so (its features in
  * arcana-host); as it is with -p, and to an agent before, which takes
- * no more than a frame carries.
+ * no more than a frame carries; with -d, one older than the agent's.
  */
 static int
 cmd_agent_update(cbl_conn *conn, int argc, char **argv)
@@ -3550,13 +3550,16 @@ cmd_agent_update(cbl_conn *conn, int argc, char **argv)
 	uint8_t		*prog;
 	ssize_t		 n;
 	size_t		 off;
-	bool		 plain, restart, restarting;
+	bool		 plain, restart, restarting, downgrade;
 	int		 ch, error, fd;
 
-	plain = restart = false;
+	plain = restart = downgrade = false;
 	optreset = optind = 1;
-	while ((ch = getopt(argc, argv, "pr")) != -1) {
+	while ((ch = getopt(argc, argv, "dpr")) != -1) {
 		switch (ch) {
+		case 'd':
+			downgrade = true;
+			break;
 		case 'p':
 			plain = true;
 			break;
@@ -3584,8 +3587,9 @@ cmd_agent_update(cbl_conn *conn, int argc, char **argv)
 	(void)SHA256_Data(prog, off, hex);
 	/* arcana-agent's update; over the local socket, unsigned. */
 	ytold_begin(conn);
-	error = yh_agent_update(conn, prog, off, hex, NULL, 0, restart,
-	    !plain && takes_gzip(conn), -1, &data, err, sizeof(err));
+	error = yh_agent_update(conn, prog, off, hex, NULL, 0, NULL,
+	    downgrade, restart, !plain && takes_gzip(conn), -1, &data, err,
+	    sizeof(err));
 	ytold_end(error != EFBIG);
 	if (error == EFBIG)
 		xo_errx(1, "%s: %s%s", argv[optind], err, plain ?

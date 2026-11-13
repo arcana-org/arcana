@@ -27,10 +27,11 @@ GH_TUPLE=	spmzt:jailconf:19c06d0a74a4d074414c4fd4010f4aa05c6f00c1:jailconf/jailc
 		spmzt:libwebpush:e23bc37c0ad6d535b5be9ddb36d73e3d816e561c:libwebpush/libwebpush \
 		spmzt:stamp:43ea48a1dfbf3ae42ce3916314c48be7c3b75ae0:stamp/stamp
 
-# stampd gives up root to its own user once bound; not in the ports'
-# UIDs and GIDs yet, so in this port's.
-USERS=		_stampd
-GROUPS=		_stampd
+# stampd gives up root to its own user once bound; the agent builds
+# itself as a user nothing else is (arcana-agent(8), BUILDS); not in
+# the ports' UIDs and GIDs yet, so in this port's.
+USERS=		_stampd _arcanabuild
+GROUPS=		_stampd _arcanabuild
 UID_FILES=	${PORTSDIR}/UIDs ${FILESDIR}/UIDs
 GID_FILES=	${PORTSDIR}/GIDs ${FILESDIR}/GIDs
 

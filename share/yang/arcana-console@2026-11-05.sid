@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 9,
+    "sid-file-version": 10,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -3293,6 +3293,11 @@
         "namespace": "data",
         "identifier": "/arcana-console:workflows/workflow/step/when/value",
         "sid": "92452"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/agent-update/input/downgrade",
+        "sid": "92453"
       }
     ]
   }

@@ -2680,6 +2680,12 @@ module arcana-console {
             description
               "Its service restarted after.";
           }
+          leaf downgrade {
+            type boolean;
+            description
+              "The console's agent may be older than the host's: the
+               host refuses it otherwise.";
+          }
         }
         output {
           anydata result {

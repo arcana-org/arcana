@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include "agent.h"
+#include "oprules.h"
 #include "ymodel.h"
 
 #define	NACM_FILE_MAX	(1024 * 1024)
@@ -44,23 +45,68 @@ nacm_node(void)
 	return (ynode_named("ietf-netconf-acm", "nacm"));
 }
 
-/* The default rules, in a. */
+static const uint8_t		op_exec[] = {
+	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_EXEC
+};
+static const uint8_t		op_read[] = {
+	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_READ
+};
+static const struct op_rule	op_rules[] = OP_RULES;
+
+/*
+ * The default rules, in a: group admin as the head says; group
+ * operator, empty until the console's nacm-sync fills it, and its
+ * rule-list exactly as the console's sync writes it (oprules.h), so a
+ * fresh host and a synchronized one are one.
+ */
 static struct ietf_netconf_acm_nacm *
 nacm_default(cbl_yarena *a)
 {
 	struct ietf_netconf_acm_nacm_groups_group	*g;
 	struct ietf_netconf_acm_nacm_groups		*gs;
-	struct ietf_netconf_acm_nacm_rule_list_group	*lg;
-	struct ietf_netconf_acm_nacm_rule_list_rule	*r;
+	struct ietf_netconf_acm_nacm_rule_list_group	*lg, *olg;
+	struct ietf_netconf_acm_nacm_rule_list_rule	*r, *or;
 	struct ietf_netconf_acm_nacm_rule_list		*l;
 	struct ietf_netconf_acm_nacm			*n;
 	const char					**users;
+	size_t						 i;
 
+	if ((g = cbl_yarena_alloc(a, 2 * sizeof(*g))) == NULL ||
+	    (l = cbl_yarena_alloc(a, 2 * sizeof(*l))) == NULL ||
+	    (olg = cbl_yarena_alloc(a, sizeof(*olg))) == NULL ||
+	    (or = cbl_yarena_alloc(a, nitems(op_rules) * sizeof(*or))) == NULL)
+		return (NULL);
+	memset(g, 0, 2 * sizeof(*g));
+	memset(l, 0, 2 * sizeof(*l));
+	memset(or, 0, nitems(op_rules) * sizeof(*or));
+	g[1].name = NACM_OPERATOR;
+	olg->which = 1;
+	olg->v.m1 = NACM_OPERATOR;
+	for (i = 0; i < nitems(op_rules); i++) {
+		or[i].name = op_rules[i].name;
+		or[i].has_module_name = true;
+		or[i].module_name.which = 1;
+		or[i].module_name.v.m1 = op_rules[i].module;
+		or[i].rule_type =
+		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+		or[i].path = op_rules[i].path;
+		or[i].has_access_operations = true;
+		or[i].access_operations.which = 1;
+		or[i].access_operations.v.m1.p = op_rules[i].exec ? op_exec :
+		    op_read;
+		or[i].access_operations.v.m1.len = 1;
+		or[i].has_action = true;
+		or[i].action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
+		or[i].comment = op_rules[i].comment;
+	}
+	l[1].name = NACM_OPERATOR;
+	l[1].group.n = 1;
+	l[1].group.v = olg;
+	l[1].rule.n = nitems(op_rules);
+	l[1].rule.v = or;
 	if ((n = cbl_yarena_alloc(a, sizeof(*n))) == NULL ||
 	    (gs = cbl_yarena_alloc(a, sizeof(*gs))) == NULL ||
-	    (g = cbl_yarena_alloc(a, sizeof(*g))) == NULL ||
 	    (users = cbl_yarena_alloc(a, 2 * sizeof(*users))) == NULL ||
-	    (l = cbl_yarena_alloc(a, sizeof(*l))) == NULL ||
 	    (lg = cbl_yarena_alloc(a, sizeof(*lg))) == NULL ||
 	    (r = cbl_yarena_alloc(a, sizeof(*r))) == NULL)
 		return (NULL);
@@ -69,7 +115,7 @@ nacm_default(cbl_yarena *a)
 	g->name = "admin";
 	g->user_name.n = 2;
 	g->user_name.v = users;
-	gs->group.n = 1;
+	gs->group.n = 2;
 	gs->group.v = g;
 	lg->which = 1;
 	lg->v.m1 = "admin";
@@ -97,7 +143,7 @@ nacm_default(cbl_yarena *a)
 	n->has_exec_default = true;
 	n->exec_default = IETF_NETCONF_ACM_NACM_EXEC_DEFAULT_PERMIT;
 	n->groups = gs;
-	n->rule_list.n = 1;
+	n->rule_list.n = 2;
 	n->rule_list.v = l;
 	return (n);
 }
@@ -223,4 +269,55 @@ ietf_netconf_acm_nacm_edit(cbl_req *req, const struct ietf_netconf_acm *before,
 		logmsg(LOG_NOTICE, "%s: the access rules written",
 		    opts.nacm_file);
 	return (error);
+}
+
+/*
+ * How far the request's user is trusted with what a read gives out
+ * (agent.h): the recovery session, and a user of group admin, an
+ * admin's; of group operator, an operator's; anyone else, and anyone
+ * while the rules cannot be read, a viewer's.
+ */
+int
+clearance(cbl_req *req)
+{
+	const struct ietf_netconf_acm_nacm_groups	*gs;
+	const struct ietf_netconf_acm_nacm		*n;
+	struct ietf_netconf_acm				 d;
+	const char					*user;
+	cbl_yarena					*a;
+	uint8_t						*p;
+	size_t						 len, i, k;
+	char						 why[160];
+	int						 c;
+
+	if ((user = cbl_req_user(req)) == NULL)
+		return (CLEAR_ADMIN);
+	if ((a = cbl_yarena_new()) == NULL)
+		return (CLEAR_VIEWER);
+	pthread_mutex_lock(&nacm_lock);
+	p = nacm_read(&len);
+	pthread_mutex_unlock(&nacm_lock);
+	memset(&d, 0, sizeof(d));
+	n = NULL;
+	if (p == NULL && errno == ENOENT)
+		n = nacm_default(a);
+	else if (p != NULL && cbl_ydecode_member(nacm_node(), p, len, &d, a,
+	    CBL_YD_STRICT, why, sizeof(why)) == 0)
+		n = d.nacm != NULL ? d.nacm : nacm_default(a);
+	free(p);
+	c = CLEAR_VIEWER;
+	if (n != NULL && (gs = n->groups) != NULL)
+		for (i = 0; i < gs->group.n; i++)
+			for (k = 0; k < gs->group.v[i].user_name.n; k++) {
+				if (strcmp(gs->group.v[i].user_name.v[k], user) !=
+				    0)
+					continue;
+				if (strcmp(gs->group.v[i].name, NACM_ADMIN) == 0)
+					c = CLEAR_ADMIN;
+				else if (strcmp(gs->group.v[i].name,
+				    NACM_OPERATOR) == 0 && c < CLEAR_OPERATOR)
+					c = CLEAR_OPERATOR;
+			}
+	cbl_yarena_free(a);
+	return (c);
 }

@@ -1212,7 +1212,9 @@ sources_json(struct work *w, ucl_object_t *top)
 						val++;
 						val[strcspn(val, "'")] = '\0';
 					}
-					put_s(o, "url", val);
+					put_s(o, "url", w->clear <
+					    CLEAR_OPERATOR ? wurl(w, val) :
+					    val);
 				}
 				put_s(o, "state", dis ? "disabled" : "enabled");
 				if (!dis)

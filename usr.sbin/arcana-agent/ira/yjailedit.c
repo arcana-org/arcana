@@ -215,11 +215,32 @@ jedit_free(struct jedit *e)
 	e->n = 0;
 }
 
-/* A value as jail.conf takes it: bare where it can be, quoted else. */
+/* The length of a variable "${name}" at s, 0 when there is none: as
+ * libjailconf's var_len() (jailconf.c). */
+static size_t
+var_len(const char *s)
+{
+	size_t	n;
+
+	if (s[0] != '$' || s[1] != '{')
+		return (0);
+	n = 2 + strcspn(s + 2, "{}\"\\\n");
+	return (n > 2 && s[n] == '}' ? n + 1 : 0);
+}
+
+/*
+ * A value as jail.conf takes it, as libjailconf writes one (jc_replace()
+ * and sb_putq(), which it does not export; a block of a jail not there
+ * before is no edit of one it has): bare where it is letters, digits
+ * and _ . - + / : with no "//" (a comment to jail(8)), double-quoted
+ * else, a "${name}" in it a variable and any other '$' itself (\$), a
+ * quote and a backslash escaped, a line's end as \n.
+ */
 static void
 put_value(FILE *fp, const char *v)
 {
-	bool	bare = v[0] != '\0';
+	size_t	n;
+	bool	bare = v[0] != '\0' && strstr(v, "//") == NULL;
 
 	for (const char *p = v; bare && *p != '\0'; p++)
 		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
@@ -231,8 +252,17 @@ put_value(FILE *fp, const char *v)
 	}
 	fputc('"', fp);
 	for (const char *p = v; *p != '\0'; p++) {
-		if (*p == '"' || *p == '\\')
+		if ((n = var_len(p)) > 0) {
+			fwrite(p, 1, n, fp);
+			p += n - 1;
+			continue;
+		}
+		if (*p == '"' || *p == '\\' || *p == '$')
 			fputc('\\', fp);
+		if (*p == '\n') {
+			fputs("\\n", fp);
+			continue;
+		}
 		fputc(*p, fp);
 	}
 	fputc('"', fp);

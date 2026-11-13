@@ -3136,7 +3136,7 @@ and
 .Fl i
 are as for
 .Cm agent-build .
-.It Cm agent-update Oo Fl pr Oc Ar program
+.It Cm agent-update Oo Fl dpr Oc Ar program
 Put
 .Ar program
 in place of the host's
@@ -3161,7 +3161,11 @@ before it replaces the one installed, which it keeps with the suffix
 .Pa .old ;
 over the local socket no signature is asked, as root there could put
 the program in place by hand, where a console's program must be signed
-by its CA key.
+by its CA key, the signature being of the host it is for, its
+version, its SHA-256 and whether it may go back.
+A program older than the running agent is refused unless
+.Fl d
+says downgrade.
 The suffix is
 .Pa .old .
 With

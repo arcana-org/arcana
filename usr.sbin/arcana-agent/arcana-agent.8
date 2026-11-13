@@ -63,6 +63,7 @@
 .Op Fl -pkg-idle Ar seconds
 .Op Fl -jobs-conf Ar file
 .Op Fl -nacm Ar file
+.Op Fl -build-user Ar user
 .Op Fl -subscriptions Ar file
 .Op Fl -features Ar list
 .Op Fl -bird-watch Ar seconds
@@ -471,9 +472,30 @@ variables.
 The file an update replaces.
 The default is the running program.
 .It Fl B Ar dir
-Where a tree is cloned and built.
+Where a tree is cloned and built, the build user's alone, mode 0700.
 Default
 .Pa /var/cache/arcana-build .
+.It Fl -build-user Ar user
+Whom git, make and ssh-keygen run as for a build when the daemon is
+root.
+Default
+.Li _arcanabuild .
+It must be a user nothing else is: not root, not
+.Li nobody ,
+with no process of its own running when a build starts and no home
+of its own
+.Po
+.Pa /nonexistent ,
+.Pa /var/empty
+or the build directory
+.Pc ;
+a build is refused otherwise, and when there is no such user, with
+the
+.Xr pw 8
+line that makes it.
+.Nm
+makes no user itself.
+Named here, it is checked when the daemon is not root too.
 .It Fl c Ar config.mk
 This host's settings for a build, copied into the tree when the file
 exists.
@@ -1132,6 +1154,42 @@ instances, the same of each edge that is a vnet jail, run in it; the
 services' dnsmasq, unbound, Squid and Suricata instances, SD-WAN's and
 the Security section's (sec-), each from its form, which the agent
 renders and the daemon's checker takes before it runs.
+Each value a file holds bare (an address, a prefix, an AS or another
+number, an interface's name) is checked by its type first, and a
+comment's word (the host, the service) is a word or
+.Ql - .
+A Suricata instance's own YAML, appended to what its form makes, is
+taken in a grammar narrower than YAML's, on purpose, so that what the
+agent checks is what Suricata reads: block mappings and block
+sequences of plain or quoted scalars, indented by spaces, comments and
+blank lines.
+Refused: a flow collection
+.Pq Li [ ] { } ,
+an anchor or alias
+.Pq Li & * ,
+a tag
+.Pq Li \&! , !! , !include ,
+a complex key
+.Pq Li \&? ,
+a merge key
+.Pq Li << ,
+a block scalar
+.Pq Li | > ,
+a directive
+.Pq Li %YAML , %TAG ,
+a document marker
+.Pq Li --- ... ,
+a plain key over several lines, a backslash in a double-quoted scalar
+(YAML decodes its escapes), a line broken otherwise than by a newline
+(CR, NEL, LS, PS), a tab, any other control character or DEL, a byte
+order mark, text that is not UTF-8, a key of other than ASCII, and a
+key named
+.Li include
+anywhere.
+A key is compared unquoted, trimmed and without regard to case, and
+one the form sets
+.Pq Li plugins , run-as , outputs No and the like
+is refused at the top whatever its style.
 What changed is set, a part at a time, as the operations it replaces
 did, and kept beside the history file for the next start
 .Pq Pa sdwan-rules.json , sdwan-steer.json , sdwan-bird.json , No and their Pa @ Ns Ar jail No files, Pa sdwan-dhcp.json , sdwan-dns.json , sdwan-proxy.json , security-proxy.json , sdwan-ids.json , security-ids.json ;
@@ -1480,8 +1538,16 @@ and
 .Pa usr.sbin/arcana-agent
 are built there with
 .Xr make 1 .
-When the daemon is root, git and make run as
-.Li nobody .
+When the daemon is root, git, make and ssh-keygen run as the build
+user
+.Pq Fl -build-user .
+Root opens nothing in the build directory by name: the directory is
+opened once, not through a link, and checked to be the build user's
+and written by no one else; the program built and
+.Pa id_ed25519.pub
+are opened beneath it a name at a time, no link followed, checked to
+be regular files of the build user's with one link, and read through
+that descriptor; the program's SHA-256 is logged.
 For a repository reached over SSH, the server's host key is never
 taken on trust: until the client sends back the keys a person
 confirmed, the reply carries the keys the server showed and their

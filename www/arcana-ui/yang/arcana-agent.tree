@@ -120,6 +120,8 @@ module: arcana-agent
      |  |  +---w restart?        boolean
      |  |  +---w signature?      binary
      |  |  +---w program-size?   uint32
+     |  |  +---w version?        string
+     |  |  +---w downgrade?      boolean
      |  +--ro output
      |     +--ro version?      string
      |     +--ro restarting?   boolean

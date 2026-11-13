@@ -255,8 +255,12 @@ module arcana-services {
         }
         leaf value {
           type string;
+          nacm:default-deny-all;
           description
-            "Its value.";
+            "Its value: read by a rule that permits it alone (an
+             admin's), a value holding a password or a key as often as
+             not; configuration, so not masked (a candidate made of a
+             masked read would write the mask back).";
         }
       }
       leaf path {

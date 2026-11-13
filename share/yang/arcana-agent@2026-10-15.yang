@@ -572,6 +572,29 @@ module arcana-agent {
              host's agent feature has gzip-update; one before takes
              the program as it is.";
         }
+        leaf version {
+          type string {
+            pattern '[0-9]+\.[0-9]+\.[0-9]+';
+          }
+          description
+            "The version the program reports (-V).  The signature is
+             of the update's statement, \"arcana-agent update\\n
+             host <hostname>\\nversion <version>\\nsha256 <sha256>\\n
+             downgrade yes|no\\n\": the host it is for, the version, the
+             SHA-256 and the downgrade the console stands for, which
+             the agent rebuilds from itself and this input; the
+             program has to report this version.
+             Sent to an agent whose host's agent feature has
+             signed-update; one before verifies the signature over the
+             program.";
+        }
+        leaf downgrade {
+          type boolean;
+          default "false";
+          description
+            "A program of a version older than the running agent's
+             replaces it: refused without.";
+        }
       }
       output {
         leaf version {

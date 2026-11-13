@@ -127,8 +127,9 @@ yh_hello(cbl_conn *conn, ucl_object_t **data, char *err, size_t errlen)
 	return (0);
 }
 
-bool
-yh_takes_gzip(const ucl_object_t *host)
+/* Does hello's host say its agent has the feature? */
+static bool
+takes(const ucl_object_t *host, const char *feature)
 {
 	const ucl_object_t	*f, *e;
 	ucl_object_iter_t	 it = NULL;
@@ -136,9 +137,23 @@ yh_takes_gzip(const ucl_object_t *host)
 	f = host != NULL ? ucl_object_lookup(host, "features") : NULL;
 	while (f != NULL && (e = ucl_object_iterate(f, &it, true)) != NULL)
 		if (ucl_object_tostring(e) != NULL &&
-		    strcmp(ucl_object_tostring(e), ZPROG_FEATURE) == 0)
+		    strcmp(ucl_object_tostring(e), feature) == 0)
 			return (true);
 	return (false);
+}
+
+bool
+yh_takes_gzip(const ucl_object_t *host)
+{
+
+	return (takes(host, ZPROG_FEATURE));
+}
+
+bool
+yh_takes_signed(const ucl_object_t *host)
+{
+
+	return (takes(host, SIGNED_UPDATE_FEATURE));
 }
 
 bool
@@ -1201,9 +1216,9 @@ yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 
 int
 yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
-    const char *sha256, const uint8_t *sig, size_t siglen, bool restart,
-    bool gzip, int timeout_ms, ucl_object_t **data, char *err,
-    size_t errlen)
+    const char *sha256, const uint8_t *sig, size_t siglen,
+    const char *version, bool downgrade, bool restart, bool gzip,
+    int timeout_ms, ucl_object_t **data, char *err, size_t errlen)
 {
 	struct arcana_agent_agent_update_input	 in;
 	struct arcana_agent_agent_update_output	 out;
@@ -1250,6 +1265,10 @@ yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
 	in.sha256 = sha256;
 	in.signature.p = sig;
 	in.signature.len = sig != NULL ? siglen : 0;
+	/* Said to an agent that takes it, as program-size is. */
+	in.version = version;
+	in.has_downgrade = downgrade;
+	in.downgrade = downgrade;
 	/* Not said when not asked: an agent before takes it so too. */
 	in.has_restart = restart;
 	in.restart = restart;

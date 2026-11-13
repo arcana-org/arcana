@@ -65,6 +65,7 @@
 
 #include "ymodel.h"
 #include "ytrans.h"
+#include "oprules.h"
 
 typedef struct ietf_interfaces_interfaces_interface yif;
 
@@ -1377,15 +1378,21 @@ named_in(const char *s, char *const *v, size_t n)
  * The rule-list operator of a host's access rules, made once with its
  * group: what the console gives an operator on the host
  * (restconf_act_role()) and the host keeps nacm:default-deny-all,
- * permitted: arcana-system's read of the system's files, which the
- * agent marks since it gives out keys (ipsec.conf, dma's credentials).
- * What changes the host stays the admin group's, as it was.
+ * permitted, as oprules.h says it (the agent's default has the same):
+ * arcana-system's read of the system's files, which the agent marks
+ * since it gives out keys (ipsec.conf, dma's credentials); BIRD's texts
+ * and services' values, which a viewer has not.  What changes the host
+ * stays the admin group's, as it was.
  */
 #define	OP_GROUP	"operator"
 
 static const uint8_t	op_exec[] = {
 	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_EXEC
 };
+static const uint8_t	op_read[] = {
+	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_READ
+};
+static const struct op_rule	op_rules[] = OP_RULES;
 
 static struct ietf_netconf_acm_nacm_rule_list *
 op_list(cbl_yarena *a)
@@ -1393,32 +1400,56 @@ op_list(cbl_yarena *a)
 	struct ietf_netconf_acm_nacm_rule_list_group	*lg;
 	struct ietf_netconf_acm_nacm_rule_list_rule	*r;
 	struct ietf_netconf_acm_nacm_rule_list		*l;
+	size_t						 i;
 
 	if ((l = cbl_yarena_alloc(a, sizeof(*l))) == NULL ||
 	    (lg = cbl_yarena_alloc(a, sizeof(*lg))) == NULL ||
-	    (r = cbl_yarena_alloc(a, sizeof(*r))) == NULL)
+	    (r = cbl_yarena_alloc(a, nitems(op_rules) * sizeof(*r))) == NULL)
 		return (NULL);
+	memset(r, 0, nitems(op_rules) * sizeof(*r));
+	for (i = 0; i < nitems(op_rules); i++) {
+		r[i].name = op_rules[i].name;
+		r[i].has_module_name = true;
+		r[i].module_name.which = 1;
+		r[i].module_name.v.m1 = op_rules[i].module;
+		r[i].rule_type =
+		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+		r[i].path = op_rules[i].path;
+		r[i].has_access_operations = true;
+		r[i].access_operations.which = 1;
+		r[i].access_operations.v.m1.p = op_rules[i].exec ? op_exec :
+		    op_read;
+		r[i].access_operations.v.m1.len = 1;
+		r[i].has_action = true;
+		r[i].action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
+		r[i].comment = op_rules[i].comment;
+	}
 	lg->which = 1;
 	lg->v.m1 = OP_GROUP;
-	r->name = "system-read";
-	r->has_module_name = true;
-	r->module_name.which = 1;
-	r->module_name.v.m1 = "arcana-system";
-	r->rule_type = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
-	r->path = "/arcana-system:system/read";
-	r->has_access_operations = true;
-	r->access_operations.which = 1;
-	r->access_operations.v.m1.p = op_exec;
-	r->access_operations.v.m1.len = sizeof(op_exec);
-	r->has_action = true;
-	r->action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
-	r->comment = "The console's operators read the system's files.";
 	l->name = OP_GROUP;
 	l->group.n = 1;
 	l->group.v = lg;
-	l->rule.n = 1;
+	l->rule.n = nitems(op_rules);
 	l->rule.v = r;
 	return (l);
+}
+
+/* Has the rule-list operator every rule op_list() makes?  One of a
+ * console before is made anew. */
+static bool
+op_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
+{
+	size_t	i, k;
+
+	for (i = 0; i < nitems(op_rules); i++) {
+		for (k = 0; k < l->rule.n; k++)
+			if (l->rule.v[k].name != NULL && strcmp(l->rule.v[k].name,
+			    op_rules[i].name) == 0)
+				break;
+		if (k == l->rule.n)
+			return (false);
+	}
+	return (true);
 }
 
 /*
@@ -1452,7 +1483,7 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	const char					*result;
 	char						 tag[64];
 	size_t						 i, k, nv, nov, ngroups;
-	bool						 changed, has_list;
+	bool						 changed, has_list, stale;
 	int						 error;
 
 	*out = NULL;
@@ -1537,11 +1568,13 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	}
 	for (i = 0; i < nov; i++)
 		ucl_array_append(onames, ucl_object_fromstring(ov[i]));
-	has_list = false;
+	has_list = stale = false;
 	for (i = 0; i < d.nacm->rule_list.n; i++)
-		if (strcmp(d.nacm->rule_list.v[i].name, OP_GROUP) == 0)
+		if (strcmp(d.nacm->rule_list.v[i].name, OP_GROUP) == 0) {
 			has_list = true;
-	if (!has_list && (og != NULL || nov > 0))
+			stale = !op_list_whole(&d.nacm->rule_list.v[i]);
+		}
+	if ((!has_list && (og != NULL || nov > 0)) || stale)
 		changed = true;
 	if (!changed) {
 		result = "unchanged";
@@ -1584,8 +1617,12 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	ngs->group.n = ngroups;
 	ngs->group.v = ng;
 	nn->groups = ngs;
-	for (i = 0; i < d.nacm->rule_list.n; i++)
+	for (i = 0; i < d.nacm->rule_list.n; i++) {
 		nl[i] = d.nacm->rule_list.v[i];
+		/* The console's own list, of a console before: anew. */
+		if (stale && strcmp(nl[i].name, OP_GROUP) == 0)
+			nl[i] = *ol;
+	}
 	if (!has_list && (og != NULL || nov > 0))
 		nl[i++] = *ol;
 	nn->rule_list.n = i;

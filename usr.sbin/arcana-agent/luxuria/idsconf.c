@@ -37,6 +37,202 @@ sstr(const ucl_object_t *o, const char *k)
 	    ucl_object_tostring(v) : NULL);
 }
 
+/*
+ * The admin's own YAML, appended to what the form made: a grammar
+ * narrower than YAML's, so that what it says is what is seen here.
+ * Block mappings and block sequences of plain or quoted scalars alone,
+ * indented by spaces; comments and blank lines; no flow collection
+ * ([ ] { }), anchor (&), alias (*), tag (!, !include among them),
+ * complex key (?), merge key (<<), block scalar (| >), directive (%) or
+ * document marker (--- ...), and no key named include, anywhere.  A
+ * key is compared unquoted, trimmed and without regard to case:
+ * "plugins", 'Plugins' and plugins : are plugins, which is the form's
+ * to set (owned) at the top.  What YAML decodes otherwise than it reads
+ * is refused, not decoded: a backslash in a double-quoted scalar (\x70
+ * is p), a line broken by anything but a newline (CR, NEL, LS, PS), a
+ * control character, DEL, a tab, a byte order mark, text that is not
+ * UTF-8, and a key of anything but ASCII.  NULL, or what is wrong, the
+ * line it is on.
+ */
+
+/* Is the text one YAML breaks into lines at its newlines alone, of
+ * UTF-8, no control character but the newline, no byte order mark?
+ * NULL, or what it holds. */
+static const char *
+yaml_bytes(const unsigned char *s)
+{
+	size_t	n, i;
+
+	if (s[0] == 0xef && s[1] == 0xbb && s[2] == 0xbf)
+		return ("a byte order mark");
+	for (; *s != '\0'; s += n) {
+		if (*s < 0x80) {
+			if ((*s < 0x20 && *s != '\n') || *s == 0x7f)
+				return ("a control character, a tab or a carriage "
+				    "return");
+			n = 1;
+			continue;
+		}
+		n = *s >= 0xf0 && *s <= 0xf4 ? 4 : *s >= 0xe0 ? 3 : *s >= 0xc2 &&
+		    *s < 0xe0 ? 2 : 0;
+		if (n == 0 || (n == 3 && *s > 0xef))
+			return ("text that is not UTF-8");
+		for (i = 1; i < n; i++)
+			if ((s[i] & 0xc0) != 0x80)
+				return ("text that is not UTF-8");
+		if ((s[0] == 0xc2 && s[1] == 0x85) || (s[0] == 0xe2 && s[1] ==
+		    0x80 && (s[2] == 0xa8 || s[2] == 0xa9)))
+			return ("a line broken by NEL, LS or PS");
+		if ((n == 3 && s[0] == 0xe0 && s[1] < 0xa0) || (n == 3 && s[0] ==
+		    0xed && s[1] >= 0xa0) || (n == 4 && s[0] == 0xf0 && s[1] <
+		    0x90) || (n == 4 && s[0] == 0xf4 && s[1] >= 0x90))
+			return ("text that is not UTF-8");
+		if (s[0] == 0xef && s[1] == 0xbb && s[2] == 0xbf)
+			return ("a byte order mark");
+	}
+	return (NULL);
+}
+
+/* A scalar at *pp, plain or quoted: its text unquoted into buf; *pp
+ * past it.  False when it is neither. */
+static bool
+yaml_scalar(const char **pp, bool key, char *buf, size_t len)
+{
+	const char	*p;
+	size_t		 n;
+
+	p = *pp;
+	n = 0;
+	if (*p == '"' || *p == '\'') {
+		for (p++; *p != '\0'; p++) {
+			/* An escape is decoded by YAML: not taken. */
+			if (**pp == '"' && *p == '\\')
+				return (false);
+			/* '' in single quotes is one: the scalar goes on. */
+			if (*p == **pp && **pp == '\'' && p[1] == '\'')
+				p++;
+			else if (*p == **pp)
+				break;
+			if (key && (unsigned char)*p >= 0x80)
+				return (false);
+			if (n + 1 < len)
+				buf[n++] = *p;
+		}
+		if (*p != (*pp)[0])
+			return (false);
+		buf[n] = '\0';
+		*pp = p + 1;
+		return (true);
+	}
+	/* Plain: not begun by an indicator, ended by ": ", " #" or the
+	 * line's end (a key's by its ":"). */
+	if (*p == '\0' || strchr("-?:,[]{}#&*!|>'\"%@`<", *p) != NULL)
+		return (false);
+	for (; *p != '\0'; p++) {
+		if (*p == ':' && (p[1] == ' ' || p[1] == '\0'))
+			break;
+		if (*p == ' ' && p[1] == '#')
+			break;
+		if (strchr("[]{}", *p) != NULL && !key)
+			return (false);
+		if (key && (unsigned char)*p >= 0x80)
+			return (false);
+		if (n + 1 < len)
+			buf[n++] = *p;
+	}
+	while (n > 0 && buf[n - 1] == ' ')
+		n--;
+	buf[n] = '\0';
+	*pp = p;
+	return (n > 0);
+}
+
+/* What may follow a scalar on its line: blanks and a comment. */
+static bool
+yaml_rest(const char *p)
+{
+
+	p += strspn(p, " ");
+	return (*p == '\0' || *p == '#');
+}
+
+static const char *
+yaml_wrong(struct work *w, const char *text, const char *const *owned,
+    size_t nowned)
+{
+	const char	*p, *e, *q;
+	char		 line[1024], key[256], val[1024];
+	size_t		 indent, i;
+	int		 ln;
+
+	if ((p = yaml_bytes((const unsigned char *)text)) != NULL)
+		return (wfmt(w, "it holds %s", p));
+	ln = 0;
+	for (p = text; *p != '\0'; p = *e != '\0' ? e + 1 : e) {
+		e = p + strcspn(p, "\n");
+		ln++;
+		if ((size_t)(e - p) >= sizeof(line))
+			return (wfmt(w, "line %d is too long", ln));
+		memcpy(line, p, (size_t)(e - p));
+		line[e - p] = '\0';
+		indent = strspn(line, " ");
+		q = line + indent;
+		if (*q == '\t' || strchr(line, '\t') != NULL)
+			return (wfmt(w, "line %d: a tab; YAML is indented by "
+			    "spaces", ln));
+		if (*q == '\0' || *q == '#')
+			continue;
+		if (indent == 0 && (strncmp(q, "---", 3) == 0 || strncmp(q,
+		    "...", 3) == 0 || *q == '%'))
+			return (wfmt(w, "line %d: a directive or a document's "
+			    "marker", ln));
+		/* A sequence's entry, then what it holds. */
+		if (*q == '-' && (q[1] == ' ' || q[1] == '\0')) {
+			if (indent == 0)
+				return (wfmt(w, "line %d: the top is a mapping, "
+				    "not a sequence", ln));
+			q += 1 + strspn(q + 1, " ");
+			/* An entry: a scalar, or "key: value". */
+			if (*q == '\0' || *q == '#')
+				continue;
+		}
+		if (!yaml_scalar(&q, true, key, sizeof(key)))
+			return (wfmt(w, "line %d: not a key or a scalar of the "
+			    "YAML taken here (no flow collection, anchor, alias, "
+			    "tag, complex key or block scalar)", ln));
+		/* "plugins" : as plugins: is. */
+		q += strspn(q, " ");
+		if (*q != ':') {
+			/* A sequence's scalar. */
+			if (!yaml_rest(q) || !(line[indent] == '-'))
+				return (wfmt(w, "line %d: a key with no colon",
+				    ln));
+			continue;
+		}
+		/* key: compared unquoted, trimmed. */
+		for (i = strlen(key); i > 0 && key[i - 1] == ' '; i--)
+			key[i - 1] = '\0';
+		if (strcasecmp(key, "include") == 0 || strcmp(key, "<<") == 0)
+			return (wfmt(w, "line %d: %s is not taken", ln, key));
+		if (indent == 0)
+			for (i = 0; i < nowned; i++)
+				if (strncasecmp(key, owned[i], strlen(owned[i]) -
+				    1) == 0 && key[strlen(owned[i]) - 1] == '\0')
+					return (wfmt(w, "line %d: %s is the form's to "
+					    "set", ln, key));
+		q++;
+		q += strspn(q, " ");
+		if (*q == '\0' || *q == '#')
+			continue;
+		if (!yaml_scalar(&q, false, val, sizeof(val)) || !yaml_rest(q))
+			return (wfmt(w, "line %d: a value of the YAML taken "
+			    "here is a plain or quoted scalar (no flow "
+			    "collection, anchor, alias, tag or block scalar)",
+			    ln));
+	}
+	return (NULL);
+}
+
 static bool
 one_of(const char *v, const char *const *set)
 {
@@ -346,10 +542,10 @@ settings(struct work *w, const ucl_object_t *in, const char *name, FILE *b,
 	ucl_object_iter_t	 it;
 	const char		*v, *rm, *mpm, *prof, *inl, *pol, *mg, *wk, *extra;
 	const char		*sched;
-	const char		*preset, *p;
+	const char		*preset;
 	const char		*sz[nitems(memcaps)];
 	int64_t			 k64, stats, pending;
-	size_t			 i, oi;
+	size_t			 i;
 	int			 k;
 	bool			 payload;
 
@@ -437,16 +633,13 @@ settings(struct work *w, const ucl_object_t *in, const char *name, FILE *b,
 		return (false);
 	}
 	/* The keys the form owns are not its to set again: a plugin, a
-	 * user or a socket of its own would go past the checks here. */
-	for (p = extra; p != NULL && *p != '\0'; p = strchr(p, '\n') != NULL ?
-	    strchr(p, '\n') + 1 : NULL)
-		for (oi = 0; oi < nitems(owned); oi++)
-			if (strncmp(p, owned[oi], strlen(owned[oi])) == 0) {
-				*errp = wfmt(w, "%s: its own YAML may not set %.*s, "
-				    "which the form does", name, (int)strlen(
-				    owned[oi]) - 1, owned[oi]);
-				return (false);
-			}
+	 * user or a socket of its own would go past the checks here; in a
+	 * grammar where what is set is what is seen (yaml_wrong()). */
+	if (extra != NULL && (v = yaml_wrong(w, extra, owned, nitems(
+	    owned))) != NULL) {
+		*errp = wfmt(w, "%s: its own YAML, %s", name, v);
+		return (false);
+	}
 	payload = ucl_object_toboolean(ucl_object_lookup(in, "payload"));
 	/* eve.json: alerts, and what else it was told to log. */
 	fprintf(b, "outputs:\n  - eve-log:\n      enabled: yes\n"
@@ -763,7 +956,7 @@ ids_conf_render(struct work *w, const ucl_object_t *in, const char *name,
 	fprintf(b, "%%YAML 1.1\n---\n# Written by arcana-agent for the Arcana "
 	    "console: the Security section's intrusion detection %s at %s,\n# "
 	    "by Suricata, %s.\nvars:\n  address-groups:\n    HOME_NET: \"",
-	    name, host, divert > 0 ? "preventing: what ipfw diverts to it" :
+	    name, conf_word(host), divert > 0 ? "preventing: what ipfw diverts to it" :
 	    "detecting: what its interfaces see");
 	/* "any", alone: every address is home, and so outside too, as
 	 * Suricata does not take the whole address space negated. */
@@ -848,7 +1041,7 @@ ids_conf_sdwan(struct work *w, const ucl_object_t *in, const char *name,
 	    "console: SD-WAN service %s at %s.\n# The intrusion detection of "
 	    "its security policies (Arcana's own), by Suricata.\nvars:\n  "
 	    "address-groups:\n    HOME_NET: \"[", sstr(in, "service") != NULL ?
-	    sstr(in, "service") : name, host);
+	    conf_word(sstr(in, "service")) : name, conf_word(host));
 	if (ucl_array_size(ucl_object_lookup(in, "home")) == 0)
 		fprintf(b, "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16");
 	else if (!list_of(w, in, "home", prefix_ok, false, b, "", ",", name,

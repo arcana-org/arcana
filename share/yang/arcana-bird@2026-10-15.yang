@@ -77,8 +77,12 @@ module arcana-bird {
         }
         leaf text {
           type string;
+          nacm:default-deny-all;
           description
-            "Its text, as it is.";
+            "Its text, as it is: read by a rule that permits it alone
+             (an admin's), its password lines being BGP's and OSPF's
+             secrets; configuration, so not masked (a candidate made of
+             a masked read would write the mask back).";
         }
         leaf sha256 {
           type string {

@@ -127,6 +127,7 @@ struct opts opts = {
 	.keygen_bin = PATH_KEYGEN_BIN,
 	.build_dir = PATH_BUILD_DIR,
 	.build_conf = PATH_BUILD_CONF,
+	.build_user = "_arcanabuild",
 };
 
 static bool	foreground;
@@ -137,7 +138,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
-    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE };
+    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -150,6 +151,8 @@ static const struct option longopts[] = {
 	/* The configured subscriptions (RFC 8639 section 2.5), as family 1
 	 * serves and edits them. */
 	{ "subscriptions", required_argument, NULL, OPT_SUBSCRIPTIONS },
+	/* Whom a build runs as, a user nothing else is (build.c). */
+	{ "build-user", required_argument, NULL, OPT_BUILD_USER },
 	/* Of hello's features, those named: an agent before the others,
 	 * as a test of what a console sends it has it. */
 	{ "features", required_argument, NULL, OPT_FEATURES },
@@ -236,7 +239,7 @@ usage(void)
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
-	    "                 [--jobs-conf file] [--nacm file]\n"
+	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
 	    "                 [--subscriptions file] [--features list]\n");
 	exit(2);
 }
@@ -486,6 +489,10 @@ main(int argc, char *argv[])
 			break;
 		case OPT_NACM:
 			opts.nacm_file = optarg;
+			break;
+		case OPT_BUILD_USER:
+			opts.build_user = optarg;
+			opts.build_user_set = true;
 			break;
 		case OPT_SUBSCRIPTIONS:
 			opts.subs_file = optarg;

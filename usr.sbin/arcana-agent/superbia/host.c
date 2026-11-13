@@ -19,6 +19,7 @@
 /* What this agent takes that one before it did not (hello's features). */
 static const char *const features[] = {
 	ZPROG_FEATURE,		/* agent-update's program compressed */
+	SIGNED_UPDATE_FEATURE,	/* its signature of its statement */
 };
 
 /*

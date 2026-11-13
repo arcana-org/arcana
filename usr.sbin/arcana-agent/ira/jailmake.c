@@ -29,6 +29,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <jailconf.h>
+
 #include <ucl.h>
 
 #include "agent.h"
@@ -379,6 +381,93 @@ own_path(struct work *w, const char *file, const char *name)
 	return (NULL);
 }
 
+/* Past blanks and comments (# and // to the line's end, C's) at p. */
+static const char *
+skip_blank(const char *p, const char *end)
+{
+
+	while (p < end) {
+		if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			p++;
+		else if (*p == '#' || (*p == '/' && p + 1 < end && p[1] ==
+		    '/'))
+			while (p < end && *p != '\n')
+				p++;
+		else if (*p == '/' && p + 1 < end && p[1] == '*') {
+			p = strnstr(p + 2, "*/", (size_t)(end - p - 2)) != NULL ?
+			    strnstr(p + 2, "*/", (size_t)(end - p - 2)) + 2 : end;
+		} else
+			break;
+	}
+	return (p);
+}
+
+/*
+ * One jail's file is that jail's block alone, with the includes of the
+ * defaults and the templates (.include) and comments: a parameter set
+ * outside it, a "*" block or another jail's block would change every
+ * jail read after it (their exec.* and allow.* among them).  *errp
+ * otherwise.
+ */
+static int
+one_jail_only(struct work *w, const char *text, const char *name,
+    const char **errp)
+{
+	struct jc_conf		 c;
+	const struct jc_file	*f;
+	const char		*p, *end, *bs;
+	size_t			 i;
+	int			 rc;
+
+	memset(&c, 0, sizeof(c));
+	if (jc_load_buf(&c, "jail", text, strlen(text)) != 0 || c.nfiles ==
+	    0) {
+		*errp = wfmt(w, "the file is not jail.conf(5)'s: %s", c.error !=
+		    NULL ? c.error : "not read");
+		jc_free(&c);
+		return (-1);
+	}
+	f = c.files[0];
+	rc = 0;
+	p = f->buf;
+	end = f->buf + f->len;
+	for (i = 0; i <= f->nblocks && rc == 0; i++) {
+		if (i < f->nblocks && strcmp(f->blocks[i].name, name) != 0) {
+			*errp = wfmt(w, "the file has a block of %s: one jail's "
+			    "file holds its own alone", strcmp(f->blocks[i].name,
+			    "*") == 0 ? "every jail (*)" : wtext(w,
+			    f->blocks[i].name));
+			rc = -1;
+			break;
+		}
+		/* Up to the block's name: blanks, comments and includes. */
+		bs = i < f->nblocks ? f->buf + f->blocks[i].open : end;
+		while (bs > p && (bs[-1] == ' ' || bs[-1] == '\t' || bs[-1] ==
+		    '\n'))
+			bs--;
+		while (bs > p && bs[-1] != ' ' && bs[-1] != '\t' && bs[-1] !=
+		    '\n' && bs[-1] != ';' && bs[-1] != '}')
+			bs--;
+		for (p = skip_blank(p, bs); p < bs; p = skip_blank(p, bs)) {
+			if (strncmp(p, ".include", 8) != 0) {
+				*errp = "the file sets a parameter outside the "
+				    "jail's block: one jail's file sets its own "
+				    "alone";
+				rc = -1;
+				break;
+			}
+			while (p < bs && *p != ';' && *p != '\n')
+				p++;
+			if (p < bs)
+				p++;
+		}
+		if (i < f->nblocks)
+			p = f->buf + f->blocks[i].close + 1;
+	}
+	jc_free(&c);
+	return (rc);
+}
+
 /*
  * jail(8)'s reading of file: the jails it defines beyond those of the
  * defaults it includes are the one named, alone, and its path is the
@@ -519,6 +608,8 @@ jail_make(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		made = true;
 	}
 	/* Read back by jail(8) first, beside where it goes. */
+	if (one_jail_only(w, sp->text, sp->jail, errp) != 0)
+		goto undo;
 	tmp = wfmt(w, "%s/.%s.conf.arcana-check", opts.jail_conf_d, sp->jail);
 	if (put_file(w, tmp, sp->text, errp) != 0)
 		goto undo;
@@ -571,6 +662,8 @@ jail_edit(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		return (-1);
 	}
 	path = jail_getid(sp->jail) >= 0 ? own_path(w, file, sp->jail) : NULL;
+	if (one_jail_only(w, sp->text, sp->jail, errp) != 0)
+		return (-1);
 	tmp = wfmt(w, "%s/.%s.conf.arcana-check", opts.jail_conf_d, sp->jail);
 	if (put_file(w, tmp, sp->text, errp) != 0)
 		return (-1);

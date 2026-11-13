@@ -9,7 +9,9 @@
  * printed.  Every reply carries it; a job's is read while the job runs;
  * a peer that joined cblink's YANG group notify is told each step of its
  * own requests as it begins and as it ends, arcana-jobs' steps
- * notification on its connection alone.
+ * notification on its connection alone.  A step's detail has each
+ * secret's value masked (wmask()), whoever reads it: a job's trace is
+ * read by every role, as its argv and title are (exec.c, jobs.c).
  */
 
 #include <sys/types.h>
@@ -62,7 +64,7 @@ step_begin(struct work *w, uint8_t kind, const char *label,
 		if (vasprintf(&d, fmt, ap) == -1)
 			err(1, "vasprintf");
 		va_end(ap);
-		dt = wstrdup(w, d);
+		dt = wmask(w, wstrdup(w, d));
 		free(d);
 	}
 	pthread_mutex_lock(&w->lock);
@@ -101,7 +103,7 @@ step_end(struct work *w, int idx, bool ok, const char *fmt, ...)
 		if (vasprintf(&d, fmt, ap) == -1)
 			err(1, "vasprintf");
 		va_end(ap);
-		dt = wstrdup(w, d);
+		dt = wmask(w, wstrdup(w, d));
 		free(d);
 	}
 	pthread_mutex_lock(&w->lock);
