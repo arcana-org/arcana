@@ -35,7 +35,7 @@ static struct {
 	char		 sync_err[160];	/* the last failure's words */
 } us;
 
-static void	password_send(const char *);
+static void	password_send(const char *, const char *);
 
 static const struct {
 	int		 tab;
@@ -903,7 +903,7 @@ user_form(const char *form, const ucl_object_t *f)
 			    "The two are not the same.");
 			return (true);
 		}
-		password_send(jstr(f, "password"));
+		password_send(jstr(f, "password"), jstr(f, "current"));
 		return (true);
 	}
 	if (strcmp(form, "user") != 0 && strcmp(form, "role") != 0 &&
@@ -1013,15 +1013,17 @@ password_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	render();
 }
 
-/* POST /api/auth/password for the user (us.pw_user, "" one's own). */
+/* POST /api/auth/password for the user (us.pw_user, "" one's own),
+ * proof (",\"current\":..." or ",\"assertion\":...") after. */
 static void
-password_send(const char *pw)
+password_post(const char *pw, const char *proof)
 {
 	char	*qu, *qp, *body;
 
 	qu = json_quote(us.pw_user);
 	qp = json_quote(pw);
-	if (asprintf(&body, "{\"user\":%s,\"password\":%s}", qu, qp) == -1)
+	if (asprintf(&body, "{\"user\":%s,\"password\":%s%s}", qu, qp,
+	    proof) == -1)
 		abort();
 	explicit_bzero(qp, strlen(qp));
 	free(qu);
@@ -1030,6 +1032,80 @@ password_send(const char *pw)
 	api("POST", "/api/auth/password", body, password_cb, NULL);
 	explicit_bzero(body, strlen(body));
 	free(body);
+}
+
+/* The key said yes (or no): its assertion is the proof. */
+static void
+password_assert_cb(bool ok, const char *result, void *arg)
+{
+	char	*pw = arg, *proof;
+
+	if (!ok) {
+		app.modal_busy = false;
+		snprintf(app.modal_error, sizeof(app.modal_error), "Security "
+		    "key: %s", result);
+		explicit_bzero(pw, strlen(pw));
+		free(pw);
+		render();
+		return;
+	}
+	if (asprintf(&proof, ",\"assertion\":%s", result) == -1)
+		abort();
+	password_post(pw, proof);
+	free(proof);
+	explicit_bzero(pw, strlen(pw));
+	free(pw);
+}
+
+static void
+password_begin_cb(int status, const ucl_object_t *o, const char *err,
+    void *arg)
+{
+	char	*pw = arg, *opts;
+
+	if (status != 200) {
+		app.modal_busy = false;
+		snprintf(app.modal_error, sizeof(app.modal_error), "%s", err !=
+		    NULL ? err : "cannot start");
+		explicit_bzero(pw, strlen(pw));
+		free(pw);
+		render();
+		return;
+	}
+	opts = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
+	webauthn(false, opts, password_assert_cb, pw);
+	free(opts);
+}
+
+/*
+ * The password set: another's by an owner as it is; one's own proved
+ * again, by the current password when given, else by one's key (a
+ * ceremony of its own, /api/auth/password/begin).
+ */
+static void
+password_send(const char *pw, const char *current)
+{
+	char	*qc, *proof;
+
+	if (us.pw_user[0] != '\0') {
+		password_post(pw, "");
+		return;
+	}
+	if (current != NULL && current[0] != '\0') {
+		qc = json_quote(current);
+		if (asprintf(&proof, ",\"current\":%s", qc) == -1)
+			abort();
+		explicit_bzero(qc, strlen(qc));
+		free(qc);
+		password_post(pw, proof);
+		explicit_bzero(proof, strlen(proof));
+		free(proof);
+		return;
+	}
+	app.modal_busy = true;
+	if ((qc = strdup(pw)) == NULL)
+		abort();
+	api("POST", "/api/auth/password/begin", "{}", password_begin_cb, qc);
 }
 
 /* The password dialog: a new one, twice; or none. */
@@ -1048,9 +1124,16 @@ password_modal(struct html *h)
 	    "out what it signed in.</p><input type=\"text\" name=\"user\" "
 	    "autocomplete=\"username\" hidden");
 	h_attr(h, "value", who);
-	h_raw(h, "><label>New password<input type=\"password\" name=\""
+	h_raw(h, ">");
+	/* One's own: proved again, by the password one has or one's key. */
+	if (us.pw_user[0] == '\0')
+		h_raw(h, "<label>Current password<input type=\"password\" "
+		    "name=\"current\" maxlength=\"72\" autocomplete=\""
+		    "current-password\" autofocus><small>Left empty, your "
+		    "security key confirms it is you.</small></label>");
+	h_raw(h, "<label>New password<input type=\"password\" name=\""
 	    "password\" required minlength=\"12\" maxlength=\"72\" "
-	    "autocomplete=\"new-password\" autofocus><small>12 characters at "
+	    "autocomplete=\"new-password\"><small>12 characters at "
 	    "least, 72 bytes at most.</small></label><label>Again<input "
 	    "type=\"password\" name=\"again\" required minlength=\"12\" "
 	    "maxlength=\"72\" autocomplete=\"new-password\"></label>");
@@ -1071,7 +1154,7 @@ user_action(const char *act, const char *arg)
 		return (true);
 	}
 	if (strcmp(act, "password-remove") == 0) {
-		password_send("");
+		password_send("", NULL);
 		return (true);
 	}
 	if (strcmp(act, "roles-sync") == 0) {

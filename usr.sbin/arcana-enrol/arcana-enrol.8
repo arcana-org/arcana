@@ -28,6 +28,11 @@ It makes an EC P-256 key and a certificate request, sends the request to
 with the one-time
 .Ar token
 the console issued for this host, and writes what comes back:
+the token,
+.Dq arce1_
+and base64url, carries the console's secret and the SHA-256 of each
+certificate of the CA this host is to trust, and each certificate of
+the CA the console sends must be one of them:
 .Pp
 .Bl -tag -width "host.key" -compact -offset indent
 .It Pa host.key
@@ -66,14 +71,15 @@ and
 Write the files there instead of
 .Pa /usr/local/etc/arcana .
 .It Fl f Ar sha256
-The SHA-256 fingerprint of the console's CA, as the console shows it
-in the command (or
+Another SHA-256 fingerprint of a CA to trust besides those the token
+carries, as
 .Ql openssl x509 -noout -fingerprint -sha256
 of its
 .Pa ca.pem
-shows it, with colons or without); may be given more than once, as
-while the console's CA is changed for another.
-Each certificate of the CA the console sends must be one of them, or
+shows it, with colons or without); may be given more than once.
+Each certificate of the CA the console sends must be one the token or
+.Fl f
+names, or
 .Nm
 writes nothing: the CA is what
 .Xr arcana-agent 8
@@ -84,10 +90,13 @@ Enrol over plain HTTP: without it a
 that is not
 .Li https://
 is refused, for the token and the CA would travel in the clear.
-With
+The CA is checked by the token's fingerprints all the same; the token
+is not kept from who listens.
+A token that carries none (one made by hand) and no
 .Fl f
-the CA is checked all the same; the token is not kept from who
-listens.
+enrol only with
+.Fl i ,
+the CA taken as it comes.
 .It Fl n Ar name
 The name in the certificate request.
 The console ignores it and names the certificate after the token's host;
@@ -122,7 +131,7 @@ In the console, add a server with
 giving it a name and the host name or address the console reaches it by.
 The console shows a command like
 .Bd -literal -offset indent
-arcana-enrol -s -f 9a0b... https://console.example 3f1c...
+arcana-enrol -s https://console.example arce1_mN3q...
 .Ed
 .Pp
 Run it on the host as root;
@@ -147,9 +156,8 @@ Over plain HTTP, taken only with
 or with
 .Ev SSL_NO_VERIFY_PEER
 set, whoever can read the connection can take the token and have the
-certificate issued to a key of their own, and without
-.Fl f
-give this host a CA of their own to trust.
+certificate issued to a key of their own; the CA this host trusts is
+the one the token pins all the same, unless it pins none.
 .Pp
 Once the console has answered,
 .Nm

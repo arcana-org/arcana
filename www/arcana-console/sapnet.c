@@ -903,8 +903,9 @@ int
 api_sapnet(struct http_request *req)
 {
 	struct snreq	*r;
-	const char	*p, *u;
+	const char	*p;
 	ucl_object_t	*top;
+	char		 why[300];
 
 	if ((r = req->hdlr_extra) != NULL) {
 		if (task_state(&r->task) != TASK_STATE_FINISHED) {
@@ -941,8 +942,9 @@ api_sapnet(struct http_request *req)
 		}
 		snprintf(r->net, sizeof(r->net), "%s", p + 9);
 	}
-	u = session_user(req);
-	r->l3nm = u == NULL || user_may_path(u, L3NM_PATH, false);
+	/* The services' status of who may read the L3NM (cnodes.c). */
+	r->l3nm = req_may_path(req, L3NM_PATH, false, NULL, why,
+	    sizeof(why)) == 0;
 	hosts_of(req, r);
 	req->hdlr_extra = r;
 	task_create(&r->task, sapnet_run);

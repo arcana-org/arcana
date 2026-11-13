@@ -1021,9 +1021,14 @@ hosts_tally_log(void)
  * console itself, by saying so (hosts_act_console()).
  */
 static _Thread_local struct principal	acting;
+static _Thread_local char		acting_user[USER_NAME_LEN];
 
-/* The user it acts for, as the agent knows it; "": none of them. */
-#define	ACTING_USER	(acting.kind == P_USER ? acting.name : "")
+/*
+ * Who it acts for, as the agent knows them (principal_nacm()): a user
+ * by name, a read token as NACM_TOKEN_READ, a write token as its maker;
+ * "": the console, the connection's user.
+ */
+#define	ACTING_USER	((const char *)acting_user)
 
 void
 hosts_act(const struct principal *p)
@@ -1033,6 +1038,7 @@ hosts_act(const struct principal *p)
 		acting = *p;
 	else
 		memset(&acting, 0, sizeof(acting));
+	(void)principal_nacm(&acting, acting_user, sizeof(acting_user));
 	(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ? ACTING_USER :
 	    NULL);
 }
@@ -1088,12 +1094,13 @@ hosts_may(const char *uri, enum role need)
 
 /*
  * Who the console is to an agent when it acts for no one (a poll, a
- * schedule), or for an API token: NACM's user "console", in group
- * admin by the agent's default rules.  Said on every connection, below
- * a thread's acting user; so the console is never the agent's recovery
- * session, not even as root over the local agent's unix socket.
+ * schedule): NACM's user "console", in group admin by the agent's
+ * default rules; never for a user or a token, said as theirs above.
+ * Said on every connection, below a thread's acting user; so the console
+ * is never the agent's recovery session, not even as root over the local
+ * agent's unix socket.
  */
-#define	CONSOLE_USER	"console"
+#define	CONSOLE_USER	NACM_CONSOLE
 
 /* web.h's: this thread acting for one. */
 void
@@ -2540,7 +2547,11 @@ connected:
 		 * have come over one kept open from before the change,
 		 * which a change that cut the host off would not touch.
 		 * No new connection, no confirmation: the host undoes the
-		 * change by itself.
+		 * change by itself.  The confirmation is the console's for
+		 * the job's own user (a write token's maker, a user),
+		 * whoever reads it now (a read token, another user): said
+		 * as that user, whom the host let make the change; as the
+		 * console for a job of no user's.
 		 */
 		if (yjob.has_state && yjob.state == ARC_JOB_STATE_UNCONFIRMED) {
 			cbl_conn		*fconn;
@@ -2550,8 +2561,12 @@ connected:
 
 			if ((fe = hosts_dial(c->uri, c->peer, &fconn,
 			    &ftls)) == NULL) {
+				(void)cbl_thread_set_user(yjob.user != NULL &&
+				    yjob.user[0] != '\0' ? yjob.user : NULL);
 				(void)yq_confirm(fconn, c->jobid, fwhy,
 				    sizeof(fwhy));
+				(void)cbl_thread_set_user(ACTING_USER[0] != '\0' ?
+				    ACTING_USER : NULL);
 				hosts_release(c->uri, c->peer, fconn, ftls,
 				    true);
 			} else
@@ -4163,8 +4178,8 @@ api_config_apply(struct http_request *req)
 	if ((tn = ucl_str(body, "template")) != NULL) {
 		char	why[300], *json;
 
-		if (session_user(req) != NULL && !user_may_path(session_user(req),
-		    CYANG_DATA "templates", false)) {
+		if (req_may_path(req, CYANG_DATA "templates", false, NULL, why,
+		    sizeof(why)) != 0) {
 			ucl_object_unref(body);
 			call_release(c);
 			free(c);

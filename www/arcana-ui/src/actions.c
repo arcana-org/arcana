@@ -3591,17 +3591,36 @@ login_password(const char *user, const char *password)
 	free(body);
 }
 
-/* With passkey, the authenticator picks the credential itself. */
+/*
+ * Signed in by a key.  The console lists no key unless a user is named:
+ * a passkey the authenticator finds by itself; with user (or, when NULL
+ * and not passkey, the one who signed in last on this browser), that
+ * user's keys too, for a key that is not discoverable.
+ */
 void
-login(bool passkey)
+login(bool passkey, const char *user)
 {
+	char	*kept, *q, *body;
 
 	if (app.auth_busy)
 		return;
 	app.auth_busy = true;
 	app.auth_error[0] = '\0';
-	api("POST", "/api/auth/login/begin", passkey ?
-	    "{\"discoverable\":true}" : "{}", login_begin_cb, NULL);
+	kept = NULL;
+	if (user == NULL && !passkey)
+		user = kept = arc_store_get("arc_signin_user");
+	if (user != NULL && user[0] != '\0') {
+		if (kept == NULL)
+			arc_store_set("arc_signin_user", user);
+		q = json_quote(user);
+		if (asprintf(&body, "{\"user\":%s}", q) == -1)
+			abort();
+		free(q);
+	} else if ((body = strdup("{}")) == NULL)
+		abort();
+	free(kept);
+	api("POST", "/api/auth/login/begin", body, login_begin_cb, NULL);
+	free(body);
 }
 
 /* After create(): add the key's name and finish the registration. */
@@ -3669,6 +3688,10 @@ who_set(const ucl_object_t *o)
 	    "console") != NULL ? jstr(o, "console") : "");
 	snprintf(app.tenant, sizeof(app.tenant), "%s", jstr(o, "tenant") != NULL
 	    ? jstr(o, "tenant") : "");
+	/* Who signs in on this browser: named at the next sign-in by key,
+	 * for a key that is not a passkey (login()). */
+	if (app.user[0] != '\0')
+		arc_store_set("arc_signin_user", app.user);
 }
 
 /* The first key, with the setup token from the console's data dir, or

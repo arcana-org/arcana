@@ -103,6 +103,26 @@ A list of where to listen:
 for IPv6 (which then listens for IPv6 alone), or
 .Dq unix: Ns Ar path .
 By default 0.0.0.0:443 and [::]:443.
+A client over a unix socket is known by its user,
+.Xr getpeereid 2 Ns 's
+uid, as
+.Dq unix: Ns Ar uid ,
+which the sign-in throttle counts by.
+.It Va listen_group
+The group of a unix socket the console listens on, which its user
+owns; by default the console's user's own group.
+A reverse proxy in front of the console that connects over it is
+named here, or made a member of that group.
+.It Va listen_mode
+Its mode, octal, by default
+.Dq 0660 :
+the owner's read and write at least, no execute.
+.It Va h2_streams
+The streams an HTTP/2 connection may have open at once, 24 to 256, by
+default 100: what browsers send before they have the console's
+settings.
+More is not tested to work: libwebsockets ends a connection whose
+client sends more than about 40 at once.
 .It Va certfile , certkey
 The certificate (with its chain) and key for HTTPS, RSA or EC; the key
 is read by the key manager alone, as root.

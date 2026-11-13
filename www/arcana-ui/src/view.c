@@ -3500,12 +3500,25 @@ auth_screen(struct html *h)
 			h_raw(h, icon_key);
 			h_fmt(h, "</div><button class=\"primary\" data-act=\""
 			    "login\"%s>%s</button>", app.auth_busy ? " disabled" :
-			    "", app.auth_busy ? "Touch your key…" : "Log in with "
-			    "your security key");
+			    "", app.auth_busy ? "Touch your key…" : "Sign in with "
+			    "a key");
 			h_fmt(h, "<button class=\"ghost\" data-act=\"login-"
 			    "passkey\"%s title=\"A passkey on this device, or on "
 			    "a phone nearby\">Use a passkey</button>",
 			    app.auth_busy ? " disabled" : "");
+			/* The console names no one's keys unasked: a key that
+			 * is not a passkey is found by its user's name. */
+			h_fmt(h, "<details class=\"login-named\"><summary>An "
+			    "older key? Sign in by name</summary><form data-form="
+			    "\"login-named\"><label>User<input name=\"user\" "
+			    "required autocomplete=\"username\" spellcheck=\""
+			    "false\" maxlength=\"64\"></label><button class=\""
+			    "ghost\"%s>Sign in with its key</button></form><p "
+			    "class=\"dim\">A passkey signs in with no name. A "
+			    "security key that keeps no passkey is asked for by "
+			    "its user's name: this browser remembers the last one "
+			    "signed in.</p></details>", app.auth_busy ?
+			    " disabled" : "");
 		}
 		/* A user and password, where a user has one of the console's
 		 * own or the console asks a directory. */

@@ -86,10 +86,18 @@
  * page's polls, every tab's) had it ended at once, again and again.
  * 100 is what no well-behaved client passes.  Each new stream is also a
  * window update libwebsockets queues, and past 50 queued it ends the
- * connection as well: a first flight of 100 does not get there
- * (console_test:h2_streams), which was the reason given for 24.
+ * connection as well: a first flight of 100 as browsers and curl send
+ * it does not get there (console_test:h2_streams), which was the reason
+ * given for 24.  More is not the default: nghttp2's h2load, which sends
+ * its whole first flight at once, has the connection ended from 48 at
+ * once (40 pass), whatever the setting, and curl sends no more than 100
+ * on a connection, so no client of the tests' shows more to work.
  */
 #define	H2_STREAMS	100
+/* web.conf's h2_streams, which the default is (server { }): within
+ * these. */
+#define	H2_STREAMS_MIN	24
+#define	H2_STREAMS_MAX	256
 #define	WS_IN_MAX	(1024 * 1024)	/* a message from a page, at most */
 /* A message goes out in fragments of this much at most: over HTTP/2 a
  * WebSocket frame may not be larger than an HTTP/2 frame (16 KB), and
@@ -108,6 +116,9 @@ static struct {
 	char	*pidfile;
 	int	 task_threads;
 	size_t	 body_max;
+	char	*listen_group;	/* a unix socket's group; NULL: user's */
+	mode_t	 listen_mode;	/* and its mode */
+	int	 h2_streams;
 } srv;
 
 const char	*web_conf_path = ARCW_CONF;
@@ -884,15 +895,33 @@ http_request_header(struct http_request *req, const char *name,
 	return (0);
 }
 
-/* The address a request came from, as libwebsockets tells it; "" for
- * one it cannot (a UNIX socket's, a client gone). */
+/*
+ * The address a request came from, as libwebsockets tells it; over a
+ * unix socket "unix:<uid>", the local user getpeereid(2) says, so that
+ * the sign-in throttle and the feeds tell one local account from
+ * another; "" for a client gone.
+ */
 const char *
 web_peer(struct http_request *req, char *buf, size_t len)
 {
+	struct sockaddr_storage	 ss;
+	socklen_t		 sl;
+	uid_t			 uid;
+	gid_t			 gid;
+	int			 fd;
 
 	buf[0] = '\0';
-	if (req->wsi != NULL && lws_get_peer_simple(req->wsi, buf, len) ==
-	    NULL)
+	if (req->wsi == NULL)
+		return (buf);
+	fd = (int)lws_get_socket_fd(lws_get_network_wsi(req->wsi));
+	sl = sizeof(ss);
+	if (fd >= 0 && getsockname(fd, (struct sockaddr *)&ss, &sl) == 0 &&
+	    ss.ss_family == AF_UNIX) {
+		if (getpeereid(fd, &uid, &gid) == 0)
+			snprintf(buf, len, "unix:%u", (unsigned int)uid);
+		return (buf);
+	}
+	if (lws_get_peer_simple(req->wsi, buf, len) == NULL)
 		buf[0] = '\0';
 	return (buf);
 }
@@ -2028,6 +2057,40 @@ conf_read(void)
 			    web_conf_path);
 		srv.body_max = (size_t)ucl_object_toint(e);
 	}
+	/*
+	 * A unix socket's: its owner the console's user, its group this
+	 * one (the user's own unless named), its mode 0660 unless said
+	 * (octal, a string or a number): every local account no longer
+	 * reaches the console by it.
+	 */
+	if ((v = conf_str(s, "listen_group", NULL)) != NULL && v[0] != '\0')
+		srv.listen_group = xstrdup(v);
+	srv.listen_mode = 0660;
+	if ((e = ucl_object_lookup(s, "listen_mode")) != NULL) {
+		char	*end;
+		long	 m;
+
+		if (ucl_object_type(e) == UCL_STRING) {
+			m = strtol(ucl_object_tostring(e), &end, 8);
+			if (*end != '\0' || end == ucl_object_tostring(e))
+				m = -1;
+		} else
+			m = (long)ucl_object_toint(e);
+		if (m < 0 || m > 0777 || (m & 0111) != 0 || (m & 0600) !=
+		    0600)
+			errx(EX_CONFIG, "%s: server: listen_mode is octal, the "
+			    "owner's read and write, no execute (0600 to 0666)",
+			    web_conf_path);
+		srv.listen_mode = (mode_t)m;
+	}
+	srv.h2_streams = H2_STREAMS;
+	if ((e = ucl_object_lookup(s, "h2_streams")) != NULL) {
+		if (ucl_object_toint(e) < H2_STREAMS_MIN || ucl_object_toint(e) >
+		    H2_STREAMS_MAX)
+			errx(EX_CONFIG, "%s: server: h2_streams is %d to %d",
+			    web_conf_path, H2_STREAMS_MIN, H2_STREAMS_MAX);
+		srv.h2_streams = (int)ucl_object_toint(e);
+	}
 	web_certfile = srv.certfile;
 	web_certkey = srv.certkey;
 	ucl_object_unref(top);
@@ -2066,6 +2129,40 @@ listen_parse(const char *spec, char *addr, size_t len, int *portp, int *famp)
 		errx(EX_CONFIG, "listen %s: no port", spec);
 	if (addr[0] == '\0')
 		strlcpy(addr, *famp == AF_INET6 ? "::" : "0.0.0.0", len);
+}
+
+/*
+ * A unix socket the console listens on, path: owned by the console's
+ * user (when the supervisor is root and names one), of listen_group, or
+ * of the user's own group, and of listen_mode (0660 unless said).
+ */
+static void
+unix_own(const char *path)
+{
+	struct passwd	*pw;
+	struct group	*gr;
+	uid_t		 uid;
+	gid_t		 gid;
+
+	uid = (uid_t)-1;
+	gid = (gid_t)-1;
+	if (geteuid() == 0 && srv.user[0] != '\0') {
+		if ((pw = getpwnam(srv.user)) == NULL)
+			errx(EX_CONFIG, "listen %s: no user %s", path, srv.user);
+		uid = pw->pw_uid;
+		gid = pw->pw_gid;
+	}
+	if (srv.listen_group != NULL) {
+		if ((gr = getgrnam(srv.listen_group)) == NULL)
+			errx(EX_CONFIG, "listen %s: no group %s", path,
+			    srv.listen_group);
+		gid = gr->gr_gid;
+	}
+	if ((uid != (uid_t)-1 || gid != (gid_t)-1) && chown(path, uid, gid) ==
+	    -1)
+		err(EX_OSERR, "listen %s: chown", path);
+	if (chmod(path, srv.listen_mode) == -1)
+		err(EX_OSERR, "listen %s: chmod", path);
 }
 
 /*
@@ -2124,9 +2221,10 @@ listen_open(void)
 		if (bind(fd, (struct sockaddr *)&ss, sl) == -1 ||
 		    listen(fd, SOMAXCONN) == -1)
 			err(EX_OSERR, "listen %s", srv.listen[k]);
-		/* The console's user connects to a local one too. */
+		/* A local one the console's user's and its group's alone
+		 * (listen_group, listen_mode): the others reach it not. */
 		if (fam == AF_UNIX)
-			(void)chmod(addr, 0666);
+			unix_own(addr);
 		(void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 		srv.lfd[k] = fd;
 	}
@@ -2208,7 +2306,7 @@ vhost_new(int k)
 			info.http2_settings[H2SET_HEADER_TABLE_SIZE] = 65536;
 			info.http2_settings[H2SET_ENABLE_PUSH] = 0;
 			info.http2_settings[H2SET_MAX_CONCURRENT_STREAMS] =
-			    H2_STREAMS;
+			    (uint32_t)srv.h2_streams;
 			info.http2_settings[H2SET_INITIAL_WINDOW_SIZE] = 0;
 			info.http2_settings[H2SET_MAX_FRAME_SIZE] = 16384;
 			info.ssl_cipher_list = "ECDHE+AESGCM:ECDHE+CHACHA20";

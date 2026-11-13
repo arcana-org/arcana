@@ -400,22 +400,23 @@ Written and tested with stand-ins only:
 
 - The SD-WAN document and the L3NM are one for the whole fleet, so a
   user of a tenant is refused them (and the virtual networks made of
-  them) rather than shown a part.  Tenant-scoped services need a
+  them) rather than shown a part, and so is a token its maker's
+  (console 0.434.0).  Tenant-scoped services need a
   design: a document a tenant (its SWVCs, end points and edges among
   its hosts), the shared underlays and the provider's edges between
   them, and who applies what of whose.
-- `login/begin` lists every key's id to anyone who asks (non-discoverable
-  keys need the list); a sign-in by user name first, or discoverable
-  keys alone, would give out none.
+- The prefix lists and the threat feeds' definitions are every
+  tenant's alike: refused to a tenant's user and to their tokens
+  (cnodes.c's T_ALL, console 0.434.0, the tenants plan's T-0.1) until
+  they are a tenant's own.
 - A follower's `cluster_save()` returns 0 once the leader committed,
   whether or not this node applied it in time (`wait_applied()` timed
   out): a read here right after may still see the old copy.
 - Each node of a cluster writes a setup token of its own while the
   console is not set up; one, the leader's, would be enough.
-- The unix listener is 0666 (the console's own user connects to it):
-  its clients still need a session or a token, but all count as one
-  address to the sign-in throttle, and the threat feeds learn no
-  user's address from them (`feeds_signin()`).
+- A unix listener's client is known by its uid (console 0.434.0); the
+  threat feeds protect addresses, so a local user signing in is not one
+  of theirs (`feeds_signin()` keeps IP addresses alone).
 - Directory users are fleet-wide (console 0.432.0): a user the
   directory keeps is of no tenant, and a role whose directory group
   has them, with "*" for its hosts, gives them every tenant's hosts.
@@ -426,19 +427,25 @@ Written and tested with stand-ins only:
   tenants' groups do, said why), and the page's Roles form a field
   for it.  Until then an owner gives directory groups roles that name
   their hosts, not "*".
-- Setting one's own password needs no current password and no fresh
-  key: a session left open sets it.  It is to ask for the current
-  password, or, from a key's session, a key assertion made for it (a
-  challenge of its own, as login/begin's); the page's password form
-  then asks for one.
 - The Telegram alerts' sender host (Settings, `telegram_via`) is
   asked as the console for every message, a workflow's notify step's
   too: a workflow's error names that host to an operator who may not
   read it.
 - Adding a host whose URI is another's is refused saying so, the host
   unnamed: that a URI is registered is told to whoever may add one.
-- bcrypt runs on the loop still when a password is set (setup, Settings,
-  AAA): the sign-in, which anyone may ask, runs in a task.
 - Adding a host resolves its name on the loop to compare it with the
-  agents registered (`same_agent()`); a name that takes the resolver
-  long holds the loop that long.
+  agents registered (`same_agent()`, also an enrolment's `servers_add()`
+  and a move); a name that takes the resolver long holds the loop that
+  long.  To do: the hosts' change resolved in a task before it is
+  judged on the loop.  The other blocking calls left on the loop:
+  store.c's and audit.c's fsync(2) of each document and audit record
+  written (bounded by the disk; a slow pool holds the loop), pki.c's
+  certificates written on the loop (the CA's actions), and the
+  directory's settings test where it runs on the loop (ldap.c dial()).
+- The console's confirmation of a safe job a workflow polls
+  (`hosts_job()`) is said as the job's own user since 0.434.0; no test
+  drives a workflow's safe job by a token yet.
+- HTTP/2 streams (`h2_streams`, default 100): nghttp2's h2load, which
+  sends a first flight whole, has the connection ended by libwebsockets
+  from 48 streams at once (its 50 queued window updates); browsers and
+  curl pace theirs and 100 pass.

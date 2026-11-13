@@ -578,6 +578,19 @@ auth_init(void)
 		put(creds, "user_id", ucl_object_fromstring(s));
 		free(s);
 	}
+	/* What the sign-in's decoys are made with: kept, so that a name
+	 * gets the same ones after a restart, on every node. */
+	if (ucl_object_lookup(creds, "decoy_key") == NULL) {
+		uint8_t	dk[32];
+
+		arc4random_buf(dk, sizeof(dk));
+		s = b64url(dk, sizeof(dk));
+		put(creds, "decoy_key", ucl_object_fromstring(s));
+		free(s);
+		explicit_bzero(dk, sizeof(dk));
+		if (cred_list() != NULL && ucl_array_size(cred_list()) > 0)
+			(void)creds_save();
+	}
 	if (cred_list() == NULL)
 		put(creds, "credentials", ucl_object_typed_new(UCL_ARRAY));
 	sessions_load();
@@ -1624,9 +1637,63 @@ out:
 }
 
 /*
- * Options for navigator.credentials.get().  {"discoverable": true} asks
- * for a passkey: no credential list, the authenticator picks one of
- * its own for this RP; the id it answers with is looked up as usual.
+ * Ids that stand for keys of a user name the console has no key of, as
+ * many as hashing the name says (one or two), each as long as the first
+ * key's is: made by HMAC of the name with a secret the console keeps
+ * (credentials.json's decoy_key), so that each name always gets the
+ * same and a reply tells not whether the user is there.  Into allow.
+ */
+static void
+decoys(const char *name, ucl_object_t *allow)
+{
+	const ucl_object_t	*c;
+	ucl_object_t		*e;
+	uint8_t			*key, *first, mac[64], id[64];
+	char			*s, text[USER_NAME_LEN + 8];
+	size_t			 klen, idlen, n, i;
+	unsigned int		 mlen;
+
+	if ((key = unb64url(ucl_str(creds, "decoy_key"), &klen)) == NULL)
+		return;
+	idlen = 32;
+	c = ucl_array_head(cred_list());
+	if (c != NULL && (first = unb64url(ucl_str(c, "id"), &n)) != NULL) {
+		if (n >= 16 && n <= sizeof(id))
+			idlen = n;
+		free(first);
+	}
+	snprintf(text, sizeof(text), "n/%s", name);
+	HMAC(EVP_sha256(), key, (int)klen, (const uint8_t *)text,
+	    strlen(text), mac, &mlen);
+	n = 1 + (mac[0] & 1);
+	for (i = 0; i < n; i++) {
+		/* Each id of its own: the name, its index, as long as
+		 * wanted, two MACs. */
+		snprintf(text, sizeof(text), "%zu/%s", i, name);
+		HMAC(EVP_sha256(), key, (int)klen, (const uint8_t *)text,
+		    strlen(text), mac, &mlen);
+		HMAC(EVP_sha256(), key, (int)klen, mac, 32, mac + 32, &mlen);
+		memcpy(id, mac, idlen);
+		if ((s = b64url(id, idlen)) == NULL)
+			continue;
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put(e, "type", ucl_object_fromstring("public-key"));
+		put(e, "id", ucl_object_fromstring(s));
+		ucl_array_append(allow, e);
+		free(s);
+	}
+	explicit_bzero(key, klen);
+	free(key);
+}
+
+/*
+ * Options for navigator.credentials.get(): no credential list, so that
+ * no one learns who has which key, the authenticator offering the
+ * passkeys it holds for this RP (registration asks for one: residentKey
+ * preferred); the id it answers with is looked up as usual.  {"user"}
+ * names whose keys, for a key that is not discoverable: that user's,
+ * or, for a name with none, decoys() as many; the sign-in throttle's
+ * (ldap.c), a try of the address's.
  */
 int
 api_login_begin(struct http_request *req)
@@ -1634,8 +1701,8 @@ api_login_begin(struct http_request *req)
 	const ucl_object_t	*c, *t;
 	ucl_object_t		*o, *pk, *allow, *e, *body;
 	ucl_object_iter_t	 it;
-	char			 chal[CHAL_MAX];
-	bool			 discoverable;
+	char			 chal[CHAL_MAX], name[USER_NAME_LEN], addr[64];
+	bool			 named;
 
 	if (ucl_array_size(cred_list()) == 0)
 		return (setup_done() ? reply_error(req, 404, "no_key", "no "
@@ -1643,16 +1710,35 @@ api_login_begin(struct http_request *req)
 		    reply_error(req, 409, "setup_required", "no security key "
 		    "registered yet"));
 	body = read_json(req);
-	discoverable = body != NULL && ucl_flag(body, "discoverable");
+	named = body != NULL && ucl_str(body, "user") != NULL && ucl_str(body,
+	    "user")[0] != '\0';
+	if (named && !name_copy(name, sizeof(name), ucl_str(body, "user"))) {
+		ucl_object_unref(body);
+		return (reply_error(req, 400, "login", "a user name is "
+		    __XSTRING(USER_NAME_MAX) " characters at most"));
+	}
 	ucl_object_unref(body);
+	if (named) {
+		(void)web_peer(req, addr, sizeof(addr));
+		if (signin_throttled(addr, name))
+			return (reply_error(req, 429, "login", "too many failed "
+			    "sign-ins: try again in a minute"));
+		/* A try of the address's: names asked one after another
+		 * wait, the user's own sign-ins by name are not held. */
+		signin_failed(addr, NULL);
+	}
 	chal_make(NULL, 0, chal, sizeof(chal));
 	pk = ucl_object_typed_new(UCL_OBJECT);
 	put(pk, "challenge", ucl_object_fromstring(chal));
 	put(pk, "rpId", ucl_object_fromstring(cfg.rp_id));
 	allow = ucl_object_typed_new(UCL_ARRAY);
+	if (named && cred_count_of(name) == 0)
+		decoys(name, allow);
 	it = NULL;
-	while (!discoverable &&
+	while (named && cred_count_of(name) > 0 &&
 	    (c = ucl_object_iterate(cred_list(), &it, true)) != NULL) {
+		if (strcmp(cred_user(c), name) != 0)
+			continue;
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put(e, "type", ucl_object_fromstring("public-key"));
 		put(e, "id", ucl_object_fromstring(ucl_str(c, "id")));
@@ -1999,22 +2085,152 @@ api_login_password(struct http_request *req)
 }
 
 /*
+ * A password hashed in a task, and a current one checked there: bcrypt
+ * takes a quarter second, the loop none of it.  What the loop decided
+ * before (the setup token, whose password, the proof by a key) is in
+ * it; what is kept once it is done the loop's again.
+ */
+struct pwset {
+	struct task	 task;		/* first */
+	char		 user[USER_NAME_LEN];
+	char		 addr[64];
+	char		*password;	/* wiped and freed once hashed */
+	char		*current;	/* NULL: not asked for */
+	bool		 setup;		/* api_setup_password's */
+	bool		 made;		/* setup: the user made for it */
+	char		 hash[128];
+	const char	*err;
+};
+
+static int
+pwset_run(struct task *t)
+{
+	struct pwset	*ps = (struct pwset *)t;
+
+	ps->err = NULL;
+	if (ps->current != NULL && !user_password_ok(ps->user, ps->current)) {
+		ps->err = "the current password is not right";
+		signin_failed(ps->addr, ps->user);
+	}
+	if (ps->err == NULL)
+		ps->err = user_password_hash(ps->password, ps->hash,
+		    sizeof(ps->hash));
+	if (ps->current != NULL) {
+		explicit_bzero(ps->current, strlen(ps->current));
+		free(ps->current);
+		ps->current = NULL;
+	}
+	explicit_bzero(ps->password, strlen(ps->password));
+	free(ps->password);
+	ps->password = NULL;
+	return (WEB_OK);
+}
+
+/* The request's task, a sign-in's or a password's, freed once done. */
+void
+api_pwset_free(struct http_request *req)
+{
+	struct pwset	*ps = req->hdlr_extra;
+
+	if (ps == NULL || !task_finished(&ps->task))
+		return;
+	task_destroy(&ps->task);
+	explicit_bzero(ps->hash, sizeof(ps->hash));
+	free(ps);
+	req->hdlr_extra = NULL;
+}
+
+static struct pwset *
+pwset_new(struct http_request *req, const char *user, const char *password,
+    const char *current)
+{
+	struct pwset	*ps;
+
+	ps = xcalloc(1, sizeof(*ps));
+	(void)name_copy(ps->user, sizeof(ps->user), user);
+	(void)web_peer(req, ps->addr, sizeof(ps->addr));
+	ps->password = xstrdup(password != NULL ? password : "");
+	ps->current = current != NULL ? xstrdup(current) : NULL;
+	return (ps);
+}
+
+static int
+pwset_start(struct http_request *req, struct pwset *ps)
+{
+
+	req->hdlr_extra = ps;
+	task_create(&ps->task, pwset_run);
+	task_bind_request(&ps->task, req);
+	task_run(&ps->task);
+	return (WEB_RETRY);
+}
+
+/* Still hashing: true, the request put to sleep. */
+static bool
+pwset_waiting(struct http_request *req, struct pwset *ps)
+{
+
+	if (task_state(&ps->task) != TASK_STATE_FINISHED) {
+		http_request_sleep(req);
+		return (true);
+	}
+	return (false);
+}
+
+static int
+setup_password_done(struct http_request *req, struct pwset *ps)
+{
+	struct session	*s;
+	const char	*e;
+	char		 who[96];
+
+	e = ps->err;
+	/* Another set it up meanwhile: the first one's. */
+	if (e == NULL && setup_done())
+		e = "this console is set up already: sign in";
+	if (e == NULL) {
+		ps->made = !user_exists(ps->user);
+		if ((e = user_owner_add(ps->user)) == NULL)
+			e = user_password_set(ps->user, ps->hash);
+	}
+	explicit_bzero(ps->hash, sizeof(ps->hash));
+	if (e != NULL) {
+		/* A user made for a password that was not kept goes. */
+		if (ps->made)
+			user_owner_undo(ps->user);
+		log_msg(LOG_NOTICE, "setup by password refused: %s", e);
+		return (reply_error(req, strstr(e, "set up already") != NULL ?
+		    409 : strstr(e, "written") != NULL || strstr(e, "crypt") !=
+		    NULL ? 500 : 400, "setup", "%s", e));
+	}
+	setup_token_init();
+	snprintf(who, sizeof(who), "%s (password)", ps->user);
+	s = session_start(req, who, NULL, "", ps->user);
+	s->pw = true;
+	session_put(s);
+	log_msg(LOG_NOTICE, "console set up by password: owner %s", ps->user);
+	return (status_reply_as(req, true, !cfg.password_full, BY_PASSWORD));
+}
+
+/*
  * POST {"setup_token", "user", "password"}: the console set up by a
  * password instead of a key, for a browser no key reaches (a remote
  * desktop's).  The setup token, as for the first key; the user the
  * built-in admin unless named, a new one made an owner; the password
- * kept as any user's (users.c).  The console is then set up: the token
- * is gone, and the session opened is the password's.
+ * kept as any user's (users.c), hashed in a task.  The console is then
+ * set up: the token is gone, and the session opened is the password's.
  */
 int
 api_setup_password(struct http_request *req)
 {
-	struct session	*s;
+	struct pwset	*ps;
 	ucl_object_t	*body;
 	const char	*token, *user, *password, *e;
-	char		 name[USER_NAME_LEN], who[96], addr[64];
-	bool		 made;
+	char		 name[USER_NAME_LEN], addr[64];
 
+	if ((ps = req->hdlr_extra) != NULL)
+		return (pwset_waiting(req, ps) ? WEB_RETRY :
+		    setup_password_done(req, ps));
 	name[0] = '\0';
 	if (req->method != HTTP_METHOD_POST)
 		return (reply_error(req, 405, "method", "POST"));
@@ -2031,7 +2247,6 @@ api_setup_password(struct http_request *req)
 	    '\0' ? ucl_str(body, "user") : ADMIN_USER;
 	password = ucl_str(body, "password");
 	e = NULL;
-	made = false;
 	(void)web_peer(req, addr, sizeof(addr));
 	/* Its own count, the sign-ins' not touched by it, nor it by
 	 * theirs. */
@@ -2040,95 +2255,268 @@ api_setup_password(struct http_request *req)
 	else if (!setup_token_ok(token)) {
 		setup_failed(addr);
 		e = "not the setup token";
-	} else if ((e = user_password_check(password)) == NULL) {
-		if (!name_copy(name, sizeof(name), user))
-			e = "a user name is 1 to 64 letters, digits and _ . @ -";
-		else {
-			made = !user_exists(name);
-			if ((e = user_owner_add(name)) == NULL)
-				e = user_password_set(name, password);
-		}
-	}
-	if (password != NULL)
-		explicit_bzero((char *)(uintptr_t)password, strlen(password));
-	ucl_object_unref(body);
+	} else if ((e = user_password_check(password)) == NULL &&
+	    !name_copy(name, sizeof(name), user))
+		e = "a user name is 1 to 64 letters, digits and _ . @ -";
 	if (e != NULL) {
-		/* A user made for a password that was not kept goes. */
-		if (made)
-			user_owner_undo(name);
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
+		ucl_object_unref(body);
 		log_msg(LOG_NOTICE, "setup by password refused: %s", e);
 		return (reply_error(req, strstr(e, "too many") != NULL ? 429 :
-		    strstr(e, "setup token") != NULL ? 403 : strstr(e,
-		    "written") != NULL || strstr(e, "crypt") != NULL ? 500 :
-		    400, "setup", "%s%s", e, strstr(e, "setup token") != NULL ?
-		    ": it is in the console's data directory, setup-token" : ""));
+		    strstr(e, "setup token") != NULL ? 403 : 400, "setup",
+		    "%s%s", e, strstr(e, "setup token") != NULL ? ": it is in "
+		    "the console's data directory, setup-token" : ""));
 	}
-	setup_token_init();
-	snprintf(who, sizeof(who), "%s (password)", name);
-	s = session_start(req, who, NULL, "", name);
-	s->pw = true;
-	session_put(s);
-	log_msg(LOG_NOTICE, "console set up by password: owner %s", name);
-	return (status_reply_as(req, true, !cfg.password_full, BY_PASSWORD));
+	ps = pwset_new(req, name, password, NULL);
+	ps->setup = true;
+	explicit_bzero((char *)(uintptr_t)password, strlen(password));
+	ucl_object_unref(body);
+	return (pwset_start(req, ps));
 }
 
 /*
- * POST {"user", "password"}: a password of the console's own set for
- * the user, or taken away when it is "" or null.  The user is the
- * session's own when not named; another's is the owner's to set.  Not
- * from a session opened by a token or a directory's password: guard()
- * refuses those (/api/auth is not theirs), and one opened by the
- * console's own password when password_full = false.  The user's
- * sessions opened by the password before end.
+ * What a password change's challenge carries (api_auth_password_begin):
+ * PW_CHAL and whose password, so that it proves that user's key alone,
+ * for that alone (a sign-in's carries nothing, a registration's more).
+ */
+#define	PW_CHAL		4
+#define	PW_CARRY	(1 + 64)
+
+/*
+ * POST {}: options for navigator.credentials.get() that prove the
+ * session's user changes their own password: a challenge for that, the
+ * user's keys.
+ */
+int
+api_auth_password_begin(struct http_request *req)
+{
+	const ucl_object_t	*c, *t;
+	ucl_object_t		*o, *pk, *allow, *e;
+	ucl_object_iter_t	 it;
+	const char		*me;
+	uint8_t			 what[PW_CARRY];
+	char			 chal[CHAL_MAX];
+
+	if (req->method != HTTP_METHOD_POST)
+		return (reply_error(req, 405, "method", "POST"));
+	if (!guard(req, true))
+		return (WEB_OK);
+	if ((me = session_user(req)) == NULL || cred_count_of(me) == 0)
+		return (reply_error(req, 404, "no_key", "no key of yours to "
+		    "confirm with: give your current password"));
+	memset(what, 0, sizeof(what));
+	what[0] = PW_CHAL;
+	memcpy(what + 1, me, strnlen(me, 64));
+	chal_make(what, sizeof(what), chal, sizeof(chal));
+	pk = ucl_object_typed_new(UCL_OBJECT);
+	put(pk, "challenge", ucl_object_fromstring(chal));
+	put(pk, "rpId", ucl_object_fromstring(cfg.rp_id));
+	allow = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((c = ucl_object_iterate(cred_list(), &it, true)) != NULL) {
+		if (strcmp(cred_user(c), me) != 0)
+			continue;
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put(e, "type", ucl_object_fromstring("public-key"));
+		put(e, "id", ucl_object_fromstring(ucl_str(c, "id")));
+		if ((t = ucl_object_lookup(c, "transports")) != NULL &&
+		    ucl_array_size(t) > 0)
+			put(e, "transports", ucl_object_copy(t));
+		ucl_array_append(allow, e);
+	}
+	put(pk, "allowCredentials", allow);
+	put(pk, "userVerification", ucl_object_fromstring("preferred"));
+	put(pk, "timeout", ucl_object_fromint(CHALLENGE_TTL * 1000));
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "publicKey", pk);
+	return (reply_json(req, 200, o));
+}
+
+/*
+ * Is a, {id, clientDataJSON, authenticatorData, signature}, an assertion
+ * of one of user's keys over a challenge api_auth_password_begin() made
+ * for user, not used before?  NULL, the challenge then used and the
+ * key's counter kept, or what is wrong.
+ */
+static const char *
+pw_assertion(const ucl_object_t *a, const char *user)
+{
+	const ucl_object_t	*c;
+	uint8_t			*cd, *ad, *sig, *spki, *msg, flags;
+	uint8_t			 cdhash[32], what[PW_CARRY];
+	const char		*id, *err;
+	char			 chal[CHAL_MAX], whose[65];
+	size_t			 cdlen, adlen, siglen, spkilen;
+	uint32_t		 count, stored;
+	time_t			 exp;
+
+	cd = ad = sig = spki = msg = NULL;
+	err = NULL;
+	if ((id = ucl_str(a, "id")) == NULL || (c = cred_find(id)) == NULL ||
+	    strcmp(cred_user(c), user) != 0)
+		return ("not a key of yours");
+	if ((cd = unb64url(ucl_str(a, "clientDataJSON"), &cdlen)) == NULL ||
+	    (ad = unb64url(ucl_str(a, "authenticatorData"), &adlen)) ==
+	    NULL ||
+	    (sig = unb64url(ucl_str(a, "signature"), &siglen)) == NULL ||
+	    (spki = unb64url(ucl_str(c, "public_key"), &spkilen)) == NULL) {
+		err = "missing or malformed fields";
+		goto out;
+	}
+	if ((err = check_client_data(cd, cdlen, "webauthn.get", chal,
+	    sizeof(chal))) != NULL ||
+	    (err = check_auth_data(ad, adlen, &flags, &count)) != NULL)
+		goto out;
+	memset(whose, 0, sizeof(whose));
+	if (!chal_check(chal, what, sizeof(what), &exp) || what[0] !=
+	    PW_CHAL || (memcpy(whose, what + 1, 64), strcmp(whose, user)) !=
+	    0) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
+	sha256(cd, cdlen, cdhash);
+	msg = xcalloc(1, adlen + sizeof(cdhash));
+	memcpy(msg, ad, adlen);
+	memcpy(msg + adlen, cdhash, sizeof(cdhash));
+	if (!verify_sig((int)ucl_object_toint(ucl_object_lookup(c, "alg")),
+	    spki, spkilen, msg, adlen + sizeof(cdhash), sig, siglen)) {
+		err = "bad signature";
+		goto out;
+	}
+	stored = (uint32_t)ucl_object_toint(ucl_object_lookup(c,
+	    "sign_count"));
+	if ((count != 0 || stored != 0) && count <= stored) {
+		err = "signature counter went backwards";
+		goto out;
+	}
+	if (!chal_use(chal, exp)) {
+		err = "unknown or expired challenge";
+		goto out;
+	}
+	ucl_object_replace_key((ucl_object_t *)(uintptr_t)c,
+	    ucl_object_fromint(count), "sign_count", 0, true);
+	(void)creds_save();
+out:
+	free(cd);
+	free(ad);
+	free(sig);
+	free(spki);
+	free(msg);
+	return (err);
+}
+
+static int
+auth_password_done(struct http_request *req, struct pwset *ps)
+{
+	ucl_object_t	*o;
+	const char	*e;
+	bool		 set;
+
+	set = ps->hash[0] != '\0';
+	if ((e = ps->err) == NULL)
+		e = user_password_set(ps->user, ps->hash);
+	explicit_bzero(ps->hash, sizeof(ps->hash));
+	if (e != NULL)
+		return (reply_error(req, strcmp(e, "no such user") == 0 ? 404 :
+		    strstr(e, "current password") != NULL ? 403 : strstr(e,
+		    "written") != NULL || strstr(e, "crypt") != NULL ? 500 :
+		    400, strstr(e, "current password") != NULL ? "proof" :
+		    "invalid", "%s", e));
+	sessions_end_password(ps->user);
+	log_msg(LOG_NOTICE, "password of %s %s by %s", ps->user, set ? "set" :
+	    "taken away", session_who(req) != NULL ? session_who(req) : "?");
+	o = ucl_object_typed_new(UCL_OBJECT);
+	put(o, "ok", ucl_object_frombool(true));
+	put(o, "user", ucl_object_fromstring(ps->user));
+	put(o, "password", ucl_object_frombool(set));
+	return (reply_json(req, 200, o));
+}
+
+/*
+ * POST {"user", "password", "current" | "assertion"}: a password of the
+ * console's own set for the user, or taken away when it is "" or null.
+ * The user is the session's own when not named, and then proved again:
+ * by the current password ("current"), or, for a user with none or
+ * signed in by a key, by a key of theirs over a challenge of
+ * api_auth_password_begin()'s ("assertion"); a session left open is not
+ * enough.  Another's is the owner's to set, as before.  Not from a
+ * session opened by a token or a directory's password: guard() refuses
+ * those (/api/auth is not theirs), and one opened by the console's own
+ * password when password_full = false.  Hashed (and the current one
+ * checked) in a task.  The user's sessions opened by the password
+ * before end.
  */
 int
 api_auth_password(struct http_request *req)
 {
-	ucl_object_t	*body, *o;
-	const char	*me, *user, *password, *e;
-	char		 name[USER_NAME_LEN];
-	bool		 set;
+	struct pwset		*ps;
+	ucl_object_t		*body;
+	const ucl_object_t	*a;
+	const char		*me, *user, *password, *current, *e;
+	char			 name[USER_NAME_LEN], addr[64];
 
+	if ((ps = req->hdlr_extra) != NULL)
+		return (pwset_waiting(req, ps) ? WEB_RETRY :
+		    auth_password_done(req, ps));
 	if (req->method != HTTP_METHOD_POST)
 		return (reply_error(req, 405, "method", "POST"));
 	if (!guard(req, true))
 		return (WEB_OK);
 	if ((body = read_json(req)) == NULL)
 		return (reply_error(req, 400, "bad_request", "{\"user\", "
-		    "\"password\"}"));
+		    "\"password\", \"current\"}"));
 	me = session_user(req);
 	user = ucl_str(body, "user") != NULL && ucl_str(body, "user")[0] !=
 	    '\0' ? ucl_str(body, "user") : me;
 	password = ucl_str(body, "password");
-	if (user == NULL || !user_name_ok(user)) {
-		ucl_object_unref(body);
-		return (reply_error(req, 400, "invalid", "whose password: "
-		    "\"user\""));
+	current = ucl_str(body, "current");
+	e = NULL;
+	if (user == NULL || !user_name_ok(user))
+		e = "whose password: \"user\"";
+	else if ((me == NULL || strcmp(me, user) != 0) && user_console(me) !=
+	    CROLE_OWNER)
+		e = "another user's password is the owner's to set";
+	else if (me != NULL && strcmp(me, user) == 0 && current == NULL) {
+		/* One's own: the key proves it, said now. */
+		if ((a = ucl_object_lookup(body, "assertion")) == NULL ||
+		    ucl_object_type(a) != UCL_OBJECT)
+			e = "your current password (\"current\"), or your key's "
+			    "assertion (\"assertion\"), please";
+		else if ((e = pw_assertion(a, me)) != NULL)
+			log_msg(LOG_NOTICE, "password change of %s refused: %s",
+			    me, e);
+	} else if (me != NULL && strcmp(me, user) == 0) {
+		(void)web_peer(req, addr, sizeof(addr));
+		if (!user_has_password(me))
+			e = "you have no password yet: confirm with your key";
+		else if (signin_throttled(addr, me))
+			e = "too many failed sign-ins: try again in a minute";
 	}
-	if ((me == NULL || strcmp(me, user) != 0) && user_console(me) !=
-	    CROLE_OWNER) {
+	if (e != NULL) {
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
+		if (current != NULL)
+			explicit_bzero((char *)(uintptr_t)current,
+			    strlen(current));
 		ucl_object_unref(body);
-		return (reply_error(req, 403, "role", "another user's password "
-		    "is the owner's to set"));
+		return (reply_error(req, strstr(e, "owner's") != NULL ? 403 :
+		    strstr(e, "too many") != NULL ? 429 : strstr(e, "user\"") !=
+		    NULL ? 400 : 403, strstr(e, "owner's") != NULL ? "role" :
+		    strstr(e, "user\"") != NULL ? "invalid" : "proof", "%s", e));
 	}
 	snprintf(name, sizeof(name), "%s", user);
-	set = password != NULL && password[0] != '\0';
-	e = user_password_set(name, password);
+	/* The current password checked only for one's own, given. */
+	ps = pwset_new(req, name, password, me != NULL && strcmp(me, name) ==
+	    0 ? current : NULL);
 	if (password != NULL)
 		explicit_bzero((char *)(uintptr_t)password, strlen(password));
+	if (current != NULL)
+		explicit_bzero((char *)(uintptr_t)current, strlen(current));
 	ucl_object_unref(body);
-	if (e != NULL)
-		return (reply_error(req, strcmp(e, "no such user") == 0 ? 404 :
-		    strstr(e, "written") != NULL || strstr(e, "crypt") != NULL ?
-		    500 : 400, "invalid", "%s", e));
-	sessions_end_password(name);
-	log_msg(LOG_NOTICE, "password of %s %s by %s", name, set ? "set" :
-	    "taken away", session_who(req) != NULL ? session_who(req) : "?");
-	o = ucl_object_typed_new(UCL_OBJECT);
-	put(o, "ok", ucl_object_frombool(true));
-	put(o, "user", ucl_object_fromstring(name));
-	put(o, "password", ucl_object_frombool(set));
-	return (reply_json(req, 200, o));
+	return (pwset_start(req, ps));
 }
 
 int

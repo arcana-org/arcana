@@ -835,7 +835,7 @@ void		 address_change(const char *, const char *, bool, bool, bool,
 void		 check_health(void);
 void		 check_update(void);
 void		 auth_status(void);
-void		 login(bool);
+void		 login(bool, const char *);
 void		 login_token(const char *);
 void		 login_password(const char *, const char *);
 const char	*signed_in_how(void);

@@ -12,7 +12,11 @@
  * with a one-time token made here by the logged-in user: arcana-enrol(8)
  * on the host sends a certificate request with the token, gets back a
  * certificate for its name signed by the CA, and the host is added to
- * the server list.  All EC P-256, signed with SHA-256.  The console's
+ * the server list.  The token is "arce1_" and base64url of 32 random
+ * bytes and the SHA-256 of each root the host is to trust (ETOKEN_PINS
+ * at most): one pasted text both lets the host in and pins the CA it
+ * gets back; the console keeps the random bytes' SHA-256 alone.  All EC
+ * P-256, signed with SHA-256.  The console's
  * client certificate says urn:arcana:role:console, which the agents ask
  * of it; one from before the roles is made again at start where the
  * console holds the CA's key (role_check()).
@@ -52,8 +56,11 @@
 #define	DEFAULT_PORT	4310
 #define	CERTS_MAX	32
 
+#define	ETOKEN_PREFIX	"arce1_"
+#define	ETOKEN_PINS	4
 struct etoken {
-	char		value[65];	/* 32 random bytes in hex */
+	uint8_t		hash[32];	/* SHA-256 of its 32 random bytes */
+	bool		used;		/* a slot in use */
 	char		name[65];	/* the server's name in the console */
 	char		host[256];	/* its host name or address */
 	int		port;
@@ -699,31 +706,27 @@ pki_sign_host(const char *csrpem, const char *host, char *err, size_t errlen)
 }
 
 /*
- * The roots of the console's CA file as arcana-enrol(8) pins them: " -f
- * <SHA-256>" each, in buf; "" when there are none.
+ * The roots of the console's CA file as arcana-enrol(8) pins them: the
+ * SHA-256 of each, max of them, into pins; how many.
  */
-static const char *
-anchors_pins(char *buf, size_t len)
+static int
+anchors_pins(uint8_t (*pins)[32], int max)
 {
 	X509		*all[CERTS_MAX];
 	unsigned char	 md[EVP_MAX_MD_SIZE];
 	unsigned int	 mdlen;
-	char		 hex[2 * 32 + 1];
-	int		 n, i;
+	int		 n, i, k;
 
-	buf[0] = '\0';
+	k = 0;
 	n = certs_read(cfg.tls_ca, all, CERTS_MAX);
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < n && k < max; i++) {
 		if (!self_signed(all[i]) || X509_digest(all[i], EVP_sha256(), md,
 		    &mdlen) != 1 || mdlen != 32)
 			continue;
-		for (unsigned int k = 0; k < mdlen; k++)
-			snprintf(hex + 2 * k, 3, "%02x", md[k]);
-		strlcat(buf, " -f ", len);
-		strlcat(buf, hex, len);
+		memcpy(pins[k++], md, 32);
 	}
 	certs_free(all, n);
-	return (buf);
+	return (k);
 }
 
 /* The roots of a CA file: what a host is to trust; PEM, to free. */
@@ -763,22 +766,38 @@ valid_host(const char *s)
 	return (true);
 }
 
+/* The token of value (ETOKEN_PREFIX's, its pins whatever they say), in
+ * time; NULL else. */
 static struct etoken *
 token_find(const char *value)
 {
-	time_t	now;
-	int	i;
+	uint8_t		*raw, h[32];
+	unsigned int	 hl;
+	size_t		 len;
+	time_t		 now;
+	int		 i;
 
+	if (strncmp(value, ETOKEN_PREFIX, sizeof(ETOKEN_PREFIX) - 1) != 0 ||
+	    !b64url_decode(value + sizeof(ETOKEN_PREFIX) - 1, &raw, &len,
+	    B64_RAW))
+		return (NULL);
+	if (len < 32 || (len - 32) % 32 != 0 || len > 32 * (1 +
+	    ETOKEN_PINS)) {
+		free(raw);
+		return (NULL);
+	}
+	EVP_Digest(raw, 32, h, &hl, EVP_sha256(), NULL);
+	explicit_bzero(raw, len);
+	free(raw);
 	now = time(NULL);
 	for (i = 0; i < MAX_TOKENS; i++) {
-		if (tokens[i].value[0] == '\0')
+		if (!tokens[i].used)
 			continue;
 		if (tokens[i].expires < now) {
 			memset(&tokens[i], 0, sizeof(tokens[i]));
 			continue;
 		}
-		if (strlen(value) == 64 && timingsafe_bcmp(tokens[i].value,
-		    value, 64) == 0)
+		if (timingsafe_bcmp(tokens[i].hash, h, sizeof(h)) == 0)
 			return (&tokens[i]);
 	}
 	return (NULL);
@@ -796,9 +815,10 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 {
 	struct etoken	*t;
 	ucl_object_t	*o;
-	uint8_t		 raw[32];
-	char		 cmd[1024], portstr[16], pins[512];
-	int		 i;
+	uint8_t		 raw[32 * (1 + ETOKEN_PINS)];
+	char		 cmd[1024], portstr[16], *b, *value;
+	unsigned int	 hl;
+	int		 i, npins;
 
 	if (cfg.tls_ca_key == NULL) {
 		snprintf(why, len, "the console has no CA key (tls.ca_key in "
@@ -814,8 +834,7 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	/* A free slot, else the one that expires first. */
 	t = &tokens[0];
 	for (i = 0; i < MAX_TOKENS; i++) {
-		if (tokens[i].value[0] == '\0' || tokens[i].expires <
-		    time(NULL)) {
+		if (!tokens[i].used || tokens[i].expires < time(NULL)) {
 			t = &tokens[i];
 			break;
 		}
@@ -823,10 +842,27 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 			t = &tokens[i];
 	}
 	memset(t, 0, sizeof(*t));
-	arc4random_buf(raw, sizeof(raw));
-	for (i = 0; i < 32; i++)
-		snprintf(t->value + i * 2, 3, "%02x", raw[i]);
+	/* Its secret, the roots it pins after. */
+	arc4random_buf(raw, 32);
+	npins = anchors_pins((uint8_t (*)[32])(raw + 32), ETOKEN_PINS);
+	EVP_Digest(raw, 32, t->hash, &hl, EVP_sha256(), NULL);
+	if (!b64url_encode(raw, 32 * (size_t)(1 + npins), &b, B64_RAW)) {
+		explicit_bzero(raw, sizeof(raw));
+		memset(t, 0, sizeof(*t));
+		snprintf(why, len, "out of memory");
+		return (500);
+	}
 	explicit_bzero(raw, sizeof(raw));
+	if (asprintf(&value, ETOKEN_PREFIX "%s", b) == -1)
+		value = NULL;
+	explicit_bzero(b, strlen(b));
+	free(b);
+	if (value == NULL) {
+		memset(t, 0, sizeof(*t));
+		snprintf(why, len, "out of memory");
+		return (500);
+	}
+	t->used = true;
 	strlcpy(t->name, name, sizeof(t->name));
 	strlcpy(t->host, host, sizeof(t->host));
 	t->port = (int)port;
@@ -836,14 +872,15 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	    t->name);
 
 	/* Options first: getopt(3) stops at the first argument.  The roots
-	 * the host is to trust pinned by their SHA-256 (-f), each. */
-	snprintf(cmd, sizeof(cmd), "arcana-enrol -s%s%s%s %s %s",
+	 * the host is to trust are in the token. */
+	snprintf(cmd, sizeof(cmd), "arcana-enrol -s%s%s %s %s",
 	    port != DEFAULT_PORT ? " -p " : "", port != DEFAULT_PORT ?
-	    portstr : "", anchors_pins(pins, sizeof(pins)), cfg.origin,
-	    t->value);
+	    portstr : "", cfg.origin, value);
 	o = ucl_object_typed_new(UCL_OBJECT);
-	ucl_object_insert_key(o, ucl_object_fromstring(t->value), "token", 0,
+	ucl_object_insert_key(o, ucl_object_fromstring(value), "token", 0,
 	    false);
+	explicit_bzero(value, strlen(value));
+	free(value);
 	ucl_object_insert_key(o, ucl_object_fromstring(t->host), "host", 0,
 	    false);
 	ucl_object_insert_key(o, ucl_object_fromstring(t->name), "name", 0,

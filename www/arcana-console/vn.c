@@ -690,10 +690,10 @@ vn_into(struct http_request *req, ucl_object_t *top)
 	ucl_object_t		*y, *view;
 	const ucl_object_t	*v;
 	ucl_object_iter_t	 it = NULL;
-	const char		*u;
+	char			 why[300];
 
-	if ((u = session_user(req)) != NULL && !user_may_path(u,
-	    VN_PREFIX VN_VN, false))
+	if (req_may_path(req, VN_PREFIX VN_VN, false, NULL, why,
+	    sizeof(why)) != 0)
 		return;
 	y = l3nm_kept();
 	view = vn_view(req, y);

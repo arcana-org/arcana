@@ -36,6 +36,14 @@
 	    "not." }, \
 }
 
+/*
+ * Who the console says an API token that reads is (its hosts.c): a name
+ * no user of the console has, in no group, whom an agent holds to a
+ * viewer's reads whatever its rules say (clearance()); the console's
+ * nacm-sync takes it out of every group.
+ */
+#define	NACM_TOKEN_READ	"token-read"
+
 struct op_rule {
 	const char	*name, *module, *path;
 	bool		 exec;

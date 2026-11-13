@@ -1530,8 +1530,10 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	for (i = 0; i < g->user_name.n; i++) {
 		const char	*u = g->user_name.v[i];
 
-		if (strcmp(u, "admin") != 0 && strcmp(u, "console") != 0 &&
-		    named_in(u, users, nusers) && !named_in(u, owners, nowners)) {
+		/* A read token's name is in no group: a viewer's. */
+		if (strcmp(u, NACM_TOKEN_READ) == 0 || (strcmp(u, "admin") != 0 &&
+		    strcmp(u, "console") != 0 && named_in(u, users, nusers) &&
+		    !named_in(u, owners, nowners))) {
 			changed = true;
 			continue;
 		}
@@ -1552,7 +1554,8 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	for (i = 0; og != NULL && i < og->user_name.n; i++) {
 		const char	*u = og->user_name.v[i];
 
-		if (named_in(u, users, nusers) && !named_in(u, ops, nops)) {
+		if (strcmp(u, NACM_TOKEN_READ) == 0 || (named_in(u, users,
+		    nusers) && !named_in(u, ops, nops))) {
 			changed = true;
 			continue;
 		}

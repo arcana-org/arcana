@@ -231,6 +231,12 @@ check-wire: .PHONY
 check-nacm: .PHONY
 	@awk -f ${.CURDIR}/share/arcana/nacm.awk \
 	    ${.CURDIR}/share/arcana/nacm-allow ${.CURDIR}/share/yang/arcana-*.yang
+# Who may touch the console's own nodes: every top-level node and action
+# of arcana-console has a row in www/arcana-console/cnodes.c's table.
+check-cnodes: .PHONY
+	@awk -f ${.CURDIR}/share/arcana/cnodes.awk \
+	    ${.CURDIR}/www/arcana-console/cnodes.c \
+	    ${.CURDIR}/share/yang/arcana-console@*.yang
 # The port's submodule tuples at the tree's pins (share/mk/check-port.sh).
 check-port: .PHONY
 	@sh ${.CURDIR}/share/mk/check-port.sh ${.CURDIR}
@@ -246,8 +252,8 @@ check: .PHONY
 .if ${CBLINK_SUBMODULE} == "yes"
 	@${MAKE} -C ${.CURDIR}/www/arcana-ui check-yang
 .endif
-	@${MAKE} -C ${.CURDIR} check-wire check-nacm check-html check-port \
-	    kyuafile
+	@${MAKE} -C ${.CURDIR} check-wire check-nacm check-cnodes check-html \
+	    check-port kyuafile
 	@db=${.OBJDIR}/check.db; rm -f "$$db"; set -o pipefail; \
 	cd ${.OBJDIR} && env ${_KYUA_ENV} kyua -v parallelism=${CHECK_PARALLEL} test \
 	    --results-file="$$db" -k Kyuafile 2>&1 | ${_KYUA_OUT} || \

@@ -39,6 +39,7 @@
 
 static int	wd_port;
 static char	wd_sid[128];
+static char	wd_auth[128];	/* the virtual security key's id */
 
 /* One WebDriver command; returns its "value", which the caller unrefs. */
 static ucl_object_t *
@@ -405,6 +406,9 @@ browser_start(const atf_tc_t *tc)
 	    "\"ctap2\",\"transport\":\"usb\",\"hasResidentKey\":false,"
 	    "\"hasUserVerification\":true,\"isUserConsenting\":true,"
 	    "\"isUserVerified\":true}");
+	wd_auth[0] = '\0';
+	if (v != NULL && ucl_object_type(v) == UCL_STRING)
+		snprintf(wd_auth, sizeof(wd_auth), "%s", ucl_object_tostring(v));
 	if (v != NULL)
 		ucl_object_unref(v);
 }
@@ -812,6 +816,29 @@ part_shell(void)
 	    "'admin') && tr.textContent.includes('password'))", 15);
 	ATF_CHECK(system("grep -q '\"password\": *\"\\$2b\\$' "
 	    "data/users.json") == 0);
+	/* That one proved by the key (no current password yet); now by the
+	 * current one: a wrong one refused, the right one taken, and the
+	 * sign-in below by the new one. */
+	run("document.querySelector('header .acct-btn').click()");
+	wait_js("document.querySelector('.acct-menu.open button[data-act="
+	    "password]')", 5);
+	run("document.querySelector('.acct-menu.open button[data-act="
+	    "password]').click()");
+	wait_js("document.querySelector('.modal form[data-form=password-set] "
+	    "input[name=current]')", 5);
+	run("const f = document.querySelector('form[data-form=password-set]');"
+	    " f.current.value = 'not the password at all'; f.password.value = "
+	    "'a longer lab password'; f.again.value = 'a longer lab password'; "
+	    "f.requestSubmit();");
+	wait_js("document.querySelector('.modal .err')?.textContent.includes("
+	    "'current password is not right')", 15);
+	run("const f = document.querySelector('form[data-form=password-set]');"
+	    " f.current.value = 'a long lab password'; f.password.value = "
+	    "'a longer lab password'; f.again.value = 'a longer lab password'; "
+	    "f.requestSubmit();");
+	wait_js("!document.querySelector('.modal') && [...document."
+	    "querySelectorAll('.toast')].some(t => t.textContent.includes("
+	    "'admin password set'))", 15);
 	run("document.querySelector('button[data-act=user-add]').click()");
 	wait_js("document.querySelector('.modal form[data-form=user] "
 	    "input[name=tenant]') !== null && document.querySelector('.modal "
@@ -939,6 +966,11 @@ part_shell(void)
 	run("const f = document.querySelector('form[data-form=login-password]'"
 	    "); f.user.value = 'admin'; f.password.value = 'a long lab "
 	    "password'; f.requestSubmit();");
+	wait_js("document.querySelector('p.err:not(.origin)')?.textContent."
+	    "includes('not right')", 20);
+	run("const f = document.querySelector('form[data-form=login-password]'"
+	    "); f.user.value = 'admin'; f.password.value = 'a longer lab "
+	    "password'; f.requestSubmit();");
 	wait_js("document.querySelector('.shell')", 20);
 	go("/#/settings/aaa/keys");
 	wait_js("document.querySelector('form[data-form=add-key] ul.keys li "
@@ -1020,10 +1052,52 @@ part_shell(void)
 	ATF_CHECK_MSG(access("data/setup-token", F_OK) == -1,
 	    "setup token not consumed");
 
-	/* Log out, and in again with the key. */
+	/* Log out, and in again with the key: one that keeps no passkey,
+	 * found by the name this browser remembers. */
 	run("document.querySelector('button[data-act=logout]').click()");
 	click_when("button[data-act=login]", 10);
 	wait_js("document.querySelector('.shell')", 20);
+	/* The same key by the name typed, nothing remembered. */
+	run("localStorage.removeItem('arc_signin_user'); document."
+	    "querySelector('button[data-act=logout]').click()");
+	wait_js("document.querySelector('form[data-form=login-named]')", 10);
+	run("document.querySelector('details.login-named').open = true; "
+	    "const f = document.querySelector('form[data-form=login-named]'); "
+	    "f.user.value = 'admin'; f.requestSubmit();");
+	wait_js("document.querySelector('.shell')", 20);
+	/* A passkey (an authenticator that keeps one): signed in with no
+	 * name at all, the console naming no key. */
+	{
+		ucl_object_t	*v;
+
+		char		 p[256];
+
+		v = wd("POST", "/session/webauthn/authenticator", "{\"protocol\":"
+		    "\"ctap2\",\"transport\":\"internal\",\"hasResidentKey\":true,"
+		    "\"hasUserVerification\":true,\"isUserConsenting\":true,"
+		    "\"isUserVerified\":true}");
+		if (v != NULL)
+			ucl_object_unref(v);
+		/* The security key away: the passkey's authenticator alone. */
+		ATF_REQUIRE(wd_auth[0] != '\0');
+		snprintf(p, sizeof(p), "/session/webauthn/authenticator/%s",
+		    wd_auth);
+		if ((v = wd("DELETE", p, NULL)) != NULL)
+			ucl_object_unref(v);
+	}
+	go("/#/settings/aaa/keys");
+	wait_js("document.querySelector('form[data-form=add-key] input"
+	    "[name=name]')", 20);
+	run("const f = document.querySelector('form[data-form=add-key]'); "
+	    "f.querySelector('input[name=name]').value = 'passkey'; "
+	    "f.requestSubmit();");
+	wait_js("[...document.querySelectorAll('form[data-form=add-key] ul.keys "
+	    "li .name')].some(n => n.textContent.includes('passkey'))", 20);
+	run("localStorage.removeItem('arc_signin_user'); document."
+	    "querySelector('button[data-act=logout]').click()");
+	click_when("button[data-act=login-passkey]", 10);
+	wait_js("document.querySelector('.shell')", 20);
+	ATF_CHECK(system("grep -q '\"sign_count\"' data/credentials.json") == 0);
 
 	/* The shell works offline and says the data needs the network. */
 	run("return navigator.serviceWorker.ready.then(() => true)");

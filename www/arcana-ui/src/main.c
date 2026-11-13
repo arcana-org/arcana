@@ -970,6 +970,8 @@ submit_form(const char *form, const ucl_object_t *f)
 		job_send(cur_server(), q, title, JOB_PACKAGES, app.pkg.jail);
 	} else if (strcmp(form, "login-token") == 0) {
 		login_token(jstr(f, "token") != NULL ? jstr(f, "token") : "");
+	} else if (strcmp(form, "login-named") == 0) {
+		login(false, jstr(f, "user") != NULL ? jstr(f, "user") : "");
 	} else if (iflabel_form(form, f) || pfxlists_form(form, f) ||
 	    feeds_form(form, f) ||
 	    user_form(form, f)) {
@@ -2211,9 +2213,9 @@ dispatch(const char *act, const char *arg, const char *value)
 	} else if (strcmp(act, "retry") == 0) {
 		auth_status();
 	} else if (strcmp(act, "login") == 0) {
-		login(false);
+		login(false, NULL);
 	} else if (strcmp(act, "login-passkey") == 0) {
-		login(true);
+		login(true, NULL);
 	} else if (strcmp(act, "logout") == 0) {
 		logout();
 	} else if (strcmp(act, "install") == 0) {

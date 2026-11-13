@@ -275,7 +275,9 @@ ietf_netconf_acm_nacm_edit(cbl_req *req, const struct ietf_netconf_acm *before,
  * How far the request's user is trusted with what a read gives out
  * (agent.h): the recovery session, and a user of group admin, an
  * admin's; of group operator, an operator's; anyone else, and anyone
- * while the rules cannot be read, a viewer's.
+ * while the rules cannot be read, a viewer's.  The console's read
+ * tokens (NACM_TOKEN_READ, no user's name) a viewer's whatever group
+ * the rules put it in.
  */
 int
 clearance(cbl_req *req)
@@ -292,6 +294,8 @@ clearance(cbl_req *req)
 
 	if ((user = cbl_req_user(req)) == NULL)
 		return (CLEAR_ADMIN);
+	if (strcmp(user, NACM_TOKEN_READ) == 0)
+		return (CLEAR_VIEWER);
 	if ((a = cbl_yarena_new()) == NULL)
 		return (CLEAR_VIEWER);
 	pthread_mutex_lock(&nacm_lock);

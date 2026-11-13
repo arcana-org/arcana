@@ -93,6 +93,41 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Tokens as themselves, sign-in, enrolment, console 0.434.0, agent 0.286.0
+
+- **API tokens on the hosts.**  A read token is said to a host as the
+  NACM user `token-read` (in no group: a viewer, secrets masked, BIRD's
+  texts and the services' values left out), a write token as its
+  maker, no longer as `console`.  A write token whose maker the host's
+  rules have in no group (an owner made after the host's roles were
+  last synchronized) is refused there what the maker would be: an
+  owner synchronizes the roles once (Settings, AAA, Roles, or each
+  host's nacm-sync) and it is let.  A token reaches no more of the
+  console than its maker's console role and tenant allow either: the
+  token of a tenant's user no longer reads the SD-WAN, the L3NM, the
+  virtual networks, the prefix lists or the threat feeds.  `console`
+  and `token-read` are no user's names.
+- **Signing in.**  The sign-in start names no key.  A passkey (a key
+  registered as a discoverable credential, as the console has asked
+  since keys were first registered, when the authenticator could)
+  signs in with **Sign in with a key** and no name.  A security key that
+  keeps no passkey is asked for by its user's name: the browser that
+  signed in before remembers it and the button works as it did; on
+  another browser, **An older key? Sign in by name** with the user's name
+  (`admin` for the built-in owner).  The owner who signed in only with a
+  key sees no change on the same browser.
+- **One's own password** is changed with the current one, or, for one
+  with none yet, with one's key (the browser asks for it); an owner
+  sets another's as before.
+- **Enrolment tokens** (`arce1_...`) carry the CA's fingerprints: the
+  console's command is `arcana-enrol -s <url> <token>` alone, and the new
+  `arcana-enrol` needs such a token (or `-f`, or `-i`).  Tokens made
+  before the update no longer work: make another.
+- **The unix listener** is 0660, owned by the console's user, its group
+  the console's own unless `listen_group` names another (a reverse proxy
+  that connects over it must be in it, or named); `listen_mode` sets
+  another mode.
+
 ### Links in the files the agent writes, agent 0.281.0
 
 A file the agent changes through libvarconf (rc.conf and its

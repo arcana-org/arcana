@@ -44,10 +44,12 @@
  * to the sources is never picked up. */
 #include <arcana.h>
 
+#include "oprules.h"
+
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.433.1"
+#define	ARCW_VERSION		"0.434.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -221,6 +223,8 @@ int		 api_login_password(struct http_request *);
 void		 api_login_password_free(struct http_request *);
 int		 api_setup_password(struct http_request *);
 int		 api_auth_password(struct http_request *);
+int		 api_auth_password_begin(struct http_request *);
+void		 api_pwset_free(struct http_request *);
 
 /* prefixlists.c: the console's prefix lists, used on any host. */
 ucl_object_t	*prefix_list_get(const char *);
@@ -311,8 +315,18 @@ void		 sessions_end_password(const char *);
 
 /* users.c: the console's users and their roles (RBAC). */
 #define	ADMIN_USER	"admin"
+/*
+ * Names no user of the console has: what a host is told is the console
+ * itself (in group admin by the agents' default), and a read token
+ * (NACM_TOKEN_READ, oprules.h: in no group, a viewer).  The nacm-sync
+ * (ytrans.c) keeps the console in group admin and takes the read
+ * token's name out of every group.
+ */
+#define	NACM_CONSOLE	"console"
 void		 users_init(void);
 bool		 user_name_ok(const char *);
+bool		 user_name_reserved(const char *);
+const char	*principal_nacm(const struct principal *, char *, size_t);
 bool		 user_exists(const char *);
 const char	*user_id(const char *);
 bool		 user_ldap(const char *);
@@ -339,10 +353,16 @@ void		 acl_init(void);
 const char	*user_tenant(const char *);
 const char	*role_name(enum role);
 const char	*crole_name(enum crole);
+enum crole	 token_console(const char *);
+void		 user_handle(const char *, char *, size_t);
+
+/* cnodes.c: who may touch which of the console's own nodes, one table. */
+int		 req_may_path(struct http_request *, const char *, bool,
+		    const char **, char *, size_t);
+enum crole	 req_console(struct http_request *);
 bool		 user_path_ok(enum crole, const char *, bool);
 bool		 user_may_path(const char *, const char *, bool);
 bool		 path_fleet_wide(const char *);
-void		 user_handle(const char *, char *, size_t);
 bool		 invite_check(const char *, uint8_t *, char *, size_t);
 bool		 invite_spend(const uint8_t *, const char *);
 #define	ROLES_LDAP_MAX	32
@@ -359,6 +379,7 @@ const char	*user_owner_add(const char *);
 void		 user_owner_undo(const char *);
 bool		 user_has_password(const char *);
 bool		 user_password_ok(const char *, const char *);
+const char	*user_password_hash(const char *, char *, size_t);
 const char	*user_password_set(const char *, const char *);
 bool		 users_any_password(void);
 /* sen.c: MEF 138's Security Event and Security Admin Notifications. */
@@ -482,8 +503,9 @@ void		 hosts_release(const char *, const char *, cbl_conn *,
  * nothing is asked for no one.  A console user is held on each host to
  * the role the request needs there (need, or more), and the host's
  * access rules (NACM) to its name; an API token to its own reach, a
- * read token a viewer's of every host, a write token an admin's,
- * said to the host as the console; the console itself is for what
+ * read token a viewer's of every host, said to the host as
+ * NACM_TOKEN_READ (a viewer there too), a write token an admin's, said
+ * as its maker (principal_nacm()); the console itself is for what
  * no one asks and only the paths that act for no one take it
  * (hosts_act_console()).
  */

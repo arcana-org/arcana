@@ -30,9 +30,11 @@
  * (cyang.c), an invitation by users/user=<name>/invite.
  *
  * A user the console keeps may also have a password of the console's
- * own, beside their keys: kept as crypt(3)'s bcrypt ("$2b$"), never
- * said back, set from a session that may change the sign-in (auth.c),
- * or at the console's setup by password; a session it opens has the
+ * own, beside their keys: kept as crypt(3)'s bcrypt ("$2b$"), hashed in
+ * a task (user_password_hash()), never said back, set from a session
+ * that may change the sign-in, one's own with the current one or one's
+ * key as proof (auth.c), or at the console's setup by password; a
+ * session it opens has the
  * user's roles, or, with password_full = false in web.conf, is limited
  * as a directory user's is.  A user the directory keeps (source ldap)
  * signs in with the directory's.
@@ -66,6 +68,8 @@ static ucl_object_t	*udoc;
 
 static const char	*pw_of(const char *);
 static int		 users_save(void);
+static const ucl_object_t *acl_get(void);
+static void		 acl_put(const ucl_object_t *);
 
 /*
  * What the threads judge a principal by (principal_reach()): the users,
@@ -159,6 +163,16 @@ user_name_ok(const char *s)
 	return (n > 0 && n <= USER_NAME_MAX && strspn(s,
 	    "abcdefghijklmnopqrstuvwxyz"
 	    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.@-") == n);
+}
+
+/* A name the hosts are told stands for no user (console.h): the console
+ * itself, a read token.  No user is made of it. */
+bool
+user_name_reserved(const char *s)
+{
+
+	return (s != NULL && (strcmp(s, NACM_CONSOLE) == 0 || strcmp(s,
+	    NACM_TOKEN_READ) == 0));
 }
 
 bool
@@ -570,6 +584,47 @@ principal_host(const struct principal *p, const char *sid)
 	}
 }
 
+/*
+ * Who p is said to a host as, its NACM user (RFC 8341), into buf: a
+ * user by their name; a read token as NACM_TOKEN_READ, a name no user
+ * has and in no group, which a host holds to a viewer's reads; a write
+ * token as its maker (the built-in owner for one made before tokens
+ * kept a maker), so that the host's rules for that user hold it, a read
+ * token's name once it reads only or is gone; "" for the console and no
+ * one, said as the connection's user ("console").  From any thread.
+ */
+const char *
+principal_nacm(const struct principal *p, char *buf, size_t len)
+{
+	const ucl_object_t	*snap, *was;
+	const char		*maker, *mid;
+
+	buf[0] = '\0';
+	switch (p->kind) {
+	case P_USER:
+		snprintf(buf, len, "%s", p->name);
+		break;
+	case P_RTOKEN:
+		snprintf(buf, len, "%s", NACM_TOKEN_READ);
+		break;
+	case P_WTOKEN:
+		snprintf(buf, len, "%s", NACM_TOKEN_READ);
+		if ((snap = acl_get()) == NULL)
+			break;
+		was = acl_in;
+		acl_in = snap;
+		if (token_now(p->name, &maker, &mid) == TOKEN_WRITE)
+			snprintf(buf, len, "%s", maker[0] != '\0' ? maker :
+			    ADMIN_USER);
+		acl_in = was;
+		acl_put(snap);
+		break;
+	default:
+		break;
+	}
+	return (buf);
+}
+
 /* The tenant of an API token's maker, "" none (users.c's, tokens.c's
  * acl). */
 const char *
@@ -877,94 +932,23 @@ acl_init(void)
 }
 
 /*
- * Is path the whole fleet's: the SD-WAN and its services (L3NM), the
- * virtual networks made of them; one document each for every tenant's
- * hosts, so not a tenant's to read or change (docs/TODO.md).
+ * The console role an API token acts with (cnodes.c): its maker's now
+ * (the built-in owner's for one made before tokens kept a maker); none
+ * once it is gone, or its maker is.
  */
-bool
-path_fleet_wide(const char *path)
+enum crole
+token_console(const char *id)
 {
-	static const char	*fleet[] = { CYANG_DATA "sdwan",
-				    "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw",
-				    "/restconf/data/ietf-vn:access-point",
-				    "/restconf/data/ietf-vn:virtual-network",
-				    "/restconf/operations/ietf-vn:vn-compute" };
-	size_t			 i, n;
+	const char	*maker, *mid;
 
-	for (i = 0; i < nitems(fleet); i++) {
-		n = strlen(fleet[i]);
-		if (strncmp(path, fleet[i], n) == 0 && (path[n] == '\0' ||
-		    path[n] == '/' || path[n] == '?'))
-			return (true);
-	}
-	return (false);
-}
-
-/* May user take path: their console role's (user_path_ok()), and what
- * is the whole fleet's only when they are of no tenant. */
-bool
-user_may_path(const char *user, const char *path, bool mutate)
-{
-
-	return (user_path_ok(user_console(user), path, mutate) &&
-	    (user_tenant(user)[0] == '\0' || !path_fleet_wide(path)));
-}
-
-/*
- * May a user of this console role take the path: the console's own
- * (settings, tokens, CA, users, roles, enrolment, update) for the owner
- * alone; the fleet's tools (SD-WAN, workflows, templates,
- * transfers, the path finder, adding a host, keeping prefix lists) for
- * an operator too; the rest for everyone, the hosts' routes checked
- * by host besides.
- */
-bool
-user_path_ok(enum crole r, const char *path, bool mutate)
-{
-	static const char	*owner_only[] = {
-				    CYANG_DATA "settings", CYANG_DATA "tokens",
-				    CYANG_DATA "users", CYANG_DATA "roles",
-				    CYANG_DATA "groups", CYANG_DATA "enrolment",
-				    CYANG_DATA "ca", CYANG_DATA "update",
-				    CYANG_DATA "update-notes" };
-	static const char	*operator_up[] = {
-				    CYANG_DATA "workflows", CYANG_DATA "runs",
-				    CYANG_DATA "templates",
-				    CYANG_DATA "threat-feeds",
-				    CYANG_DATA "transfers", CYANG_DATA "sdwan",
-				    "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw",
-				    "/restconf/data/ietf-vn:access-point",
-				    "/restconf/data/ietf-vn:virtual-network",
-				    "/restconf/operations/ietf-vn:vn-compute",
-				    "/restconf/operations/arcana-console:"
-				    "trace-path",
-				    "/restconf/operations/arcana-console:"
-				    "wireguard-keypair" };
-	size_t			 i, n;
-
-	if (r == CROLE_NONE)
-		return (false);
-	if (r == CROLE_OWNER)
-		return (true);
-	for (i = 0; i < nitems(owner_only); i++) {
-		n = strlen(owner_only[i]);
-		if (strncmp(path, owner_only[i], n) == 0 && (path[n] == '\0' ||
-		    path[n] == '/' || path[n] == '?'))
-			return (false);
-	}
-	if (r == CROLE_OPERATOR)
-		return (true);
-	for (i = 0; i < nitems(operator_up); i++) {
-		n = strlen(operator_up[i]);
-		if (strncmp(path, operator_up[i], n) == 0 && (path[n] == '\0' ||
-		    path[n] == '/' || path[n] == '?'))
-			return (false);
-	}
-	if (mutate && (strcmp(path, CYANG_DATA "hosts") == 0 ||
-	    strncmp(path, CYANG_DATA "prefix-lists", sizeof(CYANG_DATA) + 11) ==
-	    0))
-		return (false);
-	return (true);
+	if (token_now(id, &maker, &mid) == TOKEN_NONE)
+		return (CROLE_NONE);
+	if (maker[0] == '\0')
+		maker = ADMIN_USER;
+	if (!user_exists(maker) || (mid[0] != '\0' && strcmp(user_id(maker),
+	    mid) != 0))
+		return (CROLE_NONE);
+	return (user_console(maker));
 }
 
 /* The WebAuthn user handle of a user: 16 bytes of the hash of the name. */
@@ -1400,7 +1384,7 @@ users_ldap_sync(const char *name, const char **roles, int nroles)
 	char			 id[USER_ID_LEN];
 	int			 i;
 
-	if (!user_name_ok(name))
+	if (!user_name_ok(name) || user_name_reserved(name))
 		return;
 	old = by_name("users", name);
 	if (old != NULL && (ucl_str(old, "source") == NULL || strcmp(ucl_str(
@@ -1558,16 +1542,33 @@ user_password_check(const char *pw)
 }
 
 /*
- * The user's password set to pw, or taken away when pw is NULL or "".
- * NULL when kept, or what is wrong.
+ * pw's bcrypt hash into out of len, "" for none (pw NULL or ""): NULL,
+ * or what is wrong.  From any thread: a task's, bcrypt takes its time.
  */
 const char *
-user_password_set(const char *name, const char *pw)
+user_password_hash(const char *pw, char *out, size_t len)
+{
+	const char	*e;
+
+	out[0] = '\0';
+	if (pw == NULL || pw[0] == '\0')
+		return (NULL);
+	if ((e = user_password_check(pw)) != NULL)
+		return (e);
+	if (!pw_hash(pw, out, len))
+		return ("crypt(3) made no bcrypt hash");
+	return (NULL);
+}
+
+/*
+ * The user's password set to the hash user_password_hash() made, or
+ * taken away when it is "".  NULL when kept, or what is wrong.
+ */
+const char *
+user_password_set(const char *name, const char *hash)
 {
 	const ucl_object_t	*old;
 	ucl_object_t		*u;
-	const char		*e;
-	char			 h[128];
 
 	if ((old = by_name("users", name)) == NULL)
 		return ("no such user");
@@ -1575,19 +1576,13 @@ user_password_set(const char *name, const char *pw)
 	    "ldap") == 0)
 		return ("a user the directory keeps signs in with the "
 		    "directory's password");
-	h[0] = '\0';
-	if (pw != NULL && pw[0] != '\0') {
-		if ((e = user_password_check(pw)) != NULL)
-			return (e);
-		if (!pw_hash(pw, h, sizeof(h)))
-			return ("crypt(3) made no bcrypt hash");
-	}
+	if (hash[0] != '\0' && strncmp(hash, "$2b$", 4) != 0)
+		return ("crypt(3) made no bcrypt hash");
 	u = ucl_object_copy(old);
-	if (h[0] != '\0')
-		put(u, "password", ucl_object_fromstring(h));
+	if (hash[0] != '\0')
+		put(u, "password", ucl_object_fromstring(hash));
 	else
 		ucl_object_delete_key(u, "password");
-	explicit_bzero(h, sizeof(h));
 	ucl_object_unref(ucl_array_delete(list_of("users"), (ucl_object_t *)
 	    (uintptr_t)old));
 	ucl_array_append(list_of("users"), u);
@@ -1608,6 +1603,9 @@ user_owner_add(const char *name)
 
 	if (!user_name_ok(name))
 		return ("a user name is 1 to 64 letters, digits and _ . @ -");
+	if (by_name("users", name) == NULL && user_name_reserved(name))
+		return ("that name is what a host is told the console or a "
+		    "read token is: no user's name");
 	if (by_name("users", name) != NULL)
 		return (user_console(name) == CROLE_OWNER ? NULL : "that user "
 		    "is no owner of the console");
@@ -1863,6 +1861,11 @@ user_keep(ucl_object_t *body, const char *who, struct uerr *err)
 	}
 	strlcpy(kept, name, sizeof(kept));
 	old = by_name("users", name);
+	if (old == NULL && user_name_reserved(name)) {
+		ucl_object_unref(body);
+		return (refuse(err, 400, "invalid", "%s is what a host is told "
+		    "the console or a read token is: no user's name", kept));
+	}
 	if (old == NULL && ucl_array_size(list_of("users")) >= USERS_MAX) {
 		ucl_object_unref(body);
 		return (refuse(err, 400, "invalid", "%d users at most",

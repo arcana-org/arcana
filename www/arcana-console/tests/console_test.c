@@ -34,6 +34,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
@@ -224,6 +225,52 @@ do_login(struct authn *a, uint32_t count, const char *origin,
 	    "\"authenticatorData\":\"%s\",\"signature\":\"%s\"}", id64, cd64,
 	    ad64, sig64);
 	http("POST", "/api/auth/login/finish", body, r);
+	resp_free(&b);
+	free(cd);
+	free(id64);
+	free(cd64);
+	free(ad64);
+	free(sig64);
+}
+
+/*
+ * One's own password changed with key a's proof: a challenge of
+ * /api/auth/password/begin signed (counter count), sent with members
+ * ("\"password\":\"...\""); the answer in r.
+ */
+static void
+pw_by_key(struct authn *a, uint32_t count, const char *members,
+    struct resp *r)
+{
+	struct resp	 b;
+	EVP_MD_CTX	*ctx;
+	uint8_t		 ad[64], msg[128], sig[256];
+	char		 body[4096], *cd, *id64, *cd64, *ad64, *sig64;
+	size_t		 adlen, siglen;
+	unsigned int	 mdlen;
+
+	http("POST", "/api/auth/password/begin", "{}", &b);
+	EXPECT(&b, 200);
+	ATF_REQUIRE(jstr(&b, "publicKey.challenge") != NULL);
+	cd = client_data("webauthn.get", jstr(&b, "publicKey.challenge"),
+	    harness_origin);
+	adlen = auth_data(ad, RP_ID, 0x05, count, NULL);
+	memcpy(msg, ad, adlen);
+	EVP_Digest(cd, strlen(cd), msg + adlen, &mdlen, EVP_sha256(), NULL);
+	ATF_REQUIRE((ctx = EVP_MD_CTX_new()) != NULL);
+	siglen = sizeof(sig);
+	ATF_REQUIRE(EVP_DigestSignInit(ctx, NULL, a->alg == -7 ?
+	    EVP_sha256() : NULL, NULL, a->key) == 1);
+	ATF_REQUIRE(EVP_DigestSign(ctx, sig, &siglen, msg, adlen + 32) == 1);
+	EVP_MD_CTX_free(ctx);
+	id64 = b64url(a->id, sizeof(a->id));
+	cd64 = b64url(cd, strlen(cd));
+	ad64 = b64url(ad, adlen);
+	sig64 = b64url(sig, siglen);
+	snprintf(body, sizeof(body), "{%s,\"assertion\":{\"id\":\"%s\","
+	    "\"clientDataJSON\":\"%s\",\"authenticatorData\":\"%s\","
+	    "\"signature\":\"%s\"}}", members, id64, cd64, ad64, sig64);
+	http("POST", "/api/auth/password", body, r);
 	resp_free(&b);
 	free(cd);
 	free(id64);
@@ -479,6 +526,44 @@ ATF_TC_BODY(sweep_own, tc)
 	(void)kill(mine, SIGKILL);
 }
 
+/* The console's unix socket: its user's and its group's alone, 0660,
+ * unless web.conf says another mode or group. */
+CONSOLE_TC(unix_listen, "The unix listener 0660 by default")
+ATF_TC_BODY(unix_listen, tc)
+{
+	struct stat	sb;
+	struct resp	r;
+
+	start(tc, 0, NULL);
+	ATF_REQUIRE(stat("k.sock", &sb) == 0);
+	ATF_CHECK_MSG((sb.st_mode & 0777) == 0660, "mode %o", sb.st_mode &
+	    0777);
+	http("GET", "/api/health", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+}
+
+CONSOLE_TC(unix_listen_set, "The unix listener's mode and group from "
+    "web.conf")
+ATF_TC_BODY(unix_listen_set, tc)
+{
+	struct stat	 sb;
+	struct resp	 r;
+	struct group	*g;
+
+	ATF_REQUIRE((g = getgrgid(getegid())) != NULL);
+	snprintf(harness_server, sizeof(harness_server), "\tlisten_mode = "
+	    "\"0640\";\n\tlisten_group = \"%s\";\n", g->gr_name);
+	start(tc, 0, NULL);
+	ATF_REQUIRE(stat("k.sock", &sb) == 0);
+	ATF_CHECK_MSG((sb.st_mode & 0777) == 0640, "mode %o", sb.st_mode &
+	    0777);
+	ATF_CHECK_EQ(sb.st_gid, g->gr_gid);
+	http("GET", "/api/health", NULL, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+}
+
 CONSOLE_TC(unauthenticated, "Without a session only health and status work")
 ATF_TC_BODY(unauthenticated, tc)
 {
@@ -698,6 +783,118 @@ ATF_TC_BODY(nacm_sync_operator, tc)
 }
 
 /*
+ * An API token is said to the host as what it may there, never as the
+ * console: a read token as token-read, a viewer of the host (BIRD's texts
+ * and the services' values left out, a process's argv masked); a write
+ * token as its maker, here olga, made an owner, then an operator of the
+ * console: a log only root reads refused while the host has her in no
+ * group, read once she is in its group operator, and what the host keeps
+ * to its admins refused to her token.  Neither name is a user's.
+ */
+CONSOLE_TC(token_nacm, "Tokens said to the host as token-read and as "
+    "their maker")
+ATF_TC_BODY(token_nacm, tc)
+{
+	struct authn	 a, o;
+	struct resp	 r;
+	char		 id[16], admin[160], rtok[96], wtok[96], path[160];
+	char		 sync[160], body[256];
+	FILE		*fp;
+	int		 pid, i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(admin, sizeof(admin), "%s", cookie);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(sync, sizeof(sync), CC "hosts/host=%s/nacm-sync", id);
+	/* Neither name is one a user is made of. */
+	http("PUT", CC "users/user=token-read", "{\"arcana-console:user\":[{"
+	    "\"name\":\"token-read\",\"role\":[\"viewer\"]}]}", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("PUT", CC "users/user=console", "{\"arcana-console:user\":[{"
+	    "\"name\":\"console\",\"role\":[\"viewer\"]}]}", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	rc_act(CC "tokens/create", "\"name\":\"r\"", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(jstr(&r, "token") != NULL);
+	snprintf(rtok, sizeof(rtok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	/* A read token: what a viewer of the host reads. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-bird:bird", id);
+	http_bearer("GET", path, rtok, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "router id") == NULL,
+	    "%d %.400s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-services:services", id);
+	http_bearer("GET", path, rtok, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "sshd_flags") != NULL &&
+	    strstr(r.body, "\"value\"") == NULL, "%d %.400s", r.status, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(system("sh -c 'sleep 30; :' viewer-arg --password "
+	    "hunter2pw >/dev/null 2>&1 & echo $! > argv.pid") == 0);
+	ATF_REQUIRE((fp = fopen("argv.pid", "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &pid) == 1);
+	fclose(fp);
+	usleep(300000);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-processes:processes", id);
+	http_bearer("GET", path, rtok, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "viewer-arg") != NULL &&
+	    strstr(r.body, "hunter2pw") == NULL, "%d", r.status);
+	resp_free(&r);
+	(void)kill(pid, SIGTERM);
+	/* Olga, an owner, makes a write token; then an operator. */
+	cc_user(&o, "olga", "\"role\":[\"owner\"]", -7);
+	rc_act(CC "tokens/create", "\"name\":\"w\",\"kind\":\"write\"", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(jstr(&r, "token") != NULL);
+	snprintf(wtok, sizeof(wtok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	r1_role("ops", "member", "operator");
+	r1_roles("olga", "ops");
+	/* A log only root reads: an operator's, which the host does not
+	 * know her for yet. */
+	ATF_REQUIRE(chmod("log/auth.log", 0600) == 0);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-log:logs/read", id);
+	http_bearer("POST", path, wtok, "{\"arcana-log:input\":{\"name\":"
+	    "\"auth.log\"}}", &r);
+	ATF_CHECK_MSG(strstr(r.body, "BAD SU") == NULL && strstr(r.body,
+	    "an operator's") != NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_STREQ("olga", jstr(&r, "data.operator.0"));
+	resp_free(&r);
+	for (i = 0; i < 2; i++) {
+		http_bearer("POST", path, wtok, "{\"arcana-log:input\":{\"name\":"
+		    "\"auth.log\"}}", &r);
+		ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "BAD SU") !=
+		    NULL, "%d %s", r.status, r.body);
+		resp_free(&r);
+	}
+	snprintf(path, sizeof(path), FLEET "%s/arcana-bird:bird", id);
+	http_bearer("GET", path, wtok, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "router id") != NULL,
+	    "%d %.400s", r.status, r.body);
+	resp_free(&r);
+	/* What the host keeps to its admins. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:submit", id);
+	snprintf(body, sizeof(body), "{\"arcana-jobs:input\":{\"change\":[%s]}}",
+	    R1_MONITOR);
+	http_bearer("POST", path, wtok, body, &r);
+	ATF_CHECK_MSG(strstr(r.body, "access denied") != NULL, "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
+	/* The sync takes token-read out of any group it was put in. */
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "token-read") == NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
  * The console's roles synchronized to a host's access rules, by an
  * owner, when asked and not before: bob, an owner, is anyone else to
  * the host until then; synchronized, he is of its group admin and
@@ -888,12 +1085,12 @@ ATF_TC_BODY(server_readdress, tc)
 }
 
 /*
- * What the console asks for no user (an API token's request, as what
- * it does by itself) it asks as NACM's user "console", never as the
- * agent's recovery session, even over the local socket as the agent's
- * own user: with "console" out of the agent's group admin, the token's
- * change is refused.  A workflow at its interval is not the console's:
- * it acts for its author, here the owner, whom the rules let.
+ * What the console asks it asks as someone, never as the agent's
+ * recovery session, even over the local socket as the agent's own user:
+ * a write token as its maker, here carl, whom the agent's rules have in
+ * no group, so the token's change is refused.  A workflow at its
+ * interval is not the console's: it acts for its author, here the
+ * owner, whom the rules let.
  */
 ATF_TC_WITHOUT_HEAD(nacm_console);
 ATF_TC_BODY(nacm_console, tc)
@@ -903,11 +1100,11 @@ ATF_TC_BODY(nacm_console, tc)
 	    "\"admin\",\"group\":[\"admin\"],\"rule\":[{\"name\":\"all\","
 	    "\"module-name\":\"*\",\"access-operations\":\"*\",\"action\":"
 	    "\"permit\"}]}]}";
-	struct authn	 a;
+	struct authn	 a, c;
 	struct resp	 r;
 	char		 cwd[MAXPATHLEN], body[MAXPATHLEN + 512], id[16];
 	char		 wid[16], run[16], path[96], cmd[3 * MAXPATHLEN];
-	char		 tok[96];
+	char		 tok[96], owner[160];
 	const char	*ctl;
 	FILE		*fp;
 	int		 i;
@@ -925,11 +1122,16 @@ ATF_TC_BODY(nacm_console, tc)
 	    "@rules.json && %s -c unix:%s/jgd.sock commit", ctl, cwd, ctl, cwd);
 	ATF_REQUIRE_EQ_MSG(0, system(cmd), "%s", cmd);
 	cc_host("lab", "jgd.sock", id, sizeof(id));
+	/* The token of carl, an owner the host's rules have in no group:
+	 * said as carl, never as no one (the recovery session). */
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	cc_user(&c, "carl", "\"role\":[\"owner\"]", -7);
 	rc_act(CC "tokens/create", "\"name\":\"w\",\"kind\":\"write\"", &r);
 	EXPECT(&r, 200);
 	ATF_REQUIRE(jstr(&r, "token") != NULL);
 	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
 	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
 	snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:submit", id);
 	http_bearer("POST", path, tok, "{\"arcana-jobs:input\":{\"change\":["
 	    R1_MONITOR "]}}", &r);
@@ -3478,6 +3680,61 @@ ATF_TC_BODY(android_none, tc)
 	EXPECT(&r, 401);
 	ATF_CHECK_MSG(strstr(r.body, "origin") != NULL, "%s", r.body);
 	resp_free(&r);
+}
+
+/*
+ * A sign-in's start names no one's keys unasked; a user named, that
+ * user's, and for a name with none as many ids made up for it, the same
+ * each time, after a restart too, as long as a real one.
+ */
+CONSOLE_TC(login_begin_names, "Sign-in start: no key ids unasked, a "
+    "named user's, stable decoys for an unknown name")
+ATF_TC_BODY(login_begin_names, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 fake[3][128], *id64;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cookie[0] = '\0';
+	id64 = b64url(a.id, sizeof(a.id));
+	http("POST", "/api/auth/login/begin", "{}", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "publicKey.allowCredentials.0.id") == NULL &&
+	    strstr(r.body, id64) == NULL, "%s", r.body);
+	resp_free(&r);
+	http("POST", "/api/auth/login/begin", "{\"user\":\"admin\"}", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ(id64, jstr(&r, "publicKey.allowCredentials.0.id"));
+	ATF_CHECK(jstr(&r, "publicKey.allowCredentials.1.id") == NULL);
+	resp_free(&r);
+	http("POST", "/api/auth/login/begin", "{\"user\":\"nobody-here\"}", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(jstr(&r, "publicKey.allowCredentials.0.id") != NULL);
+	snprintf(fake[0], sizeof(fake[0]), "%s", jstr(&r,
+	    "publicKey.allowCredentials.0.id"));
+	ATF_CHECK(strcmp(fake[0], id64) != 0 && strlen(fake[0]) ==
+	    strlen(id64));
+	resp_free(&r);
+	http("POST", "/api/auth/login/begin", "{\"user\":\"nobody-here\"}", &r);
+	ATF_CHECK_STREQ(fake[0], jstr(&r, "publicKey.allowCredentials.0.id"));
+	resp_free(&r);
+	http("POST", "/api/auth/login/begin", "{\"user\":\"someone-else\"}", &r);
+	snprintf(fake[1], sizeof(fake[1]), "%s", jstr(&r,
+	    "publicKey.allowCredentials.0.id") != NULL ? jstr(&r,
+	    "publicKey.allowCredentials.0.id") : "");
+	ATF_CHECK(fake[1][0] != '\0' && strcmp(fake[0], fake[1]) != 0);
+	resp_free(&r);
+	restart_console();
+	http("POST", "/api/auth/login/begin", "{\"user\":\"nobody-here\"}", &r);
+	ATF_CHECK_STREQ(fake[0], jstr(&r, "publicKey.allowCredentials.0.id"));
+	resp_free(&r);
+	/* The key signs in whatever the start said. */
+	do_login(&a, 1, ORIGIN, RP_ID, NULL, false, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	free(id64);
 }
 
 CONSOLE_TC(second_key, "A spare Ed25519 key, added from a session")
@@ -6542,17 +6799,21 @@ ATF_TC_BODY(password, tc)
 	EXPECT(&r, 401);
 	resp_free(&r);
 	snprintf(cookie, sizeof(cookie), "%s", keycookie);
+	/* One's own proved again: the session left open is not enough. */
+	http("POST", "/api/auth/password", "{\"password\":\"correct horse "
+	    "battery\"}", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "assertion") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
 	/* Too short, a control character; then the session's own. */
-	http("POST", "/api/auth/password", "{\"password\":\"short one\"}", &r);
+	pw_by_key(&a, 0, "\"password\":\"short one\"", &r);
 	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "12 characters") !=
 	    NULL, "%s", r.body);
 	resp_free(&r);
-	http("POST", "/api/auth/password", "{\"password\":\"correct\\thorse "
-	    "battery\"}", &r);
+	pw_by_key(&a, 0, "\"password\":\"correct\\thorse battery\"", &r);
 	EXPECT(&r, 400);
 	resp_free(&r);
-	http("POST", "/api/auth/password", "{\"password\":\"correct horse "
-	    "battery\"}", &r);
+	pw_by_key(&a, 0, "\"password\":\"correct horse battery\"", &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_STREQ("admin", jstr(&r, "user"));
 	ATF_CHECK_STREQ("true", jstr(&r, "password"));
@@ -6675,6 +6936,66 @@ ATF_TC_BODY(password, tc)
 	http("POST", "/api/auth/login/password", "{\"user\":\"admin\","
 	    "\"password\":\"correct horse battery\"}", &r);
 	ATF_CHECK_MSG(r.status == 429, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
+ * One's own password changed only with proof: the current password, or
+ * a key of one's own over a challenge for that; a wrong current one
+ * refused, the password kept; another user's key proves nothing; the
+ * owner sets another's as before.
+ */
+CONSOLE_TC(password_proof, "One's own password changed by the current one "
+    "or one's key, never by the open session alone")
+ATF_TC_BODY(password_proof, tc)
+{
+	struct authn	 a, b;
+	struct resp	 r;
+	char		 keycookie[160];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(keycookie, sizeof(keycookie), "%s", cookie);
+	/* None yet: the current password proves nothing. */
+	http("POST", "/api/auth/password", "{\"password\":\"first long "
+	    "password\",\"current\":\"anything at all\"}", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "no password yet") !=
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	pw_by_key(&a, 0, "\"password\":\"first long password\"", &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	/* A challenge proves once. */
+	http("POST", "/api/auth/password", "{\"password\":\"second long "
+	    "password\",\"current\":\"not the password\"}", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "current password") !=
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("POST", "/api/auth/password", "{\"password\":\"second long "
+	    "password\",\"current\":\"first long password\"}", &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	cookie[0] = '\0';
+	http("POST", "/api/auth/login/password", "{\"user\":\"admin\","
+	    "\"password\":\"first long password\"}", &r);
+	EXPECT(&r, 401);
+	resp_free(&r);
+	http("POST", "/api/auth/login/password", "{\"user\":\"admin\","
+	    "\"password\":\"second long password\"}", &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	/* Bob's key proves nothing of the owner's password. */
+	snprintf(cookie, sizeof(cookie), "%s", keycookie);
+	cc_user(&b, "bob", "\"role\":[\"viewer\"]", -8);
+	snprintf(cookie, sizeof(cookie), "%s", keycookie);
+	pw_by_key(&b, 0, "\"password\":\"third long password\"", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "not a key of yours") !=
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* The owner sets bob's as before. */
+	http("POST", "/api/auth/password", "{\"user\":\"bob\",\"password\":"
+	    "\"bob's long password\"}", &r);
+	EXPECT(&r, 200);
 	resp_free(&r);
 }
 
@@ -11649,6 +11970,126 @@ ATF_TC_BODY(restconf_job_confirm, tc)
 	resp_free(&r);
 }
 
+/* Job id's state, read by token tok at data, once it is one of the
+ * states' (a "|" list), within secs; its read's body into r. */
+static bool
+tok_job_until(const char *data, const char *tok, const char *id,
+    const char *states, int secs, struct resp *r)
+{
+	char	path[512], want[64];
+	const char *s, *e;
+	int	i;
+
+	snprintf(path, sizeof(path), "%s/arcana-jobs:jobs/job=%s/read", data,
+	    id);
+	for (i = 0; i < secs * 10; i++) {
+		http_bearer("POST", path, tok, "{}", r);
+		for (s = states; *s != '\0'; s = *e != '\0' ? e + 1 : e) {
+			e = s + strcspn(s, "|");
+			snprintf(want, sizeof(want), "\"state\":\"%.*s\"",
+			    (int)(e - s), s);
+			if (strstr(r->body, want) != NULL)
+				return (true);
+		}
+		resp_free(r);
+		usleep(100000);
+	}
+	http_bearer("POST", path, tok, "{}", r);
+	return (false);
+}
+
+/* A safe route job submitted with token tok (safe-wait secs): its id. */
+static void
+tok_safe_job(const char *data, const char *tok, int secs, char *id,
+    size_t len)
+{
+	struct resp	r;
+	char		path[512], body[512];
+
+	snprintf(path, sizeof(path), "%s/arcana-jobs:submit", data);
+	snprintf(body, sizeof(body), "{\"arcana-jobs:input\":{\"change\":[{"
+	    "\"route\":{\"destination\":\"10.9.0.0/16\",\"gateway\":"
+	    "\"10.0.0.1\"},\"safe\":true,\"safe-wait\":%d}]}}", secs);
+	http_bearer("POST", path, tok, body, &r);
+	ATF_REQUIRE_MSG(r.status == 200 && jstr(&r, "arcana-jobs:output.id.0") !=
+	    NULL, "%d %s", r.status, r.body);
+	snprintf(id, len, "%s", jstr(&r, "arcana-jobs:output.id.0"));
+	resp_free(&r);
+}
+
+/*
+ * A safe change started by a write token, said to the host as its
+ * maker: confirmed by the token when it hears from the host, kept; one
+ * never confirmed undone by the host's timer; one whose token's maker is
+ * removed while it waits undone by the timer all the same, never left
+ * waiting.
+ */
+CONSOLE_TC(token_safe_jobs, "Safe jobs of a write token: confirmed, "
+    "undone by the timer, and undone when its maker is gone")
+ATF_TC_BODY(token_safe_jobs, tc)
+{
+	struct authn	 o;
+	struct resp	 r;
+	char		 data[256], cand[256], path[512], owner[160];
+	char		 wtok[96], otok[96], id[16];
+
+	rc_lab(tc, data, cand, sizeof(cand));
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	rc_act(CC "tokens/create", "\"name\":\"w\",\"kind\":\"write\"", &r);
+	EXPECT(&r, 200);
+	snprintf(wtok, sizeof(wtok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	/* Olga's, an owner the host is told of. */
+	cc_user(&o, "olga", "\"role\":[\"owner\"]", -7);
+	rc_act(CC "tokens/create", "\"name\":\"o\",\"kind\":\"write\"", &r);
+	EXPECT(&r, 200);
+	snprintf(otok, sizeof(otok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	snprintf(path, sizeof(path), CC "hosts/host=%s/nacm-sync",
+	    strrchr(data, '=') + 1);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Confirmed by the token: kept. */
+	tok_safe_job(data, wtok, 30, id, sizeof(id));
+	ATF_REQUIRE_MSG(tok_job_until(data, wtok, id, "unconfirmed", 10, &r),
+	    "%s", r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/arcana-jobs:jobs/job=%s/confirm",
+	    data, id);
+	http_bearer("POST", path, wtok, "{}", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	ATF_CHECK_MSG(tok_job_until(data, wtok, id, "done", 10, &r) &&
+	    strstr(r.body, "\"ok\":true") != NULL, "not kept: %s", r.body);
+	resp_free(&r);
+	/* Not confirmed: undone by the host. */
+	tok_safe_job(data, wtok, 10, id, sizeof(id));
+	ATF_CHECK_MSG(tok_job_until(data, wtok, id, "done|cancelled", 30, &r) &&
+	    strstr(r.body, "undone") != NULL, "not undone: %s", r.body);
+	resp_free(&r);
+	/* Olga's token's, olga removed while it waits: refused to her
+	 * token at once, undone by the host's timer all the same. */
+	tok_safe_job(data, otok, 10, id, sizeof(id));
+	ATF_REQUIRE_MSG(tok_job_until(data, wtok, id, "unconfirmed", 10, &r),
+	    "%s", r.body);
+	resp_free(&r);
+	http("DELETE", CC "users/user=olga", NULL, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/arcana-jobs:jobs/job=%s/confirm",
+	    data, id);
+	http_bearer("POST", path, otok, "{}", &r);
+	ATF_CHECK_MSG(r.status == 403 || r.status == 404 || r.status == 401,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	ATF_CHECK_MSG(tok_job_until(data, wtok, id, "done|cancelled", 30, &r) &&
+	    strstr(r.body, "undone") != NULL, "left waiting: %s", r.body);
+	resp_free(&r);
+}
+
 /*
  * A page's read through the fleet mount over the console's socket
  * (PLAN-SDN-YANG 4.8.1): a GET and an action that reads answered as
@@ -12211,9 +12652,9 @@ ATF_TC_BODY(enrol, tc)
 {
 	struct authn	 a;
 	struct resp	 r;
-	char		 url[64], body[512], tok[80], listen[64], path[128];
+	char		 url[64], body[1024], tok[256], listen[64], path[128];
 	char		 tool[MAXPATHLEN], jgd[MAXPATHLEN], *argv[20], id[16];
-	char		 gone[16], pin[80];
+	char		 gone[16], pin[80], bad[256];
 	FILE		*fp;
 	pid_t		 pid;
 	int		 port, jport, i;
@@ -12248,16 +12689,28 @@ ATF_TC_BODY(enrol, tc)
 	EXPECT(&r, 200);
 	ATF_REQUIRE_MSG(jstr(&r, "token") != NULL, "%s", r.body);
 	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
-	/* The CA the host is to trust pinned in the command, by the
-	 * SHA-256 of its certificate. */
-	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s -f ") !=
-	    NULL && strstr(jstr(&r, "command"), " http://localhost:") != NULL,
+	/* One text both lets the host in and pins the CA: the token, the
+	 * SHA-256 of the CA's certificate in it, no -f in the command. */
+	ATF_CHECK_MSG(strncmp(tok, "arce1_", 6) == 0, "%s", tok);
+	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s "
+	    "http://localhost:") != NULL && strstr(jstr(&r, "command"),
+	    " -f ") == NULL && strstr(jstr(&r, "command"), tok) != NULL,
 	    "%s", jstr(&r, "command"));
-	{
-		const char	*f = strstr(jstr(&r, "command"), "-f ");
-
-		snprintf(pin, sizeof(pin), "%.64s", f != NULL ? f + 3 : "");
-	}
+	resp_free(&r);
+	/* Its pin, the token taken apart; and one pinning another CA, and
+	 * one pinning none, made of it. */
+	snprintf(body, sizeof(body), "T='%s'; s=$(printf %%s \"$T\" | cut -c7- "
+	    "| tr '_-' '/+'); while [ $(( ${#s} %% 4 )) -ne 0 ]; do s=\"$s=\"; "
+	    "done; printf %%s \"$s\" | openssl base64 -d -A > tok.bin && "
+	    "od -An -tx1 -j32 tok.bin | tr -d ' \\n' > pin.txt && "
+	    "head -c 32 tok.bin > bad.bin && head -c 32 tok.bin > none.bin && "
+	    "dd if=/dev/zero bs=32 count=1 >> bad.bin 2>/dev/null && "
+	    "for f in bad none; do printf 'arce1_%%s' \"$(openssl base64 -A < "
+	    "$f.bin | tr '+/' '-_' | tr -d '=')\" > $f.tok; done", tok);
+	ATF_REQUIRE(system(body) == 0);
+	ATF_REQUIRE((fp = fopen("pin.txt", "r")) != NULL);
+	ATF_REQUIRE(fgets(pin, sizeof(pin), fp) != NULL);
+	fclose(fp);
 	ATF_CHECK(system("openssl x509 -in data/ca.pem -noout -fingerprint "
 	    "-sha256 | tr -d : | tr A-F a-f > fp.txt") == 0);
 	{
@@ -12266,13 +12719,12 @@ ATF_TC_BODY(enrol, tc)
 		snprintf(cmdfp, sizeof(cmdfp), "grep -q '=%s$' fp.txt", pin);
 		ATF_CHECK_MSG(system(cmdfp) == 0, "pin %s", pin);
 	}
-	resp_free(&r);
 	/* Another port than the usual is in the command for the host. */
 	rc_act(CC "enrolment/create-token", "\"name\":\"lab\",\"host\":"
 	    "\"127.0.0.1\",\"port\":4311", &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(strstr(jstr(&r, "command"), "arcana-enrol -s -p 4311 "
-	    "-f ") != NULL, "%s", jstr(&r, "command"));
+	    "http") != NULL, "%s", jstr(&r, "command"));
 	resp_free(&r);
 	http("POST", "/api/enrol", "{\"token\":\"nope\",\"csr\":\"\"}", &r);
 	EXPECT(&r, 403);
@@ -12283,8 +12735,8 @@ ATF_TC_BODY(enrol, tc)
 	 * fetch(3) waits out its connect before it tries 127.0.0.1. */
 	snprintf(url, sizeof(url), "http://127.0.0.1%s", strrchr(
 	    harness_origin, ':'));
-	/* Plain HTTP refused without -i, the token left unused; a CA that
-	 * is not the one pinned refused, nothing written. */
+	/* Plain HTTP refused without -i, the token left unused; a token
+	 * that pins nothing refused without -i, unused too. */
 	i = 0;
 	argv[i++] = tool;
 	argv[i++] = (char *)(uintptr_t)"-d";
@@ -12295,22 +12747,38 @@ ATF_TC_BODY(enrol, tc)
 	ATF_CHECK(!run_prog(argv));
 	ATF_CHECK(system("grep -q 'not HTTPS' run.out") == 0);
 	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
+	ATF_REQUIRE((fp = fopen("none.tok", "r")) != NULL);
+	ATF_REQUIRE(fgets(bad, sizeof(bad), fp) != NULL);
+	fclose(fp);
 	i = 0;
 	argv[i++] = tool;
-	argv[i++] = (char *)(uintptr_t)"-i";
-	argv[i++] = (char *)(uintptr_t)"-f";
-	argv[i++] = (char *)(uintptr_t)"00:11:22:33:44:55:66:77:88:99:aa:bb:"
-	    "cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff";
 	argv[i++] = (char *)(uintptr_t)"-d";
 	argv[i++] = (char *)(uintptr_t)"host";
 	argv[i++] = url;
-	argv[i++] = tok;
+	argv[i++] = bad;
 	argv[i] = NULL;
 	ATF_CHECK(!run_prog(argv));
-	ATF_CHECK(system("grep -q 'not the one -f names' run.out") == 0);
+	ATF_CHECK(system("grep -q 'pins no CA' run.out") == 0);
+	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
+	/* A token pinning another CA: what the console sends refused, by
+	 * the token alone, nothing written. */
+	ATF_REQUIRE((fp = fopen("bad.tok", "r")) != NULL);
+	ATF_REQUIRE(fgets(bad, sizeof(bad), fp) != NULL);
+	fclose(fp);
+	i = 0;
+	argv[i++] = tool;
+	argv[i++] = (char *)(uintptr_t)"-i";
+	argv[i++] = (char *)(uintptr_t)"-d";
+	argv[i++] = (char *)(uintptr_t)"host";
+	argv[i++] = url;
+	argv[i++] = bad;
+	argv[i] = NULL;
+	ATF_CHECK(!run_prog(argv));
+	ATF_CHECK(system("grep -q 'not the one the token or -f pins' run.out") ==
+	    0);
 	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
 	ATF_CHECK(access("host/host.pem", F_OK) != 0);
-	/* That used the token: another, and the one pinned. */
+	/* That used the token: another, its own pin the one checked. */
 	rc_act(CC "enrolment/create-token", "\"name\":\"lab\",\"host\":"
 	    "\"127.0.0.1\"", &r);
 	EXPECT(&r, 200);
@@ -12319,8 +12787,6 @@ ATF_TC_BODY(enrol, tc)
 	i = 0;
 	argv[i++] = tool;
 	argv[i++] = (char *)(uintptr_t)"-i";
-	argv[i++] = (char *)(uintptr_t)"-f";
-	argv[i++] = pin;
 	argv[i++] = (char *)(uintptr_t)"-d";
 	argv[i++] = (char *)(uintptr_t)"host";
 	argv[i++] = url;
@@ -19170,8 +19636,10 @@ ATF_TC_CLEANUP(tls_ec, tc)
 	stop();
 }
 
-/* h2_streams' host. */
+/* h2_streams' host, and the streams a connection is allowed by default
+ * (web.c's H2_STREAMS). */
 #define	R4_H2_ID	"0a0e0002"
+#define	R4_H2_STREAMS	100
 
 /*
  * n reads of /api/health, par of them wanted at once, after nsse of the
@@ -19278,8 +19746,9 @@ ATF_TC_BODY(h2_streams, tc)
 	    "https://127.0.0.1:%d" CC "hosts | grep -qx 201", port,
 	    harness_origin, cwd, port);
 	ATF_REQUIRE_MSG(system(cmd) == 0, "no session, or no host");
-	/* A new connection's first flight: 100 at once, and 25. */
-	h2_burst(port, 0, 100, 300);
+	/* A new connection's first flight: 100 at once (the streams allowed
+	 * by default, web.conf's h2_streams), and 25. */
+	h2_burst(port, 0, R4_H2_STREAMS, 3 * R4_H2_STREAMS);
 	h2_burst(port, 0, 25, 100);
 	/* Slots taken again the moment they end, event streams beside. */
 	h2_burst(port, 3, 40, 300);
@@ -21494,7 +21963,7 @@ ATF_TC_BODY(cyang_enrolment, tc)
 {
 	struct authn	a;
 	struct resp	r;
-	char		tok[80];
+	char		tok[256];
 	bool		on;
 
 	start(tc, 0, NULL);
@@ -21510,7 +21979,10 @@ ATF_TC_BODY(cyang_enrolment, tc)
 	if (on) {
 		snprintf(tok, sizeof(tok), "%s", jstr(&r,
 		    "arcana-console:output.token"));
-		ATF_CHECK_EQ(64, strlen(tok));
+		/* "arce1_", its secret and a root's SHA-256: 64 bytes in
+		 * base64url. */
+		ATF_CHECK_MSG(strncmp(tok, "arce1_", 6) == 0 && strlen(tok) ==
+		    6 + 86, "%s", tok);
 		ATF_CHECK(strstr(jstr(&r, "arcana-console:output.command"),
 		    "-p 4311") != NULL);
 		resp_free(&r);
@@ -24357,6 +24829,102 @@ ATF_TC_BODY(authz_sdwan_console, tc)
  * role that would make one refused, and one written so before is an
  * operator, kept from the console's own.
  */
+/* A token of value v (arcr_/arcw_ and 64 hex digits) of maker into
+ * tokens.json's entries, buf. */
+static void
+token_entry(char *buf, size_t len, const char *v, const char *maker)
+{
+	uint8_t		h[32];
+	unsigned int	n;
+	char		hex[65];
+	int		k;
+
+	EVP_Digest(v, strlen(v), h, &n, EVP_sha256(), NULL);
+	for (k = 0; k < 32; k++)
+		snprintf(hex + 2 * k, 3, "%02x", h[k]);
+	snprintf(buf + strlen(buf), len - strlen(buf), "%s{\"hash\":\"%s\","
+	    "\"name\":\"t\",\"created\":1,\"last\":0,\"write\":%s,\"maker\":"
+	    "\"%s\"}", buf[0] != '\0' ? "," : "", hex, strncmp(v, "arcw_", 5) ==
+	    0 ? "true" : "false", maker);
+}
+
+/*
+ * What is the whole fleet's, or every tenant's alike, is no tenant's
+ * principal's: an API token's whose maker is a tenant's user, a read
+ * one or a write one, gets neither the SD-WAN, the L3NM, the virtual
+ * networks nor the prefix lists, nor the SAPs' services' status; an
+ * untenanted owner's token reads all of it.
+ */
+CONSOLE_TC(authz_tenant_token, "A tenant's user's tokens are held to the "
+    "tenant as the user is")
+ATF_TC_BODY(authz_tenant_token, tc)
+{
+	static const char *const fleet[] = { CC "sdwan/document",
+	    "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw",
+	    "/restconf/data/ietf-vn:virtual-network",
+	    "/restconf/data/ietf-vn:access-point", CC "prefix-lists" };
+	struct authn	 a, t;
+	struct resp	 r;
+	char		 owner[160], toks[1024], rt[80], wt[80], ot[80];
+	char		*json;
+	size_t		 i, k;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	cc_role("acme-op", "operator", "{\"id\":\"*\",\"role\":\"admin\"}");
+	cc_user(&t, "tom", "\"tenant\":\"acme\",\"role\":[\"acme-op\"]", -7);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	snprintf(rt, sizeof(rt), "arcr_%s", "1111111111111111111111111111111"
+	    "111111111111111111111111111111111");
+	snprintf(wt, sizeof(wt), "arcw_%s", "2222222222222222222222222222222"
+	    "222222222222222222222222222222222");
+	snprintf(ot, sizeof(ot), "arcr_%s", "3333333333333333333333333333333"
+	    "333333333333333333333333333333333");
+	toks[0] = '\0';
+	token_entry(toks, sizeof(toks), rt, "tom");
+	token_entry(toks, sizeof(toks), wt, "tom");
+	token_entry(toks, sizeof(toks), ot, "admin");
+	ATF_REQUIRE(asprintf(&json, "{\"tokens\":[%s]}\n", toks) != -1);
+	put("data/tokens.json", json);
+	free(json);
+	for (k = 0; k < 2; k++) {
+		const char	*tok = k == 0 ? rt : wt;
+
+		for (i = 0; i < nitems(fleet); i++) {
+			http_bearer("GET", fleet[i], tok, NULL, &r);
+			ATF_CHECK_MSG(r.status == 403, "%s %s: %d %.300s",
+			    tok, fleet[i], r.status, r.body);
+			resp_free(&r);
+		}
+		http_bearer("GET", "/restconf/data", tok, NULL, &r);
+		ATF_CHECK_MSG(r.status == 200 && strstr(r.body,
+		    "\"ietf-l3vpn-ntw:l3vpn-ntw\":") == NULL && strstr(r.body,
+		    "\"arcana-console:prefix-lists\":") == NULL && strstr(r.body,
+		    "\"ietf-vn:access-point\":") == NULL && strstr(r.body,
+		    "\"ietf-vn:virtual-network\":") == NULL, "%d %s", r.status,
+		    r.body);
+		resp_free(&r);
+		http_bearer("GET", "/restconf/data/ietf-network:networks", tok,
+		    NULL, &r);
+		ATF_CHECK_MSG(strstr(r.body, "service-status") == NULL,
+		    "%d %.300s", r.status, r.body);
+		resp_free(&r);
+	}
+	/* An untenanted owner's token reads them. */
+	for (i = 0; i < nitems(fleet); i++) {
+		http_bearer("GET", fleet[i], ot, NULL, &r);
+		ATF_CHECK_MSG(r.status != 403 && r.status != 401, "%s: %d "
+		    "%.300s", fleet[i], r.status, r.body);
+		resp_free(&r);
+	}
+	http_bearer("GET", "/restconf/data", ot, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body,
+	    "\"arcana-console:prefix-lists\":") != NULL, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+}
+
 CONSOLE_TC(authz_tenant_owner, "A tenant's user is no console owner")
 ATF_TC_BODY(authz_tenant_owner, tc)
 {
@@ -24444,11 +25012,17 @@ ATF_TC_BODY(authz_token_maker, tc)
 	ATF_REQUIRE(jstr(&r, "token") != NULL);
 	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
 	resp_free(&r);
+	/* The token is olga on the host: the host told she is an owner. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/nacm-sync", sa);
+	rc_act(path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
 	snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:submit", sa);
 	snprintf(body, sizeof(body), "{\"arcana-jobs:input\":{\"change\":[%s]}}",
 	    R1_MONITOR);
 	http_bearer("POST", path, tok, body, &r);
-	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "access denied") ==
+	    NULL, "%d %s", r.status, r.body);
 	resp_free(&r);
 	snprintf(cookie, sizeof(cookie), "%s", owner);
 	r1_roles("olga", "viewer");
@@ -24815,6 +25389,8 @@ ATF_TP_ADD_TCS(tp)
 
 	ATF_TP_ADD_TC(tp, sweep_own);
 	ATF_TP_ADD_TC(tp, unauthenticated);
+	ATF_TP_ADD_TC(tp, unix_listen);
+	ATF_TP_ADD_TC(tp, unix_listen_set);
 	ATF_TP_ADD_TC(tp, setup_token);
 	ATF_TP_ADD_TC(tp, setup_password);
 	ATF_TP_ADD_TC(tp, register_login);
@@ -24822,6 +25398,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, android);
 	ATF_TP_ADD_TC(tp, android_none);
 	ATF_TP_ADD_TC(tp, second_key);
+	ATF_TP_ADD_TC(tp, login_begin_names);
 	ATF_TP_ADD_TC(tp, users);
 	ATF_TP_ADD_TC(tp, csrf);
 	ATF_TP_ADD_TC(tp, console_plugins);
@@ -24873,6 +25450,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, nacm_user);
 	ATF_TP_ADD_TC(tp, nacm_sync);
 	ATF_TP_ADD_TC(tp, nacm_sync_operator);
+	ATF_TP_ADD_TC(tp, token_nacm);
 	ATF_TP_ADD_TC(tp, server_readdress);
 	ATF_TP_ADD_TC(tp, nacm_console);
 	ATF_TP_ADD_TC(tp, job_user);
@@ -24898,6 +25476,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pfxlists);
 	ATF_TP_ADD_TC(tp, labels);
 	ATF_TP_ADD_TC(tp, password);
+	ATF_TP_ADD_TC(tp, password_proof);
 	ATF_TP_ADD_TC(tp, ldap);
 	ATF_TP_ADD_TC(tp, workflow_approval);
 	ATF_TP_ADD_TC(tp, sdwan);
@@ -24926,6 +25505,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, restconf_actions_old);
 	ATF_TP_ADD_TC(tp, stream_restconf);
 	ATF_TP_ADD_TC(tp, restconf_job_confirm);
+	ATF_TP_ADD_TC(tp, token_safe_jobs);
 	ATF_TP_ADD_TC(tp, restconf_jobs_safe_wait);
 	ATF_TP_ADD_TC(tp, sapnet);
 	ATF_TP_ADD_TC(tp, sapnet_attach);
@@ -24953,6 +25533,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, ldap_names);
 	ATF_TP_ADD_TC(tp, authz_sdwan_deep);
 	ATF_TP_ADD_TC(tp, authz_tenant_owner);
+	ATF_TP_ADD_TC(tp, authz_tenant_token);
 	ATF_TP_ADD_TC(tp, authz_token_maker);
 	ATF_TP_ADD_TC(tp, authz_trace_hosts);
 	ATF_TP_ADD_TC(tp, authz_stream_session);

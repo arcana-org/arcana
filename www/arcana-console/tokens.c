@@ -24,8 +24,11 @@
  * nothing at once, in every worker: the file is read again whenever it
  * changed.  A token keeps who made it (the user's name and id): it
  * reaches no more than its maker may now, a host at a time (users.c's
- * principal_host()), and nothing once the maker is gone; one made
- * before tokens kept a maker is the built-in owner's.
+ * principal_host()), the console's nodes by its maker's role and tenant
+ * (cnodes.c's table, which says what a token reads and changes), and
+ * nothing once the maker is gone; one made before tokens kept a maker
+ * is the built-in owner's.  To a host it is said as token-read, a read
+ * token, or as its maker, a write one (users.c's principal_nacm()).
  */
 
 #include <sys/param.h>
@@ -67,45 +70,6 @@ put(ucl_object_t *o, const char *key, ucl_object_t *v)
 {
 
 	ucl_object_insert_key(o, v, key, 0, true);
-}
-
-/*
- * What a token may read: anything RESTCONF tells, but the console's
- * own settings, the security keys, push and the enrolment tokens that
- * let a host join; never sign-in.  A read is what guard() is told is
- * not a change.
- */
-bool
-token_readable(const char *path)
-{
-
-	if (strncmp(path, CYANG_DATA "settings", sizeof(CYANG_DATA) + 7) ==
-	    0 || strncmp(path, CYANG_DATA "enrolment", sizeof(CYANG_DATA) +
-	    8) == 0 || strncmp(path, CYANG_DATA "push", sizeof(CYANG_DATA) +
-	    3) == 0 || strncmp(path, CYANG_DATA "credentials",
-	    sizeof(CYANG_DATA) + 10) == 0)
-		return (false);
-	/* The modules described for forms too (ymodule.c); of /api,
-	 * the socket's reads and an IDS's pcap files. */
-	return (strcmp(path, "/restconf") == 0 || strncmp(path, "/restconf/",
-	    10) == 0 || strncmp(path, "/yang/", 6) == 0 || strcmp(path,
-	    "/api/stream") == 0 || (strncmp(path, "/api/servers/", 13) ==
-	    0 && strstr(path, "/ids/pcap") != NULL));
-}
-
-/* What a write token may change: what it may read, but the tokens and
- * the CA. */
-bool
-token_writable(const char *path)
-{
-
-	/* Nor who is who: a token must not make itself an owner. */
-	return (token_readable(path) && strncmp(path, CYANG_DATA
-	    "tokens", sizeof(CYANG_DATA) + 5) != 0 && strncmp(path, CYANG_DATA
-	    "users", sizeof(CYANG_DATA) + 4) != 0 && strncmp(path, CYANG_DATA
-	    "roles", sizeof(CYANG_DATA) + 4) != 0 && strncmp(path, CYANG_DATA
-	    "groups", sizeof(CYANG_DATA) + 5) != 0 && strncmp(path, CYANG_DATA
-	    "ca", sizeof(CYANG_DATA) + 1) != 0);
 }
 
 static void

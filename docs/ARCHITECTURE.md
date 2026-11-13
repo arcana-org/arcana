@@ -166,6 +166,15 @@ document for the whole fleet, and so not a tenant's user's.
   it registers.  The backend checks `clientDataJSON` (type, challenge,
   origin) and the authenticator data (RP ID hash, flags, counter) and
   verifies the signature with libcrypto.  ES256, EdDSA and RS256.
+  A sign-in's start names no key: the authenticator offers the
+  passkeys it holds (registration asks for one, `residentKey`
+  preferred), and the credential it answers with names the user.  A
+  user name sent with the start (a key that keeps no passkey) gets
+  that user's keys, and a name with none as many ids made by HMAC of
+  the name with a secret of the console's (`credentials.json`), the
+  same each time, so the reply tells not who is there; a named start
+  waits while the name or the address is throttled, and is a try of
+  the address's.
 * **Passwords.**  A user may also sign in with a password of the
   console's own (bcrypt) or, when **Settings** name a directory, by LDAP
   over TLS.  A session opened by the console's own password has the
@@ -182,7 +191,11 @@ document for the whole fleet, and so not a tenant's user's.
   tried from one address (5 a minute), by the name from every address
   (50) and by the address (20), never for everyone; the setup token's
   tries have a count of their own; bcrypt and the directory run in a
-  task, never on the server's loop.
+  task, never on the server's loop, a password set or checked as one
+  signing in.  One's own password is changed with the current one, or
+  with a key of one's own over a challenge made for that (the user in
+  it, under the console's MAC, used once): a session left open is not
+  enough; an owner sets another's.
 * **Users and tenants.**  Each user has a stable id beside its name
   (`users.json`, made with the user): a session, a token's maker and a
   stored intent's author name it, so that a user removed and another
@@ -200,7 +213,16 @@ document for the whole fleet, and so not a tenant's user's.
   no more.  8 streams of one principal at once (a token's from one
   address), an event stream an hour at most, then made again by the
   browser.  One guard checks every protected
-  route; state-changing requests also need the console's own `Origin`
+  route, by one table of who may touch which of the console's own nodes
+  (`cnodes.c`: each node or subtree's role to read and to write it,
+  whether it is the whole fleet's or every tenant's alike, so no
+  tenant's, and what an API token does with it), a user judged by
+  their role and tenant, a token by its kind and its maker's role and
+  tenant; `make check-cnodes` has every node and action of
+  arcana-console in it.  A client of a unix listener (0660, the
+  console's user's and `listen_group`'s) is known by its uid,
+  `unix:<uid>`, to the throttle; a request on one is judged by its
+  `Origin` as any.  State-changing requests also need the console's own `Origin`
   (a browser sends it), or `X-Arcana: 1` from a client that sends no
   `Origin`.  A GET changes nothing, so it needs neither, even where a
   read is kept to the roles that may change (a host's system files).
@@ -209,11 +231,19 @@ document for the whole fleet, and so not a tenant's user's.
   that host (`users.c`) and, there, to the host's access rules by
   name; an API token, held to its own reach (a read token a viewer's,
   a write token an admin's), never more than its maker may now, a host
-  at a time, said to the host as the console; or the console itself,
-  which only the paths that act for no one take (the subscriptions'
-  connections, the notifier's and the workflows' event reads, the
-  SD-WAN manager, the threat feeds' delivery, the alert channel, the
-  hosts' roles synchronized).  What the console does by itself is
+  at a time, and said to the host as what it may there: a read token
+  as the NACM user `token-read`, in no group (a viewer: secrets
+  masked, BIRD's texts and the services' values left out), a write
+  token as its maker (the built-in owner for one made before tokens
+  kept a maker), the host's rules for that user holding it; or the
+  console itself, said as `console` (group admin by the agents'
+  default), which only the paths that act for no one take (the
+  subscriptions' connections, the notifier's and the workflows' event
+  reads, the SD-WAN manager, the threat feeds' delivery, the alert
+  channel, the hosts' roles synchronized).  `console` and `token-read`
+  are no user's names: the console makes no user of either, its
+  nacm-sync takes `token-read` out of every group, and an agent holds
+  `token-read` to a viewer whatever its rules say.  What the console does by itself is
   bounded by who asked for it: the SD-WAN manager works from the L3NM
   as a user last applied it (each edge it changed theirs to change),
   never from what is kept and not applied, an identity run out taken
@@ -340,13 +370,17 @@ Without a `tls { }` block the console runs its own CA (`pki.c`): EC
 P-256, made at first start in the data directory, with the console's
 client certificate signed by it.  A logged-in user asks for a token for
 a host (`arcana-console:enrolment/create-token`: name, host, port); it
-is 32 random
-bytes, single use, valid an hour.  `arcana-enrol(8)` on the host makes
+is `arce1_` and base64url of 32 random bytes and the SHA-256 of each
+root of the CA (the console keeps the random bytes' SHA-256 alone),
+single use, valid an hour: one pasted text lets the host in and pins
+the CA it will trust.  `arcana-enrol(8)` on the host makes
 a key and a certificate request and sends them with the token (`POST
 /api/enrol`, no session).  The console signs a certificate for the
 token's host, whatever the request's subject says, with `serverAuth` and
 a SAN for the host, returns it with the CA, and adds `tcp://host:port`
-to its servers.  The host's key never leaves the host.
+to its servers; `arcana-enrol` writes nothing unless each certificate
+of that CA is one the token (or `-f`) pins.  The host's key never
+leaves the host.
 
 ## Trace model
 

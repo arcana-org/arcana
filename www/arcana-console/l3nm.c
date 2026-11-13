@@ -511,10 +511,9 @@ l3nm_into(struct http_request *req, ucl_object_t *top)
 {
 	ucl_object_t		*o;
 	const ucl_object_t	*v;
-	const char		*u;
+	char			 why[300];
 
-	if ((u = session_user(req)) != NULL && !user_may_path(u,
-	    L3NM_PATH, false))
+	if (req_may_path(req, L3NM_PATH, false, NULL, why, sizeof(why)) != 0)
 		return;
 	pthread_mutex_lock(&l3nm_lock);
 	o = store_load(L3NM_FILE);

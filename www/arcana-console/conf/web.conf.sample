@@ -14,6 +14,13 @@ server {
 	#task_threads = 32;
 	#body_max = 8388608;
 	#pidfile = "/var/run/arcana-console.pid";
+	# A unix socket listened on ("unix:/var/run/arcana-console.sock"):
+	# the console's user's, of this group (its own unless named; a
+	# reverse proxy's, say), and this mode; its clients known by uid.
+	#listen_group = "www";
+	#listen_mode = "0660";
+	# The streams an HTTP/2 connection may have open at once (24-256).
+	#h2_streams = 100;
 }
 
 # WebAuthn relying party: the console's host name, and the exact origin

@@ -125,71 +125,25 @@ read_json(struct http_request *req)
 bool
 guard(struct http_request *req, bool mutate)
 {
-	struct principal	 p;
-	const char		*v, *u;
+	const char		*v, *code;
+	char			 why[300];
+	int			 st;
 
 	config_refresh();
-	if (!session_valid(req)) {
-		/*
-		 * An API token (tokens.c): a read one to read, a write one
-		 * to change things too; neither to the console's own
-		 * settings, sign-in, push or the keys that let a host join,
-		 * nor, for a change, to the tokens or the CA.  A bearer
-		 * token is not sent by a browser by itself: no CSRF checks.
-		 */
-		switch (token_kind(req)) {
-		case TOKEN_WRITE:
-			if (mutate ? token_writable(req->path) :
-			    token_readable(req->path))
-				return (true);
-			reply_error(req, 403, "token", "an API token may not "
-			    "%s this", mutate ? "change" : "read");
-			return (false);
-		case TOKEN_READ:
-			if (!mutate && token_readable(req->path))
-				return (true);
-			reply_error(req, 401, "unauthenticated", mutate ?
-			    "an API token reads only" : "log in first");
-			return (false);
-		default:
-			reply_error(req, 401, "unauthenticated", "log in first");
-			return (false);
-		}
-	}
-	/* One of no one, neither a user's nor a token's, opens nothing:
-	 * no name is no role, never every role. */
-	req_principal(req, &p);
-	if (p.kind == P_NONE) {
-		reply_error(req, 401, "unauthenticated", "a session of no "
-		    "user: sign in again");
+	/*
+	 * Who may touch the path (cnodes.c's one table): a session's user
+	 * by their role and tenant; an API token (a bearer's, or the session
+	 * it opened) by its kind and its maker's role and tenant.  A bearer
+	 * token is not sent by a browser by itself: no CSRF checks.  The
+	 * hosts' routes look at the role on the host besides.
+	 */
+	if ((st = req_may_path(req, req->path, mutate, &code, why,
+	    sizeof(why))) != 0) {
+		reply_error(req, st, code, "%s", why);
 		return (false);
 	}
-	/* Opened with a write token, or by a password the console limits:
-	 * what a write token may, no more. */
-	if (session_by_token(req) && !(mutate ? token_writable(req->path) :
-	    token_readable(req->path))) {
-		reply_error(req, 403, "token", "a session opened with an API "
-		    "token or a password may not %s this: sign in with a "
-		    "security key", mutate ? "change" : "read");
-		return (false);
-	}
-	/* A user of a tenant: not what is the whole fleet's. */
-	if ((u = session_user(req)) != NULL && user_tenant(u)[0] != '\0' &&
-	    path_fleet_wide(req->path)) {
-		reply_error(req, 403, "tenant", "the SD-WAN and its services "
-		    "are the whole fleet's: not a tenant's user's");
-		return (false);
-	}
-	/* A console user: what their role on the console allows
-	 * (users.c); the hosts' routes look at their role on the host. */
-	if (u != NULL && !user_path_ok(user_console(u),
-	    req->path, mutate)) {
-		reply_error(req, 403, "role", "%s of this console may not %s "
-		    "this", user_console(u) == CROLE_OPERATOR ? "an operator" :
-		    user_console(u) == CROLE_MEMBER ? "a member" : "a user no "
-		    "longer", mutate ? "change" : "read");
-		return (false);
-	}
+	if (!session_valid(req))
+		return (true);
 	/*
 	 * A GET changes nothing (the routes go by their method), so the
 	 * reads counted as changes for the roles above, a host's system

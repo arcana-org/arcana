@@ -700,14 +700,13 @@ peer_changes(const struct server *s, const char *nu, const char *pf)
 	return (strcmp(was, now) != 0);
 }
 
-/* May the request's user say which agent a host is: a console owner. */
+/* May the request say which agent a host is: a console owner's, or a
+ * token of one's (cnodes.c). */
 static bool
 owner_asks(struct http_request *req)
 {
-	const char	*u;
 
-	u = session_user(req);
-	return (u == NULL || user_console(u) == CROLE_OWNER);
+	return (req_console(req) == CROLE_OWNER);
 }
 
 const struct server *
@@ -1217,14 +1216,13 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 {
 	const ucl_object_t	*wl, *nl, *e, *o;
 	ucl_object_iter_t	 it, it2;
-	const char		*id, *u, *w, *pn, *nu, *rt, *t;
+	const char		*id, *w, *pn, *nu, *rt, *t;
 	char			 oldhost[256], *old;
 	int			 i, nnew, ngone;
 	bool			 seen;
 
 	wl = ucl_object_lookup(was, "host");
 	nl = ucl_object_lookup(now, "host");
-	u = session_user(req);
 	/* A user of a tenant adds and keeps the tenant's hosts alone. */
 	rt = req_tenant(req);
 	nnew = ngone = 0;
@@ -1242,8 +1240,8 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 				return (400);
 			}
 			/* Who may add first: no id told to one who may not. */
-			if (u != NULL && !user_path_ok(user_console(u),
-			    CYANG_DATA "hosts", true)) {
+			if (req_may_path(req, CYANG_DATA "hosts", true, NULL, why,
+			    len) != 0) {
 				snprintf(why, len, "a host is added by an "
 				    "operator or an owner of this console");
 				return (403);

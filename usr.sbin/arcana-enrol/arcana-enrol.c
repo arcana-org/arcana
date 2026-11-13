@@ -9,9 +9,11 @@
  * a certificate request, sends it with the one-time token the console
  * gave, and writes the certificate and the CA where arcana-agent(8) reads
  * them; with -s, enables and starts arcana-agent with them.  The CA that
- * comes back is the agent's trust anchor: it comes over HTTPS alone
- * unless -i says plain HTTP will do, and with -f each of its
- * certificates must be one whose SHA-256 the console showed.
+ * comes back is the agent's trust anchor: each of its certificates must
+ * be one whose SHA-256 the token carries (the console's "arce1_" token:
+ * base64url of its secret and the roots' SHA-256s) or -f names; a token
+ * that carries none, and no -f, enrols only with -i, and over plain
+ * HTTP only with -i too.
  */
 
 #include <sys/param.h>
@@ -44,7 +46,9 @@
 #define	PATH_ETC	PREFIX "/etc/arcana"
 #define	DEFAULT_PORT	4310
 #define	MAX_REPLY	(256 * 1024)
-#define	MAX_PINS	4
+#define	MAX_PINS	8
+#define	TOKEN_PREFIX	"arce1_"
+#define	TOKEN_PINS	4	/* the console's at most */
 
 extern char	**environ;
 
@@ -53,6 +57,8 @@ static const char *ssl_err(void);
 static char	*csr_pem(EVP_PKEY *, const char *);
 static char	*post(const char *, const char *, bool);
 static bool	 pin_parse(const char *, unsigned char *);
+static void	 token_pins(const char *, unsigned char (*)[32], size_t *,
+		    size_t);
 static void	 pins_check(const char *, unsigned char (*)[32], size_t);
 static void	 write_file(int, const char *, const char *, mode_t);
 static void	 write_key(int, const char *, EVP_PKEY *);
@@ -125,7 +131,8 @@ post(const char *url, const char *body, bool insecure)
 	if (strcmp(u->scheme, "http") == 0 && !insecure)
 		errx(1, "%s: not HTTPS: the token and the CA the agent is to "
 		    "trust would travel in the clear; -i to enrol over plain "
-		    "HTTP all the same (with -f, the CA is checked)", url);
+		    "HTTP all the same (the CA is checked by the token's pins)",
+		    url);
 	if (strcmp(u->scheme, "http") == 0)
 		warnx("%s: not HTTPS; the token and the certificate travel in "
 		    "the clear", url);
@@ -164,6 +171,55 @@ pin_parse(const char *s, unsigned char *out)
 }
 
 /*
+ * The roots' SHA-256s the console's token carries, after its 32 bytes
+ * of secret, added to pins (*np of them, max at most); exits on a token
+ * that is not one.
+ */
+static void
+token_pins(const char *token, unsigned char (*pins)[32], size_t *np,
+    size_t max)
+{
+	unsigned char	 raw[32 * (1 + TOKEN_PINS) + 3];
+	BIO		*b, *b64;
+	size_t		 n, i;
+	char		*s, *p;
+	int		 r;
+
+	if (strncmp(token, TOKEN_PREFIX, sizeof(TOKEN_PREFIX) - 1) != 0)
+		errx(1, "not a token of the console's (%s...)", TOKEN_PREFIX);
+	/* base64url to base64, padded, for libcrypto. */
+	n = strlen(token + sizeof(TOKEN_PREFIX) - 1);
+	if (n == 0 || n > 4 * sizeof(raw) / 3 || (s = calloc(1, n + 4)) == NULL)
+		errx(1, "not a token of the console's");
+	memcpy(s, token + sizeof(TOKEN_PREFIX) - 1, n);
+	for (p = s; *p != '\0'; p++)
+		if (*p == '-')
+			*p = '+';
+		else if (*p == '_')
+			*p = '/';
+		else if (!isalnum((unsigned char)*p))
+			errx(1, "not a token of the console's");
+	while (n % 4 != 0)
+		s[n++] = '=';
+	if ((b = BIO_new_mem_buf(s, (int)n)) == NULL ||
+	    (b64 = BIO_new(BIO_f_base64())) == NULL)
+		errx(1, "the token: %s", ssl_err());
+	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+	b = BIO_push(b64, b);
+	r = BIO_read(b, raw, sizeof(raw));
+	BIO_free_all(b);
+	free(s);
+	if (r < 32 || (r - 32) % 32 != 0 || r > 32 * (1 + TOKEN_PINS))
+		errx(1, "not a token of the console's");
+	for (i = 32; i < (size_t)r; i += 32) {
+		if (*np == max)
+			errx(1, "at most %zu fingerprints", max);
+		memcpy(pins[(*np)++], raw + i, 32);
+	}
+	explicit_bzero(raw, sizeof(raw));
+}
+
+/*
  * Each certificate of the CA the console sent one of the pinned: one
  * that is not, or none at all, and nothing is written.
  */
@@ -188,8 +244,9 @@ pins_check(const char *ca, unsigned char (*pins)[32], size_t npins)
 		for (i = 0; i < npins && memcmp(pins[i], md, 32) != 0; i++)
 			;
 		if (i == npins)
-			errx(1, "the CA the console sent is not the one -f names "
-			    "(its certificate %zu): nothing written", n + 1);
+			errx(1, "the CA the console sent is not the one the token "
+			    "or -f pins (its certificate %zu): nothing written",
+			    n + 1);
 	}
 	BIO_free(b);
 	if (n == 0)
@@ -370,6 +427,11 @@ main(int argc, char *argv[])
 		usage();
 	url = argv[0];
 	token = argv[1];
+	token_pins(token, pins, &npins, MAX_PINS);
+	/* Nothing to check the CA by: the agent would trust whatever came. */
+	if (npins == 0 && !insecure)
+		errx(1, "the token pins no CA, and no -f does: -i to trust the "
+		    "CA the console sends as it comes");
 	if (name == NULL) {
 		if (gethostname(hostname, sizeof(hostname)) == -1)
 			err(1, "gethostname");

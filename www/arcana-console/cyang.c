@@ -51,7 +51,8 @@
  * DELETE, each change checked as RFC 7950 says), and what changed is
  * kept through the stores' setters, with their checks, their log lines
  * and their refusals (settings_yang_set() and the others).  Who may is
- * users.c's and tokens.c's rules on the path.  The actions (a token
+ * cnodes.c's table on the path, the list above its words, and the
+ * stores' own checks of an entry (whose it is).  The actions (a token
  * made, an invitation, an enrolment token, a workflow run, a step
  * approved, a run stopped, the runs cleared) are POSTed to their node,
  * their input and output RFC 8040 section 3.6's.  Each part's
@@ -459,24 +460,9 @@ cyang_same(const ucl_object_t *a, const ucl_object_t *b)
 static bool
 may(struct http_request *req, const char *path, bool mutate)
 {
-	const char	*u;
+	char	why[300];
 
-	if (!session_valid(req)) {
-		switch (token_kind(req)) {
-		case TOKEN_WRITE:
-			return (mutate ? token_writable(path) :
-			    token_readable(path));
-		case TOKEN_READ:
-			return (!mutate && token_readable(path));
-		default:
-			return (false);
-		}
-	}
-	if (session_by_token(req) && !(mutate ? token_writable(path) :
-	    token_readable(path)))
-		return (false);
-	return ((u = session_user(req)) == NULL ||
-	    user_may_path(u, path, mutate));
+	return (req_may_path(req, path, mutate, NULL, why, sizeof(why)) == 0);
 }
 
 /* Part p's value as its store has it, as the request may see it; run one
