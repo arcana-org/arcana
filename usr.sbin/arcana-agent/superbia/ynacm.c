@@ -16,7 +16,12 @@
  * nacm:default-deny-all or -write.  Deleting the rules brings the
  * default back.  A file that cannot be read denies everything but the
  * recovery session (root, or the agent's own user, on the unix socket),
- * which can write it anew.  How far a request is trusted by its groups
+ * which can write it anew.  Rules cblink cannot hold whole (a path rule
+ * whose path does not compile: a deny's denies all of its module to its
+ * groups, a permit's never matches; cbl_ynacm_status()) are a fault,
+ * nacm-rules on "nacm", told at the start and after each write and
+ * cleared when they are whole again (nacm_check()).  How far a request
+ * is trusted by its groups
  * (clearance()) also decides what a read runs: a vnet jail's own
  * program, by jexec, for an operator and above (jail_prog_refused()).
  */
@@ -237,13 +242,16 @@ ietf_netconf_acm_nacm_edit(cbl_req *req, const struct ietf_netconf_acm *before,
 	char		 tmp[PATH_MAX];
 	int		 error, fd;
 
-	(void)req;
 	(void)before;
 	pthread_mutex_lock(&nacm_lock);
 	if (after->nacm == NULL) {
 		error = unlink(opts.nacm_file) == 0 || errno == ENOENT ? 0 :
 		    errno;
 		pthread_mutex_unlock(&nacm_lock);
+		if (error == 0) {
+			cbl_ynacm_changed(cbl_req_ctx(req));
+			nacm_check(cbl_req_ctx(req));
+		}
 		return (error);
 	}
 	if ((error = cbl_yencode_member(nacm_node(), after, &b)) != 0) {
@@ -267,10 +275,43 @@ ietf_netconf_acm_nacm_edit(cbl_req *req, const struct ietf_netconf_acm *before,
 	}
 	pthread_mutex_unlock(&nacm_lock);
 	cbl_ybuf_free(&b);
-	if (error == 0)
+	if (error == 0) {
 		logmsg(LOG_NOTICE, "%s: the access rules written",
 		    opts.nacm_file);
+		/* Read again now, not at the next request: whether cblink
+		 * holds them whole. */
+		cbl_ynacm_changed(cbl_req_ctx(req));
+		nacm_check(cbl_req_ctx(req));
+	}
 	return (error);
+}
+
+/*
+ * Whether cblink holds the rules whole (cbl_ynacm_status()): a fault
+ * nacm-rules on "nacm" while it does not, Major where a deny rule of
+ * them denies wider than written or they cannot be read, Minor where a
+ * permit rule never matches; cleared once they are whole.
+ */
+void
+nacm_check(cbl_ctx *ctx)
+{
+	struct fault_live	 v = { .object = NACM_FAULT_OBJECT };
+	char			 why[256];
+	int			 error;
+
+	if (ctx == NULL)
+		return;
+	error = cbl_ynacm_status(ctx, why, sizeof(why));
+	v.well = error == 0;
+	if (v.well)
+		v.reason = "the access rules are held whole again";
+	(void)fault_reconcile("arcana-agent", NACM_FAULT, NULL, &v, 1,
+	    "the access rules are held whole again");
+	if (error == 0)
+		return;
+	logmsg(LOG_ERR, "%s: not held whole: %s", opts.nacm_file, why);
+	fault_set(NACM_FAULT, error == EACCES ? "Major" : "Minor",
+	    NACM_FAULT_OBJECT, "arcana-agent", "%s", why);
 }
 
 /*

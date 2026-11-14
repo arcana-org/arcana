@@ -58,6 +58,8 @@ static const struct kind {
 	{ "crash", { 5, 0 }, "a process died of a signal that dumps core" },
 	{ "mail", { 4, 5 }, "smtpd stopped, or too much queued" },
 	{ "undo", { 6, 0 }, "a confirmed commit could not be undone" },
+	{ "nacm-rules", { 4, 5 }, "the access rules have a path rule whose "
+	    "path does not compile" },
 	{ "alarm-list-full", { 5, 0 }, "every place of the alarm list is an "
 	    "open alarm: new ones are refused" },
 };

@@ -1507,7 +1507,8 @@ ATF_TC_BODY(job_user, tc)
  * RESTCONF's changes (RFC 8040, RFC 8527): running is not written; the
  * candidate's node PUT, read back from the candidate's datastore; a
  * confirmed commit refused without persist; with it, then confirmed by
- * its persist-id; running has it.  NACM's rules, the agent's own file.
+ * its persist-id; running has it.  NACM's rules, the agent's own file;
+ * a rule of them whose path does not compile refused with why.
  */
 ATF_TC_WITHOUT_HEAD(restconf_write);
 ATF_TC_BODY(restconf_write, tc)
@@ -1518,6 +1519,11 @@ ATF_TC_BODY(restconf_write, tc)
 	    "[\"bob\"]}]},\"rule-list\":[{\"name\":\"admin\",\"group\":"
 	    "[\"admin\"],\"rule\":[{\"name\":\"all\",\"module-name\":\"*\","
 	    "\"access-operations\":\"*\",\"action\":\"permit\"}]}]}}";
+	static const char bad_rules[] = "{\"ietf-netconf-acm:nacm\":{"
+	    "\"rule-list\":[{\"name\":\"ops\",\"group\":[\"ops\"],"
+	    "\"rule\":[{\"name\":\"no-if\",\"module-name\":\"*\","
+	    "\"path\":\"/if:interfaces\",\"access-operations\":\"*\","
+	    "\"action\":\"deny\"}]}]}}";
 	struct authn	 a;
 	struct resp	 r;
 	char		 id[16];
@@ -1555,6 +1561,13 @@ ATF_TC_BODY(restconf_write, tc)
 	    NULL, "%s", r.body);
 	resp_free(&r);
 	snprintf(path, sizeof(path), "%s/ietf-netconf-acm:nacm", cand);
+	/* A rule whose path does not compile (a prefix where its module's
+	 * name goes): refused, and why, for the form to say. */
+	http("PUT", path, bad_rules, &r);
+	EXPECT(&r, 400);
+	ATF_CHECK_MSG(strstr(r.body, "the path /if:interfaces") != NULL &&
+	    strstr(r.body, "no-if") != NULL, "%s", r.body);
+	resp_free(&r);
 	http("PUT", path, rules, &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
@@ -1586,6 +1599,60 @@ ATF_TC_BODY(restconf_write, tc)
 	http("GET", path, NULL, &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(strstr(r.body, "\"ops\"") != NULL, "%s", r.body);
+	resp_free(&r);
+	/* A static route by an interface that is not there: put in use,
+	 * the commit's warning naming the leaf forwarded to the page
+	 * (arcana-fleet:warnings), which says it with the save. */
+	snprintf(path, sizeof(path), "%s/ietf-routing:routing", cand);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	{
+		static const char cpp[] = "{\"control-plane-protocol\":[{"
+		    "\"type\":\"ietf-routing:static\",\"name\":\"rc.conf\","
+		    "\"static-routes\":{\"ietf-ipv4-unicast-routing:ipv4\":{"
+		    "\"route\":[{\"destination-prefix\":\"198.51.100.0/24\","
+		    "\"next-hop\":{\"outgoing-interface\":\"gif9\"}}]}}}]}";
+		struct ucl_parser *p;
+		ucl_object_t *top, *cp;
+		ucl_object_t *rt;
+		char *body;
+
+		/* The candidate's routing as it is, its static routes the
+		 * one route alone: what else it has is left as it was. */
+		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS);
+		ATF_REQUIRE(ucl_parser_add_string(p, r.body, 0));
+		top = ucl_parser_get_object(p);
+		ucl_parser_free(p);
+		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS);
+		ATF_REQUIRE(ucl_parser_add_string(p, cpp, 0));
+		cp = ucl_parser_get_object(p);
+		ucl_parser_free(p);
+		rt = (ucl_object_t *)(uintptr_t)ucl_object_lookup(top,
+		    "ietf-routing:routing");
+		ATF_REQUIRE(rt != NULL);
+		ucl_object_replace_key(rt, cp, "control-plane-protocols", 0,
+		    false);
+		body = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+		ucl_object_unref(top);
+		resp_free(&r);
+		http("PUT", path, body, &r);
+		free(body);
+	}
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/ietf-netconf:commit?arcana-accept="
+	    "rc-conf-files,rc-conf-conflict", data);
+	http("POST", path, "{\"ietf-netconf:input\":{\"confirmed\":[null],"
+	    "\"confirm-timeout\":60,\"persist\":\"t2\"}}", &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body,
+	    "\"arcana-fleet:warnings\"") != NULL && strstr(r.body,
+	    "outgoing-interface: no name of its value") != NULL, "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/ietf-netconf:commit", data);
+	http("POST", path, "{\"ietf-netconf:input\":{\"persist-id\":"
+	    "\"t2\"}}", &r);
+	ATF_CHECK(r.status == 204 || r.status == 200);
 	resp_free(&r);
 	/* What is not taken. */
 	snprintf(path, sizeof(path), "%s/ietf-netconf:lock", data);
@@ -9665,7 +9732,7 @@ ATF_TC_BODY(notify_cases_unknown, tc)
 static const char *const nc_cases[] = { "threshold", "tunnel", "underlay",
     "stamp-unauthenticated", "tca", "bfd", "bgp-neighbor", "ospf-neighbor",
     "bird-instance", "interface", "ids", "key-rotation", "storage", "cpu",
-    "memory", "crash", "mail", "undo", NULL };
+    "memory", "crash", "mail", "undo", "nacm-rules", NULL };
 
 CONSOLE_TC_LONG(notify_cases_must, "Every case left out of the mail: a "
     "commit not confirmed whose undo failed is mailed all the same, its "

@@ -208,14 +208,20 @@ yorigin(const cbl_dnode *n, void *arg __unused)
 	return (NULL);
 }
 
-/* The datastores: running, changed by a confirmed commit alone. */
+/*
+ * The datastores: running, changed by a confirmed commit alone.  Running
+ * is a view of the live system, whose interfaces the kernel has and
+ * services, clones and jails make later: a reference to what is not
+ * there yet (a route by an interface to come) is a warning of the
+ * commit, not a refusal (CBL_YDS_REFS_WARN).
+ */
 int
 ynetconf_datastores(cbl_ctx *ctx)
 {
 	int	error;
 
-	if ((error = cbl_ydatastores(ctx, CBL_YDS_CONFIRMED, undo_failed,
-	    NULL)) != 0)
+	if ((error = cbl_ydatastores(ctx, CBL_YDS_CONFIRMED |
+	    CBL_YDS_REFS_WARN, undo_failed, NULL)) != 0)
 		return (error);
 	return (cbl_yorigin_set(ctx, yorigin, NULL));
 }

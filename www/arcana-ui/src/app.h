@@ -1317,6 +1317,7 @@ struct ycommit {
 	char		 errpath[512];	/* the last error's error-path, or "" */
 	char		 accepted[192];	/* those accepted so far, by commas */
 	char		 token[40];	/* a commit waiting: its persist */
+	char		 warned[256];	/* what the host's commit warned */
 	double		 until;		/* and when the host undoes it (ms) */
 	double		 last;		/* the countdown drawn last */
 };
@@ -1329,6 +1330,10 @@ void		 ycommit_tick(struct ycommit *, double);
  * merge editor has given the host its values: act's "-merge"). */
 void		 ycommit_accept(struct ycommit *, const char *);
 const char	*rc_why(const ucl_object_t *, const char *);
+/* The warnings of a host's answer (the console's arcana-fleet:warnings:
+ * what the host did, or found, that needs telling), their texts one
+ * after another into buf; "" for none. */
+void		 rc_warnings(const ucl_object_t *, char *, size_t);
 /*
  * yform.c: forms made from a host's YANG modules, described by the
  * console (/yang/<module>@<revision>.json).  yform_open(): the form of

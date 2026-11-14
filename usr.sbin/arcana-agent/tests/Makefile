@@ -47,6 +47,12 @@ CFLAGS+=	-I${.CURDIR}/.. -I${YOBJ} -I${.CURDIR}/../../../lib/libvarconf
 # Arcana's own modules: each operation's reply as its module has it
 # (the collectors of yarcana.c's reads), from JSON a case gives.
 CFLAGS+=	${UCL_CFLAGS}
+# ynacmw: access rules written as the agent keeps them, as a host may
+# have from before; whether the rules the agent writes compile.
+PROGS+=		ynacmw
+SRCS.ynacmw=	ynacmw.c ymodel_schema.c
+CFLAGS.ynacmw.c+=	-I${.CURDIR}/../ira
+LDADD.ynacmw+=	${CBLINK_LIBS}
 # yjails: the jails read as arcana-jails has it.
 PROGS+=		yjails
 SRCS.yjails=	yjails_test.c yjails.c ymodel_schema.c

@@ -4625,6 +4625,7 @@ static const struct {
 	{ "bird-instance", "BIRD instance" }, { "ids", "Suricata" },
 	{ "key-rotation", "IPsec key rotation" }, { "crash", "Process crash" },
 	{ "mail", "Mail (smtpd)" }, { "undo", "Commit not undone" },
+	{ "nacm-rules", "Access rules not whole" },
 };
 
 /* A row of the cases: type's, as kept says it, or the default. */

@@ -93,6 +93,32 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### libcblink 0.2.24: rules held whole, the configuration held whole, agent 0.289.0, console 0.439.0
+
+- **Access rules with a path that does not compile** (a prefix such as
+  `/if:interfaces` where the module's name goes, a typo) are no longer
+  passed over.  A deny rule of them denies, to its rule-list's groups and
+  for its operations, all of the module its `module-name` names (or its
+  path's first step, where that is a module; else every module); a
+  permit rule never matches.  The agent raises the fault `nacm-rules`
+  (Major for a deny, Minor for a permit) on `nacm` with the rule and why,
+  and clears it once the rules are written whole.  Writing such a rule
+  is refused; the access rules form says why.
+- **A path rule with key predicates** is held to an action's target
+  (`$USER` too), and a delete is checked for every node it takes away.
+- **A commit holds the whole configuration** to its `when`s, `must`s and
+  references: a change that leaves another node's leafref dangling is
+  refused.  What a host had failing before, left as it was by the
+  change, is not: the commit's answer warns of it, and the page says the
+  warning with the save.  A reference to what is not there (a route by
+  an interface a service, a clone or a jail makes later) never refuses a
+  commit on a host: running is the live system's, and the commit warns
+  of it, naming the leaf.
+- **JSON to a host** is stricter: a member name that is a path, one
+  child named twice (`x` and `m:x`), a decimal64 number with more
+  fraction digits than its type has, are refused rather than taken
+  otherwise.
+
 ### The page's streams on one EventSource, console 0.438.0
 
 - **Each page holds one event stream**, `GET

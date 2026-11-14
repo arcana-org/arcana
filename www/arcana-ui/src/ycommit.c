@@ -39,6 +39,23 @@ rc_why(const ucl_object_t *o, const char *err)
 	return (err != NULL ? err : "the console did not answer");
 }
 
+void
+rc_warnings(const ucl_object_t *o, char *buf, size_t len)
+{
+	const ucl_object_t	*w;
+	ucl_object_iter_t	 it = NULL;
+	size_t			 n = 0;
+
+	if (len == 0)
+		return;
+	buf[0] = '\0';
+	while ((w = ucl_object_iterate(jget(o, "arcana-fleet:warnings"), &it,
+	    true)) != NULL && n < len)
+		if (jstr(w, "text") != NULL)
+			n += (size_t)snprintf(buf + n, len - n, "%s%s",
+			    n > 0 ? "; " : "", jstr(w, "text"));
+}
+
 /* The host's rpc, an operation of ietf-netconf's. */
 static void
 rpc_url(char *buf, size_t len, const struct ycommit *yc, const char *rpc)
@@ -94,8 +111,11 @@ confirm_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	yc->busy = false;
 	if (status == 204 || status == 200) {
 		yc->token[0] = '\0';
-		snprintf(yc->note, sizeof(yc->note), "%s", yc->saved != NULL ?
-		    yc->saved : "Saved.");
+		/* What the commit warned of (a condition the host had
+		 * before, left as it was): said with the save. */
+		snprintf(yc->note, sizeof(yc->note), "%s%s%s", yc->saved !=
+		    NULL ? yc->saved : "Saved.", yc->warned[0] != '\0' ?
+		    " The host warns: " : "", yc->warned);
 		finish(yc, YC_SAVED);
 		return;
 	}
@@ -126,6 +146,7 @@ commit_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		finish(yc, YC_REFUSED);
 		return;
 	}
+	rc_warnings(o, yc->warned, sizeof(yc->warned));
 	snprintf(yc->note, sizeof(yc->note), "Committed; confirming.");
 	rpc_url(url, sizeof(url), yc, "commit");
 	snprintf(body, sizeof(body), "{\"ietf-netconf:input\":{\"persist-id\":"

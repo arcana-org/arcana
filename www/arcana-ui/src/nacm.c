@@ -41,6 +41,7 @@ static struct {
 	char		 error[512];
 	char		 note[512];	/* how the last save went */
 	char		 token[40];	/* a commit waiting: its persist */
+	char		 warned[256];	/* what the commit warned of */
 	double		 until;		/* and when the host undoes it (ms) */
 } nc;
 
@@ -437,7 +438,8 @@ confirm_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	if (status == 204 || status == 200) {
 		nc.token[0] = '\0';
 		snprintf(nc.note, sizeof(nc.note), "Saved: the host holds "
-		    "every request to the new rules.");
+		    "every request to the new rules.%s%s", nc.warned[0] !=
+		    '\0' ? " The host warns: " : "", nc.warned);
 		if (nc.edit != NULL)
 			ucl_object_unref(nc.edit);
 		nc.edit = NULL;
@@ -466,6 +468,7 @@ commit_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		return;
 	}
 	/* Confirmed at once, as the user, under the new rules. */
+	rc_warnings(o, nc.warned, sizeof(nc.warned));
 	snprintf(nc.note, sizeof(nc.note), "Committed; confirming.");
 	url_of(url, sizeof(url), NULL, "/ietf-netconf:commit");
 	snprintf(body, sizeof(body), "{\"ietf-netconf:input\":{\"persist-id\":"

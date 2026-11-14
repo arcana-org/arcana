@@ -3954,6 +3954,115 @@ yang_set_cleanup()
 	stop_daemon
 }
 
+# The access rules cblink holds whole (cbl_ynacm_status()): the rules
+# the agent writes itself all compile, no fault; a deny rule kept from
+# before whose path does not (a prefix where its module's name goes)
+# denies all of its module to its group, the fault nacm-rules open with
+# why; the rules written again (deleted: the default back), cleared.
+atf_test_case nacm_status cleanup
+nacm_status_head()
+{
+	atf_set "descr" "NACM rules not held whole: the agent's own compile;" \
+	    "a kept deny of a bad path a fault, its module denied to its" \
+	    "group alone, cleared when the rules are written again"
+}
+nacm_status_body()
+{
+	local w="$(atf_get_srcdir)/ynacmw"
+
+	atf_check -o not-match:'^bad' "$w" -c
+	atf_check -o match:'^ok system-read$' -o match:'^ok service-values$' \
+	    "$w" -c
+	start_daemon
+	atf_check -o not-match:'"resource":"nacm"' "$JGC" -c "$SOCK" get alarms
+	stop_daemon
+	atf_check "$w" nacm.cbor bob deny ietf-alarms /al:alarms
+	start_daemon
+	atf_check -o match:'"resource":"nacm"' \
+	    -o match:'the path /al:alarms' -o match:'"perceived-severity":"major"' \
+	    "$JGC" -c "$SOCK" get alarms
+	atf_check -s exit:0 -o match:'not held whole: .*kept' cat daemon.out
+	# Its group denied its module, anyone else as the defaults say.
+	atf_check -o not-match:'number-of-alarms' -e ignore -s ignore \
+	    "$JGC" -c "$SOCK" -u bob get alarms
+	atf_check -o match:'number-of-alarms' "$JGC" -c "$SOCK" -u carol \
+	    get alarms
+	# Written again: the default back, the fault cleared.
+	atf_check -o ignore "$JGC" -c "$SOCK" set -x /ietf-netconf-acm:nacm
+	atf_check -o match:'"resource":"nacm"' \
+	    -o match:'"perceived-severity":"cleared"' "$JGC" -c "$SOCK" get alarms
+}
+nacm_status_cleanup()
+{
+	stop_daemon
+}
+
+# A static route by an interface that is not there (yet: a service, a
+# clone, a jail makes it later) commits: running is the live system's,
+# so the reference to it is a warning of the commit, which names the
+# leaf, and the route is kept.
+atf_test_case yang_set_route_absent_if cleanup
+yang_set_route_absent_if_head()
+{
+	atf_set "descr" "A static route by an absent interface committed," \
+	    "a warning naming outgoing-interface"
+}
+yang_set_route_absent_if_body()
+{
+	local r=/ietf-routing:routing/control-plane-protocols/control-plane-protocol=ietf-routing:static,rc.conf/static-routes/ietf-ipv4-unicast-routing:ipv4/route=198.51.100.0%2F24
+
+	# The files rc(8) reads, the case's own.
+	mkdir -p root/etc/defaults root/usr/local/etc/rc.conf.d
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'hostname="gw"\n' > root/etc/rc.conf
+	DAEMON_ARGS="--root $(pwd)/root"
+	start_daemon
+	atf_check -o match:'committed and confirmed' \
+	    -o match:'warning.*outgoing-interface: no name of its value' \
+	    "$JGC" -c "$SOCK" set -a rc-conf-files -a rc-conf-conflict "$r" \
+	    '{"next-hop":{"outgoing-interface":"gif9"}}'
+	atf_check -o match:'198.51.100.0/24' -o match:'"outgoing-interface":"gif9"' \
+	    "$JGC" -c "$SOCK" get -d running routing
+}
+yang_set_route_absent_if_cleanup()
+{
+	stop_daemon
+}
+
+# A small change of the configuration, a leaf through the candidate and
+# a confirmed commit, timed: the whole tree held to its whens, musts and
+# references at each commit (libcblink 0.2.24).  The figure is printed
+# (ARCANA_EDIT_TIMES=1 prints each); a set over 5 s fails.
+atf_test_case yang_set_latency cleanup
+yang_set_latency_head()
+{
+	atf_set "descr" "A leaf set by a confirmed commit, 20 times: the time" \
+	    "of each, printed; none over 5 s"
+}
+yang_set_latency_body()
+{
+	local i t0 t1 ms total=0 max=0
+
+	start_daemon
+	for i in $(seq 1 20); do
+		t0=$(date +%s%N 2>/dev/null || date +%s000000000)
+		atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" \
+		    set /ietf-alarms:alarms/control/max-alarm-status-changes \
+		    $((i % 2 + 8))
+		t1=$(date +%s%N 2>/dev/null || date +%s000000000)
+		ms=$(( (t1 - t0) / 1000000 ))
+		total=$((total + ms))
+		[ $ms -gt $max ] && max=$ms
+		[ -n "$ARCANA_EDIT_TIMES" ] && echo "set $i: $ms ms"
+	done
+	echo "20 sets: $total ms, $((total / 20)) ms each, $max ms the longest"
+	[ $max -le 5000 ] || atf_fail "a set took $max ms"
+}
+yang_set_latency_cleanup()
+{
+	stop_daemon
+}
+
 # What set is refused: NACM's write rules, a must, running itself, a
 # path or value that is none.
 atf_test_case yang_set_refused cleanup
@@ -18129,6 +18238,9 @@ atf_init_test_cases()
 	atf_add_test_case yang_subscribe_subtree
 	atf_add_test_case yang_set
 	atf_add_test_case yang_set_refused
+	atf_add_test_case yang_set_latency
+	atf_add_test_case yang_set_route_absent_if
+	atf_add_test_case nacm_status
 	atf_add_test_case yang_interfaces
 	atf_add_test_case yang_routes
 	atf_add_test_case yang_origins

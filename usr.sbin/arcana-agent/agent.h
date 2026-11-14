@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.288.0"
+#define	ARCANA_AGENT_VERSION	"0.289.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1525,6 +1525,11 @@ const char	*jail_prog_refused(cbl_req *, const char *, const char *, char *,
  * requests it makes for nobody. */
 #define	NACM_ADMIN	"admin"
 #define	NACM_CONSOLE	"console"
+/* The rules cblink does not hold whole: a fault of this type on this
+ * object, until they are (nacm_check(), at the start and each write). */
+#define	NACM_FAULT		"nacm-rules"
+#define	NACM_FAULT_OBJECT	"nacm"
+void		 nacm_check(cbl_ctx *);
 void		 event_add_jail(const char *, const char *, const char *, ...)
 		    __printflike(3, 4);
 int		 do_events(struct work *, uint64_t, struct json_rsp *);

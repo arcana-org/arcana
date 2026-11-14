@@ -31,6 +31,15 @@ module arcana-alarms {
       "A fault the agent watches for and clears when it is gone.";
   }
 
+  identity nacm-rules {
+    base arcana-fault;
+    description
+      "The host's access rules (ietf-netconf-acm) have a path rule whose
+       path does not compile: a deny rule then denies all of its module
+       to its rule-list's groups, a permit rule never matches.  Cleared
+       when every rule is held whole again.";
+  }
+
   identity tunnel {
     base arcana-fault;
     description
