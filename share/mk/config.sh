@@ -23,7 +23,7 @@ end="# make config: end"
 
 # An option: its name, its default, and what it is.
 options="CONSOLE yes The_web_console:_its_server_and_the_page
-CLUSTER yes The_console's_cluster_(Raft):_consoles_that_are_one
+CLUSTER no The_console's_cluster_(Raft):_consoles_that_are_one
 WEBGPU no The_network_map_drawn_with_WebGPU_(Dawn's_emdawnwebgpu)"
 
 now()
@@ -43,7 +43,7 @@ fi
 
 if [ ! -t 0 ] || [ ! -t 1 ]; then
 	echo "make config needs a terminal; set the options in $conf:" >&2
-	echo "  WITHOUT_CONSOLE=yes, WITHOUT_CLUSTER=yes, WITH_WEBGPU=yes" >&2
+	echo "  WITHOUT_CONSOLE=yes, WITH_CLUSTER=yes, WITH_WEBGPU=yes" >&2
 	exit 1
 fi
 

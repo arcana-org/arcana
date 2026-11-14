@@ -26,10 +26,14 @@
 #define	CRAFT_ELECTION_MIN_MS	1500	/* a follower's patience, at least */
 #define	CRAFT_ELECTION_SPAN_MS	1500	/* and a random part above it */
 #define	CRAFT_HEARTBEAT_MS	400
-/* A leader's lease: heard from a majority this recently, it is the one
- * (less than CRAFT_ELECTION_MIN_MS: no other is elected before it
- * stops saying so).  Longer silent, it steps down. */
+/* A leader's lease: a majority answered what it sent this recently, it
+ * is the one (less than CRAFT_ELECTION_MIN_MS: none of them votes for
+ * another before it stops saying so).  Longer silent, it steps down. */
 #define	CRAFT_LEASE_MS		(2 * CRAFT_HEARTBEAT_MS)
+/* What the clocks of two nodes may drift apart in a lease, taken off
+ * it. */
+#define	CRAFT_DRIFT_MS		50
+#define	CRAFT_RING		1024	/* the applied writes' terms kept */
 
 enum craft_role { CRAFT_FOLLOWER, CRAFT_CANDIDATE, CRAFT_LEADER };
 
@@ -60,6 +64,12 @@ struct craft_msg {
 	uint64_t		 last_seq;
 	bool			 granted;	/* vote reply */
 	bool			 ok;		/* append reply */
+	/* vote and its reply: a pre-vote (Raft's thesis, section 9.6),
+	 * asked for term without the asker's own term raised. */
+	bool			 pre;
+	/* append: when the leader sent it, by its clock; the reply says
+	 * it back, and the leader's lease is reckoned from it. */
+	uint64_t		 sent_ms;
 	/* append */
 	uint64_t		 prev_term;
 	uint64_t		 prev_seq;
@@ -75,7 +85,8 @@ struct craft_peer {
 	bool		 voted;		/* gave its vote this term */
 	bool		 inflight;	/* an append is out, unanswered */
 	uint64_t	 sent_ms;
-	uint64_t	 heard_ms;	/* its last answer, this term */
+	/* Its newest answer this term: when what it answered was sent. */
+	uint64_t	 acked_ms;
 };
 
 struct craft {
@@ -83,6 +94,7 @@ struct craft {
 	struct craft_peer	 peers[CRAFT_NODES_MAX - 1];
 	int			 npeers;
 	enum craft_role		 role;
+	bool			 pre;		/* a candidate asking pre-votes */
 	uint64_t		 term;
 	char			 voted_for[CRAFT_NAME_MAX];
 	char			 leader[CRAFT_NAME_MAX];
@@ -98,6 +110,13 @@ struct craft {
 	uint64_t		 election_at;	/* a follower's deadline */
 	uint64_t		 heartbeat_at;	/* a leader's next beat */
 	uint64_t		 led_at;	/* when it became the leader */
+	uint64_t		 term_seq;	/* the leader's first write of it */
+	uint64_t		 heard_ms;	/* a leader's last word, here */
+	/* The writes taken out to apply: which term each was of. */
+	struct {
+		uint64_t	 seq;
+		uint64_t	 term;
+	}			 ring[CRAFT_RING];
 	uint32_t		 rnd;
 	/* What the caller takes out. */
 	struct craft_msg	*out;
@@ -117,13 +136,17 @@ int	 craft_restore_entry(struct craft *, uint64_t, uint64_t, const char *,
 void	 craft_free(struct craft *);
 void	 craft_tick(struct craft *, uint64_t);
 bool	 craft_quorum_heard(const struct craft *, uint64_t);
+bool	 craft_lease(const struct craft *);
+bool	 craft_ready(const struct craft *);
 void	 craft_recv(struct craft *, const struct craft_msg *);
 int	 craft_propose(struct craft *, const char *, const uint8_t *, size_t,
 	    bool, uint64_t *, uint64_t *);
 void	 craft_snapshot_done(struct craft *, const char *, uint64_t);
+bool	 craft_snapshot_wanted(const struct craft *, uint64_t, uint64_t);
 void	 craft_install_snapshot(struct craft *, uint64_t, uint64_t, uint64_t,
 	    const char *);
 const struct craft_entry *craft_next_apply(struct craft *);
+bool	 craft_applied_as(const struct craft *, uint64_t, uint64_t);
 void	 craft_compact(struct craft *, size_t);
 const struct craft_entry *craft_entry_at(const struct craft *, uint64_t);
 uint64_t craft_last_seq(const struct craft *);

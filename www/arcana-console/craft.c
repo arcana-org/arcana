@@ -17,6 +17,16 @@
  *   leader's own term (those before it then are too), and only then
  *   applied: what was never committed can be lost, never what was.
  *
+ * And the thesis' (Ongaro, "Consensus: Bridging Theory and Practice"):
+ * a node that heard from a leader within the least election time votes
+ * for no other and keeps its term (section 4.2.3), so that a node cut off
+ * from the leader alone cannot unseat it; a node asks first whether it
+ * would be elected, its term not raised (the pre-vote, section 9.6), so
+ * that one cut off from all comes back without a term that unseats the
+ * leader; and a leader's lease is reckoned from what a majority answered
+ * in its term, from when what they answered was sent, never granted
+ * whole at its election (section 6.4.1).
+ *
  * Writes are whole documents, so a follower too far behind for the log
  * the leader keeps is sent the documents instead (the caller's), and
  * the log is compacted to what may still be needed.
@@ -201,6 +211,10 @@ craft_init(struct craft *c, const char *self, const char *const *peers,
 	c->role = CRAFT_FOLLOWER;
 	c->now_ms = now_ms;
 	c->rnd = seed != 0 ? seed : 0x9e3779b9;
+	/* It may have answered a leader just before it stopped: it votes
+	 * for no other within an election's least time, as if it had
+	 * heard from it now. */
+	c->heard_ms = now_ms;
 	election_reset(c);
 }
 
@@ -255,6 +269,7 @@ become_follower(struct craft *c, uint64_t term, const char *leader)
 		c->state_dirty = true;
 	}
 	c->role = CRAFT_FOLLOWER;
+	c->pre = false;
 	strlcpy(c->leader, leader != NULL ? leader : "", sizeof(c->leader));
 	election_reset(c);
 }
@@ -284,6 +299,7 @@ send_append(struct craft *c, struct craft_peer *p)
 	m->prev_seq = prev;
 	m->prev_term = term_at(c, prev);
 	m->commit = c->commit;
+	m->sent_ms = c->now_ms;
 	n = craft_last_seq(c) - prev;
 	if (n > CRAFT_BATCH_MAX)
 		n = CRAFT_BATCH_MAX;
@@ -320,19 +336,21 @@ become_leader(struct craft *c)
 	int	i;
 
 	c->role = CRAFT_LEADER;
+	c->pre = false;
 	c->led_at = c->now_ms;
 	strlcpy(c->leader, c->self, sizeof(c->leader));
 	for (i = 0; i < c->npeers; i++) {
 		c->peers[i].next = craft_last_seq(c) + 1;
 		c->peers[i].match = 0;
 		c->peers[i].inflight = false;
-		/* Its vote, or not: the lease starts whole, and the first
-		 * beat's answers keep it. */
-		c->peers[i].heard_ms = c->now_ms;
+		/* No lease from the votes: from the answers to what it
+		 * sends as the leader alone. */
+		c->peers[i].acked_ms = 0;
 	}
 	/* A write of its own term, with nothing in it: what came before
 	 * is committed by it (Raft's section 5.4.2). */
 	(void)log_push(c, c->term, "", NULL, 0, false);
+	c->term_seq = craft_last_seq(c);
 	if (c->npeers == 0)
 		c->commit = craft_last_seq(c);
 	for (i = 0; i < c->npeers; i++)
@@ -348,6 +366,7 @@ start_election(struct craft *c)
 
 	c->term++;
 	c->role = CRAFT_CANDIDATE;
+	c->pre = false;
 	strlcpy(c->voted_for, c->self, sizeof(c->voted_for));
 	c->leader[0] = '\0';
 	c->state_dirty = true;
@@ -366,19 +385,79 @@ start_election(struct craft *c)
 	}
 }
 
+/*
+ * Would it be elected?  Asked of every other node for the term after its
+ * own, which it does not take yet: a node that is cut off asks and asks
+ * again, and comes back with the term it had.
+ */
+static void
+start_prevote(struct craft *c)
+{
+	struct craft_msg	*m;
+	int			 i;
+
+	c->role = CRAFT_CANDIDATE;
+	c->pre = true;
+	election_reset(c);
+	for (i = 0; i < c->npeers; i++)
+		c->peers[i].voted = false;
+	if (craft_quorum(c) <= 1) {
+		start_election(c);
+		return;
+	}
+	for (i = 0; i < c->npeers; i++) {
+		if ((m = out_new(c, CRAFT_VOTE, c->peers[i].name)) == NULL)
+			continue;
+		m->pre = true;
+		m->term = c->term + 1;
+		m->last_term = craft_last_term(c);
+		m->last_seq = craft_last_seq(c);
+	}
+}
+
+/*
+ * When a majority, itself counted, last answered from: of each node's
+ * newest answer of this term, when what it answered was sent, the
+ * majority's oldest; 0 while no majority has answered.
+ */
+static uint64_t
+quorum_acked(const struct craft *c)
+{
+	uint64_t	t[CRAFT_NODES_MAX], v;
+	int		i, j, n;
+
+	t[0] = c->now_ms;
+	for (i = 0; i < c->npeers; i++)
+		t[i + 1] = c->peers[i].acked_ms;
+	n = c->npeers + 1;
+	for (i = 1; i < n; i++)
+		for (j = i; j > 0 && t[j - 1] < t[j]; j--) {
+			v = t[j];
+			t[j] = t[j - 1];
+			t[j - 1] = v;
+		}
+	return (t[craft_quorum(c) - 1]);
+}
+
 void
 craft_tick(struct craft *c, uint64_t now_ms)
 {
 	struct craft_peer	*p;
+	uint64_t		 since;
 	int			 i;
 
 	c->now_ms = now_ms;
 	/* A leader no majority answers any more (cut off, or alone) is
 	 * one no longer: it steps down, lest it keep saying it leads while
-	 * the others elect another (Raft's check-quorum). */
-	if (c->role == CRAFT_LEADER && !craft_quorum_heard(c,
-	    CRAFT_ELECTION_MIN_MS))
-		become_follower(c, c->term, NULL);
+	 * the others elect another (Raft's check-quorum), by the answers
+	 * its lease is reckoned from, an election's time from its own. */
+	if (c->role == CRAFT_LEADER) {
+		since = quorum_acked(c);
+		if (since < c->led_at)
+			since = c->led_at;
+		if (now_ms - since >= CRAFT_ELECTION_MIN_MS)
+			become_follower(c, c->term, NULL);
+	}
 	if (c->role == CRAFT_LEADER) {
 		if (now_ms < c->heartbeat_at)
 			return;
@@ -400,27 +479,53 @@ craft_tick(struct craft *c, uint64_t now_ms)
 		return;
 	}
 	if (now_ms >= c->election_at)
-		start_election(c);
+		start_prevote(c);
 }
 
 /*
- * Has the leader heard from a majority (itself counted) within this
- * long?  What it grants on its own word (locks, the schedulers' turn)
- * is granted on this alone: a lease shorter than an election.
+ * Has a majority (itself counted) answered within this long what the
+ * leader sent in its term?  Reckoned from when what they answered was
+ * sent, and none at its election: a node that answered it votes for no
+ * other until an election's least time after it was sent.
  */
 bool
 craft_quorum_heard(const struct craft *c, uint64_t within_ms)
 {
-	int	i, have;
+	uint64_t	since;
 
 	if (c->role != CRAFT_LEADER)
 		return (false);
-	have = 1;
-	for (i = 0; i < c->npeers; i++)
-		if (c->peers[i].heard_ms != 0 && c->now_ms - c->peers[i].heard_ms
-		    <= within_ms)
-			have++;
-	return (have >= craft_quorum(c));
+	since = quorum_acked(c);
+	return (since != 0 && c->now_ms - since < within_ms);
+}
+
+/* What the leader grants on its own word (locks, the schedulers' turn)
+ * is granted on this alone: a lease shorter than an election, less what
+ * the clocks may drift. */
+bool
+craft_lease(const struct craft *c)
+{
+
+	return (craft_quorum_heard(c, CRAFT_LEASE_MS - CRAFT_DRIFT_MS));
+}
+
+/* A leader whose first write of its term is committed: it knows every
+ * write committed before it, the locks among them. */
+bool
+craft_ready(const struct craft *c)
+{
+
+	return (c->role == CRAFT_LEADER && c->commit >= c->term_seq);
+}
+
+/* Has it heard from a leader within the least election time, or does it
+ * lead?  It votes for no other then (the thesis' section 4.2.3). */
+static bool
+heard_leader(const struct craft *c)
+{
+
+	return (c->role == CRAFT_LEADER || (c->heard_ms != 0 && c->now_ms -
+	    c->heard_ms < CRAFT_ELECTION_MIN_MS));
 }
 
 /* Is a candidate's log at least as new as this node's? */
@@ -443,11 +548,14 @@ on_append(struct craft *c, const struct craft_msg *m)
 
 	if ((r = out_new(c, CRAFT_APPEND_REPLY, m->from)) == NULL)
 		return;
+	r->sent_ms = m->sent_ms;
 	if (m->term < c->term) {
 		r->ok = false;
 		return;
 	}
 	c->role = CRAFT_FOLLOWER;
+	c->pre = false;
+	c->heard_ms = c->now_ms;
 	strlcpy(c->leader, m->from, sizeof(c->leader));
 	election_reset(c);
 	/* The write before: held here, and of the same term? */
@@ -499,7 +607,25 @@ craft_recv(struct craft *c, const struct craft_msg *m)
 	struct craft_peer	*p;
 	int			 i, votes;
 
-	if (m->term > c->term)
+	/*
+	 * A pre-vote, or a vote asked of a node that heard from a leader
+	 * within the least election time: answered, its term kept.  A
+	 * pre-vote is granted as the vote would be, the vote of this term
+	 * given or not; granted, the reply says the term asked for, which
+	 * the asker does not take for a newer one.
+	 */
+	if (m->type == CRAFT_VOTE && (m->pre || heard_leader(c))) {
+		if ((r = out_new(c, CRAFT_VOTE_REPLY, m->from)) == NULL)
+			return;
+		r->pre = m->pre;
+		r->granted = m->pre && !heard_leader(c) && m->term > c->term &&
+		    up_to_date(c, m->last_term, m->last_seq);
+		if (r->granted)
+			r->term = m->term;
+		return;
+	}
+	if (m->term > c->term && !(m->type == CRAFT_VOTE_REPLY && m->pre &&
+	    m->granted))
 		become_follower(c, m->term, m->type == CRAFT_APPEND ? m->from :
 		    NULL);
 	switch (m->type) {
@@ -516,15 +642,20 @@ craft_recv(struct craft *c, const struct craft_msg *m)
 		}
 		break;
 	case CRAFT_VOTE_REPLY:
-		if (c->role != CRAFT_CANDIDATE || m->term != c->term ||
-		    !m->granted || (p = peer_of(c, m->from)) == NULL)
+		if (c->role != CRAFT_CANDIDATE || m->pre != c->pre ||
+		    m->term != c->term + (c->pre ? 1 : 0) || !m->granted ||
+		    (p = peer_of(c, m->from)) == NULL)
 			return;
 		p->voted = true;
 		votes = 1;
 		for (i = 0; i < c->npeers; i++)
 			if (c->peers[i].voted)
 				votes++;
-		if (votes >= craft_quorum(c))
+		if (votes < craft_quorum(c))
+			break;
+		if (c->pre)
+			start_election(c);
+		else
 			become_leader(c);
 		break;
 	case CRAFT_APPEND:
@@ -535,7 +666,11 @@ craft_recv(struct craft *c, const struct craft_msg *m)
 		    (p = peer_of(c, m->from)) == NULL)
 			return;
 		p->inflight = false;
-		p->heard_ms = c->now_ms;
+		/* Answered, taken or not: the lease from when it was sent,
+		 * in this term; an older answer, late, changes nothing. */
+		if (m->sent_ms >= c->led_at && m->sent_ms <= c->now_ms &&
+		    m->sent_ms > p->acked_ms)
+			p->acked_ms = m->sent_ms;
 		if (m->ok) {
 			uint64_t	was = c->commit;
 
@@ -605,20 +740,52 @@ craft_snapshot_done(struct craft *c, const char *peer, uint64_t seq)
 		send_append(c, p);
 }
 
-/* The leader's documents, as of last_seq, are this node's now. */
+/*
+ * Would the leader's documents of term, as of last_seq, be taken?  Not
+ * an old leader's, and not when this node applied as much already: its
+ * documents never go back.
+ */
+bool
+craft_snapshot_wanted(const struct craft *c, uint64_t term,
+    uint64_t last_seq)
+{
+
+	return (term >= c->term && last_seq > c->applied);
+}
+
+/*
+ * The leader's documents, as of last_seq, are this node's now.  The
+ * writes after it that this node holds stay when the one at last_seq is
+ * of last_term: they agree with the leader's that far.
+ */
 void
 craft_install_snapshot(struct craft *c, uint64_t term, uint64_t last_term,
     uint64_t last_seq, const char *leader)
 {
+	uint64_t	n;
+	size_t		i;
 
 	if (term < c->term)
 		return;
 	become_follower(c, term, leader);
-	while (c->nlog > 0)
-		entry_free(&c->log[--c->nlog]);
+	c->heard_ms = c->now_ms;
+	if (!craft_snapshot_wanted(c, term, last_seq))
+		return;
+	if (last_seq > c->base_seq && last_seq < craft_last_seq(c) &&
+	    term_at(c, last_seq) == last_term) {
+		n = last_seq - c->base_seq;
+		for (i = 0; i < n; i++)
+			entry_free(&c->log[i]);
+		memmove(c->log, c->log + n, (c->nlog - n) * sizeof(*c->log));
+		c->nlog -= n;
+	} else
+		while (c->nlog > 0)
+			entry_free(&c->log[--c->nlog]);
 	c->base_term = last_term;
 	c->base_seq = last_seq;
-	c->commit = c->applied = last_seq;
+	if (c->commit < last_seq)
+		c->commit = last_seq;
+	c->applied = last_seq;
 	c->log_truncated = true;
 	c->log_dirty_from = 0;
 }
@@ -632,10 +799,23 @@ craft_next_apply(struct craft *c)
 
 	while (c->applied < c->commit) {
 		c->applied++;
-		if ((e = craft_entry_at(c, c->applied)) != NULL)
+		if ((e = craft_entry_at(c, c->applied)) != NULL) {
+			c->ring[e->seq % CRAFT_RING].seq = e->seq;
+			c->ring[e->seq % CRAFT_RING].term = e->term;
 			return (e);
+		}
 	}
 	return (NULL);
+}
+
+/* Was the write at seq, taken out to apply, of term?  What another
+ * leader wrote in its place was not. */
+bool
+craft_applied_as(const struct craft *c, uint64_t seq, uint64_t term)
+{
+
+	return (seq != 0 && c->ring[seq % CRAFT_RING].seq == seq &&
+	    c->ring[seq % CRAFT_RING].term == term);
 }
 
 /* The log kept to keep writes after the applied ones, keep of those

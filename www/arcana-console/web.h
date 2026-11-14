@@ -289,6 +289,10 @@ struct timer	*timer_add(timer_fn *, uint64_t, void *, int);
 /* The application's start, on the loop, once the server listens and
  * runs as its user. */
 int		 arcw_init(void);
+/* A warning every reply carries while the application says one (its
+ * reads may be older than what it said it changed); NULL for none.  On
+ * the loop, cheap. */
+const char	*arcw_warning(void);
 /* The web.conf the console reads. */
 extern const char	*web_conf_path;
 /* Its certificate and key, of server { }; NULL without TLS. */

@@ -93,6 +93,50 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The cluster chosen at the build, and Raft made safer, console 0.436.0
+
+- **A console has no cluster unless it is built with one.**  From this
+  version a console built from a tree or from the port is built
+  without the cluster (`nodes.c`, its Raft, the consoles' family):
+  `WITH_CLUSTER=yes` in `config.mk` (`make config` offers it) or the
+  port's `CLUSTER` option (off by default, `make config` in the port)
+  builds it.  A console that stands alone needs nothing: its data
+  loads as before, and nothing of the cluster listens.  **A deployed
+  cluster must choose it before updating**: a node built without it
+  refuses to start with its `cluster` block, saying "built without the
+  cluster: build with WITH_CLUSTER=yes".  For **Update console** the
+  line goes in `/usr/local/etc/arcana/config.mk` of the host the
+  console runs on.
+- **A cluster's nodes are updated together.**  The consoles' family
+  changed (a pre-vote, when an append was sent, a lock's write and its
+  token) and so did a lock's write in the log (how long, not until
+  when): stop every node, update every node, start them again.  The
+  data directories, `cluster/` among them, stay as they are.
+- **Raft.**  A node that heard from the leader within the least
+  election time (1.5 s) votes for no other, and a node asks whether
+  it would be elected before it raises its term (the pre-vote): one
+  cut off from the leader alone, or from all, no longer unseats it.  A
+  leader's lease is reckoned from what a majority answered in its
+  term, never whole at its election, so two nodes never both run the
+  schedulers or grant a lock.  The term, the vote and the log are
+  written by a thread of their own, the votes and acknowledgements
+  sent once they are kept, the directory fsync'ed with each rename.
+  The documents a node is sent never take it back past what it
+  applied, and it keeps the writes after them it holds.
+- **Locks** are held once their own write is applied as it was
+  given (a leader that loses its place first gave nothing), and each
+  node keeps a lock's time by its own clock.  An **SD-WAN apply** is
+  one in the cluster at a time: another node's apply is refused with
+  409 while one runs, and an apply whose lock is lost (renewed before
+  each step's jobs) stops rather than go on beside another.
+- **A change a follower made, not yet written on it in five seconds**,
+  is accepted all the same (it is the cluster's); until the follower
+  has written it, every reply of that node carries `Warning: 110` and
+  its `arcana-console:cluster` says `behind`.
+- **The audit trail and the SENs and SANs are each node's own** in a
+  cluster: each record says the `node` that kept it (a console of no
+  cluster writes them as before).
+
 ### Feeds held back, viewers' reads, the hosts' default for actions, console 0.435.0, agent 0.287.0
 
 - **Threat feeds.**  The agent loads a feed's table by libipfeeds' own

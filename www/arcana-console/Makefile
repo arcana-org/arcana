@@ -20,8 +20,9 @@ MAN=		arcana-console.8
 .include "${.CURDIR}/../../share/mk/arcana.mk"
 
 # The consoles of a cluster to each other (nodes.c, its Raft craft.c):
-# a family served and asked both.  WITHOUT_CLUSTER leaves them out, and
-# nocluster.c answers as a console that is not one of a cluster.
+# a family served and asked both, built with WITH_CLUSTER alone; without
+# it nocluster.c answers as a console that is not one of a cluster, and
+# nothing of the family is built or listens.
 .if ${MK_CLUSTER} != "no"
 SRCS+=		craft.c nodes.c
 CFLAGS+=	-DARCANA_CLUSTER

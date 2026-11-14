@@ -2,6 +2,10 @@
 
 The console runs as a cluster of nodes, active/active, by Raft over
 cblink between the consoles: no database and no shared file system.
+It is built only when chosen: `WITH_CLUSTER=yes` (config.mk, `make
+config`) or the port's `CLUSTER` option, off by default; without it
+`nocluster.c` stands in, a `cluster` block in web.conf stops the
+console, and `make check` compiles the console the other way too.
 Every store is a whole JSON document (`store_save()` writes the file
 whole), so the stores replicate as documents, without a log of
 operations.
@@ -31,33 +35,49 @@ operations.
   `URI:urn:arcana:role:console` and serve as well as dial.
 - **Raft.** `craft.c` is Raft as a state machine without I/O, tested
   by simulation (`tests/raft_test.c`: three and five nodes through
-  drops, delays, duplicates, partitions, crashes and compaction).  A
-  node votes once a term, only for a candidate whose log is as new as
-  its own; a majority makes a leader, which holds a lease and says so
-  every heartbeat; a leader cut off from the majority steps down.  A
-  node with an empty log never stands: the seed (the first node
-  named) leads first, from the documents it has.
+  drops, delays, duplicates, partitions, crashes and compaction, a link
+  cut alone).  A node votes once a term, only for a candidate whose
+  log is as new as its own, and for none while it heard from a leader
+  within the least election time (the thesis' 4.2.3); a node asks for
+  pre-votes before it raises its term (9.6), so one cut off comes back
+  unseating nobody.  A majority makes a leader, whose lease is
+  reckoned from when what a majority answered in its term was sent,
+  less a drift bound, never whole at its election; a leader no
+  majority answers within an election's time steps down.  A node with
+  an empty log never stands: the seed (the first node named) leads
+  first, from the documents it has.
 - **Writes.** `nodes.c` is the I/O: the term, the vote and the log in
-  `<datadir>/cluster`, fsync'ed before anything is said; a thread a
-  peer.  `store_save()` is `cluster_save()`: the leader numbers the
+  `<datadir>/cluster`, written and fsync'ed (the directory too, for a
+  rename) by a writer thread, batch after batch, the messages and the
+  replies each turn of craft made sent only once its batch is kept; a
+  thread a peer.  `store_save()` is `cluster_save()`: the leader numbers the
   document, sends it to every follower and answers once a majority
   holds it and it is written; a follower forwards its write to the
   leader and waits for the same.  Committed writes are applied with
   `store_write()` on every node alike; a node too far behind is sent
-  the documents whole.
+  the documents whole, which never take it back past what it applied,
+  and it keeps the writes after them it holds.  A follower's write the
+  leader committed and the follower has not written within the wait
+  is accepted: the node's replies carry `Warning: 110` and its
+  `cluster` says `behind` until it has.
 - **Reads** are each node's own files: active/active.
 - **Locks.** The read-change-write stores (labels, templates, prefix
-  lists) take the leader's lock besides their flock(2).  A lock is a
-  write of the log, applied by every node to its table, so a new
-  leader knows the locks of the one before; the holder waits to have
-  written every write the leader had committed when it gave the lock
-  before it reads.
+  lists) take the cluster's lock besides their flock(2), and an SD-WAN
+  apply takes `sdwan.apply`.  A lock is a write of the log (its holder
+  and how long), applied by every node to its table by its own clock,
+  so a new leader knows the locks of the one before; a leader grants
+  on its lease, once its first write of its term is committed.  It is
+  held once its own write is applied here as it was given (which
+  writes every write committed before it); its fencing token is that
+  write's sequence, kept while the holder renews it.  The apply checks
+  its lock and token (renewing it) before each step's jobs, and stops
+  when it is lost.
 - **Caches.** What the worker keeps in memory (credentials, sessions,
   users, servers, push subscriptions) is read again when another
   node's write of its store lands.
 - **What runs once.** The workflow scheduler, the SD-WAN manager loop
-  and the mail watcher run on the leader alone, started when a node
-  becomes one and stopped when it is not.
+  and the mail watcher run on the leader alone, while it holds its
+  lease and once its first write of its term is committed.
 - **Sessions** are a document each (`sessions/<hash>.json`): a
   sign-in, an end, a time of use each its own write, so sign-ins on
   two nodes at once are both kept and an end is not undone by another
@@ -71,11 +91,22 @@ operations.
 - Settings › Cluster and `GET arcana-console:cluster` show it; console_test:cluster
   runs three consoles over unix sockets.
 
+- **Per node.** The audit trail (`sdwan-audit.jsonl`, under each node's
+  own key) and the SENs and SANs (`sdwan-sen.jsonl`, `sdwan-san.jsonl`)
+  are each node's own: each record names its `node`.
+
 ## Not yet
 
 - Files written besides `store_save()`: `vapid.pem` (push), the audit
-  chain, `arcana-source.json`, the CA's next state.  The audit chain
-  wants appends through the log.
+  chain and the notices (per node, above: one trail wants appends
+  through the log, an entry kind idempotent by a record id),
+  `arcana-source.json`, the CA's next state.
+- Tokens in one node's memory: enrolment tokens (pki.c) and the setup
+  token (each node writes its own `setup-token`, so two owners can be
+  made on two nodes before replication).  To replicate: the hash of an
+  enrolment token's secret through the log, the entry that spends it
+  winning; the setup token made by the leader, the first registration
+  that commits winning.
 - Membership changes: the nodes are web.conf's; adding one is a restart
   of each with the new block.
 - A cluster of two nodes and a witness.

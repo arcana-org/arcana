@@ -55,9 +55,11 @@ makes, the kinds of job), from which `share/arcana/wire.awk` writes the
 module `arcana@<rev>` of structures alone and the header that names
 them (`arcana.h`); `share/arcana/jobs.awk` makes arcana-jobs' kinds of
 it and `jobs.yaml`.  The consoles' own family, `cluster.yaml`, is a
-family as it was.  `WITHOUT_CLUSTER` builds the console without it:
-`nodes.c` and its Raft, `craft.c`, are left out and `nocluster.c`
-answers in their place as a console that is no cluster's.
+family as it was, built only with `WITH_CLUSTER` (the port's `CLUSTER`
+option, off by default): without it `nodes.c` and its Raft, `craft.c`,
+and the family are left out, nothing of it listens, and `nocluster.c`
+answers in their place as a console that is no cluster's (a `cluster`
+block in `web.conf` stops it, naming the build).
 
 The core operations, and what each runs on the host (the rest are in
 `share/arcana/yang-ops`, each with its module):

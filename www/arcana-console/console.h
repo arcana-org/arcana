@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.435.0"
+#define	ARCW_VERSION		"0.436.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -160,9 +160,9 @@ void		 store_sweep(void);
 void		 store_quiesce(void);
 
 /*
- * nodes.c: the consoles of a cluster; nocluster.c in its place in a
- * build without them (WITHOUT_CLUSTER), where no node is one of a
- * cluster and arcana-console:cluster says the build has none.
+ * nodes.c: the consoles of a cluster, built with WITH_CLUSTER; nocluster.c
+ * in its place in a build without them (the default), where no node is
+ * one of a cluster and arcana-console:cluster says the build has none.
  */
 #ifdef ARCANA_CLUSTER
 #define	CLUSTER_BUILT	true
@@ -177,6 +177,12 @@ bool		 cluster_leads(void);
 bool		 cluster_origin(const char *);
 bool		 cluster_lock(const char *);
 void		 cluster_unlock(const char *);
+bool		 cluster_lock_as(const char *, const char *, uint64_t, uint64_t,
+		    uint64_t *);
+bool		 cluster_lock_held(const char *, const char *, uint64_t);
+void		 cluster_unlock_as(const char *, const char *);
+const char	*cluster_self(void);
+bool		 cluster_behind(void);
 uint64_t	 cluster_gen(void);
 int		 cluster_save(const char *, const void *, size_t, bool);
 void		 cluster_status(ucl_object_t *);

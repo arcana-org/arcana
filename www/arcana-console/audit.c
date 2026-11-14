@@ -194,6 +194,11 @@ audit_add(const char *event, const char *action, const char *policy,
 	jesc(b, who);
 	buf_appendf(b, "\",\"why\":\"");
 	jesc(b, why);
+	/* Each node of a cluster keeps a trail of its own: whose it is. */
+	if (cluster_self() != NULL) {
+		buf_appendf(b, "\",\"node\":\"");
+		jesc(b, cluster_self());
+	}
 	buf_appendf(b, "\",\"prev\":\"%s\"", prev);
 	/* What the hash covers, then the line with it. */
 	if ((body = strndup((char *)b->data, b->offset)) == NULL) {

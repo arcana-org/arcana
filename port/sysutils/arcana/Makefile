@@ -43,7 +43,7 @@ MAKE_ENV=	WITHOUT_DEBUG_FILES=yes \
 		WITHOUT_TESTS=yes
 
 OPTIONS_DEFINE=		CLUSTER CONSOLE WEBGPU
-OPTIONS_DEFAULT=	CLUSTER CONSOLE
+OPTIONS_DEFAULT=	CONSOLE
 OPTIONS_SUB=		yes
 
 CLUSTER_DESC=	Console cluster replicated by Raft (no effect without CONSOLE)
@@ -67,8 +67,9 @@ CONSOLE_MAKE_ARGS=	LIBUCL_SRC=${WRKSRC_libucl} \
 			SSL_CFLAGS="-I${OPENSSLINC}" \
 			SSL_LDFLAGS="-L${OPENSSLLIB}"
 CONSOLE_MAKE_ENV_OFF=	WITHOUT_CONSOLE=yes
-# The console's cluster: nodes.c and its Raft, craft.c.
-CLUSTER_MAKE_ENV_OFF=	WITHOUT_CLUSTER=yes
+# The console's cluster: nodes.c and its Raft, craft.c; off unless
+# chosen ("make config").
+CLUSTER_MAKE_ENV=	WITH_CLUSTER=yes
 # The map's WebGPU is emscripten's emdawnwebgpu port, its package taken
 # here so that the build fetches nothing.
 EMDAWN_V=		v20260423.175430

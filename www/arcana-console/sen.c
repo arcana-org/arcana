@@ -173,9 +173,10 @@ sen_neutralise(const char *s)
 }
 
 /* A notice appended to its file, one a line, the console's user's
- * alone (R26, R32). */
+ * alone (R26, R32); of a cluster, each node's file its own, the node
+ * named in each. */
 static void
-keep(const char *file, const ucl_object_t *o)
+keep(const char *file, ucl_object_t *o)
 {
 	char	 path[MAXPATHLEN], *line;
 	int	 fd;
@@ -186,6 +187,9 @@ keep(const char *file, const ucl_object_t *o)
 		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
 		return;
 	}
+	if (cluster_self() != NULL)
+		ucl_object_insert_key(o, ucl_object_fromstring(cluster_self()),
+		    "node", 0, true);
 	line = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
 	(void)flock(fd, LOCK_EX);
 	if (line != NULL && (write(fd, line, strlen(line)) == -1 || write(fd,

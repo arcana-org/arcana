@@ -46,10 +46,11 @@ FORTIFY_SOURCE?=	2
 # arcanactl), with no need for libwebsockets or emcc.  WITH_WEBGPU draws
 # the network map's moving layer with WebGPU where the browser has it,
 # with Dawn's emdawnwebgpu ("make depends"); without it, WebGL 2 alone.
-# WITHOUT_CLUSTER builds the console without its cluster (nodes.c and
-# its Raft, craft.c): a console that is never one of several.
-__DEFAULT_YES_OPTIONS=	CLUSTER CONSOLE
-__DEFAULT_NO_OPTIONS=	WEBGPU
+# WITH_CLUSTER builds the console with its cluster (nodes.c and its
+# Raft, craft.c, the consoles' family): without it, the default, a
+# console that is never one of several, nothing of the cluster in it.
+__DEFAULT_YES_OPTIONS=	CONSOLE
+__DEFAULT_NO_OPTIONS=	CLUSTER WEBGPU
 .include <bsd.mkopt.mk>
 
 PREFIX?=	/usr/local

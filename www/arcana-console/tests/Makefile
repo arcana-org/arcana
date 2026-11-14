@@ -11,8 +11,9 @@ SRCS.console_test=	console_test.c harness.c ycbor.c
 # them (nacmallow.h).
 CFLAGS.console_test.c+=	-I${.OBJDIR}/..
 SRCS.pwa_test=		pwa_test.c harness.c
-# The cluster's Raft (craft.c), left out with the cluster: the cluster's
-# cases skip then, and arcana-console:cluster says the build has none.
+# The cluster's Raft (craft.c), built WITH_CLUSTER alone: without it the
+# cluster's cases skip, and arcana-console:cluster says the build has
+# none.
 .if ${MK_CLUSTER} != "no"
 ATF_TESTS_C+=		raft_test
 SRCS.raft_test=		raft_test.c craft.c

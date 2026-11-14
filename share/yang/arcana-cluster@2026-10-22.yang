@@ -168,6 +168,30 @@ module arcana-cluster {
       description
         "How long the lock is held unless given back.";
     }
+    leaf pre-vote {
+      type empty;
+      description
+        "A pre-vote: would the node vote for the candidate in term?  The
+         node's term is not raised by it, nor the candidate's.";
+    }
+    leaf sent-ms {
+      type uint64;
+      description
+        "When the leader sent the append, by its own clock; said back in
+         the reply, its lease reckoned from it.";
+    }
+    leaf lock-seq {
+      type uint64;
+      description
+        "The write of the log that gave or renewed the lock, of term.";
+    }
+    leaf token {
+      type uint64;
+      description
+        "The lock's fencing token: the sequence of the write that gave
+         it to its holder, kept while the holder renews it.
+         ";
+    }
   }
 
   grouping attr-node {
@@ -317,12 +341,50 @@ module arcana-cluster {
     }
   }
 
+  grouping attr-pre-vote {
+    leaf pre-vote {
+      type empty;
+      description
+        "A pre-vote: would the node vote for the candidate in term?  The
+         node's term is not raised by it, nor the candidate's.";
+    }
+  }
+
+  grouping attr-sent-ms {
+    leaf sent-ms {
+      type uint64;
+      description
+        "When the leader sent the append, by its own clock; said back in
+         the reply, its lease reckoned from it.";
+    }
+  }
+
+  grouping attr-lock-seq {
+    leaf lock-seq {
+      type uint64;
+      description
+        "The write of the log that gave or renewed the lock, of term.";
+    }
+  }
+
+  grouping attr-token {
+    leaf token {
+      type uint64;
+      description
+        "The lock's fencing token: the sequence of the write that gave
+         it to its holder, kept while the holder renews it.
+         ";
+    }
+  }
+
   rpc vote {
     fam:command 1;
     fam:auth;
     description
       "A candidate asks for the node's vote in term.  Granted once a term,
-       to a candidate whose newest write is as new as the node's own.";
+       to a candidate whose newest write is as new as the node's own, and
+       by a node that has not heard from a leader within the least
+       election time.  With pre-vote, whether it would be granted.";
     input {
       uses attr-node {
         refine node {
@@ -336,6 +398,7 @@ module arcana-cluster {
       }
       uses attr-last-term;
       uses attr-last-seq;
+      uses attr-pre-vote;
     }
     output {
       uses attr-term;
@@ -369,12 +432,14 @@ module arcana-cluster {
       uses attr-commit-seq;
       uses attr-origin;
       uses attr-doc;
+      uses attr-sent-ms;
     }
     output {
       uses attr-term;
       uses attr-ok;
       uses attr-last-term;
       uses attr-last-seq;
+      uses attr-sent-ms;
     }
   }
 
@@ -450,8 +515,9 @@ module arcana-cluster {
       "A lock of the cluster's, held by holder for ttl-ms at most: what is
        read, changed and written again by one node at a time.  Taken or
        not at once (the asker tries again); taken, the reply says the
-       newest write committed, which the asker waits to have written
-       before it reads what it changes.";
+       write of the log that gave it (lock-seq, of term), which the asker
+       waits to have applied, as it was given, before it holds the lock
+       and reads what it changes; and the lock's fencing token.";
     input {
       uses attr-node {
         refine node {
@@ -473,7 +539,9 @@ module arcana-cluster {
     output {
       uses attr-ok;
       uses attr-error;
-      uses attr-commit-seq;
+      uses attr-term;
+      uses attr-lock-seq;
+      uses attr-token;
     }
   }
 

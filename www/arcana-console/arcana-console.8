@@ -296,8 +296,15 @@ The first node named is the seed: its documents are the cluster's when
 it starts, sent whole to a node that has none; the others' are replaced.
 Three nodes, or five, keep a majority when one, or two, stop; a node
 cut off from the majority reads, and refuses changes.
+A change made on a node that the cluster committed but that node has
+not written within five seconds is accepted; until it has, every reply
+of that node carries
+.Ql Warning: 110 .
 The workflow scheduler, the SD-WAN manager and mail run on the leader
-alone.
+alone, while a majority answers it; an SD-WAN apply runs on one node
+at a time.
+The audit trail and the security notices are each node's own, each
+record naming its node.
 Each node needs the CA of the first:
 .Pa ca.pem
 and
@@ -313,13 +320,18 @@ and its host's name, and the nodes take each other by it.
 is a name every node's origin is under
 .Pq Li console.example No for Li https://a.console.example ,
 so that a security key registered on one signs in on every one.
-A console built with
-.Va WITHOUT_CLUSTER
+A console has the cluster only when it was built with
+.Va WITH_CLUSTER
 (the port's
 .Dv CLUSTER
-option off) has no cluster: it refuses to start with this block,
+option, off by default).
+Built without it, nothing of the cluster is in it or listens: it refuses
+to start with this block, saying
+.Dq built without the cluster: build with WITH_CLUSTER=yes ,
 .Pa /restconf/data/arcana-console:cluster
-answers 501, and Settings has no Cluster tab.
+answers 501, the health reply says
+.Li \(dqcluster\(dq:false ,
+and Settings has no Cluster tab.
 .El
 .Pp
 The settings

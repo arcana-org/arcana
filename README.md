@@ -92,9 +92,13 @@ What it needs:
 
 `make WITHOUT_CONSOLE=yes` builds only what a host runs, without
 libwebsockets, emscripten or the libraries' sources.
-`make WITHOUT_CLUSTER=yes` (the port's `CLUSTER` option, on by default)
-builds the console without its cluster, Raft and all: a console that
-stands alone, whose `arcana-console:cluster` answers 501. The port,
+The console is built without its cluster (Raft and all) unless
+`make WITH_CLUSTER=yes` (or `make config`; the port's `CLUSTER` option,
+off by default) says so: without it a console stands alone, its
+`arcana-console:cluster` answers 501, and a `cluster` block in
+`web.conf` stops it. `make check` builds the console the other way too
+(compiled only, `obj/variant`), and runs the cluster's cases only with
+`WITH_CLUSTER`. The port,
 `port/sysutils/arcana` (with a `CONSOLE` option), builds the same way;
 `devel/cblink` comes from cblink's own tree.
 

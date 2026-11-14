@@ -946,7 +946,7 @@ part_shell(void)
 	shot("0b3-keys-token");
 	/* Settings' other tabs: the token's limit said once, no refusal of
 	 * what was not asked for; Cluster says this console is not one, or,
-	 * built WITHOUT_CLUSTER, is not there. */
+	 * built without WITH_CLUSTER, is not there. */
 #ifdef ARCANA_CLUSTER
 	run("document.querySelector('button[data-act=set-tab][data-arg="
 	    "cluster]').click()");

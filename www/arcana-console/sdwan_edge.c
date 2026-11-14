@@ -46,7 +46,9 @@
  * comes in this order, Mplify 119 §12.1's, each step on every edge
  * before the next: the FIBs, IPsec, the tunnels, their peers (the far
  * end's key is read once both ends have one), the routes, and the UNIs
- * last.  One thread does it, and one worker at a time (sdwan.lock).
+ * last.  One thread does it, and one worker at a time (sdwan.lock); of a
+ * cluster, one node at a time (the cluster's lock sdwan.apply, its token
+ * checked again before each step's jobs).
  *
  *	GET  sdwan/plan		what an apply would do, edge by edge
  *	POST sdwan/apply	do it; {"fresh": true} takes everything
@@ -84,6 +86,8 @@
 
 #define	STATE_FILE	"sdwan-state.json"
 #define	LOCK_FILE	"sdwan.lock"
+#define	APPLY_LOCK	"sdwan.apply"	/* the cluster's, of an apply */
+#define	APPLY_LOCK_MS	120000	/* held unless renewed before a step */
 #define	UNIT_FIRST	100	/* tunnels' and VLANs' units, from here */
 #define	WG_PORT		51000	/* + the unit: a wg tunnel's port */
 #define	WG_REMOTE_PORT	51820	/* a remote end point's, unless said */
@@ -8065,6 +8069,9 @@ struct run {
 	ucl_object_t	*alloc;		/* allocations, to keep at the end */
 	ucl_object_t	*keys;		/* resolved: what was read, cached */
 	int		 lockfd;
+	char		 holder[128];	/* of the cluster's apply lock */
+	uint64_t	 token;		/* and its fencing token */
+	bool		 lost;		/* the lock gone: nothing more done */
 };
 
 static ucl_object_t *
@@ -8786,6 +8793,27 @@ made:
 	return (true);
 }
 
+/*
+ * Still this apply's to do, right before a step's jobs go to an edge: of
+ * a cluster, its lock still held with the token it was given (renewed
+ * when due); a console of no cluster, always.  Lost, the step fails and
+ * nothing more is done, undone neither: another node may be applying.
+ */
+static bool
+fenced(struct run *r, ucl_object_t *s)
+{
+
+	if (!r->lost && cluster_lock_held(APPLY_LOCK, r->holder, r->token))
+		return (true);
+	if (!r->lost)
+		thread_log(LOG_ERR, "sdwan: the cluster's apply lock lost "
+		    "(token %ju): the apply stops", (uintmax_t)r->token);
+	r->lost = true;
+	step_set(r, s, "failed", "the cluster's apply lock was lost: "
+	    "another node may be applying");
+	return (false);
+}
+
 static void *
 run_main(void *arg)
 {
@@ -8810,7 +8838,9 @@ run_main(void *arg)
 			    "remake") != 0) || ucl_array_size(
 			    ucl_object_lookup(s, "unmake")) == 0)
 				continue;
-			if (strcmp(ch, "unmake") == 0)
+			if (!fenced(r, s))
+				ok = false;
+			else if (strcmp(ch, "unmake") == 0)
 				(void)do_unmake(r, s);
 			else if (strcmp(str(s, "key"), "probes") != 0 &&
 			    strcmp(str(s, "key"), "rules") != 0 &&
@@ -8848,7 +8878,7 @@ run_main(void *arg)
 				continue;
 			put(s, "unmake", ucl_object_copy(ucl_object_lookup(s,
 			    "unmake_new")));
-			ok = do_make(r, s);
+			ok = fenced(r, s) && do_make(r, s);
 			if (ok)
 				ucl_array_append(made_now, ucl_object_ref(s));
 			else
@@ -8863,7 +8893,7 @@ run_main(void *arg)
 	 * were before the apply, but for that.
 	 */
 	rolled = false;
-	while (!ok && ucl_array_size(made_now) > 0) {
+	while (!ok && !r->lost && ucl_array_size(made_now) > 0) {
 		ucl_object_t	*m = ucl_array_pop_last(made_now);
 		bool		 undone;
 
@@ -8965,6 +8995,8 @@ run_main(void *arg)
 	ucl_object_unref(r->st);
 	ucl_object_unref(r->alloc);
 	ucl_object_unref(r->keys);
+	/* Given back; lost, another's (if any) stays its. */
+	cluster_unlock_as(APPLY_LOCK, r->holder);
 	if (r->lockfd != -1)
 		close(r->lockfd);
 	free(r);
@@ -11480,7 +11512,8 @@ apply_begin(struct plan *plp, const ucl_object_t *y, ucl_object_t *st,
 	struct principal	 who;
 	struct run		*r;
 	pthread_t		 tid;
-	char			 path[MAXPATHLEN];
+	char			 path[MAXPATHLEN], holder[128];
+	uint64_t		 token;
 	int			 fd, nsteps, error;
 
 	if (!edges_ours(chg, "server", why, wlen)) {
@@ -11511,6 +11544,23 @@ apply_begin(struct plan *plp, const ucl_object_t *y, ucl_object_t *st,
 	}
 	applying = true;
 	pthread_mutex_unlock(&st_lock);
+	/* And on every other node of a cluster: its lock, asked once; held
+	 * by another, refused as an apply running here is. */
+	snprintf(holder, sizeof(holder), "%s/apply/%08x", cluster_self() !=
+	    NULL ? cluster_self() : "", arc4random());
+	if (!cluster_lock_as(APPLY_LOCK, holder, APPLY_LOCK_MS, 0, &token)) {
+		close(fd);
+		ucl_object_unref(chg);
+		plan_free(plp);
+		ucl_object_unref(st);
+		pthread_mutex_lock(&st_lock);
+		applying = false;
+		pthread_mutex_unlock(&st_lock);
+		snprintf(why, wlen, "an apply is running on another node of "
+		    "the cluster, or its lock was not had");
+		*statusp = 409;
+		return (-1);
+	}
 	/* The servers as they are now, for the thread. */
 	host_refs();
 	/* The steps: each change but what stays as it is. */
@@ -11579,6 +11629,8 @@ apply_begin(struct plan *plp, const ucl_object_t *y, ucl_object_t *st,
 	r->steps = (ucl_object_t *)(uintptr_t)ucl_object_lookup(ap, "steps");
 	r->keys = ucl_object_typed_new(UCL_OBJECT);
 	r->lockfd = fd;
+	strlcpy(r->holder, holder, sizeof(r->holder));
+	r->token = token;
 	ucl_object_unref(chg);
 	plan_free(plp);
 	/* Counted before the thread runs: it frees r when it is done. */
@@ -11586,6 +11638,7 @@ apply_begin(struct plan *plp, const ucl_object_t *y, ucl_object_t *st,
 	hosts_need(ROLE_OPERATOR);
 	if ((error = hosts_thread(&tid, run_main, r)) != 0) {
 		snprintf(why, wlen, "%s", strerror(error));
+		cluster_unlock_as(APPLY_LOCK, holder);
 		close(fd);
 		ucl_object_unref(r->st);
 		ucl_object_unref(r->alloc);

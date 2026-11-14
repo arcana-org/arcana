@@ -1481,7 +1481,8 @@ health_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	if (status == 200 && jstr(o, "version") != NULL)
 		snprintf(app.version, sizeof(app.version), "%s",
 		    jstr(o, "version"));
-	/* A console built WITHOUT_CLUSTER: Settings has no Cluster tab. */
+	/* A console built without its cluster (no WITH_CLUSTER): Settings
+	 * has no Cluster tab. */
 	if (status == 200)
 		app.no_cluster = ucl_object_lookup(o, "cluster") != NULL &&
 		    !jbool(o, "cluster");

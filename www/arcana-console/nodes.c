@@ -22,9 +22,11 @@
  * says urn:arcana:role:console and the node's host, and asks the others
  * by the same.  craft.c decides, as Raft has it: who leads, which
  * writes are committed.  This is its I/O: the term, the vote and the
- * log kept in <datadir>/cluster before anything is said; messages sent
- * by a thread for each other node; committed writes applied to the data
- * directory, each a whole document, on every node alike.
+ * log kept in <datadir>/cluster before anything is said, by a thread of
+ * their own (a slow disk holds no lock and no loop while it writes), the
+ * messages and the replies craft made with them sent once they are kept;
+ * messages sent by a thread for each other node; committed writes applied
+ * to the data directory, each a whole document, on every node alike.
  *
  * store_save() of a node is cluster_save(): the leader numbers the
  * document and answers once a majority holds it and it is written here;
@@ -40,6 +42,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,10 +64,39 @@
 #define	CL_LOG_KEEP	256	/* and those kept after */
 #define	CL_QUEUE	16
 #define	CL_PENDING	64
-#define	CL_RING		1024
 #define	CL_LOCKS	64
 #define	CL_LOCK_TTL_MS	30000	/* a lock held this long, unless renewed */
+#define	CL_LOCK_TTL_MAX	600000	/* a holder's asking, at most */
 #define	ROLE_CONSOLE	"URI:urn:arcana:role:console"
+
+/* A reply to a node's request, sent with the messages of its batch. */
+enum { R_NONE, R_VOTE, R_APPEND, R_SNAP };
+
+struct batch_msg {
+	int			 to;
+	struct craft_msg	 m;	/* its entries its own */
+};
+
+/*
+ * What one turn of craft has to be kept (log records to append, or the
+ * log whole; the term, the vote and the base) and then said (messages,
+ * a reply): written by the writer thread, batch after batch in order,
+ * and only then sent.
+ */
+struct batch {
+	struct batch		*next;
+	struct buf		*log;
+	bool			 whole;
+	bool			 state;
+	char			 line[256];
+	size_t			 linelen;
+	struct batch_msg	*out;
+	size_t			 nout;
+	size_t			 outcap;
+	cbl_req			*req;
+	int			 rkind;
+	struct craft_msg	 r;
+};
 
 struct node {
 	char		 name[CRAFT_NAME_MAX];
@@ -112,10 +144,6 @@ static struct {
 	char			 cert[MAXPATHLEN];
 	char			 key[MAXPATHLEN];
 	struct pending		 pend[CL_PENDING];
-	struct {
-		uint64_t	 seq;
-		uint64_t	 term;
-	}			 ring[CL_RING];
 	uint64_t		 gen;
 	/* What was written since the worker last read it again. */
 	char			 changed[32][256];
@@ -129,16 +157,35 @@ static struct {
 	cbl_tls			*wtls;
 	struct acl_client	 wcl;
 	int			 wnode;
-	/* The leader's locks. */
+	/* The locks, as the log gave them: the leader grants by this. */
 	struct {
 		char		 name[256];
 		char		 holder[128];
-		uint64_t	 until;
+		uint64_t	 until;		/* by this node's clock */
+		uint64_t	 token;		/* the write that gave it */
 	}			 locks[CL_LOCKS];
+	/* The locks this node's holders hold, till when for sure. */
+	struct {
+		char		 name[256];
+		char		 holder[128];
+		uint64_t	 token;
+		uint64_t	 ttl;
+		uint64_t	 until;
+	}			 held[CL_LOCKS];
+	/* The batches to keep, the first being written. */
+	pthread_cond_t		 wcv;
+	struct batch		*wq;
+	struct batch		**wqtail;
+	/* Applied, and what this node's own write waited for in vain: a
+	 * reply says this node is behind while it is (any thread). */
+	_Atomic uint64_t	 applied_pub;
+	_Atomic uint64_t	 behind;
 } cl = {
 	.mu = PTHREAD_MUTEX_INITIALIZER,
 	.cv = PTHREAD_COND_INITIALIZER,
 	.wmu = PTHREAD_MUTEX_INITIALIZER,
+	.wcv = PTHREAD_COND_INITIALIZER,
+	.wqtail = &cl.wq,
 	.wnode = -1,
 };
 
@@ -168,10 +215,32 @@ cluster_leads(void)
 		return (true);
 	pthread_mutex_lock(&cl.mu);
 	/* The leader on its lease: cut off, it leads nothing, and the
-	 * one elected instead runs them. */
-	leads = craft_quorum_heard(&cl.c, CRAFT_LEASE_MS);
+	 * one elected instead runs them; and once it knows every write
+	 * committed before its term. */
+	leads = craft_lease(&cl.c) && craft_ready(&cl.c);
 	pthread_mutex_unlock(&cl.mu);
 	return (leads);
+}
+
+/* This node's name in its cluster; NULL when it is in none. */
+const char *
+cluster_self(void)
+{
+
+	return (cl.on ? cl.nodes[cl.self].name : NULL);
+}
+
+/*
+ * Has this node not yet applied a write of its own that the cluster
+ * committed (its wait for it ran out)?  What it reads may be older than
+ * what it said it changed: its replies say so.  Any thread.
+ */
+bool
+cluster_behind(void)
+{
+
+	return (cl.on && atomic_load(&cl.behind) > atomic_load(
+	    &cl.applied_pub));
 }
 
 /* How many committed writes this node applied: a cache compares it. */
@@ -273,6 +342,42 @@ cluster_config(const ucl_object_t *top, const char *path)
 
 /* ---- What is kept --------------------------------------------------- */
 
+/* The directory path is in, fsync'ed: a file made or renamed in it is
+ * kept with it. */
+static int
+dir_sync(const char *path)
+{
+	char	dir[MAXPATHLEN], *p;
+	int	fd, rc;
+
+	strlcpy(dir, path, sizeof(dir));
+	if ((p = strrchr(dir, '/')) != NULL)
+		*p = '\0';
+	if ((fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+		return (-1);
+	rc = fsync(fd);
+	(void)close(fd);
+	return (rc);
+}
+
+static int
+write_all(int fd, const void *p, size_t len)
+{
+	const uint8_t	*b = p;
+	ssize_t		 n;
+
+	while (len > 0) {
+		if ((n = write(fd, b, len)) == -1) {
+			if (errno == EINTR)
+				continue;
+			return (-1);
+		}
+		b += n;
+		len -= (size_t)n;
+	}
+	return (0);
+}
+
 static int
 write_file(const char *path, const void *p, size_t len, mode_t mode)
 {
@@ -282,8 +387,8 @@ write_file(const char *path, const void *p, size_t len, mode_t mode)
 	snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
 	if ((fd = mkstemp(tmp)) == -1)
 		return (-1);
-	if ((len > 0 && write(fd, p, len) != (ssize_t)len) || fchmod(fd,
-	    mode) == -1 || fsync(fd) == -1) {
+	if ((len > 0 && write_all(fd, p, len) == -1) || fchmod(fd, mode) ==
+	    -1 || fsync(fd) == -1) {
 		log_msg(LOG_ERR, "writing %s: %s", path, strerror(errno));
 		(void)close(fd);
 		unlink(tmp);
@@ -294,22 +399,34 @@ write_file(const char *path, const void *p, size_t len, mode_t mode)
 		unlink(tmp);
 		return (-1);
 	}
+	/* The rename kept too, before anything is said of it. */
+	if (dir_sync(path) == -1) {
+		log_msg(LOG_ERR, "writing %s: its directory: %s", path,
+		    strerror(errno));
+		return (-1);
+	}
 	return (0);
 }
 
-/* The term, the vote and the log's base. */
-static void
-state_save(void)
+/* The term, the vote and the log's base, as the state file has them. */
+static size_t
+state_line(char *buf, size_t len)
 {
-	char	buf[256], path[MAXPATHLEN];
 	int	n;
 
-	n = snprintf(buf, sizeof(buf), "%ju %s %ju %ju\n",
-	    (uintmax_t)cl.c.term, cl.c.voted_for[0] != '\0' ?
-	    cl.c.voted_for : "-", (uintmax_t)cl.c.base_term,
-	    (uintmax_t)cl.c.base_seq);
+	n = snprintf(buf, len, "%ju %s %ju %ju\n", (uintmax_t)cl.c.term,
+	    cl.c.voted_for[0] != '\0' ? cl.c.voted_for : "-",
+	    (uintmax_t)cl.c.base_term, (uintmax_t)cl.c.base_seq);
+	return (n > 0 && (size_t)n < len ? (size_t)n : 0);
+}
+
+static void
+state_write(const char *line, size_t len)
+{
+	char	path[MAXPATHLEN];
+
 	snprintf(path, sizeof(path), "%s/state", cl.dir);
-	if (write_file(path, buf, (size_t)n, 0600) == -1)
+	if (write_file(path, line, len, 0600) == -1)
 		fatalx("cluster: cannot keep its state");
 }
 
@@ -322,8 +439,8 @@ struct rec {
 	uint32_t	pad;
 };
 
-static int
-rec_write(int fd, const struct craft_entry *e)
+static void
+rec_put(struct buf *b, const struct craft_entry *e)
 {
 	struct rec	r;
 
@@ -333,52 +450,93 @@ rec_write(int fd, const struct craft_entry *e)
 	r.nlen = (uint32_t)strlen(e->name);
 	r.blen = (uint32_t)e->len;
 	r.gone = e->gone;
-	if (write(fd, &r, sizeof(r)) != (ssize_t)sizeof(r) ||
-	    write(fd, e->name, r.nlen) != (ssize_t)r.nlen ||
-	    (r.blen > 0 && write(fd, e->body, r.blen) != (ssize_t)r.blen))
-		return (-1);
-	return (0);
+	buf_append(b, &r, sizeof(r));
+	buf_append(b, e->name, r.nlen);
+	if (r.blen > 0)
+		buf_append(b, e->body, r.blen);
 }
 
-/* What craft says to keep, before anything is sent: the log whole when
- * it was cut, else what was added to it. */
+/* What craft says to keep, into the batch that says what came of it: the
+ * log whole when it was cut, else what was added to it; with the lock. */
 static void
-persist(void)
+persist(struct batch *b)
 {
-	char		 path[MAXPATHLEN], tmp[MAXPATHLEN];
-	size_t		 i;
-	int		 fd;
+	size_t	i;
 
-	snprintf(path, sizeof(path), "%s/log", cl.dir);
 	if (cl.c.log_truncated) {
-		snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
-		if ((fd = mkstemp(tmp)) == -1)
-			fatalx("cluster: mkstemp %s: %s", tmp, strerror(errno));
+		if (b->log != NULL)
+			buf_reset(b->log);
+		else
+			b->log = buf_alloc(4096);
+		b->whole = true;
 		for (i = 0; i < cl.c.nlog; i++)
-			if (rec_write(fd, &cl.c.log[i]) == -1)
-				fatalx("cluster: writing its log: %s",
-				    strerror(errno));
-		if (fsync(fd) == -1 || close(fd) == -1 || rename(tmp, path) ==
-		    -1)
-			fatalx("cluster: its log: %s", strerror(errno));
+			rec_put(b->log, &cl.c.log[i]);
 		cl.c.state_dirty = true;	/* the base with it */
 	} else if (cl.c.log_dirty_from != 0) {
-		if ((fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC,
-		    0600)) == -1)
-			fatalx("cluster: %s: %s", path, strerror(errno));
+		if (b->log == NULL)
+			b->log = buf_alloc(4096);
 		for (i = cl.c.log_dirty_from - cl.c.base_seq - 1; i <
 		    cl.c.nlog; i++)
-			if (rec_write(fd, &cl.c.log[i]) == -1)
-				fatalx("cluster: writing its log: %s",
-				    strerror(errno));
-		if (fsync(fd) == -1 || close(fd) == -1)
-			fatalx("cluster: its log: %s", strerror(errno));
+			rec_put(b->log, &cl.c.log[i]);
 	}
-	if (cl.c.state_dirty)
-		state_save();
+	if (cl.c.state_dirty) {
+		b->state = true;
+		if ((b->linelen = state_line(b->line, sizeof(b->line))) == 0)
+			fatalx("cluster: its state does not fit");
+	}
 	cl.c.state_dirty = false;
 	cl.c.log_truncated = false;
 	cl.c.log_dirty_from = 0;
+}
+
+/* A batch's log and state on the disk, fsync'ed (the writer thread's,
+ * without the lock). */
+static void
+batch_write(struct batch *b)
+{
+	char	path[MAXPATHLEN], tmp[MAXPATHLEN];
+	int	fd;
+	bool	made;
+
+	snprintf(path, sizeof(path), "%s/log", cl.dir);
+	if (b->log != NULL && b->whole) {
+		snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
+		if ((fd = mkstemp(tmp)) == -1)
+			fatalx("cluster: mkstemp %s: %s", tmp, strerror(errno));
+		if (write_all(fd, b->log->data, b->log->offset) == -1 ||
+		    fsync(fd) == -1 || close(fd) == -1 || rename(tmp, path) ==
+		    -1 || dir_sync(path) == -1)
+			fatalx("cluster: its log: %s", strerror(errno));
+	} else if (b->log != NULL) {
+		made = access(path, F_OK) == -1;
+		if ((fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC,
+		    0600)) == -1)
+			fatalx("cluster: %s: %s", path, strerror(errno));
+		if (write_all(fd, b->log->data, b->log->offset) == -1 ||
+		    fsync(fd) == -1 || close(fd) == -1 || (made &&
+		    dir_sync(path) == -1))
+			fatalx("cluster: its log: %s", strerror(errno));
+	}
+	if (b->state)
+		state_write(b->line, b->linelen);
+}
+
+static void
+batch_free(struct batch *b)
+{
+	size_t	i, k;
+
+	for (i = 0; i < b->nout; i++) {
+		for (k = 0; k < b->out[i].m.nentries; k++) {
+			free(b->out[i].m.entries[k].name);
+			free(b->out[i].m.entries[k].body);
+		}
+		free(b->out[i].m.entries);
+	}
+	free(b->out);
+	if (b->log != NULL)
+		buf_free(b->log);
+	free(b);
 }
 
 static void
@@ -396,8 +554,10 @@ restore(void)
 		/* None yet: the seed starts from the documents it has,
 		 * the base the others are sent; they wait for it. */
 		if (cl.self == 0) {
+			char	line[256];
+
 			craft_restore(&cl.c, 1, "", 1, 1);
-			state_save();
+			state_write(line, state_line(line, sizeof(line)));
 		}
 		return;
 	}
@@ -508,51 +668,83 @@ cluster_changes(void (*fn)(const char *))
 }
 
 /*
- * A lock as a write of the log: its name with LOCK_PREFIX, its body
- * the holder and when it runs out; gone when let go.  Every node
- * applies it to its table, so that a new leader knows the locks the
- * one before granted, and grants none twice.
+ * A lock as a write of the log: its name with LOCK_PREFIX, its body the
+ * holder and how long it holds it; gone when let go.  Every node applies
+ * it to its table, each by its own clock (a node's monotonic clock means
+ * nothing to another), so that a new leader knows the locks the one
+ * before granted, and grants none twice.  Its token is the write that
+ * gave it to its holder, kept while the holder renews it.
  */
 #define	LOCK_PREFIX	"\001lock\001"
 
-static void
-lock_apply(const char *name, const uint8_t *body, size_t len, bool gone)
+/* The table's place of name, or a free one; -1 for none. */
+static int
+lock_slot(const char *name)
 {
-	char		holder[128], *nl;
-	uint64_t	until;
+	uint64_t	now;
 	int		i, free_i;
 
-	snprintf(holder, sizeof(holder), "%.*s", (int)(len > sizeof(holder) -
-	    1 ? sizeof(holder) - 1 : len), (const char *)body);
+	now = now_ms();
+	free_i = -1;
+	for (i = 0; i < CL_LOCKS; i++) {
+		if (strcmp(cl.locks[i].name, name) == 0)
+			return (i);
+		if (free_i == -1 && (cl.locks[i].name[0] == '\0' ||
+		    cl.locks[i].until <= now))
+			free_i = i;
+	}
+	return (free_i);
+}
+
+/* Held, and not run out, by holder (or by anyone, for NULL)? */
+static bool
+lock_live(int i, const char *holder)
+{
+
+	return (strcmp(cl.locks[i].name, "") != 0 && cl.locks[i].until >
+	    now_ms() && (holder == NULL || strcmp(cl.locks[i].holder, holder) ==
+	    0));
+}
+
+/* Lock i given to holder for ttl, by the write seq when it is not its
+ * already. */
+static void
+lock_set(int i, const char *name, const char *holder, uint64_t ttl,
+    uint64_t seq)
+{
+
+	if (strcmp(cl.locks[i].name, name) != 0 || !lock_live(i, holder)) {
+		strlcpy(cl.locks[i].name, name, sizeof(cl.locks[i].name));
+		strlcpy(cl.locks[i].holder, holder, sizeof(cl.locks[i].holder));
+		cl.locks[i].token = seq;
+	}
+	cl.locks[i].until = now_ms() + ttl;
+}
+
+static void
+lock_apply(const struct craft_entry *e)
+{
+	const char	*name = e->name + strlen(LOCK_PREFIX);
+	char		 holder[128], *nl;
+	uint64_t	 ttl;
+	int		 i;
+
+	snprintf(holder, sizeof(holder), "%.*s", (int)(e->len > sizeof(holder)
+	    - 1 ? sizeof(holder) - 1 : e->len), (const char *)e->body);
 	if ((nl = strchr(holder, '\n')) == NULL)
 		return;
 	*nl = '\0';
-	until = strtoull(nl + 1, NULL, 10);
+	ttl = strtoull(nl + 1, NULL, 10);
 	/* Let go by its holder: another's, granted since, stays. */
-	if (gone) {
+	if (e->gone) {
 		for (i = 0; i < CL_LOCKS; i++)
 			if (strcmp(cl.locks[i].name, name) == 0 &&
 			    strcmp(cl.locks[i].holder, holder) == 0)
 				cl.locks[i].name[0] = '\0';
 		return;
 	}
-	free_i = -1;
-	for (i = 0; i < CL_LOCKS; i++) {
-		if (strcmp(cl.locks[i].name, name) == 0) {
-			strlcpy(cl.locks[i].holder, holder,
-			    sizeof(cl.locks[i].holder));
-			cl.locks[i].until = until;
-			return;
-		}
-		if (free_i == -1 && (cl.locks[i].name[0] == '\0' ||
-		    cl.locks[i].until <= now_ms()))
-			free_i = i;
-	}
-	if (free_i == -1)
-		return;
-	strlcpy(cl.locks[free_i].name, name, sizeof(cl.locks[free_i].name));
-	strlcpy(cl.locks[free_i].holder, holder, sizeof(cl.locks[free_i].holder));
-	cl.locks[free_i].until = until;
+	if ((i = lock_slot(name)) != -1)
+		lock_set(i, name, holder, ttl, e->seq);
 }
 
 static void
@@ -560,16 +752,13 @@ apply_one(const struct craft_entry *e)
 {
 	char	path[MAXPATHLEN];
 
-	cl.ring[e->seq % CL_RING].seq = e->seq;
-	cl.ring[e->seq % CL_RING].term = e->term;
 	if (strncmp(e->name, LOCK_PREFIX, strlen(LOCK_PREFIX)) == 0) {
 		/* The leader's own writes were in its table as it granted
 		 * them: applied again late, an old grant would take a newer
 		 * holder's place.  The followers', and a new leader's, from
 		 * the log. */
 		if (cl.c.role != CRAFT_LEADER || e->term != cl.c.term)
-			lock_apply(e->name + strlen(LOCK_PREFIX), e->body,
-			    e->len, e->gone);
+			lock_apply(e);
 		return;
 	}
 	if (e->name[0] == '\0' || !doc_name_ok(e->name))
@@ -590,8 +779,7 @@ static bool
 applied_as(uint64_t seq, uint64_t term)
 {
 
-	return (cl.ring[seq % CL_RING].seq == seq &&
-	    cl.ring[seq % CL_RING].term == term);
+	return (craft_applied_as(&cl.c, seq, term));
 }
 
 static void
@@ -620,36 +808,108 @@ pending_end(struct pending *p, bool ok, const char *why)
 	p->req = NULL;
 }
 
+static void	msg_copy(const struct craft_msg *, struct craft_msg *);
+static void	batch_send(struct batch *);
+static void	batch_reply(struct batch *);
+
+/* A batch kept, or sent at once when there is nothing to keep and none
+ * before it is still being kept; with the lock. */
 static void
-send_out(int to, const struct craft_msg *m);
+batch_queue(struct batch *b)
+{
+
+	if (cl.wq == NULL && b->log == NULL && !b->state) {
+		batch_send(b);
+		batch_reply(b);
+		batch_free(b);
+		return;
+	}
+	b->next = NULL;
+	*cl.wqtail = b;
+	cl.wqtail = &b->next;
+	pthread_cond_signal(&cl.wcv);
+}
 
 /*
- * After craft has changed: kept first, then said, then applied.  A reply
- * of the type want to node from is the caller's, into reply.
+ * The writer thread: each batch kept on the disk, the lock not held, then
+ * what it says sent.  A vote granted, a write acknowledged, a term taken
+ * are said only once they are kept (Raft's Figure 2: before responding
+ * to RPCs).
+ */
+static void *
+writer_run(void *arg __unused)
+{
+	struct batch	*b;
+
+	for (;;) {
+		pthread_mutex_lock(&cl.mu);
+		while (cl.wq == NULL)
+			pthread_cond_wait(&cl.wcv, &cl.mu);
+		b = cl.wq;
+		pthread_mutex_unlock(&cl.mu);
+		batch_write(b);
+		pthread_mutex_lock(&cl.mu);
+		if ((cl.wq = b->next) == NULL)
+			cl.wqtail = &cl.wq;
+		batch_send(b);
+		pthread_mutex_unlock(&cl.mu);
+		batch_reply(b);
+		batch_free(b);
+	}
+	return (NULL);
+}
+
+/*
+ * After craft has changed: what it says to keep put in a batch with what
+ * it says to send, kept first and then sent (the writer thread's), and
+ * what is committed applied.  The reply of kind rkind to node from's
+ * request req is sent with the batch.  With the lock.
  */
 static void
-pump(int want, const char *from, struct craft_msg *reply)
+pump(cbl_req *req, int rkind, const char *from)
 {
 	const struct craft_entry *e;
-	size_t			 i;
-	int			 to, k;
+	struct batch		*b;
+	struct batch_msg	*no;
+	size_t			 i, cap;
+	int			 to, k, want;
 	bool			 got;
 
-	persist();
+	if ((b = calloc(1, sizeof(*b))) == NULL)
+		fatalx("cluster: out of memory");
+	persist(b);
+	b->req = req;
+	b->rkind = rkind;
+	b->r.term = cl.c.term;
+	want = rkind == R_VOTE ? CRAFT_VOTE_REPLY : rkind == R_APPEND ?
+	    CRAFT_APPEND_REPLY : -1;
 	got = false;
 	for (i = 0; i < cl.c.nout; i++) {
-		if (reply != NULL && !got && (int)cl.c.out[i].type == want &&
+		if (!got && want != -1 && (int)cl.c.out[i].type == want &&
 		    strcmp(cl.c.out[i].to, from) == 0) {
-			*reply = cl.c.out[i];
+			b->r = cl.c.out[i];
+			b->r.entries = NULL;
+			b->r.nentries = 0;
 			got = true;
 			continue;
 		}
-		if ((to = node_of(cl.c.out[i].to)) >= 0 && to != cl.self)
-			send_out(to, &cl.c.out[i]);
+		if ((to = node_of(cl.c.out[i].to)) < 0 || to == cl.self)
+			continue;
+		if (b->nout == b->outcap) {
+			cap = b->outcap == 0 ? 8 : b->outcap * 2;
+			if ((no = realloc(b->out, cap * sizeof(*no))) == NULL)
+				fatalx("cluster: out of memory");
+			b->out = no;
+			b->outcap = cap;
+		}
+		b->out[b->nout].to = to;
+		msg_copy(&cl.c.out[i], &b->out[b->nout].m);
+		b->nout++;
 	}
 	craft_out_clear(&cl.c);
 	while ((e = craft_next_apply(&cl.c)) != NULL)
 		apply_one(e);
+	atomic_store(&cl.applied_pub, cl.c.applied);
 	/* The leader's answers to the followers' writes. */
 	for (k = 0; k < CL_PENDING; k++) {
 		if (cl.pend[k].req == NULL || cl.pend[k].seq > cl.c.applied)
@@ -662,8 +922,9 @@ pump(int want, const char *from, struct craft_msg *reply)
 	}
 	if (cl.c.nlog > CL_LOG_MAX) {
 		craft_compact(&cl.c, CL_LOG_KEEP);
-		persist();
+		persist(b);
 	}
+	batch_queue(b);
 	pthread_cond_broadcast(&cl.cv);
 }
 
@@ -683,36 +944,41 @@ msg_free(struct craft_msg *m)
 	m->nentries = 0;
 }
 
-/* Queued to the node's thread, its entries copied (they are the log's,
- * and the log changes): CL_BATCH_BYTES of them at most. */
+/* A message of craft's with its entries copied (they are the log's, and
+ * the log changes): CL_BATCH_BYTES of them at most. */
 static void
-send_out(int to, const struct craft_msg *m)
+msg_copy(const struct craft_msg *m, struct craft_msg *c)
+{
+	size_t	i, bytes;
+
+	*c = *m;
+	c->entries = NULL;
+	c->nentries = 0;
+	if (m->nentries == 0 || (c->entries = calloc(m->nentries,
+	    sizeof(*c->entries))) == NULL)
+		return;
+	for (i = 0, bytes = 0; i < m->nentries && (i == 0 || bytes +
+	    m->entries[i].len <= CL_BATCH_BYTES); i++) {
+		c->entries[i] = m->entries[i];
+		c->entries[i].name = strdup(m->entries[i].name);
+		c->entries[i].body = NULL;
+		if (m->entries[i].len > 0 && (c->entries[i].body =
+		    malloc(m->entries[i].len)) != NULL)
+			memcpy(c->entries[i].body, m->entries[i].body,
+			    m->entries[i].len);
+		c->nentries = i + 1;
+		bytes += m->entries[i].len;
+	}
+}
+
+/* A message, copied, queued to the node's thread, which takes it; with
+ * the lock. */
+static void
+send_out(int to, struct craft_msg c)
 {
 	struct peer		*p = &cl.peers[to];
-	struct craft_msg	 c;
-	size_t			 i, bytes;
 	int			 k;
 
-	c = *m;
-	c.entries = NULL;
-	c.nentries = 0;
-	if (m->nentries > 0) {
-		if ((c.entries = calloc(m->nentries, sizeof(*c.entries))) ==
-		    NULL)
-			return;
-		for (i = 0, bytes = 0; i < m->nentries && (i == 0 || bytes +
-		    m->entries[i].len <= CL_BATCH_BYTES); i++) {
-			c.entries[i] = m->entries[i];
-			c.entries[i].name = strdup(m->entries[i].name);
-			c.entries[i].body = NULL;
-			if (m->entries[i].len > 0 && (c.entries[i].body =
-			    malloc(m->entries[i].len)) != NULL)
-				memcpy(c.entries[i].body, m->entries[i].body,
-				    m->entries[i].len);
-			c.nentries = i + 1;
-			bytes += m->entries[i].len;
-		}
-	}
 	/* An append makes the one before it moot. */
 	if (c.type == CRAFT_APPEND)
 		for (k = 0; k < p->nq; k++)
@@ -729,6 +995,62 @@ send_out(int to, const struct craft_msg *m)
 	}
 	p->q[p->nq++] = c;
 	pthread_cond_signal(&p->cv);
+}
+
+/* A batch's messages to the nodes' threads, which take them; with the
+ * lock. */
+static void
+batch_send(struct batch *b)
+{
+	size_t	i;
+
+	for (i = 0; i < b->nout; i++) {
+		send_out(b->out[i].to, b->out[i].m);
+		b->out[i].m.entries = NULL;
+		b->out[i].m.nentries = 0;
+	}
+	b->nout = 0;
+}
+
+/* The reply a batch carries, to the request it answers. */
+static void
+batch_reply(struct batch *b)
+{
+	struct acl_vote_rsp	 vr;
+	struct acl_append_rsp	 ar;
+	struct acl_snapshot_rsp	 sr;
+
+	if (b->req == NULL)
+		return;
+	switch (b->rkind) {
+	case R_VOTE:
+		memset(&vr, 0, sizeof(vr));
+		vr.has_term = vr.has_granted = true;
+		vr.term = b->r.term;
+		vr.granted = b->r.granted;
+		(void)acl_vote_reply(b->req, &vr);
+		break;
+	case R_APPEND:
+		memset(&ar, 0, sizeof(ar));
+		ar.has_term = ar.has_ok = ar.has_last_term = ar.has_last_seq =
+		    ar.has_sent_ms = true;
+		ar.term = b->r.term;
+		ar.ok = b->r.ok;
+		ar.last_term = b->r.last_term;
+		ar.last_seq = b->r.last_seq;
+		ar.sent_ms = b->r.sent_ms;
+		(void)acl_append_reply(b->req, &ar);
+		break;
+	case R_SNAP:
+		memset(&sr, 0, sizeof(sr));
+		sr.has_term = sr.has_ok = true;
+		sr.term = b->r.term;
+		sr.ok = true;
+		(void)acl_snapshot_reply(b->req, &sr);
+		break;
+	}
+	(void)cbl_req_complete(b->req, 0);
+	b->req = NULL;
 }
 
 /* A failure to reach a node, logged when it is not the last one said. */
@@ -981,10 +1303,12 @@ peer_run(void *arg)
 			rq.term = m.term;
 			rq.last_term = m.last_term;
 			rq.last_seq = m.last_seq;
+			rq.pre_vote = m.pre;
 			if ((err = acl_vote(&p->cl, &rq, &rsp)) != 0)
 				peer_fail(p, "vote", err);
 			if (err == 0 && rsp != NULL) {
 				r.type = CRAFT_VOTE_REPLY;
+				r.pre = m.pre;
 				r.term = rsp->term;
 				r.granted = rsp->granted;
 				rc = 0;
@@ -999,11 +1323,13 @@ peer_run(void *arg)
 				memset(&rq, 0, sizeof(rq));
 				rq.node = cl.nodes[cl.self].name;
 				rq.has_term = rq.has_prev_term =
-				    rq.has_prev_seq = rq.has_commit_seq = true;
+				    rq.has_prev_seq = rq.has_commit_seq =
+				    rq.has_sent_ms = true;
 				rq.term = m.term;
 				rq.prev_term = m.prev_term;
 				rq.prev_seq = m.prev_seq;
 				rq.commit_seq = m.commit;
+				rq.sent_ms = m.sent_ms;
 				if (cl.nodes[cl.self].origin[0] != '\0')
 					rq.origin = cl.nodes[cl.self].origin;
 				rq.doc.n = m.nentries;
@@ -1016,6 +1342,8 @@ peer_run(void *arg)
 					r.ok = rsp->ok;
 					r.last_term = rsp->last_term;
 					r.last_seq = rsp->last_seq;
+					r.sent_ms = rsp->has_sent_ms ?
+					    rsp->sent_ms : 0;
 					rc = 0;
 				}
 				acl_append_rsp_free(rsp);
@@ -1026,7 +1354,7 @@ peer_run(void *arg)
 				pthread_mutex_lock(&cl.mu);
 				craft_snapshot_done(&cl.c, cl.nodes[p->idx].name,
 				    seq);
-				pump(-1, NULL, NULL);
+				pump(NULL, R_NONE, NULL);
 				pthread_mutex_unlock(&cl.mu);
 				msg_free(&m);
 				continue;
@@ -1039,7 +1367,7 @@ peer_run(void *arg)
 		}
 		pthread_mutex_lock(&cl.mu);
 		craft_recv(&cl.c, &r);
-		pump(-1, NULL, NULL);
+		pump(NULL, R_NONE, NULL);
 		pthread_mutex_unlock(&cl.mu);
 	}
 	return (NULL);
@@ -1078,15 +1406,18 @@ peer_ok(cbl_req *req, const char *node, int *ip)
 	return (role && host);
 }
 
+/* A vote asked: answered once what it changed (the term, the vote) is
+ * kept. */
 int
 acl_vote_doit(cbl_req *req, const struct acl_vote_req *rq, void *arg __unused)
 {
-	struct acl_vote_rsp	 rsp;
-	struct craft_msg	 m, r;
+	struct craft_msg	 m;
 	int			 n;
 
 	if (!peer_ok(req, rq->node, &n))
 		return (EACCES);
+	if (cbl_req_defer(req) != 0)
+		return (EIO);
 	memset(&m, 0, sizeof(m));
 	m.type = CRAFT_VOTE;
 	strlcpy(m.from, rq->node, sizeof(m.from));
@@ -1094,37 +1425,36 @@ acl_vote_doit(cbl_req *req, const struct acl_vote_req *rq, void *arg __unused)
 	m.term = rq->term;
 	m.last_term = rq->last_term;
 	m.last_seq = rq->last_seq;
-	memset(&r, 0, sizeof(r));
+	m.pre = rq->pre_vote;
 	pthread_mutex_lock(&cl.mu);
 	craft_recv(&cl.c, &m);
-	pump(CRAFT_VOTE_REPLY, rq->node, &r);
+	pump(req, R_VOTE, rq->node);
 	pthread_mutex_unlock(&cl.mu);
-	memset(&rsp, 0, sizeof(rsp));
-	rsp.has_term = rsp.has_granted = true;
-	rsp.term = r.term;
-	rsp.granted = r.granted;
-	return (acl_vote_reply(req, &rsp));
+	return (0);
 }
 
+/* The leader's writes: acknowledged once they are kept. */
 int
 acl_append_doit(cbl_req *req, const struct acl_append_req *rq,
     void *arg __unused)
 {
-	struct acl_append_rsp	 rsp;
-	struct craft_msg	 m, r;
+	struct craft_msg	 m;
 	struct craft_entry	*e;
 	size_t			 i;
-	int			 n, rc;
+	int			 n;
 
 	if (!peer_ok(req, rq->node, &n))
 		return (EACCES);
+	for (i = 0; i < rq->doc.n; i++)
+		if (!rq->doc.v[i].has_term || !rq->doc.v[i].has_seq)
+			return (EINVAL);
 	if ((e = calloc(rq->doc.n + 1, sizeof(*e))) == NULL)
 		return (ENOMEM);
+	if (cbl_req_defer(req) != 0) {
+		free(e);
+		return (EIO);
+	}
 	for (i = 0; i < rq->doc.n; i++) {
-		if (!rq->doc.v[i].has_term || !rq->doc.v[i].has_seq) {
-			free(e);
-			return (EINVAL);
-		}
 		e[i].term = rq->doc.v[i].term;
 		e[i].seq = rq->doc.v[i].seq;
 		e[i].name = (char *)(uintptr_t)rq->doc.v[i].name;
@@ -1140,23 +1470,15 @@ acl_append_doit(cbl_req *req, const struct acl_append_req *rq,
 	m.prev_term = rq->prev_term;
 	m.prev_seq = rq->prev_seq;
 	m.commit = rq->commit_seq;
+	m.sent_ms = rq->has_sent_ms ? rq->sent_ms : 0;
 	m.entries = e;
 	m.nentries = rq->doc.n;
-	memset(&r, 0, sizeof(r));
 	pthread_mutex_lock(&cl.mu);
 	craft_recv(&cl.c, &m);
-	pump(CRAFT_APPEND_REPLY, rq->node, &r);
+	pump(req, R_APPEND, rq->node);
 	pthread_mutex_unlock(&cl.mu);
 	free(e);
-	memset(&rsp, 0, sizeof(rsp));
-	rsp.has_term = rsp.has_ok = rsp.has_last_term = rsp.has_last_seq =
-	    true;
-	rsp.term = r.term;
-	rsp.ok = r.ok;
-	rsp.last_term = r.last_term;
-	rsp.last_seq = r.last_seq;
-	rc = acl_append_reply(req, &rsp);
-	return (rc);
+	return (0);
 }
 
 static int
@@ -1238,10 +1560,23 @@ acl_snapshot_doit(cbl_req *req, const struct acl_snapshot_req *rq,
 	if (!rq->last)
 		return (snap_reply(req, true, NULL));
 	cl.staging = false;
+	if (cbl_req_defer(req) != 0)
+		return (EIO);
 	pthread_mutex_lock(&cl.mu);
 	if (rq->term < cl.c.term) {
 		pthread_mutex_unlock(&cl.mu);
-		return (snap_reply(req, false, "an old leader's"));
+		(void)snap_reply(req, false, "an old leader's");
+		(void)cbl_req_complete(req, 0);
+		return (0);
+	}
+	/* Applied as far already: its documents never go back, and the
+	 * leader is told it has them. */
+	if (!craft_snapshot_wanted(&cl.c, rq->term, rq->last_seq)) {
+		craft_install_snapshot(&cl.c, rq->term, rq->last_term,
+		    rq->last_seq, rq->node);
+		pump(req, R_SNAP, rq->node);
+		pthread_mutex_unlock(&cl.mu);
+		return (0);
 	}
 	/* What is here and not there goes; what is there is put here. */
 	for (k = 0; k < (int)nitems(subs); k++) {
@@ -1283,15 +1618,22 @@ acl_snapshot_doit(cbl_req *req, const struct acl_snapshot_req *rq,
 		}
 		closedir(d);
 	}
+	/* The renames kept before the base that says they were made. */
+	for (k = 0; k < (int)nitems(subs); k++) {
+		snprintf(path, sizeof(path), "%s%s%s/.", cfg.datadir,
+		    subs[k][0] != '\0' ? "/" : "", subs[k]);
+		(void)dir_sync(path);
+	}
 	craft_install_snapshot(&cl.c, rq->term, rq->last_term, rq->last_seq,
 	    rq->node);
 	cl.gen++;
 	changed(NULL);
-	pump(-1, NULL, NULL);
+	/* Answered once its base and log are kept. */
+	pump(req, R_SNAP, rq->node);
 	pthread_mutex_unlock(&cl.mu);
 	log_msg(LOG_NOTICE, "cluster: the documents of %s as of %ju taken",
 	    rq->node, (uintmax_t)rq->last_seq);
-	return (snap_reply(req, true, NULL));
+	return (0);
 }
 
 /* A follower's write, at the leader: answered once it is written. */
@@ -1324,7 +1666,7 @@ acl_write_doit(cbl_req *req, const struct acl_write_req *rq,
 		return (acl_write_reply(req, &rsp));
 	}
 	if (cbl_req_defer(req) != 0) {
-		pump(-1, NULL, NULL);
+		pump(NULL, R_NONE, NULL);
 		pthread_mutex_unlock(&cl.mu);
 		return (EIO);
 	}
@@ -1333,40 +1675,44 @@ acl_write_doit(cbl_req *req, const struct acl_write_req *rq,
 	cl.pend[k].seq = seq;
 	cl.pend[k].since = now_ms();
 	strlcpy(cl.pend[k].name, d->name, sizeof(cl.pend[k].name));
-	pump(-1, NULL, NULL);
+	pump(NULL, R_NONE, NULL);
 	pthread_mutex_unlock(&cl.mu);
 	return (0);
 }
 
-/* The lock written to the log (the lock held, so the others know it,
- * or let go): the write's place in *seqp, which the holder waits for. */
-static void
-lock_write(const char *name, const char *holder, uint64_t until, bool gone,
-    uint64_t *seqp)
+/* The lock written to the log (given or renewed for ttl, so the others
+ * know it, or let go): the write's term and place, which the holder
+ * waits to see applied as it was proposed.  With the lock. */
+static int
+lock_write(const char *name, const char *holder, uint64_t ttl, bool gone,
+    uint64_t *termp, uint64_t *seqp)
 {
 	char		lname[256 + sizeof(LOCK_PREFIX)], body[160];
 	uint64_t	term, seq;
 
 	snprintf(lname, sizeof(lname), "%s%s", LOCK_PREFIX, name);
-	snprintf(body, sizeof(body), "%s\n%ju", holder, (uintmax_t)until);
+	snprintf(body, sizeof(body), "%s\n%ju", holder, (uintmax_t)ttl);
 	if (craft_propose(&cl.c, lname, (const uint8_t *)body, strlen(body),
-	    gone, &term, &seq) == 0) {
-		if (seqp != NULL)
-			*seqp = seq;
-		pump(-1, NULL, NULL);
-	}
+	    gone, &term, &seq) != 0)
+		return (-1);
+	if (termp != NULL)
+		*termp = term;
+	if (seqp != NULL)
+		*seqp = seq;
+	pump(NULL, R_NONE, NULL);
+	return (0);
 }
 
 /*
- * The leader's lock name taken by holder for ttl ms, or held already by
- * it: true; the newest committed write into commitp.  With the lock.
+ * The leader's lock name given to holder for ttl ms, or renewed for it:
+ * true, the write that says so (its term and place) and the lock's token
+ * out.  With the lock.
  */
 static bool
 lock_try(const char *name, const char *holder, uint64_t ttl,
-    uint64_t *commitp, const char **why)
+    uint64_t *termp, uint64_t *seqp, uint64_t *tokenp, const char **why)
 {
-	uint64_t	now;
-	int		i, free_i;
+	int	i;
 
 	*why = NULL;
 	if (cl.c.role != CRAFT_LEADER) {
@@ -1375,38 +1721,35 @@ lock_try(const char *name, const char *holder, uint64_t ttl,
 	}
 	/* On its lease alone: a leader cut off grants nothing, so that
 	 * the one elected instead and it never grant the same lock. */
-	if (!craft_quorum_heard(&cl.c, CRAFT_LEASE_MS)) {
+	if (!craft_lease(&cl.c)) {
 		*why = "the leader has not heard from a majority";
 		return (false);
 	}
-	now = now_ms();
-	*commitp = cl.c.commit;
-	free_i = -1;
-	for (i = 0; i < CL_LOCKS; i++) {
-		if (cl.locks[i].name[0] == '\0' || cl.locks[i].until <= now) {
-			if (free_i == -1)
-				free_i = i;
-			continue;
-		}
-		if (strcmp(cl.locks[i].name, name) == 0) {
-			if (strcmp(cl.locks[i].holder, holder) != 0) {
-				*why = "held";
-				return (false);
-			}
-			cl.locks[i].until = now + ttl;
-			lock_write(name, holder, now + ttl, false, commitp);
-			return (true);
-		}
+	/* And once it knows the locks the leaders before it gave. */
+	if (!craft_ready(&cl.c)) {
+		*why = "the leader has not committed a write of its term yet";
+		return (false);
 	}
-	if (free_i == -1) {
+	if ((i = lock_slot(name)) == -1) {
 		*why = "too many locks held";
 		return (false);
 	}
-	strlcpy(cl.locks[free_i].name, name, sizeof(cl.locks[free_i].name));
-	strlcpy(cl.locks[free_i].holder, holder,
-	    sizeof(cl.locks[free_i].holder));
-	cl.locks[free_i].until = now + ttl;
-	lock_write(name, holder, now + ttl, false, commitp);
+	if (strcmp(cl.locks[i].name, name) == 0 && lock_live(i, NULL) &&
+	    !lock_live(i, holder)) {
+		*why = "held";
+		return (false);
+	}
+	if (lock_write(name, holder, ttl, false, termp, seqp) == -1) {
+		*why = "cannot propose it";
+		return (false);
+	}
+	/* Its place again: what was applied meanwhile may have moved it. */
+	if ((i = lock_slot(name)) == -1) {
+		*why = "too many locks held";
+		return (false);
+	}
+	lock_set(i, name, holder, ttl, *seqp);
+	*tokenp = cl.locks[i].token;
 	return (true);
 }
 
@@ -1420,7 +1763,7 @@ lock_drop(const char *name, const char *holder)
 		    strcmp(cl.locks[i].holder, holder) == 0) {
 			cl.locks[i].name[0] = '\0';
 			if (cl.c.role == CRAFT_LEADER)
-				lock_write(name, holder, cl.locks[i].until, true,
+				(void)lock_write(name, holder, 0, true, NULL,
 				    NULL);
 		}
 }
@@ -1430,23 +1773,26 @@ acl_lock_doit(cbl_req *req, const struct acl_lock_req *rq, void *arg __unused)
 {
 	struct acl_lock_rsp	 rsp;
 	const char		*why;
-	uint64_t		 ttl, commit;
+	uint64_t		 ttl, term, seq, token;
 	int			 n;
 	bool			 ok;
 
 	if (!peer_ok(req, rq->node, &n))
 		return (EACCES);
-	ttl = rq->has_ttl_ms && rq->ttl_ms > 0 && rq->ttl_ms <= 60000 ?
-	    rq->ttl_ms : 10000;
+	ttl = rq->has_ttl_ms && rq->ttl_ms > 0 && rq->ttl_ms <=
+	    CL_LOCK_TTL_MAX ? rq->ttl_ms : 10000;
+	term = seq = token = 0;
 	pthread_mutex_lock(&cl.mu);
-	ok = lock_try(rq->lock, rq->holder, ttl, &commit, &why);
+	ok = lock_try(rq->lock, rq->holder, ttl, &term, &seq, &token, &why);
 	pthread_mutex_unlock(&cl.mu);
 	memset(&rsp, 0, sizeof(rsp));
 	rsp.has_ok = true;
 	rsp.ok = ok;
 	rsp.error = why;
-	rsp.has_commit_seq = ok;
-	rsp.commit_seq = commit;
+	rsp.has_term = rsp.has_lock_seq = rsp.has_token = ok;
+	rsp.term = term;
+	rsp.lock_seq = seq;
+	rsp.token = token;
 	return (acl_lock_reply(req, &rsp));
 }
 
@@ -1479,7 +1825,7 @@ tick(cbl_timer *t __unused, void *arg __unused)
 	now = now_ms();
 	pthread_mutex_lock(&cl.mu);
 	craft_tick(&cl.c, now);
-	pump(-1, NULL, NULL);
+	pump(NULL, R_NONE, NULL);
 	for (k = 0; k < CL_PENDING; k++)
 		if (cl.pend[k].req != NULL && (now - cl.pend[k].since >
 		    CL_DEFER_MS || cbl_req_cancelled(cl.pend[k].req)))
@@ -1594,7 +1940,10 @@ write_to(int leader, const char *name, const void *body, size_t len,
 
 /*
  * A document written through the cluster: 0 once a majority holds it and
- * it is written here too, -1 if it could not be within CL_WAIT_MS.
+ * it is written here too, -1 if it could not be within CL_WAIT_MS.  A
+ * follower's write the leader committed is 0 even when this node has not
+ * written it within CL_WAIT_MS: then cluster_behind() says so, and every
+ * reply of this node with it, until it has.
  */
 int
 cluster_save(const char *name, const void *body, size_t len, bool gone)
@@ -1625,7 +1974,7 @@ cluster_save(const char *name, const void *body, size_t len, bool gone)
 				snprintf(err, sizeof(err), "cannot propose it");
 				break;
 			}
-			pump(-1, NULL, NULL);
+			pump(NULL, R_NONE, NULL);
 			if (!wait_applied(seq, deadline)) {
 				snprintf(err, sizeof(err), "not committed in "
 				    "time: the cluster has no majority here");
@@ -1646,8 +1995,21 @@ cluster_save(const char *name, const void *body, size_t len, bool gone)
 			    sizeof(err));
 			pthread_mutex_lock(&cl.mu);
 			if (seq != 0) {
-				/* Committed: here once the leader says so. */
-				(void)wait_applied(seq, deadline);
+				/*
+				 * Committed: here once the leader says so.  Not
+				 * here in time, it is the cluster's all the same
+				 * (accepted), and until it is here too this
+				 * node's replies say it is behind.
+				 */
+				if (!wait_applied(seq, deadline)) {
+					if (atomic_load(&cl.behind) < seq)
+						atomic_store(&cl.behind, seq);
+					pthread_mutex_unlock(&cl.mu);
+					log_msg(LOG_NOTICE, "cluster: %s accepted "
+					    "as %ju, not yet written here", name,
+					    (uintmax_t)seq);
+					return (0);
+				}
 				pthread_mutex_unlock(&cl.mu);
 				return (0);
 			}
@@ -1679,92 +2041,174 @@ holder_of(char *buf, size_t len)
 	    (uintptr_t)pthread_self());
 }
 
+/* The lock holder holds by this node's word, kept till until (by this
+ * node's clock); with the lock. */
+static void
+held_set(const char *name, const char *holder, uint64_t token, uint64_t ttl,
+    uint64_t until)
+{
+	int	i, free_i;
+
+	free_i = -1;
+	for (i = 0; i < CL_LOCKS; i++) {
+		if (strcmp(cl.held[i].name, name) == 0 &&
+		    strcmp(cl.held[i].holder, holder) == 0)
+			break;
+		if (free_i == -1 && cl.held[i].name[0] == '\0')
+			free_i = i;
+	}
+	if (i == CL_LOCKS && (i = free_i) == -1)
+		return;
+	strlcpy(cl.held[i].name, name, sizeof(cl.held[i].name));
+	strlcpy(cl.held[i].holder, holder, sizeof(cl.held[i].holder));
+	cl.held[i].token = token;
+	cl.held[i].ttl = ttl;
+	cl.held[i].until = until;
+}
+
+static int
+held_find(const char *name, const char *holder)
+{
+	int	i;
+
+	for (i = 0; i < CL_LOCKS; i++)
+		if (strcmp(cl.held[i].name, name) == 0 &&
+		    strcmp(cl.held[i].holder, holder) == 0)
+			return (i);
+	return (-1);
+}
+
 /*
- * What is read, changed and written again by one node of the cluster at
- * a time (labels, templates, prefix lists): the leader's lock name,
- * besides the caller's flock(2) of its own node; and, taken, every write
- * the leader had committed written here first, so that what is read is
- * the newest.  False when no leader gave it within CL_LOCK_WAIT_MS: the
- * write that follows then fails for want of a majority anyway.
+ * The cluster's lock name taken by holder for ttl ms (or renewed), asked
+ * until wait ms have gone (once for 0): held once the write that gave it
+ * is applied here as the leader proposed it, which makes every write the
+ * leader had committed before it written here too.  A leader that loses
+ * its place before the write is committed gave nothing: its holder asks
+ * again.  The lock's fencing token into *tokenp, the write that gave it
+ * to holder; the holder is sure of it until ttl from when it asked, less
+ * what the clocks may drift.
  */
 bool
-cluster_lock(const char *name)
+cluster_lock_as(const char *name, const char *holder, uint64_t ttl,
+    uint64_t wait, uint64_t *tokenp)
 {
 	struct acl_lock_req	 rq;
 	struct acl_lock_rsp	*rsp;
-	char			 holder[128], err[256];
+	char			 err[256];
 	const char		*why;
-	uint64_t		 deadline, commit;
+	uint64_t		 deadline, asked, term, seq, token;
 	int			 leader;
-	bool			 ok;
+	bool			 got, held;
 
+	*tokenp = 0;
 	if (!cl.on || !cl.started)
 		return (true);
-	holder_of(holder, sizeof(holder));
-	deadline = now_ms() + CL_LOCK_WAIT_MS;
-	while (now_ms() < deadline) {
+	if (ttl > CL_LOCK_TTL_MAX)
+		ttl = CL_LOCK_TTL_MAX;
+	deadline = now_ms() + wait;
+	do {
+		asked = now_ms();
+		got = false;
+		term = seq = token = 0;
 		pthread_mutex_lock(&cl.mu);
 		if (cl.c.role == CRAFT_LEADER) {
-			ok = lock_try(name, holder, CL_LOCK_TTL_MS, &commit,
+			got = lock_try(name, holder, ttl, &term, &seq, &token,
 			    &why);
-			if (ok)
-				(void)wait_applied(commit, deadline);
 			pthread_mutex_unlock(&cl.mu);
-			if (ok)
-				return (true);
-			usleep(50000);
-			continue;
-		}
-		leader = node_of(cl.c.leader);
-		pthread_mutex_unlock(&cl.mu);
-		if (leader < 0 || leader == cl.self) {
-			usleep(100000);
-			continue;
-		}
-		pthread_mutex_lock(&cl.wmu);
-		ok = false;
-		commit = 0;
-		if (leader_client(leader, err, sizeof(err))) {
-			memset(&rq, 0, sizeof(rq));
-			rq.node = cl.nodes[cl.self].name;
-			rq.lock = name;
-			rq.holder = holder;
-			rq.has_ttl_ms = true;
-			rq.ttl_ms = CL_LOCK_TTL_MS;
-			rsp = NULL;
-			if (acl_lock(&cl.wcl, &rq, &rsp) != 0 || rsp == NULL)
-				leader_drop();
-			else if (rsp->ok) {
-				ok = true;
-				commit = rsp->commit_seq;
+		} else {
+			leader = node_of(cl.c.leader);
+			pthread_mutex_unlock(&cl.mu);
+			if (leader >= 0 && leader != cl.self) {
+				pthread_mutex_lock(&cl.wmu);
+				if (leader_client(leader, err, sizeof(err))) {
+					memset(&rq, 0, sizeof(rq));
+					rq.node = cl.nodes[cl.self].name;
+					rq.lock = name;
+					rq.holder = holder;
+					rq.has_ttl_ms = true;
+					rq.ttl_ms = (uint32_t)ttl;
+					rsp = NULL;
+					if (acl_lock(&cl.wcl, &rq, &rsp) != 0 ||
+					    rsp == NULL)
+						leader_drop();
+					else if (rsp->ok && rsp->has_term &&
+					    rsp->has_lock_seq && rsp->has_token) {
+						got = true;
+						term = rsp->term;
+						seq = rsp->lock_seq;
+						token = rsp->token;
+					}
+					acl_lock_rsp_free(rsp);
+				}
+				pthread_mutex_unlock(&cl.wmu);
 			}
-			acl_lock_rsp_free(rsp);
 		}
-		pthread_mutex_unlock(&cl.wmu);
-		if (ok) {
+		if (got) {
 			pthread_mutex_lock(&cl.mu);
-			(void)wait_applied(commit, deadline);
+			held = wait_applied(seq, MAX(deadline, now_ms() +
+			    CL_WAIT_MS)) && applied_as(seq, term);
+			if (held)
+				held_set(name, holder, token, ttl, asked + ttl -
+				    CRAFT_DRIFT_MS);
 			pthread_mutex_unlock(&cl.mu);
-			return (true);
+			if (held) {
+				*tokenp = token;
+				return (true);
+			}
+			log_msg(LOG_NOTICE, "cluster: the lock %s given by a "
+			    "leader that lost its place before it was written",
+			    name);
 		}
+		if (now_ms() >= deadline)
+			break;
 		usleep(50000);
-	}
-	log_msg(LOG_ERR, "cluster: the lock %s not had in time", name);
+	} while (now_ms() < deadline);
+	if (wait > 0)
+		log_msg(LOG_ERR, "cluster: the lock %s not had in time", name);
 	return (false);
 }
 
+/*
+ * Is the lock holder took (its token) still held, right before what it
+ * guards is done?  Renewed when half its time has gone; false when it
+ * ran out or another holds it now.
+ */
+bool
+cluster_lock_held(const char *name, const char *holder, uint64_t token)
+{
+	uint64_t	now, ttl, t;
+	int		i;
+	bool		fresh;
+
+	if (!cl.on || !cl.started)
+		return (true);
+	now = now_ms();
+	pthread_mutex_lock(&cl.mu);
+	if ((i = held_find(name, holder)) == -1 || cl.held[i].token != token) {
+		pthread_mutex_unlock(&cl.mu);
+		return (false);
+	}
+	ttl = cl.held[i].ttl;
+	fresh = cl.held[i].until > now && cl.held[i].until - now > ttl / 2;
+	pthread_mutex_unlock(&cl.mu);
+	if (fresh)
+		return (true);
+	return (cluster_lock_as(name, holder, ttl, 0, &t) && t == token);
+}
+
 void
-cluster_unlock(const char *name)
+cluster_unlock_as(const char *name, const char *holder)
 {
 	struct acl_unlock_req	 rq;
 	struct acl_unlock_rsp	*rsp;
-	char			 holder[128], err[256];
-	int			 leader;
+	char			 err[256];
+	int			 leader, i;
 
 	if (!cl.on || !cl.started)
 		return;
-	holder_of(holder, sizeof(holder));
 	pthread_mutex_lock(&cl.mu);
+	if ((i = held_find(name, holder)) != -1)
+		cl.held[i].name[0] = '\0';
 	if (cl.c.role == CRAFT_LEADER) {
 		lock_drop(name, holder);
 		pthread_mutex_unlock(&cl.mu);
@@ -1786,6 +2230,39 @@ cluster_unlock(const char *name)
 		acl_unlock_rsp_free(rsp);
 	}
 	pthread_mutex_unlock(&cl.wmu);
+}
+
+/*
+ * What is read, changed and written again by one node of the cluster at
+ * a time (labels, templates, prefix lists): the cluster's lock name, by
+ * this thread, besides the caller's flock(2) of its own node; taken,
+ * every write the leader had committed is written here first, so that
+ * what is read is the newest.  False when it was not had within
+ * CL_LOCK_WAIT_MS: the write that follows then fails for want of a
+ * majority anyway.
+ */
+bool
+cluster_lock(const char *name)
+{
+	char		holder[128];
+	uint64_t	token;
+
+	if (!cl.on || !cl.started)
+		return (true);
+	holder_of(holder, sizeof(holder));
+	return (cluster_lock_as(name, holder, CL_LOCK_TTL_MS, CL_LOCK_WAIT_MS,
+	    &token));
+}
+
+void
+cluster_unlock(const char *name)
+{
+	char	holder[128];
+
+	if (!cl.on || !cl.started)
+		return;
+	holder_of(holder, sizeof(holder));
+	cluster_unlock_as(name, holder);
 }
 
 /* ---- Start ---------------------------------------------------------------- */
@@ -1888,6 +2365,9 @@ cluster_init(void)
 		}
 		(void)pthread_detach(cl.peers[i].thread);
 	}
+	if (pthread_create(&tid, NULL, writer_run, NULL) != 0)
+		return (-1);
+	(void)pthread_detach(tid);
 	if (pthread_create(&tid, NULL, loop_run, NULL) != 0)
 		return (-1);
 	(void)pthread_detach(tid);
@@ -1945,6 +2425,13 @@ cluster_status(ucl_object_t *o)
 	    "commit", 0, false);
 	ucl_object_insert_key(o, ucl_object_fromint((int64_t)cl.c.applied),
 	    "applied", 0, false);
+	/* A write of this node's own the cluster committed, not yet
+	 * written here. */
+	if (atomic_load(&cl.behind) > cl.c.applied)
+		ucl_object_insert_key(o, ucl_object_fromint((int64_t)
+		    atomic_load(&cl.behind)), "behind", 0, false);
+	ucl_object_insert_key(o, ucl_object_frombool(craft_lease(&cl.c)),
+	    "lease", 0, false);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (i = 0; i < cl.nn; i++) {
 		n = ucl_object_typed_new(UCL_OBJECT);

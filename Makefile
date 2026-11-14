@@ -15,8 +15,8 @@
 # submodule stamp/, built and installed with the rest.  The console
 # needs net/libwebsockets and emcc(1); see config.mk.sample to point at
 # copies not installed in ${LOCALBASE}.  WITHOUT_CONSOLE=yes builds only
-# the jail host's programs; WITHOUT_CLUSTER=yes the console without its
-# cluster (Raft); WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
+# the jail host's programs; WITH_CLUSTER=yes the console with its
+# cluster (Raft), which it is built without otherwise; WITH_WEBGPU=yes the map's WebGPU too, with Dawn's
 # emdawnwebgpu package, which "make depends" fetches, not the build.  "make check" runs the tests in the build tree: those
 # that need root are skipped unless it runs as root, the browser test
 # unless Chromium and chromedriver are installed.
@@ -245,6 +245,25 @@ check-port: .PHONY
 check-html: .PHONY
 	@awk -f ${.CURDIR}/www/arcana-ui/tools/check-html.awk \
 	    ${.CURDIR}/www/arcana-ui/src/*.c
+# The console as the other build of it would be, as to its cluster
+# (WITH_CLUSTER or not), compiled alone in an object directory of its own
+# (obj/variant), so that the one the configuration does not choose does
+# not rot unseen: one more compile of www/arcana-console, not its tests.
+.if ${MK_CLUSTER} != "no"
+_VARIANT_CLUSTER=	no
+.else
+_VARIANT_CLUSTER=	yes
+.endif
+check-variant: .PHONY
+.if ${MK_CONSOLE} != "no"
+	@mkdir -p ${.OBJDIR}/variant/www/arcana-console && \
+	    env MAKEOBJDIR=${.OBJDIR}/variant/www/arcana-console \
+	    ${MAKE} -j${CHECK_JOBS} -C ${.CURDIR}/www/arcana-console \
+	    MK_CLUSTER=${_VARIANT_CLUSTER} MK_TESTS=no all > \
+	    ${.OBJDIR}/variant/build.log 2>&1 || { tail -40 \
+	    ${.OBJDIR}/variant/build.log; echo "check-variant: the console" \
+	    "with MK_CLUSTER=${_VARIANT_CLUSTER} does not build" >&2; exit 1; }
+.endif
 # "all" as a dependency would not recurse: bsd.subdir.mk only descends
 # for targets named on the command line.
 check: .PHONY
@@ -253,7 +272,7 @@ check: .PHONY
 	@${MAKE} -C ${.CURDIR}/www/arcana-ui check-yang
 .endif
 	@${MAKE} -C ${.CURDIR} check-wire check-nacm check-cnodes check-html \
-	    check-port kyuafile
+	    check-port check-variant kyuafile
 	@db=${.OBJDIR}/check.db; rm -f "$$db"; set -o pipefail; \
 	cd ${.OBJDIR} && env ${_KYUA_ENV} kyua -v parallelism=${CHECK_PARALLEL} test \
 	    --results-file="$$db" -k Kyuafile 2>&1 | ${_KYUA_OUT} || \

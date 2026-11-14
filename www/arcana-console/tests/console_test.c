@@ -14435,16 +14435,27 @@ ATF_TC_BODY(sdwan_sfp, tc)
  * sdwan_good with a uswe tunnel over the Internet into doc, its UNIs on
  * lo0, not kept yet.
  */
+static void	uswe_doc(const char *, const char *, char *, size_t);
+
 static void
 uswe_start(const atf_tc_t *tc, struct authn *a, char *sa, char *sb,
     size_t len, char *doc, size_t dlen)
 {
-	char		t1[8192];
-	size_t		i;
 
 	start(tc, 0, NULL);
 	enrol(a);
 	r3_ab(sa, sb, len);
+	uswe_doc(sa, sb, doc, dlen);
+}
+
+/* sdwan_good with a uswe tunnel over the Internet, its UNIs on lo0, its
+ * edges sa and sb, into doc. */
+static void
+uswe_doc(const char *sa, const char *sb, char *doc, size_t dlen)
+{
+	char		t1[8192];
+	size_t		i;
+
 	snprintf(doc, dlen, "%s", sdwan_good);
 	static const char *const edits[][2] = {
 		{ "\"tunnel\":{\"kind\":\"gre\",\"ipsec\":true}",
@@ -19476,12 +19487,14 @@ ATF_TC_BODY(sdwan_apply_rollback, tc)
 static const char *const cl_nodes[] = { "na", "nb", "nc" };
 
 /* A case of the cluster's: its consoles stopped, each in its directory. */
-#define	CLUSTER_TC(name, descr)						\
+#define	CLUSTER_TC(name, descr)	CLUSTER_TC_T(name, descr, "120")
+/* The same, given secs (a string) to run. */
+#define	CLUSTER_TC_T(name, descr, secs)					\
 ATF_TC_WITH_CLEANUP(name);						\
 ATF_TC_HEAD(name, tc)							\
 {									\
 	atf_tc_set_md_var(tc, "descr", descr);				\
-	atf_tc_set_md_var(tc, "timeout", "120");				\
+	atf_tc_set_md_var(tc, "timeout", secs);				\
 }									\
 ATF_TC_CLEANUP(name, tc)						\
 {									\
@@ -19531,8 +19544,8 @@ cl_start(const atf_tc_t *tc, const char *cwd, struct authn *a)
 	int	i, n;
 
 #ifndef ARCANA_CLUSTER
-	atf_tc_skip("arcana-console built without clustering "
-	    "(WITHOUT_CLUSTER)");
+	atf_tc_skip("arcana-console built without the cluster (the "
+	    "tree's configuration has no WITH_CLUSTER=yes)");
 #endif
 	n = snprintf(nodes, sizeof(nodes), "nodes {");
 	for (i = 0; i < 3; i++)
@@ -19673,6 +19686,175 @@ ATF_TC_BODY(cluster_catchup, tc)
 	}
 	ATF_CHECK_EQ(401, n);
 	ATF_REQUIRE(chdir(cwd) == 0);
+}
+
+/* The pid a node's pid file (console.pid, arcana-agent.pid) names: its
+ * process group's (the console's worker is its child). */
+static pid_t
+cl_pid(const char *cwd, int i, const char *file)
+{
+	char	path[MAXPATHLEN];
+	FILE	*fp;
+	int	pid;
+
+	snprintf(path, sizeof(path), "%s/%s/%s", cwd, cl_nodes[i], file);
+	ATF_REQUIRE((fp = fopen(path, "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &pid) == 1);
+	fclose(fp);
+	return ((pid_t)pid);
+}
+
+/*
+ * A follower's change the leader committed, which the follower has not
+ * written in its time: accepted all the same, and until the follower has
+ * written it, its replies say it is behind (a warning, and the cluster's
+ * state) rather than serve what it reads as the newest.
+ */
+CLUSTER_TC(cluster_behind, "Three consoles of a cluster: a follower's "
+    "change committed but not yet written there is accepted, its replies "
+    "saying it is behind until it is written")
+ATF_TC_BODY(cluster_behind, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		cwd[MAXPATHLEN], sock[MAXPATHLEN], away[MAXPATHLEN];
+	char		sid[16];
+	pid_t		pid;
+	int		k;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_start(tc, cwd, &a);
+	/*
+	 * nb out of the others' reach, it reaching them: its socket moved
+	 * away, and nb stopped longer than a request is waited for (5 s),
+	 * so that the leader's connection to it is given up and not made
+	 * again.
+	 */
+	snprintf(sock, sizeof(sock), "%s/%s/cl.sock", cwd, cl_nodes[1]);
+	snprintf(away, sizeof(away), "%s/%s/cl.sock.away", cwd, cl_nodes[1]);
+	ATF_REQUIRE(rename(sock, away) == 0);
+	pid = cl_pid(cwd, 1, "console.pid");
+	ATF_REQUIRE(killpg(pid, SIGSTOP) == 0);
+	sleep(7);
+	ATF_REQUIRE(killpg(pid, SIGCONT) == 0);
+	/* A host added on nb: committed by na and nc, never written on nb
+	 * in its time: 201, saying nb is behind. */
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	host_try("\"name\":\"late\",\"uri\":\"tcp://192.0.2.11:4310\"", sid,
+	    sizeof(sid), &r);
+	ATF_CHECK_MSG(r.status == 201, "%d %s", r.status, r.body);
+	ATF_CHECK_MSG(r.head != NULL && strcasestr(r.head, "warning: 110") !=
+	    NULL, "the reply does not say nb is behind: %s", r.head);
+	resp_free(&r);
+	http("GET", CC "cluster", NULL, &r);
+	ATF_CHECK_MSG(r.body != NULL && strstr(r.body, "\"behind\":") != NULL &&
+	    r.head != NULL && strcasestr(r.head, "warning: 110") != NULL,
+	    "%s %s", r.head, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_CHECK(cl_until(cwd, 0, CC "hosts", "\"late\""));
+	ATF_CHECK(cl_until(cwd, 2, CC "hosts", "\"late\""));
+	/* Reached again: it writes it, and says nothing more. */
+	ATF_REQUIRE(rename(away, sock) == 0);
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	for (k = 0; k < 150; k++) {
+		http("GET", CC "cluster", NULL, &r);
+		if (r.body != NULL && strstr(r.body, "\"behind\":") == NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_CHECK_MSG(k < 150 && r.head != NULL && strcasestr(r.head,
+	    "warning:") == NULL, "%s %s", r.head, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+}
+
+/*
+ * An SD-WAN apply is the cluster's one at a time: one running on na (its
+ * edges' agent stopped once it has begun, so that it waits at a step),
+ * an apply asked of nb meanwhile is refused; once na's has ended, nb's
+ * runs.
+ */
+CLUSTER_TC_T(cluster_apply_lock, "Three consoles of a cluster: an SD-WAN "
+    "apply running on one node, another's apply is refused until it ends",
+    "360")
+ATF_TC_BODY(cluster_apply_lock, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		cwd[MAXPATHLEN], sa[16], sb[16], doc[8192], said[512];
+	char		*acc_a, *acc_b;
+	FILE		*fp;
+	pid_t		agent, pid;
+	int		st;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_start(tc, cwd, &a);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	r3_ab(sa, sb, sizeof(sa));
+	uswe_doc(sa, sb, doc, sizeof(doc));
+	r3_keep(doc);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	/* The servers as the SD-WAN's threads see them, a tick on, on
+	 * both; what each would apply, its warnings accepted. */
+	usleep(2500000);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	ATF_REQUIRE((acc_a = strdup(accepting(false))) != NULL);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_REQUIRE(cl_until(cwd, 1, CC "sdwan/plan", "\"tunnels\""));
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	ATF_REQUIRE((acc_b = strdup(accepting(false))) != NULL);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	http("POST", CC "sdwan/apply", acc_a, &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	agent = cl_pid(cwd, 0, "arcana-agent.pid");
+	ATF_REQUIRE(killpg(agent, SIGSTOP) == 0);
+	/* nb asked while na's waits; what nb reads of the edges first may
+	 * wait for the agent too, so it is asked aside, the agent going on
+	 * in a few seconds either way. */
+	if ((pid = fork()) == 0) {
+		ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+		http("POST", CC "sdwan/apply", acc_b, &r);
+		if ((fp = fopen("../apply-b", "w")) != NULL) {
+			fprintf(fp, "%d %.400s\n", r.status, r.body != NULL ?
+			    r.body : "");
+			fclose(fp);
+		}
+		_exit(0);
+	}
+	ATF_REQUIRE(pid > 0);
+	sleep(3);
+	ATF_REQUIRE(killpg(agent, SIGCONT) == 0);
+	ATF_REQUIRE(waitpid(pid, &st, 0) == pid);
+	said[0] = '\0';
+	if ((fp = fopen("apply-b", "r")) != NULL) {
+		if (fgets(said, sizeof(said), fp) == NULL)
+			said[0] = '\0';
+		fclose(fp);
+	}
+	ATF_CHECK_MSG(strncmp(said, "409 ", 4) == 0 && strstr(said, "another "
+	    "node of the cluster") != NULL, "nb applied while na did: %s",
+	    said);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	sdwan_wait(&r);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	/* na's ended: nb's turn, with what is to apply now. */
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	sdwan_wait(&r);
+	resp_free(&r);
+	http("POST", CC "sdwan/apply", accepting(false), &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	sdwan_wait(&r);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	free(acc_a);
+	free(acc_b);
 }
 
 /* tls_ec's host, its id made by the test. */
@@ -23837,6 +24019,54 @@ ATF_TC_BODY(cyang_sdwan, tc)
 	resp_free(&r);
 }
 
+/*
+ * A console built without the cluster (no WITH_CLUSTER): web.conf's
+ * cluster block stops it at its start, saying how to build one that
+ * has it, and nothing of the cluster listens.
+ */
+CONSOLE_TC(cluster_unbuilt, "A console built without the cluster refuses "
+    "web.conf's cluster block at its start, saying how to build it")
+ATF_TC_BODY(cluster_unbuilt, tc)
+{
+	char	cwd[MAXPATHLEN], conf[2048];
+	FILE	*fp;
+	int	k, pid;
+	bool	said;
+
+#ifdef ARCANA_CLUSTER
+	atf_tc_skip("arcana-console built with the cluster (WITH_CLUSTER): "
+	    "it takes the block");
+#endif
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	start(tc, 0, NULL);
+	console_stop();
+	ATF_REQUIRE((fp = fopen("web.conf", "a")) != NULL);
+	snprintf(conf, sizeof(conf), "cluster { self = \"na\"; listen = "
+	    "\"unix:%s/cl.sock\"; nodes { na { uri = \"unix:%s/cl.sock\"; } "
+	    "nb { uri = \"unix:%s/nb.sock\"; } nc { uri = \"unix:%s/nc.sock\";"
+	    " } } }\n", cwd, cwd, cwd, cwd);
+	fputs(conf, fp);
+	fclose(fp);
+	(void)unlink("console.out");
+	console_start();
+	for (said = false, k = 0; k < 100 && !said; k++) {
+		said = system("grep -q 'cluster: this arcana-console was built "
+		    "without the cluster: build with WITH_CLUSTER=yes' "
+		    "console.out") == 0;
+		if (!said)
+			usleep(100000);
+	}
+	ATF_CHECK_MSG(said, "no word of the build at its start");
+	ATF_REQUIRE((fp = fopen("console.pid", "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &pid) == 1);
+	fclose(fp);
+	for (k = 0; k < 100 && waitpid((pid_t)pid, NULL, WNOHANG) !=
+	    (pid_t)pid; k++)
+		usleep(100000);
+	ATF_CHECK_MSG(k < 100, "it went on");
+	ATF_CHECK_MSG(access("cl.sock", F_OK) == -1, "the cluster listens");
+}
+
 CONSOLE_TC(cyang_console, "arcana-console's update, notes, cluster, CA, "
     "security keys, path finder and WireGuard key pair at their RESTCONF "
     "paths, an owner's an owner's, a key never the last, a token reading "
@@ -23858,8 +24088,10 @@ ATF_TC_BODY(cyang_console, tc)
 	ATF_CHECK_STREQ("true", jstr(&r, "cluster"));
 	resp_free(&r);
 #else
-	/* Built WITHOUT_CLUSTER: the cluster is not there, and says so. */
-	cc_want("GET", CC "cluster", NULL, 501, "built without clustering");
+	/* Built without WITH_CLUSTER: the cluster is not there, and says
+	 * so. */
+	cc_want("GET", CC "cluster", NULL, 501, "built without the cluster: "
+	    "build with WITH_CLUSTER=yes");
 	http("GET", "/api/health", NULL, &r);
 	ATF_CHECK_STREQ("false", jstr(&r, "cluster"));
 	resp_free(&r);
@@ -25673,6 +25905,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, telegram);
 	ATF_TP_ADD_TC(tp, telegram_workflow);
 	ATF_TP_ADD_TC(tp, cluster_catchup);
+	ATF_TP_ADD_TC(tp, cluster_behind);
+	ATF_TP_ADD_TC(tp, cluster_apply_lock);
 
 	ATF_TP_ADD_TC(tp, watch_nacm);
 	ATF_TP_ADD_TC(tp, notif_receiver);
@@ -25813,6 +26047,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, cyang_host_verbs);
 	ATF_TP_ADD_TC(tp, cyang_dataset_key);
 	ATF_TP_ADD_TC(tp, cyang_sdwan);
+	ATF_TP_ADD_TC(tp, cluster_unbuilt);
 	ATF_TP_ADD_TC(tp, cyang_console);
 	ATF_TP_ADD_TC(tp, cyang_plugins);
 	ATF_TP_ADD_TC(tp, yang_module);

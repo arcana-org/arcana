@@ -1413,8 +1413,9 @@ static int
 sec_add(struct lws *wsi, const char *ua, unsigned char **pp,
     unsigned char *end)
 {
-	size_t	i;
-	int	rc;
+	const char	*w;
+	size_t		 i;
+	int		 rc;
 
 	rc = csp_add(wsi, ua, pp, end);
 	for (i = 0; rc == 0 && i < nitems(sec_headers); i++)
@@ -1430,6 +1431,10 @@ sec_add(struct lws *wsi, const char *ua, unsigned char **pp,
 		    "strict-transport-security:", (const unsigned char *)v,
 		    n, pp, end);
 	}
+	if (rc == 0 && (w = arcw_warning()) != NULL)
+		rc = lws_add_http_header_by_name(wsi, (const unsigned char *)
+		    "warning:", (const unsigned char *)w, (int)strlen(w), pp,
+		    end);
 	return (rc);
 }
 

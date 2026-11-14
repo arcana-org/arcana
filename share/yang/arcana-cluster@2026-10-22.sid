@@ -2,6 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-cluster",
     "module-revision": "2026-10-22",
+    "sid-file-version": 1,
     "description": "Arcana's SIDs for arcana-cluster (RFC 9595's experimental range; share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -161,7 +162,7 @@
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-cluster:lock/output/commit-seq",
+        "identifier": "/arcana-cluster:append/input/sent-ms",
         "sid": "77027"
       },
       {
@@ -443,6 +444,31 @@
         "namespace": "data",
         "identifier": "/arcana-cluster:write/output/term",
         "sid": "77083"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cluster:append/output/sent-ms",
+        "sid": "77084"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cluster:lock/output/lock-seq",
+        "sid": "77085"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cluster:lock/output/term",
+        "sid": "77086"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cluster:lock/output/token",
+        "sid": "77087"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cluster:vote/input/pre-vote",
+        "sid": "77088"
       }
     ]
   }

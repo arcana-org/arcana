@@ -2516,9 +2516,9 @@ view_settings(struct html *h)
 	case SET_CLUSTER:
 		if (app.no_cluster)
 			h_raw(h, "<div class=\"empty\"><p>This console was built "
-			    "without clustering.</p><p class=\"dim\">Its build "
-			    "had WITHOUT_CLUSTER (the port's CLUSTER option "
-			    "off).</p></div>");
+			    "without the cluster.</p><p class=\"dim\">A build "
+			    "has it with WITH_CLUSTER=yes (the port's CLUSTER "
+			    "option, off by default).</p></div>");
 		else
 			set_cluster(h);
 		break;

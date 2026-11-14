@@ -420,11 +420,21 @@ Written and tested with stand-ins only:
   tenant's alike: refused to a tenant's user and to their tokens
   (cnodes.c's T_ALL, console 0.434.0, the tenants plan's T-0.1) until
   they are a tenant's own.
-- A follower's `cluster_save()` returns 0 once the leader committed,
-  whether or not this node applied it in time (`wait_applied()` timed
-  out): a read here right after may still see the old copy.
 - Each node of a cluster writes a setup token of its own while the
-  console is not set up; one, the leader's, would be enough.
+  console is not set up, so two owners can be made on two nodes before
+  either is replicated, and an enrolment token lives in the memory of
+  the node that made it (pki.c).  To do: the setup token made by the
+  leader and replicated, the first registration that commits winning;
+  enrolment tokens (the hash of their secret) through the log, the
+  entry that spends one winning (docs/notes/console-cluster.md).
+- A cluster's audit trail and SENs/SANs are each node's own, each
+  record naming its node: one trail would want appends through the
+  log (an entry kind idempotent by a record id).
+- The SD-WAN apply's lock of a cluster is renewed before each step's
+  jobs, for two minutes: a step that waits longer than that for its
+  jobs loses it, and the apply stops at the next step rather than run
+  beside another.  The schedulers check their lease each tick, not
+  again before each side effect.
 - A unix listener's client is known by its uid (console 0.434.0); the
   threat feeds protect addresses, so a local user signing in is not one
   of theirs (`feeds_signin()` keeps IP addresses alone).

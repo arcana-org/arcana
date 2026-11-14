@@ -399,6 +399,20 @@ cluster_tick(void *arg __unused, uint64_t now __unused)
 	cluster_changes(reload_one);
 }
 
+/*
+ * A node of a cluster that has not yet written a change of its own the
+ * cluster committed: what it reads may be older than what it said was
+ * accepted, and every reply says so (RFC 9111's 110, response is stale).
+ */
+const char *
+arcw_warning(void)
+{
+
+	return (cluster_behind() ? "110 - \"this console has not yet written "
+	    "a change the cluster accepted from it: what it reads may be "
+	    "older\"" : NULL);
+}
+
 /* Called by the server in its worker, once it listens as its user. */
 int
 arcw_init(void)
