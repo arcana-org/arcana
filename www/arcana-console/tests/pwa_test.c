@@ -7919,16 +7919,16 @@ part_netsect_paths(void)
 	 * up): its node gone from the map, its addresses no gateway's
 	 * below.
 	 */
-	wait_js("window.arcanaStreams && window.arcanaStreams[1] && "
-	    "window.arcanaStreams[1].readyState === 1", 10);
+	wait_js("window.arcanaStream && window.arcanaStream.readyState === 1 "
+	    "&& window.arcanaStreams[1] === 'fleet'", 10);
 	ATF_REQUIRE(system("sed -i '' '/^gw /d' jails") == 0);
 	run("Object.values(window.labIds).forEach((id, i) => window."
-	    "arcanaStreams[1].onmessage({ data: JSON.stringify({ "
-	    "'ietf-restconf:notification': { eventTime: new Date()."
-	    "toISOString(), 'arcana-fleet:fleet': { host: [{ id: id, "
+	    "arcanaStream.dispatchEvent(new MessageEvent('fleet', { data: "
+	    "JSON.stringify({ 'ietf-restconf:notification': { eventTime: new "
+	    "Date().toISOString(), 'arcana-fleet:fleet': { host: [{ id: id, "
 	    "'arcana-events:event': { number: String(900000 + i), time: new "
 	    "Date().toISOString(), kind: 'arcana-events:jail-state', "
-	    "'jail-state': { jail: 'gw', state: 'stopped' } } }] } } }) }));");
+	    "'jail-state': { jail: 'gw', state: 'stopped' } } }] } } }) })));");
 	run("document.querySelector('li[data-act=select-network]').click()");
 	wait_js("document.querySelector('svg.topo .tnode') && !document."
 	    "querySelector('svg.topo .tnode.vjail')", 15);
@@ -8257,14 +8257,15 @@ part_streams(void)
 	/*
 	 * The fleet's stream open, and the stats' subscription of every
 	 * host's (the host's own, of the page before, given up for it):
-	 * each EventSource of the stats' listened to, its first push
-	 * waited for.
+	 * each subscription of the stats' listened to on the page's
+	 * stream, its first push waited for.
 	 */
-	wait_js("window.arcanaStreams && window.arcanaStreams[1] && "
-	    "window.arcanaStreams[1].readyState === 1", 30);
+	wait_js("window.arcanaStream && window.arcanaStream.readyState === 1 "
+	    "&& window.arcanaStreams[1] === 'fleet'", 30);
 	run("window.pushes = []; window.subs = 0; setInterval(() => { "
-	    "const es = window.arcanaStreams[2]; if (es && !es.heard) { "
-	    "es.heard = true; window.subs++; es.addEventListener('message', "
+	    "const es = window.arcanaStream, n = window.arcanaStreams[2]; "
+	    "if (es && n && !(es.tHeard = es.tHeard || {})[n]) { "
+	    "es.tHeard[n] = true; window.subs++; es.addEventListener(n, "
 	    "e => window.pushes.push(e.data)); } }, 100);");
 	wait_js("window.pushes.some(p => p.includes('\"arcana-fleet:fleet\"'))",
 	    40);
@@ -8327,6 +8328,87 @@ ATF_TC_BODY(pwa_streams, tc)
 	part_streams();
 }
 ATF_TC_CLEANUP(pwa_streams, tc)
+{
+
+	browser_stop();
+}
+
+/*
+ * The page's streams on one EventSource (bridge.js; the console's page
+ * stream, rcstream.c): a host's Jobs tab has the fleet's stream, the
+ * host's stats and every host's jobs live at once, all three on one, as
+ * the browser counts its EventSources; each still tells: the stats
+ * pushed, a job submitted shown on the Jobs tab, its change and its
+ * event told.
+ */
+static void
+part_page_stream(void)
+{
+	ucl_object_t	*v;
+
+	/* Every EventSource the page makes, counted while it is open. */
+	v = wd("POST", "/session/goog/cdp/execute", "{\"cmd\":\"Page."
+	    "addScriptToEvaluateOnNewDocument\",\"params\":{\"source\":\""
+	    "window.esOpen = 0; window.esMade = 0; const E = window."
+	    "EventSource; window.EventSource = class extends E { constructor("
+	    "u, o) { super(u, o); window.esMade++; window.esOpen++; this."
+	    "addEventListener('error', () => { if (this.readyState === 2 && "
+	    "!this.gone) { this.gone = true; window.esOpen--; } }); } close() "
+	    "{ if (!this.gone) { this.gone = true; window.esOpen--; } super."
+	    "close(); } };\"}}");
+	if (v != NULL)
+		ucl_object_unref(v);
+	run("window.before = 1; location.reload();");
+	wait_js("window.before === undefined && window.esMade !== undefined "
+	    "&& document.querySelector('.hostbar[data-server=lab]')", 30);
+	run("window.labId = null; fetch('/restconf/data/arcana-fleet:fleet')"
+	    ".then(r => r.json()).then(j => { window.labId = j['arcana-fleet:"
+	    "fleet'].host[0].id; });");
+	wait_js("window.labId", 10);
+	run("location.hash = '#/hosts/' + window.labId + '/jobs';");
+	wait_js("(() => { const n = Object.values(window.arcanaStreams || {}); "
+	    "return window.arcanaStream && window.arcanaStream.readyState === 1 "
+	    "&& n.length === 3 && n[0] === 'fleet'; })()", 30);
+	/* Each source's records, heard on the one EventSource. */
+	run("window.heard = {}; const es = window.arcanaStream; Object.entries("
+	    "window.arcanaStreams).forEach(([id, n]) => { window.heard[id] = "
+	    "[]; es.addEventListener(n, e => window.heard[id].push(e.data)); "
+	    "});");
+	wait_js("window.heard[2].filter(d => d.includes('push-update') && "
+	    "d.includes('stats')).length >= 2", 30);
+	run("fetch('/restconf/data/arcana-fleet:fleet/host=' + window.labId + "
+	    "'/arcana-jobs:submit', { method: 'POST', headers: { "
+	    "'Content-Type': 'application/yang-data+json', 'X-Arcana': '1' }, "
+	    "body: JSON.stringify({ 'arcana-jobs:input': { change: [{ "
+	    "monitor: { verb: 'set', args: ['name=gre7', 'interface=gre7', "
+	    "'address=192.0.2.7', 'interval=500', 'eval=10000'] } }] } }) });");
+	wait_js("window.heard[1].some(d => d.includes('arcana-events:event')) "
+	    "&& window.heard[3].length > 0", 30);
+	wait_js("document.querySelector('table.jobs tr.j-done')", 20);
+	fprintf(stderr, "page stream: %d EventSource open, %d made; heard "
+	    "%d of the fleet's, %d of the stats', %d of the jobs'\n",
+	    (int)js_num("window.esOpen"), (int)js_num("window.esMade"),
+	    (int)js_num("window.heard[1].length"),
+	    (int)js_num("window.heard[2].length"),
+	    (int)js_num("window.heard[3].length"));
+	ATF_CHECK_MSG(js_num("window.esOpen") == 1, "%d EventSources open",
+	    (int)js_num("window.esOpen"));
+}
+
+ATF_TC_WITH_CLEANUP(pwa_page_stream);
+ATF_TC_HEAD(pwa_page_stream, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A host's Jobs tab has the fleet's stream, its stats and the jobs live on one EventSource, each still told");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_page_stream, tc)
+{
+
+	prologue(tc, 1);
+	part_page_stream();
+}
+ATF_TC_CLEANUP(pwa_page_stream, tc)
 {
 
 	browser_stop();
@@ -13984,6 +14066,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_cplug_data);
 	ATF_TP_ADD_TC(tp, pwa_routes);
 	ATF_TP_ADD_TC(tp, pwa_streams);
+	ATF_TP_ADD_TC(tp, pwa_page_stream);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);
 	ATF_TP_ADD_TC(tp, pwa_nacm);

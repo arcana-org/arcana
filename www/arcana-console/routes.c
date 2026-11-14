@@ -124,6 +124,10 @@ const struct route routes[] = {
 	    api_restconf_stream_free, HTTP_METHOD_GET },
 	{ "^/restconf/streams/fleet/json$", api_restconf_fleet_stream,
 	    api_restconf_stream_free, HTTP_METHOD_GET },
+	{ "/restconf/streams/page/json", api_restconf_page_stream,
+	    api_restconf_stream_free, HTTP_METHOD_GET },
+	{ "^/restconf/streams/page/[0-9a-f]{32}$", api_restconf_page_change,
+	    NULL, HTTP_METHOD_POST },
 	/*
 	 * The console's plain-HTTP resources, /api beside /restconf
 	 * (PLAN-SDN-YANG D-10): no YANG data, so not modelled.  The

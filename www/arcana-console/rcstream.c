@@ -44,6 +44,27 @@
  * on one reply as the fleet's stream is: each record in its host's
  * entry, a host lost said and subscribed again.
  *
+ * A page's stream, /restconf/streams/page/json?fleet=1&sub=<id>,<id>:
+ * the console's page holds one EventSource, not one a stream (every tab
+ * shares the browser's one HTTP/2 connection, and the streams held on
+ * it are few), and so one reply and one thread carry its sources: the
+ * fleet's stream ("fleet") and the subscriptions it established
+ * ("sub-<id>"), each judged as its own GET would be.  Each event is
+ * named by its source: a record "fleet", "sub-<id>"; a host lost or
+ * heard again "<name>.error", "<name>.info"; a source taken
+ * "<name>.open", one that ended by itself "<name>.end", saying why.  A
+ * record's and an open's id is every source's of the reply with its
+ * last record's event time, "fleet@<time>;sub-<id>@<time>" (a source
+ * without one by its name alone), so a client back with Last-Event-ID
+ * has each source again from its own time, the subscriptions it names
+ * taken again (a page stream's are given back to be taken, as when
+ * just established, when its reply goes).  Its first line, a comment,
+ * and its first event, "page" ({"stream": <id>, "sources": [...]}),
+ * name the stream: a source wanted later, or one given up, is said to
+ * it by POST /restconf/streams/page/<id> ({"add": <name>} or {"end":
+ * <name>}), by the session that opened it alone.  The lost events, the
+ * keep-alives and the error the reply ends with are the reply's.
+ *
  * Records left out, the client being slow, are said in a lost event:
  * a page then reads again what it shows.
  *
@@ -93,6 +114,8 @@
 #define	SUB_WAIT_S	60		/* how long one waits to be taken */
 #define	RCH_BACKOFF_S	60		/* subscribe again at most so far apart */
 #define	RCH_SEEN	64		/* records of one event time remembered */
+#define	PAGE_SRC_MAX	8		/* sources of a page's stream */
+#define	PAGE_ID_LEN	32		/* a page's stream's id, hex */
 
 /* An establish-subscription's input, as the POST said it. */
 struct rcsub {
@@ -111,10 +134,11 @@ struct rcsub {
 static struct rcsub	subs[SUBS_MAX];
 
 struct rcs;
+struct rcsrc;
 
 /* A host a stream hears, its connection the thread's alone. */
 struct rch {
-	struct rcs		*rs;
+	struct rcsrc		*src;
 	char			 sid[9];
 	char			*uri;
 	char			*peer;
@@ -132,20 +156,43 @@ struct rch {
 	size_t			 nseen;
 };
 
-struct rcs {
-	LIST_ENTRY(rcs)		 list;
-	struct http_request	*req;	/* NULL once the client went */
+/* A source of a stream: a host's NETCONF stream, the fleet's, or a
+ * subscription, and the hosts it hears.  A page's stream has several,
+ * each by its name; another's one, its name "". */
+struct rcsrc {
+	TAILQ_ENTRY(rcsrc)	 link;
+	struct rcs		*rs;
+	char			 name[24];	/* "fleet", "sub-<id>"; "" */
 	struct rch		*h;
 	size_t			 nh;
 	bool			 fleet;	/* records nested in their hosts */
+	bool			 opened;	/* its hosts asked, by the thread */
+	atomic_bool		 end;	/* given up by the page */
+	struct rcsub		 sub;	/* its input: id 0, the NETCONF stream;
+					 * a subscription's its id kept */
+	char			 since[40];	/* replay from, or "" */
+	char			 last[40];	/* its last record's event time
+						 * (the lock's) */
+	char			 why[200];	/* why it ended */
+};
+
+TAILQ_HEAD(rcsrcs, rcsrc);
+
+struct rcs {
+	LIST_ENTRY(rcs)		 list;
+	struct http_request	*req;	/* NULL once the client went */
+	struct rcsrcs		 src;	/* the thread's; changed under lock */
+	struct rcsrcs		 add;	/* for the thread to take (lock) */
+	size_t			 nsrc;	/* of both (lock) */
+	bool			 page;	/* a page's: its sources named */
+	char			 pid[PAGE_ID_LEN + 1];	/* a page's: its id */
+	char			 owner[256];	/* a page's: session_owner() */
 	pthread_t		 thread;
 	atomic_bool		 stop;
 	atomic_bool		 ended;	/* the thread is done */
 	pthread_mutex_t		 lock;
 	struct buf		*out;
 	bool			 lost;
-	char			 since[40];	/* replay from, or "" */
-	struct rcsub		 sub;	/* its input: id 0, the NETCONF stream */
 	char			 why[200];	/* why the stream ended */
 	time_t			 said;	/* when the reply had a line last */
 	struct sbind		 b;	/* whose: the session that opened it */
@@ -250,15 +297,59 @@ rch_seen(struct rch *h, const char *when, const char *json)
 	return (false);
 }
 
+/*
+ * A page's stream's id of now: each of its sources, its last record's
+ * event time after an @ where it has one, ';' between them.  Under the
+ * lock.
+ */
+static void
+rcs_id(const struct rcs *rs, char *buf, size_t len)
+{
+	const struct rcsrc	*src;
+	size_t			 n = 0;
+
+	buf[0] = '\0';
+	TAILQ_FOREACH(src, &rs->src, link) {
+		if (atomic_load(&src->end))
+			continue;
+		n += (size_t)snprintf(buf + n, n < len ? len - n : 0, "%s%s%s%s",
+		    n > 0 ? ";" : "", src->name, src->last[0] != '\0' ? "@" : "",
+		    src->last);
+		if (n >= len) {
+			buf[0] = '\0';
+			return;
+		}
+	}
+}
+
+/* An event of src's ("open", "end", "error", "info"; named by src on a
+ * page's stream), with an id when id. */
+static void
+src_say(struct rcsrc *src, const char *event, const char *data, bool id)
+{
+	struct rcs	*rs = src->rs;
+	char		 ids[PAGE_SRC_MAX * 72];
+
+	pthread_mutex_lock(&rs->lock);
+	if (src->name[0] == '\0')
+		buf_appendf(rs->out, "event: %s\ndata: %s\n\n", event, data);
+	else {
+		ids[0] = '\0';
+		if (id)
+			rcs_id(rs, ids, sizeof(ids));
+		buf_appendf(rs->out, "event: %s.%s\n%s%s%sdata: %s\n\n",
+		    src->name, event, ids[0] != '\0' ? "id: " : "", ids,
+		    ids[0] != '\0' ? "\n" : "", data);
+	}
+	pthread_mutex_unlock(&rs->lock);
+}
+
 /* An event of the fleet's reply, about host h. */
 static void
 rch_say(struct rch *h, const char *event, const char *data)
 {
-	struct rcs	*rs = h->rs;
 
-	pthread_mutex_lock(&rs->lock);
-	buf_appendf(rs->out, "event: %s\ndata: %s\n\n", event, data);
-	pthread_mutex_unlock(&rs->lock);
+	src_say(h->src, event, data, false);
 }
 
 static void
@@ -277,7 +368,7 @@ rcs_open(cbl_stream *s, cbl_msg *accept, int error, void *arg)
 	}
 	h->backoff = 0;
 	/* Back after it was said lost: said so, naming it. */
-	if (h->lost && !atomic_load(&h->rs->stop)) {
+	if (h->lost && !atomic_load(&h->src->rs->stop)) {
 		h->lost = false;
 		snprintf(text, sizeof(text), "{\"host\":\"%s\",\"message\":"
 		    "\"host %s: heard again, from %s\"}", h->sid, h->sid,
@@ -290,23 +381,35 @@ static void
 rcs_data(cbl_stream *s, cbl_msg *data, void *arg)
 {
 	struct rch	*h = arg;
-	struct rcs	*rs = h->rs;
-	char		*json, when[64];
+	struct rcsrc	*src = h->src;
+	struct rcs	*rs = src->rs;
+	char		*json, when[64], ids[PAGE_SRC_MAX * 72];
+	bool		 timed;
 
 	(void)s;
 	when[0] = '\0';
-	if ((json = notif_json(data, rs->fleet ? h->sid : NULL, when,
+	if ((json = notif_json(data, src->fleet ? h->sid : NULL, when,
 	    sizeof(when))) == NULL)
 		return;
 	if (rch_seen(h, when, json)) {
 		free(json);
 		return;
 	}
-	/* Its event time its id, where it has one. */
+	/* Its event time its id, where it has one; on a page's stream,
+	 * every source's. */
+	timed = when[0] != '\0' && strlen(when) < sizeof(src->last) &&
+	    when[strspn(when, "0123456789-:.TZ+")] == '\0';
 	pthread_mutex_lock(&rs->lock);
 	if (rs->out->offset + strlen(json) > RCS_OUT_MAX)
 		rs->lost = true;
-	else if (when[0] != '\0' && strchr(when, '\n') == NULL)
+	else if (rs->page) {
+		if (timed)
+			strlcpy(src->last, when, sizeof(src->last));
+		rcs_id(rs, ids, sizeof(ids));
+		buf_appendf(rs->out, "event: %s\n%s%s%sdata: %s\n\n", src->name,
+		    ids[0] != '\0' ? "id: " : "", ids, ids[0] != '\0' ? "\n" :
+		    "", json);
+	} else if (timed)
 		buf_appendf(rs->out, "id: %s\ndata: %s\n\n", when, json);
 	else
 		buf_appendf(rs->out, "data: %s\n\n", json);
@@ -357,10 +460,10 @@ est_input(void)
 
 #define	SN(x)	IETF_SUBSCRIBED_NOTIFICATIONS_ESTABLISH_SUBSCRIPTION_INPUT_##x
 
-/* establish-subscription's input of the stream rs is: the NETCONF stream,
+/* establish-subscription's input of source src: the NETCONF stream,
  * from since when it is not NULL, or what a POST said. */
 static void
-sub_input(const struct rcs *rs, const char *since,
+sub_input(const struct rcsrc *src, const char *since,
     struct ietf_subscribed_notifications_establish_subscription_input *in,
     struct ietf_subscribed_notifications_establish_subscription_input_yp_periodic
     *per,
@@ -368,7 +471,7 @@ sub_input(const struct rcs *rs, const char *since,
     *oc)
 {
 	const struct cbl_yident	*id;
-	const struct rcsub	*sb = &rs->sub;
+	const struct rcsub	*sb = &src->sub;
 
 	memset(in, 0, sizeof(*in));
 	memset(per, 0, sizeof(*per));
@@ -452,8 +555,8 @@ rch_open(struct rch *h)
 		return (false);
 	}
 	/* Again: from its last record, or from when it was first heard. */
-	sub_input(h->rs, h->last[0] != '\0' ? h->last : h->rs->since[0] !=
-	    '\0' ? h->rs->since : NULL, &in, &per, &oc);
+	sub_input(h->src, h->last[0] != '\0' ? h->last : h->src->since[0] !=
+	    '\0' ? h->src->since : NULL, &in, &per, &oc);
 	if ((inode = est_input()) == NULL || cbl_msg_new(cbl_conn_ctx(h->conn),
 	    CBL_YANG_FAMILY, CBL_YCMD_SUBSCRIBE, 0, &m) != 0 ||
 	    cbl_msg_put_ynode(m, inode, &in) != 0 || cbl_stream_open(h->conn, m,
@@ -465,7 +568,7 @@ rch_open(struct rch *h)
 		return (false);
 	}
 	/* Heard from now on: subscribed again, from now at least. */
-	if (h->last[0] == '\0' && h->rs->since[0] == '\0') {
+	if (h->last[0] == '\0' && h->src->since[0] == '\0') {
 		t = time(NULL);
 		if (gmtime_r(&t, &tm) != NULL)
 			strftime(h->last, sizeof(h->last),
@@ -504,7 +607,7 @@ rch_reach(struct rch *h)
 static void
 rch_done(struct rch *h, bool broken)
 {
-	struct rcs	*rs = h->rs;
+	struct rcsrc	*src = h->src;
 	char		*why, text[260];
 
 	if (h->conn != NULL) {
@@ -515,7 +618,8 @@ rch_done(struct rch *h, bool broken)
 		h->conn = NULL;
 	}
 	h->closed = true;
-	if (!rs->fleet || atomic_load(&rs->stop))
+	if (!src->fleet || atomic_load(&src->rs->stop) ||
+	    atomic_load(&src->end))
 		return;
 	h->backoff = h->backoff == 0 ? 1 : MIN(h->backoff * 2, RCH_BACKOFF_S);
 	h->retry = mono_ms() + (uint64_t)h->backoff * 1000;
@@ -530,66 +634,181 @@ rch_done(struct rch *h, bool broken)
 	free(why);
 }
 
+/* A source of the n hosts sv, the fleet's (records nested in their
+ * hosts) or one host's, of sb's input (NULL: the NETCONF stream; its
+ * strings the source's then), from since when it is not NULL. */
+static struct rcsrc *
+src_new(struct rcs *rs, const char *name, const struct server *const *sv,
+    size_t n, bool fleet, struct rcsub *sb, const char *since)
+{
+	struct rcsrc	*src;
+
+	src = xcalloc(1, sizeof(*src));
+	src->rs = rs;
+	strlcpy(src->name, name, sizeof(src->name));
+	src->h = xcalloc(n, sizeof(*src->h));
+	src->nh = n;
+	src->fleet = fleet;
+	for (size_t i = 0; i < n; i++) {
+		src->h[i].src = src;
+		strlcpy(src->h[i].sid, sv[i]->id, sizeof(src->h[i].sid));
+		src->h[i].uri = xstrdup(sv[i]->uri);
+		src->h[i].peer = sv[i]->peer_name != NULL ?
+		    xstrdup(sv[i]->peer_name) : NULL;
+	}
+	if (sb != NULL) {
+		src->sub = *sb;
+		memset(sb, 0, sizeof(*sb));
+	}
+	if (since != NULL) {
+		strlcpy(src->since, since, sizeof(src->since));
+		strlcpy(src->last, since, sizeof(src->last));
+	}
+	atomic_init(&src->end, false);
+	return (src);
+}
+
+static void
+src_free(struct rcsrc *src)
+{
+
+	sub_clear(&src->sub);
+	for (size_t i = 0; i < src->nh; i++) {
+		free(src->h[i].uri);
+		free(src->h[i].peer);
+	}
+	free(src->h);
+	free(src);
+}
+
+/* In the thread: the sources added since it looked, each said open and
+ * its hosts asked. */
+static void
+rcs_take(struct rcs *rs)
+{
+	struct rcsrc	*src;
+
+	pthread_mutex_lock(&rs->lock);
+	TAILQ_CONCAT(&rs->src, &rs->add, link);
+	pthread_mutex_unlock(&rs->lock);
+	TAILQ_FOREACH(src, &rs->src, link) {
+		if (src->opened)
+			continue;
+		src->opened = true;
+		if (rs->page)
+			src_say(src, "open", "{}", true);
+		for (size_t i = 0; i < src->nh && !atomic_load(&rs->stop); i++)
+			if (!rch_open(&src->h[i]))
+				rch_done(&src->h[i], true);
+	}
+}
+
+/* In the thread: src let go, its hosts' streams closed; on a page's,
+ * said ended, why, unless the page gave it up. */
+static void
+src_drop(struct rcs *rs, struct rcsrc *src)
+{
+	char	*why;
+
+	for (size_t i = 0; i < src->nh; i++)
+		if (src->h[i].conn != NULL)
+			rch_done(&src->h[i], false);
+	if (rs->page && !atomic_load(&src->end) && (why = restconf_errors(502,
+	    src->why)) != NULL) {
+		src_say(src, "end", why, false);
+		free(why);
+	}
+	pthread_mutex_lock(&rs->lock);
+	TAILQ_REMOVE(&rs->src, src, link);
+	rs->nsrc--;
+	pthread_mutex_unlock(&rs->lock);
+	src_free(src);
+}
+
 static void *
 rcs_run(void *arg)
 {
 	struct rcs	*rs = arg;
-	struct pollfd	*pfd;
-	struct rch	*h;
-	size_t		 i, n, *at;
+	struct rcsrc	*src, *next;
+	struct pollfd	*pfd = NULL;
+	struct rch	*h, **at = NULL;
+	size_t		 i, n, cap = 0, want;
 	uint64_t	 now;
 	int		 error, ev, ms, wait;
-	bool		 later;
+	bool		 live;
 
-	pfd = xcalloc(rs->nh, sizeof(*pfd));
-	at = xcalloc(rs->nh, sizeof(*at));
-	for (i = 0; i < rs->nh && !atomic_load(&rs->stop); i++)
-		if (!rch_open(&rs->h[i]))
-			rch_done(&rs->h[i], true);
 	while (!atomic_load(&rs->stop)) {
-		wait = RCS_WAKE_MS;
-		later = false;
-		now = mono_ms();
-		for (i = n = 0; i < rs->nh; i++) {
-			h = &rs->h[i];
-			/* The fleet's: a host lost is asked again, in time. */
-			if (h->conn == NULL && rs->fleet && !h->gone) {
-				if (now < h->retry) {
-					later = true;
-					if (h->retry - now < (uint64_t)wait)
-						wait = (int)(h->retry - now);
-					continue;
-				}
-				if (!rch_reach(h))
-					continue;
-				h->closed = false;
-				h->why[0] = '\0';
-				if (!rch_open(h))
-					rch_done(h, true);
-				if (h->conn == NULL) {
-					later = true;
-					continue;
-				}
-			}
-			if (h->conn == NULL)
-				continue;
-			if (h->closed) {
-				rch_done(h, false);
-				continue;
-			}
-			ev = 0;
-			ms = -1;
-			(void)cbl_conn_interest(h->conn, &ev, &ms);
-			if (ms >= 0 && ms < wait)
-				wait = ms;
-			pfd[n].fd = cbl_conn_fd(h->conn);
-			pfd[n].events = ((ev & CBL_EV_READ) != 0 ? POLLIN : 0) |
-			    ((ev & CBL_EV_WRITE) != 0 ? POLLOUT : 0);
-			pfd[n].revents = 0;
-			at[n++] = i;
+		rcs_take(rs);
+		want = 0;
+		TAILQ_FOREACH(src, &rs->src, link)
+			want += src->nh;
+		if (want > cap) {
+			cap = want;
+			pfd = xrealloc(pfd, cap * sizeof(*pfd));
+			at = xrealloc(at, cap * sizeof(*at));
 		}
-		if (n == 0 && !later)
-			break;
+		wait = RCS_WAKE_MS;
+		now = mono_ms();
+		n = 0;
+		TAILQ_FOREACH_SAFE(src, &rs->src, link, next) {
+			if (atomic_load(&src->end)) {
+				src_drop(rs, src);
+				continue;
+			}
+			for (i = 0; i < src->nh; i++) {
+				h = &src->h[i];
+				/* The fleet's: a host lost is asked again, in
+				 * time. */
+				if (h->conn == NULL && src->fleet && !h->gone) {
+					if (now < h->retry) {
+						if (h->retry - now < (uint64_t)wait)
+							wait = (int)(h->retry - now);
+						continue;
+					}
+					if (!rch_reach(h))
+						continue;
+					h->closed = false;
+					h->why[0] = '\0';
+					if (!rch_open(h))
+						rch_done(h, true);
+					if (h->conn == NULL)
+						continue;
+				}
+				if (h->conn == NULL)
+					continue;
+				if (h->closed) {
+					rch_done(h, false);
+					continue;
+				}
+				ev = 0;
+				ms = -1;
+				(void)cbl_conn_interest(h->conn, &ev, &ms);
+				if (ms >= 0 && ms < wait)
+					wait = ms;
+				pfd[n].fd = cbl_conn_fd(h->conn);
+				pfd[n].events = ((ev & CBL_EV_READ) != 0 ?
+				    POLLIN : 0) | ((ev & CBL_EV_WRITE) != 0 ?
+				    POLLOUT : 0);
+				pfd[n].revents = 0;
+				at[n++] = h;
+			}
+			/* Every host of it let go: it ended, why. */
+			live = false;
+			for (i = 0; i < src->nh && !live; i++)
+				if (src->h[i].conn != NULL || (src->fleet &&
+				    !src->h[i].gone))
+					live = true;
+			if (live)
+				continue;
+			snprintf(src->why, sizeof(src->why), "%s", src->fleet ?
+			    "every host was removed" : src->nh > 0 ?
+			    src->h[0].why : "no host to hear");
+			if (!rs->page) {
+				strlcpy(rs->why, src->why, sizeof(rs->why));
+				goto out;
+			}
+			src_drop(rs, src);
+		}
 		if (n == 0) {
 			(void)poll(NULL, 0, wait);
 			continue;
@@ -597,7 +816,7 @@ rcs_run(void *arg)
 		if (poll(pfd, n, wait) == -1)
 			continue;
 		for (i = 0; i < n; i++) {
-			h = &rs->h[at[i]];
+			h = at[i];
 			ev = ((pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) !=
 			    0 ? CBL_EV_READ : 0) | ((pfd[i].revents & POLLOUT) !=
 			    0 ? CBL_EV_WRITE : 0);
@@ -608,39 +827,71 @@ rcs_run(void *arg)
 			}
 		}
 	}
-	for (i = 0; i < rs->nh; i++)
-		if (rs->h[i].conn != NULL)
-			rch_done(&rs->h[i], false);
-	snprintf(rs->why, sizeof(rs->why), "%s", rs->fleet ?
-	    "every host was removed" : rs->h[0].why);
+out:
+	TAILQ_FOREACH(src, &rs->src, link)
+		for (i = 0; i < src->nh; i++)
+			if (src->h[i].conn != NULL)
+				rch_done(&src->h[i], false);
 	free(pfd);
 	free(at);
 	atomic_store(&rs->ended, true);
 	return (NULL);
 }
 
+/*
+ * A subscription's input given back, to be taken again as one just
+ * established is (a page's stream's, its reply gone: its client, back,
+ * names it in its Last-Event-ID); dropped when no slot is free.
+ */
+static void
+sub_back(struct rcsub *sb)
+{
+	time_t	now = time(NULL);
+
+	for (int i = 0; i < SUBS_MAX; i++)
+		if (subs[i].id == 0 || now - subs[i].made > SUB_WAIT_S) {
+			sub_clear(&subs[i]);
+			subs[i] = *sb;
+			subs[i].made = now;
+			memset(sb, 0, sizeof(*sb));
+			return;
+		}
+	sub_clear(sb);
+}
+
 static void
 rcs_clear(struct rcs *rs)
 {
+	struct rcsrc	*src;
 
+	while ((src = TAILQ_FIRST(&rs->src)) != NULL) {
+		TAILQ_REMOVE(&rs->src, src, link);
+		src_free(src);
+	}
+	while ((src = TAILQ_FIRST(&rs->add)) != NULL) {
+		TAILQ_REMOVE(&rs->add, src, link);
+		src_free(src);
+	}
 	pthread_mutex_destroy(&rs->lock);
 	buf_free(rs->out);
-	sub_clear(&rs->sub);
-	for (size_t i = 0; i < rs->nh; i++) {
-		free(rs->h[i].uri);
-		free(rs->h[i].peer);
-	}
-	free(rs->h);
 	free(rs);
 }
 
 static void
 rcs_free(struct rcs *rs)
 {
+	struct rcsrc	*src;
 
 	(void)pthread_join(rs->thread, NULL);
 	LIST_REMOVE(rs, list);
 	nstreams--;
+	/* A page's subscriptions, to be taken again. */
+	if (rs->page) {
+		TAILQ_CONCAT(&rs->src, &rs->add, link);
+		TAILQ_FOREACH(src, &rs->src, link)
+			if (src->sub.id != 0 && !atomic_load(&src->end))
+				sub_back(&src->sub);
+	}
 	rcs_clear(rs);
 }
 
@@ -652,13 +903,16 @@ put(struct http_request *req, const char *s)
 }
 
 /*
- * Is rs's still to be told: its session good, each host its own still
- * to read (judged again when who may do what changed), and its time not
- * over?  Why not into why.
+ * Is rs's still to be told: its session good, each host of each source
+ * its own still to read (judged again when who may do what changed),
+ * and its time not over?  Why not into why.
  */
 static bool
 rcs_ok(struct rcs *rs, time_t t, char *why, size_t len)
 {
+	struct rcsrcs	*l[2] = { &rs->src, &rs->add };
+	struct rcsrc	*src;
+	bool		 ok = true;
 
 	if (!sbind_ok(&rs->b)) {
 		snprintf(why, len, "the session ended: sign in again");
@@ -671,14 +925,18 @@ rcs_ok(struct rcs *rs, time_t t, char *why, size_t len)
 	if (rs->hgen == sbind_gen())
 		return (true);
 	rs->hgen = sbind_gen();
-	for (size_t i = 0; i < rs->nh; i++)
-		if (!rs->h[i].gone && !principal_may(&rs->b.who, rs->h[i].sid,
-		    ROLE_VIEWER)) {
-			snprintf(why, len, "host %s is not one to read any more",
-			    rs->h[i].sid);
-			return (false);
-		}
-	return (true);
+	pthread_mutex_lock(&rs->lock);
+	for (int k = 0; k < 2 && ok; k++)
+		TAILQ_FOREACH(src, l[k], link)
+			for (size_t i = 0; i < src->nh && ok; i++)
+				if (!src->h[i].gone && !principal_may(
+				    &rs->b.who, src->h[i].sid, ROLE_VIEWER)) {
+					snprintf(why, len, "host %s is not one "
+					    "to read any more", src->h[i].sid);
+					ok = false;
+				}
+	pthread_mutex_unlock(&rs->lock);
+	return (ok);
 }
 
 /* In the worker: what each thread heard, to its reply. */
@@ -762,12 +1020,10 @@ api_restconf_stream_free(struct http_request *req)
 	atomic_store(&rs->stop, true);
 }
 
-/* The stream of the n hosts sv to req, the fleet's (records nested in
- * their hosts) or one host's, of sb's input (NULL: the NETCONF stream),
- * from since when it is not NULL; the reply begun. */
-static int
-rcs_start(struct http_request *req, const struct server *const *sv,
-    size_t n, bool fleet, struct rcsub *sb, const char *since)
+/* A stream for req, its sources to be added, or NULL: too many are open,
+ * said so. */
+static struct rcs *
+rcs_new(struct http_request *req)
 {
 	struct rcs	*rs, *o;
 	struct sbind	 b;
@@ -780,36 +1036,45 @@ rcs_start(struct http_request *req, const struct server *const *sv,
 		    o->b.who.name, b.who.name) == 0 && (b.who.kind == P_USER ||
 		    strcmp(o->b.addr, b.addr) == 0))
 			mine++;
-	if (nstreams >= RCS_MAX || mine >= RCS_WHO)
-		return (restconf_error(req, 503, "too many streams are open: "
-		    "try again"));
+	if (nstreams >= RCS_MAX || mine >= RCS_WHO) {
+		(void)restconf_error(req, 503, "too many streams are open: "
+		    "try again");
+		return (NULL);
+	}
 	rs = xcalloc(1, sizeof(*rs));
 	rs->b = b;
 	rs->hgen = sbind_gen();
-	rs->h = xcalloc(n, sizeof(*rs->h));
-	rs->nh = n;
-	rs->fleet = fleet;
-	for (size_t i = 0; i < n; i++) {
-		rs->h[i].rs = rs;
-		strlcpy(rs->h[i].sid, sv[i]->id, sizeof(rs->h[i].sid));
-		rs->h[i].uri = xstrdup(sv[i]->uri);
-		rs->h[i].peer = sv[i]->peer_name != NULL ?
-		    xstrdup(sv[i]->peer_name) : NULL;
-	}
+	TAILQ_INIT(&rs->src);
+	TAILQ_INIT(&rs->add);
 	rs->out = buf_alloc(512);
 	rs->said = time(NULL);
-	if (sb != NULL) {
-		rs->sub = *sb;		/* its strings now the stream's */
-		memset(sb, 0, sizeof(*sb));
-	}
-	if (since != NULL)
-		snprintf(rs->since, sizeof(rs->since), "%s", since);
 	atomic_init(&rs->stop, false);
 	atomic_init(&rs->ended, false);
 	pthread_mutex_init(&rs->lock, NULL);
+	return (rs);
+}
+
+/* src to rs's sources, for its thread to take. */
+static void
+rcs_add(struct rcs *rs, struct rcsrc *src)
+{
+
+	pthread_mutex_lock(&rs->lock);
+	TAILQ_INSERT_TAIL(&rs->add, src, link);
+	rs->nsrc++;
+	pthread_mutex_unlock(&rs->lock);
+}
+
+/* rs's thread started, the reply to req begun with first, a comment;
+ * false: no thread for it, rs let go, said so. */
+static bool
+rcs_go(struct http_request *req, struct rcs *rs, const char *first)
+{
+
 	if (hosts_thread(&rs->thread, rcs_run, rs) != 0) {
 		rcs_clear(rs);
-		return (restconf_error(req, 503, "no thread for it"));
+		(void)restconf_error(req, 503, "no thread for it");
+		return (false);
 	}
 	LIST_INSERT_HEAD(&streams, rs, list);
 	nstreams++;
@@ -820,11 +1085,27 @@ rcs_start(struct http_request *req, const struct server *const *sv,
 	http_response_header(req, "x-content-type-options", "nosniff");
 	http_stream(req, 200);
 	/* A first line at once: the client knows it is open. */
-	put(req, sb != NULL || rs->sub.datastore ? ": the subscription\n\n" :
-	    fleet ? ": the fleet's stream\n\n" :
-	    ": the host's NETCONF stream\n\n");
+	put(req, first);
 	if (ticker == NULL)
 		ticker = timer_add(rcs_tick, RCS_TICK_MS, NULL, 0);
+	return (true);
+}
+
+/* The stream of the n hosts sv to req, the fleet's (records nested in
+ * their hosts) or one host's, of sb's input (NULL: the NETCONF stream),
+ * from since when it is not NULL; the reply begun. */
+static int
+rcs_start(struct http_request *req, const struct server *const *sv,
+    size_t n, bool fleet, struct rcsub *sb, const char *since)
+{
+	struct rcs	*rs;
+	bool		 sub = sb != NULL;
+
+	if ((rs = rcs_new(req)) == NULL)
+		return (WEB_OK);
+	rcs_add(rs, src_new(rs, "", sv, n, fleet, sb, since));
+	(void)rcs_go(req, rs, sub ? ": the subscription\n\n" : fleet ?
+	    ": the fleet's stream\n\n" : ": the host's NETCONF stream\n\n");
 	return (WEB_OK);
 }
 
@@ -859,14 +1140,13 @@ api_restconf_stream(struct http_request *req)
 	return (rcs_start(req, &s, 1, false, NULL, last_event(req)));
 }
 
-/* The fleet's stream of every host's this user may read, of sb's input
- * (NULL: the NETCONF stream). */
-static int
-fleet_start(struct http_request *req, struct rcsub *sb)
+/* The hosts of every host's this user may read, into *svp (malloc'd);
+ * how many. */
+static size_t
+fleet_hosts(struct http_request *req, const struct server ***svp)
 {
 	const struct server	*s, **sv;
 	size_t			 n = 0;
-	int			 rv;
 
 	for (int i = 0; server_at(i) != NULL; i++)
 		n++;
@@ -875,6 +1155,20 @@ fleet_start(struct http_request *req, struct rcsub *sb)
 	for (int i = 0; (s = server_at(i)) != NULL; i++)
 		if (host_role_ok(req, s->id, false, false))
 			sv[n++] = s;
+	*svp = sv;
+	return (n);
+}
+
+/* The fleet's stream of every host's this user may read, of sb's input
+ * (NULL: the NETCONF stream). */
+static int
+fleet_start(struct http_request *req, struct rcsub *sb)
+{
+	const struct server	**sv;
+	size_t			  n;
+	int			  rv;
+
+	n = fleet_hosts(req, &sv);
 	rv = n == 0 ? restconf_error(req, 404, "no host to hear") :
 	    rcs_start(req, sv, n, true, sb, sb == NULL ? last_event(req) :
 	    NULL);
@@ -1038,12 +1332,27 @@ restconf_establish(struct http_request *req, const char *sid)
 	return (restconf_reply(req, top));
 }
 
+/* Subscription id, made by who, not yet taken and its time to be taken
+ * not past; NULL. */
+static struct rcsub *
+sub_find(unsigned long id, const char *who)
+{
+
+	for (int i = 0; i < SUBS_MAX; i++)
+		if (subs[i].id != 0 && subs[i].id == id && who[0] != '\0' &&
+		    strcmp(subs[i].who, who) == 0 && time(NULL) -
+		    subs[i].made <= SUB_WAIT_S)
+			return (&subs[i]);
+	return (NULL);
+}
+
 /* GET /restconf/subscriptions/<id>: an established subscription's stream,
  * to whoever made it, once. */
 int
 api_restconf_subscription(struct http_request *req)
 {
 	const struct server	*s;
+	struct rcsub		*sb;
 	char			 num[16], *end, who[256];
 	unsigned long		 id;
 
@@ -1053,21 +1362,359 @@ api_restconf_subscription(struct http_request *req)
 	    10)) == 0 || *end != '\0')
 		return (restconf_error(req, 404, "no such subscription"));
 	(void)session_owner(req, who, sizeof(who));
-	for (int i = 0; i < SUBS_MAX; i++) {
-		if (subs[i].id != id || who[0] == '\0' || strcmp(subs[i].who,
-		    who) != 0 ||
-		    time(NULL) - subs[i].made > SUB_WAIT_S)
-			continue;
-		if (subs[i].fleet) {
-			subs[i].id = 0;
-			return (fleet_start(req, &subs[i]));
-		}
-		if ((s = server_find(subs[i].sid)) == NULL)
-			break;
-		if (!host_allowed(req, subs[i].sid, false, false))
-			return (WEB_OK);
-		subs[i].id = 0;
-		return (rcs_start(req, &s, 1, false, &subs[i], NULL));
+	if ((sb = sub_find(id, who)) == NULL)
+		return (restconf_error(req, 404, "no such subscription"));
+	if (sb->fleet) {
+		sb->id = 0;
+		return (fleet_start(req, sb));
 	}
-	return (restconf_error(req, 404, "no such subscription"));
+	if ((s = server_find(sb->sid)) == NULL)
+		return (restconf_error(req, 404, "no such subscription"));
+	if (!host_allowed(req, sb->sid, false, false))
+		return (WEB_OK);
+	sb->id = 0;
+	return (rcs_start(req, &s, 1, false, sb, NULL));
+}
+
+/* ---- A page's stream ------------------------------------------------- */
+
+/* A source a page's stream is asked for: its name, replayed from since
+ * ("" from now). */
+struct pagesrc {
+	char	name[24];
+	char	since[40];
+};
+
+/* Is name one of a page's sources: "fleet", or "sub-<id>" (its id into
+ * idp)? */
+static bool
+page_name(const char *name, unsigned long *idp)
+{
+	char		*end;
+	unsigned long	 id;
+
+	if (strcmp(name, "fleet") == 0) {
+		*idp = 0;
+		return (true);
+	}
+	if (strncmp(name, "sub-", 4) != 0 || name[4] < '1' || name[4] > '9' ||
+	    strlen(name + 4) > 10 || name[4 + strspn(name + 4,
+	    "0123456789")] != '\0')
+		return (false);
+	id = strtoul(name + 4, &end, 10);
+	if (id == 0 || id > 0x7fffffff)
+		return (false);
+	*idp = id;
+	return (true);
+}
+
+/* name, from since, to the n of l (max long), once: named twice, from
+ * the time one of them has. */
+static void
+page_want(struct pagesrc *l, size_t *n, size_t max, const char *name,
+    const char *since)
+{
+
+	for (size_t i = 0; i < *n; i++)
+		if (strcmp(l[i].name, name) == 0) {
+			if (l[i].since[0] == '\0')
+				strlcpy(l[i].since, since, sizeof(l[i].since));
+			return;
+		}
+	if (*n == max)
+		return;
+	strlcpy(l[*n].name, name, sizeof(l[*n].name));
+	strlcpy(l[*n].since, since, sizeof(l[*n].since));
+	(*n)++;
+}
+
+/*
+ * The sources a client back names in its Last-Event-ID, each with its
+ * last record's event time, "fleet@<time>;sub-<id>" (rcs_id()), to the
+ * n of l; what is not one is passed over.
+ */
+static void
+page_last(struct http_request *req, struct pagesrc *l, size_t *n,
+    size_t max)
+{
+	const char	*leid, *p, *at, *e;
+	char		 name[24], since[40];
+	unsigned long	 id;
+	size_t		 k;
+
+	if (!http_request_header(req, "last-event-id", &leid) ||
+	    strlen(leid) >= PAGE_SRC_MAX * 72)
+		return;
+	for (p = leid; *p != '\0'; p = *e == ';' ? e + 1 : e) {
+		e = p + strcspn(p, ";");
+		at = memchr(p, '@', (size_t)(e - p));
+		k = (size_t)((at != NULL ? at : e) - p);
+		if (k >= sizeof(name))
+			continue;
+		memcpy(name, p, k);
+		name[k] = '\0';
+		since[0] = '\0';
+		if (at != NULL) {
+			k = (size_t)(e - at - 1);
+			if (k >= sizeof(since))
+				continue;
+			memcpy(since, at + 1, k);
+			since[k] = '\0';
+			if (since[strspn(since, "0123456789-:.TZ+")] != '\0')
+				continue;
+		}
+		if (page_name(name, &id))
+			page_want(l, n, max, name, since);
+	}
+}
+
+/* Is a source of rs's named name, and not given up?  Under the lock. */
+static bool
+page_has(struct rcs *rs, const char *name)
+{
+	struct rcsrcs	*l[2] = { &rs->src, &rs->add };
+	struct rcsrc	*src;
+
+	for (int k = 0; k < 2; k++)
+		TAILQ_FOREACH(src, l[k], link)
+			if (strcmp(src->name, name) == 0 &&
+			    !atomic_load(&src->end))
+				return (true);
+	return (false);
+}
+
+/*
+ * Source name ("fleet", "sub-<id>") of req's to page stream rs, from
+ * since ("": from now): the fleet's stream of every host it may read, or
+ * a subscription it established, judged as the fleet's stream's GET and
+ * the subscription's are.  0, or the status it is refused with, why into
+ * why.
+ */
+static int
+page_add(struct http_request *req, struct rcs *rs, const char *name,
+    const char *since, char *why, size_t len)
+{
+	const struct server	**sv, *s;
+	struct rcsub		 *sb;
+	struct rcsrc		 *src;
+	char			  who[256];
+	unsigned long		  id;
+	size_t			  n;
+	bool			  have;
+
+	if (!page_name(name, &id)) {
+		snprintf(why, len, "a source is fleet or sub-<id>");
+		return (400);
+	}
+	pthread_mutex_lock(&rs->lock);
+	have = page_has(rs, name);
+	n = rs->nsrc;
+	pthread_mutex_unlock(&rs->lock);
+	if (have)
+		return (0);
+	if (n >= PAGE_SRC_MAX) {
+		snprintf(why, len, "a page's stream has %d sources at most",
+		    PAGE_SRC_MAX);
+		return (503);
+	}
+	(void)session_owner(req, who, sizeof(who));
+	if (id == 0) {
+		if ((n = fleet_hosts(req, &sv)) == 0) {
+			free(sv);
+			snprintf(why, len, "no host to hear");
+			return (404);
+		}
+		src = src_new(rs, name, sv, n, true, NULL, since[0] != '\0' ?
+		    since : NULL);
+		free(sv);
+	} else if ((sb = sub_find(id, who)) == NULL) {
+		snprintf(why, len, "no such subscription");
+		return (404);
+	} else if (sb->fleet) {
+		sb->id = 0;
+		if ((n = fleet_hosts(req, &sv)) == 0) {
+			free(sv);
+			snprintf(why, len, "no host to hear");
+			return (404);
+		}
+		src = src_new(rs, name, sv, n, true, sb, NULL);
+		free(sv);
+		src->sub.id = (uint32_t)id;
+	} else {
+		/* As host_allowed() judges a read: no such host to one who
+		 * may not read it. */
+		if ((s = server_find(sb->sid)) == NULL ||
+		    !host_role_ok(req, sb->sid, false, false)) {
+			snprintf(why, len, "no such server");
+			return (404);
+		}
+		sb->id = 0;
+		src = src_new(rs, name, &s, 1, false, sb, since[0] != '\0' ?
+		    since : NULL);
+		src->sub.id = (uint32_t)id;
+	}
+	rcs_add(rs, src);
+	return (0);
+}
+
+/*
+ * GET /restconf/streams/page/json?fleet=1&sub=<id>,<id>: the page's one
+ * stream, of the fleet's and of the subscriptions named, and of those
+ * its Last-Event-ID names; one refused said ended, why, the rest heard.
+ */
+int
+api_restconf_page_stream(struct http_request *req)
+{
+	struct pagesrc	 l[PAGE_SRC_MAX * 2];
+	struct rcs	*rs;
+	struct rcsrc	*src;
+	struct buf	*said, *page;
+	uint8_t		 raw[PAGE_ID_LEN / 2];
+	const char	*v, *p;
+	char		 name[24], why[200], first[80], *err;
+	unsigned long	 id;
+	size_t		 n = 0, k;
+	int		 st;
+
+	if (!guard(req, false))
+		return (WEB_OK);
+	if (http_argument_get_string(req, "fleet", &v) && strcmp(v, "1") == 0)
+		page_want(l, &n, nitems(l), "fleet", "");
+	if (http_argument_get_string(req, "sub", &v))
+		for (p = v; *p != '\0'; p += k + (p[k] == ',' ? 1 : 0)) {
+			k = strcspn(p, ",");
+			if (snprintf(name, sizeof(name), "sub-%.*s", (int)k, p) >=
+			    (int)sizeof(name) || !page_name(name, &id))
+				return (restconf_error(req, 400, "sub is a list "
+				    "of subscriptions' ids"));
+			page_want(l, &n, nitems(l), name, "");
+		}
+	page_last(req, l, &n, nitems(l));
+	if ((rs = rcs_new(req)) == NULL)
+		return (WEB_OK);
+	rs->page = true;
+	arc4random_buf(raw, sizeof(raw));
+	for (size_t i = 0; i < sizeof(raw); i++)
+		snprintf(rs->pid + 2 * i, 3, "%02x", raw[i]);
+	(void)session_owner(req, rs->owner, sizeof(rs->owner));
+	said = buf_alloc(256);
+	for (size_t i = 0; i < n; i++) {
+		if ((st = page_add(req, rs, l[i].name, l[i].since, why,
+		    sizeof(why))) == 0 || (err = restconf_errors(st, why)) ==
+		    NULL)
+			continue;
+		buf_appendf(said, "event: %s.end\ndata: %s\n\n", l[i].name, err);
+		free(err);
+	}
+	page = buf_alloc(256);
+	buf_appendf(page, "event: page\ndata: {\"stream\":\"%s\",\"sources\":[",
+	    rs->pid);
+	TAILQ_FOREACH(src, &rs->add, link)
+		buf_appendf(page, "%s\"%s\"", src == TAILQ_FIRST(&rs->add) ? "" :
+		    ",", src->name);
+	buf_appendf(page, "]}\n\n");
+	snprintf(first, sizeof(first), ": the page's stream %s\n\n", rs->pid);
+	if (rcs_go(req, rs, first)) {
+		http_stream_put(req, said->data, said->offset);
+		http_stream_put(req, page->data, page->offset);
+	}
+	buf_free(said);
+	buf_free(page);
+	return (WEB_OK);
+}
+
+/* The page's stream pid, its reply not gone, opened by req's session
+ * (or bearer token), its owner who; NULL. */
+static struct rcs *
+page_find(struct http_request *req, const char *pid, const char *who)
+{
+	struct rcs	*rs;
+	struct sbind	 b;
+
+	if (strlen(pid) != PAGE_ID_LEN || who[0] == '\0')
+		return (NULL);
+	sbind_make(req, &b);
+	LIST_FOREACH(rs, &streams, list)
+		if (rs->page && rs->req != NULL && !atomic_load(&rs->stop) &&
+		    timingsafe_bcmp(rs->pid, pid, PAGE_ID_LEN) == 0 &&
+		    strcmp(rs->owner, who) == 0 && memcmp(rs->b.hash, b.hash,
+		    sizeof(b.hash)) == 0 && strcmp(rs->b.tok, b.tok) == 0)
+			return (rs);
+	return (NULL);
+}
+
+/* Source name of rs's given up: one not yet taken let go here, one taken
+ * by its thread; false when it has none of that name. */
+static bool
+page_end(struct rcs *rs, const char *name)
+{
+	struct rcsrc	*src, *drop = NULL;
+	bool		 found = false;
+
+	pthread_mutex_lock(&rs->lock);
+	TAILQ_FOREACH(src, &rs->add, link)
+		if (strcmp(src->name, name) == 0) {
+			TAILQ_REMOVE(&rs->add, src, link);
+			rs->nsrc--;
+			drop = src;
+			found = true;
+			break;
+		}
+	if (!found)
+		TAILQ_FOREACH(src, &rs->src, link)
+			if (strcmp(src->name, name) == 0 &&
+			    !atomic_load(&src->end)) {
+				atomic_store(&src->end, true);
+				found = true;
+				break;
+			}
+	pthread_mutex_unlock(&rs->lock);
+	if (drop != NULL)
+		src_free(drop);
+	return (found);
+}
+
+/*
+ * POST /restconf/streams/page/<id>: a source added to the page's stream
+ * of that id ({"add": "<name>"}), or one given up ({"end": "<name>"}),
+ * by the session (or token) that opened it alone; to any other, there is
+ * no such stream.
+ */
+int
+api_restconf_page_change(struct http_request *req)
+{
+	ucl_object_t	*body;
+	struct rcs	*rs;
+	const char	*add, *end;
+	char		 pid[PAGE_ID_LEN + 8], who[256], why[200], name[24];
+	bool		 adding;
+	int		 st;
+
+	if (!guard(req, true))
+		return (WEB_OK);
+	(void)session_owner(req, who, sizeof(who));
+	if (!capture(req, 4, pid, sizeof(pid)) || (rs = page_find(req, pid,
+	    who)) == NULL)
+		return (restconf_error(req, 404, "no such stream"));
+	if ((body = read_json(req)) == NULL)
+		return (restconf_error(req, 400, "the body is {\"add\": "
+		    "<source>} or {\"end\": <source>}"));
+	add = ucl_object_tostring(ucl_object_lookup(body, "add"));
+	end = ucl_object_tostring(ucl_object_lookup(body, "end"));
+	if ((add == NULL) == (end == NULL) || strlen(add != NULL ? add :
+	    end) >= sizeof(name)) {
+		ucl_object_unref(body);
+		return (restconf_error(req, 400, "the body is {\"add\": "
+		    "<source>} or {\"end\": <source>}"));
+	}
+	strlcpy(name, add != NULL ? add : end, sizeof(name));
+	adding = add != NULL;
+	ucl_object_unref(body);
+	if (adding) {
+		if ((st = page_add(req, rs, name, "", why, sizeof(why))) != 0)
+			return (restconf_error(req, st, why));
+	} else if (!page_end(rs, name))
+		return (restconf_error(req, 404, "no such source"));
+	http_response(req, 204, NULL, 0);
+	return (WEB_OK);
 }

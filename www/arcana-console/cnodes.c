@@ -136,6 +136,10 @@ static const struct cnode	cnodes[] = {
 	 * for forms (ymodule.c); of /api, the socket's reads and an IDS's
 	 * pcap files. */
 	{ "/restconf", false, M, M, T_ANY, TK_WRITE },
+	/* The event streams, each source judged by host (rcstream.c); a
+	 * page's stream changed (a POST) by the session that opened it,
+	 * as a change, its Origin checked. */
+	{ "/restconf/streams", false, M, M, T_ANY, TK_WRITE },
 	{ "/yang", false, M, M, T_ANY, TK_WRITE },
 	{ "/api/stream", false, M, M, T_ANY, TK_WRITE },
 	{ "/api/servers/*/ids/pcap", false, M, M, T_ANY, TK_WRITE },

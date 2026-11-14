@@ -162,23 +162,6 @@
   change nobody confirmed.  Safe mode takes an unconfirmed change back
   elsewhere: put the file back here too?
 
-- One EventSource a page instead of three (sse.c: the fleet's stream,
-  arcana-host's stats, arcana-jobs): every tab of the console shares
-  the browser's one HTTP/2 connection, and each page holds its event
-  streams and its WebSocket open on it for good.  The design: a GET
-  /restconf/streams/page/json?fleet=1&sub=<id>,<id> (rcstream.c) that
-  starts the fleet's stream and takes the page's established
-  subscriptions on one reply, one thread, each event named by what it
-  is of ("event: fleet", "event: sub-<id>"; its id the event time
-  prefixed by the same, so Last-Event-ID replays each); a subscription
-  established later, or one ended, said to it by a POST naming the
-  page's stream (its id from the reply's first comment line) rather
-  than a new GET; bridge.js's arc_sse_open/arc_sse_close then add and
-  remove a name on the one EventSource, arc_on_sse unchanged.  The
-  rcs threads already hold one host list each; the change is that one
-  rcs carries several sources (rch sets) and the keep-alive and lost
-  events are the reply's, not each source's.
-
 ## Not yet run for real
 
 Written and tested with stand-ins only:

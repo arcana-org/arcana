@@ -16,6 +16,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/file.h>
 #include <sys/module.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -21063,6 +21064,573 @@ ATF_TC_BODY(fleet_stream_removed, tc)
 }
 
 /*
+ * A page's one stream (rcstream.c): the fleet's and the page's
+ * subscriptions on one reply, each event named by its source.
+ */
+
+static void	cc_role(const char *, const char *, const char *);
+
+/* A subscription of host sid's ("" every host's): lo0's oper-status
+ * every half second, or the NETCONF stream when netconf; its id. */
+static unsigned long
+ps_sub(const char *sid, bool netconf)
+{
+	struct resp	 r;
+	char		 path[200];
+	const char	*uri;
+	unsigned long	 n;
+
+	if (sid[0] == '\0')
+		snprintf(path, sizeof(path), "/restconf/data/arcana-fleet:"
+		    "fleet/ietf-subscribed-notifications:"
+		    "establish-subscription");
+	else
+		snprintf(path, sizeof(path), FLEET "%s/ietf-subscribed-"
+		    "notifications:establish-subscription", sid);
+	http("POST", path, netconf ? "{\"ietf-subscribed-notifications:"
+	    "input\":{\"stream\":\"NETCONF\"}}" : "{\"ietf-subscribed-"
+	    "notifications:input\":{\"ietf-yang-push:datastore\":\"ietf-"
+	    "datastores:operational\",\"ietf-yang-push:datastore-xpath-"
+	    "filter\":\"/ietf-interfaces:interfaces/interface[name='lo0']/"
+	    "oper-status\",\"ietf-yang-push:periodic\":{\"period\":50}}}", &r);
+	EXPECT(&r, 200);
+	uri = jstr(&r, "ietf-subscribed-notifications:output."
+	    "ietf-restconf-subscribed-notifications:uri");
+	ATF_REQUIRE_MSG(uri != NULL && strrchr(uri, '/') != NULL, "%s",
+	    r.body);
+	n = strtoul(strrchr(uri, '/') + 1, NULL, 10);
+	resp_free(&r);
+	ATF_REQUIRE(n != 0);
+	return (n);
+}
+
+/* A page's stream of query q with Last-Event-ID leid (NULL: none), on a
+ * socket of its own, read into buf until its page event. */
+static int
+ps_open(const char *q, const char *leid, char *buf, size_t *len,
+    size_t cap)
+{
+	struct timeval	 tv = { 1, 0 };
+	char		 rq[1024];
+	int		 s;
+
+	s = console_socket();
+	ATF_REQUIRE(setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv,
+	    sizeof(tv)) == 0);
+	snprintf(rq, sizeof(rq), "GET /restconf/streams/page/json%s%s "
+	    "HTTP/1.1\r\nHost: localhost:8443\r\nCookie: %s\r\n%s%s%s\r\n",
+	    q[0] != '\0' ? "?" : "", q, cookie, leid != NULL ?
+	    "Last-Event-ID: " : "", leid != NULL ? leid : "", leid != NULL ?
+	    "\r\n" : "");
+	ATF_REQUIRE(write(s, rq, strlen(rq)) == (ssize_t)strlen(rq));
+	buf[0] = '\0';
+	*len = 0;
+	ATF_REQUIRE_MSG(sse_until(s, buf, len, cap, "event: page\n", 10), "%s",
+	    buf);
+	(void)sse_until(s, buf, len, cap, "]}\n", 2);
+	return (s);
+}
+
+/* The page's stream's id, of its first line, into pid. */
+static void
+ps_id(const char *buf, char *pid, size_t len)
+{
+	const char	*p;
+
+	ATF_REQUIRE_MSG((p = strstr(buf, ": the page's stream ")) != NULL,
+	    "%s", buf);
+	snprintf(pid, len, "%.32s", p + 20);
+	ATF_REQUIRE_MSG(strlen(pid) == 32 && pid[strspn(pid,
+	    "0123456789abcdef")] == '\0', "%s", buf);
+}
+
+/* Has an event of buf named name, whole, needle in it (NULL: any)? */
+static bool
+ps_event(const char *buf, const char *name, const char *needle)
+{
+	const char	*p, *e;
+	char		 want[64];
+
+	snprintf(want, sizeof(want), "event: %s\n", name);
+	for (p = buf; (p = strstr(p, want)) != NULL; p++) {
+		if (p != buf && p[-1] != '\n')
+			continue;
+		if ((e = strstr(p, "\n\n")) == NULL)
+			break;
+		if (needle == NULL || memmem(p, (size_t)(e - p), needle,
+		    strlen(needle)) != NULL)
+			return (true);
+	}
+	return (false);
+}
+
+/* Read on s until buf has such an event, for secs at most. */
+static bool
+ps_wait(int s, char *buf, size_t *len, size_t cap, const char *name,
+    const char *needle, int secs)
+{
+	time_t	t0 = time(NULL);
+
+	while (!ps_event(buf, name, needle) && time(NULL) - t0 < secs)
+		(void)sse_until(s, buf, len, cap, "\a", 1);
+	return (ps_event(buf, name, needle));
+}
+
+/* What s says for secs, into buf. */
+static void
+ps_drain(int s, char *buf, size_t *len, size_t cap, int secs)
+{
+
+	(void)sse_until(s, buf, len, cap, "\a", secs);
+}
+
+/* A record of buf whose event is not named: its data line, or NULL.
+ * The line before a data line its id, the one before that its event
+ * (a chunk's size line, over HTTP/1.1, is neither). */
+static const char *
+ps_unnamed(const char *buf)
+{
+	const char	*p, *q;
+
+	for (p = buf; (p = strstr(p, "\ndata: ")) != NULL; p++) {
+		for (q = p - 1; q > buf && q[-1] != '\n'; q--)
+			;
+		if (strncmp(q, "id: ", 4) == 0 && q > buf)
+			for (q = q - 2; q > buf && q[-1] != '\n'; q--)
+				;
+		if (strncmp(q, "event: ", 7) != 0)
+			return (p + 1);
+	}
+	return (NULL);
+}
+
+/* The console's threads and open descriptors. */
+static void
+ps_counts(int *threads, int *fds)
+{
+	struct kinfo_proc	 kp, *all;
+	struct xfile		*xf;
+	FILE			*fp;
+	size_t			 len;
+	int			 pid, sup, mib[4] = { CTL_KERN, KERN_PROC, 0, 0 };
+
+	ATF_REQUIRE((fp = fopen("console.pid", "r")) != NULL);
+	ATF_REQUIRE(fscanf(fp, "%d", &pid) == 1);
+	fclose(fp);
+	/* That one the supervisor: its child, the worker, holds them. */
+	mib[2] = KERN_PROC_PROC;
+	ATF_REQUIRE(sysctl(mib, 3, NULL, &len, NULL, 0) == 0);
+	len = len * 4 / 3;
+	ATF_REQUIRE((all = malloc(len)) != NULL);
+	ATF_REQUIRE(sysctl(mib, 3, all, &len, NULL, 0) == 0);
+	sup = pid;
+	for (size_t i = 0; i < len / sizeof(*all); i++)
+		if (all[i].ki_ppid == sup) {
+			pid = all[i].ki_pid;
+			break;
+		}
+	free(all);
+	mib[2] = KERN_PROC_PID;
+	mib[3] = pid;
+	len = sizeof(kp);
+	ATF_REQUIRE(sysctl(mib, 4, &kp, &len, NULL, 0) == 0);
+	*threads = kp.ki_numthreads;
+	/* Its descriptors, of every process's open files (kern.file, as
+	 * sockstat(1) reads them: another's descriptor table is not ours to
+	 * read, unprivileged_proc_debug off). */
+	mib[1] = KERN_FILE;
+	ATF_REQUIRE(sysctl(mib, 2, NULL, &len, NULL, 0) == 0);
+	len = len * 4 / 3;
+	ATF_REQUIRE((xf = malloc(len)) != NULL);
+	ATF_REQUIRE(sysctl(mib, 2, xf, &len, NULL, 0) == 0);
+	*fds = 0;
+	for (size_t i = 0; i < len / sizeof(*xf); i++)
+		if (xf[i].xf_pid == pid)
+			(*fds)++;
+	free(xf);
+}
+
+/* Counts as ps_counts(), once two of them half a second apart agree. */
+static void
+ps_settled(int *threads, int *fds)
+{
+	int	t, f;
+
+	ps_counts(threads, fds);
+	for (int i = 0; i < 20; i++) {
+		usleep(500000);
+		ps_counts(&t, &f);
+		if (t == *threads && f == *fds)
+			return;
+		*threads = t;
+		*fds = f;
+	}
+}
+
+CONSOLE_TC(page_stream, "A page's one stream carries the fleet's and two "
+    "subscriptions, each event named by its source")
+ATF_TC_BODY(page_stream, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 id[16], q[96], na[24], nb[24], want[160], *buf, *p, *e;
+	size_t		 len = 0, cap = 1 << 20;
+	unsigned long	 sa, sb;
+	int		 s;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	watch_host(id, sizeof(id));
+	sa = ps_sub(id, false);
+	sb = ps_sub("", false);
+	snprintf(na, sizeof(na), "sub-%lu", sa);
+	snprintf(nb, sizeof(nb), "sub-%lu", sb);
+	snprintf(q, sizeof(q), "fleet=1&sub=%lu,%lu", sa, sb);
+	s = ps_open(q, NULL, buf, &len, cap);
+	/* Each taken, as the page event lists them, and said open. */
+	snprintf(want, sizeof(want), "\"sources\":[\"fleet\",\"%s\",\"%s\"]",
+	    na, nb);
+	ATF_CHECK_MSG(strstr(buf, want) != NULL, "%s", buf);
+	snprintf(want, sizeof(want), "%s.open", na);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet.open", NULL, 10) &&
+	    ps_wait(s, buf, &len, cap, want, NULL, 10), "%s", buf);
+	/* Each subscription's pushes by its name: the host's as they are,
+	 * the fleet's in its host's entry. */
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, na, "\"oper-status\":\"up\"",
+	    15), "%s", buf);
+	snprintf(want, sizeof(want), "\"arcana-fleet:fleet\":{\"host\":[{"
+	    "\"id\":\"%s\",\"ietf-yang-push:push-update\":", id);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, nb, want, 15), "%s", buf);
+	/* The fleet's by its own: a job's event. */
+	usleep(1500000);
+	r4_submit(id, R1_MONITOR, &r);
+	resp_free(&r);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet",
+	    "\"arcana-events:event\":", 15), "%s", buf);
+	/* A record's id every source's, each by its name, the fleet's
+	 * with its event time. */
+	p = strstr(buf, "event: fleet\nid: ");
+	ATF_REQUIRE_MSG(p != NULL && (e = strchr(p + 17, '\n')) != NULL, "%s",
+	    buf);
+	p += 17;
+	ATF_CHECK_MSG(strncmp(p, "fleet@20", 8) == 0 && memmem(p, (size_t)(e -
+	    p), na, strlen(na)) != NULL && memmem(p, (size_t)(e - p), nb,
+	    strlen(nb)) != NULL, "%.*s", (int)(e - p), p);
+	/* Nothing unnamed. */
+	ATF_CHECK_MSG(ps_unnamed(buf) == NULL, "unnamed: %.200s",
+	    ps_unnamed(buf));
+	close(s);
+	free(buf);
+}
+
+CONSOLE_TC(page_stream_post, "A page's stream takes a subscription added, "
+    "and lets one given up go, by a POST naming it")
+ATF_TC_BODY(page_stream_post, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 id[16], pid[40], path[96], body[96], na[24], want[40];
+	char		*buf;
+	size_t		 len = 0, cap = 1 << 20, mark;
+	unsigned long	 sa;
+	int		 s;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	watch_host(id, sizeof(id));
+	s = ps_open("fleet=1", NULL, buf, &len, cap);
+	ps_id(buf, pid, sizeof(pid));
+	ATF_CHECK_MSG(strstr(buf, "\"sources\":[\"fleet\"]") != NULL, "%s",
+	    buf);
+	/* Established later: said to the stream, not a new GET. */
+	sa = ps_sub(id, false);
+	snprintf(na, sizeof(na), "sub-%lu", sa);
+	snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+	snprintf(body, sizeof(body), "{\"add\":\"%s\"}", na);
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(want, sizeof(want), "%s.open", na);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, NULL, 10), "%s", buf);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, na, "\"oper-status\":\"up\"",
+	    15), "%s", buf);
+	/* Taken: not again by its own GET. */
+	snprintf(body, sizeof(body), "/restconf/subscriptions/%lu", sa);
+	http("GET", body, NULL, &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	/* Given up: no more of it, the fleet's still there. */
+	snprintf(body, sizeof(body), "{\"end\":\"%s\"}", na);
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	ps_drain(s, buf, &len, cap, 1);
+	mark = len;
+	ps_drain(s, buf, &len, cap, 3);
+	ATF_CHECK_MSG(!ps_event(buf + mark, na, NULL), "%s", buf + mark);
+	http("POST", path, body, &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	/* What is not a source, or no subscription of the user's. */
+	http("POST", path, "{\"add\":\"sub-12345\"}", &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	http("POST", path, "{\"add\":\"jobs\"}", &r);
+	EXPECT(&r, 400);
+	resp_free(&r);
+	http("POST", path, "{\"add\":\"fleet\",\"end\":\"fleet\"}", &r);
+	EXPECT(&r, 400);
+	resp_free(&r);
+	http("POST", "/restconf/streams/page/0123456789abcdef0123456789abcdef",
+	    "{\"end\":\"fleet\"}", &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	http("POST", path, "{\"end\":\"fleet\"}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	close(s);
+	free(buf);
+}
+
+CONSOLE_TC(page_stream_replay, "A page's stream back with Last-Event-ID "
+    "replays each source from its own time, its subscriptions taken "
+    "again")
+ATF_TC_BODY(page_stream_replay, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 id[16], na[24], leid[96], want[40], *buf;
+	size_t		 len = 0, cap = 1 << 20;
+	unsigned long	 sa;
+	int		 s;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	watch_host(id, sizeof(id));
+	/* A job's event the agent keeps, to be replayed. */
+	r4_submit(id, R1_MONITOR, &r);
+	resp_free(&r);
+	usleep(1000000);
+	sa = ps_sub(id, true);
+	snprintf(na, sizeof(na), "sub-%lu", sa);
+	/* The subscription named by the id alone, with a time; the fleet's
+	 * without: the subscription's replayed, the fleet's from now. */
+	snprintf(leid, sizeof(leid), "fleet;%s@2001-01-01T00:00:00Z", na);
+	s = ps_open("fleet=1", leid, buf, &len, cap);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, na, "replay-completed", 15) &&
+	    ps_event(buf, na, "\"arcana-events:event\":"), "%s", buf);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet.open", NULL, 5), "%s",
+	    buf);
+	ps_drain(s, buf, &len, cap, 3);
+	ATF_CHECK_MSG(!ps_event(buf, "fleet", "replay-completed"), "%s", buf);
+	close(s);
+	/* Its reply gone, the subscription is given back to be taken; the
+	 * other way about now. */
+	usleep(1500000);
+	snprintf(leid, sizeof(leid), "fleet@2001-01-01T00:00:00Z;%s", na);
+	s = ps_open("fleet=1", leid, buf, &len, cap);
+	snprintf(want, sizeof(want), "%s.open", na);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet", "replay-completed",
+	    15) && ps_event(buf, "fleet", "\"arcana-events:event\":"), "%s",
+	    buf);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, NULL, 5), "%s", buf);
+	ps_drain(s, buf, &len, cap, 3);
+	ATF_CHECK_MSG(!ps_event(buf, na, "replay-completed"), "%s", buf);
+	close(s);
+	free(buf);
+}
+
+CONSOLE_TC(page_stream_owner, "A page's stream changed by the session that "
+    "opened it alone; its subscriptions no one else's")
+ATF_TC_BODY(page_stream_owner, tc)
+{
+	struct authn	 a, b;
+	struct resp	 r;
+	char		 sid[16], pid[40], path[96], body[96], na[24], want[96];
+	char		 mine[sizeof(cookie)], *buf;
+	size_t		 len = 0, cap = 1 << 20;
+	unsigned long	 sa;
+	int		 s, s2;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", sid, sizeof(sid));
+	r1_role("look", "member", "viewer");
+	s = ps_open("fleet=1", NULL, buf, &len, cap);
+	ps_id(buf, pid, sizeof(pid));
+	sa = ps_sub(sid, false);
+	snprintf(na, sizeof(na), "sub-%lu", sa);
+	snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+	memcpy(mine, cookie, sizeof(mine));
+	/* bob, his key named as the owner's is, with the stream's id: there
+	 * is no such stream to him. */
+	cc_user(&b, "bob", "\"role\":[\"look\"]", -7);
+	snprintf(body, sizeof(body), "{\"add\":\"%s\"}", na);
+	http("POST", path, body, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("POST", path, "{\"end\":\"fleet\"}", &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Nor does his own take the owner's subscription. */
+	{
+		char	*b2;
+		size_t	 l2 = 0;
+
+		ATF_REQUIRE((b2 = calloc(1, cap)) != NULL);
+		snprintf(body, sizeof(body), "sub=%lu", sa);
+		s2 = ps_open(body, NULL, b2, &l2, cap);
+		snprintf(want, sizeof(want), "%s.end", na);
+		ATF_CHECK_MSG(ps_event(b2, want, "no such subscription") &&
+		    strstr(b2, "\"sources\":[]") != NULL, "%s", b2);
+		close(s2);
+		free(b2);
+	}
+	/* The owner's whole: the fleet's there, the subscription hers. */
+	memcpy(cookie, mine, sizeof(cookie));
+	snprintf(body, sizeof(body), "{\"add\":\"%s\"}", na);
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(want, sizeof(want), "%s.open", na);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, NULL, 10), "%s", buf);
+	ATF_CHECK_MSG(!ps_event(buf, "fleet.end", NULL), "%s", buf);
+	http("POST", path, "{\"end\":\"fleet\"}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	close(s);
+	free(buf);
+}
+
+CONSOLE_TC(page_stream_reach, "A page's stream takes a source as its own "
+    "GET would: a host the user may no longer read refused")
+ATF_TC_BODY(page_stream_reach, tc)
+{
+	struct authn	 a, o;
+	struct resp	 r;
+	char		 sa[16], sb[16], hosts[200], na[24], want[96], q[64];
+	char		 owner[sizeof(cookie)], tess[sizeof(cookie)], pid[40];
+	char		 path[96], *buf, *p;
+	size_t		 len = 0, cap = 1 << 20;
+	unsigned long	 n;
+	int		 s;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("a", "jgd.sock", sa, sizeof(sa));
+	cc_host("hidden-bee", "./jgd.sock", sb, sizeof(sb));
+	snprintf(hosts, sizeof(hosts), "{\"id\":\"%s\",\"role\":\"viewer\"},"
+	    "{\"id\":\"%s\",\"role\":\"viewer\"}", sa, sb);
+	cc_role("two", "member", hosts);
+	memcpy(owner, cookie, sizeof(owner));
+	cc_user(&o, "tess", "\"role\":[\"two\"]", -7);
+	/* tess's subscription of hidden-bee; then hidden-bee not hers. */
+	n = ps_sub(sb, false);
+	snprintf(na, sizeof(na), "sub-%lu", n);
+	memcpy(tess, cookie, sizeof(tess));
+	memcpy(cookie, owner, sizeof(cookie));
+	snprintf(hosts, sizeof(hosts), "{\"id\":\"%s\",\"role\":\"viewer\"}",
+	    sa);
+	cc_role("two", "member", hosts);
+	memcpy(cookie, tess, sizeof(cookie));
+	snprintf(q, sizeof(q), "fleet=1&sub=%lu", n);
+	s = ps_open(q, NULL, buf, &len, cap);
+	snprintf(want, sizeof(want), "%s.end", na);
+	ATF_CHECK_MSG(ps_event(buf, want, "no such server") && strstr(buf,
+	    "\"sources\":[\"fleet\"]") != NULL, "%s", buf);
+	/* Nor by a POST. */
+	ps_id(buf, pid, sizeof(pid));
+	snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+	snprintf(want, sizeof(want), "{\"add\":\"%s\"}", na);
+	http("POST", path, want, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* The fleet's of a alone: the agent's job heard as a's, never as
+	 * hidden-bee's. */
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet.open", NULL, 10), "%s",
+	    buf);
+	usleep(1500000);
+	memcpy(cookie, owner, sizeof(cookie));
+	r4_submit(sa, R1_MONITOR, &r);
+	resp_free(&r);
+	snprintf(want, sizeof(want), "{\"id\":\"%s\",\"arcana-events:event\"",
+	    sa);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, "fleet", want, 15), "%s", buf);
+	ps_drain(s, buf, &len, cap, 2);
+	snprintf(want, sizeof(want), "\"id\":\"%s\"", sb);
+	ATF_CHECK_MSG((p = strstr(buf, want)) == NULL, "%s", p);
+	snprintf(want, sizeof(want), "%s.open", na);
+	ATF_CHECK(!ps_event(buf, want, NULL));
+	close(s);
+	free(buf);
+}
+
+CONSOLE_TC(page_stream_freed, "A page's stream is one thread; a source given "
+    "up, and the stream ended, leave no thread or descriptor behind")
+ATF_TC_BODY(page_stream_freed, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 id[16], q[96], na[24], nb[24], pid[40], path[96];
+	char		 body[64], *buf;
+	size_t		 len = 0, cap = 1 << 20;
+	unsigned long	 sa, sb;
+	int		 s, t0, f0, t1, f1, t, f, i;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	watch_host(id, sizeof(id));
+	sa = ps_sub(id, false);
+	sb = ps_sub("", false);
+	snprintf(na, sizeof(na), "sub-%lu", sa);
+	snprintf(nb, sizeof(nb), "sub-%lu", sb);
+	ps_settled(&t0, &f0);
+	snprintf(q, sizeof(q), "fleet=1&sub=%lu,%lu", sa, sb);
+	s = ps_open(q, NULL, buf, &len, cap);
+	ps_id(buf, pid, sizeof(pid));
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, na, "push-update", 15) &&
+	    ps_wait(s, buf, &len, cap, nb, "push-update", 15), "%s", buf);
+	/* One thread for the three; a connection to the host each, and
+	 * the client's. */
+	ps_settled(&t1, &f1);
+	ATF_CHECK_MSG(t1 == t0 + 1, "threads: %d before, %d with the stream",
+	    t0, t1);
+	ATF_CHECK_MSG(f1 >= f0 + 4, "descriptors: %d before, %d with the "
+	    "stream", f0, f1);
+	/* A subscription given up: its connection closed. */
+	snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+	snprintf(body, sizeof(body), "{\"end\":\"%s\"}", na);
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	for (i = 0; i < 20; i++) {
+		usleep(250000);
+		ps_counts(&t, &f);
+		if (f <= f1 - 1)
+			break;
+	}
+	ATF_CHECK_MSG(f <= f1 - 1 && t == t1, "descriptors %d, threads %d "
+	    "after a source given up (%d, %d before)", f, t, f1, t1);
+	/* The client gone: the thread and every descriptor of it. */
+	close(s);
+	for (i = 0; i < 40; i++) {
+		usleep(250000);
+		ps_counts(&t, &f);
+		if (t <= t0 && f <= f0)
+			break;
+	}
+	ATF_CHECK_MSG(t <= t0 && f <= f0, "threads %d, descriptors %d after "
+	    "the stream (%d, %d before)", t, f, t0, f0);
+	free(buf);
+}
+
+/*
  * PLAN-SDN-YANG 3.4.2: the console's own reads (a workflow's read
  * steps, hosts_read()) answered from the subscriptions, in the shapes
  * the host's answers have: the stats (periodic) and the jails
@@ -26061,6 +26629,12 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, mtls);
 	ATF_TP_ADD_TC(tp, mtls_move);
 	ATF_TP_ADD_TC(tp, fleet_stream_removed);
+	ATF_TP_ADD_TC(tp, page_stream);
+	ATF_TP_ADD_TC(tp, page_stream_post);
+	ATF_TP_ADD_TC(tp, page_stream_replay);
+	ATF_TP_ADD_TC(tp, page_stream_owner);
+	ATF_TP_ADD_TC(tp, page_stream_reach);
+	ATF_TP_ADD_TC(tp, page_stream_freed);
 	ATF_TP_ADD_TC(tp, workflows_arcana);
 	ATF_TP_ADD_TC(tp, feeds);
 	ATF_TP_ADD_TC(tp, telegram_job);

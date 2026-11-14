@@ -3309,61 +3309,222 @@ addToLibrary({
 
 	/*
 	 * RESTCONF's event streams and subscriptions as Server-Sent Events
-	 * (sse.c): an EventSource each, by the page's id.  What it says goes
-	 * to arc_on_sse(id, event, data): "open"; a record ("message"); the
-	 * console's "error", "info" and "lost" events; "down" when the
-	 * connection went, data "closed" when the browser gives it up (an
-	 * HTTP error), "" when it comes back by itself, with Last-Event-ID.
-	 * window.arcanaStreams has them by id, for a plugin or a test to
-	 * listen to as well.
+	 * (sse.c), on the page's one EventSource: the console's page stream
+	 * (rcstream.c), as every tab shares the browser's one HTTP/2
+	 * connection and the streams held on it are few.  Each of the
+	 * page's ids is a source of it, by name: "fleet", the fleet's
+	 * stream, or "sub-<n>", the subscription whose URI ends in n.  The
+	 * EventSource is opened with the sources wanted then and closed
+	 * with the last; one wanted later, or given up, is said to it by a
+	 * POST, its id from the "page" event, which lists what the console
+	 * took: what is wanted and not there is added, what is there and
+	 * not wanted given up.  What it says of a source goes to
+	 * arc_on_sse(id, event, data): "open" (<name>.open); a record
+	 * ("message", <name>); the console's "error" and "info" of it, and
+	 * the stream's "lost" and its "error"; "down" when the connection
+	 * went, data "" when the browser comes back by itself, with
+	 * Last-Event-ID (the console takes each source again, from its own
+	 * last record), "closed" when the browser gives up (an HTTP error),
+	 * the source ended (<name>.end) or the console refused it.
+	 * window.arcanaStream is the EventSource, window.arcanaStreams the
+	 * names by id, for a plugin or a test to listen to as well.
 	 */
-	$arcSse: {},
-	arc_sse_open__deps: ["$arcSse", "$arcStr", "$UTF8ToString"],
-	arc_sse_open: function (id, urlp) {
-		var url = UTF8ToString(urlp), es;
-		var say = function (ev, data) {
-			if (arcSse[id] === es)
-				Module._arc_on_sse(id, arcStr(ev), arcStr(data));
+	$arcSse: { es: null, page: null, ids: {}, ended: {}, q: null },
+	$arcSseName: function (url) {
+		var m = /^\/restconf\/subscriptions\/([0-9]+)$/.exec(url);
+
+		if (url === "/restconf/streams/fleet/json")
+			return ("fleet");
+		return (m !== null ? "sub-" + m[1] : null);
+	},
+	/* Said to each id of source name (null: every id). */
+	$arcSseSay__deps: ["$arcSse", "$arcStr"],
+	$arcSseSay: function (name, ev, data) {
+		Object.keys(arcSse.ids).forEach(function (id) {
+			if (arcSse.ids[id] !== undefined && (name === null ||
+			    arcSse.ids[id] === name))
+				Module._arc_on_sse(Number(id), arcStr(ev),
+				    arcStr(data));
+		});
+	},
+	$arcSseWants__deps: ["$arcSse"],
+	$arcSseWants: function (name) {
+		return (Object.keys(arcSse.ids).some(function (id) {
+			return (arcSse.ids[id] === name);
+		}));
+	},
+	/* Source name added to the page's stream ("add") or given up
+	 * ("end"), each after the one before (a name given up and wanted
+	 * again is said in that order); an add refused is the source down
+	 * for good. */
+	$arcSsePost__deps: ["$arcSse", "$arcSseSay"],
+	$arcSsePost: function (what, name) {
+		var es = arcSse.es, url = "/restconf/streams/page/" + arcSse.page;
+		var body = {};
+		var refused = function () {
+			if (what === "add" && arcSse.es === es)
+				arcSseSay(name, "down", "closed");
 		};
 
-		if (arcSse[id])
-			arcSse[id].close();
+		body[what] = name;
+		arcSse.q = arcSse.q.then(function () {
+			return (fetch(url, { method: "POST", credentials:
+			    "same-origin", cache: "no-store", headers: {
+			    "Content-Type": "application/json", "X-Arcana": "1" },
+			    body: JSON.stringify(body) }).then(function (r) {
+				if (!r.ok)
+					refused();
+			}, refused));
+		});
+	},
+	/* The events of source name on es, listened to once. */
+	$arcSseListen__deps: ["$arcSse", "$arcSseSay"],
+	$arcSseListen: function (es, name) {
+		var on = function (k, fn) {
+			es.addEventListener(k, function (e) {
+				if (arcSse.es === es)
+					fn(typeof e.data === "string" ? e.data : "");
+			});
+		};
+
+		if (es.heard[name])
+			return;
+		es.heard[name] = true;
+		on(name, function (d) { arcSseSay(name, "message", d); });
+		on(name + ".open", function () { arcSseSay(name, "open", ""); });
+		on(name + ".error", function (d) { arcSseSay(name, "error", d); });
+		on(name + ".info", function (d) { arcSseSay(name, "info", d); });
+		on(name + ".end", function (d) {
+			arcSseSay(name, "error", d);
+			arcSse.ended[name] = true;
+			arcSseSay(name, "down", "closed");
+		});
+	},
+	$arcSseStart__deps: ["$arcSse", "$arcSseSay", "$arcSseListen",
+	    "$arcSsePost"],
+	$arcSseStart: function () {
+		var q = [], subs = [], es, names;
+
+		names = Object.keys(arcSse.ids).map(function (id) {
+			return (arcSse.ids[id]);
+		});
+		names.forEach(function (n) {
+			if (n === "fleet")
+				q.push("fleet=1");
+			else
+				subs.push(n.slice(4));
+		});
+		if (subs.length > 0)
+			q.push("sub=" + subs.join(","));
+		arcSse.page = null;
+		arcSse.ended = {};
+		arcSse.q = Promise.resolve();
 		try {
-			es = new EventSource(url);
+			es = new EventSource("/restconf/streams/page/json?" +
+			    q.join("&"));
 		} catch (e) {
-			delete arcSse[id];
+			arcSse.es = window.arcanaStream = null;
+			setTimeout(function () {
+				arcSseSay(null, "down", "closed");
+			}, 0);
+			return;
+		}
+		es.heard = {};
+		arcSse.es = window.arcanaStream = es;
+		window.arcanaStreams = arcSse.ids;
+		names.forEach(function (n) { arcSseListen(es, n); });
+		es.addEventListener("page", function (e) {
+			var j, want = {};
+
+			if (arcSse.es !== es)
+				return;
+			try {
+				j = JSON.parse(e.data);
+			} catch (x) {
+				return;
+			}
+			arcSse.page = j.stream;
+			Object.keys(arcSse.ids).forEach(function (id) {
+				want[arcSse.ids[id]] = true;
+			});
+			(j.sources || []).forEach(function (n) {
+				if (!want[n])
+					arcSsePost("end", n);
+				delete want[n];
+			});
+			Object.keys(want).forEach(function (n) {
+				arcSseListen(es, n);
+				arcSsePost("add", n);
+			});
+		});
+		es.addEventListener("lost", function (e) {
+			if (arcSse.es === es)
+				arcSseSay(null, "lost", e.data || "");
+		});
+		/* The console's error event has data; the connection's not. */
+		es.addEventListener("error", function (e) {
+			if (arcSse.es !== es)
+				return;
+			if (typeof e.data === "string") {
+				arcSseSay(null, "error", e.data);
+				return;
+			}
+			arcSse.page = null;
+			if (es.readyState === 2)
+				arcSse.es = window.arcanaStream = null;
+			arcSseSay(null, "down", es.readyState === 2 ? "closed" : "");
+		});
+	},
+	arc_sse_open__deps: ["$arcSse", "$arcSseName", "$arcSseWants",
+	    "$arcSseStart", "$arcSseListen", "$arcSsePost", "$arcStr",
+	    "$UTF8ToString"],
+	arc_sse_open: function (id, urlp) {
+		var name = arcSseName(UTF8ToString(urlp)), old = arcSse.ids[id];
+
+		if (name === null) {
 			setTimeout(function () {
 				Module._arc_on_sse(id, arcStr("down"),
 				    arcStr("closed"));
 			}, 0);
 			return;
 		}
-		arcSse[id] = es;
-		window.arcanaStreams = arcSse;
-		es.onopen = function () { say("open", ""); };
-		es.onmessage = function (e) { say("message", e.data); };
-		["info", "lost"].forEach(function (k) {
-			es.addEventListener(k, function (e) {
-				say(k, e.data || "");
-			});
-		});
-		/* The console's error event has data; the connection's not. */
-		es.addEventListener("error", function (e) {
-			if (typeof e.data === "string") {
-				say("error", e.data);
-				return;
-			}
-			say("down", es.readyState === 2 ? "closed" : "");
-			if (es.readyState === 2 && arcSse[id] === es)
-				delete arcSse[id];
-		});
-	},
-	arc_sse_close__deps: ["$arcSse"],
-	arc_sse_close: function (id) {
-		if (arcSse[id]) {
-			arcSse[id].close();
-			delete arcSse[id];
+		if (old === name)
+			return;
+		arcSse.ids[id] = name;
+		if (arcSse.es === null) {
+			arcSseStart();
+			return;
 		}
+		/* Before the "page" event, that event's sources say it. */
+		if (old !== undefined && arcSse.page !== null &&
+		    !arcSseWants(old))
+			arcSsePost("end", old);
+		arcSseListen(arcSse.es, name);
+		if (arcSse.page !== null)
+			arcSsePost("add", name);
+	},
+	arc_sse_close__deps: ["$arcSse", "$arcSseWants", "$arcSsePost"],
+	arc_sse_close: function (id) {
+		var name = arcSse.ids[id];
+
+		if (name === undefined)
+			return;
+		delete arcSse.ids[id];
+		if (Object.keys(arcSse.ids).length === 0) {
+			if (arcSse.es !== null)
+				arcSse.es.close();
+			arcSse.es = window.arcanaStream = null;
+			arcSse.page = null;
+			return;
+		}
+		/* One that ended is the console's no longer. */
+		if (arcSse.ended[name]) {
+			delete arcSse.ended[name];
+			return;
+		}
+		if (arcSse.es !== null && arcSse.page !== null &&
+		    !arcSseWants(name))
+			arcSsePost("end", name);
 	},
 
 	/* Is the window as narrow as a phone held upright? */

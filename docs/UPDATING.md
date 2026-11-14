@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The page's streams on one EventSource, console 0.438.0
+
+- **Each page holds one event stream**, `GET
+  /restconf/streams/page/json?fleet=1&sub=<id>,<id>`, instead of one for
+  the fleet's stream and one for each subscription: every tab shares the
+  browser's one HTTP/2 connection, and the streams held on it are few.
+  Each event is named by its source, `fleet` or `sub-<id>` (and
+  `<name>.open`, `.end`, `.error`, `.info`); a subscription established
+  later, or given up, is said to the stream by `POST
+  /restconf/streams/page/<stream id>` from the same session.
+- **A plugin that listened to `window.arcanaStreams[<id>]`** (an
+  EventSource each) listens on `window.arcanaStream` for the source's
+  name instead; `window.arcanaStreams` now maps the page's ids to those
+  names.
+- `/restconf/streams/<host>/json`, `/restconf/streams/fleet/json` and
+  `/restconf/subscriptions/<id>` stay as they were, for RESTCONF clients.
+
 ### Console plugins: themes and guide packs as data, code only when trusted, console 0.437.0
 
 - **A plugin with scripts or styles must say `"trusted": true`** in its

@@ -7,9 +7,9 @@
 /*
  * What the page is told rather than asks for: RESTCONF's event streams
  * and YANG-Push subscriptions (RFC 8040 section 6, RFC 8650; the
- * console's rcstream.c) as Server-Sent Events, an EventSource each
- * (bridge.js), at most three at once, HTTP/2 giving each a stream of
- * the console's few:
+ * console's rcstream.c) as Server-Sent Events, all on one EventSource
+ * (bridge.js; the console's page stream), HTTP/2 giving it one stream
+ * of the console's few, each of these a source of it:
  *
  * - the fleet's stream, /restconf/streams/fleet/json, while the console
  *   is shown: every host's arcana-events, each a sign that what the page
@@ -18,7 +18,8 @@
  *   events added (logs.c).  A host the console lost or heard again, a
  *   record left out, the stream itself lost and back: what is shown of
  *   that host (of every host) read again.  The browser comes back by
- *   itself with Last-Event-ID, the console replaying what came between.
+ *   itself with Last-Event-ID, the console replaying what came between
+ *   and taking the subscriptions again.
  * - arcana-host's stats, a periodic subscription of the operational
  *   datastore every REFRESH_MS: every host's (established under the
  *   fleet) on the fleet and devices views, the host's own on its page;
@@ -326,8 +327,9 @@ arc_on_sse(int id, char *ev, char *data)
 		ss[id].was_up = true;
 	} else if (strcmp(ev, "down") == 0) {
 		ss[id].up = false;
-		/* A subscription's is taken once: established again. */
-		if (strcmp(data, "closed") == 0 || id != SS_FLEET)
+		/* Given up, or ended: opened (established) again a while on;
+		 * else the stream comes back with it. */
+		if (strcmp(data, "closed") == 0)
 			sse_closed(id, arc_now());
 	} else if (strcmp(ev, "lost") == 0) {
 		if (id == SS_FLEET)

@@ -2604,6 +2604,12 @@ whose first part is served.
   every host's, while a job of the page's runs or a Jobs tab is shown.
   A subscription's EventSource down is established again (its URI is
   taken once); the fleet's comes back by itself with Last-Event-ID.
+  Since console 0.438.0 the three are sources of the page's one
+  EventSource (rcstream.c's page stream, GET
+  /restconf/streams/page/json, a source added or given up by a POST to
+  the stream), each event named by its source and the stream's
+  Last-Event-ID each source's time, so a subscription comes back with
+  the stream too (console_test page_stream*, pwa_test pwa_page_stream).
   Added to the console: establish-subscription POSTed under
   `arcana-fleet:fleet` itself, every host's this user may read on one
   reply, its XPath each host's below its mount, each record in its
