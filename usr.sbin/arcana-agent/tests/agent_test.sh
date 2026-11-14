@@ -3037,6 +3037,213 @@ probe_open_backoff_cleanup()
 	stop_daemon
 }
 
+atf_test_case probe_echo_demux
+probe_echo_demux_head()
+{
+	atf_set "descr" "an echo reply told to its target by its id and to" \
+	    "its probe by its sequence (the echoid harness, probe_echo.c" \
+	    "alone): another program's id, another family's, a target gone," \
+	    "the sequence's wrap, a reply twice or for none sent, a full" \
+	    "window giving its oldest, a packet that is no reply"
+}
+probe_echo_demux_body()
+{
+	atf_check -o inline:'find inet 7 0
+find inet6 7 1
+find inet 65535 2
+find inet 1 3
+find inet 8 -1
+find inet6 65535 -1
+find inet 65535 -1
+find inet 1 2
+slot 0
+slot 1
+slot 2
+slot 3
+take 0 2
+take 65535 1
+take 0 -1
+take 2 -1
+slot 1
+slot 2 full
+parse reply4 4242 65535
+parse request4 none
+parse short4 none
+parse reply6 7 0
+parse request6 none
+parse short6 none
+' "$(atf_get_srcdir)/echoid"
+}
+
+atf_test_case probe_views_swap cleanup
+probe_views_swap_head()
+{
+	atf_set "descr" "a read while the targets are swapped sees the table" \
+	    "whole, before or after, and each target whole: sixteen kept" \
+	    "targets changed in place and eight more, back and forth, read" \
+	    "all the while"
+	atf_set "timeout" "120"
+}
+probe_views_swap_body()
+{
+	local a b i
+
+	command -v python3 >/dev/null || atf_skip "no python3 to read the targets"
+	start_daemon
+	# The same targets (address, FIB, DSCP, size, kind): kept, their
+	# other settings changed in place; B has eight more.
+	a=
+	b=
+	for i in $(seq 1 24); do
+		[ $i -le 16 ] && a="$a{\"id\":\"t$i\",\"address\":\"127.0.0.1\",\"kind\":\"icmp\",\"interval\":100,\"eval\":1000,\"down\":3,\"up\":3,\"history\":100},"
+		b="$b{\"id\":\"t$i\",\"address\":\"127.0.0.1\",\"kind\":\"icmp\",\"interval\":200,\"eval\":2000,\"down\":5,\"up\":4,\"history\":200},"
+	done
+	printf '[%s]' "${a%,}" > a.json
+	printf '[%s]' "${b%,}" > b.json
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "$(cat a.json)"
+	(
+		while [ ! -f stop ]; do
+			"$JGC" -c "$SOCK" sdwan probes "$(cat b.json)" || echo bad
+			"$JGC" -c "$SOCK" sdwan probes "$(cat a.json)" || echo bad
+		done > swaps.out 2>&1
+	) &
+	echo $! > swap.pid
+	for i in $(seq 1 80); do
+		"$JGC" -c "$SOCK" sdwan > r$i.json ||
+		    atf_fail "read $i: $(cat r$i.json)"
+	done
+	touch stop
+	wait "$(cat swap.pid)"
+	atf_check -o empty cat swaps.out
+	cat > whole.py <<'EOF'
+import json, sys
+# Each read: A (16 targets, its settings each) or B (24, its own).
+sets = {16: ("100", "1000", "3", "3", "100"), 24: ("200", "2000", "5", "4",
+    "200")}
+seen = {16: 0, 24: 0}
+for f in sys.argv[1:]:
+    ts = json.load(open(f))["targets"]
+    if len(ts) not in sets:
+        sys.exit("%s: %d targets" % (f, len(ts)))
+    want = sets[len(ts)]
+    for t in ts:
+        got = tuple(str(t.get(k)) for k in ("interval", "eval", "down",
+            "up", "history"))
+        if got != want:
+            sys.exit("%s: %s half changed: %s, not %s" % (f, t["id"], got,
+                want))
+    seen[len(ts)] += 1
+print("whole: A %d, B %d" % (seen[16], seen[24]))
+EOF
+	atf_check -o match:'^whole: A [0-9]+, B [0-9]+$' python3 -I whole.py r*.json
+}
+probe_views_swap_cleanup()
+{
+	touch stop
+	[ -f swap.pid ] && kill "$(cat swap.pid)" 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case probe_reader_late cleanup
+probe_reader_late_head()
+{
+	atf_set "descr" "readers hammering the probes' views do not hold up" \
+	    "the probing: STAMP targets on the loopback every 10 ms beside" \
+	    "sixty with long histories, read over and over; each eval" \
+	    "interval meanwhile has its probes sent, and the engine says few" \
+	    "were late"
+	atf_set "timeout" "180"
+}
+probe_reader_late_body()
+{
+	local P i t
+
+	command -v python3 >/dev/null || atf_skip "no python3 to read the samples"
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$(pwd)/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	DAEMON_ARGS="-d --stamp-port $P" start_daemon
+	# Four measured every 10 ms, a hundred probes an eval interval;
+	# sixty more every 100 ms, a sample each 100 ms: what a read builds.
+	t=
+	for i in $(seq 1 4); do
+		t="$t{\"id\":\"m$i\",\"address\":\"127.0.0.1\",\"kind\":\"stamp\",\"interval\":10,\"eval\":1000,\"timeout\":300},"
+	done
+	for i in $(seq 1 60); do
+		t="$t{\"id\":\"b$i\",\"address\":\"127.0.0.1\",\"kind\":\"stamp\",\"interval\":100,\"eval\":100,\"timeout\":300},"
+	done
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[${t%,}]"
+	sleep 15
+	# Four readers at once, ten seconds.
+	date +%s > from
+	for i in 1 2 3 4; do
+		(
+			while [ ! -f stop ]; do
+				"$JGC" -c "$SOCK" action probes read raw=true \
+				    > /dev/null 2>&1
+			done
+		) &
+		echo $! >> readers.pid
+	done
+	sleep 10
+	touch stop
+	date +%s > to
+	for i in $(cat readers.pid); do
+		wait "$i"
+	done
+	sleep 1.5
+	atf_check -o save:read.json "$JGC" -c "$SOCK" sdwan
+	cat > late.py <<'EOF'
+import json, sys
+# The measured targets' eval intervals that ended while the readers
+# read (t, the end), the first and the last left out: their probes
+# sent, of a hundred.
+d = json.load(open(sys.argv[1]))
+t0, t1 = int(open("from").read()) + 1, int(open("to").read()) - 1
+worst, n = 100, 0
+for t in d["targets"]:
+    if not t["id"].startswith("m"):
+        continue
+    for r in t["samples"]:
+        if t0 < r[0] <= t1:
+            worst = min(worst, r[6])
+            n += 1
+print("windows %d, the fewest sent %d" % (n, worst))
+sys.exit(0 if n >= 8 and worst >= 90 else 1)
+EOF
+	atf_check -o match:'^windows [0-9]+, the fewest sent (9[0-9]|1[0-9][0-9])$' \
+	    python3 -I late.py read.json
+	# The engine's own count, said when it grew: a few at most.
+	cat > count.py <<'EOF'
+import re, sys
+late, sent = 0, 1
+for l in open("daemon.out"):
+    m = re.search(r'probe: engine: (\d+) of (\d+) probes sent', l)
+    if m:
+        late, sent = int(m.group(1)), int(m.group(2))
+print("late %d of %d" % (late, sent))
+sys.exit(0 if late * 100 <= sent else 1)
+EOF
+	atf_check -o match:'^late [0-9]+ of [0-9]+$' python3 -I count.py
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '[]'
+}
+probe_reader_late_cleanup()
+{
+	touch stop
+	[ -f readers.pid ] && for p in $(cat readers.pid); do
+		kill "$p" 2>/dev/null
+	done
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
+}
+
 atf_test_case pm_clock_step cleanup
 pm_clock_step_head()
 {
@@ -17858,6 +18065,9 @@ atf_init_test_cases()
 	atf_add_test_case history_slots
 	atf_add_test_case probe_echo_ids
 	atf_add_test_case probe_open_backoff
+	atf_add_test_case probe_echo_demux
+	atf_add_test_case probe_views_swap
+	atf_add_test_case probe_reader_late
 	atf_add_test_case pm_clock_step
 	atf_add_test_case firewall_aliases
 	atf_add_test_case firewall_long

@@ -51,7 +51,7 @@
  * material is laid out A to B first.  A plain tunnel's end (gre, gif,
  * geneve) has a pair too, made by the same key verb: its STAMP key is
  * derived from it the same way, salted apart (tunnel_key_derive(),
- * gula/probe.c).
+ * gula/probe_stamp.c).
  */
 #define	KEY_FILE	"sdwan-key-%s.pem"
 #define	NEXT_FILE	"sdwan-key-%s-next.pem"	/* the pair to come (R110) */

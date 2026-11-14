@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.287.0"
+#define	ARCANA_AGENT_VERSION	"0.288.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -921,7 +921,7 @@ const char	*kmsg_find(const char *, size_t, const char *, size_t, size_t,
 		    bool);
 void		 history_save(void);
 void		 history_look(void);
-/* gula/probe.c: the tunnels measured, STAMP to Arcana's far ends, ICMP echo
+/* gula/probe*.c: the tunnels measured, STAMP to Arcana's far ends, ICMP echo
  * to the others, again and again. */
 enum { PROBE_NONE = -1, PROBE_UNKNOWN, PROBE_UP, PROBE_DOWN, PROBE_ENDED,
     PROBE_ERROR };
@@ -952,7 +952,7 @@ void		 stampd_nudge(void);
 void		 stampd_state(bool *, char *, size_t, const char **, int *,
 		    char *, size_t);
 struct stamp_key;
-/* A target's name (gula/probe.c's TNAME_MAX), with its NUL. */
+/* A target's name (gula/probe_int.h's TNAME_MAX), with its NUL. */
 #define	PROBE_NAME_MAX	(128 + 1 + 64 + 1 + 33)
 int		 probe_stamp_keys(struct stamp_key *, char (*)[PROBE_NAME_MAX],
 		    int);

@@ -92,11 +92,13 @@ listener, TLS and dispatch in one process (the split needs a frame
 proxy in cblink or the backend to re-decode), and each of the agent's
 ~200 operations would need its request carried over the socketpair.
 A smaller first step with the same shape: the **prober**
-(gula/probe.c), which parses ICMP replies from anyone on the network
-in the root process; moved to a child in capability mode, it would
-need Casper's cap_net (`cap_connect` on a per-target connected raw
-socket, since `sendto` with an address is refused) and a pipe for
-targets and states.
+(gula/probe_icmp.c, probe_echo.c), which parses ICMP replies from
+anyone on the network in the root process; moved to a child in
+capability mode, it would need Casper's cap_net and a pipe for targets
+and states.  `sendto` with an address is refused there, and since
+agent 0.288.0 the host's targets share one unconnected raw socket a
+FIB and a family: the sends would go through cap_net, or back to a
+connected socket a target for the child alone.
 
 ### The console's worker
 

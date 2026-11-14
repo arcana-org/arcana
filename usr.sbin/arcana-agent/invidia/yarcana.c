@@ -2941,7 +2941,7 @@ arcana_probe_probes_read_action(cbl_req *req, const struct cbl_bytes *target,
  * arcana-stamp: the Session-Sender's settings (the command line's, the
  * clock as packets say it), stampd as gula/stampd.c sets it, and a
  * session of each target the probes' read has measured by STAMP, or
- * that may be (probe.c's target_json(), gula/yprobe.c).
+ * that may be (probe_view.c's target_json(), gula/yprobe.c).
  */
 int
 arcana_stamp_stamp_get(cbl_req *req, struct arcana_stamp *data, cbl_yarena *a)

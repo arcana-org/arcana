@@ -9,7 +9,7 @@
  * Session-Reflector (RFC 8762, RFC 8972's SSID) of the submodule
  * stamp/.  The agent reflects nothing itself.  It says in rc.conf where
  * stampd answers, the base's way: stampd_enable and stampd_fibs, the
- * FIBs of the host's probe targets (probe_fibs(), gula/probe.c) and of
+ * FIBs of the host's probe targets (probe_fibs(), gula/probe_view.c) and of
  * its steered routes (sdwan_fibs(), invidia/sdwan.c), written as a
  * commit writes rc.conf (rca_*: Arcana's file or the admin's, by
  * config-files), and has "service stampd reload" start the instances
@@ -30,7 +30,7 @@
  *
  * The reflector's keys (PLAN-SDN-YANG 5.1.7): the plain tunnels' STAMP
  * keys, each derived by the prober from the tunnel's pair and the far
- * end's public half (probe_stamp_keys(), gula/probe.c), written to
+ * end's public half (probe_stamp_keys(), gula/probe_view.c), written to
  * stampd's key file (--stampd-keys, stampd.keys beside stampd.conf),
  * root's alone, 0600, in place, as stampd(8) wants it: it keeps the
  * file open from its start and reads it again on SIGHUP.  The lines

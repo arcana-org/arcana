@@ -156,6 +156,12 @@ SRCS.hist=	hist_test.c history.c
 CFLAGS.hist_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 CFLAGS.history.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 LDADD.hist+=	${CBLINK_LIBS} -ldevstat -ljail -lpthread
+# echoid: gula/probe_echo.c alone: an echo reply told to its target by
+# its id, to its probe by its sequence.
+PROGS+=		echoid
+SRCS.echoid=	echoid_test.c probe_echo.c
+CFLAGS.echoid_test.c+=	-I${.CURDIR}/.. -I${.CURDIR}/../gula -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS} ${STAMP_CFLAGS}
+CFLAGS.probe_echo.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS} ${STAMP_CFLAGS}
 # notifrecv: a stand-in HTTPS-notif receiver, for the configured
 # subscriptions of agent_tls_test.sh.
 PROGS+=		notifrecv

@@ -6,11 +6,11 @@
 
 /*
  * Gula: the probes as YANG, arcana-probe: each edge's targets, links
- * and monitors (probe.c's probe_conf_json()) as configuration, and
+ * and monitors (probe_view.c's probe_conf_json()) as configuration, and
  * back as the JSON do_probes_set() and do_monitors_set() take; the
  * sdwan read's targets as state, each sample taken apart from its row.
  * And arcana-stamp's sessions, from the same read: each target that
- * STAMP measures, or may (probe.c's target_json() says its reflector's
+ * STAMP measures, or may (probe_view.c's target_json() says its reflector's
  * port), with what STAMP saw of it.
  */
 
@@ -584,7 +584,7 @@ u32s_of(cbl_yarena *a, const ucl_object_t *r, const char *key, size_t *np,
 	return (0);
 }
 
-/* A target's measurement intervals (probe.c's pm_target_json()). */
+/* A target's measurement intervals (probe_view.c's pm_target_json()). */
 static int
 pm_of(cbl_yarena *a, const ucl_object_t *pm,
     const struct arcana_probe_target_state_pm **out)
@@ -778,7 +778,7 @@ yprobe_state_from_json(const char *json, cbl_yarena *a,
 }
 
 /*
- * Each edge's interfaces' counters and FIBs' routes (probe.c's
+ * Each edge's interfaces' counters and FIBs' routes (probe_view.c's
  * probe_edges_json()) into st's edge list, RFC 9375's terms.
  */
 int
@@ -1039,7 +1039,7 @@ ystamp_sessions_from_json(const char *json, cbl_yarena *a,
 		return (ENOMEM);
 	}
 	/* A target STAMP measures, or may (auto fallen back): one with
-	 * the reflector's port said (probe.c's target_json()). */
+	 * the reflector's port said (probe_view.c's target_json()). */
 	YJ_EACH(list, it, e) {
 		if (ucl_object_lookup(e, "reflector_port") == NULL ||
 		    yj_str(a, e, "id") == NULL)

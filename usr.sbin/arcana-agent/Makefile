@@ -22,7 +22,9 @@ SRCS+=		build.c exec.c jail.c jails.c jailwatch.c jobs.c lifecycle.c jailmake.c 
 # Acedia: storage.  Avaritia: resources.  Gula: observation.
 SRCS+=		record.c \
 		pools.c storage.c zfskey.c xfer.c health.c resources.c stats.c trace.c procs.c log.c \
-		history.c events.c faults.c kmsg.c probe.c stampd.c hostwatch.c crashes.c \
+		history.c events.c faults.c kmsg.c probe.c probe_echo.c \
+		probe_engine.c probe_icmp.c probe_link.c probe_mon.c probe_pm.c \
+		probe_stamp.c probe_view.c stampd.c hostwatch.c crashes.c \
 		ystorage.c yev.c yhist.c ylog.c ysyslog.c yprobe.c yprocs.c yalarms.c
 .PATH:		${.CURDIR}/superbia ${.CURDIR}/invidia ${.CURDIR}/ira \
 		${.CURDIR}/acedia ${.CURDIR}/avaritia ${.CURDIR}/gula \
@@ -55,7 +57,7 @@ LDADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 DPADD+=		${.OBJDIR}/../../lib/libvarconf/libvarconf_pie.a
 CFLAGS+=	-I${.CURDIR}/../../lib/libvarconf
 DPADD+=		${JAILCONF_LIBS}
-# The STAMP sender (gula/probe.c): libstamp linked in (arcana.mk).
+# The STAMP sender (gula/probe_stamp.c): libstamp linked in (arcana.mk).
 CFLAGS+=	${STAMP_CFLAGS}
 LDADD+=		${STAMP_LIBS}
 DPADD+=		${STAMP_LIBS}

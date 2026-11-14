@@ -796,6 +796,137 @@ probe_other_fib_cleanup()
 	true
 }
 
+# The agent's raw ICMP sockets now (procstat -f): ICMP's are "ICM",
+# ICMPv6's a protocol procstat has no name for.
+icmp_socks()
+{
+	procstat -f "$(cat daemon.pid)" | awk '$4 == "s" && ($9 == "ICM" ||
+	    $9 == "IP?")' | wc -l | tr -d ' '
+}
+
+atf_test_case probe_shared_sockets cleanup
+probe_shared_sockets_head()
+{
+	atf_set "descr" "the host's targets share one raw socket a FIB and a" \
+	    "family: 64 on the loopback (32 inet, 32 inet6), two sockets, each" \
+	    "target up by its own echo id; one in FIB 1 opens every FIB's" \
+	    "socket of its family for the replies that come in on another" \
+	    "table, and is up"
+	atf_set "require.user" "root"
+	atf_set "is.exclusive" "true"
+}
+probe_shared_sockets_body()
+{
+	local t i nf
+
+	command -v python3 >/dev/null || atf_skip "no python3 to read the targets"
+	DAEMON_ARGS="-d" start_daemon
+	atf_check_equal 0 "$(icmp_socks)"
+	# The kernel answers 200 echoes a second at most (net.inet.icmp.
+	# icmplim): the 32 inet targets ask 128.
+	t=
+	for i in $(seq 1 32); do
+		t="$t{\"id\":\"v4-$i\",\"address\":\"127.0.0.1\",\"kind\":\"icmp\",\"interval\":250,\"eval\":1000,\"up\":2},"
+		t="$t{\"id\":\"v6-$i\",\"address\":\"::1\",\"kind\":\"icmp\",\"interval\":250,\"eval\":1000,\"up\":2},"
+	done
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[${t%,}]"
+	sleep 4
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	cat > up.py <<'EOF'
+import json, sys
+ts = json.load(open(sys.argv[1]))["targets"]
+up = [t["id"] for t in ts if t["state"] == "up"]
+print("%d targets, %d up" % (len(ts), len(up)))
+EOF
+	atf_check -o inline:'64 targets, 64 up\n' python3 -I up.py sd.json
+	# One a family, not one a target.
+	atf_check_equal 2 "$(icmp_socks)"
+	atf_check -o inline:'1\n' grep -c 'probe: echo socket of FIB 0, inet$' \
+	    daemon.out
+	atf_check -o inline:'1\n' grep -c 'probe: echo socket of FIB 0, inet6$' \
+	    daemon.out
+	# A target in FIB 1: every FIB's inet socket (sixteen at most), its
+	# replies heard whichever table they come in on.
+	nf=$(sysctl -n net.fibs)
+	[ "$nf" -ge 2 ] || atf_skip "net.fibs is 1"
+	setfib 1 route -n get 127.0.0.1 >/dev/null 2>&1 ||
+	    atf_skip "FIB 1 has no way to 127.0.0.1"
+	[ "$nf" -gt 16 ] && nf=16
+	# Raw sockets that take every table's packets: FIB 1's alone more.
+	[ "$(sysctl -n net.inet.raw.bind_all_fibs)" = 0 ] || nf=2
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    "[${t%,},{\"id\":\"f1\",\"address\":\"127.0.0.1\",\"fib\":1,\"kind\":\"icmp\",\"interval\":100,\"eval\":500,\"up\":2}]"
+	sleep 4
+	atf_check -o save:sd2.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o inline:'65 targets, 65 up\n' python3 -I up.py sd2.json
+	atf_check_equal "$((nf + 1))" "$(icmp_socks)"
+	atf_check -o inline:"$nf\n" sh -c "grep -c 'probe: echo socket of FIB [0-9]*, inet\$' daemon.out"
+	# That target gone: the other tables' sockets with it.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes "[${t%,}]"
+	sleep 1
+	atf_check_equal 2 "$(icmp_socks)"
+}
+probe_shared_sockets_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	true
+}
+
+atf_test_case probe_dscp_packets cleanup
+probe_dscp_packets_head()
+{
+	atf_set "descr" "targets of different DSCPs on one FIB's socket each" \
+	    "send with their own: on lo0 (tcpdump), inet's echo requests of" \
+	    "one target tos 0xb8 (46), another's 0x0; inet6's class 0x28 (10)" \
+	    "and 0x0"
+	atf_set "require.user" "root"
+	atf_set "is.exclusive" "true"
+}
+probe_dscp_packets_body()
+{
+	command -v python3 >/dev/null || atf_skip "no python3 to read the capture"
+	command -v tcpdump >/dev/null || atf_skip "no tcpdump"
+	[ -c /dev/bpf ] || atf_skip "no /dev/bpf here for tcpdump"
+	DAEMON_ARGS="-d" start_daemon
+	tcpdump -l -n -v -i lo0 'icmp or icmp6' > dump.txt 2>/dev/null &
+	echo $! > tcpdump.pid
+	sleep 1
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"ef","address":"127.0.0.1","kind":"icmp","dscp":46,"interval":100},{"id":"be","address":"127.0.0.1","kind":"icmp","interval":100},{"id":"af11","address":"::1","kind":"icmp","dscp":10,"interval":100},{"id":"be6","address":"::1","kind":"icmp","interval":100}]'
+	sleep 3
+	kill "$(cat tcpdump.pid)"
+	sleep 0.5
+	# Each target's echo id, as the agent says it when it makes it.
+	sed -nE 's/.*probe: ([a-z0-9]+) \([^)]*\): echo id ([0-9]+)$/\1 \2/p' \
+	    daemon.out > ids
+	cat > tos.py <<'EOF'
+import re, sys
+ids = dict(l.split() for l in open("ids"))
+tos = {}
+lines = open("dump.txt").read().split("\n")
+for i, l in enumerate(lines):
+    m = re.search(r'^\S+ IP \(tos (0x[0-9a-f]+),', l)
+    if m and i + 1 < len(lines):
+        r = re.search(r'ICMP echo request, id (\d+),', lines[i + 1])
+        if r:
+            tos.setdefault(r.group(1), set()).add(m.group(1))
+    m = re.search(r'IP6 \(class (0x[0-9a-f]+),.*ICMP6, echo request, id (\d+),',
+        l)
+    if m:
+        tos.setdefault(m.group(2), set()).add(m.group(1))
+for t in ("ef", "be", "af11", "be6"):
+    print(t, " ".join(sorted(tos.get(ids.get(t, "-"), ["none"]))))
+EOF
+	atf_check -o inline:'ef 0xb8\nbe 0x0\naf11 0x28\nbe6 0x0\n' \
+	    python3 -I tos.py
+}
+probe_dscp_packets_cleanup()
+{
+	[ -f tcpdump.pid ] && kill "$(cat tcpdump.pid)" 2>/dev/null
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	true
+}
+
 atf_test_case sdwan_probe cleanup
 sdwan_probe_head()
 {
@@ -4912,6 +5043,8 @@ atf_init_test_cases()
 	atf_add_test_case path_check
 	atf_add_test_case crash_event
 	atf_add_test_case probe_other_fib
+	atf_add_test_case probe_shared_sockets
+	atf_add_test_case probe_dscp_packets
 	atf_add_test_case sdwan_probe
 	atf_add_test_case sdwan_control
 	atf_add_test_case sdwan_jail_edge
