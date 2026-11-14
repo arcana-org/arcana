@@ -480,23 +480,216 @@ cred_find(const char *id)
 	return (NULL);
 }
 
-/* Set up: a key registered, or a user with a password of the console's. */
+/*
+ * Set up: a key registered, or a user with a password of the console's;
+ * in a cluster, also once the log has a setup that spent its token,
+ * before this node has read what it wrote.
+ */
 static bool
 setup_done(void)
 {
+#ifdef ARCANA_CLUSTER
+	uint8_t	h[32];
+	char	node[64];
 
+	if (cluster_on() && cluster_setup_state(h, node, sizeof(node)) ==
+	    CLUSTER_SETUP_DONE)
+		return (true);
+#endif
 	return (ucl_array_size(cred_list()) > 0 || users_any_password());
 }
 
-/* Is token the setup token?  None once the console is set up. */
+/*
+ * Is token the setup token?  None once the console is set up.  A
+ * cluster's is the one whose SHA-256 its log has, on every node.
+ */
 static bool
 setup_token_ok(const char *token)
 {
+#ifdef ARCANA_CLUSTER
+	uint8_t	h[32], mine[32];
+	char	node[64];
 
+	if (cluster_on()) {
+		if (token == NULL || strlen(token) != 64 || cluster_setup_state(h,
+		    node, sizeof(node)) != CLUSTER_SETUP_TOKEN)
+			return (false);
+		sha256(token, 64, mine);
+		return (timingsafe_bcmp(h, mine, sizeof(h)) == 0);
+	}
+#endif
 	return (token != NULL && setup_token[0] != '\0' && strlen(token) ==
 	    strlen(setup_token) && timingsafe_bcmp(token, setup_token,
 	    strlen(setup_token)) == 0);
 }
+
+/* Where the setup token is, for one who asks for it: this console's
+ * setup-token, or in a cluster the leader's that made it. */
+static void
+setup_token_where(char *buf, size_t len)
+{
+#ifdef ARCANA_CLUSTER
+	uint8_t	h[32];
+	char	node[64];
+
+	if (cluster_on() && cluster_setup_state(h, node, sizeof(node)) ==
+	    CLUSTER_SETUP_TOKEN) {
+		snprintf(buf, len, "%s/%s on node %s of the cluster",
+		    cfg.datadir, SETUP_TOKEN, node);
+		return;
+	}
+#endif
+	snprintf(buf, len, "%s/%s", cfg.datadir, SETUP_TOKEN);
+}
+
+/*
+ * No setup token to check one against: a cluster's node, the console not
+ * set up, before its leader made one (none is made here instead); why.
+ */
+static bool
+setup_token_none(char *why, size_t len)
+{
+#ifdef ARCANA_CLUSTER
+	uint8_t	h[32];
+	char	node[64];
+
+	if (cluster_on() && cluster_setup_state(h, node, sizeof(node)) ==
+	    CLUSTER_SETUP_NONE) {
+		if (node[0] == '\0')
+			snprintf(why, len, "this node of the cluster has no "
+			    "leader, and the setup token is the leader's to "
+			    "make: there is none until one is elected");
+		else
+			snprintf(why, len, "the leader of the cluster, %s, has "
+			    "not made the setup token yet: ask again in a "
+			    "moment", node);
+		return (true);
+	}
+#endif
+	(void)why;
+	(void)len;
+	return (false);
+}
+
+/* setup_token written to path, whole or not at all: whoever reads it never
+ * finds it empty.  Where only the console's user can read it. */
+static int
+setup_token_write(const char *path)
+{
+	char	tmp[MAXPATHLEN];
+	int	fd;
+
+	snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
+	if ((fd = mkstemp(tmp)) == -1) {
+		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
+		return (-1);
+	}
+	if (fchmod(fd, 0600) == -1 || dprintf(fd, "%s\n", setup_token) < 0) {
+		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
+		(void)close(fd);
+		(void)unlink(tmp);
+		return (-1);
+	}
+	if (close(fd) == -1 || rename(tmp, path) == -1) {
+		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
+		(void)unlink(tmp);
+		return (-1);
+	}
+	return (0);
+}
+
+/* setup_token as path has it, when it is one: else "". */
+static void
+setup_token_read(const char *path)
+{
+	FILE	*fp;
+
+	setup_token[0] = '\0';
+	if ((fp = fopen(path, "r")) == NULL)
+		return;
+	if (fgets(setup_token, sizeof(setup_token), fp) == NULL)
+		setup_token[0] = '\0';
+	fclose(fp);
+	setup_token[strcspn(setup_token, "\n")] = '\0';
+	if (strlen(setup_token) != 64)
+		explicit_bzero(setup_token, sizeof(setup_token));
+}
+
+#ifdef ARCANA_CLUSTER
+/*
+ * A cluster's setup token is its leader's: made by the node that leads,
+ * on its lease and once it knows the writes before its term
+ * (cluster_leads()), its SHA-256 through the log (cluster_setup_make()),
+ * its text in that node's setup-token alone.  Another node never makes
+ * one; one whose text the log no longer has (the leader changed, or the
+ * console was set up) takes its file away.  On the worker's tick.
+ */
+static void
+setup_token_cluster(void)
+{
+	uint8_t	 raw[32], h[32], mine[32];
+	char	 path[MAXPATHLEN], node[64], why[256];
+	int	 st, i;
+
+	snprintf(path, sizeof(path), "%s/%s", cfg.datadir, SETUP_TOKEN);
+	st = cluster_setup_state(h, node, sizeof(node));
+	if (st == CLUSTER_SETUP_TOKEN && setup_token[0] != '\0') {
+		sha256(setup_token, strlen(setup_token), mine);
+		if (strcmp(node, cluster_self()) == 0 && timingsafe_bcmp(h, mine,
+		    sizeof(h)) == 0)
+			return;
+	}
+	if (setup_token[0] != '\0' || access(path, F_OK) == 0) {
+		explicit_bzero(setup_token, sizeof(setup_token));
+		(void)unlink(path);
+	}
+	if (st == CLUSTER_SETUP_DONE || setup_done() || !cluster_leads())
+		return;
+	arc4random_buf(raw, sizeof(raw));
+	for (i = 0; i < 32; i++)
+		snprintf(setup_token + i * 2, 3, "%02x", raw[i]);
+	explicit_bzero(raw, sizeof(raw));
+	sha256(setup_token, 64, h);
+	if (cluster_setup_make(h, why, sizeof(why)) == -1 ||
+	    setup_token_write(path) == -1) {
+		explicit_bzero(setup_token, sizeof(setup_token));
+		return;
+	}
+	log_msg(LOG_NOTICE, "not set up yet (no security key, no password): "
+	    "the setup token of the cluster is in %s", path);
+}
+
+/* The worker's tick of a cluster's node. */
+void
+auth_cluster_tick(void)
+{
+
+	setup_token_cluster();
+}
+
+/*
+ * The cluster's console set up by the setup token of hash: doc, as o is to
+ * be, written on every node by the write of the log that spends the
+ * token, if it is the first.  0 it was; else 409 another came first (or
+ * the token is not the log's), 503 it is not known here which, 500; why.
+ */
+static int
+setup_spend(const uint8_t *hash, const char *doc, const ucl_object_t *o,
+    char *why, size_t len)
+{
+	unsigned char	*json;
+	int		 rc;
+
+	if ((json = ucl_object_emit(o, UCL_EMIT_JSON)) == NULL) {
+		snprintf(why, len, "out of memory");
+		return (500);
+	}
+	rc = cluster_setup_spend(hash, doc, json, strlen((char *)json), why,
+	    len);
+	free(json);
+	return (rc == 1 ? 0 : rc == 0 ? 409 : 503);
+}
+#endif
 
 /*
  * Until the console is set up, the first key, or the first password,
@@ -507,44 +700,33 @@ static void
 setup_token_init(void)
 {
 	uint8_t	 raw[32];
-	char	 path[MAXPATHLEN], tmp[MAXPATHLEN];
-	FILE	*fp;
-	int	 fd, i;
+	char	 path[MAXPATHLEN];
+	int	 i;
 
 	snprintf(path, sizeof(path), "%s/%s", cfg.datadir, SETUP_TOKEN);
+#ifdef ARCANA_CLUSTER
+	/* A cluster's is the leader's: what this node made before it
+	 * stopped is read, and kept only while the log has it. */
+	if (cluster_on()) {
+		if (setup_token[0] == '\0')
+			setup_token_read(path);
+		setup_token_cluster();
+		return;
+	}
+#endif
 	if (setup_done()) {
 		setup_token[0] = '\0';
 		(void)unlink(path);
 		return;
 	}
-	if ((fp = fopen(path, "r")) != NULL) {
-		if (fgets(setup_token, sizeof(setup_token), fp) == NULL)
-			setup_token[0] = '\0';
-		fclose(fp);
-		setup_token[strcspn(setup_token, "\n")] = '\0';
-		if (strlen(setup_token) == 64)
-			return;
-	}
+	setup_token_read(path);
+	if (setup_token[0] != '\0')
+		return;
 	arc4random_buf(raw, sizeof(raw));
 	for (i = 0; i < 32; i++)
 		snprintf(setup_token + i * 2, 3, "%02x", raw[i]);
-	/* Whole or not at all: whoever reads it never finds it empty. */
-	snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
-	if ((fd = mkstemp(tmp)) == -1) {
-		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
+	if (setup_token_write(path) == -1)
 		return;
-	}
-	if (fchmod(fd, 0600) == -1 || dprintf(fd, "%s\n", setup_token) < 0) {
-		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
-		(void)close(fd);
-		(void)unlink(tmp);
-		return;
-	}
-	if (close(fd) == -1 || rename(tmp, path) == -1) {
-		log_msg(LOG_ERR, "%s: %s", path, strerror(errno));
-		(void)unlink(tmp);
-		return;
-	}
 	log_msg(LOG_NOTICE, "not set up yet (no security key, no password): "
 	    "the setup token is in %s", path);
 }
@@ -555,9 +737,27 @@ auth_reload(const char *name)
 {
 
 	if (name == NULL || strcmp(name, CREDENTIALS) == 0) {
-		ucl_object_unref(creds);
+		ucl_object_t	*was;
+		static const char *const kept[] = { "user_id", "decoy_key" };
+		size_t		 i;
+
+		was = creds;
 		if ((creds = store_load(CREDENTIALS)) == NULL)
 			creds = ucl_object_typed_new(UCL_OBJECT);
+		/*
+		 * None written yet (a cluster's console not set up, its
+		 * documents taken from the seed): what auth_init() made of
+		 * it stays, for the first key made here.
+		 */
+		for (i = 0; i < nitems(kept); i++)
+			if (ucl_object_lookup(creds, kept[i]) == NULL &&
+			    ucl_object_lookup(was, kept[i]) != NULL)
+				put(creds, kept[i], ucl_object_copy(
+				    ucl_object_lookup(was, kept[i])));
+		if (cred_list() == NULL)
+			put(creds, "credentials", ucl_object_typed_new(
+			    UCL_ARRAY));
+		ucl_object_unref(was);
 	}
 	if (name == NULL || strncmp(name, SESSIONS_DIR "/",
 	    sizeof(SESSIONS_DIR)) == 0)
@@ -1332,6 +1532,20 @@ status_reply_as(struct http_request *req, bool authenticated, bool by_token,
 	put(o, "password", ucl_object_frombool(users_any_password()));
 	put(o, "password_full", ucl_object_frombool(cfg.password_full));
 	put(o, "setup_required", ucl_object_frombool(!setup_done()));
+#ifdef ARCANA_CLUSTER
+	/* A cluster's setup token: the node whose data directory has it,
+	 * the same on every node; or why there is none yet. */
+	if (cluster_on() && !setup_done()) {
+		uint8_t	h[32];
+		char	node[64], why[256];
+
+		if (cluster_setup_state(h, node, sizeof(node)) ==
+		    CLUSTER_SETUP_TOKEN)
+			put(o, "setup_node", ucl_object_fromstring(node));
+		else if (setup_token_none(why, sizeof(why)))
+			put(o, "setup_waiting", ucl_object_fromstring(why));
+	}
+#endif
 	/* Whether there is a key to sign in with: a console set up by a
 	 * password alone has none yet. */
 	put(o, "keys", ucl_object_frombool(ucl_array_size(cred_list()) > 0));
@@ -1393,15 +1607,29 @@ api_register_begin(struct http_request *req)
 		}
 		rc.mode = REG_INVITE;
 	} else if (!setup_done()) {
+		char	where[MAXPATHLEN + 128];
+
 		token = body != NULL ? ucl_str(body, "setup_token") : NULL;
+		if (setup_token_none(where, sizeof(where))) {
+			ucl_object_unref(body);
+			return (reply_error(req, 503, "setup_token", "%s",
+			    where));
+		}
 		if (!setup_token_ok(token)) {
 			ucl_object_unref(body);
+			setup_token_where(where, sizeof(where));
 			return (reply_error(req, 403, "setup_token",
-			    "the first key needs the setup token from %s/%s",
-			    cfg.datadir, SETUP_TOKEN));
+			    "the first key needs the setup token from %s",
+			    where));
 		}
 		rc.mode = REG_SETUP;
 		snprintf(rc.user, sizeof(rc.user), "%s", ADMIN_USER);
+#ifdef ARCANA_CLUSTER
+		/* Which token, for the cluster's log to spend it: its
+		 * SHA-256, under the challenge's MAC. */
+		if (cluster_on())
+			sha256(token, strlen(token), rc.inv);
+#endif
 	} else {
 		const char	*u, *forname;
 
@@ -1610,6 +1838,30 @@ api_register_finish(struct http_request *req)
 	if (strcmp(rc.user, ADMIN_USER) != 0)
 		put(c, "user", ucl_object_fromstring(rc.user));
 	ucl_array_append(cred_list(), c);
+#ifdef ARCANA_CLUSTER
+	/* A cluster's first key is the write that spends the setup token,
+	 * the first of them committed: another node's first owner may have
+	 * come before it. */
+	if (rc.mode == REG_SETUP && cluster_on()) {
+		char	why[256];
+
+		if ((status = setup_spend(rc.inv, CREDENTIALS, creds, why,
+		    sizeof(why))) != 0) {
+			ucl_object_unref(ucl_array_delete(cred_list(), c));
+			if (status == 409)
+				status = 403;
+			log_msg(LOG_NOTICE, "first key refused: %s", why);
+			err = strstr(why, "set up already") != NULL ? "this "
+			    "console is set up already: sign in" : strstr(why,
+			    "setup token") != NULL ? "not the setup token: "
+			    "the leader of the cluster made another" : "the "
+			    "cluster did not say whether it was kept: reload "
+			    "the page";
+			goto out;
+		}
+		cyang_changed("credentials");
+	} else
+#endif
 	if (creds_save() == -1) {
 		/* A key that would be gone after a restart is not one. */
 		ucl_object_unref(ucl_array_delete(cred_list(), c));
@@ -2098,6 +2350,9 @@ struct pwset {
 	char		*current;	/* NULL: not asked for */
 	bool		 setup;		/* api_setup_password's */
 	bool		 made;		/* setup: the user made for it */
+#ifdef ARCANA_CLUSTER
+	uint8_t		 token[32];	/* setup: SHA-256 of its token */
+#endif
 	char		 hash[128];
 	const char	*err;
 };
@@ -2188,6 +2443,34 @@ setup_password_done(struct http_request *req, struct pwset *ps)
 	/* Another set it up meanwhile: the first one's. */
 	if (e == NULL && setup_done())
 		e = "this console is set up already: sign in";
+#ifdef ARCANA_CLUSTER
+	/* A cluster's first owner is the write that spends the setup token,
+	 * the first of them committed, users.json as it is to be in it. */
+	if (e == NULL && cluster_on()) {
+		ucl_object_t	*doc;
+		char		 why[256];
+		int		 st;
+
+		if ((doc = user_owner_doc(ps->user, ps->hash, &e)) != NULL) {
+			st = setup_spend(ps->token, "users.json", doc, why,
+			    sizeof(why));
+			ucl_object_unref(doc);
+			if (st != 0) {
+				explicit_bzero(ps->hash, sizeof(ps->hash));
+				log_msg(LOG_NOTICE, "setup by password refused: "
+				    "%s", why);
+				return (reply_error(req, st, "setup", "%s",
+				    st == 409 && strstr(why, "setup token") !=
+				    NULL ? "not the setup token: the leader of the "
+				    "cluster made another" : st == 409 ? "this "
+				    "console is set up already: sign in" : why));
+			}
+			/* Written here by that write: read now, for the
+			 * session opened with it. */
+			users_reload();
+		}
+	} else
+#endif
 	if (e == NULL) {
 		ps->made = !user_exists(ps->user);
 		if ((e = user_owner_add(ps->user)) == NULL)
@@ -2227,6 +2510,7 @@ api_setup_password(struct http_request *req)
 	ucl_object_t	*body;
 	const char	*token, *user, *password, *e;
 	char		 name[USER_NAME_LEN], addr[64];
+	char		 where[MAXPATHLEN + 128];
 
 	if ((ps = req->hdlr_extra) != NULL)
 		return (pwset_waiting(req, ps) ? WEB_RETRY :
@@ -2252,7 +2536,13 @@ api_setup_password(struct http_request *req)
 	 * theirs. */
 	if (setup_throttled(addr))
 		e = "too many failed attempts: try again in a minute";
-	else if (!setup_token_ok(token)) {
+	else if (setup_token_none(where, sizeof(where))) {
+		if (password != NULL)
+			explicit_bzero((char *)(uintptr_t)password,
+			    strlen(password));
+		ucl_object_unref(body);
+		return (reply_error(req, 503, "setup", "%s", where));
+	} else if (!setup_token_ok(token)) {
 		setup_failed(addr);
 		e = "not the setup token";
 	} else if ((e = user_password_check(password)) == NULL &&
@@ -2264,13 +2554,21 @@ api_setup_password(struct http_request *req)
 			    strlen(password));
 		ucl_object_unref(body);
 		log_msg(LOG_NOTICE, "setup by password refused: %s", e);
+		if (cluster_on())
+			setup_token_where(where, sizeof(where));
+		else
+			strlcpy(where, "the console's data directory, "
+			    "setup-token", sizeof(where));
 		return (reply_error(req, strstr(e, "too many") != NULL ? 429 :
 		    strstr(e, "setup token") != NULL ? 403 : 400, "setup",
-		    "%s%s", e, strstr(e, "setup token") != NULL ? ": it is in "
-		    "the console's data directory, setup-token" : ""));
+		    "%s%s%s", e, strstr(e, "setup token") != NULL ? ": it is in "
+		    : "", strstr(e, "setup token") != NULL ? where : ""));
 	}
 	ps = pwset_new(req, name, password, NULL);
 	ps->setup = true;
+#ifdef ARCANA_CLUSTER
+	sha256(token, strlen(token), ps->token);
+#endif
 	explicit_bzero((char *)(uintptr_t)password, strlen(password));
 	ucl_object_unref(body);
 	return (pwset_start(req, ps));

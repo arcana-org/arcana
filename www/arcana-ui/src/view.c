@@ -3491,7 +3491,16 @@ auth_screen(struct html *h)
 		    "Touch your key…" : "Register security key");
 	} else if (app.screen == SCREEN_ENROL) {
 		h_raw(h, "<form data-form=\"enrol\" class=\"enrol\">"
-		    "<p>This console is not set up yet. It wrote a one-time "
+		    "<p>This console is not set up yet. ");
+		/* A cluster's token is its leader's, in that node's data
+		 * directory alone. */
+		if (app.setup_node[0] != '\0') {
+			h_raw(h, "The cluster's node <code>");
+			h_txt(h, app.setup_node);
+			h_raw(h, "</code> wrote");
+		} else
+			h_raw(h, "It wrote");
+		h_raw(h, " a one-time "
 		    "setup token to <code>setup-token</code> in its data "
 		    "directory; paste it here, then touch your key.</p>"
 		    "<label>Setup token<input name=\"token\" required "

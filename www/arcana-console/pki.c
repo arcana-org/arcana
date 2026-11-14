@@ -15,7 +15,9 @@
  * the server list.  The token is "arce1_" and base64url of 32 random
  * bytes and the SHA-256 of each root the host is to trust (ETOKEN_PINS
  * at most): one pasted text both lets the host in and pins the CA it
- * gets back; the console keeps the random bytes' SHA-256 alone.  All EC
+ * gets back; the console keeps the random bytes' SHA-256 alone (a
+ * cluster's log does, its write that spends one the first to win, the
+ * token run out by the leader's clock: nodes.c).  All EC
  * P-256, signed with SHA-256.  The console's
  * client certificate says urn:arcana:role:console, which the agents ask
  * of it; one from before the roles is made again at start where the
@@ -51,7 +53,6 @@
 
 #define	CA_DAYS		3650
 #define	CERT_DAYS	825
-#define	TOKEN_TTL	3600
 #define	MAX_TOKENS	16
 #define	DEFAULT_PORT	4310
 #define	CERTS_MAX	32
@@ -766,29 +767,41 @@ valid_host(const char *s)
 	return (true);
 }
 
-/* The token of value (ETOKEN_PREFIX's, its pins whatever they say), in
- * time; NULL else. */
-static struct etoken *
-token_find(const char *value)
+/* The SHA-256 of the secret of value (ETOKEN_PREFIX's, its pins whatever
+ * they say) into h; false when it is no token. */
+static bool
+token_hash(const char *value, uint8_t *h)
 {
-	uint8_t		*raw, h[32];
+	uint8_t		*raw;
 	unsigned int	 hl;
 	size_t		 len;
-	time_t		 now;
-	int		 i;
 
 	if (strncmp(value, ETOKEN_PREFIX, sizeof(ETOKEN_PREFIX) - 1) != 0 ||
 	    !b64url_decode(value + sizeof(ETOKEN_PREFIX) - 1, &raw, &len,
 	    B64_RAW))
-		return (NULL);
+		return (false);
 	if (len < 32 || (len - 32) % 32 != 0 || len > 32 * (1 +
 	    ETOKEN_PINS)) {
+		explicit_bzero(raw, len);
 		free(raw);
-		return (NULL);
+		return (false);
 	}
 	EVP_Digest(raw, 32, h, &hl, EVP_sha256(), NULL);
 	explicit_bzero(raw, len);
 	free(raw);
+	return (true);
+}
+
+/* The token of value, in time; NULL else. */
+static struct etoken *
+token_find(const char *value)
+{
+	uint8_t		 h[32];
+	time_t		 now;
+	int		 i;
+
+	if (!token_hash(value, h))
+		return (NULL);
 	now = time(NULL);
 	for (i = 0; i < MAX_TOKENS; i++) {
 		if (!tokens[i].used)
@@ -813,7 +826,7 @@ int
 enrol_token_new(const char *name, const char *host, int64_t port,
     ucl_object_t **out, char *why, size_t len)
 {
-	struct etoken	*t;
+	struct etoken	 nt, *t, *s;
 	ucl_object_t	*o;
 	uint8_t		 raw[32 * (1 + ETOKEN_PINS)];
 	char		 cmd[1024], portstr[16], *b, *value;
@@ -831,24 +844,14 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 		    "port (default %d) are needed", DEFAULT_PORT);
 		return (400);
 	}
-	/* A free slot, else the one that expires first. */
-	t = &tokens[0];
-	for (i = 0; i < MAX_TOKENS; i++) {
-		if (!tokens[i].used || tokens[i].expires < time(NULL)) {
-			t = &tokens[i];
-			break;
-		}
-		if (tokens[i].expires < t->expires)
-			t = &tokens[i];
-	}
-	memset(t, 0, sizeof(*t));
 	/* Its secret, the roots it pins after. */
+	memset(&nt, 0, sizeof(nt));
+	t = &nt;
 	arc4random_buf(raw, 32);
 	npins = anchors_pins((uint8_t (*)[32])(raw + 32), ETOKEN_PINS);
 	EVP_Digest(raw, 32, t->hash, &hl, EVP_sha256(), NULL);
 	if (!b64url_encode(raw, 32 * (size_t)(1 + npins), &b, B64_RAW)) {
 		explicit_bzero(raw, sizeof(raw));
-		memset(t, 0, sizeof(*t));
 		snprintf(why, len, "out of memory");
 		return (500);
 	}
@@ -858,7 +861,6 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	explicit_bzero(b, strlen(b));
 	free(b);
 	if (value == NULL) {
-		memset(t, 0, sizeof(*t));
 		snprintf(why, len, "out of memory");
 		return (500);
 	}
@@ -866,7 +868,35 @@ enrol_token_new(const char *name, const char *host, int64_t port,
 	strlcpy(t->name, name, sizeof(t->name));
 	strlcpy(t->host, host, sizeof(t->host));
 	t->port = (int)port;
-	t->expires = time(NULL) + TOKEN_TTL;
+#ifdef ARCANA_CLUSTER
+	/* A cluster's is the log's, the hash of its secret, made to last by
+	 * the leader's clock: any node enrols by it, once. */
+	if (cluster_on()) {
+		int64_t	exp;
+
+		if (cluster_enrol_make(t->hash, t->name, t->host, t->port,
+		    cfg.enrol_ttl, &exp, why, len) == -1) {
+			explicit_bzero(value, strlen(value));
+			free(value);
+			return (503);
+		}
+		t->expires = (time_t)exp;
+	} else
+#endif
+	{
+		t->expires = time(NULL) + cfg.enrol_ttl;
+		/* A free slot, else the one that expires first. */
+		s = &tokens[0];
+		for (i = 0; i < MAX_TOKENS; i++) {
+			if (!tokens[i].used || tokens[i].expires < time(NULL)) {
+				s = &tokens[i];
+				break;
+			}
+			if (tokens[i].expires < s->expires)
+				s = &tokens[i];
+		}
+		*s = nt;
+	}
 	snprintf(portstr, sizeof(portstr), "%d", t->port);
 	log_msg(LOG_NOTICE, "enrolment token for %s (%s) made", t->host,
 	    t->name);
@@ -922,6 +952,11 @@ api_enrol(struct http_request *req)
 	char			 why[300], uri[300], *s, *capem;
 	int			 status;
 	bool			 added;
+#ifdef ARCANA_CLUSTER
+	struct etoken		 ct;
+	struct cluster_enrol	 en;
+	uint8_t			 h[32];
+#endif
 
 	csr = NULL;
 	ca = cert = NULL;
@@ -937,7 +972,26 @@ api_enrol(struct http_request *req)
 		    "expected a JSON object"));
 	token = ucl_str(body, "token");
 	pem = ucl_str(body, "csr");
-	if (token == NULL || (t = token_find(token)) == NULL) {
+	t = NULL;
+#ifdef ARCANA_CLUSTER
+	/* A cluster's, as its log has it: spent below, by a write of the
+	 * log, once the certificate is made. */
+	if (cluster_on()) {
+		if (token != NULL && token_hash(token, h) &&
+		    cluster_enrol_find(h, &en)) {
+			memset(&ct, 0, sizeof(ct));
+			t = &ct;
+			t->used = true;
+			strlcpy(t->name, en.name, sizeof(t->name));
+			strlcpy(t->host, en.host, sizeof(t->host));
+			t->port = en.port;
+			t->expires = (time_t)en.expires;
+		}
+	} else
+#endif
+	if (token != NULL)
+		t = token_find(token);
+	if (t == NULL) {
 		status = 403;
 		err = "unknown or expired token";
 		log_msg(LOG_NOTICE, "enrolment refused: %s", err);
@@ -970,6 +1024,24 @@ api_enrol(struct http_request *req)
 		    s == NULL ? why : "no root in the CA file");
 		goto out;
 	}
+#ifdef ARCANA_CLUSTER
+	/* Spent by a write of the log, the first of two committed winning,
+	 * in time by the leader's clock as that write says it. */
+	if (cluster_on()) {
+		int	rc;
+
+		if ((rc = cluster_enrol_spend(h, &en, why, sizeof(why))) != 1) {
+			status = rc == 0 ? 403 : 503;
+			err = rc == 0 ? "unknown or expired token" : "the cluster "
+			    "did not say whether the token was spent: try again";
+			log_msg(LOG_NOTICE, "enrolment refused: %s", why);
+			goto out;
+		}
+		strlcpy(t->name, en.name, sizeof(t->name));
+		strlcpy(t->host, en.host, sizeof(t->host));
+		t->port = en.port;
+	}
+#endif
 	/* The token is used up; the host is now a server. */
 	snprintf(uri, sizeof(uri), strchr(t->host, ':') != NULL ?
 	    "tcp://[%s]:%d" : "tcp://%s:%d", t->host, t->port);

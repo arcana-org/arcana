@@ -3453,6 +3453,8 @@ status_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		return;
 	}
 	app.setup_required = jbool(o, "setup_required");
+	snprintf(app.setup_node, sizeof(app.setup_node), "%s", jstr(o,
+	    "setup_node") != NULL ? jstr(o, "setup_node") : "");
 	app.by_ldap = jbool(o, "by_ldap");
 	app.by_password = jbool(o, "by_password");
 	/* Limited as the console says: a password's session is not when

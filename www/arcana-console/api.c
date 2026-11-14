@@ -397,6 +397,10 @@ cluster_tick(void *arg __unused, uint64_t now __unused)
 {
 
 	cluster_changes(reload_one);
+#ifdef ARCANA_CLUSTER
+	/* The setup token, made by the leader alone. */
+	auth_cluster_tick();
+#endif
 }
 
 /*

@@ -1631,6 +1631,67 @@ user_owner_add(const char *name)
 	return (NULL);
 }
 
+#ifdef ARCANA_CLUSTER
+/*
+ * users.json as it is to be with name an owner whose password is hash
+ * (user_password_hash()'s), made and not kept: the setup of a cluster's
+ * console (auth.c), which the write of the log that spends the setup
+ * token keeps on every node, or no node.  NULL, what is wrong in *errp.
+ */
+ucl_object_t *
+user_owner_doc(const char *name, const char *hash, const char **errp)
+{
+	const ucl_object_t	*old, *e;
+	ucl_object_t		*d, *users, *u, *roles;
+	ucl_object_iter_t	 it;
+	char			 id[USER_ID_LEN];
+
+	*errp = NULL;
+	old = by_name("users", name);
+	if (!user_name_ok(name))
+		*errp = "a user name is 1 to 64 letters, digits and _ . @ -";
+	else if (old == NULL && user_name_reserved(name))
+		*errp = "that name is what a host is told the console or a read "
+		    "token is: no user's name";
+	else if (old != NULL && user_console(name) != CROLE_OWNER)
+		*errp = "that user is no owner of the console";
+	else if (old != NULL && ucl_str(old, "source") != NULL &&
+	    strcmp(ucl_str(old, "source"), "ldap") == 0)
+		*errp = "a user the directory keeps signs in with the "
+		    "directory's password";
+	else if (old == NULL && ucl_array_size(list_of("users")) >= USERS_MAX)
+		*errp = "too many users";
+	else if (strncmp(hash, "$2b$", 4) != 0)
+		*errp = "crypt(3) made no bcrypt hash";
+	if (*errp != NULL)
+		return (NULL);
+	d = ucl_object_copy(udoc);
+	users = (ucl_object_t *)(uintptr_t)ucl_object_lookup(d, "users");
+	if (old != NULL) {
+		it = NULL;
+		while ((e = ucl_object_iterate(users, &it, true)) != NULL)
+			if (ucl_str(e, "name") != NULL && strcmp(ucl_str(e,
+			    "name"), name) == 0)
+				break;
+		u = ucl_object_copy(e);
+		ucl_object_unref(ucl_array_delete(users, (ucl_object_t *)
+		    (uintptr_t)e));
+	} else {
+		u = ucl_object_typed_new(UCL_OBJECT);
+		put(u, "name", ucl_object_fromstring(name));
+		uid_new(id, sizeof(id));
+		put(u, "id", ucl_object_fromstring(id));
+		roles = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(roles, ucl_object_fromstring("owner"));
+		put(u, "roles", roles);
+		put(u, "created", ucl_object_fromint(time(NULL)));
+	}
+	put(u, "password", ucl_object_fromstring(hash));
+	ucl_array_append(users, u);
+	return (d);
+}
+#endif
+
 /* The owner user_owner_add() made, gone again: its password was not
  * kept.  It has no keys, sessions or invitations yet. */
 void

@@ -93,6 +93,30 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A cluster's setup and enrolment tokens through its log, console 0.440.0
+
+- **A cluster's setup token is its leader's.**  The node that leads
+  makes it, writes its text to its own `setup-token` alone, and puts its
+  SHA-256 through the log; every node takes it, and its sign-in page
+  says which node has it (`setup_node` in `/api/auth/status`).  A
+  follower that had a `setup-token` of its own takes it away.  Before
+  there is a leader a node says so (503, `setup_waiting`) instead of
+  making one.  The first owner, by a key or by a password, is the write
+  of the log that spends the token: one registered on another node at
+  the same time is refused, "set up already".
+- **Enrolment tokens are the cluster's**: made on one node, a host
+  enrols with it through any node, once; one sent to two nodes at once
+  enrols once.  A token lasts `enrol_ttl` seconds (web.conf, 3600 by
+  default) by the leader's clock.  An enrolment token made before the
+  update was in one node's memory and is gone: make another.
+- **Every node of a cluster is updated before a token is made**: an
+  older node passes over the new writes of the log, and would not know
+  the tokens.  A cluster set up before keeps its owners; one not yet set
+  up is set up with the token its leader makes once all are updated
+  (`cluster-tokens.json` in each node's data directory is the cluster's
+  and is written by the log alone).  Without `WITH_CLUSTER` nothing
+  changes.
+
 ### libcblink 0.2.24: rules held whole, the configuration held whole, agent 0.289.0, console 0.439.0
 
 - **Access rules with a path that does not compile** (a prefix such as

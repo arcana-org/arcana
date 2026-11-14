@@ -205,6 +205,9 @@ Without the block the console makes an authority of its own in
 .Va datadir
 at first start and enrols hosts with it; see
 .Xr arcana-enrol 8 .
+.It Va enrol_ttl
+The seconds an enrolment token lasts, 1 to 86400.
+Default 3600.
 .It Va update_check
 False stops the console from asking the release feed for newer
 versions.
@@ -310,6 +313,15 @@ alone, while a majority answers it; an SD-WAN apply runs on one node
 at a time.
 The audit trail and the security notices are each node's own, each
 record naming its node.
+The setup token and the enrolment tokens are the cluster's: the setup
+token is made by the leader, in its
+.Pa setup-token
+alone (every node's sign-in page names that node), and taken by any
+node; the first owner registered on any node is the only one.
+An enrolment token made on one node enrols a host on any, once, and
+runs out by the leader's clock.
+A node with no leader before the console is set up says so, and makes
+no token of its own.
 Each node needs the CA of the first:
 .Pa ca.pem
 and
@@ -390,7 +402,8 @@ console writes a one-time token to
 .Pa setup-token
 in
 .Va datadir
-and says so in its log.
+and says so in its log; a cluster's leader alone does, and the
+sign-in page of every node names the node.
 The first registration in the browser needs it; later keys are added
 from a logged-in session.
 A key may be a hardware key or a passkey, such as a phone's.

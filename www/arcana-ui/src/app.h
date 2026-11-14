@@ -578,6 +578,7 @@ struct app {
 	bool		 notify_off;	/* turned off here, though allowed */
 	int		 install;	/* 0 no offer, 1 prompt, 2 iOS, 3 menu */
 	bool		 setup_required;
+	char		 setup_node[64];	/* a cluster's: whose token; "" */
 	char		 version[32];	/* the console's, from /api/health */
 	double		 health_retry;	/* ms: ask for its health again then; 0 no */
 	char		 agent_build[65]; /* of the arcana-agent it sends */

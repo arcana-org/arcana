@@ -1729,7 +1729,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	wait_for("jgd.sock");
 	if (port == 0)
 		wait_for("k.sock");
-	wait_for("data/setup-token");
+	/* A node of a cluster has the setup token when it leads (the
+	 * cluster's cases wait for the seed's). */
+	if (strstr(harness_webconf, "cluster {") == NULL)
+		wait_for("data/setup-token");
 	cookie[0] = '\0';
 	send_xjg = true;
 	origin_hdr = harness_origin;

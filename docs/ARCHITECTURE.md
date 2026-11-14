@@ -169,7 +169,12 @@ document for the whole fleet, and so not a tenant's user's.
   and makes the built-in owner, or, set up by a password instead, the
   token, a user name and a password make that user an owner; an invited user
   registers with the invitation's token; adding a key needs a logged-in
-  session.
+  session.  In a cluster the setup token is the leader's (its SHA-256
+  through the log, its text in the leader's `setup-token` alone), and the
+  first owner is the write of the log that spends it, so two nodes never
+  make two owners; enrolment tokens go through the log the same way, the
+  SHA-256 of their secret, the write that spends one winning
+  (docs/notes/console-cluster.md).
 * **Ceremonies.**  Single-use challenges, valid two minutes, kept
   nowhere: each says when it ends and, a registration's, whose key it
   is and by which invitation, under a MAC of the console's; noted used

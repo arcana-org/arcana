@@ -91,6 +91,37 @@ operations.
 - Settings › Cluster and `GET arcana-console:cluster` show it; console_test:cluster
   runs three consoles over unix sockets.
 
+- **Tokens.** The setup token and the enrolment tokens are the log's,
+  not a node's memory (`nodes.c`, the tokens' section): each change a
+  write named `\001token\001` and its kind, its body lines of
+  `key=value`, an empty line, and (a setup alone) a document.  The
+  kinds: `setup-token` (`hash`, `node`, `time`), the leader's new setup
+  token; `setup` (`hash`, `doc`, `time`, then `credentials.json` or
+  `users.json` whole), the first owner; `enrol-token` (`hash`, `name`,
+  `host`, `port`, `ttl`, `time`); `enrol` (`hash`, `time`), a spend.
+  `hash` is the SHA-256 of the token's secret, never the secret; the
+  leader proposes every one, a follower's sent to it, and puts its own
+  clock's `time` in it (what the follower said is not taken).  Every
+  node applies them alike, in order, to its table and to
+  `cluster-tokens.json` (which the documents sent to a node carry, with
+  the last token write applied, so a restart applies none twice); a
+  write that does not read (sizes, keys, a kind, a document that is not
+  one of the two) changes nothing.  A spend holds when its token is
+  there, unspent, compared in constant time: of two committed the first
+  wins on every node, and what came of it is read where it was asked
+  once it is applied there.  An enrolment token lasts `enrol_ttl` from
+  the `time` of the write that made it, and is judged against the
+  `time` of each later token write, the leader's clock alone deciding.
+  A node knows a token once it has applied the write that made it (a
+  heartbeat after the leader); asked before, it knows none, and no write
+  of the log is made for a token the node does not know.
+  The setup token is made by the node that leads, on its lease and once
+  its first write of its term is committed: its text in that node's
+  `setup-token`, the others' files taken away; a new leader makes
+  another.  A node with no leader says so instead of making one.  The
+  first owner (a key's `credentials.json`, or a password's `users.json`)
+  is written only by the `setup` write that spends the token; after
+  one, no `setup-token` is taken.
 - **Per node.** The audit trail (`sdwan-audit.jsonl`, under each node's
   own key) and the SENs and SANs (`sdwan-sen.jsonl`, `sdwan-san.jsonl`)
   are each node's own: each record names its `node`.
@@ -101,12 +132,6 @@ operations.
   chain and the notices (per node, above: one trail wants appends
   through the log, an entry kind idempotent by a record id),
   `arcana-source.json`, the CA's next state.
-- Tokens in one node's memory: enrolment tokens (pki.c) and the setup
-  token (each node writes its own `setup-token`, so two owners can be
-  made on two nodes before replication).  To replicate: the hash of an
-  enrolment token's secret through the log, the entry that spends it
-  winning; the setup token made by the leader, the first registration
-  that commits winning.
 - Membership changes: the nodes are web.conf's; adding one is a restart
   of each with the new block.
 - A cluster of two nodes and a witness.

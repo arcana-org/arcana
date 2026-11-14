@@ -747,11 +747,534 @@ lock_apply(const struct craft_entry *e)
 		lock_set(i, name, holder, ttl, e->seq);
 }
 
+/* ---- The tokens ------------------------------------------------------- */
+
+/*
+ * The setup token and the enrolment tokens, kept by the cluster as its
+ * log gives them, not by the node that made one: each change a write of
+ * the log named TOKEN_PREFIX and its kind, its body lines of key=value,
+ * an empty line, and (a setup alone) the document it writes.  The leader
+ * proposes each, whoever asked, with its own clock's time in it (time=),
+ * and every node applies them alike in order, to cl.tok and to
+ * TOKENS_DOC, which the documents sent to a node carry.  A write that
+ * spends a token holds only when the token is there, unspent, and (an
+ * enrolment token) in time by that write's own time: of two committed,
+ * the first wins and the second changes nothing, on every node.  What is
+ * kept of a token is the SHA-256 of its secret, compared in constant
+ * time, never the secret.  The first owner is itself such a write: the
+ * console's credentials.json or users.json as it is to be, written only
+ * by the write that spends the setup token, after which no setup token
+ * is taken again.
+ */
+#define	TOKEN_PREFIX	"\001token\001"
+#define	TOKENS_DOC	"cluster-tokens.json"
+#define	TOK_HEAD_MAX	2048	/* a token write's lines */
+#define	TOK_OUTCOMES	64	/* what came of the token writes, the last */
+
+enum tok_kind { TK_SETUP_TOKEN, TK_SETUP, TK_ENROL_TOKEN, TK_ENROL, TK_N };
+static const char *const tok_kinds[TK_N] = { "setup-token", "setup",
+    "enrol-token", "enrol" };
+
+/* The keys of a token write's lines, as bits. */
+#define	TF_HASH		0x01
+#define	TF_TIME		0x02
+#define	TF_NODE		0x04
+#define	TF_NAME		0x08
+#define	TF_HOST		0x10
+#define	TF_PORT		0x20
+#define	TF_TTL		0x40
+#define	TF_DOC		0x80
+static const struct {
+	const char	*key;
+	int		 bit;
+} tok_keys[] = {
+	{ "hash", TF_HASH }, { "time", TF_TIME }, { "node", TF_NODE },
+	{ "name", TF_NAME }, { "host", TF_HOST }, { "port", TF_PORT },
+	{ "ttl", TF_TTL }, { "doc", TF_DOC },
+};
+/* What each kind says, every one of them. */
+static const int tok_need[TK_N] = {
+	[TK_SETUP_TOKEN] = TF_HASH | TF_TIME | TF_NODE,
+	[TK_SETUP] = TF_HASH | TF_TIME | TF_DOC,
+	[TK_ENROL_TOKEN] = TF_HASH | TF_TIME | TF_NAME | TF_HOST | TF_PORT |
+	    TF_TTL,
+	[TK_ENROL] = TF_HASH | TF_TIME,
+};
+/* The documents a setup may write: the first owner's. */
+static const char *const tok_docs[] = { "credentials.json", "users.json" };
+
+/* A token write, its body read. */
+struct tok_entry {
+	enum tok_kind	 kind;
+	uint8_t		 hash[32];	/* SHA-256 of the token's secret */
+	int64_t		 time;		/* the leader's clock as it proposed it */
+	char		 node[CRAFT_NAME_MAX];	/* setup-token: whose it is */
+	char		 name[65];	/* enrol-token: the server's name */
+	char		 host[256];	/* its host */
+	int		 port;
+	int64_t		 ttl;		/* seconds it lasts */
+	char		 doc[32];	/* setup: what it writes */
+	const uint8_t	*doc_body;
+	size_t		 doc_len;
+};
+
+struct tok_outcome {
+	uint64_t		 seq;	/* the write; 0 a free place */
+	bool			 ok;
+	char			 why[96];
+	struct cluster_enrol	 en;	/* enrol-token, enrol: the token */
+};
+
+/* The tokens, as the log made them: the leader and the others alike. */
+static struct {
+	uint64_t		 seq;		/* the last token write applied */
+	uint64_t		 set_up;	/* the setup that spent it; 0 none */
+	bool			 setup_live;
+	uint8_t			 setup_hash[32];
+	char			 setup_node[CRAFT_NAME_MAX];
+	struct {
+		bool		 used;
+		uint8_t		 hash[32];
+		struct cluster_enrol en;
+	}			 enrol[CLUSTER_ENROL_MAX];
+} tok;
+static struct tok_outcome tok_out[TOK_OUTCOMES];
+
+static void
+hex_put(char *out, const uint8_t *p, size_t n)
+{
+	size_t	i;
+
+	for (i = 0; i < n; i++)
+		snprintf(out + 2 * i, 3, "%02x", p[i]);
+}
+
+/* n bytes of exactly 2n small hexadecimal digits; false else. */
+static bool
+hex_get(uint8_t *p, size_t n, const char *s, size_t len)
+{
+	size_t	i;
+	int	hi, lo;
+
+	if (s == NULL || len != 2 * n)
+		return (false);
+	for (i = 0; i < n; i++) {
+		hi = s[2 * i] >= '0' && s[2 * i] <= '9' ? s[2 * i] - '0' :
+		    s[2 * i] >= 'a' && s[2 * i] <= 'f' ? s[2 * i] - 'a' + 10 : -1;
+		lo = s[2 * i + 1] >= '0' && s[2 * i + 1] <= '9' ? s[2 * i + 1] -
+		    '0' : s[2 * i + 1] >= 'a' && s[2 * i + 1] <= 'f' ?
+		    s[2 * i + 1] - 'a' + 10 : -1;
+		if (hi == -1 || lo == -1)
+			return (false);
+		p[i] = (uint8_t)(hi << 4 | lo);
+	}
+	return (true);
+}
+
+/* Of len bytes, each one of the set (and printable)? */
+static bool
+chars_of(const char *s, size_t len, const char *set)
+{
+	size_t	i;
+
+	for (i = 0; i < len; i++)
+		if ((unsigned char)s[i] < 0x20 || (unsigned char)s[i] > 0x7e ||
+		    (set != NULL && !(s[i] >= 'a' && s[i] <= 'z') && !(s[i] >=
+		    'A' && s[i] <= 'Z') && !(s[i] >= '0' && s[i] <= '9') &&
+		    strchr(set, s[i]) == NULL))
+			return (false);
+	return (true);
+}
+
+/* A decimal number of v's text, lo to hi; false else. */
+static bool
+num_get(const char *v, size_t len, int64_t lo, int64_t hi, int64_t *out)
+{
+	char		 buf[24], *end;
+	long long	 n;
+
+	if (len == 0 || len >= sizeof(buf) || !chars_of(v, len, "") ||
+	    strspn(v, "0123456789") < len)
+		return (false);
+	memcpy(buf, v, len);
+	buf[len] = '\0';
+	errno = 0;
+	n = strtoll(buf, &end, 10);
+	if (errno != 0 || *end != '\0' || n < lo || n > hi)
+		return (false);
+	*out = n;
+	return (true);
+}
+
+/*
+ * A token write of name and body read into t, as a node reads whatever a
+ * peer sent it: every key known to its kind and said once, every value
+ * of its form and size, a setup's document a JSON object.  0, or -1.
+ */
+static int
+tok_parse(const char *name, const uint8_t *body, size_t len,
+    struct tok_entry *t)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*o;
+	const char		*s, *end, *eol, *eq, *v;
+	size_t			 vl, i;
+	int64_t			 n;
+	int			 k, seen, bit;
+	bool			 ok;
+
+	memset(t, 0, sizeof(*t));
+	if (strncmp(name, TOKEN_PREFIX, strlen(TOKEN_PREFIX)) != 0)
+		return (-1);
+	name += strlen(TOKEN_PREFIX);
+	for (k = 0; k < TK_N && strcmp(name, tok_kinds[k]) != 0; k++)
+		;
+	if (k == TK_N || body == NULL || len < 1)
+		return (-1);
+	t->kind = (enum tok_kind)k;
+	s = (const char *)body;
+	end = s + MIN(len, TOK_HEAD_MAX);
+	seen = 0;
+	for (;;) {
+		if ((eol = memchr(s, '\n', (size_t)(end - s))) == NULL)
+			return (-1);
+		if (eol == s)
+			break;		/* the empty line: the lines end */
+		if ((eq = memchr(s, '=', (size_t)(eol - s))) == NULL)
+			return (-1);
+		v = eq + 1;
+		vl = (size_t)(eol - v);
+		for (i = 0, bit = 0; i < nitems(tok_keys); i++)
+			if ((size_t)(eq - s) == strlen(tok_keys[i].key) &&
+			    memcmp(s, tok_keys[i].key, (size_t)(eq - s)) == 0)
+				bit = tok_keys[i].bit;
+		if (bit == 0 || (seen & bit) != 0 || (tok_need[t->kind] & bit) ==
+		    0)
+			return (-1);
+		seen |= bit;
+		switch (bit) {
+		case TF_HASH:
+			ok = hex_get(t->hash, sizeof(t->hash), v, vl);
+			break;
+		case TF_TIME:
+			ok = num_get(v, vl, 0, INT64_MAX / 2, &t->time);
+			break;
+		case TF_NODE:
+			ok = vl > 0 && vl < sizeof(t->node) && chars_of(v, vl,
+			    "._-");
+			if (ok)
+				memcpy(t->node, v, vl);
+			break;
+		case TF_NAME:
+			ok = vl > 0 && vl < sizeof(t->name) && chars_of(v, vl,
+			    NULL);
+			if (ok)
+				memcpy(t->name, v, vl);
+			break;
+		case TF_HOST:
+			ok = vl > 0 && vl < sizeof(t->host) && chars_of(v, vl,
+			    ".:-");
+			if (ok)
+				memcpy(t->host, v, vl);
+			break;
+		case TF_PORT:
+			ok = num_get(v, vl, 1, 65535, &n);
+			t->port = (int)n;
+			break;
+		case TF_TTL:
+			ok = num_get(v, vl, 1, CLUSTER_ENROL_TTL_MAX, &t->ttl);
+			break;
+		case TF_DOC:
+			for (i = 0, ok = false; i < nitems(tok_docs) && !ok; i++)
+				ok = vl == strlen(tok_docs[i]) && memcmp(v,
+				    tok_docs[i], vl) == 0;
+			if (ok)
+				memcpy(t->doc, v, vl);
+			break;
+		default:
+			ok = false;
+		}
+		if (!ok)
+			return (-1);
+		s = eol + 1;
+	}
+	if (seen != tok_need[t->kind])
+		return (-1);
+	t->doc_body = (const uint8_t *)(s + 1);
+	t->doc_len = len - (size_t)(s + 1 - (const char *)body);
+	if (t->kind != TK_SETUP)
+		return (t->doc_len == 0 ? 0 : -1);
+	if (t->doc_len == 0 || t->doc_len > ACL_MAX_DOC)
+		return (-1);
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO);
+	o = NULL;
+	if (ucl_parser_add_chunk_full(p, t->doc_body, t->doc_len, 0,
+	    UCL_DUPLICATE_APPEND, UCL_PARSE_UCL))
+		o = ucl_parser_get_object(p);
+	ucl_parser_free(p);
+	ok = o != NULL && ucl_object_type(o) == UCL_OBJECT;
+	ucl_object_unref(o);
+	return (ok ? 0 : -1);
+}
+
+/* t's body, as tok_parse() reads it, into b. */
+static void
+tok_body(const struct tok_entry *t, struct buf *b)
+{
+	char	hex[65];
+
+	hex_put(hex, t->hash, sizeof(t->hash));
+	buf_appendf(b, "hash=%s\ntime=%jd\n", hex, (intmax_t)t->time);
+	switch (t->kind) {
+	case TK_SETUP_TOKEN:
+		buf_appendf(b, "node=%s\n", t->node);
+		break;
+	case TK_SETUP:
+		buf_appendf(b, "doc=%s\n", t->doc);
+		break;
+	case TK_ENROL_TOKEN:
+		buf_appendf(b, "name=%s\nhost=%s\nport=%d\nttl=%jd\n", t->name,
+		    t->host, t->port, (intmax_t)t->ttl);
+		break;
+	default:
+		break;
+	}
+	buf_append(b, "\n", 1);
+	if (t->kind == TK_SETUP)
+		buf_append(b, t->doc_body, t->doc_len);
+}
+
+/* The tokens as TOKENS_DOC has them, the snapshot's of the leader's or
+ * this node's own; what does not read is not a token. */
+static void
+tok_load(void)
+{
+	const ucl_object_t	*o, *e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*top;
+	const char		*s;
+	int			 i;
+
+	memset(&tok, 0, sizeof(tok));
+	if ((top = store_load(TOKENS_DOC)) == NULL)
+		return;
+	if ((o = ucl_object_lookup(top, "seq")) != NULL)
+		tok.seq = (uint64_t)ucl_object_toint(o);
+	if ((o = ucl_object_lookup(top, "set_up")) != NULL)
+		tok.set_up = (uint64_t)ucl_object_toint(o);
+	if ((o = ucl_object_lookup(top, "setup")) != NULL &&
+	    (s = ucl_str(o, "hash")) != NULL && hex_get(tok.setup_hash,
+	    sizeof(tok.setup_hash), s, strlen(s)) && (s = ucl_str(o,
+	    "node")) != NULL && strlen(s) < sizeof(tok.setup_node)) {
+		strlcpy(tok.setup_node, s, sizeof(tok.setup_node));
+		tok.setup_live = tok.set_up == 0;
+	}
+	it = NULL;
+	i = 0;
+	while ((e = ucl_object_iterate(ucl_object_lookup(top, "enrol"), &it,
+	    true)) != NULL && i < CLUSTER_ENROL_MAX) {
+		if ((s = ucl_str(e, "hash")) == NULL || !hex_get(
+		    tok.enrol[i].hash, 32, s, strlen(s)) || ucl_str(e,
+		    "name") == NULL || ucl_str(e, "host") == NULL)
+			continue;
+		strlcpy(tok.enrol[i].en.name, ucl_str(e, "name"),
+		    sizeof(tok.enrol[i].en.name));
+		strlcpy(tok.enrol[i].en.host, ucl_str(e, "host"),
+		    sizeof(tok.enrol[i].en.host));
+		tok.enrol[i].en.port = (int)ucl_object_toint(ucl_object_lookup(e,
+		    "port"));
+		tok.enrol[i].en.expires = ucl_object_toint(ucl_object_lookup(e,
+		    "expires"));
+		tok.enrol[i].used = true;
+		i++;
+	}
+	ucl_object_unref(top);
+}
+
+/* The tokens into TOKENS_DOC, with the write that made them so. */
+static void
+tok_save(void)
+{
+	ucl_object_t	*top, *o, *a;
+	unsigned char	*json;
+	char		 hex[65];
+	int		 i;
+
+	top = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(top, ucl_object_fromint((int64_t)tok.seq),
+	    "seq", 0, false);
+	ucl_object_insert_key(top, ucl_object_fromint((int64_t)tok.set_up),
+	    "set_up", 0, false);
+	if (tok.setup_live) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		hex_put(hex, tok.setup_hash, sizeof(tok.setup_hash));
+		ucl_object_insert_key(o, ucl_object_fromstring(hex), "hash", 0,
+		    false);
+		ucl_object_insert_key(o, ucl_object_fromstring(tok.setup_node),
+		    "node", 0, false);
+		ucl_object_insert_key(top, o, "setup", 0, false);
+	}
+	a = ucl_object_typed_new(UCL_ARRAY);
+	for (i = 0; i < CLUSTER_ENROL_MAX; i++) {
+		if (!tok.enrol[i].used)
+			continue;
+		o = ucl_object_typed_new(UCL_OBJECT);
+		hex_put(hex, tok.enrol[i].hash, 32);
+		ucl_object_insert_key(o, ucl_object_fromstring(hex), "hash", 0,
+		    false);
+		ucl_object_insert_key(o, ucl_object_fromstring(
+		    tok.enrol[i].en.name), "name", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromstring(
+		    tok.enrol[i].en.host), "host", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint(tok.enrol[i].en.port),
+		    "port", 0, false);
+		ucl_object_insert_key(o, ucl_object_fromint(
+		    tok.enrol[i].en.expires), "expires", 0, false);
+		ucl_array_append(a, o);
+	}
+	ucl_object_insert_key(top, a, "enrol", 0, false);
+	if ((json = ucl_object_emit(top, UCL_EMIT_JSON)) == NULL ||
+	    store_write(TOKENS_DOC, json, strlen((char *)json)) == -1)
+		log_msg(LOG_ERR, "cluster: %s could not be written", TOKENS_DOC);
+	free(json);
+	ucl_object_unref(top);
+}
+
+/* The enrolment token of hash, its place; -1 for none.  Each one looked
+ * at, each compared in constant time. */
+static int
+tok_enrol_find(const uint8_t *hash)
+{
+	int	i, found;
+
+	found = -1;
+	for (i = 0; i < CLUSTER_ENROL_MAX; i++)
+		if (tok.enrol[i].used && timingsafe_bcmp(tok.enrol[i].hash, hash,
+		    32) == 0)
+			found = i;
+	return (found);
+}
+
+/*
+ * A token write committed, applied: the tokens changed as it says, when
+ * it holds, on every node alike (by what the log says alone, the time
+ * the leader put in it among that), and what came of it kept for whoever
+ * waits for it here.  One applied before a restart (TOKENS_DOC has it)
+ * changes nothing again.
+ */
+static void
+tok_apply(const struct craft_entry *e)
+{
+	struct tok_entry	 t;
+	struct tok_outcome	*out;
+	const char		*why;
+	int			 i, k;
+
+	if (e->seq <= tok.seq)
+		return;
+	out = &tok_out[e->seq % TOK_OUTCOMES];
+	memset(out, 0, sizeof(*out));
+	out->seq = e->seq;
+	why = NULL;
+	if (e->gone || tok_parse(e->name, e->body, e->len, &t) == -1) {
+		log_msg(LOG_ERR, "cluster: a token write that does not read, "
+		    "at %ju: nothing done", (uintmax_t)e->seq);
+		why = "not a token write";
+		goto done;
+	}
+	/* The enrolment tokens run out by the leader's clock, as each
+	 * write says it. */
+	for (i = 0; i < CLUSTER_ENROL_MAX; i++)
+		if (tok.enrol[i].used && tok.enrol[i].en.expires < t.time) {
+			explicit_bzero(&tok.enrol[i], sizeof(tok.enrol[i]));
+			tok.enrol[i].used = false;
+		}
+	switch (t.kind) {
+	case TK_SETUP_TOKEN:
+		if (tok.set_up != 0) {
+			why = "this console is set up already";
+			break;
+		}
+		tok.setup_live = true;
+		memcpy(tok.setup_hash, t.hash, sizeof(tok.setup_hash));
+		strlcpy(tok.setup_node, t.node, sizeof(tok.setup_node));
+		break;
+	case TK_SETUP:
+		if (tok.set_up != 0) {
+			why = "this console is set up already: sign in";
+			break;
+		}
+		if (!tok.setup_live || timingsafe_bcmp(tok.setup_hash, t.hash,
+		    sizeof(t.hash)) != 0) {
+			why = "not the setup token";
+			break;
+		}
+		/* Spent by this write, which makes the first owner. */
+		if (store_write(t.doc, t.doc_body, t.doc_len) == -1)
+			log_msg(LOG_ERR, "cluster: %s could not be written",
+			    t.doc);
+		cl.gen++;
+		changed(t.doc);
+		tok.set_up = e->seq;
+		tok.setup_live = false;
+		explicit_bzero(tok.setup_hash, sizeof(tok.setup_hash));
+		break;
+	case TK_ENROL_TOKEN:
+		/* A free place, else the one that runs out first. */
+		for (i = 0, k = 0; i < CLUSTER_ENROL_MAX; i++) {
+			if (!tok.enrol[i].used) {
+				k = i;
+				break;
+			}
+			if (tok.enrol[i].en.expires < tok.enrol[k].en.expires)
+				k = i;
+		}
+		memset(&tok.enrol[k], 0, sizeof(tok.enrol[k]));
+		tok.enrol[k].used = true;
+		memcpy(tok.enrol[k].hash, t.hash, sizeof(t.hash));
+		strlcpy(tok.enrol[k].en.name, t.name,
+		    sizeof(tok.enrol[k].en.name));
+		strlcpy(tok.enrol[k].en.host, t.host,
+		    sizeof(tok.enrol[k].en.host));
+		tok.enrol[k].en.port = t.port;
+		tok.enrol[k].en.expires = t.time + t.ttl;
+		out->en = tok.enrol[k].en;
+		break;
+	case TK_ENROL:
+		/* Not there: never made, spent, or run out. */
+		if ((k = tok_enrol_find(t.hash)) == -1) {
+			why = "unknown or expired token";
+			break;
+		}
+		out->en = tok.enrol[k].en;
+		explicit_bzero(&tok.enrol[k], sizeof(tok.enrol[k]));
+		tok.enrol[k].used = false;
+		break;
+	default:
+		why = "not a token write";
+		break;
+	}
+done:
+	out->ok = why == NULL;
+	if (why != NULL)
+		strlcpy(out->why, why, sizeof(out->why));
+	tok.seq = e->seq;
+	tok_save();
+}
+
 static void
 apply_one(const struct craft_entry *e)
 {
 	char	path[MAXPATHLEN];
 
+	if (strncmp(e->name, TOKEN_PREFIX, strlen(TOKEN_PREFIX)) == 0) {
+		tok_apply(e);
+		return;
+	}
+	/* The token writes' alone: none of a document's own. */
+	if (strcmp(e->name, TOKENS_DOC) == 0)
+		return;
 	if (strncmp(e->name, LOCK_PREFIX, strlen(LOCK_PREFIX)) == 0) {
 		/* The leader's own writes were in its table as it granted
 		 * them: applied again late, an old grant would take a newer
@@ -1626,6 +2149,7 @@ acl_snapshot_doit(cbl_req *req, const struct acl_snapshot_req *rq,
 	}
 	craft_install_snapshot(&cl.c, rq->term, rq->last_term, rq->last_seq,
 	    rq->node);
+	tok_load();
 	cl.gen++;
 	changed(NULL);
 	/* Answered once its base and log are kept. */
@@ -1633,6 +2157,61 @@ acl_snapshot_doit(cbl_req *req, const struct acl_snapshot_req *rq,
 	pthread_mutex_unlock(&cl.mu);
 	log_msg(LOG_NOTICE, "cluster: the documents of %s as of %ju taken",
 	    rq->node, (uintmax_t)rq->last_seq);
+	return (0);
+}
+
+static int	tok_propose(struct tok_entry *, uint64_t *, uint64_t *);
+
+/*
+ * A follower's token write, at the leader: read as any peer's word, and
+ * proposed as the leader's own, with the leader's time in it (whatever the
+ * follower's said); answered once it is applied here.  The setup token is
+ * the leader's to make alone.
+ */
+static int
+tok_write_doit(cbl_req *req, int from, const struct acl_doc *d)
+{
+	struct acl_write_rsp	 rsp;
+	struct tok_entry	 t;
+	uint64_t		 term, seq;
+	int			 k;
+
+	memset(&rsp, 0, sizeof(rsp));
+	rsp.has_ok = true;
+	if (d->gone || tok_parse(d->name, d->body.p, d->body.len, &t) == -1 ||
+	    t.kind == TK_SETUP_TOKEN) {
+		log_msg(LOG_NOTICE, "cluster: a token write from %s refused: "
+		    "not one a node asks for", cl.nodes[from].name);
+		rsp.error = "not a token write a node asks for";
+		return (acl_write_reply(req, &rsp));
+	}
+	pthread_mutex_lock(&cl.mu);
+	for (k = 0; k < CL_PENDING && cl.pend[k].req != NULL; k++)
+		;
+	if (k == CL_PENDING || cl.c.role != CRAFT_LEADER) {
+		pthread_mutex_unlock(&cl.mu);
+		rsp.error = k == CL_PENDING ? "too many writes at once" :
+		    "not the leader";
+		return (acl_write_reply(req, &rsp));
+	}
+	if (cbl_req_defer(req) != 0) {
+		pthread_mutex_unlock(&cl.mu);
+		return (EIO);
+	}
+	if (tok_propose(&t, &term, &seq) != 0) {
+		pthread_mutex_unlock(&cl.mu);
+		rsp.error = "cannot propose it";
+		(void)acl_write_reply(req, &rsp);
+		(void)cbl_req_complete(req, 0);
+		return (0);
+	}
+	cl.pend[k].req = req;
+	cl.pend[k].term = term;
+	cl.pend[k].seq = seq;
+	cl.pend[k].since = now_ms();
+	snprintf(cl.pend[k].name, sizeof(cl.pend[k].name), "%s",
+	    tok_kinds[t.kind]);
+	pthread_mutex_unlock(&cl.mu);
 	return (0);
 }
 
@@ -1650,7 +2229,11 @@ acl_write_doit(cbl_req *req, const struct acl_write_req *rq,
 		return (EACCES);
 	memset(&rsp, 0, sizeof(rsp));
 	rsp.has_ok = true;
-	if (rq->doc.n != 1 || !replicated(rq->doc.v[0].name)) {
+	if (rq->doc.n == 1 && rq->doc.v[0].name != NULL &&
+	    strncmp(rq->doc.v[0].name, TOKEN_PREFIX, strlen(TOKEN_PREFIX)) == 0)
+		return (tok_write_doit(req, n, &rq->doc.v[0]));
+	if (rq->doc.n != 1 || !replicated(rq->doc.v[0].name) ||
+	    strcmp(rq->doc.v[0].name, TOKENS_DOC) == 0) {
 		rsp.error = "one document of the data directory";
 		return (acl_write_reply(req, &rsp));
 	}
@@ -1954,6 +2537,9 @@ cluster_save(const char *name, const void *body, size_t len, bool gone)
 
 	if (!replicated(name))
 		return (store_write(name, body, len));
+	/* The token writes' alone (tok_apply()). */
+	if (strcmp(name, TOKENS_DOC) == 0)
+		return (-1);
 	/*
 	 * While the worker starts, no majority can be waited for (the
 	 * loop is not running yet): what is written then is the
@@ -2027,6 +2613,252 @@ cluster_save(const char *name, const void *body, size_t len, bool gone)
 	pthread_mutex_unlock(&cl.mu);
 	log_msg(LOG_ERR, "cluster: %s not written: %s", name, err);
 	return (-1);
+}
+
+/* ---- This node's token writes ------------------------------------------ */
+
+/* The token write t proposed by the leader, its time the leader's clock's
+ * now, whoever asked: its term and place.  With the lock. */
+static int
+tok_propose(struct tok_entry *t, uint64_t *termp, uint64_t *seqp)
+{
+	struct buf	*b;
+	char		 name[64];
+	int		 rc;
+
+	t->time = (int64_t)time(NULL);
+	snprintf(name, sizeof(name), "%s%s", TOKEN_PREFIX, tok_kinds[t->kind]);
+	b = buf_alloc(256 + t->doc_len);
+	tok_body(t, b);
+	rc = craft_propose(&cl.c, name, (const uint8_t *)b->data, b->offset,
+	    false, termp, seqp);
+	buf_free(b);
+	if (rc == 0)
+		pump(NULL, R_NONE, NULL);
+	return (rc);
+}
+
+/* What came of the token write seq, applied here: 1 it held, 0 it did not
+ * (why), -1 not known here (the documents sent instead).  With the lock. */
+static int
+tok_outcome(uint64_t seq, struct tok_outcome *o, char *why, size_t len)
+{
+	const struct tok_outcome	*out = &tok_out[seq % TOK_OUTCOMES];
+
+	if (out->seq != seq) {
+		snprintf(why, len, "this node took the cluster's documents "
+		    "instead of the write: what came of it is not known here");
+		return (-1);
+	}
+	if (o != NULL)
+		*o = *out;
+	if (!out->ok)
+		snprintf(why, len, "%s", out->why);
+	return (out->ok ? 1 : 0);
+}
+
+/*
+ * A token write t through the cluster, from this node: proposed by the
+ * leader (this one, or sent it), and once it is applied here, what came
+ * of it into *o: 1 it held, 0 it did not (why), -1 it is not known whether
+ * it did (why: no majority, no leader, not applied here in time).  A write
+ * sent to the leader is sent once: asked again after no answer, a spend
+ * could be refused that the first one made.
+ */
+static int
+tok_write(struct tok_entry *t, struct tok_outcome *o, char *why, size_t len)
+{
+	struct buf	*b;
+	char		 name[64];
+	uint64_t	 deadline, term, seq;
+	int		 leader, rc;
+
+	why[0] = '\0';
+	if (!cl.started) {
+		snprintf(why, len, "the console is still starting");
+		return (-1);
+	}
+	snprintf(name, sizeof(name), "%s%s", TOKEN_PREFIX, tok_kinds[t->kind]);
+	deadline = now_ms() + CL_WAIT_MS;
+	rc = -1;
+	pthread_mutex_lock(&cl.mu);
+	for (;;) {
+		if (cl.c.role == CRAFT_LEADER) {
+			if (tok_propose(t, &term, &seq) != 0)
+				snprintf(why, len, "cannot propose it");
+			else if (!wait_applied(seq, deadline))
+				snprintf(why, len, "not committed in time: the "
+				    "cluster has no majority here");
+			else if (!applied_as(seq, term))
+				snprintf(why, len, "a new leader took its place "
+				    "before it was written");
+			else
+				rc = tok_outcome(seq, o, why, len);
+			break;
+		}
+		if ((leader = node_of(cl.c.leader)) >= 0 && leader != cl.self) {
+			pthread_mutex_unlock(&cl.mu);
+			b = buf_alloc(256 + t->doc_len);
+			tok_body(t, b);
+			seq = write_to(leader, name, b->data, b->offset, false, why,
+			    len);
+			buf_free(b);
+			pthread_mutex_lock(&cl.mu);
+			if (seq == 0)
+				break;
+			/* Committed: what came of it is known once it is
+			 * applied here, as on every node. */
+			if (!wait_applied(seq, now_ms() + CL_WAIT_MS))
+				snprintf(why, len, "the cluster took it, and this "
+				    "node has not applied it yet: what came of it "
+				    "is not known here");
+			else
+				rc = tok_outcome(seq, o, why, len);
+			break;
+		}
+		if (now_ms() >= deadline) {
+			snprintf(why, len, "no leader: the cluster has no "
+			    "majority here");
+			break;
+		}
+		(void)wait_applied(cl.c.applied + 1, MIN(deadline, now_ms() +
+		    200));
+	}
+	pthread_mutex_unlock(&cl.mu);
+	if (rc == -1)
+		log_msg(LOG_ERR, "cluster: a %s write: %s", tok_kinds[t->kind],
+		    why);
+	return (rc);
+}
+
+/*
+ * The cluster's setup token as the log has it: CLUSTER_SETUP_DONE once a
+ * setup spent one; CLUSTER_SETUP_TOKEN while one is there, its hash and
+ * the node whose setup-token has its text out; CLUSTER_SETUP_NONE before
+ * the leader made one, the leader's name out ("" while there is none).
+ */
+int
+cluster_setup_state(uint8_t *hash, char *node, size_t len)
+{
+	int	st;
+
+	pthread_mutex_lock(&cl.mu);
+	if (tok.set_up != 0) {
+		st = CLUSTER_SETUP_DONE;
+		snprintf(node, len, "%s", "");
+	} else if (tok.setup_live) {
+		st = CLUSTER_SETUP_TOKEN;
+		memcpy(hash, tok.setup_hash, sizeof(tok.setup_hash));
+		snprintf(node, len, "%s", tok.setup_node);
+	} else {
+		st = CLUSTER_SETUP_NONE;
+		snprintf(node, len, "%s", cl.c.role == CRAFT_LEADER ?
+		    cl.nodes[cl.self].name : cl.c.leader);
+	}
+	pthread_mutex_unlock(&cl.mu);
+	return (st);
+}
+
+/* The setup token of hash this leader made, through the log: 0 once
+ * committed and applied here, -1 (why) else.  The leader's alone. */
+int
+cluster_setup_make(const uint8_t *hash, char *why, size_t len)
+{
+	struct tok_entry	t;
+
+	pthread_mutex_lock(&cl.mu);
+	if (cl.c.role != CRAFT_LEADER) {
+		pthread_mutex_unlock(&cl.mu);
+		snprintf(why, len, "not the leader");
+		return (-1);
+	}
+	pthread_mutex_unlock(&cl.mu);
+	memset(&t, 0, sizeof(t));
+	t.kind = TK_SETUP_TOKEN;
+	memcpy(t.hash, hash, sizeof(t.hash));
+	strlcpy(t.node, cl.nodes[cl.self].name, sizeof(t.node));
+	return (tok_write(&t, NULL, why, len) == 1 ? 0 : -1);
+}
+
+/*
+ * The console set up by the setup token of hash: the document doc (the
+ * first owner's credentials.json or users.json) written on every node by
+ * the write that spends the token.  1 this one was the first, 0 it was
+ * not (why: set up already, not the token), -1 not known (why).
+ */
+int
+cluster_setup_spend(const uint8_t *hash, const char *doc, const void *body,
+    size_t blen, char *why, size_t len)
+{
+	struct tok_entry	t;
+
+	memset(&t, 0, sizeof(t));
+	t.kind = TK_SETUP;
+	memcpy(t.hash, hash, sizeof(t.hash));
+	strlcpy(t.doc, doc, sizeof(t.doc));
+	t.doc_body = body;
+	t.doc_len = blen;
+	return (tok_write(&t, NULL, why, len));
+}
+
+/*
+ * An enrolment token of hash for name, its host and port, lasting ttl s
+ * from the time the leader puts in its write: 0 once it is the cluster's
+ * and applied here, when it expires out (by the leader's clock); -1, why.
+ */
+int
+cluster_enrol_make(const uint8_t *hash, const char *name, const char *host,
+    int port, int ttl, int64_t *expires, char *why, size_t len)
+{
+	struct tok_entry	t;
+	struct tok_outcome	o;
+
+	memset(&t, 0, sizeof(t));
+	t.kind = TK_ENROL_TOKEN;
+	memcpy(t.hash, hash, sizeof(t.hash));
+	if (strlcpy(t.name, name, sizeof(t.name)) >= sizeof(t.name) ||
+	    strlcpy(t.host, host, sizeof(t.host)) >= sizeof(t.host)) {
+		snprintf(why, len, "too long");
+		return (-1);
+	}
+	t.port = port;
+	t.ttl = ttl;
+	if (tok_write(&t, &o, why, len) != 1)
+		return (-1);
+	*expires = o.en.expires;
+	return (0);
+}
+
+/* Is the enrolment token of hash the cluster's, unspent?  It into *en.
+ * Whether it is in time is the spend's to say, by the leader's clock. */
+bool
+cluster_enrol_find(const uint8_t *hash, struct cluster_enrol *en)
+{
+	int	i;
+
+	pthread_mutex_lock(&cl.mu);
+	if ((i = tok_enrol_find(hash)) != -1)
+		*en = tok.enrol[i].en;
+	pthread_mutex_unlock(&cl.mu);
+	return (i != -1);
+}
+
+/* The enrolment token of hash spent through the log: 1 by this write, the
+ * token into *en; 0 not (why: spent, run out, never made); -1 not known. */
+int
+cluster_enrol_spend(const uint8_t *hash, struct cluster_enrol *en,
+    char *why, size_t len)
+{
+	struct tok_entry	t;
+	struct tok_outcome	o;
+	int			rc;
+
+	memset(&t, 0, sizeof(t));
+	t.kind = TK_ENROL;
+	memcpy(t.hash, hash, sizeof(t.hash));
+	if ((rc = tok_write(&t, &o, why, len)) == 1)
+		*en = o.en;
+	return (rc);
 }
 
 /* ---- Locks of the cluster ------------------------------------------------ */
@@ -2313,6 +3145,7 @@ cluster_init(void)
 	craft_init(&cl.c, cl.nodes[cl.self].name, peers, np, now_ms(),
 	    (uint32_t)arc4random());
 	restore();
+	tok_load();
 	if ((error = cbl_ctx_new(&cl.ctx)) != 0 ||
 	    (error = cbl_loop_new(cl.ctx, &cl.loop)) != 0) {
 		log_msg(LOG_ERR, "cluster: cblink: %s", strerror(error));

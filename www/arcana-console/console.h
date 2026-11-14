@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.439.0"
+#define	ARCW_VERSION		"0.440.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/spmzt/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -98,6 +98,7 @@ struct config {
 	char		*sendmail;	/* what mail is sent by */
 	int		 mail_tick;	/* s between reads of the events */
 	int		 cooldown_unit;	/* s a cool-down's minute lasts */
+	int		 enrol_ttl;	/* s an enrolment token lasts */
 	/* web.conf's for the mail; what is in force: settings_peek(). */
 	char		*mail_to;	/* addresses, "" for none */
 	char		*mail_from;	/* "": arcana@ the host */
@@ -188,6 +189,31 @@ int		 cluster_save(const char *, const void *, size_t, bool);
 void		 cluster_status(ucl_object_t *);
 void		 cluster_changes(void (*)(const char *));
 int		 api_cluster(struct http_request *);
+#ifdef ARCANA_CLUSTER
+/*
+ * nodes.c: the setup token and the enrolment tokens as a cluster's log
+ * keeps them, the SHA-256 of each one's secret (auth.c, pki.c).
+ */
+#define	CLUSTER_ENROL_MAX	16	/* enrolment tokens at once */
+#define	CLUSTER_ENROL_TTL_MAX	86400	/* s one lasts, at most */
+enum { CLUSTER_SETUP_NONE, CLUSTER_SETUP_TOKEN, CLUSTER_SETUP_DONE };
+struct cluster_enrol {
+	char		 name[65];	/* the server's name in the console */
+	char		 host[256];
+	int		 port;
+	int64_t		 expires;	/* by the leader's clock */
+};
+int		 cluster_setup_state(uint8_t *, char *, size_t);
+int		 cluster_setup_make(const uint8_t *, char *, size_t);
+int		 cluster_setup_spend(const uint8_t *, const char *, const void *,
+		    size_t, char *, size_t);
+int		 cluster_enrol_make(const uint8_t *, const char *, const char *,
+		    int, int, int64_t *, char *, size_t);
+bool		 cluster_enrol_find(const uint8_t *, struct cluster_enrol *);
+int		 cluster_enrol_spend(const uint8_t *, struct cluster_enrol *,
+		    char *, size_t);
+void		 auth_cluster_tick(void);
+#endif
 void		 auth_reload(const char *);
 void		 users_reload(void);
 void		 servers_reload(void);
@@ -384,6 +410,9 @@ size_t		 users_names(char **, size_t, bool);
 size_t		 users_operators(char **, size_t, const char *);
 const char	*user_owner_add(const char *);
 void		 user_owner_undo(const char *);
+#ifdef ARCANA_CLUSTER
+ucl_object_t	*user_owner_doc(const char *, const char *, const char **);
+#endif
 bool		 user_has_password(const char *);
 bool		 user_password_ok(const char *, const char *);
 const char	*user_password_hash(const char *, char *, size_t);

@@ -410,13 +410,6 @@ Written and tested with stand-ins only:
   tenant's alike: refused to a tenant's user and to their tokens
   (cnodes.c's T_ALL, console 0.434.0, the tenants plan's T-0.1) until
   they are a tenant's own.
-- Each node of a cluster writes a setup token of its own while the
-  console is not set up, so two owners can be made on two nodes before
-  either is replicated, and an enrolment token lives in the memory of
-  the node that made it (pki.c).  To do: the setup token made by the
-  leader and replicated, the first registration that commits winning;
-  enrolment tokens (the hash of their secret) through the log, the
-  entry that spends one winning (docs/notes/console-cluster.md).
 - A cluster's audit trail and SENs/SANs are each node's own, each
   record naming its node: one trail would want appends through the
   log (an entry kind idempotent by a record id).

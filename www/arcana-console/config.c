@@ -51,8 +51,9 @@ get(const ucl_object_t *top, const char *path, const char *def)
  * false limits it as an API token's (auth.c, tokens.c).
  *
  * Without tls, the console runs its own CA from datadir (pki.c).  With
- * it, tls.ca_key names the CA's key when the console is to enrol hosts.
- * update_check = false stops the release checks; update_url names
+ * it, tls.ca_key names the CA's key when the console is to enrol hosts;
+ * enrol_ttl is the seconds an enrolment token lasts (3600; fewer for a
+ * test).  update_check = false stops the release checks; update_url names
  * another feed in GitHub's releases/latest shape.  sendmail names what
  * mail goes out by (/usr/sbin/sendmail), mail_tick the seconds between
  * reads of the hosts' events for it (15), cooldown_unit the seconds a
@@ -126,6 +127,9 @@ config_load(const char *path)
 	o = ucl_object_lookup(top, "cooldown_unit");
 	cfg.cooldown_unit = o != NULL && ucl_object_toint(o) >= 1 &&
 	    ucl_object_toint(o) <= 60 ? (int)ucl_object_toint(o) : 60;
+	o = ucl_object_lookup(top, "enrol_ttl");
+	cfg.enrol_ttl = o != NULL && ucl_object_toint(o) >= 1 &&
+	    ucl_object_toint(o) <= 86400 ? (int)ucl_object_toint(o) : 3600;
 	/* Empty says: do not look for an agent beside the console. */
 	cfg.local_agent = get(top, "local_agent", ARCW_LOCAL_AGENT);
 	cfg.notif_base = get(top, "notif_base", NULL);

@@ -150,22 +150,34 @@ client_data(const char *type, const char *challenge, const char *origin)
 
 /* navigator.credentials.create(), as a browser and a key would do it;
  * token the setup token, or an invitation (inv_...) of a user's. */
+static void	reg_finish_body(struct authn *, const char *, char *, size_t);
+
 static void
 do_register(struct authn *a, const char *token, struct resp *r)
 {
 	struct resp	 b;
-	uint8_t		 ad[256], *spki;
-	char		 body[4096], *cd, *id64, *cd64, *ad64, *pk64, *p;
-	size_t		 adlen;
-	int		 spkilen;
+	char		 body[4096];
 
 	snprintf(body, sizeof(body), "{\"%s\":\"%s\"}", token != NULL &&
 	    strncmp(token, "inv_", 4) == 0 ? "invite" : "setup_token", token !=
 	    NULL ? token : "");
 	http("POST", "/api/auth/register/begin", body, &b);
 	EXPECT(&b, 200);
-	cd = client_data("webauthn.create", jstr(&b, "publicKey.challenge"),
-	    harness_origin);
+	reg_finish_body(a, jstr(&b, "publicKey.challenge"), body, sizeof(body));
+	http("POST", "/api/auth/register/finish", body, r);
+	resp_free(&b);
+}
+
+/* What register/finish is sent for key a, the challenge begin gave. */
+static void
+reg_finish_body(struct authn *a, const char *chal, char *body, size_t len)
+{
+	uint8_t		 ad[256], *spki;
+	char		*cd, *id64, *cd64, *ad64, *pk64, *p;
+	size_t		 adlen;
+	int		 spkilen;
+
+	cd = client_data("webauthn.create", chal, harness_origin);
 	adlen = auth_data(ad, RP_ID, 0x41, 0, a);
 	spki = NULL;
 	ATF_REQUIRE((spkilen = i2d_PUBKEY(a->key, &spki)) > 0);
@@ -173,12 +185,10 @@ do_register(struct authn *a, const char *token, struct resp *r)
 	cd64 = b64url(cd, strlen(cd));
 	ad64 = b64url(ad, adlen);
 	pk64 = b64url(spki, (size_t)spkilen);
-	snprintf(body, sizeof(body), "{\"id\":\"%s\",\"clientDataJSON\":\"%s\","
+	snprintf(body, len, "{\"id\":\"%s\",\"clientDataJSON\":\"%s\","
 	    "\"authenticatorData\":\"%s\",\"publicKey\":\"%s\","
 	    "\"publicKeyAlgorithm\":%d,\"transports\":[\"usb\"],"
 	    "\"name\":\"key %d\"}", id64, cd64, ad64, pk64, a->alg, a->alg);
-	http("POST", "/api/auth/register/finish", body, r);
-	resp_free(&b);
 	p = (char *)spki;
 	OPENSSL_free(p);
 	free(cd);
@@ -19766,6 +19776,54 @@ cl_until(const char *cwd, int i, const char *path, const char *want)
 	return (ok);
 }
 
+/* What a case adds to each node's web.conf ("enrol_ttl = 5;"). */
+static const char	*cl_conf = "";
+
+/* Node i started in its directory under cwd, of the three. */
+static void
+cl_node(const atf_tc_t *tc, const char *cwd, int i)
+{
+	char	nodes[1024];
+	int	k, n;
+
+#ifndef ARCANA_CLUSTER
+	atf_tc_skip("arcana-console built without the cluster (the "
+	    "tree's configuration has no WITH_CLUSTER=yes)");
+#endif
+	n = snprintf(nodes, sizeof(nodes), "nodes {");
+	for (k = 0; k < 3; k++)
+		n += snprintf(nodes + n, sizeof(nodes) - (size_t)n, " %s { uri "
+		    "= \"unix:%s/%s/cl.sock\"; }", cl_nodes[k], cwd,
+		    cl_nodes[k]);
+	snprintf(nodes + n, sizeof(nodes) - (size_t)n, " }");
+	ATF_REQUIRE(mkdir(cl_nodes[i], 0755) == 0);
+	ATF_REQUIRE(chdir(cl_nodes[i]) == 0);
+	snprintf(harness_webconf, sizeof(harness_webconf), "cluster { self = "
+	    "\"%s\"; listen = \"unix:%s/%s/cl.sock\"; %s }\n%s\n", cl_nodes[i],
+	    cwd, cl_nodes[i], nodes, cl_conf);
+	start(tc, 0, NULL);
+	harness_webconf[0] = '\0';
+	ATF_REQUIRE(chdir(cwd) == 0);
+}
+
+/* The first n consoles started, not set up; the seed leads, and has the
+ * setup token, which every one of them knows of. */
+static void
+cl_boot(const atf_tc_t *tc, const char *cwd, int n)
+{
+	char	path[MAXPATHLEN];
+	int	i;
+
+	for (i = 0; i < n; i++)
+		cl_node(tc, cwd, i);
+	snprintf(path, sizeof(path), "%s/data/setup-token", cl_nodes[0]);
+	wait_for(path);
+	for (i = 0; i < n; i++)
+		ATF_CHECK_MSG(cl_until(cwd, i, "/api/auth/status",
+		    "\"setup_node\":\"na\""), "%s does not say the setup token "
+		    "is na's", cl_nodes[i]);
+}
+
 /*
  * The three consoles started, each in its directory under cwd; the
  * seed's first key, once it leads; the others follow it.  Signed in on
@@ -19774,29 +19832,8 @@ cl_until(const char *cwd, int i, const char *path, const char *want)
 static void
 cl_start(const atf_tc_t *tc, const char *cwd, struct authn *a)
 {
-	char	nodes[1024];
-	int	i, n;
 
-#ifndef ARCANA_CLUSTER
-	atf_tc_skip("arcana-console built without the cluster (the "
-	    "tree's configuration has no WITH_CLUSTER=yes)");
-#endif
-	n = snprintf(nodes, sizeof(nodes), "nodes {");
-	for (i = 0; i < 3; i++)
-		n += snprintf(nodes + n, sizeof(nodes) - (size_t)n, " %s { uri "
-		    "= \"unix:%s/%s/cl.sock\"; }", cl_nodes[i], cwd,
-		    cl_nodes[i]);
-	snprintf(nodes + n, sizeof(nodes) - (size_t)n, " }");
-	for (i = 0; i < 3; i++) {
-		ATF_REQUIRE(mkdir(cl_nodes[i], 0755) == 0);
-		ATF_REQUIRE(chdir(cl_nodes[i]) == 0);
-		snprintf(harness_webconf, sizeof(harness_webconf), "cluster { "
-		    "self = \"%s\"; listen = \"unix:%s/%s/cl.sock\"; %s }\n",
-		    cl_nodes[i], cwd, cl_nodes[i], nodes);
-		start(tc, 0, NULL);
-		ATF_REQUIRE(chdir(cwd) == 0);
-	}
-	harness_webconf[0] = '\0';
+	cl_boot(tc, cwd, 3);
 	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
 	enrol(a);
 	ATF_REQUIRE(chdir(cwd) == 0);
@@ -20089,6 +20126,469 @@ ATF_TC_BODY(cluster_apply_lock, tc)
 	ATF_REQUIRE(chdir(cwd) == 0);
 	free(acc_a);
 	free(acc_b);
+}
+
+/* How many times needle is in rel of node i's directory; -1, no file. */
+static int
+cl_count(int i, const char *rel, const char *needle)
+{
+	char	 path[MAXPATHLEN], buf[65536], *p;
+	FILE	*fp;
+	size_t	 n;
+	int	 k;
+
+	snprintf(path, sizeof(path), "%s/%s", cl_nodes[i], rel);
+	if ((fp = fopen(path, "r")) == NULL)
+		return (-1);
+	n = fread(buf, 1, sizeof(buf) - 1, fp);
+	fclose(fp);
+	buf[n] = '\0';
+	for (k = 0, p = buf; (p = strstr(p, needle)) != NULL; p++)
+		k++;
+	return (k);
+}
+
+/* Until rel of node i has needle n times: 15 s at most. */
+static bool
+cl_count_until(int i, const char *rel, const char *needle, int n)
+{
+	int	k;
+
+	for (k = 0; k < 150; k++) {
+		if (cl_count(i, rel, needle) == n)
+			return (true);
+		usleep(100000);
+	}
+	return (false);
+}
+
+/* A certificate request of a host's, in host.csr of cwd. */
+static void
+cl_csr(void)
+{
+
+	ATF_REQUIRE(system("openssl req -new -newkey ec -pkeyopt "
+	    "ec_paramgen_curve:P-256 -nodes -keyout host.key -subj /CN=host "
+	    "-out host.csr >/dev/null 2>&1") == 0);
+}
+
+/* POST /api/enrol of node i, token tok and host.csr of cwd: its status,
+ * what it said into said. */
+static int
+cl_enrol(const char *cwd, int i, const char *tok, char *said, size_t len)
+{
+	struct resp	 r;
+	char		 csr[4096], body[8192], *p;
+	FILE		*fp;
+	size_t		 n, k;
+	int		 st;
+
+	ATF_REQUIRE((fp = fopen("host.csr", "r")) != NULL);
+	n = fread(csr, 1, sizeof(csr) - 1, fp);
+	fclose(fp);
+	csr[n] = '\0';
+	k = (size_t)snprintf(body, sizeof(body), "{\"token\":\"%s\",\"csr\":\"",
+	    tok);
+	for (p = csr; *p != '\0' && k + 4 < sizeof(body); p++) {
+		if (*p == '\n') {
+			body[k++] = '\\';
+			body[k++] = 'n';
+		} else
+			body[k++] = *p;
+	}
+	snprintf(body + k, sizeof(body) - k, "\"}");
+	ATF_REQUIRE(chdir(cl_nodes[i]) == 0);
+	http("POST", "/api/enrol", body, &r);
+	st = r.status;
+	if (said != NULL)
+		snprintf(said, len, "%.300s", r.body != NULL ? r.body : "");
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	return (st);
+}
+
+/* An enrolment token made on node i for name: into tok. */
+static void
+cl_enrol_token(const char *cwd, int i, const char *name, char *tok,
+    size_t len)
+{
+	struct resp	r;
+	char		in[128];
+
+	snprintf(in, sizeof(in), "\"name\":\"%s\",\"host\":\"127.0.0.1\"",
+	    name);
+	ATF_REQUIRE(chdir(cl_nodes[i]) == 0);
+	rc_act(CC "enrolment/create-token", in, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE_MSG(jstr(&r, "token") != NULL, "%s", r.body);
+	snprintf(tok, len, "%s", jstr(&r, "token"));
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+}
+
+/* Node i's committed writes applied, as it says. */
+static long long
+cl_applied(const char *cwd, int i)
+{
+	struct resp	 r;
+	const char	*p;
+	long long	 n;
+
+	ATF_REQUIRE(chdir(cl_nodes[i]) == 0);
+	http("GET", CC "cluster", NULL, &r);
+	p = r.body != NULL ? strstr(r.body, "\"applied\":") : NULL;
+	n = p != NULL ? atoll(p + 10) : -1;
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	return (n);
+}
+
+/*
+ * Until the first n nodes have applied what node i had when asked: a
+ * follower knows a write once it is told it is committed, a heartbeat
+ * after the leader.
+ */
+static void
+cl_settle(const char *cwd, int i, int n)
+{
+	long long	want;
+	int		k, j;
+
+	want = cl_applied(cwd, i);
+	for (j = 0; j < n; j++) {
+		for (k = 0; k < 150 && cl_applied(cwd, j) < want; k++)
+			usleep(100000);
+		ATF_REQUIRE_MSG(k < 150, "%s did not apply %lld", cl_nodes[j],
+		    want);
+	}
+}
+
+/* Each of two children's exit: what the status they were answered says. */
+#define	CL_EXIT(st)	((st) == 200 ? 0 : (st) == 403 ? 3 : (st) == 409 ? 4 : 9)
+
+/*
+ * A cluster not set up has one setup token, its leader's: none on a node
+ * that has never had a leader (it says so), then made by the seed once it
+ * leads, its text in the seed's data directory alone; every node says
+ * where it is and takes it, and no follower writes one of its own.
+ */
+CLUSTER_TC(cluster_setup_token, "A cluster's setup token is its leader's: "
+    "none before there is one, the same on every node, none of a follower's "
+    "own")
+ATF_TC_BODY(cluster_setup_token, tc)
+{
+	struct resp	 r;
+	char		 cwd[MAXPATHLEN], body[256], path[MAXPATHLEN], *tok;
+	int		 i;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	/* nb alone: no leader, none had; no token, and it says why. */
+	cl_node(tc, cwd, 1);
+	ATF_CHECK(cl_until(cwd, 1, "/api/auth/status", "\"setup_waiting\":"
+	    "\"this node of the cluster has no leader"));
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	http("POST", "/api/auth/register/begin", "{\"setup_token\":\"00000000"
+	    "00000000000000000000000000000000000000000000000000000000\"}", &r);
+	ATF_CHECK_MSG(r.status == 503 && strstr(r.body, "no leader") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	ATF_CHECK(access("data/setup-token", F_OK) == -1);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	/* The seed and nc: the seed leads, and makes it. */
+	cl_node(tc, cwd, 0);
+	cl_node(tc, cwd, 2);
+	snprintf(path, sizeof(path), "%s/data/setup-token", cl_nodes[0]);
+	wait_for(path);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	tok = setup_token();
+	ATF_REQUIRE(chdir(cwd) == 0);
+	for (i = 0; i < 3; i++)
+		ATF_CHECK_MSG(cl_until(cwd, i, "/api/auth/status",
+		    "\"setup_node\":\"na\""), "%s does not say the token is na's",
+		    cl_nodes[i]);
+	for (i = 1; i < 3; i++) {
+		snprintf(path, sizeof(path), "%s/data/setup-token", cl_nodes[i]);
+		ATF_CHECK_MSG(access(path, F_OK) == -1, "%s wrote a setup token "
+		    "of its own", cl_nodes[i]);
+	}
+	/* A follower takes the leader's, and no other. */
+	ATF_REQUIRE(chdir(cl_nodes[2]) == 0);
+	snprintf(body, sizeof(body), "{\"setup_token\":\"%s\"}", tok);
+	http("POST", "/api/auth/register/begin", body, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("POST", "/api/auth/register/begin", "{\"setup_token\":\"00000000"
+	    "00000000000000000000000000000000000000000000000000000000\"}", &r);
+	ATF_CHECK_MSG(r.status == 403 && strstr(r.body, "on node na") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	free(tok);
+}
+
+/*
+ * Two first keys registered at once on two nodes by the leader's setup
+ * token: the first committed wins, the other is refused, and every node
+ * has the one owner's key alone; the token is spent, its file gone.
+ */
+CLUSTER_TC(cluster_setup_race, "Two first keys raced on two nodes of a "
+    "cluster: one owner on every node, the other refused")
+ATF_TC_BODY(cluster_setup_race, tc)
+{
+	struct authn	 ka, kb;
+	struct resp	 r;
+	char		 cwd[MAXPATHLEN], fb[4096], fc[4096], body[256];
+	char		 path[MAXPATHLEN], *tok, *id64;
+	pid_t		 pid;
+	int		 i, st, sb, sc;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_boot(tc, cwd, 3);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	tok = setup_token();
+	ATF_REQUIRE(chdir(cwd) == 0);
+	snprintf(body, sizeof(body), "{\"setup_token\":\"%s\"}", tok);
+	authn_new(&ka, -7);
+	authn_new(&kb, -7);
+	/* Each ceremony begun on its node, finished on it at once. */
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	http("POST", "/api/auth/register/begin", body, &r);
+	EXPECT(&r, 200);
+	reg_finish_body(&ka, jstr(&r, "publicKey.challenge"), fb, sizeof(fb));
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_REQUIRE(chdir(cl_nodes[2]) == 0);
+	http("POST", "/api/auth/register/begin", body, &r);
+	EXPECT(&r, 200);
+	reg_finish_body(&kb, jstr(&r, "publicKey.challenge"), fc, sizeof(fc));
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	if ((pid = fork()) == 0) {
+		ATF_REQUIRE(chdir(cl_nodes[2]) == 0);
+		http("POST", "/api/auth/register/finish", fc, &r);
+		_exit(r.status == 403 && strstr(r.body, "set up already") ==
+		    NULL ? 8 : CL_EXIT(r.status));
+	}
+	ATF_REQUIRE(pid > 0);
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	http("POST", "/api/auth/register/finish", fb, &r);
+	sb = r.status;
+	ATF_CHECK_MSG(sb == 200 || (sb == 403 && strstr(r.body, "set up "
+	    "already") != NULL), "nb: %d %s", sb, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_REQUIRE(waitpid(pid, &st, 0) == pid);
+	ATF_REQUIRE(WIFEXITED(st));
+	sc = WEXITSTATUS(st) == 0 ? 200 : WEXITSTATUS(st) == 3 ? 403 : -1;
+	ATF_CHECK_MSG((sb == 200) + (sc == 200) == 1 && (sb == 403 || sc ==
+	    403), "nb %d, nc %d (exit %d): not one owner", sb, sc,
+	    WEXITSTATUS(st));
+	/* Every node: one key, the first's. */
+	id64 = b64url(sb == 200 ? ka.id : kb.id, sizeof(ka.id));
+	for (i = 0; i < 3; i++) {
+		ATF_CHECK_MSG(cl_count_until(i, "data/credentials.json",
+		    "\"public_key\"", 1) && cl_count(i, "data/credentials.json",
+		    id64) == 1, "%s has not the one owner's key alone",
+		    cl_nodes[i]);
+		ATF_CHECK_MSG(cl_count(i, "data/users.json",
+		    "\"password\":\"$2b$") <= 0, "%s has an owner by password "
+		    "too", cl_nodes[i]);
+	}
+	/* Spent: the leader's file gone, and the token sets up nothing. */
+	snprintf(path, sizeof(path), "%s/data/setup-token", cl_nodes[0]);
+	for (i = 0; i < 150 && access(path, F_OK) == 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(access(path, F_OK) == -1, "the setup token is still in "
+	    "%s", path);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	snprintf(body, sizeof(body), "{\"setup_token\":\"%s\",\"user\":"
+	    "\"admin\",\"password\":\"correct horse battery\"}", tok);
+	http("POST", "/api/auth/setup/password", body, &r);
+	ATF_CHECK_MSG(r.status == 409, "%d %s", r.status, r.body);
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	free(id64);
+	free(tok);
+}
+
+/*
+ * A first key on one node and a first password on another, at once: one
+ * of them sets the console up, on every node, though they write two
+ * documents.
+ */
+CLUSTER_TC(cluster_setup_race_password, "A first key and a first password "
+    "raced on two nodes of a cluster: one owner on every node")
+ATF_TC_BODY(cluster_setup_race_password, tc)
+{
+	struct authn	 ka;
+	struct resp	 r;
+	char		 cwd[MAXPATHLEN], fb[4096], body[256], *tok;
+	pid_t		 pid;
+	int		 i, st, sb, sc, keys, pws;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_boot(tc, cwd, 3);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	tok = setup_token();
+	ATF_REQUIRE(chdir(cwd) == 0);
+	authn_new(&ka, -7);
+	snprintf(body, sizeof(body), "{\"setup_token\":\"%s\"}", tok);
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	http("POST", "/api/auth/register/begin", body, &r);
+	EXPECT(&r, 200);
+	reg_finish_body(&ka, jstr(&r, "publicKey.challenge"), fb, sizeof(fb));
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	snprintf(body, sizeof(body), "{\"setup_token\":\"%s\",\"user\":"
+	    "\"owner2\",\"password\":\"correct horse battery\"}", tok);
+	if ((pid = fork()) == 0) {
+		ATF_REQUIRE(chdir(cl_nodes[2]) == 0);
+		http("POST", "/api/auth/setup/password", body, &r);
+		_exit(CL_EXIT(r.status));
+	}
+	ATF_REQUIRE(pid > 0);
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	http("POST", "/api/auth/register/finish", fb, &r);
+	sb = r.status;
+	resp_free(&r);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_REQUIRE(waitpid(pid, &st, 0) == pid);
+	ATF_REQUIRE(WIFEXITED(st));
+	sc = WEXITSTATUS(st) == 0 ? 200 : WEXITSTATUS(st) == 4 ? 409 : -1;
+	ATF_CHECK_MSG((sb == 200) + (sc == 200) == 1 && (sb == 403 || sc ==
+	    409), "key on nb %d, password on nc %d: not one owner", sb, sc);
+	/* Every node alike: the key's owner, or the password's. */
+	keys = sb == 200 ? 1 : 0;
+	pws = sc == 200 ? 1 : 0;
+	for (i = 0; i < 3; i++) {
+		ATF_CHECK_MSG(keys == 0 || cl_count_until(i,
+		    "data/credentials.json", "\"public_key\"", 1), "%s: no key",
+		    cl_nodes[i]);
+		ATF_CHECK_MSG(pws == 0 || cl_count_until(i, "data/users.json",
+		    "\"password\":\"$2b$", 1), "%s: no password", cl_nodes[i]);
+		ATF_CHECK_MSG(cl_count(i, "data/credentials.json",
+		    "\"public_key\"") <= keys && cl_count(i, "data/users.json",
+		    "\"password\":\"$2b$") <= pws, "%s has two owners",
+		    cl_nodes[i]);
+	}
+	free(tok);
+}
+
+/*
+ * Enrolment tokens are the cluster's: one made on one node enrols a host
+ * through another, once; one sent to two nodes at once enrols once.
+ */
+CLUSTER_TC(cluster_enrol, "An enrolment token made on one node of a "
+    "cluster enrols through another, once; raced on two, once")
+ATF_TC_BODY(cluster_enrol, tc)
+{
+	struct authn	 a;
+	char		 cwd[MAXPATHLEN], tok[256], said[512];
+	pid_t		 pid;
+	int		 st, sa;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_start(tc, cwd, &a);
+	cl_csr();
+	cl_enrol_token(cwd, 0, "h1", tok, sizeof(tok));
+	cl_settle(cwd, 0, 3);
+	st = cl_enrol(cwd, 1, tok, said, sizeof(said));
+	ATF_CHECK_MSG(st == 200 && strstr(said, "BEGIN CERTIFICATE") != NULL,
+	    "made on na, enrolled on nb: %d %s", st, said);
+	st = cl_enrol(cwd, 2, tok, said, sizeof(said));
+	ATF_CHECK_MSG(st == 403, "spent, again on nc: %d %s", st, said);
+	st = cl_enrol(cwd, 0, tok, said, sizeof(said));
+	ATF_CHECK_MSG(st == 403, "spent, again on na: %d %s", st, said);
+	/* The host it made a server of, on every node. */
+	ATF_CHECK(cl_until(cwd, 0, CC "hosts", "\"h1\""));
+	ATF_CHECK(cl_until(cwd, 2, CC "hosts", "\"h1\""));
+	/* One made on nb, sent to nc and na at once. */
+	cl_enrol_token(cwd, 1, "h2", tok, sizeof(tok));
+	cl_settle(cwd, 1, 3);
+	if ((pid = fork()) == 0)
+		_exit(CL_EXIT(cl_enrol(cwd, 2, tok, NULL, 0)));
+	ATF_REQUIRE(pid > 0);
+	sa = cl_enrol(cwd, 0, tok, said, sizeof(said));
+	ATF_REQUIRE(waitpid(pid, &st, 0) == pid);
+	ATF_REQUIRE(WIFEXITED(st));
+	ATF_CHECK_MSG((sa == 200) + (WEXITSTATUS(st) == 0) == 1 && (sa == 403 ||
+	    WEXITSTATUS(st) == 3), "na %d (%s), nc exit %d: not one enrolment",
+	    sa, said, WEXITSTATUS(st));
+}
+
+/*
+ * An enrolment token runs out by the leader's clock, as the write that
+ * spends it says: in time it enrols on another node; run out, it is
+ * refused on every node alike.
+ */
+CLUSTER_TC(cluster_enrol_expired, "An enrolment token of a cluster run out "
+    "is refused on every node alike")
+ATF_TC_BODY(cluster_enrol_expired, tc)
+{
+	struct authn	 a;
+	char		 cwd[MAXPATHLEN], tok[256], said[512];
+	int		 i, st;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	cl_conf = "enrol_ttl = 10;";
+	cl_start(tc, cwd, &a);
+	cl_csr();
+	cl_enrol_token(cwd, 0, "h1", tok, sizeof(tok));
+	cl_settle(cwd, 0, 3);
+	st = cl_enrol(cwd, 2, tok, said, sizeof(said));
+	ATF_CHECK_MSG(st == 200, "in time, on nc: %d %s", st, said);
+	cl_enrol_token(cwd, 0, "h2", tok, sizeof(tok));
+	cl_settle(cwd, 0, 3);
+	sleep(12);
+	for (i = 1; i < 4; i++) {
+		st = cl_enrol(cwd, i % 3, tok, said, sizeof(said));
+		ATF_CHECK_MSG(st == 403 && strstr(said, "expired") != NULL,
+		    "run out, on %s: %d %s", cl_nodes[i % 3], st, said);
+	}
+}
+
+/*
+ * The tokens are the log's on a node restarted (its documents and its
+ * log), and on a node that joins later (the documents it is sent): one
+ * made before enrols through either; the console set up, on both.
+ */
+CLUSTER_TC(cluster_tokens_restart, "A node of a cluster restarted, and one "
+    "joined after the documents, both know its tokens")
+ATF_TC_BODY(cluster_tokens_restart, tc)
+{
+	struct authn	 a;
+	char		 cwd[MAXPATHLEN], t1[256], t2[256], said[512];
+	int		 st;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	/* na and nb, a majority of the three. */
+	cl_boot(tc, cwd, 2);
+	ATF_REQUIRE(chdir(cl_nodes[0]) == 0);
+	enrol(&a);
+	ATF_REQUIRE(chdir(cwd) == 0);
+	cl_csr();
+	cl_enrol_token(cwd, 0, "h1", t1, sizeof(t1));
+	cl_enrol_token(cwd, 0, "h2", t2, sizeof(t2));
+	/* nb has applied them, then restarted. */
+	cl_settle(cwd, 0, 2);
+	ATF_REQUIRE(chdir(cl_nodes[1]) == 0);
+	console_stop();
+	console_start();
+	ATF_REQUIRE(chdir(cwd) == 0);
+	ATF_CHECK(cl_until(cwd, 1, CC "cluster", "\"leader\":\"n"));
+	st = cl_enrol(cwd, 1, t1, said, sizeof(said));
+	ATF_CHECK_MSG(st == 200, "made on na, on nb restarted: %d %s", st,
+	    said);
+	/* nc joins: sent the documents, the tokens among them. */
+	cl_node(tc, cwd, 2);
+	ATF_CHECK(cl_until(cwd, 2, "/api/auth/status", "\"setup_required\":"
+	    "false"));
+	ATF_CHECK_MSG(system("grep -q 'the documents of n.* taken' "
+	    "nc/console.out") == 0, "nc was not sent the documents");
+	st = cl_enrol(cwd, 2, t2, said, sizeof(said));
+	ATF_CHECK_MSG(st == 200, "made on na, on nc joined: %d %s", st, said);
+	st = cl_enrol(cwd, 2, t1, said, sizeof(said));
+	ATF_CHECK_MSG(st == 403, "spent on nb, on nc: %d %s", st, said);
 }
 
 /* tls_ec's host, its id made by the test. */
@@ -26759,6 +27259,12 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, cluster_catchup);
 	ATF_TP_ADD_TC(tp, cluster_behind);
 	ATF_TP_ADD_TC(tp, cluster_apply_lock);
+	ATF_TP_ADD_TC(tp, cluster_setup_token);
+	ATF_TP_ADD_TC(tp, cluster_setup_race);
+	ATF_TP_ADD_TC(tp, cluster_setup_race_password);
+	ATF_TP_ADD_TC(tp, cluster_enrol);
+	ATF_TP_ADD_TC(tp, cluster_enrol_expired);
+	ATF_TP_ADD_TC(tp, cluster_tokens_restart);
 
 	ATF_TP_ADD_TC(tp, watch_nacm);
 	ATF_TP_ADD_TC(tp, notif_receiver);
