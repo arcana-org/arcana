@@ -21443,6 +21443,50 @@ ATF_TC_BODY(page_stream_replay, tc)
 	free(buf);
 }
 
+CONSOLE_TC(page_stream_cap, "A principal's pages hear 32 sources at most "
+    "between them: the next refused, by POST and on a new stream")
+ATF_TC_BODY(page_stream_cap, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 sid[16], pid[40], path[96], body[96], *buf;
+	size_t		 len, cap = 1 << 20;
+	int		 s[5];
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", sid, sizeof(sid));
+	for (int i = 0; i < 4; i++) {
+		len = 0;
+		memset(buf, 0, cap);
+		s[i] = ps_open("fleet=1", NULL, buf, &len, cap);
+		ps_id(buf, pid, sizeof(pid));
+		snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+		for (int k = 0; k < 7; k++) {
+			snprintf(body, sizeof(body), "{\"add\":\"sub-%lu\"}",
+			    ps_sub(sid, false));
+			http("POST", path, body, &r);
+			EXPECT(&r, 204);
+			resp_free(&r);
+		}
+	}
+	/* The 33rd. */
+	snprintf(body, sizeof(body), "{\"add\":\"sub-%lu\"}", ps_sub(sid,
+	    false));
+	http("POST", path, body, &r);
+	ATF_CHECK_MSG(r.status == 503, "%d %s", r.status, r.body);
+	resp_free(&r);
+	len = 0;
+	memset(buf, 0, cap);
+	s[4] = ps_open("fleet=1", NULL, buf, &len, cap);
+	ATF_CHECK_MSG(ps_event(buf, "fleet.end", "too many sources") &&
+	    strstr(buf, "\"sources\":[]") != NULL, "%s", buf);
+	for (int i = 0; i < 5; i++)
+		close(s[i]);
+	free(buf);
+}
+
 CONSOLE_TC(page_stream_owner, "A page's stream changed by the session that "
     "opened it alone; its subscriptions no one else's")
 ATF_TC_BODY(page_stream_owner, tc)
@@ -26633,6 +26677,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, page_stream_post);
 	ATF_TP_ADD_TC(tp, page_stream_replay);
 	ATF_TP_ADD_TC(tp, page_stream_owner);
+	ATF_TP_ADD_TC(tp, page_stream_cap);
 	ATF_TP_ADD_TC(tp, page_stream_reach);
 	ATF_TP_ADD_TC(tp, page_stream_freed);
 	ATF_TP_ADD_TC(tp, workflows_arcana);

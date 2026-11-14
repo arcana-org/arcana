@@ -115,6 +115,8 @@
 #define	RCH_BACKOFF_S	60		/* subscribe again at most so far apart */
 #define	RCH_SEEN	64		/* records of one event time remembered */
 #define	PAGE_SRC_MAX	8		/* sources of a page's stream */
+#define	PAGE_SRC_WHO	32		/* ... of one principal's pages */
+#define	PAGE_SRC_ALL	256		/* ... of every page */
 #define	PAGE_ID_LEN	32		/* a page's stream's id, hex */
 
 /* An establish-subscription's input, as the POST said it. */
@@ -1498,8 +1500,9 @@ page_add(struct http_request *req, struct rcs *rs, const char *name,
 	struct rcsub		 *sb;
 	struct rcsrc		 *src;
 	char			  who[256];
+	struct rcs		 *o;
 	unsigned long		  id;
-	size_t			  n;
+	size_t			  n, k, mine, all;
 	bool			  have;
 
 	if (!page_name(name, &id)) {
@@ -1515,6 +1518,30 @@ page_add(struct http_request *req, struct rcs *rs, const char *name,
 	if (n >= PAGE_SRC_MAX) {
 		snprintf(why, len, "a page's stream has %d sources at most",
 		    PAGE_SRC_MAX);
+		return (503);
+	}
+	/* Each source is the hosts' streams of its own, as a stream of one
+	 * source was: counted as those were, of one principal and of all. */
+	mine = all = 0;
+	LIST_FOREACH(o, &streams, list) {
+		if (!o->page || o->req == NULL)
+			continue;
+		pthread_mutex_lock(&o->lock);
+		k = o->nsrc;
+		pthread_mutex_unlock(&o->lock);
+		all += k;
+		if (o->b.who.kind == rs->b.who.kind && strcmp(o->b.who.name,
+		    rs->b.who.name) == 0 && (rs->b.who.kind == P_USER ||
+		    strcmp(o->b.addr, rs->b.addr) == 0))
+			mine += k;
+	}
+	/* rs itself is on the list only once its reply began. */
+	if (rs->req == NULL) {
+		all += n;
+		mine += n;
+	}
+	if (mine >= PAGE_SRC_WHO || all >= PAGE_SRC_ALL) {
+		snprintf(why, len, "too many sources are heard: try again");
 		return (503);
 	}
 	(void)session_owner(req, who, sizeof(who));
