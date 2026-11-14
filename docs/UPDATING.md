@@ -93,6 +93,40 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Console plugins: themes and guide packs as data, code only when trusted, console 0.437.0
+
+- **A plugin with scripts or styles must say `"trusted": true`** in its
+  `plugin.json`, or the console lists it as refused, with why, and
+  serves none of it: its scripts run as every user who opens the page,
+  with their session.  An enabled plugin that does not say so stops
+  being served at the console's first look after the update (open pages
+  keep its code until they are loaded again).  Settings, Plugins shows
+  trusted plugins apart, under a warning, and asks the owner before
+  enabling one; an owner who enabled one before has it enabled still,
+  once its manifest says it is trusted.
+- **Themes and guide packs are data**: the manifest names them
+  (`themes: [{id, name, file}]`, `guide-packs: [{id, name, expressions,
+  lines}]`), the console checks their JSON (a theme's tokens by name and
+  grammar, no `url()` or anything that fetches; a pack's pictures files
+  the plugin lists; every string text) and the page applies them with
+  its own code, with no script of the plugin's.  `provides` says
+  `theme` and `guide-pack` exactly when the manifest has them, and a
+  plugin of data alone provides nothing else.  `plugin.json` is now
+  served too (the page reads it).  A data plugin disabled is put away
+  at once, in open pages too.
+- **What an admin does**: a script plugin that only provided a theme or
+  a guide pack loads again only once marked `"trusted": true`; better,
+  rewrite it as data (its manifest names its files, its script goes).
+  The first-party ones are converted: `template` 0.2.0 and
+  `guide-after-hours` 1.1.0 are data, `game-mode` 0.31.0 is trusted and
+  takes the guide packs of data (`Arcana.on("guide-packs")`); each needs
+  this console.  Install the new copies over the old directories.
+- An SVG of a plugin is served with a policy of its own (`sandbox`,
+  nothing fetched) and as an attachment: a picture for an `<img>`.
+- A theme picked from a plugin is kept in the browser as
+  `p:<plugin>/<id>`; when its plugin is disabled the page wears the
+  default until it is enabled again.
+
 ### The cluster chosen at the build, and Raft made safer, console 0.436.0
 
 - **A console has no cluster unless it is built with one.**  From this

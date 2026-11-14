@@ -282,9 +282,19 @@ document for the whole fleet, and so not a tenant's user's.
 
 Extensions of the console's page, served by the console from its own
 origin (`cplug.c`); not the hosts' plugins (BIRD, Suricata and the
-others), which run on the hosts.  A console plugin's script runs with
-the page's full rights, the signed-in user's, so only what the console
-host's administrator installed and a console owner enabled is served.
+others), which run on the hosts.  Only what the console host's
+administrator installed and a console owner enabled is served.  A
+plugin is data or trusted:
+
+* **Data**: themes and guide packs, JSON and pictures (and a font) that
+  the console checks and the page applies with its own code; nothing of
+  the plugin's runs.  The common kinds need no more.
+* **Trusted**: a plugin with scripts (`entry`) or stylesheets
+  (`styles`).  Its script runs with the page's full rights, those of
+  every user who opens it, with their session; the manifest says
+  `"trusted": true` or the plugin is refused, and Settings shows it
+  apart, under a warning, and asks before enabling it.  It may ship
+  themes and guide packs as data too.
 
 * **Where.**  A directory each under web.conf's `plugins_dir`
   (`/usr/local/share/arcana-console/plugins` unless set; `""`, or no
@@ -293,21 +303,45 @@ host's administrator installed and a console owner enabled is served.
 * **Format.**  `plugin.json` in it: `id` (`[a-z0-9-]{1,40}`, the
   directory's name), `name`, `version`, `arcana` (the least console
   version, `a.b.c`; an older console lists the plugin with why and
-  serves none of it), optional `description`, `author`, `entry` (the
-  `.js` files, in order), `styles` (`.css`), `assets` (files or
-  glob(3) patterns of `.png`, `.svg`, `.webp`, `.json`, `.woff2`) and
-  `provides` (words: `guide-pack`, `theme`, ...).  Anything else, a key
-  the format does not have, a path that is absolute, hidden or has
-  `..`, a file larger than 8 MB, a file whose real path is out of the
-  plugin's directory (a link out), and the plugin is listed with the
-  reason and none of it served.
+  serves none of it), optional `description`, `author`, `themes`
+  (`[{id, name, file}]`), `guide-packs` (`[{id, name, expressions,
+  lines}]`), `trusted`, `entry` (the `.js` files, in order), `styles`
+  (`.css`), `assets` (files or glob(3) patterns of `.png`, `.svg`,
+  `.webp`, `.json`, `.woff2`) and `provides` (words: `theme` exactly
+  when it has themes, `guide-pack` exactly when it has guide packs; a
+  data plugin nothing else).  `entry` or `styles` without `"trusted":
+  true`, `trusted` without them, anything else, a key the format does
+  not have, a path that is absolute, hidden or has `..`, a file larger
+  than 8 MB, a file whose real path is out of the plugin's directory (a
+  link out), data that is not as below, and the plugin is listed with
+  the reason and none of it served.  The files of its themes and guide
+  packs, and `plugin.json` itself, are listed with its assets.
+* **A theme's file**: `{"scheme": "dark" | "light", "tokens": {...},
+  "font": {"family", "file"}}`, tokens required.  A token is one of
+  `web/style.css`'s `:root` custom properties that a theme sets (the
+  table in `cplug.c`, the same in `bridge.js`), each by a grammar of its
+  own: the colours (`--bg`, `--fg`, `--cyan`, ...) `#rgb`, `#rgba`,
+  `#rrggbb`, `#rrggbbaa`, `rgb(r, g, b)` or `rgba(r, g, b, a)`; the
+  channels (`--accent-rgb`, ...) `r, g, b`; the faces (`--sans`,
+  `--mono`, `--display`) up to eight names, quoted (letters, digits,
+  spaces, `-`) or bare, by commas; `--cut` and `--radius` `0` or a
+  number of `px`, `rem` or `em`.  Nothing else: no `url()`, no `var()`,
+  no `@import`, nothing that fetches.  The font a `.woff2` it lists.
+* **A guide pack's files**: `expressions.json` (`version`, `default`,
+  `expressions`, and one of `rig`, an `.svg`, or `images`, an `.svg`,
+  `.png` or `.webp` an expression), `lines.json` (`version`,
+  `placeholders`, `moments`: lists of `{expression, text}`), each picture
+  a file the plugin lists, relative to its JSON; every string text of
+  300 bytes at most, shown as text and never as markup.
 * **Hashes.**  Each listed file's size and SHA-384 are kept; the page
   loads exactly these, with `integrity="sha384-..."`.  The directory is
   looked at again at most once a second, on a read of
   `arcana-console:plugins` and on a
   plugin's file asked for: rescanned when it, a plugin's directory,
   its `plugin.json` or the directory of a listed file changed, and a
-  listed file whose time or size changed is hashed again.  No restart.
+  listed file whose time or size changed is hashed again; a theme's or
+  a guide pack's file that changed is checked again, the plugin
+  rescanned, and not served as it is until then.  No restart.
 * **Enabled** by a console owner alone (`plugins/plugin=<id>/enabled`
   of `arcana-console`), kept in `console-plugins.json` in the data
   directory, written in the audit trail.  An enabled plugin is served
@@ -316,35 +350,51 @@ host's administrator installed and a console owner enabled is served.
   enabled plugin, to a session (not to an API token), with the
   headers every reply has (above), `Cache-Control: no-cache` and the hash as the
   ETag; read and hashed again as it is sent, its real path checked to
-  be in the plugin's directory.  Anything else is not found.
+  be in the plugin's directory.  An SVG with a policy of its own too
+  (`default-src 'none'; style-src 'unsafe-inline'; img-src data:;
+  sandbox`) and `Content-Disposition: attachment`: a picture for an
+  `<img>`, which opened by its address runs and fetches nothing and is
+  saved, not shown.  Anything else is not found.
 * **Loaded** by the page (`bridge.js`, `plugins.c`) once signed in:
   the list is read then and again with the health (every 15 s while
   the page is looked at), and each enabled plugin with no error that
-  the page has not loaded yet gets its styles (`<link rel=stylesheet
+  the page has not loaded yet gets its data read (`fetch` with the
+  integrity: `plugin.json`, then its themes' and guide packs' files),
+  checked by the same rules and applied by the page's own code, all or
+  nothing; a trusted one its styles too (`<link rel=stylesheet
   integrity crossorigin>`) and its scripts (`<script integrity>`, in
-  `entry` order).  A file the browser refuses (its bytes not what was
-  listed), a script that throws, a plugin function that throws: the
-  plugin's error, shown in Settings, Plugins and in a toast; the page
-  goes on without it.  Enabled, a plugin is loaded at once; disabled,
-  it stays in a page until that page is loaded again (Settings says
-  so).  Settings, Plugins lists them (name, version, author, provides,
-  enabled, and what the page made of each) and has Enable and Disable
-  for a console owner.
+  `entry` order).  No `<script>` is made for a data plugin.  A theme is
+  picked in Settings, Look (kept in the browser as `p:<plugin>/<id>`)
+  and worn by setting its tokens on `:root` over the stylesheet's; a
+  guide pack goes to a guide's runtime (`guide-packs` below) and is
+  shown in Settings, Plugins (its picture an `<img>`, its first line as
+  text).  A file the browser refuses (its bytes not what was listed),
+  data the page refuses, a script that throws, a plugin function that
+  throws: the plugin's error, shown in Settings, Plugins and in a
+  toast; the page goes on without it.  Enabled, a plugin is loaded at
+  once; disabled, its themes (worn or not) and guide packs are put away
+  at once, and a trusted one's code stays in a page until that page is
+  loaded again (Settings says so).  Settings, Plugins lists the data
+  plugins, then the trusted ones apart under a warning (name, version,
+  author, provides, enabled, and what the page made of each) and has
+  Enable and Disable for a console owner; enabling a trusted one asks
+  first.
 
-The page gives a plugin's scripts `window.Arcana`:
+The page gives a trusted plugin's scripts `window.Arcana`:
 
 | Member | What |
 |---|---|
 | `version` | the console's version |
 | `user` | `{name, role}` of who is signed in |
 | `registerPlugin({id, screens, menu, on})` | once, from the plugin's own script, `id` its own; `on` as `Arcana.on` for each key |
+| `guidePacks()` | the guide packs of plugins' data, `[{id, name, plugin, base, expressions, lines}]`, the files relative to `base`, for a guide's runtime to register |
 | `api(method, url, body)` | a request to the console as the page makes them (its session, `X-Arcana`), a path of the console's alone; `body` sent as JSON; a Promise of the reply's JSON, rejected with an `Error` (`status`, `body`) unless 2xx |
 | `navigate(hash)` | goes to an address of the page (`#/...`) |
 | `toast(text, bad)` | a toast, an error's when `bad` |
 | `fullscreen(on)` | the page over the whole screen, or not, where the browser lets it |
 | `store.get()`, `store.put(obj, etag)` | the signed-in user's own JSON object for the plugin (below): `get` resolves to `{data, etag}`, `data` `null` while none is stored; `put` to `{etag}` |
 | `store.shared.get()`, `store.shared.put(obj, etag)` | the same, one object the console's users share: any console role reads it, an operator or an owner writes it |
-| `on(event, fn)` | `route` (`{hash}`, the address once it changed, after what the page does then: the last told is the address, the same one never twice in a row), `theme` (`{theme}`), `servers` (`[{id, name, local}]`, when the hosts change, and at once with them as they are), `signed-out`, `gamepad-first` (`{id}`, a controller's first press on the console's pages; a handler that returns `true` takes it, and the page does nothing with that press) |
+| `on(event, fn)` | `route` (`{hash}`, the address once it changed, after what the page does then: the last told is the address, the same one never twice in a row), `theme` (`{theme}`), `servers` (`[{id, name, local}]`, when the hosts change, and at once with them as they are), `signed-out`, `gamepad-first` (`{id}`, a controller's first press on the console's pages; a handler that returns `true` takes it, and the page does nothing with that press), `guide-packs` (`guidePacks()`'s list, at once and whenever a data plugin's packs come or go) |
 
 `screens: {<name>: {title, enter(root, ctx), leave()}}` are the
 plugin's screens, at `#/p/<plugin>/<name>[/<rest>]`: shown, the page's

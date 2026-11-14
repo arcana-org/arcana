@@ -4518,9 +4518,9 @@ ATF_TC_BODY(console_plugins, tc)
 	ATF_REQUIRE(mkdir("plugins/good/img", 0755) == 0);
 	put("plugins/good/plugin.json", "{\"id\":\"good\",\"name\":\"Good\","
 	    "\"version\":\"1.2.0\",\"arcana\":\"0.1.0\",\"description\":"
-	    "\"A test\",\"author\":\"Tests\",\"entry\":[\"main.js\"],"
-	    "\"styles\":[\"look.css\"],\"assets\":[\"img/*.png\"],"
-	    "\"provides\":[\"theme\"]}");
+	    "\"A test\",\"author\":\"Tests\",\"trusted\":true,\"entry\":"
+	    "[\"main.js\"],\"styles\":[\"look.css\"],\"assets\":"
+	    "[\"img/*.png\"],\"provides\":[\"screen\"]}");
 	put("plugins/good/main.js", js);
 	put("plugins/good/look.css", "body { color: red; }\n");
 	put("plugins/good/img/a.png", "PNG a");
@@ -4535,7 +4535,8 @@ ATF_TC_BODY(console_plugins, tc)
 	put("outside.js", "window.secret = 1;\n");
 	ATF_REQUIRE(mkdir("plugins/leak", 0755) == 0);
 	put("plugins/leak/plugin.json", "{\"id\":\"leak\",\"name\":\"Leak\","
-	    "\"version\":\"1\",\"arcana\":\"0.1.0\",\"entry\":[\"s.js\"]}");
+	    "\"version\":\"1\",\"arcana\":\"0.1.0\",\"trusted\":true,"
+	    "\"entry\":[\"s.js\"]}");
 	ATF_REQUIRE(symlink("../../outside.js", "plugins/leak/s.js") == 0);
 	/* Of a console to come. */
 	ATF_REQUIRE(mkdir("plugins/newer", 0755) == 0);
@@ -4566,7 +4567,7 @@ ATF_TC_BODY(console_plugins, tc)
 	ATF_CHECK_STREQ("Good", cplug_str(&r, "good", "name"));
 	ATF_CHECK_STREQ("1.2.0", cplug_str(&r, "good", "version"));
 	ATF_CHECK_STREQ("Tests", cplug_str(&r, "good", "author"));
-	ATF_CHECK_STREQ("theme", cplug_str(&r, "good", "provides.0"));
+	ATF_CHECK_STREQ("screen", cplug_str(&r, "good", "provides.0"));
 	ATF_CHECK_STREQ("false", cplug_str(&r, "good", "enabled"));
 	ATF_CHECK_STREQ("main.js", cplug_str(&r, "good", "file.0.path"));
 	ATF_CHECK_STREQ("script", cplug_str(&r, "good", "file.0.kind"));
@@ -4576,7 +4577,9 @@ ATF_TC_BODY(console_plugins, tc)
 	ATF_CHECK_STREQ("img/a.png", cplug_str(&r, "good", "file.2.path"));
 	ATF_CHECK_STREQ("asset", cplug_str(&r, "good", "file.2.kind"));
 	ATF_CHECK_STREQ("img/b.png", cplug_str(&r, "good", "file.3.path"));
-	ATF_CHECK(cplug_str(&r, "good", "file.4.path") == NULL);
+	/* Its manifest, last, for the page to read. */
+	ATF_CHECK_STREQ("plugin.json", cplug_str(&r, "good", "file.4.path"));
+	ATF_CHECK(cplug_str(&r, "good", "file.5.path") == NULL);
 	ATF_CHECK(has(cplug_str(&r, "leak", "error"), "outside"));
 	ATF_CHECK(cplug_str(&r, "leak", "file") == NULL);
 	ATF_CHECK(has(cplug_str(&r, "newer", "error"), "needs console "
@@ -4637,8 +4640,9 @@ ATF_TC_BODY(console_plugins, tc)
 	http("GET", "/plugins/good/extra.js", NULL, &r);
 	EXPECT(&r, 404);
 	resp_free(&r);
+	/* Its manifest is listed, and served. */
 	http("GET", "/plugins/good/plugin.json", NULL, &r);
-	EXPECT(&r, 404);
+	EXPECT(&r, 200);
 	resp_free(&r);
 	http("GET", "/plugins/good/img/.hidden.png", NULL, &r);
 	EXPECT(&r, 404);
@@ -4691,7 +4695,8 @@ ATF_TC_BODY(console_plugins, tc)
 	 * rewritten, a file made a link out; seen without a restart. */
 	ATF_REQUIRE(mkdir("plugins/fresh", 0755) == 0);
 	put("plugins/fresh/plugin.json", "{\"id\":\"fresh\",\"name\":\"Fresh\","
-	    "\"version\":\"1\",\"arcana\":\"0.1.0\",\"entry\":[\"f.js\"]}");
+	    "\"version\":\"1\",\"arcana\":\"0.1.0\",\"trusted\":true,"
+	    "\"entry\":[\"f.js\"]}");
 	put("plugins/fresh/f.js", "window.f = 1;\n");
 	put("plugins/good/main.js", "window.x = 2;\n");
 	usleep(1200 * 1000);
@@ -4887,6 +4892,167 @@ ATF_TC_BODY(console_plugins, tc)
 	resp_free(&r);
 #undef	STORE
 #undef	SHARED
+}
+
+/* A plugin of the data cases: its plugin.json, what follows id. */
+static void
+cdata_put(const char *id, const char *rest)
+{
+	char	path[MAXPATHLEN], json[1024];
+
+	snprintf(path, sizeof(path), "plugins/%s", id);
+	ATF_REQUIRE(mkdir(path, 0755) == 0);
+	snprintf(json, sizeof(json), "{\"id\":\"%s\",\"name\":\"%s\","
+	    "\"version\":\"1.0.0\",\"arcana\":\"0.1.0\",%s}", id, id, rest);
+	snprintf(path, sizeof(path), "plugins/%s/plugin.json", id);
+	put(path, json);
+}
+
+/* A theme plugin id whose duo.json's tokens are tokens. */
+static void
+cdata_theme(const char *id, const char *tokens)
+{
+	char	path[MAXPATHLEN], json[1024];
+
+	cdata_put(id, "\"themes\":[{\"id\":\"duo\",\"name\":\"Duo\",\"file\":"
+	    "\"duo.json\"}],\"provides\":[\"theme\"]");
+	snprintf(json, sizeof(json), "{\"tokens\":{%s}}", tokens);
+	snprintf(path, sizeof(path), "plugins/%s/duo.json", id);
+	put(path, json);
+}
+
+CONSOLE_TC(console_plugins_data, "Console plugins of data alone: themes "
+    "and guide packs checked by the console, listed and served with "
+    "their manifest; scripts only from a plugin that says it is trusted; "
+    "a theme's tokens by name and grammar, its assets the plugin's; a "
+    "data file changed checked again")
+ATF_TC_BODY(console_plugins_data, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		cwd[MAXPATHLEN], hdr[256];
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	ATF_REQUIRE(mkdir("plugins", 0755) == 0);
+	/* A theme of two colours, a font of its own. */
+	cdata_put("duo", "\"themes\":[{\"id\":\"duo\",\"name\":\"Duo\","
+	    "\"file\":\"duo.json\"}],\"assets\":[\"duo.woff2\"],"
+	    "\"provides\":[\"theme\"]");
+	put("plugins/duo/duo.json", "{\"scheme\":\"dark\",\"tokens\":{"
+	    "\"--bg\":\"#123456\",\"--cyan\":\"rgb(1, 2, 3)\",\"--line\":"
+	    "\"rgba(1, 2, 3, 0.5)\",\"--accent-rgb\":\"1, 2, 3\",\"--sans\":"
+	    "\"\\\"Duo Sans\\\", sans-serif\",\"--radius\":\"4px\"},\"font\":{"
+	    "\"family\":\"Duo Sans\",\"file\":\"duo.woff2\"}}");
+	put("plugins/duo/duo.woff2", "wOF2");
+	/* A guide pack: a square and a line. */
+	cdata_put("hello", "\"guide-packs\":[{\"id\":\"hello\",\"name\":"
+	    "\"Hello\",\"expressions\":\"pack.json\",\"lines\":\"lines.json\"}],"
+	    "\"assets\":[\"sq.svg\"],\"provides\":[\"guide-pack\"]");
+	put("plugins/hello/pack.json", "{\"version\":1,\"images\":{\"calm\":"
+	    "\"sq.svg\"}}");
+	put("plugins/hello/lines.json", "{\"version\":1,\"moments\":{"
+	    "\"greeting-first\":[{\"expression\":\"calm\",\"text\":"
+	    "\"<b>hello</b>\"}]}}");
+	put("plugins/hello/sq.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+	    "viewBox=\"0 0 8 8\"><rect width=\"8\" height=\"8\"/></svg>\n");
+	/* Scripts not said to be trusted. */
+	cdata_put("code", "\"entry\":[\"main.js\"],\"provides\":[\"screen\"]");
+	put("plugins/code/main.js", "window.x = 1;\n");
+	/* Trusted with no code; a data plugin providing what code would. */
+	cdata_put("idle", "\"trusted\":true,\"themes\":[{\"id\":\"duo\","
+	    "\"name\":\"Duo\",\"file\":\"duo.json\"}],\"provides\":[\"theme\"]");
+	put("plugins/idle/duo.json", "{\"tokens\":{\"--bg\":\"#000\"}}");
+	cdata_put("screen", "\"provides\":[\"screen\"]");
+	/* What a theme's value may not be. */
+	cdata_theme("url", "\"--bg\":\"url(x.png)\"");
+	cdata_theme("expr", "\"--bg\":\"expression(alert(1))\"");
+	cdata_theme("unknown", "\"--evil\":\"#000\"");
+	cdata_theme("import", "\"--sans\":\"x; @import url(y)\"");
+	cdata_theme("var", "\"--fg\":\"var(--bg)\"");
+	/* A picture the pack's plugin does not list. */
+	cdata_put("away", "\"guide-packs\":[{\"id\":\"away\",\"name\":\"Away\","
+	    "\"expressions\":\"pack.json\"}],\"provides\":[\"guide-pack\"]");
+	put("plugins/away/pack.json", "{\"images\":{\"calm\":\"sq.svg\"}}");
+	put("plugins/away/sq.svg", "<svg/>");
+	snprintf(harness_webconf, sizeof(harness_webconf), "plugins_dir = "
+	    "\"%s/plugins\";\n", cwd);
+	start(tc, 0, NULL);
+	enrol(&a);
+
+	http("GET", CC "plugins", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(cplug_str(&r, "duo", "error") == NULL, "%s",
+	    cplug_str(&r, "duo", "error"));
+	ATF_CHECK_STREQ("duo.woff2", cplug_str(&r, "duo", "file.0.path"));
+	ATF_CHECK_STREQ("duo.json", cplug_str(&r, "duo", "file.1.path"));
+	ATF_CHECK_STREQ("asset", cplug_str(&r, "duo", "file.1.kind"));
+	ATF_CHECK_STREQ("plugin.json", cplug_str(&r, "duo", "file.2.path"));
+	ATF_CHECK_MSG(cplug_str(&r, "hello", "error") == NULL, "%s",
+	    cplug_str(&r, "hello", "error"));
+	ATF_CHECK_STREQ("guide-pack", cplug_str(&r, "hello", "provides.0"));
+	ATF_CHECK(has(cplug_str(&r, "code", "error"), "\"trusted\": true"));
+	ATF_CHECK(cplug_str(&r, "code", "file") == NULL);
+	ATF_CHECK(has(cplug_str(&r, "idle", "error"), "no code to trust"));
+	ATF_CHECK(has(cplug_str(&r, "screen", "error"), "provides screen"));
+	ATF_CHECK(has(cplug_str(&r, "url", "error"), "--bg: not a colour"));
+	ATF_CHECK(has(cplug_str(&r, "expr", "error"), "--bg: not a colour"));
+	ATF_CHECK(has(cplug_str(&r, "unknown", "error"), "--evil is not one "
+	    "of the page's design tokens"));
+	ATF_CHECK(has(cplug_str(&r, "import", "error"), "--sans: not font"));
+	ATF_CHECK(has(cplug_str(&r, "var", "error"), "--fg: not a colour"));
+	ATF_CHECK(has(cplug_str(&r, "away", "error"), "not an asset the "
+	    "plugin lists"));
+	resp_free(&r);
+	r1_enable("code", "true", &r);
+	EXPECT(&r, 409);
+	resp_free(&r);
+
+	/* Enabled, served: the manifest, the data, the pictures as
+	 * pictures alone. */
+	http("GET", "/plugins/duo/duo.json", NULL, &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	r1_enable("duo", "true", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	r1_enable("hello", "true", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	http("GET", "/plugins/duo/plugin.json", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("duo.json", jstr(&r, "themes.0.file"));
+	resp_free(&r);
+	http("GET", "/plugins/duo/duo.json", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("#123456", jstr(&r, "tokens.--bg"));
+	ATF_CHECK(resp_header(&r, "content-type", hdr, sizeof(hdr)) != NULL &&
+	    strcmp(hdr, "application/json") == 0);
+	resp_free(&r);
+	http("GET", "/plugins/hello/sq.svg", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK(resp_header(&r, "content-type", hdr, sizeof(hdr)) != NULL &&
+	    strcmp(hdr, "image/svg+xml") == 0);
+	ATF_CHECK(strcasestr(r.head, "content-security-policy: default-src "
+	    "'none'; style-src 'unsafe-inline'; img-src data:; sandbox") !=
+	    NULL);
+	ATF_CHECK(resp_header(&r, "content-disposition", hdr, sizeof(hdr)) !=
+	    NULL && strcmp(hdr, "attachment") == 0);
+	resp_free(&r);
+
+	/* A data file changed to what may not be: not served as it is,
+	 * and the plugin refused once looked at again. */
+	put("plugins/duo/duo.json", "{\"tokens\":{\"--bg\":\"url(evil)\"}}");
+	http("GET", "/plugins/duo/duo.json", NULL, &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
+	usleep(1200 * 1000);
+	http("GET", CC "plugins", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK(has(cplug_str(&r, "duo", "error"), "--bg: not a colour"));
+	resp_free(&r);
+	http("GET", "/plugins/duo/plugin.json", NULL, &r);
+	EXPECT(&r, 404);
+	resp_free(&r);
 }
 
 CONSOLE_TC(jails, "Servers, jails, actions and addresses through arcana-agent")
@@ -24225,8 +24391,8 @@ ATF_TC_BODY(cyang_plugins, tc)
 	ATF_REQUIRE(mkdir("plugins", 0755) == 0);
 	ATF_REQUIRE(mkdir("plugins/good", 0755) == 0);
 	put("plugins/good/plugin.json", "{\"id\":\"good\",\"name\":\"Good\","
-	    "\"version\":\"1.2.0\",\"arcana\":\"0.1.0\",\"entry\":"
-	    "[\"main.js\"],\"provides\":[\"theme\"]}");
+	    "\"version\":\"1.2.0\",\"arcana\":\"0.1.0\",\"trusted\":true,"
+	    "\"entry\":[\"main.js\"],\"provides\":[\"screen\"]}");
 	put("plugins/good/main.js", "window.x = 1;\n");
 	snprintf(harness_webconf, sizeof(harness_webconf), "plugins_dir = "
 	    "\"%s/plugins\";\n", cwd);
@@ -24240,7 +24406,7 @@ ATF_TC_BODY(cyang_plugins, tc)
 	    "arcana-console:plugins.plugin.0.enabled"));
 	ATF_CHECK_STREQ("main.js", jstr(&r,
 	    "arcana-console:plugins.plugin.0.file.0.path"));
-	ATF_CHECK_STREQ("theme", jstr(&r,
+	ATF_CHECK_STREQ("screen", jstr(&r,
 	    "arcana-console:plugins.plugin.0.provides.0"));
 	resp_free(&r);
 	/* Its store not found until enabled. */
@@ -25930,6 +26096,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, users);
 	ATF_TP_ADD_TC(tp, csrf);
 	ATF_TP_ADD_TC(tp, console_plugins);
+	ATF_TP_ADD_TC(tp, console_plugins_data);
 	ATF_TP_ADD_TC(tp, jails);
 	ATF_TP_ADD_TC(tp, restconf);
 	ATF_TP_ADD_TC(tp, restconf_write);

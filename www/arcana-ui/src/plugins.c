@@ -8,10 +8,13 @@
  * Console plugins, the page's side (the console's is cplug.c there):
  * the list read after sign-in and again with the health, handed to
  * bridge.js, which loads each enabled plugin's files with the integrity
- * listed and gives its scripts window.Arcana.  Here: Settings' Plugins
- * tab, the entries plugins add to the account menu, the screen of a
- * plugin's the address names (#/p/<plugin>/<screen>[/rest]), and what
- * the page saw of each plugin (loaded, or why not).
+ * listed: the themes and guide packs of its data, checked and applied
+ * by the page's own code, and a trusted plugin's scripts, given
+ * window.Arcana.  Here: Settings' Plugins tab, data and trusted plugins
+ * apart, the themes of plugins in Look, the entries plugins add to the
+ * account menu, the screen of a plugin's the address names
+ * (#/p/<plugin>/<screen>[/rest]), and what the page saw of each plugin
+ * (loaded, or why not).
  */
 
 #include <stdio.h>
@@ -28,6 +31,7 @@ static struct {
 	char		 error[300];
 	char		 busy[48];	/* being enabled or disabled */
 	ucl_object_t	*page;		/* by id: "loaded", or the error */
+	ucl_object_t	*data;		/* by id: {themes, packs} applied */
 	ucl_object_t	*menu;		/* [{plugin, label, screen}] */
 	char		 screen[160];	/* <plugin>/<screen>[/rest], or "" */
 	char		*servers;	/* the hosts as last told the plugins */
@@ -160,6 +164,125 @@ page_get(const char *id)
 {
 
 	return (pl.page != NULL ? jstr(pl.page, id) : NULL);
+}
+
+/* A plugin with code, its scripts or styles: a trusted one. */
+static bool
+trusted(const ucl_object_t *p)
+{
+	const ucl_object_t	*f;
+	ucl_object_iter_t	 it;
+	const char		*k;
+
+	it = NULL;
+	while ((f = ucl_object_iterate(jget(p, "files"), &it, true)) != NULL)
+		if ((k = jstr(f, "kind")) != NULL && (strcmp(k, "script") ==
+		    0 || strcmp(k, "style") == 0))
+			return (true);
+	return (false);
+}
+
+static const ucl_object_t *
+plugin_of(const char *id)
+{
+	const ucl_object_t	*p;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((p = ucl_object_iterate(jget(pl.o, "plugins"), &it, true)) !=
+	    NULL)
+		if (jstr(p, "id") != NULL && strcmp(jstr(p, "id"), id) == 0)
+			return (p);
+	return (NULL);
+}
+
+/* The data bridge.js applied of plugin id, as it told it; "" none. */
+static void
+data_set(const char *id, const char *json)
+{
+	ucl_object_t	*o;
+
+	if (pl.data == NULL)
+		pl.data = ucl_object_typed_new(UCL_OBJECT);
+	if (json[0] == '\0' || (o = json_parse(json)) == NULL) {
+		ucl_object_delete_key(pl.data, id);
+		return;
+	}
+	ucl_object_replace_key(pl.data, o, id, 0, true);
+}
+
+/* The themes of plugins' data, for Look beside the stylesheet's. */
+void
+plugins_themes(struct html *h)
+{
+	const ucl_object_t	*d, *t;
+	ucl_object_iter_t	 it, jt;
+
+	it = NULL;
+	while ((d = ucl_object_iterate(pl.data, &it, true)) != NULL) {
+		jt = NULL;
+		while ((t = ucl_object_iterate(jget(d, "themes"), &jt, true)) !=
+		    NULL) {
+			if (jstr(t, "key") == NULL || jstr(t, "name") == NULL)
+				continue;
+			h_fmt(h, "<button type=\"button\" class=\"theme "
+			    "t-plugin%s\" data-act=\"theme\"",
+			    strcmp(app.theme, jstr(t, "key")) == 0 ? " on" : "");
+			h_attr(h, "data-arg", jstr(t, "key"));
+			h_raw(h, "><i></i>");
+			h_txt(h, jstr(t, "name"));
+			h_raw(h, "</button>");
+		}
+	}
+}
+
+/* The guide packs of plugins' data: a picture and a line of each, as
+ * text. */
+static void
+packs_shown(struct html *h)
+{
+	const ucl_object_t	*d, *g;
+	ucl_object_iter_t	 it, jt;
+	bool			 any;
+
+	any = false;
+	it = NULL;
+	while ((d = ucl_object_iterate(pl.data, &it, true)) != NULL) {
+		jt = NULL;
+		while ((g = ucl_object_iterate(jget(d, "packs"), &jt, true)) !=
+		    NULL) {
+			if (jstr(g, "id") == NULL || jstr(g, "name") == NULL)
+				continue;
+			if (!any)
+				h_raw(h, "<h3 class=\"set-sub\">Guide packs</h3>"
+				    "<p class=\"dim\">For a guide that takes "
+				    "them (Game mode's): what each shows and "
+				    "the first thing it says.</p><div "
+				    "class=\"cplug-packs\">");
+			any = true;
+			h_raw(h, "<figure class=\"cplug-pack\"");
+			h_attr(h, "data-pack", jstr(g, "id"));
+			h_raw(h, ">");
+			if (jstr(g, "picture") != NULL &&
+			    strncmp(jstr(g, "picture"), "/plugins/", 9) == 0) {
+				h_raw(h, "<img alt=\"\" loading=\"lazy\"");
+				h_attr(h, "src", jstr(g, "picture"));
+				h_raw(h, ">");
+			}
+			h_raw(h, "<figcaption><b>");
+			h_txt(h, jstr(g, "name"));
+			h_raw(h, "</b>");
+			if (jstr(g, "line") != NULL && jstr(g, "line")[0] !=
+			    '\0') {
+				h_raw(h, " <q>");
+				h_txt(h, jstr(g, "line"));
+				h_raw(h, "</q>");
+			}
+			h_raw(h, "</figcaption></figure>");
+		}
+	}
+	if (any)
+		h_raw(h, "</div>");
 }
 
 static bool
@@ -350,11 +473,28 @@ plugins_action(const char *act, const char *arg, const char *value)
 		    0)
 			toast(true, "Plugin %s: %s", arg, value);
 		page_set(arg, value);
+	} else if (strcmp(act, "plugin-data") == 0) {
+		data_set(arg, value);
+	} else if (strcmp(act, "plugin-unloaded") == 0) {
+		/* A plugin of data alone, disabled: gone from the page. */
+		if (pl.page != NULL)
+			ucl_object_delete_key(pl.page, arg);
+		data_set(arg, "");
 	} else if (strcmp(act, "plugin-menu") == 0) {
 		menu_set(arg, value);
 	} else if (strcmp(act, "plugin-toast") == 0) {
 		toast(arg[0] != '\0', "%s", value);
-	} else if (strcmp(act, "plugin-enable") == 0) {
+	} else if (strcmp(act, "plugin-enable") == 0 && strcmp(value, "1") ==
+	    0 && plugin_of(arg) != NULL && trusted(plugin_of(arg))) {
+		/* Code that runs as everyone: asked first. */
+		confirm("Enable a trusted plugin?", "Its scripts will run in "
+		    "this page as every user who opens it, with that user's "
+		    "session: they can read and do whatever that user can, on "
+		    "the console and on every host. Enable it only if you trust "
+		    "whoever wrote it and whoever installed it.", "Enable", true,
+		    "", "plugin-enable-trusted", arg, "1");
+	} else if (strcmp(act, "plugin-enable") == 0 ||
+	    strcmp(act, "plugin-enable-trusted") == 0) {
 		/* A console owner's alone; the reply is the list. */
 		if (pl.busy[0] != '\0' || !word_ok(arg, false) || strlen(arg) >
 		    40)
@@ -371,10 +511,10 @@ plugins_action(const char *act, const char *arg, const char *value)
 	return (true);
 }
 
-/* What the page made of a plugin: running, failed, or put away at the
- * next reload. */
+/* What the page made of a plugin: running (applied, for data), failed,
+ * or put away at the next reload. */
 static void
-state_cell(struct html *h, const ucl_object_t *p)
+state_cell(struct html *h, const ucl_object_t *p, bool code)
 {
 	const char	*id, *page;
 	bool		 on;
@@ -391,7 +531,8 @@ state_cell(struct html *h, const ucl_object_t *p)
 		h_txt(h, page);
 		h_raw(h, "</span>");
 	} else if (page != NULL && on)
-		h_raw(h, "<span class=\"chip st-up\">running here</span>");
+		h_fmt(h, "<span class=\"chip st-up\">%s</span>", code ?
+		    "running here" : "in use here");
 	else if (page != NULL)
 		h_raw(h, "<span class=\"chip warn\">running here until this "
 		    "page is reloaded</span>");
@@ -401,52 +542,26 @@ state_cell(struct html *h, const ucl_object_t *p)
 		h_raw(h, "<span class=\"dim\">off</span>");
 }
 
-void
-set_plugins(struct html *h)
+/* The plugins of one kind, data or trusted (code), in a table of their
+ * own; their number. */
+static int
+plug_table(struct html *h, const char *tid, bool code, bool owner)
 {
 	const ucl_object_t	**rows, *p, *w;
 	ucl_object_iter_t	  it;
-	bool			  owner;
-	int			  r, n;
+	int			  r, n, k;
 
-	if (pl.o == NULL)
-		list_load();
-	owner = !app.by_token && strcmp(app.console_role, "owner") == 0;
-	h_raw(h, "<p class=\"dim\">Extensions of this page that the console "
-	    "host's administrator installed: their scripts run in the page "
-	    "with your rights, so only a console owner enables one. Enabled, "
-	    "a plugin is loaded at once in every signed-in page; disabled, it "
-	    "is gone from a page once that page is reloaded.</p>");
-	if (owner && jstr(pl.o, "dir") != NULL) {
-		h_raw(h, "<p class=\"dim\">Installed under <code>");
-		h_txt(h, jstr(pl.o, "dir"));
-		h_raw(h, "</code>, a directory each (web.conf's "
-		    "<code>plugins_dir</code>).</p>");
-	}
-	if (pl.error[0] != '\0') {
-		h_raw(h, "<div class=\"notice bad\">");
-		h_txt(h, pl.error);
-		h_raw(h, "</div>");
-	}
-	if (pl.o == NULL) {
-		h_raw(h, "<p class=\"dim\">Reading…</p>");
-		return;
-	}
-	if (ucl_array_size(jget(pl.o, "plugins")) == 0) {
-		h_raw(h, "<div class=\"empty\"><p>No console plugin is "
-		    "installed.</p></div>");
-		return;
-	}
-	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
-	    "data-input=\"filter\" placeholder=\"Filter\" autocomplete=\"off\" "
-	    "spellcheck=\"false\"");
-	h_attr(h, "value", app.filter);
-	h_raw(h, "></div><table class=\"net cplugs\">");
-	tbl_head(h, "cplugs", pcols, nitems(pcols), owner ? 1 : 0);
-	h_raw(h, "<tbody>");
-	rows = tbl_rows("cplugs", jget(pl.o, "plugins"), pcols, nitems(pcols),
+	rows = tbl_rows(tid, jget(pl.o, "plugins"), pcols, nitems(pcols),
 	    app.filter);
-	for (r = 0; (p = rows[r]) != NULL; r++) {
+	for (r = k = 0; (p = rows[r]) != NULL; r++) {
+		if (trusted(p) != code)
+			continue;
+		if (k++ == 0) {
+			h_fmt(h, "<table class=\"net cplugs%s\">", code ?
+			    " trusted" : "");
+			tbl_head(h, tid, pcols, nitems(pcols), owner ? 1 : 0);
+			h_raw(h, "<tbody>");
+		}
 		h_raw(h, "<tr");
 		h_attr(h, "data-plugin", jstr(p, "id"));
 		h_raw(h, "><td><b>");
@@ -477,7 +592,7 @@ set_plugins(struct html *h)
 		h_rawf(h, "%s</td><td>%s</td><td>", n == 0 ?
 		    "<span class=\"dim\">—</span>" : "", jbool(p, "enabled") ?
 		    "yes" : "no");
-		state_cell(h, p);
+		state_cell(h, p, code);
 		h_raw(h, "</td>");
 		if (owner) {
 			h_raw(h, "<td>");
@@ -496,7 +611,68 @@ set_plugins(struct html *h)
 		h_raw(h, "</tr>");
 	}
 	free(rows);
-	h_raw(h, "</tbody></table>");
+	if (k > 0)
+		h_raw(h, "</tbody></table>");
+	return (k);
+}
+
+void
+set_plugins(struct html *h)
+{
+	const ucl_object_t	*p;
+	ucl_object_iter_t	 it;
+	bool			 owner;
+
+	if (pl.o == NULL)
+		list_load();
+	owner = !app.by_token && strcmp(app.console_role, "owner") == 0;
+	h_raw(h, "<p class=\"dim\">Extensions of this page that the console "
+	    "host's administrator installed, each enabled by a console owner "
+	    "for every signed-in page. Themes and guide packs are data: this "
+	    "page reads and applies them itself, and puts them away at once "
+	    "when they are disabled. A trusted plugin brings code.</p>");
+	if (owner && jstr(pl.o, "dir") != NULL) {
+		h_raw(h, "<p class=\"dim\">Installed under <code>");
+		h_txt(h, jstr(pl.o, "dir"));
+		h_raw(h, "</code>, a directory each (web.conf's "
+		    "<code>plugins_dir</code>).</p>");
+	}
+	if (pl.error[0] != '\0') {
+		h_raw(h, "<div class=\"notice bad\">");
+		h_txt(h, pl.error);
+		h_raw(h, "</div>");
+	}
+	if (pl.o == NULL) {
+		h_raw(h, "<p class=\"dim\">Reading…</p>");
+		return;
+	}
+	if (ucl_array_size(jget(pl.o, "plugins")) == 0) {
+		h_raw(h, "<div class=\"empty\"><p>No console plugin is "
+		    "installed.</p></div>");
+		return;
+	}
+	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
+	    "data-input=\"filter\" placeholder=\"Filter\" autocomplete=\"off\" "
+	    "spellcheck=\"false\"");
+	h_attr(h, "value", app.filter);
+	h_raw(h, "></div>");
+	(void)plug_table(h, "cplugs", false, owner);
+	packs_shown(h);
+	it = NULL;
+	while ((p = ucl_object_iterate(jget(pl.o, "plugins"), &it, true)) !=
+	    NULL)
+		if (trusted(p)) {
+			h_raw(h, "<h3 class=\"set-sub\">Trusted plugins</h3>"
+			    "<div class=\"notice warn cplug-warn\"><b>These "
+			    "run code.</b> A trusted plugin's scripts run in "
+			    "this page as every user who opens it, with that "
+			    "user's session: they can read and do whatever "
+			    "that user can, on the console and on every host. "
+			    "Enabling one asks first; disabled, it is gone from "
+			    "a page once that page is reloaded.</div>");
+			(void)plug_table(h, "cplugs-t", true, owner);
+			break;
+		}
 	if (!owner)
 		h_raw(h, "<p class=\"dim\">A console owner enables and "
 		    "disables them.</p>");

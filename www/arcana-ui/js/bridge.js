@@ -110,15 +110,17 @@ addToLibrary({
 	/*
 	 * Console plugins (the console's cplug.c, the page's plugins.c): the
 	 * files of each plugin a console owner enabled, loaded with the
-	 * integrity the console lists, and what their scripts are given,
-	 * window.Arcana.  A plugin that fails, to load or as it runs, is
-	 * told to the page as its error; the page goes on without it.
-	 * What a plugin's code is called for is caught alike.  The C side
-	 * is told by actions, after what it is doing is done.
+	 * integrity the console lists.  Themes and guide packs are data,
+	 * read and checked here and applied by the page's own code; only a
+	 * trusted plugin's scripts and styles go into the page, and its
+	 * scripts are given window.Arcana.  A plugin that fails, to load
+	 * or as it runs, is told to the page as its error; the page goes on
+	 * without it.  What a plugin's code is called for is caught alike.
+	 * The C side is told by actions, after what it is doing is done.
 	 */
 	$arcPlug__deps: ["$arcStr"],
 	$arcPlug: {
-		plugins: {},	/* by id: { pending, reg, failed } */
+		plugins: {},	/* by id: { pending, reg, failed, code } */
 		listed: null,	/* the list as last given */
 		ev: {},		/* event: [{ id, fn }] */
 		want: "",	/* the screen the address names */
@@ -130,7 +132,27 @@ addToLibrary({
 		user: { name: "", role: "" },
 		version: "",
 		events: ["route", "theme", "servers", "signed-out",
-		    "gamepad-first"],
+		    "gamepad-first", "guide-packs"],
+		data: {},	/* by id: its data's { themes, packs, gone } */
+		themes: {},	/* "p:<plugin>/<id>": { name, scheme, tokens, font } */
+		packs: [],	/* the guide packs of plugins' data, in order */
+		theme: "",	/* the theme picked, a plugin's "p:..." or not */
+		worn: null,	/* the properties a plugin's theme set */
+		/*
+		 * A theme's design tokens and what each value is (c a colour,
+		 * n its channels, l a length, f font names): those of
+		 * web/style.css's :root that a theme sets, as the console's
+		 * cplug.c has them.
+		 */
+		tokens: { "--bg": "c", "--bg-2": "c", "--panel": "c",
+		    "--panel-2": "c", "--line": "c", "--line-2": "c",
+		    "--fg": "c", "--fg-2": "c", "--dim": "c", "--cyan": "c",
+		    "--amber": "c", "--red": "c", "--slate": "c",
+		    "--violet": "c", "--green": "c", "--blue": "c",
+		    "--teal": "c", "--magenta": "c", "--accent-rgb": "n",
+		    "--surface-rgb": "n", "--red-rgb": "n", "--amber-rgb": "n",
+		    "--violet-rgb": "n", "--sans": "f", "--mono": "f",
+		    "--display": "f", "--cut": "l", "--radius": "l" },
 
 		act: function (a, b, c) {
 			Promise.resolve().then(function () {
@@ -299,9 +321,12 @@ addToLibrary({
 				    ": not a function");
 			(arcPlug.ev[name] = arcPlug.ev[name] || []).push({
 			    id: id, fn: fn });
-			/* The hosts as they are, not only when they change. */
+			/* The hosts as they are, not only when they change;
+			 * the guide packs alike. */
 			if (name === "servers" && arcPlug.servers !== null)
 				arcPlug.call(id, fn, [arcPlug.servers]);
+			if (name === "guide-packs")
+				arcPlug.call(id, fn, [arcPlug.packList()]);
 		},
 		register: function (def) {
 			var id = arcPlug.whose(), p = arcPlug.plugins[id], menu;
@@ -337,6 +362,355 @@ addToLibrary({
 			return ("/plugins/" + encodeURIComponent(id) + "/" +
 			    f.path.split("/").map(encodeURIComponent).join("/"));
 		},
+		/*
+		 * A plugin's data checked as the console checks it (cplug.c):
+		 * what fails says why and nothing of the plugin is applied.
+		 */
+		bad: function (what) {
+			throw new Error(what);
+		},
+		/* A design token's value of kind k, by its grammar alone. */
+		value: function (k, s) {
+			var F = /^("[A-Za-z0-9-][A-Za-z0-9 -]{0,63}"|[A-Za-z][A-Za-z0-9-]{0,63})$/,
+			    m;
+
+			function bytes(l) {
+				return (l.every(function (x) {
+					return (+x <= 255);
+				}));
+			}
+			if (typeof s !== "string" || s.length > 200)
+				return (false);
+			switch (k) {
+			case "c":
+				if (/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+				    .test(s))
+					return (true);
+				m = /^rgb\((\d{1,3}), *(\d{1,3}), *(\d{1,3})\)$/
+				    .exec(s) || /^rgba\((\d{1,3}), *(\d{1,3}), *(\d{1,3}), *([01](\.\d{1,3})?)\)$/
+				    .exec(s);
+				return (m !== null && bytes(m.slice(1, 4)) &&
+				    (m[4] === undefined || +m[4] <= 1));
+			case "n":
+				m = /^(\d{1,3}), *(\d{1,3}), *(\d{1,3})$/.exec(s);
+				return (m !== null && bytes(m.slice(1)));
+			case "l":
+				return (/^(0|\d{1,2}(\.\d{1,2})?(px|rem|em))$/
+				    .test(s));
+			case "f":
+				m = s.split(/, */);
+				return (m.length <= 8 && m.every(function (x) {
+					return (F.test(x));
+				}));
+			}
+			return (false);
+		},
+		/* o an object of these keys alone. */
+		keys: function (what, o, keys) {
+			if (o === null || typeof o !== "object" ||
+			    Array.isArray(o))
+				arcPlug.bad(what + ": not an object");
+			Object.keys(o).forEach(function (k) {
+				if (keys.indexOf(k) < 0)
+					arcPlug.bad(what + ": unknown key " + k);
+			});
+		},
+		/* Every string text, never markup wherever it is shown; the
+		 * whole no deeper nor larger than the console allows. */
+		walk: function (what, o) {
+			var n = 0;
+
+			(function w(v, d) {
+				if (++n > 20000 || d > 8)
+					arcPlug.bad(what + ": too deep or too large");
+				if (typeof v === "string") {
+					if (v.length > 300 || /[\x00-\x1f\x7f]/.test(v))
+						arcPlug.bad(what + ": a string is a "
+						    + "line of text");
+				} else if (v !== null && typeof v === "object")
+					Object.keys(v).forEach(function (k) {
+						w(v[k], d + 1);
+					});
+			})(o, 0);
+		},
+		word: function (s) {
+			return (typeof s === "string" &&
+			    /^[a-z0-9-]{1,40}$/.test(s));
+		},
+		/* An asset a data file names, relative to the file: one the
+		 * plugin lists, of a kind of exts; its path. */
+		ref: function (files, rel, ref, exts) {
+			var p = typeof ref === "string" ?
+			    rel.replace(/[^/]*$/, "") + ref : "", f = files[p];
+
+			if (p.length > 200 || !/^[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*(\/[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*)*$/
+			    .test(p) || exts.indexOf(p.replace(/^.*\./, "")) < 0 ||
+			    !f || f.kind !== "asset")
+				arcPlug.bad(rel + ": " + String(ref) + " is not "
+				    + "an asset the plugin lists (" +
+				    exts.join(", ") + ")");
+			return (p);
+		},
+		/* A theme of plugin id: its file j checked. */
+		themeOf: function (id, t, j, files) {
+			var rel = t.file, tk, out;
+
+			if (!arcPlug.word(t.id))
+				arcPlug.bad("themes: an id");
+			arcPlug.keys(rel, j, ["scheme", "tokens", "font"]);
+			tk = j.tokens;
+			if (j.scheme !== undefined && j.scheme !== "dark" &&
+			    j.scheme !== "light")
+				arcPlug.bad(rel + ": scheme: dark or light");
+			arcPlug.keys(rel + ": tokens", tk, Object.keys(
+			    arcPlug.tokens));
+			if (Object.keys(tk).length === 0)
+				arcPlug.bad(rel + ": tokens: none");
+			Object.keys(tk).forEach(function (k) {
+				if (!arcPlug.value(arcPlug.tokens[k], tk[k]))
+					arcPlug.bad(rel + ": " + k + ": not a "
+					    + "value of its kind");
+			});
+			out = { key: "p:" + id + "/" + t.id, name: String(t.name),
+			    scheme: j.scheme || "", tokens: tk, font: null };
+			if (j.font !== undefined) {
+				arcPlug.keys(rel + ": font", j.font, ["family",
+				    "file"]);
+				if (!/^[A-Za-z0-9-][A-Za-z0-9 -]{0,63}$/.test(
+				    j.font.family))
+					arcPlug.bad(rel + ": font: family");
+				out.font = { family: j.font.family, face: null,
+				    url: arcPlug.file(id, { path: arcPlug.ref(
+				    files, rel, j.font.file, ["woff2"]) }) };
+			}
+			return (out);
+		},
+		/* A guide pack of plugin id: its expressions e and lines l. */
+		packOf: function (id, g, e, l, files) {
+			var rel = g.expressions, pic = "", line = "", ex, k, m;
+
+			if (!arcPlug.word(g.id))
+				arcPlug.bad("guide-packs: an id");
+			arcPlug.walk(rel, e);
+			arcPlug.keys(rel, e, ["version", "rig", "images",
+			    "default", "expressions"]);
+			if ((e.rig === undefined) === (e.images === undefined))
+				arcPlug.bad(rel + ": a rig or images");
+			if (e.rig !== undefined)
+				pic = arcPlug.ref(files, rel, e.rig, ["svg"]);
+			else {
+				arcPlug.keys(rel + ": images", e.images, Object.keys(
+				    e.images).filter(arcPlug.word));
+				ex = Object.keys(e.images);
+				if (ex.length === 0)
+					arcPlug.bad(rel + ": images: none");
+				ex.forEach(function (x) {
+					var p = arcPlug.ref(files, rel, e.images[x],
+					    ["svg", "png", "webp"]);
+
+					if (pic === "" || x === (e["default"] ||
+					    "calm"))
+						pic = p;
+				});
+			}
+			if (e["default"] !== undefined && !arcPlug.word(
+			    e["default"]))
+				arcPlug.bad(rel + ": default");
+			if (e.expressions !== undefined)
+				arcPlug.keys(rel + ": expressions", e.expressions,
+				    Object.keys(e.expressions).filter(arcPlug.word));
+			if (l !== null) {
+				arcPlug.walk(g.lines, l);
+				arcPlug.keys(g.lines, l, ["version",
+				    "placeholders", "moments"]);
+				m = l.moments;
+				arcPlug.keys(g.lines + ": moments", m, Object.keys(
+				    m || {}).filter(arcPlug.word));
+				for (k in m) {
+					if (!Array.isArray(m[k]))
+						arcPlug.bad(g.lines + ": " + k +
+						    ": a list");
+					m[k].forEach(function (x) {
+						arcPlug.keys(g.lines + ": " + k, x,
+						    ["expression", "text"]);
+						if (typeof x.text !== "string" ||
+						    (x.expression !== undefined &&
+						    !arcPlug.word(x.expression)))
+							arcPlug.bad(g.lines + ": " +
+							    k + ": a line");
+					});
+				}
+				k = m["greeting-first"] ? "greeting-first" :
+				    Object.keys(m).find(function (x) {
+					return (m[x].length > 0);
+				    });
+				if (k !== undefined && m[k].length > 0)
+					line = m[k][0].text;
+			}
+			return ({ id: g.id, name: String(g.name), plugin: id,
+			    base: "/plugins/" + encodeURIComponent(id) + "/",
+			    expressions: rel, lines: g.lines || null,
+			    picture: arcPlug.file(id, { path: pic }), line: line });
+		},
+		/* The guide packs as a guide runtime takes them (game-mode's
+		 * ArcanaGuide.registerPack): copies. */
+		packList: function () {
+			return (arcPlug.packs.map(function (x) {
+				return ({ id: x.id, name: x.name, plugin: x.plugin,
+				    base: x.base, expressions: x.expressions,
+				    lines: x.lines });
+			}));
+		},
+		/*
+		 * The theme picked worn: a plugin's, its tokens set on :root
+		 * over the stylesheet's own, or none of them.
+		 */
+		wear: function () {
+			var root = document.documentElement,
+			    t = arcPlug.themes[arcPlug.theme], meta;
+
+			(arcPlug.worn || []).forEach(function (n) {
+				root.style.removeProperty(n);
+			});
+			arcPlug.worn = null;
+			if (t) {
+				arcPlug.worn = Object.keys(t.tokens).concat(
+				    ["color-scheme"]);
+				Object.keys(t.tokens).forEach(function (n) {
+					root.style.setProperty(n, t.tokens[n]);
+				});
+				if (t.scheme !== "")
+					root.style.setProperty("color-scheme",
+					    t.scheme);
+				if (t.font !== null && t.font.face === null) {
+					try {
+						t.font.face = new FontFace(
+						    t.font.family, "url(\"" +
+						    t.font.url + "\")");
+						document.fonts.add(t.font.face);
+						t.font.face.load().catch(
+						    function () {});
+					} catch (e) {
+					}
+				}
+			}
+			meta = document.querySelector("meta[name=theme-color]");
+			if (meta)
+				meta.content = getComputedStyle(root)
+				    .getPropertyValue("--bg").trim() ||
+				    meta.content;
+		},
+		/*
+		 * A plugin's data: plugin.json, then the files its themes and
+		 * guide packs name, each with the integrity listed, checked;
+		 * all of it applied, or nothing when one fails.  counted: the
+		 * plugin waits for it (done()).
+		 */
+		dataLoad: function (p, counted) {
+			var files = {}, d = { themes: [], packs: [], gone: false };
+
+			(p.files || []).forEach(function (f) {
+				files[f.path] = f;
+			});
+			arcPlug.data[p.id] = d;
+			function get(path) {
+				var f = files[path];
+
+				if (typeof path !== "string" || !f ||
+				    f.kind !== "asset" || !/\.json$/.test(path))
+					return (Promise.reject(new Error(String(path)
+					    + ": not a listed .json")));
+				return (fetch(arcPlug.file(p.id, f), {
+				    credentials: "same-origin", cache: "no-cache",
+				    integrity: f.integrity }).then(function (r) {
+					if (!r.ok)
+						throw new Error(path + ": HTTP " +
+						    r.status);
+					return (r.json());
+				}).catch(function (e) {
+					throw new Error(path + ": not served, or "
+					    + "not as listed (" + (e && e.message ?
+					    e.message : String(e)) + ")");
+				}));
+			}
+			get("plugin.json").then(function (m) {
+				var th = Array.isArray(m.themes) ? m.themes : [],
+				    gp = Array.isArray(m["guide-packs"]) ?
+				    m["guide-packs"] : [];
+
+				return (Promise.all(th.map(function (t) {
+					return (get(t.file).then(function (j) {
+						return (arcPlug.themeOf(p.id, t, j,
+						    files));
+					}));
+				}).concat(gp.map(function (g) {
+					return (Promise.all([get(g.expressions),
+					    g.lines ? get(g.lines) : null]).then(
+					    function (j) {
+						return (arcPlug.packOf(p.id, g, j[0],
+						    j[1], files));
+					}));
+				}))));
+			}).then(function (parts) {
+				if (d.gone)
+					return;
+				parts.forEach(function (x) {
+					if (x.tokens) {
+						arcPlug.themes[x.key] = x;
+						d.themes.push(x.key);
+					} else {
+						arcPlug.packs.push(x);
+						d.packs.push(x.id);
+					}
+				});
+				arcPlug.act("plugin-data", p.id, JSON.stringify({
+				    themes: d.themes.map(function (k) {
+					return ({ key: k, name:
+					    arcPlug.themes[k].name });
+				    }), packs: arcPlug.packs.filter(function (x) {
+					return (x.plugin === p.id);
+				    }).map(function (x) {
+					return ({ id: x.id, name: x.name,
+					    picture: x.picture, line: x.line });
+				    }) }));
+				if (d.themes.indexOf(arcPlug.theme) >= 0)
+					arcPlug.wear();
+				if (d.packs.length > 0)
+					arcPlug.emit("guide-packs",
+					    arcPlug.packList());
+			}).catch(function (e) {
+				if (!d.gone)
+					arcPlug.fail(p.id, e);
+			}).then(function () {
+				if (counted && !d.gone && arcPlug.plugins[p.id])
+					arcPlug.done(p.id);
+			});
+		},
+		/* A plugin's data put away: its themes, worn or not, and its
+		 * guide packs. */
+		dataDrop: function (id) {
+			var d = arcPlug.data[id];
+
+			if (!d)
+				return;
+			d.gone = true;
+			delete arcPlug.data[id];
+			d.themes.forEach(function (k) {
+				var f = arcPlug.themes[k].font;
+
+				if (f !== null && f.face !== null)
+					document.fonts.delete(f.face);
+				delete arcPlug.themes[k];
+			});
+			if (d.themes.indexOf(arcPlug.theme) >= 0)
+				arcPlug.wear();
+			arcPlug.packs = arcPlug.packs.filter(function (x) {
+				return (x.plugin !== id);
+			});
+			if (d.packs.length > 0)
+				arcPlug.emit("guide-packs", arcPlug.packList());
+			arcPlug.act("plugin-data", id, "");
+		},
 		/* Every plugin's files loaded, or failed: none is waited for. */
 		settled: function () {
 			return (Object.keys(arcPlug.plugins).every(function (id) {
@@ -356,12 +730,13 @@ addToLibrary({
 		},
 		/*
 		 * The list arcana-console's plugins give: each enabled plugin with
-		 * nothing wrong and not loaded yet, its styles and then its
-		 * scripts in their order.  A plugin disabled since stays
-		 * until the page is loaded again.
+		 * nothing wrong and not loaded yet, its data (dataLoad()), and
+		 * a trusted one's styles and then its scripts in their order.
+		 * A plugin disabled since has its data put away at once; its
+		 * code, which cannot be, stays until the page is loaded again.
 		 */
 		load: function (text) {
-			var list;
+			var list, on = {};
 
 			if (text === arcPlug.listed)
 				return;
@@ -372,10 +747,32 @@ addToLibrary({
 				return;
 			}
 			list.forEach(function (p) {
-				var files = p.files || [], st, sc;
-
-				if (!p.enabled || p.error || arcPlug.plugins[p.id])
+				if (p.enabled && !p.error)
+					on[p.id] = true;
+			});
+			Object.keys(arcPlug.plugins).forEach(function (id) {
+				if (on[id])
 					return;
+				arcPlug.dataDrop(id);
+				if (!arcPlug.plugins[id].code) {
+					delete arcPlug.plugins[id];
+					arcPlug.act("plugin-unloaded", id, "");
+				}
+			});
+			list.forEach(function (p) {
+				var files = p.files || [], st, sc, data;
+
+				if (!on[p.id])
+					return;
+				data = files.some(function (f) {
+					return (f.path === "plugin.json" &&
+					    f.kind === "asset");
+				});
+				if (arcPlug.plugins[p.id]) {
+					if (data && !arcPlug.data[p.id])
+						arcPlug.dataLoad(p, false);
+					return;
+				}
 				st = files.filter(function (f) {
 					return (f.kind === "style");
 				});
@@ -383,7 +780,10 @@ addToLibrary({
 					return (f.kind === "script");
 				});
 				arcPlug.plugins[p.id] = { pending: st.length +
-				    sc.length + 1, reg: null, failed: false };
+				    sc.length + (data ? 1 : 0) + 1, reg: null,
+				    failed: false, code: st.length + sc.length > 0 };
+				if (data)
+					arcPlug.dataLoad(p, true);
 				st.forEach(function (f) {
 					var el = document.createElement("link");
 
@@ -501,6 +901,11 @@ addToLibrary({
 				},
 				registerPlugin: function (def) {
 					arcPlug.register(def);
+				},
+				/* The guide packs of plugins' data, for a
+				 * guide's runtime to register. */
+				guidePacks: function () {
+					return (arcPlug.packList());
 				},
 				on: function (name, fn) {
 					var id = arcPlug.whose();
@@ -2349,9 +2754,18 @@ addToLibrary({
 	 * none for the default.  The bar of the installed app follows the
 	 * page's background.
 	 */
-	arc_theme_get__deps: ["$arcStr"],
+	arc_theme_get__deps: ["$arcStr", "$arcPlug"],
 	arc_theme_get: function () {
-		return (arcStr(document.documentElement.dataset.theme || ""));
+		var t = document.documentElement.dataset.theme || "", s;
+
+		/* A plugin's, worn once its data is read (fx.js leaves it). */
+		try {
+			s = localStorage.getItem("arc_theme") || "";
+			if (s.indexOf("p:") === 0)
+				t = arcPlug.theme = s;
+		} catch (e) {
+		}
+		return (arcStr(t));
 	},
 	/* A text saved as a file: a document as JSON, to keep. */
 	arc_save_text__deps: ["$UTF8ToString"],
@@ -2415,7 +2829,7 @@ addToLibrary({
 	 * on a canvas over the map's background.  The theme is put on for
 	 * the reading alone, transitions off, and taken off again.
 	 */
-	arc_svg_png__deps: ["$UTF8ToString"],
+	arc_svg_png__deps: ["$UTF8ToString", "$arcPlug"],
 	arc_svg_png: function (selp, namep) {
 		var svg = document.querySelector(UTF8ToString(selp)),
 		    name = UTF8ToString(namep), props = ["fill", "fill-opacity",
@@ -2424,7 +2838,8 @@ addToLibrary({
 		    "paint-order", "opacity", "font-family", "font-style",
 		    "font-size", "font-weight", "text-anchor", "letter-spacing",
 		    "dominant-baseline", "visibility", "display"],
-		    clone, src, dst, i, cs, r, w, h, bg, el, img, root, old, calm;
+		    clone, src, dst, i, cs, r, w, h, bg, el, img, root, old, calm,
+		    worn;
 
 		if (svg === null)
 			return;
@@ -2435,6 +2850,11 @@ addToLibrary({
 		    "!important; animation: none !important; }";
 		document.head.appendChild(calm);
 		root.setAttribute("data-theme", "paper");
+		/* A plugin's theme off for it too. */
+		worn = arcPlug.theme;
+		arcPlug.theme = "";
+		arcPlug.wear();
+		arcPlug.theme = worn;
 		clone = svg.cloneNode(true);
 		src = [svg].concat(Array.prototype.slice.call(
 		    svg.querySelectorAll("*")));
@@ -2460,6 +2880,7 @@ addToLibrary({
 			root.removeAttribute("data-theme");
 		else
 			root.setAttribute("data-theme", old);
+		arcPlug.wear();
 		calm.remove();
 		img = new Image();
 		img.onload = function () {
@@ -2522,9 +2943,10 @@ addToLibrary({
 	},
 	arc_theme_set__deps: ["$UTF8ToString", "$arcPlug"],
 	arc_theme_set: function (namep) {
-		var name = UTF8ToString(namep), meta;
+		var name = UTF8ToString(namep);
 
-		if (name === "")
+		/* A plugin's ("p:<plugin>/<id>") over the default's rules. */
+		if (name === "" || name.indexOf("p:") === 0)
 			delete document.documentElement.dataset.theme;
 		else
 			document.documentElement.dataset.theme = name;
@@ -2538,10 +2960,8 @@ addToLibrary({
 				localStorage.setItem("arc_theme", name);
 		} catch (e) {
 		}
-		meta = document.querySelector("meta[name=theme-color]");
-		if (meta)
-			meta.content = getComputedStyle(document.documentElement)
-			    .getPropertyValue("--bg").trim() || meta.content;
+		arcPlug.theme = name;
+		arcPlug.wear();
 		Promise.resolve().then(function () {
 			arcPlug.emit("theme", { theme: name });
 		});

@@ -635,7 +635,7 @@ struct app {
 	bool		 rail_open;	/* the tree, on a narrow screen, is unfolded */
 	bool		 who_open;	/* the top bar's menu, on a phone */
 	bool		 acct_open;	/* the account button's menu */
-	char		 theme[16];	/* "" for the default */
+	char		 theme[96];	/* "" for the default; a plugin's "p:..." */
 	ucl_object_t	*settings;	/* settings, while its dialog is open */
 	ucl_object_t	*push;		/* push: the devices that are told */
 	ucl_object_t	*tokens;	/* tokens: the API tokens */
@@ -1177,6 +1177,7 @@ void		 plugins_signed_out(void);
 void		 plugins_menu(struct html *);
 bool		 plugins_action(const char *, const char *, const char *);
 void		 set_plugins(struct html *);
+void		 plugins_themes(struct html *);
 void		 ca_tick(double);
 void		 set_ca(struct html *);
 bool		 ca_form(const char *, const ucl_object_t *);

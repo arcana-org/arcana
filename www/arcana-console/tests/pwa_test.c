@@ -7602,18 +7602,47 @@ part_netsect_map(void)
  * asks for its details, with addresses offered, and makes its two
  * ends, one on each host.
  */
+/*
+ * A line drawn from the first host's port onto the second, as a hand
+ * draws it, once the map has settled: the nodes are placed again for
+ * the shape the links make when a host's links or jails come in
+ * (topo.c's layout_follow()), later the busier the machine, and a drop
+ * where the host was before that misses it, no dialog opened.  The
+ * drop is aimed where the host is as it is let go.
+ */
+static void
+topo_join_start(void)
+{
+
+	wait_js("(k => { const t = window.tsettle; if (t && t.k === k) return "
+	    "(Date.now() - t.at > 1500); window.tsettle = { k: k, at: Date."
+	    "now() }; return (false); })([...document.querySelectorAll("
+	    "'svg.topo .tnode')].slice(0, 2).map(n => JSON.stringify(n."
+	    "querySelector('.box').getBoundingClientRect())).join())", 30);
+	run("window.tsettle = null; const ns = document.querySelectorAll("
+	    "'svg.topo .tnode'), p = ns[0].querySelector('.port'), b = ns[1]."
+	    "querySelector('.box').getBoundingClientRect(); window.tgt = ns[1]."
+	    "id; ptr(p, 'pointerdown'); ptr(p, 'pointermove', b.x + b.width / "
+	    "2, b.y + b.height / 2);");
+	wait_js("document.querySelector('svg.topo .tdraft')", 5);
+}
+
+static void
+topo_join_drop(void)
+{
+
+	run("const b = document.getElementById(window.tgt).querySelector("
+	    "'.box').getBoundingClientRect(); ptr(document.body, 'pointerup', "
+	    "b.x + b.width / 2, b.y + b.height / 2);");
+}
+
 static void
 part_netsect_draw(void)
 {
 
 	netsect_open();
-	run("const ns = document.querySelectorAll('svg.topo .tnode'), p = "
-	    "ns[0].querySelector('.port'), b = ns[1].querySelector('.box')."
-	    "getBoundingClientRect(); window.bx = b.x + b.width / 2; "
-	    "window.by = b.y + b.height / 2; ptr(p, 'pointerdown'); "
-	    "ptr(p, 'pointermove', window.bx, window.by);");
-	wait_js("document.querySelector('svg.topo .tdraft')", 5);
-	run("ptr(document.body, 'pointerup', window.bx, window.by);");
+	topo_join_start();
+	topo_join_drop();
 	wait_js("document.querySelector('form[data-form=tunnel]')", 5);
 	ATF_CHECK(js_true("document.querySelector('form[data-form=tunnel]')."
 	    "inner_a.value === '10.255.0.1/30'"));
@@ -7654,13 +7683,8 @@ part_netsect_draw(void)
 	 * key, and when both public keys are known each is given the
 	 * other as its peer, by that key, at its outer address.
 	 */
-	run("const ns = document.querySelectorAll('svg.topo .tnode'), p = "
-	    "ns[0].querySelector('.port'), b = ns[1].querySelector('.box')."
-	    "getBoundingClientRect(); window.bx = b.x + b.width / 2; "
-	    "window.by = b.y + b.height / 2; ptr(p, 'pointerdown'); "
-	    "ptr(p, 'pointermove', window.bx, window.by);");
-	wait_js("document.querySelector('svg.topo .tdraft')", 5);
-	run("ptr(document.body, 'pointerup', window.bx, window.by);");
+	topo_join_start();
+	topo_join_drop();
 	wait_js("document.querySelector('form[data-form=tunnel]')", 5);
 	run("const f = document.querySelector('form[data-form=tunnel]'); "
 	    "f.type.value = 'wg'; f.inner_a.value = '10.254.0.1/30'; "
@@ -7693,17 +7717,12 @@ part_netsect_draw(void)
 	 * the first end's BIRD with the neighbour filled in.  Saved there,
 	 * the other end is offered, filled in from its side.
 	 */
-	run("const ns = document.querySelectorAll('svg.topo .tnode'), p = "
-	    "ns[0].querySelector('.port'), b = ns[1].querySelector('.box')."
-	    "getBoundingClientRect(); window.bx = b.x + b.width / 2; "
-	    "window.by = b.y + b.height / 2; ptr(p, 'pointerdown'); "
-	    "ptr(p, 'pointermove', window.bx, window.by);");
-	wait_js("document.querySelector('svg.topo .tdraft')", 5);
+	topo_join_start();
 	/* The line alive in the WebGL layer, and the host it can go to
 	 * lit round its box. */
 	wait_js("!window.arcGl.ok || window.arcGl.points >= 72", 5);
 	shot("8b-join-draft");
-	run("ptr(document.body, 'pointerup', window.bx, window.by);");
+	topo_join_drop();
 	wait_js("document.querySelector('form[data-form=tunnel] nav.join-kinds')",
 	    5);
 	run("document.querySelector('button[data-act=topo-join][data-arg=bgp]')"
@@ -7751,13 +7770,8 @@ part_netsect_draw(void)
 	wait_js("document.querySelectorAll('svg.topo .tnode').length >= 2", 20);
 	/* OSPF: the interface the session goes over, in the form of an
 	 * OSPF instance, the one the host runs or a new one. */
-	run("const ns = document.querySelectorAll('svg.topo .tnode'), p = "
-	    "ns[0].querySelector('.port'), b = ns[1].querySelector('.box')."
-	    "getBoundingClientRect(); window.bx = b.x + b.width / 2; "
-	    "window.by = b.y + b.height / 2; ptr(p, 'pointerdown'); "
-	    "ptr(p, 'pointermove', window.bx, window.by);");
-	wait_js("document.querySelector('svg.topo .tdraft')", 5);
-	run("ptr(document.body, 'pointerup', window.bx, window.by);");
+	topo_join_start();
+	topo_join_drop();
 	wait_js("document.querySelector('form[data-form=tunnel] nav.join-kinds')",
 	    5);
 	run("document.querySelector('button[data-act=topo-join][data-arg=ospf]')"
@@ -8546,8 +8560,9 @@ cplug_put(const char *id, const char *name, const char *js, const char *css)
 	ATF_REQUIRE(mkdir(path, 0755) == 0);
 	snprintf(json, sizeof(json), "{\"id\":\"%s\",\"name\":\"%s\","
 	    "\"version\":\"1.0.0\",\"arcana\":\"0.1.0\",\"description\":"
-	    "\"A plugin of the tests\",\"author\":\"Tests\",\"entry\":"
-	    "[\"main.js\"]%s,\"provides\":[\"screen\"]}", id, name, css != NULL ?
+	    "\"A plugin of the tests\",\"author\":\"Tests\",\"trusted\":true,"
+	    "\"entry\":[\"main.js\"]%s,\"provides\":[\"screen\"]}", id, name,
+	    css != NULL ?
 	    ",\"styles\":[\"look.css\"]" : "");
 	snprintf(path, sizeof(path), "plugins/%s/plugin.json", id);
 	put(path, json);
@@ -8563,6 +8578,23 @@ cplug_put(const char *id, const char *name, const char *js, const char *css)
 			    "tr[data-plugin=" id "]')"
 #define	CPLUG_STATE(id, text)	"(" CPLUG_ROW(id) " || {})." \
 			    "textContent.includes('" text "')"
+
+/* A trusted plugin enabled: its Enable, then the owner's yes. */
+static void
+cplug_trust(const char *id)
+{
+	char	sel[128];
+
+	snprintf(sel, sizeof(sel), "table.cplugs.trusted tr[data-plugin=%s] "
+	    "button[data-act=plugin-enable]", id);
+	click_when(sel, 10);
+	wait_js("document.querySelector('form[data-form=confirm]') && "
+	    "document.querySelector('form[data-form=confirm]').textContent."
+	    "includes('as every user who opens it')", 5);
+	run("document.querySelector('form[data-form=confirm]')."
+	    "requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=confirm]')", 5);
+}
 
 static void
 part_cplug(void)
@@ -8602,8 +8634,9 @@ part_cplug(void)
 	ts[1] = sb.st_mtim;
 	ATF_REQUIRE(utimensat(AT_FDCWD, "plugins/tamper/main.js", ts, 0) == 0);
 
-	/* Enabled: loaded at once with its integrity, given Arcana. */
-	click_when("tr[data-plugin=test] button[data-act=plugin-enable]", 10);
+	/* Enabled, asked first: loaded at once with its integrity, given
+	 * Arcana. */
+	cplug_trust("test");
 	wait_js("window.tapi && Array.isArray(window.tapi["
 	    "'arcana-console:hosts'].host) && "
 	    "window.tservers && window.tservers.length === 1 && "
@@ -8653,7 +8686,7 @@ part_cplug(void)
 	ATF_CHECK(js_true("window.tpad === 1"));
 
 	/* One that throws: its error said, the page goes on. */
-	click_when("tr[data-plugin=broken] button[data-act=plugin-enable]", 10);
+	cplug_trust("broken");
 	wait_js(CPLUG_STATE("broken", "broken on purpose"), 15);
 	click_when("button.tab[data-arg=look]", 5);
 	wait_js("document.querySelector('.themes')", 5);
@@ -8661,7 +8694,7 @@ part_cplug(void)
 	/* One not as listed: the browser refuses it, and it is said. */
 	wait_js(CPLUG_ROW("tamper") " && " CPLUG_ROW("tamper") ".querySelector("
 	    "'button[data-act=plugin-enable]:not([disabled])')", 10);
-	click_when("tr[data-plugin=tamper] button[data-act=plugin-enable]", 10);
+	cplug_trust("tamper");
 	wait_js(CPLUG_STATE("tamper", "integrity"), 15);
 	ATF_CHECK(!js_true("window.tampered"));
 	shot("0c-cplug-errors");
@@ -8818,7 +8851,7 @@ route_prologue(const atf_tc_t *tc)
 	    "\"%s/plugins\";\n", dir);
 	prologue(tc, 0);
 	run("location.hash = '#/settings/plugins'");
-	click_when("tr[data-plugin=route] button[data-act=plugin-enable]", 10);
+	cplug_trust("route");
 	wait_js("Array.isArray(window.troutes)", 15);
 }
 
@@ -8887,6 +8920,164 @@ ATF_TC_BODY(pwa_cplug, tc)
 	part_cplug();
 }
 ATF_TC_CLEANUP(pwa_cplug, tc)
+{
+
+	browser_stop();
+}
+
+/*
+ * Console plugins of data: a theme of two colours, a guide pack of a
+ * square and a line, a theme whose file is changed after it was listed;
+ * a trusted plugin whose script is told the guide packs.
+ */
+static void
+cdata_put(const char *id, const char *rest)
+{
+	char	path[MAXPATHLEN], json[1024];
+
+	snprintf(path, sizeof(path), "plugins/%s", id);
+	ATF_REQUIRE(mkdir(path, 0755) == 0);
+	snprintf(json, sizeof(json), "{\"id\":\"%s\",\"name\":\"%s\","
+	    "\"version\":\"1.0.0\",\"arcana\":\"0.1.0\",%s}", id, id, rest);
+	snprintf(path, sizeof(path), "plugins/%s/plugin.json", id);
+	put(path, json);
+}
+
+#define	CDATA_BG	"getComputedStyle(document.documentElement)." \
+			    "getPropertyValue('--bg').trim()"
+
+static void
+part_cplug_data(void)
+{
+	struct stat	sb;
+	struct timespec	ts[2];
+
+	/* Apart: the data plugins, then the trusted one under a warning. */
+	run("location.hash = '#/settings/plugins'");
+	wait_js("document.querySelectorAll('table.cplugs:not(.trusted) "
+	    "tr[data-plugin]').length === 3 && document.querySelector("
+	    "'table.cplugs.trusted tr[data-plugin=trust]')", 10);
+	ATF_CHECK(js_true("document.querySelector('.cplug-warn')."
+	    "textContent.includes('as every user who opens it, with that "
+	    "user\\'s session') && document.querySelector('.cplug-warn')."
+	    "compareDocumentPosition(document.querySelector('table.cplugs."
+	    "trusted')) & Node.DOCUMENT_POSITION_FOLLOWING"));
+	ATF_CHECK(js_true("!document.querySelector('script[data-plugin]')"));
+	shot("0c-cdata-settings");
+
+	/* A theme: enabled without a question, no script nor style of it
+	 * in the page; picked in Look, its tokens on :root. */
+	click_when("tr[data-plugin=duo] button[data-act=plugin-enable]", 10);
+	wait_js(CPLUG_STATE("duo", "in use here"), 15);
+	ATF_CHECK(js_true("!document.querySelector('form[data-form=confirm]')"
+	    " && !document.querySelector('script[data-plugin], "
+	    "link[data-plugin]')"));
+	ATF_CHECK(js_true(CDATA_BG " === '#0f1216'"));
+	click_when("button.tab[data-arg=look]", 5);
+	click_when("button.theme[data-arg='p:duo/duo']", 10);
+	wait_js(CDATA_BG " === '#123456' && getComputedStyle(document."
+	    "documentElement).getPropertyValue('--cyan').trim() === "
+	    "'#abcdef' && localStorage.getItem('arc_theme') === 'p:duo/duo' "
+	    "&& document.querySelector('button.theme.on[data-arg=\"p:duo/"
+	    "duo\"]')", 10);
+	shot("0c-cdata-theme");
+	/* Kept in this browser: worn again in a page loaded anew. */
+	run("window.__old = true; location.reload();");
+	wait_js("!window.__old && " CDATA_BG " === '#123456' && document."
+	    "querySelector('button.theme.on[data-arg=\"p:duo/duo\"]')", 20);
+	/* Disabled: off at once, the stylesheet's own again. */
+	click_when("button.tab[data-arg=plugins]", 5);
+	click_when("tr[data-plugin=duo] button[data-act=plugin-enable]", 10);
+	wait_js(CDATA_BG " === '#0f1216' && document.documentElement.style."
+	    "getPropertyValue('--bg') === '' && " CPLUG_STATE("duo", "off"),
+	    15);
+	click_when("button.tab[data-arg=look]", 5);
+	wait_js("document.querySelector('.themes') && !document.querySelector("
+	    "'button.theme[data-arg=\"p:duo/duo\"]')", 5);
+	click_when("button.tab[data-arg=plugins]", 5);
+
+	/* A guide pack: its picture an <img> from its plugin, its line
+	 * text. */
+	click_when("tr[data-plugin=hello] button[data-act=plugin-enable]", 10);
+	wait_js("(f => f && f.querySelector('img') && f.querySelector('img')."
+	    "complete && f.querySelector('img').naturalWidth > 0)(document."
+	    "querySelector('figure.cplug-pack[data-pack=hello]'))", 15);
+	ATF_CHECK(js_true("(f => f.querySelector('img').getAttribute('src') "
+	    "=== '/plugins/hello/sq.svg' && f.querySelector('q').textContent "
+	    "=== '<b>hello</b>' && !f.querySelector('q b') && !document."
+	    "querySelector('svg rect[width=\"8\"]'))(document.querySelector("
+	    "'figure.cplug-pack[data-pack=hello]'))"));
+	ATF_CHECK(js_true("!document.querySelector('script[data-plugin]')"));
+	shot("0c-cdata-pack");
+
+	/* Trusted: asked first; its script told the guide pack as a
+	 * guide's runtime registers it. */
+	cplug_trust("trust");
+	wait_js("document.querySelector('script[data-plugin=trust]') && "
+	    "Array.isArray(window.tpacks) && window.tpacks.length === 1", 15);
+	ATF_CHECK(js_true("(p => p.id === 'hello' && p.name === 'Hello' && "
+	    "p.plugin === 'hello' && p.base === '/plugins/hello/' && "
+	    "p.expressions === 'pack.json' && p.lines === 'lines.json')("
+	    "window.tpacks[0]) && Arcana.guidePacks().length === 1"));
+	/* The pack's plugin disabled: told it is gone. */
+	click_when("tr[data-plugin=hello] button[data-act=plugin-enable]", 10);
+	wait_js("window.tpacks.length === 0 && !document.querySelector("
+	    "'figure.cplug-pack')", 15);
+
+	/* A theme's file not as listed: said, and nothing of it worn. */
+	ATF_REQUIRE(stat("plugins/tamp/duo.json", &sb) == 0);
+	put("plugins/tamp/duo.json", "{\"tokens\":{\"--bg\":\"#222222\"}}");
+	ts[0] = sb.st_atim;
+	ts[1] = sb.st_mtim;
+	ATF_REQUIRE(utimensat(AT_FDCWD, "plugins/tamp/duo.json", ts, 0) == 0);
+	click_when("tr[data-plugin=tamp] button[data-act=plugin-enable]", 10);
+	wait_js(CPLUG_STATE("tamp", "In this page") " && " CPLUG_STATE("tamp",
+	    "duo.json"), 15);
+	click_when("button.tab[data-arg=look]", 5);
+	wait_js("document.querySelector('.themes')", 5);
+	ATF_CHECK(js_true("!document.querySelector('button.theme[data-arg^="
+	    "\"p:tamp\"]') && " CDATA_BG " === '#0f1216'"));
+}
+
+ATF_TC_WITH_CLEANUP(pwa_cplug_data);
+ATF_TC_HEAD(pwa_cplug_data, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Console plugins of data in the page: a theme worn from its tokens and put away when disabled, a guide pack's picture and line as text, no script for either, a file not as listed told; a trusted plugin apart, under a warning, asked for and given the guide packs");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_cplug_data, tc)
+{
+	char	dir[MAXPATHLEN];
+
+	ATF_REQUIRE(getcwd(dir, sizeof(dir)) != NULL);
+	ATF_REQUIRE(mkdir("plugins", 0755) == 0);
+	cdata_put("duo", "\"themes\":[{\"id\":\"duo\",\"name\":\"Duo\","
+	    "\"file\":\"duo.json\"}],\"provides\":[\"theme\"]");
+	put("plugins/duo/duo.json", "{\"scheme\":\"dark\",\"tokens\":{"
+	    "\"--bg\":\"#123456\",\"--cyan\":\"#abcdef\"}}");
+	cdata_put("hello", "\"guide-packs\":[{\"id\":\"hello\",\"name\":"
+	    "\"Hello\",\"expressions\":\"pack.json\",\"lines\":\"lines.json\"}],"
+	    "\"assets\":[\"sq.svg\"],\"provides\":[\"guide-pack\"]");
+	put("plugins/hello/pack.json", "{\"version\":1,\"images\":{\"calm\":"
+	    "\"sq.svg\"}}");
+	put("plugins/hello/lines.json", "{\"version\":1,\"moments\":{"
+	    "\"greeting-first\":[{\"expression\":\"calm\",\"text\":"
+	    "\"<b>hello</b>\"}]}}");
+	put("plugins/hello/sq.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+	    "width=\"64\" height=\"64\" viewBox=\"0 0 8 8\"><rect width=\"8\" "
+	    "height=\"8\" fill=\"#888\"/></svg>\n");
+	cdata_put("tamp", "\"themes\":[{\"id\":\"duo\",\"name\":\"Tamp\","
+	    "\"file\":\"duo.json\"}],\"provides\":[\"theme\"]");
+	put("plugins/tamp/duo.json", "{\"tokens\":{\"--bg\":\"#111111\"}}");
+	cplug_put("trust", "Trust", "Arcana.on('guide-packs', function (l) "
+	    "{\n\twindow.tpacks = l;\n});\n", NULL);
+	snprintf(harness_webconf, sizeof(harness_webconf), "plugins_dir = "
+	    "\"%s/plugins\";\n", dir);
+	prologue(tc, 0);
+	part_cplug_data();
+}
+ATF_TC_CLEANUP(pwa_cplug_data, tc)
 {
 
 	browser_stop();
@@ -13790,6 +13981,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_flows_trouble);
 	ATF_TP_ADD_TC(tp, pwa_pad);
 	ATF_TP_ADD_TC(tp, pwa_cplug);
+	ATF_TP_ADD_TC(tp, pwa_cplug_data);
 	ATF_TP_ADD_TC(tp, pwa_routes);
 	ATF_TP_ADD_TC(tp, pwa_streams);
 	ATF_TP_ADD_TC(tp, pwa_tabs);

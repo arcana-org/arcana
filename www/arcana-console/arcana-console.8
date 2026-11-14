@@ -238,8 +238,13 @@ each, named by the plugin's id, with its
 .Pa plugin.json
 and the files it lists; not the hosts' plugins.
 Read again when it changes, without a restart; a plugin is served once
-an owner of the console enables it, to every signed-in user, and runs
-with the page's rights.
+an owner of the console enables it, to every signed-in user.
+Themes and guide packs are data the console checks and the page
+applies itself; a plugin with scripts or styles says
+.Dq trusted
+in its
+.Pa plugin.json ,
+and its scripts run with the page's rights, every user's who opens it.
 Default
 .Pa /usr/local/share/arcana-console/plugins ;
 an empty one for none.

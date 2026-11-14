@@ -35,7 +35,8 @@ try {
 	}
 	arcTheme = localStorage.getItem("arc_theme");
 
-	if (arcTheme)
+	/* A plugin's ("p:...") is worn once the page has read it. */
+	if (arcTheme && arcTheme.indexOf("p:") !== 0)
 		document.documentElement.dataset.theme = arcTheme;
 	if (/^(tron|amber|matrix|synth)$/.test(arcTheme || ""))
 		document.documentElement.classList.add("neon");

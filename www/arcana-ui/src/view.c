@@ -1607,6 +1607,7 @@ set_look(struct html *h)
 		    themes[i].name[0] != '\0' ? themes[i].name : "graphite",
 		    strcmp(app.theme, themes[i].name) == 0 ? " on" : "",
 		    themes[i].name, themes[i].title);
+	plugins_themes(h);
 	h_fmt(h, "</div><p class=\"dim\">Kept in this browser. Graphite is "
 	    "the default; Tron, Amber, Matrix and Synth are the neon ones, "
 	    "with glow and capitals.</p><h3>Motion</h3><label class=\""

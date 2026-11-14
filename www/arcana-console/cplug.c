@@ -12,20 +12,26 @@
  * A console plugin is a directory under web.conf's plugins_dir, named
  * by its id, with a plugin.json:
  *
- *	{ "id": "x", "name": "X", "version": "1.0", "arcana": "0.337.0",
+ *	{ "id": "x", "name": "X", "version": "1.0", "arcana": "0.437.0",
  *	  "description": "...", "author": "...",
- *	  "entry": [ "main.js" ], "styles": [ "x.css" ],
- *	  "assets": [ "img/a.png", "pack.json" ], "provides": [ "theme" ] }
+ *	  "themes": [ { "id": "duo", "name": "Duo", "file": "duo.json" } ],
+ *	  "guide-packs": [ { "id": "x", "name": "X",
+ *	    "expressions": "expressions.json", "lines": "lines.json" } ],
+ *	  "assets": [ "art/a.svg" ], "provides": [ "theme", "guide-pack" ] }
  *
  * arcana is the least console version it runs on; an asset may be a
- * glob(3) pattern, of files of those kinds alone.  Every file it lists
- * is checked, sized and hashed (SHA-384, the page's integrity); a
- * plugin with anything wrong is listed with why, and none of it is
- * served.  What is served is a listed file of a plugin a console owner
- * enabled, to a signed-in session, from inside the plugin's directory
- * (symbolic links followed only as far as that).  A plugin runs with
- * the page's rights: what the console host's administrator installed
- * and a console owner enabled alone.
+ * glob(3) pattern, of files of those kinds alone.  Themes and guide
+ * packs are data: their JSON is checked here (theme_check(),
+ * pack_check()) and the page applies it with its own code.  A plugin
+ * with code, "entry" scripts or "styles", says "trusted": true: its
+ * script runs as every user who opens the page, with their session.
+ * Every file it lists, plugin.json among them, is checked, sized and
+ * hashed (SHA-384, the page's integrity); a plugin with anything wrong
+ * is listed with why, and none of it is served.  What is served is a
+ * listed file of a plugin a console owner enabled, to a signed-in
+ * session, from inside the plugin's directory (symbolic links followed
+ * only as far as that): what the console host's administrator
+ * installed and a console owner enabled alone.
  *
  * The directory is looked at again, at most once a CHECK_MS, on each
  * read of arcana-console's plugins and plugin file asked for: rescanned
@@ -67,6 +73,10 @@
 #define	CHECK_MS	1000
 #define	ID_MAX		40
 #define	PATH_MAX_REL	200
+#define	DATA_MAX	16		/* themes, guide packs a plugin has */
+#define	DATA_DEPTH	8		/* of a data file's JSON */
+#define	DATA_NODES	20000
+#define	DATA_TEXT	300		/* bytes of a data file's string */
 
 enum fkind { F_SCRIPT, F_STYLE, F_ASSET };
 
@@ -77,6 +87,7 @@ struct cfile {
 	ino_t		 ino;
 	struct timespec	 mtim;
 	char		 sri[72];	/* base64 of the SHA-384 */
+	bool		 data;		/* a theme's or a guide pack's JSON */
 };
 
 struct cwatch {
@@ -119,6 +130,40 @@ static const struct {
 	{ "webp", "image/webp", F_ASSET },
 	{ "json", "application/json", F_ASSET },
 	{ "woff2", "font/woff2", F_ASSET },
+};
+
+/*
+ * A theme's design tokens: the custom properties the page's stylesheet
+ * (www/arcana-ui/web/style.css) defines on :root that a theme sets, each
+ * by what its value is (value_ok()); the page's bridge.js has the same.
+ * Nothing else: no url(), no var(), nothing that fetches or runs.
+ */
+enum tkind { T_COLOUR, T_CHANNELS, T_LENGTH, T_FONT };
+
+static const char *const tkinds[] = {
+	[T_COLOUR] = "a colour: #rgb, #rrggbb, rgb(r, g, b) or rgba(r, g, b, a)",
+	[T_CHANNELS] = "a colour's channels: r, g, b",
+	[T_LENGTH] = "a length: 0, or a number of px, rem or em",
+	[T_FONT] = "font names: \"Quoted\" or bare, by commas",
+};
+
+static const struct {
+	const char	*name;
+	enum tkind	 kind;
+} tokens[] = {
+	{ "--bg", T_COLOUR }, { "--bg-2", T_COLOUR },
+	{ "--panel", T_COLOUR }, { "--panel-2", T_COLOUR },
+	{ "--line", T_COLOUR }, { "--line-2", T_COLOUR },
+	{ "--fg", T_COLOUR }, { "--fg-2", T_COLOUR }, { "--dim", T_COLOUR },
+	{ "--cyan", T_COLOUR }, { "--amber", T_COLOUR }, { "--red", T_COLOUR },
+	{ "--slate", T_COLOUR }, { "--violet", T_COLOUR },
+	{ "--green", T_COLOUR }, { "--blue", T_COLOUR }, { "--teal", T_COLOUR },
+	{ "--magenta", T_COLOUR },
+	{ "--accent-rgb", T_CHANNELS }, { "--surface-rgb", T_CHANNELS },
+	{ "--red-rgb", T_CHANNELS }, { "--amber-rgb", T_CHANNELS },
+	{ "--violet-rgb", T_CHANNELS },
+	{ "--sans", T_FONT }, { "--mono", T_FONT }, { "--display", T_FONT },
+	{ "--cut", T_LENGTH }, { "--radius", T_LENGTH },
 };
 
 static uint64_t
@@ -343,6 +388,17 @@ watch_add(struct cplug *p, const char *path)
 	p->watch[p->nwatch++].mtim = sb.st_mtim;
 }
 
+static struct cfile *
+file_find(struct cplug *p, const char *rel)
+{
+	int	i;
+
+	for (i = 0; i < p->nfiles; i++)
+		if (strcmp(p->files[i].path, rel) == 0)
+			return (&p->files[i]);
+	return (NULL);
+}
+
 /* A file listed: checked and hashed once, however often named. */
 static bool
 file_add(struct cplug *p, const char *rel, enum fkind kind)
@@ -351,11 +407,10 @@ file_add(struct cplug *p, const char *rel, enum fkind kind)
 	struct stat	 sb;
 	const char	*why;
 	char		 dir[MAXPATHLEN], *s;
-	int		 i, t;
+	int		 t;
 
-	for (i = 0; i < p->nfiles; i++)
-		if (strcmp(p->files[i].path, rel) == 0)
-			return (true);
+	if (file_find(p, rel) != NULL)
+		return (true);
 	if ((t = type_of(rel)) == -1 || types[t].kind != kind)
 		return (fail(p, "%s: %s", rel, kind == F_SCRIPT ? "a script is "
 		    "a .js" : kind == F_STYLE ? "a style is a .css" : "an asset "
@@ -470,13 +525,613 @@ text_check(struct cplug *p, const char *key, bool required, size_t max)
 	return (true);
 }
 
+/* o's keys each one of keys, NULL ended; or why not. */
+static bool
+keys_only(struct cplug *p, const char *what, const ucl_object_t *o,
+    const char *const *keys)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it;
+	size_t			 i;
+
+	it = NULL;
+	while ((v = ucl_object_iterate(o, &it, true)) != NULL) {
+		for (i = 0; keys[i] != NULL; i++)
+			if (strcmp(ucl_object_key(v), keys[i]) == 0)
+				break;
+		if (keys[i] == NULL)
+			return (fail(p, "%s: unknown key %s", what,
+			    ucl_object_key(v)));
+	}
+	return (true);
+}
+
+/* At most max digits at *sp, past them; their value into *v. */
+static bool
+digits(const char **sp, int max, long *v)
+{
+	const char	*s;
+	int		 n;
+
+	*v = 0;
+	for (s = *sp, n = 0; *s >= '0' && *s <= '9'; s++, n++) {
+		if (n == max)
+			return (false);
+		*v = *v * 10 + (*s - '0');
+	}
+	*sp = s;
+	return (n > 0);
+}
+
+/* A comma, and the spaces after it, at *sp. */
+static bool
+comma(const char **sp)
+{
+
+	if (**sp != ',')
+		return (false);
+	for ((*sp)++; **sp == ' '; (*sp)++)
+		;
+	return (true);
+}
+
+/* "r, g, b" at *sp, each 0 to 255; with alpha, ", a" after, 0 to 1. */
+static bool
+channels(const char **sp, bool alpha)
+{
+	const char	*s;
+	long		 v, f;
+	int		 i;
+
+	s = *sp;
+	for (i = 0; i < 3; i++)
+		if ((i > 0 && !comma(&s)) || !digits(&s, 3, &v) || v > 255)
+			return (false);
+	if (alpha) {
+		if (!comma(&s) || !digits(&s, 1, &v) || v > 1)
+			return (false);
+		if (*s == '.' && (s++, !digits(&s, 3, &f) || (v == 1 && f != 0)))
+			return (false);
+	}
+	*sp = s;
+	return (true);
+}
+
+/* A font's family as a theme names it: letters, digits, spaces, -. */
+static bool
+family_ok(const char *s, size_t n)
+{
+	size_t	i;
+
+	if (n == 0 || n > 64 || s[0] == ' ')
+		return (false);
+	for (i = 0; i < n; i++)
+		if (strchr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		    "0123456789 -", s[i]) == NULL || s[i] == '\0')
+			return (false);
+	return (true);
+}
+
+/* A design token's value of kind k, by a grammar of its own. */
+static bool
+value_ok(enum tkind k, const char *s)
+{
+	const char	*e;
+	long		 v;
+	size_t		 n;
+	int		 i;
+
+	if (strlen(s) > 200)
+		return (false);
+	switch (k) {
+	case T_COLOUR:
+		if (s[0] == '#') {
+			n = strlen(s + 1);
+			return ((n == 3 || n == 4 || n == 6 || n == 8) &&
+			    strspn(s + 1, "0123456789abcdefABCDEF") == n);
+		}
+		if (strncmp(s, "rgba(", 5) == 0) {
+			s += 5;
+			if (!channels(&s, true))
+				return (false);
+		} else if (strncmp(s, "rgb(", 4) == 0) {
+			s += 4;
+			if (!channels(&s, false))
+				return (false);
+		} else
+			return (false);
+		return (strcmp(s, ")") == 0);
+	case T_CHANNELS:
+		return (channels(&s, false) && *s == '\0');
+	case T_LENGTH:
+		if (strcmp(s, "0") == 0)
+			return (true);
+		if (!digits(&s, 2, &v) || (*s == '.' && (s++,
+		    !digits(&s, 2, &v))))
+			return (false);
+		return (strcmp(s, "px") == 0 || strcmp(s, "rem") == 0 ||
+		    strcmp(s, "em") == 0);
+	case T_FONT:
+		for (i = 0; i < 8; i++) {
+			if (*s == '"') {
+				if ((e = strchr(s + 1, '"')) == NULL ||
+				    !family_ok(s + 1, (size_t)(e - s - 1)))
+					return (false);
+				s = e + 1;
+			} else {
+				n = strspn(s, "abcdefghijklmnopqrstuvwxyz"
+				    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
+				if (n == 0 || n > 64 || (*s >= '0' && *s <= '9') ||
+				    *s == '-')
+					return (false);
+				s += n;
+			}
+			if (*s == '\0')
+				return (true);
+			if (!comma(&s))
+				return (false);
+		}
+		return (false);
+	}
+	return (false);
+}
+
+/* Whether word is one of the words of list, by spaces. */
+static bool
+word_in(const char *word, const char *list)
+{
+	size_t	n;
+
+	n = strlen(word);
+	for (;;) {
+		if (strncmp(list, word, n) == 0 && (list[n] == ' ' ||
+		    list[n] == '\0'))
+			return (true);
+		if ((list = strchr(list, ' ')) == NULL)
+			return (false);
+		list++;
+	}
+}
+
+/*
+ * An asset a data file names, relative to that file's directory: a file
+ * the plugin lists, of a kind of exts ("svg png webp").
+ */
+static bool
+ref_ok(struct cplug *p, const char *rel, const ucl_object_t *v,
+    const char *exts)
+{
+	struct cfile	*f;
+	const char	*s, *ref;
+	char		 path[2 * PATH_MAX_REL + 2];
+	int		 t;
+
+	if (ucl_object_type(v) != UCL_STRING)
+		return (fail(p, "%s: %s: a file's path", rel, ucl_object_key(v)));
+	ref = ucl_object_tostring(v);
+	s = strrchr(rel, '/');
+	snprintf(path, sizeof(path), "%.*s%s", s != NULL ? (int)(s - rel + 1) :
+	    0, rel, ref);
+	if (!path_ok(ref, false) || !path_ok(path, false) ||
+	    (t = type_of(path)) == -1 || !word_in(types[t].ext, exts) ||
+	    (f = file_find(p, path)) == NULL || f->kind != F_ASSET)
+		return (fail(p, "%s: \"%s\" is not an asset the plugin lists "
+		    "(%s)", rel, ref, exts));
+	return (true);
+}
+
+/*
+ * A data file's JSON: every string text of DATA_TEXT bytes at most, its
+ * keys of 64, no deeper than DATA_DEPTH nor larger than DATA_NODES; a
+ * string of it is text wherever the page shows it, never markup.
+ */
+static bool
+data_walk(struct cplug *p, const char *rel, const ucl_object_t *o,
+    int depth, int *nodes)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	if (++*nodes > DATA_NODES || depth > DATA_DEPTH)
+		return (fail(p, "%s: deeper than %d, or more than %d values",
+		    rel, DATA_DEPTH, DATA_NODES));
+	switch (ucl_object_type(o)) {
+	case UCL_STRING:
+		if (!text_ok(ucl_object_tostring(o), DATA_TEXT))
+			return (fail(p, "%s: a string is a line of text, %d "
+			    "bytes at most", rel, DATA_TEXT));
+		break;
+	case UCL_OBJECT:
+	case UCL_ARRAY:
+		it = NULL;
+		while ((e = ucl_object_iterate(o, &it, true)) != NULL) {
+			if (ucl_object_type(o) == UCL_OBJECT &&
+			    !text_ok(ucl_object_key(e), 64))
+				return (fail(p, "%s: a key is a word of 64 "
+				    "bytes at most", rel));
+			if (!data_walk(p, rel, e, depth + 1, nodes))
+				return (false);
+		}
+		break;
+	case UCL_INT:
+	case UCL_FLOAT:
+	case UCL_BOOLEAN:
+		break;
+	default:
+		return (fail(p, "%s: JSON's values alone", rel));
+	}
+	return (true);
+}
+
+/*
+ * A data file a plugin.json names under key, listed with the plugin's
+ * assets and read: its JSON object, the bytes read the ones listed;
+ * NULL, the plugin failed with why.
+ */
+static ucl_object_t *
+data_read(struct cplug *p, const char *key, const ucl_object_t *v)
+{
+	struct ucl_parser	*ps;
+	struct cfile		*f;
+	struct stat		 sb;
+	ucl_object_t		*o;
+	const char		*rel, *why;
+	uint8_t			*buf;
+	size_t			 i;
+	int			 nodes, t;
+
+	rel = ucl_object_tostring(v);
+	if (ucl_object_type(v) != UCL_STRING || !path_ok(rel, false) ||
+	    (t = type_of(rel)) == -1 || strcmp(types[t].ext, "json") != 0) {
+		fail(p, "%s: %s: a .json in the plugin's directory", key,
+		    ucl_object_key(v));
+		return (NULL);
+	}
+	if (!file_add(p, rel, F_ASSET))
+		return (NULL);
+	f = file_find(p, rel);
+	f->data = true;
+	if ((why = file_read(p, rel, &sb, f->sri, &buf)) != NULL) {
+		fail(p, "%s: %s", rel, why);
+		return (NULL);
+	}
+	f->size = sb.st_size;
+	f->ino = sb.st_ino;
+	f->mtim = sb.st_mtim;
+	/* An object as JSON writes one; what else libucl reads is not. */
+	for (i = 0; i < (size_t)sb.st_size && strchr(" \t\r\n", buf[i]) !=
+	    NULL; i++)
+		;
+	o = NULL;
+	if (i < (size_t)sb.st_size && buf[i] == '{') {
+		ps = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+		    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
+		if (ucl_parser_add_chunk(ps, buf, (size_t)sb.st_size))
+			o = ucl_parser_get_object(ps);
+		ucl_parser_free(ps);
+	}
+	free(buf);
+	if (o == NULL || ucl_object_type(o) != UCL_OBJECT) {
+		if (o != NULL)
+			ucl_object_unref(o);
+		fail(p, "%s: not a JSON object", rel);
+		return (NULL);
+	}
+	nodes = 0;
+	if (!data_walk(p, rel, o, 0, &nodes)) {
+		ucl_object_unref(o);
+		return (NULL);
+	}
+	return (o);
+}
+
+/*
+ * A theme's file: {"scheme": "dark" or "light", "tokens": {token: value},
+ * "font": {"family": name, "file": a .woff2 it lists}}, tokens alone
+ * required.
+ */
+static bool
+theme_check(struct cplug *p, const char *rel, const ucl_object_t *o)
+{
+	static const char *const	 keys[] = { "scheme", "tokens", "font",
+					    NULL };
+	static const char *const	 fkeys[] = { "family", "file", NULL };
+	const ucl_object_t		*v, *e;
+	ucl_object_iter_t		 it;
+	const char			*s;
+	size_t				 i;
+	int				 n;
+
+	if (!keys_only(p, rel, o, keys))
+		return (false);
+	if ((v = ucl_object_lookup(o, "scheme")) != NULL &&
+	    (ucl_object_type(v) != UCL_STRING || (strcmp(ucl_object_tostring(v),
+	    "dark") != 0 && strcmp(ucl_object_tostring(v), "light") != 0)))
+		return (fail(p, "%s: scheme: \"dark\" or \"light\"", rel));
+	if ((v = ucl_object_lookup(o, "tokens")) == NULL ||
+	    ucl_object_type(v) != UCL_OBJECT)
+		return (fail(p, "%s: tokens: an object of the page's design "
+		    "tokens", rel));
+	it = NULL;
+	n = 0;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL) {
+		for (i = 0; i < nitems(tokens); i++)
+			if (strcmp(ucl_object_key(e), tokens[i].name) == 0)
+				break;
+		if (i == nitems(tokens))
+			return (fail(p, "%s: %s is not one of the page's design "
+			    "tokens", rel, ucl_object_key(e)));
+		if (ucl_object_type(e) != UCL_STRING ||
+		    !value_ok(tokens[i].kind, ucl_object_tostring(e)))
+			return (fail(p, "%s: %s: not %s", rel, tokens[i].name,
+			    tkinds[tokens[i].kind]));
+		n++;
+	}
+	if (n == 0)
+		return (fail(p, "%s: tokens: none", rel));
+	if ((v = ucl_object_lookup(o, "font")) == NULL)
+		return (true);
+	if (ucl_object_type(v) != UCL_OBJECT || !keys_only(p, rel, v, fkeys) ||
+	    (s = ucl_str(v, "family")) == NULL ||
+	    ucl_object_lookup(v, "file") == NULL)
+		return (fail(p, "%s: font: {\"family\": a name, \"file\": a "
+		    ".woff2}", rel));
+	if (!family_ok(s, strlen(s)))
+		return (fail(p, "%s: font: family: letters, digits, spaces and "
+		    "-, 64 at most", rel));
+	return (ref_ok(p, rel, ucl_object_lookup(v, "file"), "woff2"));
+}
+
+/*
+ * A guide pack's expressions.json: {"version", "default", "expressions"}
+ * and the art, a rig ("rig": an .svg) or a picture an expression
+ * ("images": {expression: an .svg, .png or .webp}), files it lists.
+ */
+static bool
+expressions_check(struct cplug *p, const char *rel, const ucl_object_t *o)
+{
+	static const char *const	 keys[] = { "version", "rig", "images",
+					    "default", "expressions", NULL };
+	const ucl_object_t		*rig, *img, *v, *e;
+	ucl_object_iter_t		 it;
+	int				 n;
+
+	if (!keys_only(p, rel, o, keys))
+		return (false);
+	rig = ucl_object_lookup(o, "rig");
+	img = ucl_object_lookup(o, "images");
+	if ((rig == NULL) == (img == NULL))
+		return (fail(p, "%s: a rig or images, one of them", rel));
+	if (rig != NULL && !ref_ok(p, rel, rig, "svg"))
+		return (false);
+	if (img != NULL) {
+		if (ucl_object_type(img) != UCL_OBJECT)
+			return (fail(p, "%s: images: {expression: a picture}",
+			    rel));
+		it = NULL;
+		n = 0;
+		while ((e = ucl_object_iterate(img, &it, true)) != NULL) {
+			if (!id_ok(ucl_object_key(e)))
+				return (fail(p, "%s: images: %s is not a word "
+				    "of a-z, 0-9 and -", rel, ucl_object_key(e)));
+			if (!ref_ok(p, rel, e, "svg png webp"))
+				return (false);
+			n++;
+		}
+		if (n == 0)
+			return (fail(p, "%s: images: none", rel));
+	}
+	if ((v = ucl_object_lookup(o, "default")) != NULL &&
+	    (ucl_object_type(v) != UCL_STRING || !id_ok(ucl_object_tostring(v))))
+		return (fail(p, "%s: default: an expression's name", rel));
+	if ((v = ucl_object_lookup(o, "expressions")) == NULL)
+		return (true);
+	if (ucl_object_type(v) != UCL_OBJECT)
+		return (fail(p, "%s: expressions: {name: how the parts stand}",
+		    rel));
+	it = NULL;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL)
+		if (!id_ok(ucl_object_key(e)) || ucl_object_type(e) != UCL_OBJECT)
+			return (fail(p, "%s: expressions: %s: a word of a-z, "
+			    "0-9 and -, an object", rel, ucl_object_key(e)));
+	return (true);
+}
+
+/* A guide pack's lines.json: {"version", "placeholders", "moments":
+ * {moment: [{"expression", "text"}]}}. */
+static bool
+lines_check(struct cplug *p, const char *rel, const ucl_object_t *o)
+{
+	static const char *const	 keys[] = { "version", "placeholders",
+					    "moments", NULL };
+	static const char *const	 lkeys[] = { "expression", "text",
+					    NULL };
+	const ucl_object_t		*v, *m, *l, *x;
+	ucl_object_iter_t		 it, jt;
+
+	if (!keys_only(p, rel, o, keys))
+		return (false);
+	if ((v = ucl_object_lookup(o, "moments")) == NULL ||
+	    ucl_object_type(v) != UCL_OBJECT)
+		return (fail(p, "%s: moments: {moment: [lines]}", rel));
+	it = NULL;
+	while ((m = ucl_object_iterate(v, &it, true)) != NULL) {
+		if (!id_ok(ucl_object_key(m)) || ucl_object_type(m) != UCL_ARRAY)
+			return (fail(p, "%s: moments: %s: a word of a-z, 0-9 "
+			    "and -, a list", rel, ucl_object_key(m)));
+		jt = NULL;
+		while ((l = ucl_object_iterate(m, &jt, true)) != NULL) {
+			if (ucl_object_type(l) != UCL_OBJECT ||
+			    !keys_only(p, rel, l, lkeys) ||
+			    (x = ucl_object_lookup(l, "text")) == NULL ||
+			    ucl_object_type(x) != UCL_STRING)
+				return (fail(p, "%s: moments: %s: each line "
+				    "{\"expression\", \"text\"}", rel,
+				    ucl_object_key(m)));
+			if ((x = ucl_object_lookup(l, "expression")) != NULL &&
+			    (ucl_object_type(x) != UCL_STRING ||
+			    !id_ok(ucl_object_tostring(x))))
+				return (fail(p, "%s: moments: %s: expression: "
+				    "an expression's name", rel,
+				    ucl_object_key(m)));
+		}
+	}
+	return (true);
+}
+
+/*
+ * plugin.json's themes and guide packs, each named, its files read and
+ * checked:
+ *
+ *	"themes": [ { "id", "name", "file" } ]
+ *	"guide-packs": [ { "id", "name", "expressions", "lines" } ]
+ *
+ * lines optional.  The ids unique of their kind.
+ */
+static bool
+data_check(struct cplug *p)
+{
+	static const char *const	 tkeys[] = { "id", "name", "file", NULL };
+	static const char *const	 gkeys[] = { "id", "name", "expressions",
+					    "lines", NULL };
+	static const char *const	 kinds[] = { "themes", "guide-packs" };
+	const ucl_object_t		*a, *e, *v;
+	ucl_object_iter_t		 it;
+	ucl_object_t			*o;
+	const char			*id, *name, *seen[DATA_MAX];
+	size_t				 k;
+	int				 n, j;
+	bool				 ok;
+
+	for (k = 0; k < nitems(kinds); k++) {
+		if ((a = ucl_object_lookup(p->m, kinds[k])) == NULL)
+			continue;
+		if (ucl_object_type(a) != UCL_ARRAY || ucl_array_size(a) >
+		    DATA_MAX)
+			return (fail(p, "%s: a list of %d at most", kinds[k],
+			    DATA_MAX));
+		it = NULL;
+		n = 0;
+		while ((e = ucl_object_iterate(a, &it, true)) != NULL) {
+			if (ucl_object_type(e) != UCL_OBJECT ||
+			    !keys_only(p, kinds[k], e, k == 0 ? tkeys : gkeys))
+				return (fail(p, "%s: a list of objects",
+				    kinds[k]));
+			id = ucl_str(e, "id");
+			name = ucl_str(e, "name");
+			if (id == NULL || !id_ok(id))
+				return (fail(p, "%s: an id of a-z, 0-9 and -, "
+				    "%d at most", kinds[k], ID_MAX));
+			for (j = 0; j < n; j++)
+				if (strcmp(seen[j], id) == 0)
+					return (fail(p, "%s: %s twice",
+					    kinds[k], id));
+			seen[n++] = id;
+			if (name == NULL || name[0] == '\0' || !text_ok(name, 64))
+				return (fail(p, "%s: %s: name: a line of text, "
+				    "64 bytes at most", kinds[k], id));
+			if (k == 0) {
+				if ((v = ucl_object_lookup(e, "file")) == NULL)
+					return (fail(p, "themes: %s: file is "
+					    "missing", id));
+				if ((o = data_read(p, "themes", v)) == NULL)
+					return (false);
+				ok = theme_check(p, ucl_object_tostring(v), o);
+				ucl_object_unref(o);
+				if (!ok)
+					return (false);
+				continue;
+			}
+			if ((v = ucl_object_lookup(e, "expressions")) == NULL)
+				return (fail(p, "guide-packs: %s: expressions "
+				    "is missing", id));
+			if ((o = data_read(p, "guide-packs", v)) == NULL)
+				return (false);
+			ok = expressions_check(p, ucl_object_tostring(v), o);
+			ucl_object_unref(o);
+			if (!ok)
+				return (false);
+			if ((v = ucl_object_lookup(e, "lines")) == NULL)
+				continue;
+			if ((o = data_read(p, "guide-packs", v)) == NULL)
+				return (false);
+			ok = lines_check(p, ucl_object_tostring(v), o);
+			ucl_object_unref(o);
+			if (!ok)
+				return (false);
+		}
+	}
+	return (true);
+}
+
+/*
+ * What the plugin is: data alone, themes and guide packs that the page
+ * applies itself, or code too (entry, styles), which runs as every user
+ * who opens the page and is there only when the plugin says it is
+ * trusted.  provides says theme and guide-pack exactly when it has
+ * them; a plugin of data alone provides nothing else.
+ */
+static bool
+kind_check(struct cplug *p)
+{
+	const ucl_object_t	*v, *e;
+	ucl_object_iter_t	 it;
+	const char		*s;
+	bool			 code, trusted, theme, pack, st, sp;
+	int			 i;
+
+	if ((v = ucl_object_lookup(p->m, "trusted")) != NULL &&
+	    ucl_object_type(v) != UCL_BOOLEAN)
+		return (fail(p, "trusted: true or false"));
+	trusted = v != NULL && ucl_object_toboolean(v);
+	for (code = false, i = 0; i < p->nfiles; i++)
+		if (p->files[i].kind != F_ASSET)
+			code = true;
+	if (code && !trusted)
+		return (fail(p, "not trusted: its entry and styles would run as "
+		    "every user who opens the page, with their session; a "
+		    "plugin with code says \"trusted\": true"));
+	if (!code && trusted)
+		return (fail(p, "trusted: a plugin of data alone (themes, guide "
+		    "packs) has no code to trust"));
+	v = ucl_object_lookup(p->m, "themes");
+	theme = v != NULL && ucl_array_size(v) > 0;
+	v = ucl_object_lookup(p->m, "guide-packs");
+	pack = v != NULL && ucl_array_size(v) > 0;
+	st = sp = false;
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(p->m, "provides"), &it,
+	    true)) != NULL) {
+		s = ucl_object_tostring(e);
+		if (strcmp(s, "theme") == 0) {
+			if (!theme)
+				return (fail(p, "provides theme: its themes "
+				    "are named in themes"));
+			st = true;
+		} else if (strcmp(s, "guide-pack") == 0) {
+			if (!pack)
+				return (fail(p, "provides guide-pack: its "
+				    "guide packs are named in guide-packs"));
+			sp = true;
+		} else if (!code)
+			return (fail(p, "provides %s: a plugin of data alone "
+			    "provides theme and guide-pack", s));
+	}
+	if (theme && !st)
+		return (fail(p, "themes: provides says theme"));
+	if (pack && !sp)
+		return (fail(p, "guide-packs: provides says guide-pack"));
+	return (true);
+}
+
 /* plugin.json read and checked, and the files it lists. */
 static void
 plug_load(struct cplug *p, const char *top, const char *name)
 {
 	static const char	*keys[] = { "id", "name", "version", "arcana",
-				    "description", "author", "entry", "styles",
-				    "assets", "provides" };
+				    "description", "author", "trusted", "entry",
+				    "styles", "assets", "themes", "guide-packs",
+				    "provides" };
 	struct ucl_parser	*ps;
 	const ucl_object_t	*v;
 	ucl_object_iter_t	 it;
@@ -580,10 +1235,12 @@ plug_load(struct cplug *p, const char *top, const char *name)
 		fail(p, "version: letters, digits and . + -");
 		return;
 	}
+	/* Itself last: the page reads its themes and guide packs in it. */
 	(void)(list_check(p, "provides", F_ASSET, true) &&
 	    list_check(p, "entry", F_SCRIPT, false) &&
 	    list_check(p, "styles", F_STYLE, false) &&
-	    list_check(p, "assets", F_ASSET, false));
+	    list_check(p, "assets", F_ASSET, false) && data_check(p) &&
+	    kind_check(p) && file_add(p, "plugin.json", F_ASSET));
 }
 
 static int
@@ -631,8 +1288,8 @@ rescan(const char *top, const struct stat *tsb)
 	qsort(cp.v, (size_t)cp.n, sizeof(*cp.v), plug_cmp);
 }
 
-/* A listed file changed since: hashed again; false when it is gone or
- * no longer what may be served. */
+/* A listed file changed since: hashed again; false when it is gone, no
+ * longer what may be served, or data to be checked again. */
 static bool
 file_fresh(struct cplug *p, struct cfile *f)
 {
@@ -645,7 +1302,7 @@ file_fresh(struct cplug *p, struct cfile *f)
 	if (sb.st_size == f->size && sb.st_ino == f->ino &&
 	    same_time(&sb.st_mtim, &f->mtim))
 		return (true);
-	if (file_read(p, f->path, &sb, f->sri, NULL) != NULL)
+	if (f->data || file_read(p, f->path, &sb, f->sri, NULL) != NULL)
 		return (false);
 	f->size = sb.st_size;
 	f->ino = sb.st_ino;
@@ -983,6 +1640,12 @@ api_cplug_file(struct http_request *req)
 		cp.scanned = false;
 		return (not_found(req));
 	}
+	/* Data not as it was checked: not served until checked again. */
+	if (strcmp(sri, p->files[i].sri) != 0 && p->files[i].data) {
+		free(buf);
+		cp.scanned = false;
+		return (not_found(req));
+	}
 	if (strcmp(sri, p->files[i].sri) != 0) {
 		snprintf(p->files[i].sri, sizeof(p->files[i].sri), "%s", sri);
 		p->files[i].size = sb.st_size;
@@ -999,6 +1662,17 @@ api_cplug_file(struct http_request *req)
 		return (WEB_OK);
 	}
 	http_response_header(req, "content-type", types[t].type);
+	/*
+	 * A picture is for an <img>: as a document of its own (the address
+	 * opened) an SVG runs nothing, fetches nothing and is saved, not
+	 * shown, whatever it holds.
+	 */
+	if (strcmp(types[t].ext, "svg") == 0) {
+		http_response_header(req, "content-security-policy",
+		    "default-src 'none'; style-src 'unsafe-inline'; "
+		    "img-src data:; sandbox");
+		http_response_header(req, "content-disposition", "attachment");
+	}
 	http_response(req, 200, buf, (size_t)sb.st_size);
 	free(buf);
 	return (WEB_OK);
