@@ -204,7 +204,7 @@ the page's socket `/api/stream`.
 
 ## arcana-container
 
-The entry point of the container image (`ghcr.io/spmzt/arcana`): it
+The entry point of the container image (`ghcr.io/arcana-org/arcana`): it
 writes `web.conf` from the environment unless it is mounted in
 `/usr/local/etc/arcana`, and starts `arcana-console` in the foreground
 as the image's unprivileged user.

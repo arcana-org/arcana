@@ -16,7 +16,7 @@
 
 #include "app.h"
 
-#define	BOOK	"https://spmzt.github.io/arcana-docs/"
+#define	BOOK	"https://arcana-org.github.io/arcana-docs/"
 
 static const char *
 net_help(void)

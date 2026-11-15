@@ -5,7 +5,7 @@ CATEGORIES=	sysutils www
 
 MAINTAINER=	pouria@FreeBSD.org
 COMMENT=	Agent and web console for a fleet of FreeBSD hosts
-WWW=		https://github.com/spmzt/arcana
+WWW=		https://github.com/arcana-org/arcana
 
 LICENSE=	BSD2CLAUSE
 LICENSE_FILE=	${WRKSRC}/LICENSE
@@ -16,7 +16,7 @@ LIB_DEPENDS=	libcblink.so:devel/cblink
 USES=		uidfix
 
 USE_GITHUB=	yes
-GH_ACCOUNT=	spmzt
+GH_ACCOUNT=	arcana-org
 GH_PROJECT=	arcana
 # The submodules, at the commits the tree's are at, which a GitHub
 # tarball does not carry: jailconf(8) and libjailconf; libipfeeds and

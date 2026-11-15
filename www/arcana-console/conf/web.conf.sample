@@ -57,7 +57,7 @@ cookie_secure = true;
 # few hours and says in the UI when there is one; it does not replace
 # itself.  Turn the checks off, or point them elsewhere:
 #update_check = false;
-#update_url = "https://api.github.com/repos/spmzt/arcana/releases/latest";
+#update_url = "https://api.github.com/repos/arcana-org/arcana/releases/latest";
 
 # The arcana-agent sent to hosts when the console is asked to update
 # them: by default the one installed with it.
@@ -66,7 +66,7 @@ cookie_secure = true;
 # Or have a host build it: with a repository named here, a host's page
 # offers "Build agent here", and what it builds is what the console
 # sends from then on.
-#agent_source = "https://github.com/spmzt/arcana.git";
+#agent_source = "https://github.com/arcana-org/arcana.git";
 #agent_ref = "main";
 # Over SSH, a private key on the host that builds, readable by nobody;
 # by default that host makes one and the console shows it to you.

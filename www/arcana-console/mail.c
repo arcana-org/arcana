@@ -1053,7 +1053,7 @@ event(const struct mailconf *mc, const char *id, const char *host,
 				    "in time could not be undone at %s: %s; the "
 				    "rest stays as committed. Its report, of the "
 				    "failure alone, to file at https://github.com/"
-				    "spmzt/arcana/issues if you choose:\n%s", when,
+				    "arcana-org/arcana/issues if you choose:\n%s", when,
 				    host, str(d, "node"), str(d, "message"),
 				    str(d, "report") != NULL ? str(d, "report") :
 				    "");

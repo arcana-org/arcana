@@ -83,7 +83,7 @@ RUN make install WITHOUT_TESTS=yes WITHOUT_DEBUG_FILES=yes DESTDIR=/dist && \
         /dist/usr/local/libexec/arcana-container
 
 FROM cblink
-LABEL org.opencontainers.image.source="https://github.com/spmzt/arcana" \
+LABEL org.opencontainers.image.source="https://github.com/arcana-org/arcana" \
     org.opencontainers.image.title="arcana" \
     org.opencontainers.image.description="Arcana, The Seven Archives of FreeBSD: the fleet console, a PWA with WebAuthn login, served on libwebsockets" \
     org.opencontainers.image.licenses="BSD-2-Clause" \

@@ -8,9 +8,9 @@ library calls, system calls and programs each change used. Its
 vocabulary, and where it is going, are in
 [docs/NAMING.md](docs/NAMING.md).
 
-Home: <https://github.com/spmzt/arcana>. The manual, a book of its
-own: <https://spmzt.github.io/arcana-docs/> (its source is
-<https://github.com/spmzt/arcana-docs>).
+Home: <https://github.com/arcana-org/arcana>. The manual, a book of its
+own: <https://arcana-org.github.io/arcana-docs/> (its source is
+<https://github.com/arcana-org/arcana-docs>).
 
 ```
  browser (PWA, C → wasm) ──HTTPS──▶ arcana-console ──cblink/mTLS──▶ arcana-agent ──▶ jails
@@ -42,7 +42,7 @@ Base `make(1)` and `bsd.*.mk`, on FreeBSD 16.0 or later (16-CURRENT
 until 16.0 is released).
 
 ```sh
-git clone --recurse-submodules https://github.com/spmzt/arcana.git
+git clone --recurse-submodules https://github.com/arcana-org/arcana.git
 cd arcana
 make config                       # the options (CONSOLE, WEBGPU), kept in config.mk
 make check-deps                   # what the build needs, and what is missing
@@ -212,7 +212,7 @@ it through a socket only its group can open.
 (the base toolchain and emscripten, from
 [spmzt/images](https://github.com/spmzt/images)) and ships it on the
 cblink image; the workflow in `.github/workflows` publishes it as
-`ghcr.io/spmzt/arcana`. It runs the console unprivileged (uid 4310) on
+`ghcr.io/arcana-org/arcana`. It runs the console unprivileged (uid 4310) on
 port 8443: HTTPS with a certificate (RSA or EC) mounted as `console.pem`
 and `console.key` in `/usr/local/etc/arcana`, plain HTTP for a reverse
 proxy without one.
@@ -221,7 +221,7 @@ proxy without one.
 podman run -d --name arcana -p 8443:8443 \
     -e ARCANA_RP_ID=console.example \
     -v arcana:/var/db/arcana \
-    ghcr.io/spmzt/arcana
+    ghcr.io/arcana-org/arcana
 podman exec arcana cat /var/db/arcana/setup-token
 ```
 
@@ -277,7 +277,7 @@ token.
 The console is a tree and tabs: the fleet, its hosts and their jails on
 the left; a host's Summary, Jails, Services, Network, Packages and Jobs;
 and an activity bar that shows each call as a graph, with its CBOR
-schema. [The book](https://spmzt.github.io/arcana-docs/) goes through
+schema. [The book](https://arcana-org.github.io/arcana-docs/) goes through
 all of it, SD-WAN included; [docs/USING.md](docs/USING.md) lists its
 chapters.
 

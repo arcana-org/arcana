@@ -5,7 +5,7 @@ banner when a newer version is out; `update_check = false` in `web.conf`
 turns that off. It does not replace itself, since it runs unprivileged:
 
 - the container image carries `io.containers.autoupdate=registry`, so
-  `podman auto-update` (from cron, say) pulls a newer `ghcr.io/spmzt/arcana`
+  `podman auto-update` (from cron, say) pulls a newer `ghcr.io/arcana-org/arcana`
   and restarts the container;
 - a native install is updated with `pkg upgrade arcana`, or
   `make install` from a newer tree, then `service arcana_console restart`.
@@ -476,7 +476,7 @@ The console need not have the agent it sends: it can have a host build
 it. Name the repository in `web.conf`,
 
 ```
-agent_source = "https://github.com/spmzt/arcana.git";
+agent_source = "https://github.com/arcana-org/arcana.git";
 agent_ref = "main";            # a branch or tag; optional
 ```
 

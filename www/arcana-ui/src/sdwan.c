@@ -5915,7 +5915,7 @@ sdwan_modal(struct html *h)
 		    "(VRF) is put in it (<code>ifconfig fib</code>); BIRD for "
 		    "its BGP or OSPF where it has them. The link the console "
 		    "reaches the host through is said, and kept as it is "
-		    "unless you agree. <a href=\"https://spmzt.github.io/"
+		    "unless you agree. <a href=\"https://arcana-org.github.io/"
 		    "arcana-docs/sdwan/apply.html#what-an-edge-changes-on-its-"
 		    "host\" target=\"_blank\" rel=\"noopener\">More</a></li><li>Once a service uses it: more routing tables "
 		    "(<code>net.fibs</code>), the service's tunnels (gre(4), "
@@ -6011,7 +6011,7 @@ sdwan_modal(struct html *h)
 				    "to the console. <label class=\"toggle\"><input "
 				    "type=\"checkbox\" name=\"wayin_ok\"> I reach it "
 				    "another way too, or its address and routes "
-				    "stay</label> <a href=\"https://spmzt.github.io/"
+				    "stay</label> <a href=\"https://arcana-org.github.io/"
 				    "arcana-docs/sdwan/apply.html#what-an-edge-"
 				    "changes-on-its-host\" target=\"_blank\" rel="
 				    "\"noopener\">What an edge changes</a></div>");

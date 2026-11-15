@@ -179,7 +179,7 @@ report_out(struct html *h, const char *report)
 	    "failure alone: file it as a bug if you choose</summary><pre>");
 	h_txt(h, report);
 	h_raw(h, "</pre><a class=\"ghost small\" target=\"_blank\" "
-	    "rel=\"noopener\" href=\"https://github.com/spmzt/arcana/issues/"
+	    "rel=\"noopener\" href=\"https://github.com/arcana-org/arcana/issues/"
 	    "new?title=");
 	h_url(h, "An undo of a confirmed commit failed");
 	h_raw(h, "&amp;body=");

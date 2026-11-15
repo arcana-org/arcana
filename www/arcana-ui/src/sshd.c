@@ -728,7 +728,7 @@ ssh_modal(struct html *h)
 		    "ssh-agent of the signing's own for two minutes at most, "
 		    "never in a file (on ZFS a snapshot could keep it), never "
 		    "in a jail; the console overwrites its copies once sent. "
-		    "<a href=\"https://spmzt.github.io/arcana-docs/sections/"
+		    "<a href=\"https://arcana-org.github.io/arcana-docs/sections/"
 		    "ssh.html#where-the-cas-private-key-is-and-is-not\" "
 		    "target=\"_blank\" rel=\"noopener\">How, in the book"
 		    "</a></p><label>The CA's private key"
