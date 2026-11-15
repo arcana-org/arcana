@@ -3,7 +3,8 @@
 TESTSDIR=	${TESTSBASE}/arcana/console
 ATF_TESTS_C=	pwa_test \
 		console_test \
-		yaml_test
+		yaml_test \
+		altmark_test
 
 # The page's YANG-CBOR reader, for the pass-through's case.
 SRCS.console_test=	console_test.c harness.c ycbor.c
@@ -20,6 +21,8 @@ SRCS.raft_test=		raft_test.c craft.c
 CFLAGS.console_test.c+=	-DARCANA_CLUSTER
 CFLAGS.pwa_test.c+=	-DARCANA_CLUSTER
 .endif
+# Alternate marking's loss and RFC 9342's clusters (amclust.c), alone.
+SRCS.altmark_test=	altmark_test.c amclust.c
 # The panel's YAML, natively: base's libucl and libyaml.
 SRCS.yaml_test=		yaml_test.c yaml.c
 CFLAGS.yaml_test.c+=	-DDISTDIR='"${.OBJDIR}/../../arcana-ui/dist"'

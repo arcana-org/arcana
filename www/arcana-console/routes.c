@@ -94,6 +94,8 @@ const struct route routes[] = {
 	{ CYANG_DATA "sdwan/san", api_sdwan_san, NULL, HTTP_METHOD_GET },
 	{ CYANG_DATA "sdwan/record", api_sdwan_record, NULL,
 	    HTTP_METHOD_GET },
+	{ CYANG_DATA "sdwan/alt-marking", api_sdwan_altmark, NULL,
+	    HTTP_METHOD_GET },
 	{ CYANG_DATA "sdwan/attach", api_sapnet_attach, api_sapnet_free,
 	    HTTP_METHOD_POST },
 	/* The console's own (cyang.c's bridges). */

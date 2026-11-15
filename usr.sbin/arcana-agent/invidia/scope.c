@@ -315,6 +315,15 @@ helper_icmp_socket(int jid, int af)
 	    "inet6"));
 }
 
+/* The raw socket ipfw(8) asks its firewall on (IP_FW3), in a jail's own
+ * network: the firewall it reaches is the jail's (gula/altmark.c). */
+int
+helper_ipfw_socket(int jid)
+{
+
+	return (helper_socket(jid, "ipfw-socket", NULL));
+}
+
 /* The helper's side: fd handed over on its standard output. */
 static int
 fd_send(int fd)
@@ -819,6 +828,16 @@ scope_helper(int argc, char **argv)
 		af = strcmp(argv[2], "inet6") == 0 ? AF_INET6 : AF_INET;
 		if ((fd = socket(af, SOCK_RAW, af == AF_INET ? IPPROTO_ICMP :
 		    IPPROTO_ICMPV6)) == -1) {
+			fprintf(stderr, "socket: %s\n", strerror(errno));
+			return (1);
+		}
+		return (fd_send(fd));
+	}
+	/* The jail's firewall's socket, for IP_FW3. */
+	if (strcmp(argv[1], "ipfw-socket") == 0 && argc == 2) {
+		int	fd;
+
+		if ((fd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) == -1) {
 			fprintf(stderr, "socket: %s\n", strerror(errno));
 			return (1);
 		}

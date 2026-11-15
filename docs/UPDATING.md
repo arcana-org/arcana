@@ -93,6 +93,54 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Alternate marking, agent 0.290.0, console 0.441.0
+
+- **A service may measure its tunnels by alternate marking** (RFC 9341):
+  the service form's **Alternate marking block, s** (arcana-l3nm's probe
+  `alt-marking-period`, 2 to 3600 s; none, off).  The edges' ipfw then
+  has, in the SD-WAN set (30): on the way out of each tunnel, first of
+  all (rule 9), two `count` rules and a `setdscp` that clears the
+  colour bit; on the way in, last (rule 11, after the console's rules
+  there that only count or mark, before its first that ends the pass:
+  a flow's dummynet queue or pipe, the skip to the way out), a
+  `setdscp tablearg` that sets the DSCP's lowest bit in every other
+  block, two `count` rules, and a `setdscp` that clears the bit on the
+  outer header of the tunnel's own packets alone (GRE; IP in IP or IPv6
+  for gif; UDP to the far end's port for wg and GENEVE; ESP too when
+  IPsec carries it; a uswe or relayed tunnel's outer packets keep the
+  colour on the underlay); two colour tables a service and
+  `arcam_even`, made and destroyed with the set.  A flow's queue or pipe
+  by DSCP matches the class and its coloured neighbour (`dscp 46,47`):
+  nothing follows dummynet (`net.inet.ip.fw.one_pass`), so the colour
+  comes before it, and its count of what went into the tunnel counts
+  what dummynet then drops (a full queue, a pipe's rate) as lost in the
+  tunnel.  The admin's own rules are not touched: the marking goes and
+  comes with the SD-WAN set, its kept file, its undo and safe mode.
+- **DSCPs**: the standard classes (CS, AF, EF, VA) keep their codepoints
+  on the underlay and past the far end; inside a tunnel an odd block's
+  packets carry the class's DSCP plus one.  What came with the lowest bit
+  set (LE, RFC 8622's 1; the local and experimental pools) is carried as
+  its even neighbour (LE as CS0).  A service with alternate marking takes
+  only even DSCPs for its probes and classes (refused otherwise).  What
+  remains so while a service has alternate marking on: an admin's own
+  rule after Arcana's band (past rule 99) that matches a DSCP on the way
+  out by a tunnel sees the colour in odd blocks (`dscp 46` misses half
+  the EF; write `dscp 46,47`), and one that sets a DSCP there overrides
+  the colour (those blocks show everything lost one way); traffic that
+  arrives with the low bit set (LE, the local-use codepoints) is
+  delivered as its even neighbour.
+- **Blocks are the wall clock's**: both ends of a tunnel number them by
+  CLOCK_REALTIME over the block's length, so the edges' clocks are kept
+  within a quarter of a block of each other (ntpd, chronyd); a block read
+  outside its guard band is marked not valid.
+- The loss of each tunnel's each way by block and RFC 9342's clusters
+  are the Paths tab's **Alternate marking** tables and
+  `/restconf/data/arcana-console:sdwan/alt-marking`; each edge's blocks
+  are arcana-sdwan's state (`alt-marking`) and the event `sdwan-altmark`.
+  An agent before 0.290.0 refuses the rules' `alt-marking`: update the
+  agents before turning it on.  arcana-sdwan, arcana-events, arcana-l3nm
+  and arcana-console are numbered again.
+
 ### A cluster's setup and enrolment tokens through its log, console 0.440.0
 
 - **A cluster's setup token is its leader's.**  The node that leads

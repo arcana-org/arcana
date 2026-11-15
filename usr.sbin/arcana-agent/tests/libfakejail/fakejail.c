@@ -43,6 +43,19 @@
  * And time(3) stepped by the seconds in the file FAKETIME names (read
  * again a second on at most, by the monotonic clock), as a step of the
  * wall clock would: the monotonic clock is the kernel's.
+ *
+ * And ipfw's IP_FW3 socket option, when FAKEIPFW names a file: the raw
+ * socket ipfw(8) asks with (AF_INET, SOCK_RAW, IPPROTO_RAW) is a
+ * descriptor of /dev/null, and on it IP_FW_XGET answers the rules of
+ * the file, one a line,
+ *
+ *	number set packets bytes comment ...
+ *
+ * as "9 30 100 8000 am 0.0 out 0 sw1/a-b": a count rule of that number
+ * in that set with those counters, the rest its comment (O_NOP), the
+ * file read anew at each question; IP_FW_TABLE_XSWAP writes "swap set
+ * first second" and the wall clock's milliseconds at the end of
+ * FAKEIPFW.log.  Any other IP_FW3 opcode is refused (EOPNOTSUPP).
  */
 
 #include <sys/param.h>
@@ -53,12 +66,15 @@
 
 #include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/ip_fw.h>
 #include <arpa/inet.h>
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -795,4 +811,179 @@ time(time_t *tp)
 	if (tp != NULL)
 		*tp = t;
 	return (t);
+}
+
+/* ---- ipfw's IP_FW3, FAKEIPFW's ------------------------------------- */
+
+#define	FW_RULES	256
+
+typedef int	socket_fn(int, int, int);
+typedef int	getsockopt_fn(int, int, int, void *, socklen_t *);
+typedef int	setsockopt_fn(int, int, int, const void *, socklen_t);
+
+static int	fw_fd = -1;	/* the raw socket stood in for */
+
+int
+socket(int domain, int type, int protocol)
+{
+	socket_fn	*realf;
+	int		 fd;
+
+	if (getenv("FAKEIPFW") != NULL && domain == AF_INET &&
+	    (type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) == SOCK_RAW &&
+	    protocol == IPPROTO_RAW) {
+		if ((fd = open("/dev/null", O_RDWR | ((type & SOCK_CLOEXEC) !=
+		    0 ? O_CLOEXEC : 0))) != -1)
+			fw_fd = fd;
+		return (fd);
+	}
+	if ((realf = (socket_fn *)real("socket")) == NULL)
+		return (-1);
+	return (realf(domain, type, protocol));
+}
+
+/*
+ * IP_FW_XGET of the file's rules: the header, the rule list's TLV, and
+ * each rule's TLV with its counters (IPFW_CFG_GET_COUNTERS) and its
+ * body, a comment and a count, as the kernel lays them out.
+ */
+static int
+fw_xget(void *buf, socklen_t *lenp)
+{
+	ipfw_cfg_lheader	*cfg = buf;
+	ipfw_obj_ctlv		*ctlv;
+	ipfw_obj_tlv		*tlv;
+	struct ip_fw_bcounter	*cnt;
+	struct ip_fw_rule	*r;
+	ipfw_insn		*cmd;
+	FILE			*fp;
+	char			 line[512], *cm;
+	unsigned long		 num, set;
+	unsigned long long	 pk, by;
+	size_t			 need, at, clen, rlen;
+	uint32_t		 first, last, nr;
+	int			 n;
+
+	if (*lenp < sizeof(*cfg) + sizeof(*ctlv)) {
+		errno = EINVAL;
+		return (-1);
+	}
+	first = cfg->start_rule;
+	last = cfg->end_rule != 0 ? cfg->end_rule : UINT32_MAX;
+	need = at = sizeof(*cfg) + sizeof(*ctlv);
+	nr = 0;
+	if ((fp = fopen(getenv("FAKEIPFW"), "re")) != NULL) {
+		while (nr < FW_RULES && fgets(line, sizeof(line), fp) != NULL) {
+			line[strcspn(line, "\n")] = '\0';
+			if (sscanf(line, "%lu %lu %llu %llu %n", &num, &set, &pk,
+			    &by, &n) != 4 || num < first || num > last)
+				continue;
+			cm = line + n;
+			/* The comment, NUL-ended, in whole words of 4. */
+			clen = (strlen(cm) + 1 + 3) / 4;
+			rlen = roundup2(sizeof(*r) - sizeof(ipfw_insn) +
+			    (1 + clen + 1) * sizeof(ipfw_insn), 8);
+			need += sizeof(*tlv) + sizeof(*cnt) + rlen;
+			if (need > *lenp)
+				continue;
+			tlv = (ipfw_obj_tlv *)(void *)((char *)buf + at);
+			memset(tlv, 0, sizeof(*tlv) + sizeof(*cnt) + rlen);
+			tlv->type = IPFW_TLV_RULE_ENT;
+			tlv->length = (uint32_t)(sizeof(*tlv) + sizeof(*cnt) +
+			    rlen);
+			cnt = (struct ip_fw_bcounter *)(void *)(tlv + 1);
+			cnt->size = sizeof(*cnt);
+			cnt->pcnt = pk;
+			cnt->bcnt = by;
+			r = (struct ip_fw_rule *)(cnt + 1);
+			r->rulenum = (uint32_t)num;
+			r->set = (uint8_t)set;
+			r->act_ofs = (uint16_t)(1 + clen);
+			r->cmd_len = (uint16_t)(1 + clen + 1);
+			cmd = r->cmd;
+			cmd->opcode = O_NOP;
+			cmd->len = (uint8_t)(1 + clen);
+			memcpy(cmd + 1, cm, strlen(cm) + 1);
+			cmd += 1 + clen;
+			cmd->opcode = O_COUNT;
+			cmd->len = 1;
+			at += tlv->length;
+			nr++;
+		}
+		fclose(fp);
+	}
+	cfg->size = (uint32_t)need;
+	if (need > *lenp) {
+		errno = ENOMEM;
+		return (-1);
+	}
+	ctlv = (ipfw_obj_ctlv *)(cfg + 1);
+	memset(ctlv, 0, sizeof(*ctlv));
+	ctlv->head.type = IPFW_TLV_RULE_LIST;
+	ctlv->head.length = (uint32_t)(at - sizeof(*cfg));
+	ctlv->count = nr;
+	cfg->set_mask = ~0u;
+	*lenp = (socklen_t)at;
+	return (0);
+}
+
+int
+getsockopt(int s, int level, int name, void *val, socklen_t *lenp)
+{
+	getsockopt_fn	*realf;
+	ip_fw3_opheader	*op = val;
+
+	if (fw_fd != -1 && s == fw_fd && level == IPPROTO_IP &&
+	    name == IP_FW3) {
+		if (val == NULL || lenp == NULL || *lenp < sizeof(*op)) {
+			errno = EINVAL;
+			return (-1);
+		}
+		if (op->opcode == IP_FW_XGET)
+			return (fw_xget(val, lenp));
+		errno = EOPNOTSUPP;
+		return (-1);
+	}
+	if ((realf = (getsockopt_fn *)real("getsockopt")) == NULL)
+		return (-1);
+	return (realf(s, level, name, val, lenp));
+}
+
+int
+setsockopt(int s, int level, int name, const void *val, socklen_t len)
+{
+	setsockopt_fn		*realf;
+	const ipfw_obj_header	*oh = val;
+	const ipfw_obj_ntlv	*second;
+	struct timespec		 ts;
+	char			 log[MAXPATHLEN];
+	FILE			*fp;
+
+	if (fw_fd != -1 && s == fw_fd && level == IPPROTO_IP &&
+	    name == IP_FW3) {
+		if (val == NULL || len < sizeof(oh->opheader)) {
+			errno = EINVAL;
+			return (-1);
+		}
+		if (oh->opheader.opcode != IP_FW_TABLE_XSWAP ||
+		    len < sizeof(*oh) + sizeof(*second)) {
+			errno = EOPNOTSUPP;
+			return (-1);
+		}
+		second = (const ipfw_obj_ntlv *)(oh + 1);
+		(void)clock_gettime(CLOCK_REALTIME, &ts);
+		snprintf(log, sizeof(log), "%s.log", getenv("FAKEIPFW"));
+		if ((fp = fopen(log, "ae")) != NULL) {
+			fprintf(fp, "swap %u %.*s %.*s %jd\n", oh->ntlv.set,
+			    (int)strnlen(oh->ntlv.name, sizeof(oh->ntlv.name)),
+			    oh->ntlv.name, (int)strnlen(second->name,
+			    sizeof(second->name)), second->name,
+			    (intmax_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+			fclose(fp);
+		}
+		return (0);
+	}
+	if ((realf = (setsockopt_fn *)real("setsockopt")) == NULL)
+		return (-1);
+	return (realf(s, level, name, val, len));
 }

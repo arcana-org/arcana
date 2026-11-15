@@ -1911,7 +1911,7 @@ events last=12 first=3 kept=512
 19 2026-10-14T16:25:26Z procs: procs started=4 exited=3
 20 2026-10-14T16:25:27Z monitor-threshold: monitor edge-b delay value=42500 threshold=40000 over=yes on gre0
 21 2026-10-14T16:25:28Z sdwan-ids: alert sec-lan sid=1000009 rev=1 10.0.0.9:4444 -> 10.0.0.1:23 TCP on em0 severity=2 allowed: LOCAL telnet
-yang-cbor 1343 bytes, the same back
+yang-cbor 1342 bytes, the same back
 EOT
 	atf_check -o file:want "$y" list ev.json
 	# Each kind as its source writes it, there and back as the console
@@ -2245,7 +2245,7 @@ rule 2: 120 fwd tablearg ip from any to table(sw1_p1)
 rule 3: 110 count ip from any to any
 set {"set":30,"tables":[{"name":"sw1_zone","valtype":"legacy","entries":[["10.1.0.0/24","1"],["10.2.0.0/24","2"]]},{"name":"sw1_p1","valtype":"ipv4","entries":[["10.3.0.0/24","10.202.0.2"]]}],"objects":["pipe 1 config bw 10Mbit/s","queue 2 config pipe 1 weight 30"],"rules":["100 skipto 999 ip from any to any not recv vtnet1","110 setfib 1 ip from table(sw1_zone) to any","120 fwd tablearg ip from any to table(sw1_p1)","110 count ip from any to any"]}
 emptied {"set":30,"tables":[],"objects":[],"rules":[]}
-yang-cbor 351 bytes, the same back
+yang-cbor 343 bytes, the same back
 EOT
 	atf_check -o file:want "$y" rules rules.json
 	# The steering, with the breakout's routes.
@@ -2255,7 +2255,7 @@ EOT
 	cat > want <<'EOT'
 entry sw1_p1 10.3.0.0/24: tvc-1 via 10.202.0.2 tvc-2 via 10.203.0.2
 set {"entries":[{"table":"sw1_p1","prefix":"10.3.0.0/24","candidates":[{"id":"tvc-1","via":"10.202.0.2"},{"id":"tvc-2","via":"10.203.0.2"}]}],"routes":[{"fib":2,"destination":"0.0.0.0/0","candidates":[{"id":"bo:a-inet","via":"192.0.2.254"}]}]}
-yang-cbor 112 bytes, the same back
+yang-cbor 110 bytes, the same back
 EOT
 	atf_check -o file:want "$y" steer steer.json
 	# An edge that is a vnet jail: its entry's, back with its jail;
@@ -2316,7 +2316,7 @@ EOT
 	cat > want <<'EOT'
 instance svc1 fib=1 host=edge-a spec={"router_id":"10.0.0.1","bfd":true}
 set {"jail":"gateway","instances":[{"name":"svc1","fib":1,"host":"edge-a","spec":{"router_id":"10.0.0.1","bfd":true}}]}
-yang-cbor 60 bytes, the same back
+yang-cbor 58 bytes, the same back
 EOT
 	atf_check -o file:want "$y" bird inst.json gateway
 	# The proxies and the IDS: SD-WAN's and the Security section's
@@ -2329,7 +2329,7 @@ proxy svc1 fib=1 mode=inspect host=edge-a spec={"flavor":"sdwan","zones":[]} lis
 proxy sec-web fib=0 mode=sni host=- spec={"listen":["10.1.0.1"]} stopped=yes
 set {"instances":[{"name":"svc1","fib":1,"mode":"inspect","host":"edge-a","lists":{"zone-block":"bad.example\n"},"spec":{"flavor":"sdwan","zones":[]}}]}
 set {"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","lists":{},"stopped":true,"spec":{"listen":["10.1.0.1"]}}]}
-yang-cbor 134 bytes, the same back
+yang-cbor 125 bytes, the same back
 EOT
 	atf_check -o file:want "$y" proxy proxy.json
 	cat > ids.json <<'EOT'
@@ -2340,7 +2340,7 @@ ids svc1 divert=8000 conf=10 rules=51 interfaces=vtnet1,vtnet2 host=- capture=- 
 ids sec-lan divert=0 conf=0 rules=0 interfaces=em0 host=edge-a capture=netmap offload=no stopped=yes thresholds=28 lua=1 plugins=1 spec={"home":["any"]}
 set {"instances":[{"name":"svc1","interfaces":["vtnet1","vtnet2"],"divert":8000,"rules":"alert tcp any any -> any 23 (msg:\"telnet\"; sid:1;)\n","conf":"%YAML 1.1\n"}]}
 set {"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["em0"],"capture":"netmap","offload":false,"lua":{"a.lua":"return 1\n"},"plugins":["/usr/local/lib/x.so"],"stopped":true,"thresholds":"suppress gen_id 1, sig_id 1\n","spec":{"home":["any"]}}]}
-yang-cbor 226 bytes, the same back
+yang-cbor 219 bytes, the same back
 EOT
 	atf_check -o file:want "$y" ids ids.json
 	# The state, all of it.
@@ -2375,7 +2375,7 @@ record count=7 seq=7
   2026-10-14T16:25:19Z 7 rule=30010 Deny 10.1.0.2:4000 -> 10.3.0.2:22 vtnet1 (deny-ssh)
 key ipsec0 public=AAAA next=BBBB at=2026-10-14T15:00:00Z lifetime=86400 spi=1001/1002 next-spi=0 pending=yes
 fault 2026-10-14T16:25:18Z tunnel Major was=- tvc-2 by=probe cleared=no at=-: no reply
-yang-cbor 1330 bytes, the same back
+yang-cbor 1317 bytes, the same back
 EOT
 	atf_check -o file:want "$y" state state.json
 }
@@ -9785,6 +9785,157 @@ sdwan_rules_body()
 	atf_check -o match:'"rules":\{"set":0,' "$JGC" -c "$SOCK" sdwan
 }
 sdwan_rules_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case sdwan_altmark cleanup
+sdwan_altmark_head()
+{
+	atf_set "descr" "Alternate marking (RFC 9341, PLAN-SDN-YANG 5.5.1 and 5.5.2): the count and unmark rules of the way out of a tunnel first in the SD-WAN set, the colour and count rules of the way in after the console's rules that only count and before its queue, the outer rule by the tunnel's kind, the colour tables swapped at each block's start, the counters read by IP_FW3 in the middle of the block after (libfakejail's), each block's gain with its number, its timing in the guard band, told as sdwan-altmark; taken away with the set"
+	atf_set "timeout" "120"
+}
+sdwan_altmark_body()
+{
+	local R AM
+
+	# ipfw's IP_FW3 as libfakejail answers it: ./fw3's rules and
+	# counters, the swaps in ./fw3.log.
+	export FAKEIPFW="$(pwd)/fw3"
+	: > fw3
+	sdwan_start
+	# The console's way in at the UNI (10), its way out by the
+	# tunnels (11): a rule that only counts a class, a flow's queue by
+	# DSCP (the class and its coloured neighbour), the skip to the way
+	# out; then the way out (99).
+	R='"rules":["10 skipto tablearg ip from table(sw1_zone) to any in recv lo1","11 count ip from any to any dscp 46 out xmit gre100","11 queue 3001 ip from any to any dscp 46,47 out xmit gre100","11 skipto 99 ip from any to any","99 count ip from any to any"]'
+	AM='{"service":"sw1","period":2,"tunnels":[{"id":"sw1/a-b","interface":"gre100","outer":"192.0.2.2","kind":"gre","ipsec":true},{"id":"sw1/a-c","interface":"gre101","outer":"2001:db8::3","kind":"wg","port":51101},{"id":"sw1/a-d","interface":"gre102","outer":"192.0.2.4"}]}'
+	# What is no alternate marking: a period under 2 s, an interface
+	# two tunnels'.
+	atf_check -s exit:1 -e match:'period' -o ignore "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[{\"service\":\"sw1\",\"period\":1,\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"}]}]}"
+	atf_check -s exit:1 -e match:'an interface is one tunnel' -o ignore "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[{\"service\":\"sw1\",\"period\":2,\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"},{\"id\":\"u\",\"interface\":\"gre100\"}]}]}"
+	: > ipfw.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[$AM]}"
+	# The tables: a class to itself, and the colours, the one now's in
+	# arcam0.  The way out of a tunnel at 9, first: counted, the colour
+	# cleared.  The way in at 11, last: after what only counts, before
+	# the queue (no rule sees a packet after dummynet): the colour, what
+	# went in counted, the colour off the outer header of the tunnel's
+	# own packets (GRE and ESP; UDP to wg's port; none where the kind is
+	# not said).
+	atf_check -o match:'^set 30 table arcam_even create type number valtype dscp$' \
+	    -o match:'^set 30 table arcam_even atomic add 0 0 2 2 4 4 .* 46 46 .* 62 62$' \
+	    -o match:'^set 30 table arcam0 create type number valtype dscp$' \
+	    -o match:'^set 30 table arcam0_alt create type number valtype dscp$' \
+	    -o match:'^set 30 table arcam0 atomic add 0 [01] 2 [23] ' \
+	    -o match:'^add 9 set 30 count ip from any to any in recv gre100 dscp 0,2,[0-9,]*,62 // am 0.0 in 0 sw1/a-b$' \
+	    -o match:'^add 9 set 30 count ip from any to any in recv gre100 dscp 1,3,[0-9,]*,63 // am 0.0 in 1 sw1/a-b$' \
+	    -o match:'^add 9 set 30 setdscp tablearg ip from any to any in recv gre100 lookup dscp:0x3e arcam_even // am 0.0 unmark sw1/a-b$' \
+	    -o match:'^add 9 set 30 count ip from any to any in recv gre101 dscp 1,3,[0-9,]*,63 // am 0.1 in 1 sw1/a-c$' \
+	    -o match:'^add 11 set 30 setdscp tablearg ip from any to any out xmit gre100 lookup dscp:0x3e arcam0 // am 0.0 mark sw1/a-b$' \
+	    -o match:'^add 11 set 30 count ip from any to any out xmit gre100 dscp 0,2,4,[0-9,]*,62 // am 0.0 out 0 sw1/a-b$' \
+	    -o match:'^add 11 set 30 count ip from any to any out xmit gre100 dscp 1,3,5,[0-9,]*,63 // am 0.0 out 1 sw1/a-b$' \
+	    -o match:'^add 11 set 30 setdscp tablearg ip from any to 192.0.2.2 out \{ proto gre or proto esp \} lookup dscp:0x3e arcam_even // am 0.0 outer sw1/a-b$' \
+	    -o match:'^add 11 set 30 setdscp tablearg udp from any to 2001:db8::3 dst-port 51101 out lookup dscp:0x3e arcam_even // am 0.1 outer sw1/a-c$' \
+	    -o match:'^add 11 set 30 count ip from any to any out xmit gre102 dscp 1,3,[0-9,]*,63 // am 0.2 out 1 sw1/a-d$' \
+	    -o not-match:'outer sw1/a-d' -o not-match:'^add 9 .* out xmit ' cat ipfw.log
+	# Their order in the file: the tables, the way out of the tunnels,
+	# the UNI's, the console's count of the class, the colour, the
+	# queue, the way out.
+	atf_check -o inline:'yes\n' sh -c "l() { grep -n \"\$1\" ipfw.log | head -1 | cut -d: -f1; }; L() { grep -n \"\$1\" ipfw.log | tail -1 | cut -d: -f1; }; test \$(l '^set 30 table arcam0_alt atomic') -lt \$(l '^add 9 ') && test \$(L '^add 9 ') -lt \$(l '^add 10 ') && test \$(l '^add 10 ') -lt \$(l '^add 11 set 30 count ip from any to any dscp 46 out') && test \$(l '^add 11 set 30 count ip from any to any dscp 46 out') -lt \$(l ' // am 0.0 mark ') && test \$(L ' // am 0.2 out 1 ') -lt \$(l '^add 11 set 30 queue 3001') && test \$(l '^add 11 set 30 queue 3001') -lt \$(l '^add 99 ') && echo yes"
+	# The counters as IP_FW_XGET answers them, nothing counted yet; the
+	# console's rules and the marking's own beside them, not counted.
+	cat > fw3 <<'EOF'
+11 30 0 0 am 0.0 mark sw1/a-b
+11 30 0 0 am 0.0 out 0 sw1/a-b
+11 30 0 0 am 0.0 out 1 sw1/a-b
+9 30 0 0 am 0.0 in 0 sw1/a-b
+9 30 0 0 am 0.0 in 1 sw1/a-b
+11 30 0 0 am 0.1 out 0 sw1/a-c
+11 30 0 0 am 0.1 out 1 sw1/a-c
+9 30 0 0 am 0.1 in 0 sw1/a-c
+9 30 0 0 am 0.1 in 1 sw1/a-c
+9 30 999 999 divert 8001
+9 0 999 999 am 0.0 out 0 sw1/a-b
+EOF
+	# The swaps: one a block, at its start (within L/4 = 500 ms).
+	wait_match '^[2-9]' grep -c '^swap' fw3.log ||
+	    atf_fail "no two swaps: $(cat fw3.log 2>/dev/null)"
+	atf_check -o inline:'ok\n' awk '$1 != "swap" || $2 != 30 || $3 != "arcam0" || $4 != "arcam0_alt" { bad = 1 } $5 % 2000 > 500 { bad = 1 } END { print bad ? "bad" : "ok" }' fw3.log
+	# Counted now: of colour 0, 100 in at this end and 97 out at the
+	# far one's; of colour 1, 50 and 50.  Each block after gains them
+	# once: the next of each colour read has them, the ones after
+	# none.
+	sed -i '' -e 's/^11 30 0 0 am 0.0 out 0/11 30 100 8000 am 0.0 out 0/' \
+	    -e 's/^9 30 0 0 am 0.0 in 0/9 30 97 7760 am 0.0 in 0/' \
+	    -e 's/^11 30 0 0 am 0.0 out 1/11 30 50 4000 am 0.0 out 1/' \
+	    -e 's/^9 30 0 0 am 0.0 in 1/9 30 50 4000 am 0.0 in 1/' fw3
+	cat > amcheck.py <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ts = {t["tunnel"]: t for t in d.get("altmark", [])}
+ab, ac = ts["sw1/a-b"], ts["sw1/a-c"]
+assert ab["interface"] == "gre100" and ab["period"] == 2, ab
+assert ab["service"] == "sw1" and ac["interface"] == "gre101"
+c0 = [b for b in ab["blocks"] if b["out_packets"] == 100]
+c1 = [b for b in ab["blocks"] if b["out_packets"] == 50]
+assert len(c0) == 1 and len(c1) == 1, ab["blocks"]
+for b, col, inp in ((c0[0], 0, 97), (c1[0], 1, 50)):
+    assert b["colour"] == col and b["block"] % 2 == col, b
+    assert b["in_packets"] == inp and b["start"] == b["block"] * 2, b
+    assert b["out_bytes"] == b["out_packets"] * 80, b
+# Every block read in the guard band's middle: never before L/2
+# (1000 ms into the block after), and these two before 3L/4.
+for b in ab["blocks"] + ac["blocks"]:
+    assert b["read_ms"] >= 1000, b
+for b in (c0[0], c1[0]):
+    assert b["read_ms"] <= 1500 and b["valid"], b
+# The blocks in their order, one after another, each a colour.
+ns = [b["block"] for b in ab["blocks"]]
+assert ns == sorted(ns) and len(set(ns)) == len(ns), ns
+assert all(b["out_packets"] == 0 for b in ac["blocks"]), ac
+print("ok", len(ab["blocks"]))
+EOF
+	wait_match '"out_packets":50' "$JGC" -c "$SOCK" sdwan ||
+	    atf_fail "no block of 50: $("$JGC" -c "$SOCK" sdwan)"
+	wait_match '"out_packets":100' "$JGC" -c "$SOCK" sdwan ||
+	    atf_fail "no block of 100: $("$JGC" -c "$SOCK" sdwan)"
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'^ok [0-9]+$' python3 -I amcheck.py sd.json
+	# Told as it was read: the service's block, its tunnels' counts.
+	atf_check -o match:'"kind":"sdwan-altmark","data":\{"service":"sw1","block":[0-9]+,"start":[0-9]+,"period":2,"colour":0,"valid":true,"tunnels":\[\{"id":"sw1/a-b","interface":"gre100","out":100,"in":97\},\{"id":"sw1/a-c","interface":"gre101","out":0,"in":0\}\]\}' \
+	    "$JGC" -c "$SOCK" events
+	# The same rules again: nothing reloaded, the blocks kept.
+	: > ipfw.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[$AM]}"
+	atf_check -o not-match:'^add 9 ' -o not-match:'set disable 30' cat ipfw.log
+	# Kept: applied again at the next start, the rules and tables
+	# loaded as before.
+	: > ipfw.log
+	stop_daemon
+	start_daemon
+	atf_check -o match:'^add 11 set 30 setdscp tablearg ip from any to any out xmit gre100 lookup dscp:0x3e arcam0 // am 0.0 mark sw1/a-b$' \
+	    -o match:'^set 30 table arcam0 create type number valtype dscp$' cat ipfw.log
+	# Without it: the colour tables destroyed with the set's, no more
+	# swaps, nothing measured.
+	: > ipfw.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R}"
+	atf_check -o match:'^ipfw -q set 30 table arcam0 destroy$' \
+	    -o match:'^ipfw -q set 30 table arcam0_alt destroy$' \
+	    -o match:'^ipfw -q set 30 table arcam_even destroy$' \
+	    -o not-match:'^add 9 ' cat ipfw.log
+	sleep 1
+	: > fw3.log
+	sleep 3
+	atf_check -o empty cat fw3.log
+	atf_check -o not-match:'"altmark"' "$JGC" -c "$SOCK" sdwan
+}
+sdwan_altmark_cleanup()
 {
 	stop_daemon
 }
@@ -18117,6 +18268,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_ids_rules
 	atf_add_test_case history_hold_off
 	atf_add_test_case sdwan_rules
+	atf_add_test_case sdwan_altmark
 	atf_add_test_case vpn_bird
 	atf_add_test_case sdwan_bird
 	atf_add_test_case vpn_wireguard

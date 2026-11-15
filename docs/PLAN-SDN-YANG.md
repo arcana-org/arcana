@@ -3436,13 +3436,173 @@ whose first part is served.
 - 5.5.1 A: `setdscp` colour pairs flipped on timer L per service,
   `count dscp` rules at the ends with the SD-WAN rules; check: the
   rules in `ipfw show`.
+  Done (agent 0.290.0, console 0.441.0).  The colour is the DSCP's
+  lowest bit: no standard class (CS, AF, EF, VA) sets it, RFC 2474's
+  pools 2 and 3 (local and experimental use, LE) do.  A service's pair
+  is so its classes' DSCPs and each plus one: an even block carries the
+  class's own, an odd one the class's with the bit.  Traffic that came
+  with it set is carried as its even neighbour (LE as CS0); the probes'
+  and classes' DSCPs of a service with alternate marking must be even
+  (the console refuses an odd one).  The console's apply gives each
+  edge's sdwan-rules, beside the rules, `altmark`: each service whose
+  probe settings have `alt_marking` (arcana-l3nm's probe
+  `alt-marking-period`, 2 to 3600 s, the service form's), its block
+  length and its tunnels with an end there (id, interface, the far
+  end's outer address); arcana-sdwan's rules-config has it as the list
+  `alt-marking` (`ietf-altmark`, draft-ietf-ippm-alt-mark-yang, was
+  looked at: it marks IPv6 options, SRH and MPLS, carries no counters
+  and needs the ACL modules, so it is not used).  The agent
+  (gula/altmark.c) writes into the set's file per service two `number`
+  tables of `valtype dscp`, `arcamK` and `arcamK_alt`, mapping each
+  even class to itself or to itself plus one, and `arcam_even`, a class
+  to itself; and per tunnel, on the way out of it first of all (rule 9
+  of the set, before the IDS's diverts and the classification),
+  `count ... in recv TUN dscp <even>` and `<odd>` and `setdscp tablearg
+  ... in recv TUN lookup dscp:0x3e arcam_even` (the class again before
+  anything else reads the DSCP); on the way into it last (rule 11,
+  after the console's rules there that only count or mark, a class's
+  `setdscp` among them, and before its first that ends the pass, a
+  flow's dummynet queue or pipe or the skip to the way out),
+  `setdscp tablearg ... out xmit TUN lookup dscp:0x3e arcamK` (the
+  colour), `count ... out xmit TUN dscp <even>` and `<odd>`, and a
+  `setdscp ... arcam_even` of the outer header of the tunnel's own
+  packets to the far end's outer address (gre(4), gif(4), wg(4) and ESP
+  copy the inner DSCP): `{ proto gre }`, `{ proto ipencap or proto
+  ipv6 }` for gif, `udp ... dst-port P` for wg (51000 plus the far
+  unit) and GENEVE (6081), `or proto esp` (or ESP alone for the UDP
+  kinds) where IPsec carries it, none for uswe or a kind not said (the
+  underlay then sees the colour); each rule with a comment `am K.J what
+  id`.  Where each DSCP is read on the way into a tunnel, established
+  from the rule generation: the flows' criteria (`dscp <list>`) are
+  matched in the zone blocks, reached from rule 10 on the way in at the
+  UNI, another pass, before any colour; Arcana marks no class by
+  `setdscp` (the probes' and classes' DSCP is the socket's, IP_TOS,
+  before ipfw, and a class marked by an admin's rule in the band
+  precedes the colour); STAMP's CoS (the probes' DSCP and the
+  reflector's IP_RECVTOS) sees the class, the colour cleared at the far
+  end's rule 9 before stampd reads it; the one rule that matches a DSCP
+  on the same pass after the colour is a flow's dummynet queue or pipe
+  (rule 11, `out xmit TUN`), which the colour must precede, since a
+  packet leaving dummynet is not seen by the rules again
+  (`net.inet.ip.fw.one_pass`, the admin's to set): the console writes
+  their DSCP lists with each class's coloured neighbour (`dscp 46,47`,
+  amclust.c's am_dscp_widen), and what dummynet then drops is counted
+  as lost in the tunnel.  They are the
+  SD-WAN set's: emptied and loaded with it while disabled, kept in its
+  file for the next start, cleared with it (rules_clear destroys the
+  colour tables with the set's), its undo and safe mode the set's; the
+  admin's rules are never touched.  An admin's rule after the set (past
+  rule 99) that matches a DSCP on the way out by a tunnel sees the
+  colour in odd blocks, one that sets a DSCP there overrides it; one
+  that sets it on the way in at a UNI is coloured over.
+  The colour flips every L seconds of CLOCK_REALTIME, block n from n*L,
+  its colour n's lowest bit: at a block's start the agent swaps the
+  service's colour table with its other (IP_FW_TABLE_XSWAP through
+  IP_FW3, one atomic switch of all its tunnels).  A vnet jail's edge is
+  worked on a raw socket the helper makes in the jail's network
+  (`ipfw-socket`), so its firewall is the jail's.  Checked:
+  agent_test:sdwan_altmark (fake ipfw and libfakejail's IP_FW3, below:
+  a period of 1 and an interface two tunnels' refused; the tables and
+  rules in the load file in order: the tables, the way out of the
+  tunnels at 9, the console's 10, its count of a class at 11, the
+  colour and counts at 11, its queue by `dscp 46,47`, its 99; the
+  outer rules by GRE and ESP, by UDP to wg's port, none without a kind;
+  the swaps one a block at its start, within 500 ms;
+  the same rules again not reloaded; kept and loaded again at the next
+  start; without it, the colour tables destroyed with the set's, no
+  more swaps, nothing measured), pwa_test:pwa_flows_sdwan (the service
+  form's block of 10 s kept in L3NM and shown again; after the apply
+  the edges' ipfw given the colour, count and table lines).  For real:
+  agent_root_test:sdwan_altmark_lab (5.5.5).
 - 5.5.2 A: counters read at L/2 by `IP_FW3` with a block number,
   pushed as records; check: timing within guard band.
+  Done (agent 0.290.0, console 0.441.0).  In the middle of each block
+  (L/2, RFC 9341's guard band of L/2 each side) the agent reads the
+  set's rules 9 to 11 with their counters (IP_FW_XGET, IPFW_CFG_GET_COUNTERS,
+  the rule's O_NOP comment naming its service, tunnel, way and colour),
+  not ipfw -S show's text: what the previous block's colour gained since
+  that colour's last read, two blocks before, is the previous block's
+  count, each way (out at this end, in at this end).  The counters begin
+  at 0 when the set is loaded: the colour of the block before has a
+  base of 0 at once, the other its first read.  A block is kept with its
+  number, start, colour, packets and bytes each way, how far into the
+  next block it was read and how late its swap was; it is valid read
+  between L/4 and 3L/4 of the next block with its swap within L/4 of
+  its start (so the ends' clocks within L/4 and the delay under L/4).
+  The last 64 of each tunnel are the sdwan read's `altmark`
+  (arcana-sdwan's state `alt-marking`, the host's and each jail edge's);
+  each read is told as the event sdwan-altmark (arcana-events: the
+  service, the block, its start, period, colour, validity, and each
+  tunnel's packets in and out), so a subscriber has the records as they
+  come.  arcana-sdwan, arcana-events numbered again.  libfakejail stands
+  in for the socket option unprivileged: FAKEIPFW names a file of
+  rules and counters that IP_FW_XGET answers, in the kernel's layout;
+  IP_FW_TABLE_XSWAP is logged with its time.  Checked:
+  agent_test:sdwan_altmark (counters set while it runs: the block of
+  colour 0 with 100 in and 97 out, the one of colour 1 with 50 and 50,
+  each once, its number's parity its colour, its start its number
+  times L, its bytes; every read at L/2 or later, these two before 3L/4
+  and valid; the blocks in order; the other tunnel's zero; the event
+  with both tunnels' counts).
 - 5.5.3 C: per-tunnel loss per block; the RFC 9342 §5.1 partition with
   Appendix A as the unit test; check: four clusters.
+  Done (console 0.441.0).  amclust.c: a tunnel's way from A to B lost in
+  block n what went into it at A less what came out at B in block n
+  (the same number at both ends, by the clock); more out than in is
+  shown not valid (a packet across the guard band).  The monitoring
+  network of each service: its nodes the measurement points, an edge's
+  tunnel interface as the packets go in (an input node) and the far
+  edge's as they come out (an output node), so that no node is both
+  source and destination; its arcs each tunnel's each way.  RFC 9342
+  §5.1's two steps (links of one starting node grouped, groups with an
+  ending node in common joined) by union-find; a cluster's loss in a
+  block what its input nodes counted less what its output nodes did, a
+  node counted once whatever links share it.  With a tunnel interface of
+  its own a tunnel at each end, as the plan makes them, every cluster
+  is one tunnel's one way and its loss the link's (Appendix A's
+  two-node cluster); a measurement point several tunnels share joins
+  their clusters.  arcana-console's `sdwan/alt-marking` (anydata,
+  numbered again) reads each edge of the plan's tunnels (the sdwan read,
+  a jail edge's part) and answers the links with their last 32 blocks
+  and the clusters with their links, nodes, last block's and all
+  blocks' loss.  The Paths tab: "Alternate marking", a row a block of
+  each tunnel's each way (service, tunnel, from, to, block, sent,
+  arrived, lost, loss %), and "Clusters" (service, cluster, links, last
+  block, lost, loss %, blocks, lost and loss % in all), each sorted and
+  filtered (tbl.c) and saying what is missing when empty; the service
+  form's "Alternate marking block, s"; arcana-sdwan's and
+  arcana-events' { } Schema regenerated.  Checked: altmark_test:
+  appendix_a (Figure 4's links: four clusters, R1's, R2's and R3's
+  joined by R5, R4's, R5-R8, as the RFC has them, and the same in
+  another order), three_edges (three edges' blocks: six links, a to b's
+  blocks paired by number with b's one later, 3 of 100 lost, the rest
+  none; six clusters, the loss in a to b's alone), shared_point (two
+  tunnels from one interface: one input node counted once, one cluster
+  of two links whose loss is known), dscp_widen (a flow's queue by
+  `dscp 46,10` written `10,11,46,47`, an odd one with its even one),
+  pwa_test:pwa_flows_sdwan (the two tables, their columns, sorted, the
+  empty state where no IP_FW3 is).
 - 5.5.4 A: the in-band variant through STAMP's direct-measurement TLV
   for steering; check: steering on loss without the console.
+  Not started: the far end's count of a block is the reflector's
+  (stampd's, the stamp submodule's), which knows nothing of the agent's
+  blocks; the in-band variant needs stampd to put the agent's block
+  counters in its Direct Measurement TLV and the steering a loss
+  threshold of its own.
 - 5.5.5 L: three jails, loss on one tunnel localised to its cluster.
+  Done (agent 0.290.0), as root: agent_root_test:sdwan_altmark_lab
+  (three vnet jails, gre(4) each pair over epairs, each jail an edge of
+  one agent with the marking in its own ipfw's set 30, seen in `ipfw
+  show`: the way out of a tunnel at 9, the colour at 11 after a class's
+  `setdscp ef` and a flow's count by DSCP and before a flow's skip by
+  `dscp ef,47`, the outer rule GRE alone, the jail's own rules kept; a
+  count rule of the jail's own after the set seeing no odd DSCP; the
+  class's packets all counted before the colour and by `ef,47` after
+  it, a quarter to three quarters of them `47`, every one EF again at
+  the far end's own rule, both colours in the blocks; a fifth of a's
+  outer packets to b dropped by an ipfw `prob` rule in jail a; pings
+  each way; a to b losing 10 to 30 % over its valid blocks, every other
+  way none; the set taken away, the jail's rules as they were).
 - 5.6.1 A: `ng_netflow` per service FIB with sampling (v9); check:
   records at a collector jail.
 - 5.6.2 C: BMP from BIRD to the console; check: a session's updates

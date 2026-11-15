@@ -137,6 +137,62 @@ forced(cbl_yarena *a, const ucl_object_t *o)
 	return (o == NULL ? NULL : dup(a, ucl_object_tostring_forced(o)));
 }
 
+/* A tunnel's kinds, in the enumeration's order. */
+static const char *const am_kinds[] = { "gre", "gif", "geneve", "wg",
+    "uswe" };
+
+/* The rules' altmark: each service's name, period and tunnels (id,
+ * interface, outer, kind, port, ipsec). */
+static int
+altmark_of(cbl_yarena *a, const ucl_object_t *arr,
+    struct arcana_sdwan_rules_config *out)
+{
+	struct arcana_sdwan_rules_config_alt_marking		*m;
+	struct arcana_sdwan_rules_config_alt_marking_tunnel	*t;
+	const ucl_object_t					*s, *e;
+	ucl_object_iter_t					 it, eit;
+	const char						*v;
+	size_t							 n, k;
+
+	if (!ALLOC_N(a, m, yj_count(arr)))
+		return (ENOMEM);
+	n = 0;
+	YJ_EACH(arr, it, s) {
+		memset(&m[n], 0, sizeof(m[n]));
+		if ((m[n].service = yj_str(a, s, "service")) == NULL)
+			continue;
+		YJ_NUM(s, "period", &m[n], period);
+		if (!ALLOC_N(a, t, yj_count(ucl_object_lookup(s, "tunnels"))))
+			return (ENOMEM);
+		k = 0;
+		YJ_EACH(ucl_object_lookup(s, "tunnels"), eit, e) {
+			memset(&t[k], 0, sizeof(t[k]));
+			if ((t[k].id = yj_str(a, e, "id")) == NULL)
+				continue;
+			t[k].interface = yj_str(a, e, "interface");
+			t[k].has_outer = addr_union(a, e, "outer", &t[k].outer);
+			if ((v = yj_str(a, e, "kind")) != NULL) {
+				for (size_t q = 0; q < nitems(am_kinds); q++)
+					if (strcmp(v, am_kinds[q]) == 0) {
+						t[k].has_kind = true;
+						t[k].kind = (enum
+						    arcana_sdwan_rules_config_alt_marking_tunnel_kind)
+						    q;
+					}
+			}
+			YJ_NUM(e, "port", &t[k], port);
+			t[k].ipsec = yj_yes(e, "ipsec", &t[k].has_ipsec);
+			k++;
+		}
+		m[n].tunnel.n = k;
+		m[n].tunnel.v = t;
+		n++;
+	}
+	out->alt_marking.n = n;
+	out->alt_marking.v = m;
+	return (0);
+}
+
 int
 ysd_rules_from_json(const char *json, cbl_yarena *a,
     struct arcana_sdwan_rules_config *out)
@@ -230,6 +286,9 @@ ysd_rules_from_json(const char *json, cbl_yarena *a,
 	}
 	out->rule.n = n;
 	out->rule.v = r;
+	/* The services measured by alternate marking, their tunnels. */
+	if (altmark_of(a, ucl_object_lookup(top, "altmark"), out) != 0)
+		goto nomem;
 	ucl_object_unref(top);
 	return (0);
 nomem:
@@ -528,6 +587,41 @@ ysd_rules_json(const char *jail, const struct arcana_sdwan_rules_config *r,
 		free(byidx);
 	}
 	put(top, "rules", arr);
+	if (r != NULL && r->alt_marking.n > 0) {
+		ucl_object_t	*s, *ts, *u;
+
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < r->alt_marking.n; i++) {
+			const struct arcana_sdwan_rules_config_alt_marking *m =
+			    &r->alt_marking.v[i];
+
+			s = ucl_object_typed_new(UCL_OBJECT);
+			put_str(s, "service", m->service);
+			put(s, "period", ucl_object_fromint(m->period));
+			ts = ucl_object_typed_new(UCL_ARRAY);
+			for (size_t k = 0; k < m->tunnel.n; k++) {
+				u = ucl_object_typed_new(UCL_OBJECT);
+				put_str(u, "id", m->tunnel.v[k].id);
+				put_str(u, "interface", m->tunnel.v[k].interface);
+				if (m->tunnel.v[k].has_outer)
+					put_str(u, "outer", m->tunnel.v[k].outer.v.m0);
+				if (m->tunnel.v[k].has_kind &&
+				    (size_t)m->tunnel.v[k].kind < nitems(am_kinds))
+					put_str(u, "kind",
+					    am_kinds[m->tunnel.v[k].kind]);
+				if (m->tunnel.v[k].has_port)
+					put(u, "port", ucl_object_fromint(
+					    m->tunnel.v[k].port));
+				if (m->tunnel.v[k].has_ipsec)
+					put(u, "ipsec", ucl_object_frombool(
+					    m->tunnel.v[k].ipsec));
+				ucl_array_append(ts, u);
+			}
+			put(s, "tunnels", ts);
+			ucl_array_append(arr, s);
+		}
+		put(top, "altmark", arr);
+	}
 	return (emit(top));
 }
 
@@ -831,6 +925,7 @@ edge_state(cbl_yarena *a, const ucl_object_t *top,
 	struct arcana_sdwan_rules_counter	*rc;
 	struct arcana_sdwan_steer		*st;
 	struct arcana_sdwan_steered_route	*sr;
+	struct arcana_sdwan_altmark_tunnel	*am;
 	const ucl_object_t			*e, *o;
 	ucl_object_iter_t			 it;
 	int64_t					 n;
@@ -909,6 +1004,50 @@ edge_state(cbl_yarena *a, const ucl_object_t *top,
 	}
 	out->route.n = k;
 	out->route.v = sr;
+	/* The tunnels measured by alternate marking, their last blocks. */
+	if (!ALLOC_N(a, am, yj_count(ucl_object_lookup(top, "altmark"))))
+		return (ENOMEM);
+	k = 0;
+	YJ_EACH(ucl_object_lookup(top, "altmark"), it, e) {
+		struct arcana_sdwan_altmark_tunnel_block	*ab;
+		const ucl_object_t				*b;
+		ucl_object_iter_t				 bit;
+		size_t						 m;
+
+		memset(&am[k], 0, sizeof(am[k]));
+		if ((am[k].tunnel = yj_str(a, e, "tunnel")) == NULL)
+			continue;
+		am[k].service = yj_str(a, e, "service");
+		am[k].interface = yj_str(a, e, "interface");
+		YJ_NUM(e, "period", &am[k], period);
+		YJ_NUM(e, "colour", &am[k], colour);
+		YJ_NUM(e, "block", &am[k], current);
+		if (!ALLOC_N(a, ab, yj_count(ucl_object_lookup(e, "blocks"))))
+			return (ENOMEM);
+		m = 0;
+		YJ_EACH(ucl_object_lookup(e, "blocks"), bit, b) {
+			memset(&ab[m], 0, sizeof(ab[m]));
+			if (!yj_num(b, "block", &n))
+				continue;
+			ab[m].number = (uint64_t)n;
+			if (yj_num(b, "start", &n))
+				ab[m].start = datetime(a, n);
+			YJ_NUM(b, "colour", &ab[m], colour);
+			YJ_NUM(b, "out_packets", &ab[m], out_packets);
+			YJ_NUM(b, "out_bytes", &ab[m], out_octets);
+			YJ_NUM(b, "in_packets", &ab[m], in_packets);
+			YJ_NUM(b, "in_bytes", &ab[m], in_octets);
+			YJ_NUM(b, "read_ms", &ab[m], read_offset);
+			YJ_NUM(b, "flip_ms", &ab[m], swap_delay);
+			ab[m].valid = yj_yes(b, "valid", &ab[m].has_valid);
+			m++;
+		}
+		am[k].block.n = m;
+		am[k].block.v = ab;
+		k++;
+	}
+	out->alt_marking.n = k;
+	out->alt_marking.v = am;
 	return (0);
 }
 
@@ -1201,6 +1340,8 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 		ed[k].steer.v = one.steer.v;
 		ed[k].route.n = one.route.n;
 		ed[k].route.v = one.route.v;
+		ed[k].alt_marking.n = one.alt_marking.n;
+		ed[k].alt_marking.v = one.alt_marking.v;
 		ed[k].error = yj_str(a, e, "error");
 		k++;
 	}

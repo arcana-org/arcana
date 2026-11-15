@@ -160,6 +160,7 @@ static const struct bridge {
 	{ S "sen", NULL, NULL, false },
 	{ S "san", NULL, NULL, false },
 	{ S "record", NULL, NULL, false },
+	{ S "alt-marking", NULL, NULL, false },
 	{ S "check", "result", "document", false },
 	{ S "apply", "result", NULL, false },
 	{ S "pin", "result", NULL, false },

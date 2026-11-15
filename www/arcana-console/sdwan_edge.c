@@ -82,6 +82,7 @@
 
 #include <openssl/evp.h>
 
+#include "amclust.h"
 #include "console.h"
 
 #define	STATE_FILE	"sdwan-state.json"
@@ -3720,6 +3721,7 @@ dns_build(struct plan *pl, const ucl_object_t *doc)
 #define	RULE_FROM	10	/* the rules' numbers, from here */
 #define	RULE_TO		99	/* to here, the way out of them */
 #define	IPFW_SET	30
+#define	AM_RULE		9	/* the agent's alternate marking's, before */
 
 /* APPID (Table 8): what each application is, as ports and a protocol. */
 static const struct {
@@ -5431,6 +5433,90 @@ kmod_obj(struct plan *pl, const char *sid, const char *key, const char *module,
 }
 
 /*
+ * Alternate marking (RFC 9341, PLAN-SDN-YANG 5.5) at edge sid: each
+ * service whose probe settings give alt_marking, a block's length, with
+ * its tunnels that have an end here, each its interface here and the
+ * far end's outer address, for the agent to write its rules (rule
+ * AM_RULE of the set, gula/altmark.c) and read its blocks.  NULL where
+ * none is.
+ */
+static bool
+am_on(const ucl_object_t *sw)
+{
+
+	return (ucl_object_toint(ucl_object_lookup(ucl_object_lookup(sw,
+	    "probe"), "alt_marking")) >= 2);
+}
+
+static ucl_object_t *
+altmark_of(struct plan *pl, const char *sid)
+{
+	const ucl_object_t	*sw, *t, *a, *b, *p;
+	ucl_object_iter_t	 it, tit;
+	ucl_object_t		*arr, *s, *ts, *u;
+	int			 k;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((sw = ucl_object_iterate(ucl_object_lookup(pl->doc, "swvcs"),
+	    &it, true)) != NULL) {
+		p = ucl_object_lookup(ucl_object_lookup(sw, "probe"),
+		    "alt_marking");
+		if (p == NULL || ucl_object_toint(p) < 2)
+			continue;
+		ts = ucl_object_typed_new(UCL_ARRAY);
+		tit = NULL;
+		while ((t = ucl_object_iterate(pl->tunnels, &tit, true)) != NULL) {
+			if (strcmp(str(t, "swvc"), str(sw, "id")) != 0 ||
+			    ucl_flag(t, "control"))
+				continue;
+			for (k = 0; k < 2; k++) {
+				a = ucl_array_find_index(ucl_object_lookup(t,
+				    "ends"), (unsigned int)k);
+				b = ucl_array_find_index(ucl_object_lookup(t,
+				    "ends"), (unsigned int)!k);
+				if (strcmp(str(a, "edge"), sid) != 0 ||
+				    str(a, "ifname") == NULL)
+					continue;
+				u = ucl_object_typed_new(UCL_OBJECT);
+				put(u, "id", S(str(t, "id")));
+				put(u, "interface", S(str(a, "ifname")));
+				if (str(b, "underlay") != NULL)
+					put(u, "outer", S(str(b, "underlay")));
+				/* What the outer packets are, for the colour to
+				 * be taken off theirs alone. */
+				if (str(t, "kind") != NULL)
+					put(u, "kind", S(str(t, "kind")));
+				if (str(t, "kind") != NULL && strcmp(str(t,
+				    "kind"), "wg") == 0)
+					put(u, "port", I(WG_PORT + ucl_object_toint(
+					    ucl_object_lookup(b, "unit"))));
+				else if (str(t, "kind") != NULL && strcmp(str(t,
+				    "kind"), "geneve") == 0)
+					put(u, "port", I(6081));
+				if (ucl_flag(t, "ipsec"))
+					put(u, "ipsec", B(true));
+				ucl_array_append(ts, u);
+			}
+		}
+		if (ucl_array_size(ts) == 0) {
+			ucl_object_unref(ts);
+			continue;
+		}
+		s = ucl_object_typed_new(UCL_OBJECT);
+		put(s, "service", S(str(sw, "id")));
+		put(s, "period", I(ucl_object_toint(p)));
+		put(s, "tunnels", ts);
+		ucl_array_append(arr, s);
+	}
+	if (ucl_array_size(arr) == 0) {
+		ucl_object_unref(arr);
+		return (NULL);
+	}
+	return (arr);
+}
+
+/*
  * The rules of one edge, and its steering: for each service with an
  * end point here, the zone table and each zone's block, each flow
  * with the policy it gets, each policy's tables; what a flow may do beyond the tunnels
@@ -5445,9 +5531,10 @@ rules_build(struct plan *pl, const char *sid)
 	char			 n64n[32];
 	ucl_object_iter_t	 it, eit, zit, ait;
 	ucl_object_t		*o, *tables, *rules, *entries, *zt, *j, *pre;
-	ucl_object_t		*objects, *kt;
+	ucl_object_t		*objects, *kt, *am;
 	struct dn		*dn;
 	char			 ifn[32], tname[64], zname[64], words[2000];
+	char			 wide[2100];
 	char			 key[200], kname[64], zp[64], xmit[1200], own[1200];
 	char			 host[64], note[400], tail[120];
 	const char		*uni, *pname, *bo_sid, *bif;
@@ -6044,21 +6131,31 @@ rules_build(struct plan *pl, const char *sid)
 							    "deny %s%s", words,
 							    recv);
 						/* By the tunnels, its queue; and the
-						 * security policy's pipe. */
+						 * security policy's pipe.  After the
+						 * colour of alternate marking, which
+						 * must precede them (one_pass): by
+						 * DSCP, each class and its coloured
+						 * neighbour. */
 						if (q >= 0 && xmit[0] != '\0' &&
 						    afs_words(cr, NULL, appid,
 						    words, sizeof(words), &fam))
 							rule(pre, RULE_FROM + 1,
 							    "queue %d %s src-ip "
 							    "table(%s) out %s", q,
-							    words, zp, xmit);
+							    am_on(sw) ? am_dscp_widen(
+							    words, wide, sizeof(
+							    wide)) : words, zp,
+							    xmit);
 						if (rp >= 0 && xmit[0] != '\0' &&
 						    afs_words(cr, NULL, appid,
 						    words, sizeof(words), &fam))
 							rule(pre, RULE_FROM + 1,
 							    "pipe %d %s src-ip "
 							    "table(%s) out %s", rp,
-							    words, zp, xmit);
+							    am_on(sw) ? am_dscp_widen(
+							    words, wide, sizeof(
+							    wide)) : words, zp,
+							    xmit);
 					}
 				}
 				/* No flow matched: dropped (R96). */
@@ -6273,10 +6370,18 @@ rules_build(struct plan *pl, const char *sid)
 	if (ucl_array_size(objects) > 0)
 		snprintf(words + strlen(words), sizeof(words) - strlen(words),
 		    ", %u dummynet and nat objects", ucl_array_size(objects));
+	am = altmark_of(pl, sid);
+	if (am != NULL)
+		snprintf(words + strlen(words), sizeof(words) - strlen(words),
+		    "; %u service%s' tunnels measured by alternate marking (ipfw "
+		    "setdscp and count, rule %d)", ucl_array_size(am),
+		    ucl_array_size(am) == 1 ? "" : "s", AM_RULE);
 	o = object(pl, sid, key, PH_RULES, "%s", words);
 	if (o != NULL) {
 		j = job("sdwan-rules", "set", I(IPFW_SET), "tables", tables,
 		    "rules", rules, "objects", objects, NULL);
+		if (am != NULL)
+			put(j, "altmark", am);
 		make(o, j);
 		unmake(o, job("sdwan-rules", "set", I(IPFW_SET), "tables",
 		    ucl_object_typed_new(UCL_ARRAY), "rules",
@@ -6286,6 +6391,8 @@ rules_build(struct plan *pl, const char *sid)
 		ucl_object_unref(tables);
 		ucl_object_unref(rules);
 		ucl_object_unref(objects);
+		if (am != NULL)
+			ucl_object_unref(am);
 	}
 	o = object(pl, sid, "steer", PH_STEER, "the steering: %u far "
 	    "prefix%s, each by the tunnels that may carry it",
@@ -10205,6 +10312,84 @@ api_sdwan_record(struct http_request *req)
 	return (WEB_OK);
 }
 
+/*
+ * arcana-console's sdwan/alt-marking (PLAN-SDN-YANG 5.5.3): the loss of
+ * each tunnel's each way in each block of alternate marking (RFC 9341)
+ * and RFC 9342's clusters (amclust.c), of the plan's tunnels and the
+ * blocks each of their edges' agents counted (the sdwan read's
+ * altmark, ipfw's count rules read by IP_FW3).  An edge not reached has
+ * no blocks: its links pair with nothing.
+ */
+int
+api_sdwan_altmark(struct http_request *req)
+{
+	const ucl_object_t	*t, *e, *r, *b;
+	ucl_object_iter_t	 it, eit, rit, bit;
+	ucl_object_t		*y, *tuns, *states, *ans, *arr, *o, *bs, *bo, *top;
+	char			 name[128];
+	int			 status;
+
+	if (!guard(req, false))
+		return (WEB_OK);
+	host_refs();
+	y = l3nm_kept();
+	tuns = y != NULL && ucl_object_lookup_path(y,
+	    "vpn-services.vpn-service") != NULL ? sdwan_plan_tunnels(y) : NULL;
+	states = ucl_object_typed_new(UCL_OBJECT);
+	it = NULL;
+	while (tuns != NULL && (t = ucl_object_iterate(tuns, &it, true)) !=
+	    NULL) {
+		eit = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(t, "ends"), &eit,
+		    true)) != NULL) {
+			if (str(e, "edge") == NULL || ucl_object_lookup(states,
+			    str(e, "edge")) != NULL)
+				continue;
+			arr = ucl_object_typed_new(UCL_ARRAY);
+			ans = sdwan_read(str(e, "edge"), name, sizeof(name),
+			    &status);
+			rit = NULL;
+			while (ans != NULL && (r = ucl_object_iterate(at_path(
+			    ans, "data", "altmark"), &rit, true)) != NULL) {
+				o = ucl_object_typed_new(UCL_OBJECT);
+				put(o, "tunnel", S(str(r, "tunnel")));
+				put(o, "interface", S(str(r, "interface")));
+				put(o, "period", I(ucl_object_toint(
+				    ucl_object_lookup(r, "period"))));
+				bs = ucl_object_typed_new(UCL_ARRAY);
+				bit = NULL;
+				while ((b = ucl_object_iterate(ucl_object_lookup(r,
+				    "blocks"), &bit, true)) != NULL) {
+					bo = ucl_object_typed_new(UCL_OBJECT);
+					put(bo, "block", I(ucl_object_toint(
+					    ucl_object_lookup(b, "block"))));
+					put(bo, "start", I(ucl_object_toint(
+					    ucl_object_lookup(b, "start"))));
+					put(bo, "out", I(ucl_object_toint(
+					    ucl_object_lookup(b, "out_packets"))));
+					put(bo, "in", I(ucl_object_toint(
+					    ucl_object_lookup(b, "in_packets"))));
+					put(bo, "valid", B(ucl_object_toboolean(
+					    ucl_object_lookup(b, "valid"))));
+					ucl_array_append(bs, bo);
+				}
+				put(o, "blocks", bs);
+				ucl_array_append(arr, o);
+			}
+			if (ans != NULL)
+				ucl_object_unref(ans);
+			put(states, str(e, "edge"), arr);
+		}
+	}
+	top = am_view(tuns, states);
+	ucl_object_unref(states);
+	if (tuns != NULL)
+		ucl_object_unref(tuns);
+	if (y != NULL)
+		ucl_object_unref(y);
+	return (reply_json(req, 200, top));
+}
+
 /* ---- The manager: each policy's tunnels ordered by performance ------ */
 
 #define	MGR_LOCK	"sdwan-mgr.lock"
@@ -11106,6 +11291,10 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 		ucl_object_replace_key(data, ucl_object_frombool(e != NULL &&
 		    ucl_object_toboolean(ucl_object_lookup(e, "steered"))),
 		    "steered", 0, false);
+		ucl_object_replace_key(data, e != NULL && ucl_object_lookup(e,
+		    "altmark") != NULL ? ucl_object_copy(ucl_object_lookup(e,
+		    "altmark")) : ucl_object_typed_new(UCL_ARRAY), "altmark", 0,
+		    false);
 		for (i = 0; i < nitems(none); i++)
 			ucl_object_replace_key(data, ucl_object_typed_new(
 			    UCL_ARRAY), none[i], 0, false);

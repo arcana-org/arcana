@@ -185,6 +185,13 @@ module arcana-events {
        tunnel's.";
   }
 
+  identity sdwan-altmark {
+    base event-kind;
+    description
+      "A block of alternate marking (RFC 9341) read: a service's
+       tunnels' packets in and out at this edge.";
+  }
+
   grouping event {
     description
       "One event.";
@@ -889,6 +896,69 @@ module arcana-events {
           type string;
           description
             "A report to file as a bug.";
+        }
+      }
+      container altmark {
+        description
+          "sdwan-altmark: a block of a service's alternate marking
+           read, in the middle of the block after it.";
+        leaf service {
+          type string;
+          description
+            "The service.";
+        }
+        leaf block {
+          type uint64;
+          description
+            "The block's number: its start over the period.";
+        }
+        leaf start {
+          type yang:date-and-time;
+          description
+            "Its start.";
+        }
+        leaf period {
+          type uint16;
+          units "seconds";
+          description
+            "Its length.";
+        }
+        leaf colour {
+          type uint8 {
+            range "0..1";
+          }
+          description
+            "Its colour.";
+        }
+        leaf valid {
+          type boolean;
+          description
+            "Read within the guard band.";
+        }
+        list tunnel {
+          key "id";
+          description
+            "The service's tunnels at this edge.";
+          leaf id {
+            type string;
+            description
+              "The tunnel.";
+          }
+          leaf interface {
+            type string;
+            description
+              "Its interface.";
+          }
+          leaf out-packets {
+            type uint64;
+            description
+              "Packets that went into it here in the block.";
+          }
+          leaf in-packets {
+            type uint64;
+            description
+              "Packets that came out of it here.";
+          }
         }
       }
     }

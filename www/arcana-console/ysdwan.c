@@ -277,6 +277,33 @@ rules_of(const ucl_object_t *in)
 		ucl_array_append(arr, r);
 	}
 	put_list(m, "rule", arr);
+	/* The services measured by alternate marking, their tunnels. */
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(ucl_object_lookup(in, "altmark"), &it,
+	    true)) != NULL) {
+		ucl_object_t	*ts, *u;
+
+		r = ucl_object_typed_new(UCL_OBJECT);
+		copy(r, "service", t, "service");
+		copy(r, "period", t, "period");
+		ts = ucl_object_typed_new(UCL_ARRAY);
+		eit = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(t, "tunnels"),
+		    &eit, true)) != NULL) {
+			u = ucl_object_typed_new(UCL_OBJECT);
+			copy(u, "id", e, "id");
+			copy(u, "interface", e, "interface");
+			copy(u, "outer", e, "outer");
+			copy(u, "kind", e, "kind");
+			copy(u, "port", e, "port");
+			copy(u, "ipsec", e, "ipsec");
+			ucl_array_append(ts, u);
+		}
+		put_list(r, "tunnel", ts);
+		ucl_array_append(arr, r);
+	}
+	put_list(m, "alt-marking", arr);
 	return (m);
 }
 
@@ -1212,6 +1239,55 @@ edge_json(ucl_object_t *o, const struct arcana_sdwan_rules *r, bool steered,
 	put(o, "routes", arr);
 }
 
+/* An edge's tunnels measured by alternate marking, their last blocks,
+ * as the agent's sdwan read had them (gula/altmark.c); none, nothing. */
+static void
+altmark_json(ucl_object_t *o, size_t n, const struct arcana_sdwan_altmark_tunnel
+    *v)
+{
+	ucl_object_t	*arr, *t, *bs, *b;
+
+	if (n == 0)
+		return;
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t i = 0; i < n; i++) {
+		t = ucl_object_typed_new(UCL_OBJECT);
+		put_str(t, "tunnel", v[i].tunnel);
+		put_str(t, "service", v[i].service);
+		put_str(t, "interface", v[i].interface);
+		put(t, "period", ucl_object_fromint(v[i].period));
+		put(t, "colour", ucl_object_fromint(v[i].colour));
+		put(t, "block", ucl_object_fromint((int64_t)v[i].current));
+		bs = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t k = 0; k < v[i].block.n; k++) {
+			const struct arcana_sdwan_altmark_tunnel_block *x =
+			    &v[i].block.v[k];
+
+			b = ucl_object_typed_new(UCL_OBJECT);
+			put(b, "block", ucl_object_fromint((int64_t)x->number));
+			put_time(b, "start", x->start);
+			put(b, "colour", ucl_object_fromint(x->colour));
+			put(b, "out_packets", ucl_object_fromint((int64_t)
+			    x->out_packets));
+			put(b, "out_bytes", ucl_object_fromint((int64_t)
+			    x->out_octets));
+			put(b, "in_packets", ucl_object_fromint((int64_t)
+			    x->in_packets));
+			put(b, "in_bytes", ucl_object_fromint((int64_t)
+			    x->in_octets));
+			put(b, "read_ms", ucl_object_fromint(x->read_offset));
+			if (x->has_swap_delay)
+				put(b, "flip_ms", ucl_object_fromint(
+				    x->swap_delay));
+			put(b, "valid", ucl_object_frombool(x->valid));
+			ucl_array_append(bs, b);
+		}
+		put(t, "blocks", bs);
+		ucl_array_append(arr, t);
+	}
+	put(o, "altmark", arr);
+}
+
 /* A JSON text the agent read, parsed again; NULL where it is none. */
 static ucl_object_t *
 reparse(const char *s)
@@ -1381,6 +1457,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 	}
 	edge_json(top, st->rules, st->steered, st->steer.n, st->steer.v,
 	    st->route.n, st->route.v);
+	altmark_json(top, st->alt_marking.n, st->alt_marking.v);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < st->edge.n; i++) {
 		const struct arcana_sdwan_sdwan_state_edge *e = &st->edge.v[i];
@@ -1389,9 +1466,11 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 		put_str(o, "jail", e->jail);
 		if (e->error != NULL)
 			put_str(o, "error", e->error);
-		else
+		else {
 			edge_json(o, e->rules, e->steered, e->steer.n,
 			    e->steer.v, e->route.n, e->route.v);
+			altmark_json(o, e->alt_marking.n, e->alt_marking.v);
+		}
 		ucl_array_append(arr, o);
 	}
 	put(top, "edges", arr);

@@ -288,6 +288,30 @@ data_of(const yevent *e)
 		put_str(d, "message", e->undo->message);
 		put_str(d, "report", e->undo->report);
 		break;
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_ALTMARK: {
+		ucl_object_t	*arr, *t;
+		int64_t		 s;
+
+		put_str(d, "service", e->altmark->service);
+		PUT_NUM(d, "block", e->altmark, block);
+		if (e->altmark->start != NULL && (s = epoch(e->altmark->start)) >=
+		    0)
+			put(d, "start", ucl_object_fromint(s));
+		PUT_NUM(d, "period", e->altmark, period);
+		PUT_NUM(d, "colour", e->altmark, colour);
+		PUT_YES(d, "valid", e->altmark, valid);
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < e->altmark->tunnel.n; i++) {
+			t = ucl_object_typed_new(UCL_OBJECT);
+			put_str(t, "id", e->altmark->tunnel.v[i].id);
+			put_str(t, "interface", e->altmark->tunnel.v[i].interface);
+			PUT_NUM(t, "out", &e->altmark->tunnel.v[i], out_packets);
+			PUT_NUM(t, "in", &e->altmark->tunnel.v[i], in_packets);
+			ucl_array_append(arr, t);
+		}
+		put(d, "tunnels", arr);
+		break;
+	}
 	default:
 		break;
 	}

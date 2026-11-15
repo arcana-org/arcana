@@ -403,6 +403,38 @@ data_of(cbl_yarena *a, const char *kind, const ucl_object_t *d, yevent *y)
 		c->report = yj_str(a, d, "report");
 		y->undo = c;
 		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_UNDO;
+	} else if (strcmp(kind, "sdwan-altmark") == 0) {
+		struct arcana_events_event_entry_altmark	*m;
+		struct arcana_events_event_entry_altmark_tunnel	*t;
+		const ucl_object_t				*e;
+		ucl_object_iter_t				 it;
+		int64_t						 v64;
+		size_t						 k;
+
+		if (!ALLOC(a, m) || (t = cbl_yarena_alloc(a, (yj_count(
+		    ucl_object_lookup(d, "tunnels")) + 1) * sizeof(*t))) == NULL)
+			return (ENOMEM);
+		m->service = yj_str(a, d, "service");
+		YJ_NUM(d, "block", m, block);
+		if (yj_num(d, "start", &v64))
+			m->start = datetime(a, v64);
+		YJ_NUM(d, "period", m, period);
+		YJ_NUM(d, "colour", m, colour);
+		m->valid = yj_yes(d, "valid", &m->has_valid);
+		k = 0;
+		YJ_EACH(ucl_object_lookup(d, "tunnels"), it, e) {
+			memset(&t[k], 0, sizeof(t[k]));
+			if ((t[k].id = yj_str(a, e, "id")) == NULL)
+				continue;
+			t[k].interface = yj_str(a, e, "interface");
+			YJ_NUM(e, "out", &t[k], out_packets);
+			YJ_NUM(e, "in", &t[k], in_packets);
+			k++;
+		}
+		m->tunnel.n = k;
+		m->tunnel.v = t;
+		y->altmark = m;
+		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_ALTMARK;
 	}
 	return (0);
 }
@@ -507,5 +539,6 @@ yev_one_from_json(const char *json, cbl_yarena *a,
 	out->monitor = (const void *)y.monitor;
 	out->alert = (const void *)y.alert;
 	out->undo = (const void *)y.undo;
+	out->altmark = (const void *)y.altmark;
 	return (0);
 }

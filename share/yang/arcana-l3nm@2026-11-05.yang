@@ -1370,6 +1370,21 @@ module arcana-l3nm {
           description
             "Their length; 60 when none.";
         }
+        leaf alt-marking-period {
+          type uint16 {
+            range "2..3600";
+          }
+          units "seconds";
+          description
+            "The service's tunnels measured by alternate marking too
+             (RFC 9341, single marking), in blocks of this length: the
+             DSCP's lowest bit the colour, set by ipfw setdscp on the way
+             into each tunnel and cleared on the way out, the packets
+             counted at both ends (ipfw count) and the loss of each
+             block, of each tunnel each way, made by the console (RFC
+             9342's clusters).  None, not measured.  Every DSCP the
+             probes and classes use must be even.";
+        }
         list class {
           key "name";
           max-elements 8;

@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.440.1"
+#define	ARCW_VERSION		"0.441.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/arcana-org/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -291,6 +291,7 @@ int		 api_sdwan_edges(struct http_request *);
 int		 api_sdwan_rekey(struct http_request *);
 int		 api_sdwan_lists(struct http_request *);
 int		 api_sdwan_record(struct http_request *);
+int		 api_sdwan_altmark(struct http_request *);
 int		 api_sdwan_identities(struct http_request *);
 bool		 sdwan_list_exists(const char *);
 void		 sdwan_init(void);

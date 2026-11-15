@@ -229,6 +229,114 @@ module arcana-sdwan {
         uses candidate-state;
       }
     }
+    list alt-marking {
+      cg:struct "altmark-tunnel";
+      key "tunnel";
+      description
+        "Each tunnel measured by alternate marking (RFC 9341, single
+         marking, the colour the DSCP's lowest bit), its last blocks:
+         what went into it at this end and came out of it here, of
+         each block's colour, as ipfw's count rules (rules 9 and 11 of the
+         set) counted, read by IP_FW3 in the middle of the block
+         after.  The console subtracts the far end's packets in from
+         this end's packets out.";
+      leaf tunnel {
+        type string;
+        description
+          "The tunnel.";
+      }
+      leaf service {
+        type string;
+        description
+          "Its service.";
+      }
+      leaf interface {
+        type string;
+        description
+          "Its interface at this end.";
+      }
+      leaf period {
+        type uint16;
+        units "seconds";
+        description
+          "A block's length, L.";
+      }
+      leaf colour {
+        type uint8 {
+          range "0..1";
+        }
+        description
+          "The colour marked now: the block's number's lowest bit.";
+      }
+      leaf current {
+        type uint64;
+        description
+          "The block now: the wall clock's seconds since the epoch
+           over the period.";
+      }
+      list block {
+        key "number";
+        description
+          "The blocks read, oldest first.";
+        leaf number {
+          type uint64;
+          description
+            "Its number: its start over the period.";
+        }
+        leaf start {
+          type yang:date-and-time;
+          description
+            "Its start.";
+        }
+        leaf colour {
+          type uint8 {
+            range "0..1";
+          }
+          description
+            "Its colour.";
+        }
+        leaf out-packets {
+          type uint64;
+          description
+            "Packets that went into the tunnel at this end.";
+        }
+        leaf out-octets {
+          type uint64;
+          description
+            "Their bytes.";
+        }
+        leaf in-packets {
+          type uint64;
+          description
+            "Packets that came out of it at this end.";
+        }
+        leaf in-octets {
+          type uint64;
+          description
+            "Their bytes.";
+        }
+        leaf read-offset {
+          type uint32;
+          units "milliseconds";
+          description
+            "When it was read, from the next block's start: L/2 when
+             on time.";
+        }
+        leaf swap-delay {
+          type uint32;
+          units "milliseconds";
+          description
+            "How late the colour table was swapped at the next block's
+             start.";
+        }
+        leaf valid {
+          type boolean;
+          description
+            "Read within the guard band: between L/4 and 3L/4 of the
+             next block, its swap within L/4 of its start.";
+        }
+      }
+    }
   }
 
   grouping instance {
@@ -359,6 +467,106 @@ module arcana-sdwan {
           type string;
           description
             "Its words.";
+        }
+      }
+      list alt-marking {
+        key "service";
+        description
+          "The services whose tunnels this edge measures by alternate
+           marking (RFC 9341, single marking): the colour is the DSCP's
+           lowest bit, which no standard class sets, put on by ipfw
+           setdscp on the way into each tunnel from a table of the
+           set swapped every period (IP_FW_TABLE_XSWAP), counted by
+           ipfw count rules at both ends, taken off again on the way
+           out of the tunnel and from the outer header.  Its rules and
+           tables are the set's (rule 9, first, on the way out of a
+           tunnel; rule 11, last, on the way in, before the flows'
+           dummynet queues and pipes, which match a class and its
+           coloured neighbour); they go and come with it.
+           (draft-ietf-ippm-alt-mark-yang's
+           ietf-altmark carries no DSCP mark and no counters.)";
+        leaf service {
+          type string {
+            length "1..63";
+            pattern '[A-Za-z0-9_.-]+';
+          }
+          description
+            "The service.";
+        }
+        leaf period {
+          type uint16 {
+            range "2..3600";
+          }
+          units "seconds";
+          mandatory true;
+          description
+            "A block's length, L (ietf-altmark's
+             measurement-period): blocks begin where the wall clock is
+             a multiple of it, so that both ends of a tunnel number
+             them alike.";
+        }
+        list tunnel {
+          key "id";
+          description
+            "Its tunnels with an end at this edge.";
+          leaf id {
+            type string {
+              length "1..127";
+            }
+            description
+              "The tunnel, as both its ends name it.";
+          }
+          leaf interface {
+            type string {
+              length "1..15";
+            }
+            mandatory true;
+            description
+              "Its interface at this end.";
+          }
+          leaf outer {
+            type inet:ip-address-no-zone;
+            description
+              "The far end's outer address: the colour is taken off
+               the outer header of the tunnel's own packets there.";
+          }
+          leaf kind {
+            type enumeration {
+              enum gre {
+                description
+                  "gre(4): its outer packets GRE.";
+              }
+              enum gif {
+                description
+                  "gif(4): IP in IP, or IPv6.";
+              }
+              enum geneve {
+                description
+                  "GENEVE: UDP to its port.";
+              }
+              enum wg {
+                description
+                  "wg(4): UDP to its port.";
+              }
+              enum uswe {
+                description
+                  "Userland ESP: its outer packets not matched; the
+                   underlay sees the colour.";
+              }
+            }
+            description
+              "Its kind, which says the outer packets' protocol.";
+          }
+          leaf port {
+            type inet:port-number;
+            description
+              "The far end's UDP port, for wg and GENEVE.";
+          }
+          leaf ipsec {
+            type boolean;
+            description
+              "IPsec carries it: its outer packets are ESP too.";
+          }
         }
       }
     }

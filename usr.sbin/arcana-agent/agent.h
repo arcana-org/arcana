@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.289.0"
+#define	ARCANA_AGENT_VERSION	"0.290.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -956,6 +956,44 @@ struct stamp_key;
 #define	PROBE_NAME_MAX	(128 + 1 + 64 + 1 + 33)
 int		 probe_stamp_keys(struct stamp_key *, char (*)[PROBE_NAME_MAX],
 		    int);
+/* gula/altmark.c: alternate marking (RFC 9341) of the services' tunnels,
+ * its rules in the SD-WAN set's file, its blocks read by IP_FW3. */
+#define	AM_NAME		64
+#define	AM_SERVICES	16	/* an edge's measured */
+#define	AM_TUNNELS	64	/* a service's at an edge */
+#define	AM_EDGES	32
+#define	AM_RULE_IN	9	/* out of a tunnel: first, before the IDS */
+#define	AM_RULE_OUT	11	/* into it: last, before the way out's end */
+#define	AM_TABLE	"arcam"	/* arcamK, arcamK_alt: service K's colours */
+#define	AM_EVEN		"arcam_even"	/* a class to itself: the bit off */
+struct am_tunnel {
+	char	id[128];
+	char	ifname[16];
+	char	outer[48];	/* the far end's outer address, "" none */
+	char	kind[8];	/* gre, gif, geneve, wg; "" not said */
+	int	port;		/* wg's, geneve's: the far end's UDP port */
+	bool	ipsec;		/* carried by ESP */
+};
+struct am_service {
+	char		  name[AM_NAME];
+	int		  period;	/* the block's length, s */
+	int		  colour;	/* the colour table's, at the load */
+	int		  ntun;
+	struct am_tunnel *tun;
+};
+struct ucl_object_s;
+int		 altmark_parse(const struct ucl_object_s *, struct am_service **,
+		    int *, const char **);
+void		 altmark_free(struct am_service *, int);
+void		 altmark_tables(FILE *, const char *, struct am_service *,
+		    int);
+int		 altmark_rules_in(FILE *, const char *, const struct am_service *,
+		    int);
+int		 altmark_rules_out(FILE *, const char *,
+		    const struct am_service *, int);
+bool		 altmark_marks_before(const char *);
+void		 altmark_set(const char *, int, const struct am_service *, int);
+struct ucl_object_s *altmark_json(const char *);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);
@@ -1416,6 +1454,7 @@ int		 addr_lines(FILE *);
 int		 route_socket(void);
 int		 helper_netlink(int);
 int		 helper_icmp_socket(int, int);
+int		 helper_ipfw_socket(int);
 unsigned int	 plugins_here(void);
 int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);

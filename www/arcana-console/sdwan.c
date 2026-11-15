@@ -2421,6 +2421,32 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 				return (fail(c, "probe: %s is 0 to 100, 0 for "
 				    "none", pcts[k]));
 		}
+		/* Alternate marking (RFC 9341): its blocks' length; the DSCP's
+		 * lowest bit is its colour, so the probes' and the classes'
+		 * DSCPs are even (no standard class's is odd). */
+		if ((e = ucl_object_lookup(v, "alt_marking")) != NULL) {
+			const ucl_object_t	*cl;
+			ucl_object_iter_t	 cit = NULL;
+
+			if (!is_int(e, 2, 3600, NULL))
+				return (fail(c, "probe: alt_marking is a block of "
+				    "2 to 3600 s"));
+			if ((cl = ucl_object_lookup(v, "dscp")) != NULL &&
+			    (ucl_object_toint(cl) & 1) != 0)
+				return (fail(c, "probe: dscp %jd is odd: its lowest "
+				    "bit is alternate marking's colour",
+				    (intmax_t)ucl_object_toint(cl)));
+			while ((cl = ucl_object_iterate(ucl_object_lookup(v,
+			    "classes"), &cit, true)) != NULL)
+				if ((ucl_object_toint(ucl_object_lookup(cl,
+				    "dscp")) & 1) != 0)
+					return (fail(c, "probe: class %s: dscp %jd "
+					    "is odd: its lowest bit is alternate "
+					    "marking's colour", ucl_object_tostring(
+					    ucl_object_lookup(cl, "name")), (intmax_t)
+					    ucl_object_toint(ucl_object_lookup(cl,
+					    "dscp"))));
+		}
 	}
 	return (true);
 }

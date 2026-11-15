@@ -89,6 +89,7 @@ static struct {
 	ucl_object_t	*faults;	/* sid: the agent's faults of the day */
 	ucl_object_t	*rekeys;	/* sdwan/rekeys: the rotations */
 	ucl_object_t	*steer_live;	/* sdwan/steering's live: why */
+	ucl_object_t	*altmark;	/* sdwan/alt-marking: loss, clusters */
 	ucl_object_t	*lists;		/* sdwan/lists: the feeds and lists */
 	char		 record_filter[80];	/* the record's filter text */
 	ucl_object_t	*identities;	/* sdwan/identities */
@@ -700,6 +701,23 @@ steer_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		render();
 }
 
+/* Alternate marking's loss by block and its clusters (the console's,
+ * amclust.c). */
+static void
+altmark_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+
+	(void)err;
+	(void)arg;
+	if (status != 200 || jget(o, "links") == NULL)
+		return;
+	if (sd.altmark != NULL)
+		ucl_object_unref(sd.altmark);
+	sd.altmark = ucl_object_copy(o);
+	if (app.node == NODE_SDWAN && sd.tab == SD_PATHS)
+		render();
+}
+
 static void
 identities_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
@@ -1050,6 +1068,8 @@ paths_load(void)
 	ucl_object_unref(asked);
 	rc_get(RC_C "sdwan/rekeys", NULL, rekeys_cb, NULL);
 	rc_get(RC_C "sdwan/steering", NULL, steer_cb, NULL);
+	if (sd.tab == SD_PATHS)
+		rc_get(RC_C "sdwan/alt-marking", NULL, altmark_cb, NULL);
 	if (sd.tab == SD_SECURITY)
 		rc_get(RC_C "sdwan/lists", NULL, lists_cb, NULL);
 }
@@ -3947,6 +3967,173 @@ view_pm(struct html *h)
 	ucl_object_unref(all);
 }
 
+/*
+ * Alternate marking (RFC 9341, PLAN-SDN-YANG 5.5): the services' own
+ * packets counted at both ends of each tunnel, in blocks of the
+ * service's length, the colour the DSCP's lowest bit (ipfw setdscp on
+ * the way in, count rules at both ends, read by IP_FW3 in the middle of
+ * the block after).  A row a block of a tunnel's each way: what went in,
+ * what came out at the far end, the loss; then RFC 9342's clusters of
+ * each service, each its links and the loss of its last block and of
+ * all.  Sorted and filtered as every table is (tbl.c).
+ */
+static void
+view_altmark(struct html *h)
+{
+	static struct tcol	 bcols[] = {
+		{ "Service", "service", false }, { "Tunnel", "tunnel", false },
+		{ "From", "from", false }, { "To", "to", false },
+		{ "Block", "start", true }, { "Sent", "out", true },
+		{ "Arrived", "in", true }, { "Lost", "lost", true },
+		{ "Loss %", "loss", true },
+	};
+	static struct tcol	 ccols[] = {
+		{ "Service", "service", false }, { "Cluster", "cluster", true },
+		{ "Links", "links_text", false }, { "Last block", "start", true },
+		{ "Lost", "lost", true }, { "Loss %", "loss", true },
+		{ "Blocks", "blocks", true }, { "Lost in all", "lost_total", true },
+		{ "Loss % in all", "loss_total", true },
+	};
+	const ucl_object_t	*l, *b, *c, *k, **rows, *r;
+	ucl_object_iter_t	 it, bit, kit;
+	ucl_object_t		*all, *o;
+	char			 when[32], lb[600];
+	struct tm		 tm;
+	time_t			 at;
+	int			 n;
+	size_t			 len;
+
+	h_raw(h, "<div class=\"sd-block sd-am\"><h3>Alternate marking "
+	    "<small class=\"dim\">the services' own packets counted at both "
+	    "ends of each tunnel (RFC 9341): ipfw setdscp sets the DSCP's "
+	    "lowest bit in every other block of the service's length as they "
+	    "go in, after the classification and before a flow's dummynet "
+	    "queue (which matches the class and its coloured neighbour, and "
+	    "whose drops count here as lost), ipfw count rules count each "
+	    "colour at both ends, the agent reads them by IP_FW3 in the middle "
+	    "of the block after, and the far end clears the bit first thing; "
+	    "a row a block of each tunnel's each way</small></h3><table "
+	    "class=\"net sd\">");
+	all = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((l = ucl_object_iterate(jget(sd.altmark, "links"), &it,
+	    true)) != NULL) {
+		bit = NULL;
+		while ((b = ucl_object_iterate(jget(l, "blocks"), &bit, true)) !=
+		    NULL) {
+			o = ucl_object_copy(b);
+			ucl_object_insert_key(o, ucl_object_fromstring(jstr(l,
+			    "service")), "service", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(jstr(l,
+			    "tunnel")), "tunnel", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(host_name(
+			    jstr(l, "from"))), "from", 0, true);
+			ucl_object_insert_key(o, ucl_object_fromstring(host_name(
+			    jstr(l, "to"))), "to", 0, true);
+			ucl_array_append(all, o);
+		}
+	}
+	tbl_head(h, "sd-am", bcols, (int)nitems(bcols), 0);
+	if (!tbl_sorted("sd-am"))
+		tbl_set("sd-am", 4, true);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-am", all, bcols, (int)nitems(bcols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		at = (time_t)jint(r, "start", 0);
+		gmtime_r(&at, &tm);
+		strftime(when, sizeof(when), "%H:%M:%S", &tm);
+		h_raw(h, "<tr><td>");
+		h_txt(h, jstr(r, "service"));
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "tunnel"));
+		h_raw(h, "</td><td><b>");
+		h_txt(h, jstr(r, "from"));
+		h_raw(h, "</b></td><td>");
+		h_txt(h, jstr(r, "to"));
+		h_fmt(h, "</td><td class=\"mono\">%s <small class=\"dim\">#%lld"
+		    "</small></td><td class=\"num\">%lld</td><td class=\"num\">"
+		    "%lld</td><td class=\"num%s\">%lld</td><td class=\"num%s\">"
+		    "%.3f %%%s</td></tr>", when, (long long)jint(r, "block", 0),
+		    (long long)jint(r, "out", 0), (long long)jint(r, "in", 0),
+		    jint(r, "lost", 0) > 0 ? " bad" : "", (long long)jint(r,
+		    "lost", 0), jnum(r, "loss", 0) > 0 ? " bad" : "", jnum(r,
+		    "loss", 0), jbool(r, "valid") ? "" : " <small class=\"dim\" "
+		    "title=\"Read outside the guard band, or more came out than "
+		    "went in: the clocks too far apart\">?</small>");
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"9\" class=\"dim\">No block counted "
+		    "at both ends yet: a service measures its tunnels by "
+		    "alternate marking when its probe settings give a block "
+		    "length (the service form's Alternate marking block), or "
+		    "nothing matches the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table>");
+	ucl_object_unref(all);
+	/* The clusters. */
+	h_raw(h, "<h3>Clusters <small class=\"dim\">RFC 9342 §5.1: the links "
+	    "of one input point grouped, groups with an output point in common "
+	    "joined; a cluster's loss is what its input points counted less "
+	    "what its output points did. With a tunnel interface each end, "
+	    "each is a tunnel's one way: the loss is that link's</small></h3>"
+	    "<table class=\"net sd\">");
+	all = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((c = ucl_object_iterate(jget(sd.altmark, "clusters"), &it,
+	    true)) != NULL) {
+		o = ucl_object_copy(c);
+		lb[0] = '\0';
+		len = 0;
+		kit = NULL;
+		while ((k = ucl_object_iterate(jget(c, "links"), &kit, true)) !=
+		    NULL && len < sizeof(lb) - 1)
+			len += (size_t)snprintf(lb + len, sizeof(lb) - len,
+			    "%s%s %s→%s", len > 0 ? ", " : "", jstr(k, "tunnel"),
+			    host_name(jstr(k, "from")), host_name(jstr(k, "to")));
+		ucl_object_insert_key(o, ucl_object_fromstring(lb), "links_text",
+		    0, true);
+		if (jget(c, "block") != NULL)
+			ucl_object_insert_key(o, ucl_object_frombool(true), "has",
+			    0, true);
+		ucl_array_append(all, o);
+	}
+	tbl_head(h, "sd-amc", ccols, (int)nitems(ccols), 0);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-amc", all, ccols, (int)nitems(ccols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		h_raw(h, "<tr><td>");
+		h_txt(h, jstr(r, "service"));
+		h_fmt(h, "</td><td class=\"num\">%lld</td><td class=\"mono\">",
+		    (long long)jint(r, "cluster", 0));
+		h_txt(h, jstr(r, "links_text"));
+		h_raw(h, "</td>");
+		if (jget(r, "has") == NULL) {
+			h_raw(h, "<td class=\"dim\" colspan=\"6\">no block counted "
+			    "at all its points yet</td></tr>");
+			continue;
+		}
+		h_fmt(h, "<td class=\"mono\">#%lld</td><td class=\"num%s\">%lld "
+		    "<small class=\"dim\">of %lld</small></td><td class=\"num%s\">"
+		    "%.3f %%</td><td class=\"num\">%lld</td><td class=\"num%s\">"
+		    "%lld <small class=\"dim\">of %lld</small></td><td class=\""
+		    "num%s\">%.3f %%</td></tr>", (long long)jint(r, "block", 0),
+		    jint(r, "lost", 0) > 0 ? " bad" : "", (long long)jint(r,
+		    "lost", 0), (long long)jint(r, "out", 0), jnum(r, "loss", 0) >
+		    0 ? " bad" : "", jnum(r, "loss", 0), (long long)jint(r,
+		    "blocks", 0), jint(r, "lost_total", 0) > 0 ? " bad" : "",
+		    (long long)jint(r, "lost_total", 0), (long long)jint(r,
+		    "out_total", 0), jnum(r, "loss_total", 0) > 0 ? " bad" : "",
+		    jnum(r, "loss_total", 0));
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"9\" class=\"dim\">No cluster: no "
+		    "tunnel is measured by alternate marking, or nothing matches "
+		    "the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table></div>");
+	ucl_object_unref(all);
+}
+
 static void
 view_paths(struct html *h)
 {
@@ -4094,6 +4281,7 @@ view_paths(struct html *h)
 	else {
 		view_stamp(h);
 		view_pm(h);
+		view_altmark(h);
 	}
 	/* The uswe tunnels' keys: each end's, when they were set and the
 	 * half-life they turn at; a rotation on its way; one by hand. */
@@ -6620,6 +6808,18 @@ sdwan_modal_service(struct html *h)
 				{ "measurement_interval", "Measurement interval, "
 				    "s", "60", "Aligned to the clock: 60 begins "
 				    "at each minute." },
+				{ "alt_marking", "Alternate marking block, s",
+				    "off", "RFC 9341 on every tunnel, the packets "
+				    "themselves counted: ipfw setdscp sets the "
+				    "DSCP's lowest bit in every other block and "
+				    "count rules at both ends count each colour; "
+				    "the far end clears the bit. The probes' and "
+				    "classes' DSCPs must be even. While it is on, "
+				    "your own ipfw rules after Arcana's that match "
+				    "a DSCP on the way out by a tunnel see the "
+				    "colour in odd blocks (write 46,47 for 46), and "
+				    "traffic that came with the low bit set (LE) "
+				    "arrives as its even neighbour (CS0)." },
 			};
 
 			h_raw(h, "<details class=\"sd-more\"><summary>Application "
@@ -8968,7 +9168,8 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 			static const char *const pk[] = { "interval", "size",
 			    "dscp", "timeout", "down", "up", "history", "report",
 			    "low_percentile", "intermediate_percentile",
-			    "high_percentile", "measurement_interval" };
+			    "high_percentile", "measurement_interval",
+			    "alt_marking" };
 			char	 name[32];
 			size_t	 k;
 

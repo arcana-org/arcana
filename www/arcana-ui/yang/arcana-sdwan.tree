@@ -10,9 +10,19 @@ module: arcana-sdwan
      |  |     +--rw value?    string
      |  +--rw object*   string
      |  +--rw rule* [index]
-     |     +--rw index     uint32
-     |     +--rw number    arcfw:rule-number
-     |     +--rw text?     string
+     |  |  +--rw index     uint32
+     |  |  +--rw number    arcfw:rule-number
+     |  |  +--rw text?     string
+     |  +--rw alt-marking* [service]
+     |     +--rw service    string
+     |     +--rw period     uint16
+     |     +--rw tunnel* [id]
+     |        +--rw id           string
+     |        +--rw interface    string
+     |        +--rw outer?       inet:ip-address-no-zone
+     |        +--rw kind?        enumeration
+     |        +--rw port?        inet:port-number
+     |        +--rw ipsec?       boolean
      +--rw steer
      |  +--rw entry* [table prefix]
      |  |  +--rw table     string
@@ -83,9 +93,19 @@ module: arcana-sdwan
      |  |  |     +--rw value?    string
      |  |  +--rw object*   string
      |  |  +--rw rule* [index]
-     |  |     +--rw index     uint32
-     |  |     +--rw number    arcfw:rule-number
-     |  |     +--rw text?     string
+     |  |  |  +--rw index     uint32
+     |  |  |  +--rw number    arcfw:rule-number
+     |  |  |  +--rw text?     string
+     |  |  +--rw alt-marking* [service]
+     |  |     +--rw service    string
+     |  |     +--rw period     uint16
+     |  |     +--rw tunnel* [id]
+     |  |        +--rw id           string
+     |  |        +--rw interface    string
+     |  |        +--rw outer?       inet:ip-address-no-zone
+     |  |        +--rw kind?        enumeration
+     |  |        +--rw port?        inet:port-number
+     |  |        +--rw ipsec?       boolean
      |  +--rw steer
      |  |  +--rw entry* [table prefix]
      |  |  |  +--rw table     string
@@ -136,6 +156,24 @@ module: arcana-sdwan
      |  |     +--ro id       string
      |  |     +--ro via?     inet:ip-address-no-zone
      |  |     +--ro state?   far-state
+     |  +--ro alt-marking* [tunnel]
+     |  |  +--ro tunnel       string
+     |  |  +--ro service?     string
+     |  |  +--ro interface?   string
+     |  |  +--ro period?      uint16
+     |  |  +--ro colour?      uint8
+     |  |  +--ro current?     uint64
+     |  |  +--ro block* [number]
+     |  |     +--ro number         uint64
+     |  |     +--ro start?         yang:date-and-time
+     |  |     +--ro colour?        uint8
+     |  |     +--ro out-packets?   uint64
+     |  |     +--ro out-octets?    uint64
+     |  |     +--ro in-packets?    uint64
+     |  |     +--ro in-octets?     uint64
+     |  |     +--ro read-offset?   uint32
+     |  |     +--ro swap-delay?    uint32
+     |  |     +--ro valid?         boolean
      |  +--ro edge* [jail]
      |  |  +--ro jail       string
      |  |  +--ro rules
@@ -168,6 +206,24 @@ module: arcana-sdwan
      |  |  |     +--ro id       string
      |  |  |     +--ro via?     inet:ip-address-no-zone
      |  |  |     +--ro state?   far-state
+     |  |  +--ro alt-marking* [tunnel]
+     |  |  |  +--ro tunnel       string
+     |  |  |  +--ro service?     string
+     |  |  |  +--ro interface?   string
+     |  |  |  +--ro period?      uint16
+     |  |  |  +--ro colour?      uint8
+     |  |  |  +--ro current?     uint64
+     |  |  |  +--ro block* [number]
+     |  |  |     +--ro number         uint64
+     |  |  |     +--ro start?         yang:date-and-time
+     |  |  |     +--ro colour?        uint8
+     |  |  |     +--ro out-packets?   uint64
+     |  |  |     +--ro out-octets?    uint64
+     |  |  |     +--ro in-packets?    uint64
+     |  |  |     +--ro in-octets?     uint64
+     |  |  |     +--ro read-offset?   uint32
+     |  |  |     +--ro swap-delay?    uint32
+     |  |  |     +--ro valid?         boolean
      |  |  +--ro error?     string
      |  +--ro bird*
      |  |  +--ro name?      string

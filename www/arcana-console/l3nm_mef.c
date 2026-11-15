@@ -779,6 +779,7 @@ static const struct fm probe_m[] = {
 	F("intermediate_percentile", "intermediate-percentile", N),
 	F("high_percentile", "high-percentile", N),
 	F("measurement_interval", "measurement-interval", C),
+	F("alt_marking", "alt-marking-period", C),
 	FS("classes", "class", L, pclassm), FEND
 };
 static const struct fm rl_m[] = {

@@ -148,11 +148,24 @@ module: arcana-events
      |     |     +--ro severity?    uint8
      |     |     +--ro action?      string
      |     +--:(undo)
-     |        +--ro undo
-     |           +--ro node?      string
-     |           +--ro errno?     int32
-     |           +--ro message?   string
-     |           +--ro report?    string
+     |     |  +--ro undo
+     |     |     +--ro node?      string
+     |     |     +--ro errno?     int32
+     |     |     +--ro message?   string
+     |     |     +--ro report?    string
+     |     +--:(altmark)
+     |        +--ro altmark
+     |           +--ro service?   string
+     |           +--ro block?     uint64
+     |           +--ro start?     yang:date-and-time
+     |           +--ro period?    uint16
+     |           +--ro colour?    uint8
+     |           +--ro valid?     boolean
+     |           +--ro tunnel* [id]
+     |              +--ro id             string
+     |              +--ro interface?     string
+     |              +--ro out-packets?   uint64
+     |              +--ro in-packets?    uint64
      +---x read
         +---w input
         |  +---w after?   uint64
@@ -304,11 +317,24 @@ module: arcana-events
            |     |     +--ro severity?    uint8
            |     |     +--ro action?      string
            |     +--:(undo)
-           |        +--ro undo
-           |           +--ro node?      string
-           |           +--ro errno?     int32
-           |           +--ro message?   string
-           |           +--ro report?    string
+           |     |  +--ro undo
+           |     |     +--ro node?      string
+           |     |     +--ro errno?     int32
+           |     |     +--ro message?   string
+           |     |     +--ro report?    string
+           |     +--:(altmark)
+           |        +--ro altmark
+           |           +--ro service?   string
+           |           +--ro block?     uint64
+           |           +--ro start?     yang:date-and-time
+           |           +--ro period?    uint16
+           |           +--ro colour?    uint8
+           |           +--ro valid?     boolean
+           |           +--ro tunnel* [id]
+           |              +--ro id             string
+           |              +--ro interface?     string
+           |              +--ro out-packets?   uint64
+           |              +--ro in-packets?    uint64
            +--ro kept?    uint16
 
   notifications:
@@ -457,8 +483,21 @@ module: arcana-events
           |     +---- severity?    uint8
           |     +---- action?      string
           +--:(undo)
-             +---- undo
-                +---- node?      string
-                +---- errno?     int32
-                +---- message?   string
-                +---- report?    string
+          |  +---- undo
+          |     +---- node?      string
+          |     +---- errno?     int32
+          |     +---- message?   string
+          |     +---- report?    string
+          +--:(altmark)
+             +---- altmark
+                +---- service?   string
+                +---- block?     uint64
+                +---- start?     yang:date-and-time
+                +---- period?    uint16
+                +---- colour?    uint8
+                +---- valid?     boolean
+                +---- tunnel* [id]
+                   +---- id             string
+                   +---- interface?     string
+                   +---- out-packets?   uint64
+                   +---- in-packets?    uint64

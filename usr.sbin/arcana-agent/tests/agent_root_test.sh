@@ -1137,6 +1137,224 @@ sdwan_jail_edge_cleanup()
 	true
 }
 
+atf_test_case sdwan_altmark_lab cleanup
+sdwan_altmark_lab_head()
+{
+	atf_set "descr" "alternate marking for real (RFC 9341, PLAN-SDN-YANG" \
+	    "5.5.5): three vnet jails, a gre tunnel each pair over epairs," \
+	    "each jail an edge with the marking's rules in its own ipfw set" \
+	    "(ipfw show: the way out of a tunnel at 9, the way in at 11 after" \
+	    "a class's setdscp and a flow's count by DSCP, before a flow's" \
+	    "skip by the class and its coloured neighbour), the colour" \
+	    "cleared before the jail's own rules, the class counted in both" \
+	    "colours and EF again at the far end;" \
+	    "traffic each way; a fifth of one tunnel's outer packets dropped" \
+	    "one way (ipfw prob, in the jail): its blocks lose packets, every" \
+	    "other way none, the loss in its RFC 9342 cluster alone"
+	atf_set "require.user" "root"
+	atf_set "timeout" "180"
+	atf_set "is.exclusive" "true"
+}
+sdwan_altmark_lab_body()
+{
+	local d="$(pwd)" j e i n odd am
+
+	for j in arcw_ama arcw_amb arcw_amc; do
+		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
+	done
+	for j in a b c; do
+		atf_check -o ignore jail -c name=arcw_am$j vnet persist path=/
+		jexec arcw_am$j ipfw show >/dev/null 2>&1 ||
+		    atf_skip "no ipfw in a vnet jail"
+		atf_check jexec arcw_am$j ifconfig lo0 inet 127.0.0.1/8 up
+		# The jail's own rules, the admin's: what the marking's set
+		# goes on to, and what it must never lose.
+		atf_check -o ignore jexec arcw_am$j ipfw -q add 65000 allow ip \
+		    from any to any
+	done
+	# The underlay: an epair each pair of jails.
+	: > epairs
+	for p in "a b 198.51.100.1 198.51.100.2" "a c 198.51.100.5 198.51.100.6" \
+	    "b c 198.51.100.9 198.51.100.10"; do
+		set -- $p
+		e=$(epair_create) || atf_fail "no epair"
+		echo "${e%a} $1 $2" >> epairs
+		atf_check ifconfig ${e%a}a vnet arcw_am$1
+		atf_check ifconfig ${e%a}b vnet arcw_am$2
+		atf_check jexec arcw_am$1 ifconfig ${e%a}a inet $3/30 up
+		atf_check jexec arcw_am$2 ifconfig ${e%a}b inet $4/30 up
+	done
+	# The tunnels, gre(4), each end in its jail's network.
+	tun()
+	{
+		jexec arcw_am$1 ifconfig $2 create >/dev/null 2>&1 ||
+		    atf_skip "no gre(4) in a vnet jail"
+		atf_check jexec arcw_am$1 ifconfig $2 inet $3 $4 netmask \
+		    255.255.255.255 tunnel $5 $6 up
+	}
+	tun a gre0 10.255.0.0 10.255.0.1 198.51.100.1 198.51.100.2
+	tun b gre0 10.255.0.1 10.255.0.0 198.51.100.2 198.51.100.1
+	tun a gre1 10.255.0.2 10.255.0.3 198.51.100.5 198.51.100.6
+	tun c gre0 10.255.0.3 10.255.0.2 198.51.100.6 198.51.100.5
+	tun b gre1 10.255.0.4 10.255.0.5 198.51.100.9 198.51.100.10
+	tun c gre1 10.255.0.5 10.255.0.4 198.51.100.10 198.51.100.9
+	start_daemon
+	# Each jail an edge: its rules, its tunnels measured in blocks of
+	# 2 s.  b's rules as the console's way into a tunnel has them: a
+	# class marked (EF on b's pings to c), a flow's rule by DSCP that
+	# only counts, a flow's that ends the pass (by the class and its
+	# coloured neighbour, as the console writes a queue's), the skip to
+	# the way out; at the way out, after the colour, the class counted
+	# by colour.
+	am()
+	{
+		atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+		    "{\"jail\":\"arcw_am$1\",\"set\":30,\"tables\":[],\"rules\":[$3\"99 count ip from any to any\"],\"altmark\":[{\"service\":\"lab\",\"period\":2,\"tunnels\":[$2]}]}"
+	}
+	am a '{"id":"lab/a-b","interface":"gre0","outer":"198.51.100.2","kind":"gre"},{"id":"lab/a-c","interface":"gre1","outer":"198.51.100.6","kind":"gre"}'
+	am b '{"id":"lab/a-b","interface":"gre0","outer":"198.51.100.1","kind":"gre"},{"id":"lab/b-c","interface":"gre1","outer":"198.51.100.10","kind":"gre"}' \
+	    '"11 setdscp 46 icmp from 10.255.0.4 to 10.255.0.5 out xmit gre1","11 count ip from any to any dscp 46 out xmit gre1","11 skipto 99 ip from any to any dscp 46,47 out xmit gre1","11 skipto 99 ip from any to any","99 count ip from any to any dscp 47 out xmit gre1","99 count ip from any to any dscp 46,47 out xmit gre1",'
+	am c '{"id":"lab/a-c","interface":"gre0","outer":"198.51.100.5","kind":"gre"},{"id":"lab/b-c","interface":"gre1","outer":"198.51.100.9","kind":"gre"}'
+	# 5.5.1's check: the rules in the jail's ipfw, set 30: the way out
+	# of a tunnel at 9, the way in at 11; the outer rule the tunnel's
+	# GRE alone.
+	atf_check -o match:'^00011 +[0-9]+ +[0-9]+ set 30 setdscp tablearg ip from any to any out xmit gre0 lookup dscp:0x3e arcam0 // am 0\.0 mark lab/a-b' \
+	    -o match:'^00009 +[0-9]+ +[0-9]+ set 30 count ip from any to any in recv gre1 dscp 1,3,5,.*,63 // am 0\.1 in 1 lab/a-c' \
+	    -o match:'^00009 +[0-9]+ +[0-9]+ set 30 setdscp tablearg ip from any to any in recv gre0 lookup dscp:0x3e arcam_even // am 0\.0 unmark' \
+	    -o match:'^00011 +[0-9]+ +[0-9]+ set 30 setdscp tablearg gre from any to 198\.51\.100\.2 out lookup dscp:0x3e arcam_even' \
+	    -o match:'^65000 .*allow ip from any to any' \
+	    jexec arcw_ama ipfw -S show
+	# In b's: the class and the count of it before the colour, the
+	# flow's skip after it.
+	jexec arcw_amb ipfw -S show 11 > b11
+	# (ipfw says EF for 46.)
+	atf_check -o inline:'yes\n' sh -c "l() { grep -nE \"\$1\" b11 | head -1 | cut -d: -f1; }; test \$(l 'setdscp ef icmp') -lt \$(l 'count ip from any to any dscp ef out') && test \$(l 'count ip from any to any dscp ef out') -lt \$(l 'am 0.1 mark lab/b-c') && test \$(l 'am 0.1 mark lab/b-c') -lt \$(l 'skipto 99 ip from any to any dscp ef,47') && echo yes"
+	atf_check -o match:'^46 ' jexec arcw_ama ipfw table arcam0 list
+	atf_check -o match:'^46 ' jexec arcw_ama ipfw table arcam0_alt list
+	# Nothing odd reaches the jail's own rules: the bit is cleared
+	# before them on the way out of a tunnel.
+	odd=$(seq -s, 1 2 63)
+	atf_check -o ignore jexec arcw_amb ipfw -q add 1000 count ip from any \
+	    to any in recv gre0 dscp $odd
+	# c's own rule after the set: b's class arrives as EF.
+	atf_check -o ignore jexec arcw_amc ipfw -q add 1001 count ip from any \
+	    to any in recv gre1 dscp 46
+	# A fifth of a's outer packets to b dropped (the underlay's loss,
+	# one tunnel, one way).
+	atf_check -o ignore jexec arcw_ama ipfw -q add 100 prob 0.2 deny gre \
+	    from 198.51.100.1 to 198.51.100.2 out
+	# Traffic each way of each tunnel, b's to c in a class (EF, b's
+	# setdscp).
+	jexec arcw_ama ping -q -i 0.01 -c 1200 10.255.0.1 >/dev/null 2>&1 &
+	p1=$!
+	jexec arcw_ama ping -q -i 0.01 -c 1200 10.255.0.3 >/dev/null 2>&1 &
+	p2=$!
+	jexec arcw_amb ping -q -i 0.01 -c 1200 10.255.0.5 >/dev/null 2>&1 &
+	p3=$!
+	# The pings alone: the agent is this shell's child too.
+	wait $p1 $p2 $p3
+	sleep 3
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	cat > amlab.py <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rec = {}
+for e in d.get("edges", []):
+    for t in e.get("altmark", []):
+        rec[(e["jail"][-1], t["tunnel"])] = {b["block"]: b for b in t["blocks"]}
+ends = {"lab/a-b": "ab", "lab/a-c": "ac", "lab/b-c": "bc"}
+links = []
+for tun, (x, y) in ends.items():
+    for f, t in ((x, y), (y, x)):
+        a, b = rec[(f, tun)], rec[(t, tun)]
+        common = [n for n in a if n in b and a[n]["valid"] and b[n]["valid"]]
+        out = sum(a[n]["out_packets"] for n in common)
+        lost = sum(a[n]["out_packets"] - b[n]["in_packets"] for n in common)
+        links.append((tun, f, t, len(common), out, lost))
+# RFC 9342 5.1: the input point is the from end's interface, the
+# output the far end's; with a tunnel interface each end each link is
+# its own cluster.
+for tun, f, t, nb, out, lost in links:
+    print(tun, f + ">" + t, "blocks", nb, "out", out, "lost", lost)
+    assert nb >= 3 and out > 300, (tun, f, t, nb, out)
+    if (tun, f) == ("lab/a-b", "a"):
+        assert 0.1 * out < lost < 0.3 * out, (tun, f, out, lost)
+    else:
+        assert lost == 0, (tun, f, t, out, lost)
+print("ok")
+EOF
+	atf_check -o match:'^ok$' -o match:'^lab/a-b a>b blocks' \
+	    python3 -I amlab.py sd.json
+	# Nothing odd counted by b's own rule: the colour was cleared.
+	atf_check -o match:'^01000 +0 +0 ' jexec arcw_amb ipfw show 1000
+	# b's class: every packet of it seen by the flow's count before the
+	# colour, by the class and its neighbour after it; some in each
+	# colour (dscp 47 alone in the odd blocks); all of it EF again at
+	# c's own rule, none lost.
+	cnt()
+	{
+		jexec arcw_am$1 ipfw show | grep -E "$2" | head -1 | \
+		    awk '{ print $2 }'
+	}
+	all=$(cnt b '^00011 .*count ip from any to any dscp (ef|46) out xmit gre1$')
+	wide=$(cnt b '^00099 .*count ip from any to any dscp (ef|46),47 out xmit gre1$')
+	odd47=$(cnt b '^00099 .*count ip from any to any dscp 47 out xmit gre1$')
+	atc=$(cnt c '^01001 ')
+	echo "b's class: $all before the colour, $wide after, $odd47 odd, $atc at c"
+	[ "${all:-0}" -ge 1000 ] || atf_fail "b's class counted $all before the colour"
+	[ "$wide" = "$all" ] || atf_fail "after the colour $wide of $all"
+	[ "$odd47" -gt $((all / 4)) ] && [ "$odd47" -lt $((all * 3 / 4)) ] ||
+	    atf_fail "odd blocks' $odd47 of $all"
+	[ "$atc" = "$all" ] || atf_fail "c's EF $atc of $all"
+	cat > amcol.py <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d.get("edges", []):
+    if e["jail"] != "arcw_amb":
+        continue
+    for t in e.get("altmark", []):
+        if t["tunnel"] == "lab/b-c":
+            c = {0: 0, 1: 0}
+            for b in t["blocks"]:
+                c[b["colour"]] += b["out_packets"]
+            assert c[0] > 100 and c[1] > 100, c
+            print("ok", c[0], c[1])
+EOF
+	atf_check -o match:'^ok [0-9]+ [0-9]+$' python3 -I amcol.py sd.json
+	# Taken away with the set: the jail's own rules kept, no table left.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    '{"jail":"arcw_ama","set":30,"tables":[],"rules":[]}'
+	atf_check -o not-match:' set 30 ' -o match:'^00100 .*prob 0\.2[0-9]* deny' \
+	    -o match:'^65000 .*allow ip from any to any' jexec arcw_ama ipfw -S show
+	atf_check -s not-exit:0 -o ignore -e ignore jexec arcw_ama ipfw table \
+	    arcam0 list
+}
+sdwan_altmark_lab_cleanup()
+{
+	local e j1 j2
+
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	sleep 0.5
+	# Every interface out of its jail before the jail goes: a vnet torn
+	# down with one in it panics.
+	for j1 in a b c; do
+		for e in gre0 gre1; do
+			jexec arcw_am$j1 ifconfig $e destroy 2>/dev/null
+		done
+	done
+	if [ -f epairs ]; then
+		while read e j1 j2; do
+			ifconfig ${e}a -vnet arcw_am$j1 2>/dev/null
+			ifconfig ${e}b -vnet arcw_am$j2 2>/dev/null
+			ifconfig ${e}a destroy 2>/dev/null
+		done < epairs
+	fi
+	for j1 in a b c; do
+		jail -r arcw_am$j1 2>/dev/null
+	done
+	true
+}
+
 atf_test_case sdwan_links cleanup
 sdwan_links_head()
 {
@@ -5048,6 +5266,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_probe
 	atf_add_test_case sdwan_control
 	atf_add_test_case sdwan_jail_edge
+	atf_add_test_case sdwan_altmark_lab
 	atf_add_test_case sdwan_links
 	atf_add_test_case bird_live
 	atf_add_test_case sctp_multihome

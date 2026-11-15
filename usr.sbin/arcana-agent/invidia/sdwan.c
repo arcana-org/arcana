@@ -589,6 +589,10 @@ tables_only(const struct edge *e, const ucl_object_t *top,
 	free(jb);
 	if (!same)
 		return (false);
+	/* Alternate marking's tunnels, whose rules are the set's too. */
+	if (!entries_same(ucl_object_lookup(top, "altmark"), ucl_object_lookup(
+	    kept, "altmark")))
+		return (false);
 	if (ucl_array_size(ucl_object_lookup(top, "tables")) != ucl_array_size(
 	    ucl_object_lookup(kept, "tables")))
 		return (false);
@@ -1724,8 +1728,12 @@ object_module(struct work *w, const char *kind)
 
 /*
  * The ruleset applied: {"set", "tables": [{"name", "valtype",
- * "entries": [[key, value], ...]}], "rules": ["number rest", ...]}.
- * With no rules, the set is emptied.
+ * "entries": [[key, value], ...]}], "rules": ["number rest", ...],
+ * "altmark": [{"service", "period", "tunnels": [{"id", "interface",
+ * "outer", "kind", "port", "ipsec"}]}]}: the services' tunnels
+ * measured by alternate marking, their rules and tables
+ * (gula/altmark.c's) in the set around the console's.  With no rules,
+ * the set is emptied.
  */
 int
 do_sdwan_rules(struct work *w, const char *json, const char **errp)
@@ -1737,6 +1745,8 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	struct table		*nt;
 	struct object		*no;
 	struct edge		*ed;
+	struct am_service	*am;
+	int			 nam, nar;
 	char			 path[MAXPATHLEN], tmp[MAXPATHLEN], num[16];
 	char			*text, alt[72], *buf;
 	FILE			*fp;
@@ -1744,8 +1754,10 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	int64_t			 s;
 	int			 n, nr, step, fd, nob, kk;
 	const char		*line, *err, *jail, *rfile, *load;
-	bool			 ok, dn, natm, n64, empty;
+	bool			 ok, dn, natm, n64, empty, marked;
 
+	am = NULL;
+	nam = nar = 0;
 	if ((top = parse(json)) == NULL || ucl_object_type(top) != UCL_OBJECT) {
 		if (top != NULL)
 			ucl_object_unref(top);
@@ -1855,6 +1867,25 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 			goto bad;
 		}
 	}
+	/* The tunnels measured by alternate marking (RFC 9341): their
+	 * rules and colour tables in the set, before the console's. */
+	if (altmark_parse(ucl_object_lookup(top, "altmark"), &am, &nam,
+	    errp) != 0)
+		goto bad;
+	if (nam > 0 && n + nam + 1 > TABLES_MAX) {
+		*errp = wfmt(w, "%d tables at most", TABLES_MAX);
+		goto bad;
+	}
+	for (int ai = 0; ai < nam; ai++) {
+		snprintf(nt[n + ai].name, sizeof(nt[n + ai].name), AM_TABLE "%d",
+		    ai);
+		snprintf(nt[n + ai].valtype, sizeof(nt[n + ai].valtype), "dscp");
+	}
+	if (nam > 0) {
+		snprintf(nt[n + nam].name, sizeof(nt[n + nam].name), AM_EVEN);
+		snprintf(nt[n + nam].valtype, sizeof(nt[n + nam].valtype),
+		    "dscp");
+	}
 	/* Only entries changed, the rules as they are (a list fetched
 	 * anew): each table whose entries differ from the kept ones is
 	 * filled afresh beside itself and swapped in, in one call; the
@@ -1907,6 +1938,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		ucl_object_unref(kept);
 		free(nt);
 		free(no);
+		altmark_free(am, nam);
 		ucl_object_unref(top);
 		if (!ok) {
 			*errp = err;
@@ -1921,6 +1953,9 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	pthread_mutex_unlock(&lock);
 	if (kept != NULL)
 		ucl_object_unref(kept);
+	/* The colour tables are the set's too, made and destroyed with it. */
+	if (nam > 0)
+		n += nam + 1;
 	/* Room for the tables: ipfw's limit raised when they would not fit
 	 * (the edge's vnet's). */
 	if (n * 2 > 128)
@@ -1984,13 +2019,31 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		if (kk > 0)
 			fprintf(fp, "\n");
 	}
+	/* Alternate marking's colour tables; its rules of the way out of
+	 * the tunnels first of all, before the console's, and of the way
+	 * in after what the console's way in only counts or marks, before
+	 * its first that ends the pass (a queue, a pipe, the skip to the
+	 * way out): the colour the last thing put on a packet. */
+	marked = true;
+	if (nr > 0 && nam > 0) {
+		altmark_tables(fp, num, am, nam);
+		nar = altmark_rules_in(fp, num, am, nam);
+		marked = false;
+	}
 	it = NULL;
 	while ((r = ucl_object_iterate(ucl_object_lookup(top, "rules"), &it,
 	    true)) != NULL) {
 		line = ucl_object_tostring(r);
+		if (!marked && altmark_marks_before(line)) {
+			nar += altmark_rules_out(fp, num, am, nam);
+			marked = true;
+		}
 		fprintf(fp, "add %.*s set %s %s\n", (int)strspn(line,
 		    "0123456789"), line, num, line + strspn(line, "0123456789 "));
 	}
+	if (!marked)
+		nar += altmark_rules_out(fp, num, am, nam);
+	nr += nar;
 	if (fclose(fp) != 0) {
 		free(buf);
 		*errp = wfmt(w, "the rules: %s", strerror(errno));
@@ -2070,6 +2123,8 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		(void)unlink(load);
 	else
 		(void)scope_rename(w, load, strrchr(load, '/') + 1, NULL);
+	/* Measured from now in the set loaded; nothing where it is not. */
+	altmark_set(jail, ok ? ed->set : 0, am, ok && ed->set != 0 ? nam : 0);
 	if (!ok) {
 		pthread_mutex_unlock(&lock);
 		*errp = err;
@@ -2088,6 +2143,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	steer_tell();
 	free(nt);
 	free(no);
+	altmark_free(am, nam);
 	ucl_object_unref(top);
 	if (edge_keep(jail, rfile, json, empty, &err) != 0) {
 		*errp = wfmt(w, "%s: %s", rfile, err);
@@ -2097,6 +2153,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 bad:
 	free(nt);
 	free(no);
+	altmark_free(am, nam);
 	ucl_object_unref(top);
 	return (-1);
 }
@@ -2301,6 +2358,12 @@ edge_json(struct work *w, const struct edge *ed, ucl_object_t *top)
 	ucl_object_insert_key(top, arr, "steer", 0, false);
 	ucl_object_insert_key(top, ucl_object_frombool(steered), "steered", 0,
 	    false);
+	/* The tunnels measured by alternate marking, their last blocks. */
+	arr = altmark_json(ed->jail);
+	if (ucl_array_size(arr) > 0)
+		ucl_object_insert_key(top, arr, "altmark", 0, false);
+	else
+		ucl_object_unref(arr);
 	/* The breakout's routes steered, where there are any. */
 	if (ed->nroutes == 0)
 		return;
