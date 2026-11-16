@@ -27296,6 +27296,109 @@ ATF_TC_BODY(authz_feed_author, tc)
 	resp_free(&r);
 }
 
+static int
+cmp_str(const void *a, const void *b)
+{
+
+	return (strcmp(*(char *const *)a, *(char *const *)b));
+}
+
+/* A source file of the tree, whole, read; NULL-terminated. */
+static char *
+src_read(const char *rel)
+{
+	char	 path[MAXPATHLEN], *buf;
+	FILE	*fp;
+	long	 n;
+
+	snprintf(path, sizeof(path), "%s/%s", TESTSRC, rel);
+	ATF_REQUIRE_MSG((fp = fopen(path, "r")) != NULL, "%s", path);
+	ATF_REQUIRE(fseek(fp, 0, SEEK_END) == 0 && (n = ftell(fp)) > 0);
+	rewind(fp);
+	ATF_REQUIRE((buf = malloc((size_t)n + 1)) != NULL);
+	ATF_REQUIRE(fread(buf, 1, (size_t)n, fp) == (size_t)n);
+	buf[n] = '\0';
+	fclose(fp);
+	return (buf);
+}
+
+/*
+ * The design tokens of text between from and the next end, each
+ * "--name" followed by its kind's word (kinds[] maps a word to a
+ * letter), as "name=letter" lines into out, sorted.
+ */
+static void
+tokens_of(const char *text, const char *from, const char *end,
+    const char *const kinds[][2], char *out, size_t len)
+{
+	const char	*p, *e, *q, *k;
+	char		 line[64], *lines[64];
+	size_t		 n = 0, i, j = 0, kl;
+
+	ATF_REQUIRE_MSG((p = strstr(text, from)) != NULL, "%s", from);
+	ATF_REQUIRE((e = strstr(p, end)) != NULL);
+	while ((p = strstr(p, "\"--")) != NULL && p < e) {
+		q = strchr(p + 1, '"');
+		ATF_REQUIRE(q != NULL && q < e && n < nitems(lines));
+		/* Its kind: the first of the words after it. */
+		k = NULL;
+		for (i = 0; kinds[i][0] != NULL; i++) {
+			const char *w = strstr(q, kinds[i][0]);
+
+			if (w != NULL && w < e && (k == NULL || w < k)) {
+				k = w;
+				j = i;
+			}
+		}
+		ATF_REQUIRE_MSG(k != NULL, "%.*s", (int)(q - p + 1), p);
+		kl = (size_t)(q - p - 1);
+		snprintf(line, sizeof(line), "%.*s=%s", (int)kl, p + 1,
+		    kinds[j][1]);
+		lines[n++] = strdup(line);
+		p = q + 1;
+	}
+	qsort(lines, n, sizeof(*lines), cmp_str);
+	out[0] = '\0';
+	for (i = 0; i < n; i++) {
+		strlcat(out, lines[i], len);
+		strlcat(out, "\n", len);
+		free(lines[i]);
+	}
+}
+
+ATF_TC_WITHOUT_HEAD(theme_tokens_agree);
+ATF_TC_BODY(theme_tokens_agree, tc)
+{
+	static const char *const ckinds[][2] = { { "T_COLOUR", "c" },
+	    { "T_CHANNELS", "n" }, { "T_LENGTH", "l" }, { "T_FONT", "f" },
+	    { NULL, NULL } };
+	static const char *const jkinds[][2] = { { ": \"c\"", "c" },
+	    { ": \"n\"", "n" }, { ": \"l\"", "l" }, { ": \"f\"", "f" },
+	    { NULL, NULL } };
+	char	 c[4096], j[4096], want[80], *cp, *bj, *css, *l, *nl;
+
+	/* The console checks a theme's tokens and the page again: the
+	 * two lists the same, names and kinds. */
+	cp = src_read("../cplug.c");
+	bj = src_read("../../arcana-ui/js/bridge.js");
+	tokens_of(cp, "} tokens[] = {", "};", ckinds, c, sizeof(c));
+	tokens_of(bj, "tokens: { \"--", "}", jkinds, j, sizeof(j));
+	ATF_CHECK_MSG(strlen(c) > 0 && strcmp(c, j) == 0,
+	    "cplug.c:\n%s\nbridge.js:\n%s", c, j);
+	/* Each one the page's stylesheet defines. */
+	css = src_read("../../arcana-ui/web/style.css");
+	for (l = c; *l != '\0'; l = nl + 1) {
+		nl = strchr(l, '\n');
+		snprintf(want, sizeof(want), "%.*s:", (int)(strcspn(l, "=")),
+		    l);
+		ATF_CHECK_MSG(strstr(css, want) != NULL, "style.css has no %s",
+		    want);
+	}
+	free(cp);
+	free(bj);
+	free(css);
+}
+
 ATF_TP_ADD_TCS(tp)
 {
 	/* The longest first: kyua starts them in this order. */
@@ -27525,5 +27628,6 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, authz_subscription_owner);
 	ATF_TP_ADD_TC(tp, authz_feed_author);
 	ATF_TP_ADD_TC(tp, authz_sdwan_console);
+	ATF_TP_ADD_TC(tp, theme_tokens_agree);
 	return (atf_no_error());
 }
