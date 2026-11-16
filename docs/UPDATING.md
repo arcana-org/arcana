@@ -93,6 +93,15 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A commit's warning always said, console 0.442.3
+
+- What the host warns of in a commit it took (a condition it had
+  before, a reference to an interface not there yet) is a toast of its
+  own after any save of the page's (ycommit.c); before, a form that
+  closed on success and toasted its own words (the generic YANG form,
+  the job lanes, router advertisements, a tunnel's monitors, sampling)
+  dropped it.
+
 ### Every alarm type a row of the alerts' cases, console 0.442.2
 
 - Settings, Notifications: the mail's and Telegram's cases have a row

@@ -82,6 +82,10 @@ finish(struct ycommit *yc, int how)
 
 	if (yc->done != NULL)
 		yc->done(yc, how);
+	/* What the host warned of, said whatever the caller shows: one
+	 * that toasts its own words and closes its form would lose it. */
+	if (how == YC_SAVED && yc->warned[0] != '\0')
+		toast(true, "The host warns: %s", yc->warned);
 	render();
 }
 
