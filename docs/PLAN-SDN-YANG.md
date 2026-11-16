@@ -3610,6 +3610,11 @@ whose first part is served.
 - 5.6.3 C: a compact time-series store with retention per class;
   check: a week of samples on the VM's disk budget.
 - 5.7.1 D: the measurement chapter; TODO.
+  The chapter done (the book's sdwan/measurement.md, 2026-11-17): what
+  is measured, STAMP and its fallback to ICMP, the delay and loss each
+  way, DSCP, NAT and authentication, measurement intervals, alternate
+  marking, RFC 9375's view, and what is not measured yet.  TODO's
+  verified list waits for 5.6.
 
 ### Y-6
 
