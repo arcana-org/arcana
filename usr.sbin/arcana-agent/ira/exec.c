@@ -377,6 +377,8 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	int				 op[2], ep[2], ip[2], status, rc, step,
 					 n, infd, outfd;
 	bool				 exited, reads;
+	struct live			*live;
+	size_t				 had;
 	const char			*in;
 	size_t				 inlen, off;
 	ssize_t				 wr;
@@ -492,6 +494,18 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	}
 
 	/*
+	 * A job's program, its output kept: a live copy beside the capture,
+	 * for whoever follows it while it runs (live.c).
+	 */
+	live = NULL;
+	if (w->told && step >= 0 && !exec_secret && !secret &&
+	    (live = live_new()) != NULL) {
+		pthread_mutex_lock(&w->lock);
+		w->steps[step].live = live;
+		pthread_mutex_unlock(&w->lock);
+	}
+
+	/*
 	 * Read until the program has exited and its output is drained, not
 	 * until the pipes close: what a jail's exec.start leaves running may
 	 * keep them open for as long as it lives, and write on.  Drained for
@@ -530,11 +544,17 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 			    (ep[0] != -1 && (pfd[1].revents & POLLIN)))
 				heard = time(NULL);
 			if (op[0] != -1 &&
-			    (pfd[0].revents & (POLLIN | POLLHUP)))
+			    (pfd[0].revents & (POLLIN | POLLHUP))) {
+				had = out.len;
 				capture_read(&op[0], &out);
+				live_put(live, out.buf + had, out.len - had);
+			}
 			if (ep[0] != -1 &&
-			    (pfd[1].revents & (POLLIN | POLLHUP)))
+			    (pfd[1].revents & (POLLIN | POLLHUP))) {
+				had = eout.len;
 				capture_read(&ep[0], &eout);
+				live_put(live, eout.buf + had, eout.len - had);
+			}
 		} else if (n == 0 && exited)
 			break;
 		if (exited) {
@@ -578,6 +598,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 			err(1, "waitpid");
 	rc = WIFEXITED(status) ? WEXITSTATUS(status) :
 	    128 + WTERMSIG(status);
+	live_end(live);
 
 	res->status = rc;
 	res->out = out.len > 0 ? wstrndup(w, out.buf, out.len) : "";

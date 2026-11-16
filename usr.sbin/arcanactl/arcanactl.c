@@ -164,6 +164,7 @@ static int	cmd_job(cbl_conn *, int, char **);
 static int	cmd_reboot(cbl_conn *);
 static int	cmd_interface(cbl_conn *, int, char **);
 static int	cmd_job_cancel(cbl_conn *, int, char **);
+static int	cmd_job_follow(cbl_conn *, int, char **);
 static int	cmd_service(cbl_conn *, int, char **);
 static void	emit_service(const struct arc_service *, bool);
 
@@ -399,6 +400,7 @@ usage(void)
 	    "    jobs [lanes number]\n"
 	    "    job [-w] id\n"
 	    "    job-cancel id\n"
+	    "    job-follow id step\n"
 	    "    agent-update [-dpr] program\n"
 	    "    agent-build [-y] [-i key] [-o file] repository [ref]\n"
 	    "    console-update [-y] [-i key] repository [ref]\n"
@@ -5930,6 +5932,49 @@ sxf_run(cbl_conn *conn, const char *what, const bool *done)
 }
 
 /*
+ * job-follow id step: what a job's program (its step, as job shows the
+ * trace) writes, from its start and then as it comes, to the standard
+ * output until it has exited; arcana-stream's exec-follow.
+ */
+static int
+cmd_job_follow(cbl_conn *conn, int argc, char **argv)
+{
+	struct arcana_stream_open	 rq;
+	struct sxfer			 x;
+	cbl_stream			*s;
+	const char			*names[2], *e;
+	char				 job[32], step[32];
+	int				 error;
+
+	if (argc != 3)
+		usage();
+	(void)strtonum(argv[1], 0, INT64_MAX, &e);
+	if (e == NULL)
+		(void)strtonum(argv[2], 0, INT_MAX, &e);
+	if (e != NULL)
+		xo_errx(1, "job-follow: a job's number and a step's");
+	snprintf(job, sizeof(job), "job=%s", argv[1]);
+	snprintf(step, sizeof(step), "step=%s", argv[2]);
+	names[0] = job;
+	names[1] = step;
+	memset(&x, 0, sizeof(x));
+	memset(&rq, 0, sizeof(rq));
+	rq.name.v = names;
+	rq.name.n = 2;
+	if ((error = ys_open(conn, YS_EXEC_FOLLOW, &rq, YS_WINDOW, 0,
+	    &sxf_cbs, &x, &s)) != 0)
+		xo_errx(1, "job-follow: %s", strerror(error));
+	sxf_run(conn, "job-follow", &x.opened);
+	if (x.error != 0)
+		xo_errx(1, "job-follow: %s", txe(x.why[0] != '\0' ? x.why :
+		    strerror(x.error)));
+	sxf_run(conn, "job-follow", &x.closed);
+	if (x.code != 0)
+		xo_errx(1, "job-follow: %s", txe(x.why));
+	return (0);
+}
+
+/*
  * suricata pcap-put instance=name file=name [offset=N] [last=1]: the
  * standard input sent as a capture (or a part of one) for the
  * instance's replay, where it is kept said; suricata pcap-get
@@ -8344,6 +8389,8 @@ main(int argc, char *argv[])
 		rc = cmd_job(conn, argc, argv);
 	else if (strcmp(argv[0], "job-cancel") == 0)
 		rc = cmd_job_cancel(conn, argc, argv);
+	else if (strcmp(argv[0], "job-follow") == 0)
+		rc = cmd_job_follow(conn, argc, argv);
 	else if (strcmp(argv[0], "pkg-clean") == 0)
 		rc = cmd_pkg_clean(conn, argc, argv);
 	else if (strcmp(argv[0], "pkg-install") == 0)

@@ -93,6 +93,35 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A job's program followed while it runs, agent 0.291.0, console 0.442.0
+
+- **Follow output**: a job's program step, picked in its trace while it
+  runs, has **Follow output**: what the program has written so far,
+  standard output and standard error, at once, then each piece as it
+  comes, until it exits ("The program has exited"); **Stop** lets it
+  go.  One step at a time on a page.
+- On the agent, arcana-stream's command 5, `exec-follow` (names `job=`
+  and `step=`, the step's number in the job's trace): a job's program
+  keeps a live copy of its output while it runs (ira/live.c) and sends
+  it to each follower, sixteen at once at most; the copy is let go once
+  the program has exited and no one follows, the output being in the
+  trace from then on.  A program whose output is not kept (keys in its
+  words) has none to follow.  Every role that reads a job's trace may
+  follow it (NACM's default; no rule needed).
+- On the console, a page's stream takes the source
+  `out-<host>.<job>.<step>`, judged as a read of the host is: each piece
+  an event of that name, `{"text": ...}`, whole UTF-8 characters; the
+  end `<name>.end` with `{"done": true}`.  Taken again it starts from
+  the program's start.
+- `arcanactl job-follow id step` writes the same to its standard
+  output.
+- A service job that ended no longer reads the settings of a service
+  with no name (no service open) and takes the trace with that read's
+  error.
+- A program's output comes as the program writes it: one that holds its
+  output back while it writes to a pipe (stdio's buffer) comes in
+  pieces of that buffer.
+
 ### Alternate marking, agent 0.290.0, console 0.441.0
 
 - **A service may measure its tunnels by alternate marking** (RFC 9341):

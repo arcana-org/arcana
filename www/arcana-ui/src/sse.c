@@ -29,6 +29,11 @@
  *   jobs has its running jobs and its Jobs tab read then, not every
  *   second.
  *
+ * - a job's program followed while it runs, "out-<host>.<job>.<step>"
+ *   (the console's rcstream.c, the agent's exec-follow): what it wrote,
+ *   from its start, kept in app.follow for the step's pane (graph.c);
+ *   one at a time, its open the sign to start over.
+ *
  * What nothing tells is still read now and then (SSE_SAFE_MS), and what
  * a stream would tell is read as before, on a timer, while that stream
  * is not up: closed, refused, or not yet open.
@@ -43,12 +48,13 @@
 
 #include "app.h"
 
-enum { SS_FLEET = 1, SS_STATS, SS_JOBS, SS_N };
+enum { SS_FLEET = 1, SS_STATS, SS_JOBS, SS_OUT, SS_N };
 
 #define	SSE_RETRY_MS	5000	/* a stream refused or closed: again then */
 #define	SSE_SAFE_MS	180000	/* what a stream tells, read so often anyway */
 #define	SSE_SOON_MS	1000	/* an event's read waits for others */
 #define	SSE_HOSTS	128
+#define	FOLLOW_MAX	(512 * 1024)	/* of a followed program's output */
 
 static struct {
 	bool	 open;		/* its EventSource asked for */
@@ -309,6 +315,90 @@ sse_closed(int id, double now)
 	ss[id].gen++;
 }
 
+/* What the followed program wrote, added; its last FOLLOW_MAX kept. */
+static void
+follow_add(const char *t)
+{
+	size_t	n, drop;
+
+	if (t == NULL || (n = strlen(t)) == 0)
+		return;
+	if ((app.follow.text = realloc(app.follow.text, app.follow.len + n +
+	    1)) == NULL)
+		abort();
+	memcpy(app.follow.text + app.follow.len, t, n + 1);
+	app.follow.len += n;
+	if (app.follow.len > FOLLOW_MAX) {
+		drop = app.follow.len - FOLLOW_MAX;
+		memmove(app.follow.text, app.follow.text + drop,
+		    app.follow.len - drop + 1);
+		app.follow.len -= drop;
+	}
+}
+
+/* Follow step step of job job on host sid; step -1: follow none. */
+void
+sse_follow(const char *sid, long long job, int step)
+{
+
+	/* Closed even when it ended by itself: the bridge still names it. */
+	arc_sse_close(SS_OUT);
+	ss[SS_OUT].open = ss[SS_OUT].up = false;
+	free(app.follow.text);
+	app.follow.text = NULL;
+	app.follow.len = 0;
+	app.follow.up = app.follow.done = false;
+	app.follow.err[0] = '\0';
+	app.follow.step = -1;
+	if (sid == NULL || step < 0 || job <= 0)
+		return;
+	snprintf(app.follow.sid, sizeof(app.follow.sid), "%s", sid);
+	app.follow.job = job;
+	app.follow.step = step;
+	snprintf(ss[SS_OUT].sid, sizeof(ss[SS_OUT].sid), "%s", sid);
+	ss[SS_OUT].open = true;
+	{
+		char	url[160];
+
+		snprintf(url, sizeof(url), "/restconf/streams/out/%s/%lld/%d",
+		    sid, job, step);
+		arc_sse_open(SS_OUT, url);
+	}
+}
+
+/* What the followed program's source said. */
+static void
+follow_event(const char *ev, const char *data)
+{
+	ucl_object_t	*o;
+	const char	*m;
+
+	if (strcmp(ev, "open") == 0) {
+		/* Taken (again): sent from the program's start. */
+		free(app.follow.text);
+		app.follow.text = NULL;
+		app.follow.len = 0;
+		app.follow.up = true;
+	} else if (strcmp(ev, "message") == 0 && (o = json_parse(data)) !=
+	    NULL) {
+		follow_add(jstr(o, "text"));
+		ucl_object_unref(o);
+	} else if (strcmp(ev, "error") == 0 && (o = json_parse(data)) !=
+	    NULL) {
+		if (jget(o, "done") != NULL)
+			app.follow.done = true;
+		else if ((m = jstr(o, "ietf-restconf:errors.error.0."
+		    "error-message")) != NULL)
+			snprintf(app.follow.err, sizeof(app.follow.err), "%s", m);
+		ucl_object_unref(o);
+	} else if (strcmp(ev, "down") == 0 && strcmp(data, "closed") == 0) {
+		ss[SS_OUT].open = false;
+		if (!app.follow.done && app.follow.err[0] == '\0')
+			snprintf(app.follow.err, sizeof(app.follow.err),
+			    "the console did not take it");
+	}
+}
+
 /* What an EventSource said (bridge.js). */
 EMSCRIPTEN_KEEPALIVE void
 arc_on_sse(int id, char *ev, char *data)
@@ -319,6 +409,11 @@ arc_on_sse(int id, char *ev, char *data)
 
 	if (id <= 0 || id >= SS_N || !ss[id].open)
 		goto out;
+	if (id == SS_OUT) {
+		follow_event(ev, data);
+		render();
+		goto out;
+	}
 	if (strcmp(ev, "open") == 0) {
 		ss[id].up = true;
 		/* Back: what came meanwhile may have gone past. */

@@ -584,6 +584,9 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "[ -f running.$r ] && { echo \"$r is running as pid 7.\"; "
 	    "exit 0; }; echo \"$r is not running.\"; exit 1 ;;\n"
 	    "start|onestart|restart|onerestart) [ -f slow ] && sleep 3; "
+	    /* ./chatty: a line, then the rest once ./go is there. */
+	    "[ -f chatty ] && { echo first; while [ ! -f go ]; do "
+	    "sleep 0.1; done; echo second >&2; }; "
 	    "touch running.$r ;;\n"
 	    "stop|onestop) rm -f running.$r ;;\n"
 	    "describe) echo \"The $1 daemon.\" ;;\n"

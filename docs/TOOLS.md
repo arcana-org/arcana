@@ -121,6 +121,7 @@ arcanactl -c tcp://host1.example:4310 \
 | `jobs` | Queued, running and recent jobs. |
 | `job [-w]` *id* | A job with its trace so far; `-w` waits for the end. |
 | `job-cancel` *id* | Take a queued job back. |
+| `job-follow` *id* *step* | What a job's program writes, as it writes it, until it exits. |
 | `interface` *name* `up` \| `down` | Bring an interface up or down, with `ifconfig(8)`; waited for, or queued with `-q`. |
 | `interface` *name* `add` \| `remove` *address* | Add an address to an interface as an alias, or take it off. Live only. |
 | `route add` *destination* *gateway* | Add a static route with `route(8)`; the gateway is an address or an interface. Live only. |

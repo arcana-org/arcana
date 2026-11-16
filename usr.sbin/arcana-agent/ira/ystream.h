@@ -33,6 +33,7 @@
 #define	YS_ZFS_RECEIVE		2
 #define	YS_PCAP_PUT		3
 #define	YS_PCAP_GET		4
+#define	YS_EXEC_FOLLOW		5
 #define	YS_WINDOW		4194304		/* what is taken before credit */
 
 struct ys_cbs {

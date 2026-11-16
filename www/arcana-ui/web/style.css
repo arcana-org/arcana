@@ -2244,6 +2244,41 @@ pre.out {
 	overflow-wrap: anywhere;
 }
 
+/* A job's program followed (graph.c): its newest lines kept in view,
+ * the box scrolled from the bottom (column-reverse) as they come. */
+.follow { margin-top: .6rem; }
+.follow header {
+	display: flex;
+	align-items: center;
+	gap: .5rem;
+	font-size: .75rem;
+}
+.follow header button { margin-left: auto; }
+.follow .live-dot {
+	width: .5rem;
+	height: .5rem;
+	border-radius: 50%;
+	background: var(--green);
+}
+html.fx .follow .live-dot { animation: breathe 1.4s ease-in-out infinite; }
+.follow .out.live {
+	display: flex;
+	flex-direction: column-reverse;
+	margin-top: .4rem;
+	max-height: 40vh;
+	overflow: auto;
+	background: #020509;
+	border: 1px solid var(--line);
+}
+.follow .out.live pre {
+	margin: 0;
+	padding: .55rem .7rem;
+	color: #c9eef7;
+	font-size: .72rem;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
 pre.out.err {
 	color: #ffa9bd;
 	border-color: rgba(var(--red-rgb), .3);

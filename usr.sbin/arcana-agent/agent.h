@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.290.1"
+#define	ARCANA_AGENT_VERSION	"0.291.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -236,6 +236,8 @@ struct step {
 	const char	*err;
 	size_t		 errlen;
 	bool		 notrun;	/* a dry run's program: not run */
+	struct live	*live;		/* a job's program: its output as it
+					 * comes (ira/live.c), or NULL */
 };
 
 struct work {
@@ -1353,6 +1355,16 @@ int		 pcap_put_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 int		 pcap_get_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
+/* ira/live.c: a job's program followed while it runs */
+struct live;
+struct live	*live_new(void);
+void		 live_ref(struct live *);
+void		 live_rele(struct live *);
+void		 live_put(struct live *, const char *, size_t);
+void		 live_end(struct live *);
+int		 exec_follow_open(cbl_req *, const struct arcana_stream_open *,
+		    cbl_stream *);
+struct live	*jobs_live(uint64_t, int, const char **);
 /* superbia/tlsfiles.c: the agent's own TLS files renewed */
 const char	*tls_files_ca(void);
 const char	*tls_files_cert(void);

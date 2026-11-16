@@ -650,6 +650,17 @@ struct app {
 	bool		 yang_loading;
 	bool		 yang_failed;
 	bool		 trace_schema;	/* shown beside the operation */
+	/* A job's program followed while it runs (sse.c, graph.c). */
+	struct {
+		char		 sid[9];
+		long long	 job;
+		int		 step;	/* the host's number of it; -1 none */
+		char		*text;	/* what it wrote, its last FOLLOW_MAX */
+		size_t		 len;
+		bool		 up;	/* the console took it */
+		bool		 done;	/* it exited, all of it heard */
+		char		 err[200];	/* why it ended, else "" */
+	} follow;
 	int		 jail_sort;	/* JAIL_SORT_*: running first at start */
 	bool		 jail_sort_desc;
 	char		 svc_error[256];
@@ -720,6 +731,7 @@ bool		 sse_due(const struct server *, int, double, double, bool);
 void		 sse_read(const struct server *, int);
 bool		 sse_fleet_up(void);
 bool		 sse_jobs_up(void);
+void		 sse_follow(const char *, long long, int);
 ucl_object_t	*event_of_yang(const ucl_object_t *);
 
 /* actions.c: what the buttons do. */

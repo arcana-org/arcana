@@ -3313,7 +3313,10 @@ addToLibrary({
 	 * (rcstream.c), as every tab shares the browser's one HTTP/2
 	 * connection and the streams held on it are few.  Each of the
 	 * page's ids is a source of it, by name: "fleet", the fleet's
-	 * stream, or "sub-<n>", the subscription whose URI ends in n.  The
+	 * stream, "sub-<n>", the subscription whose URI ends in n, or
+	 * "out-<host>.<job>.<step>", a job's program followed, asked as
+	 * /restconf/streams/out/<host>/<job>/<step> (added by a POST once
+	 * the stream is up, never in its GET).  The
 	 * EventSource is opened with the sources wanted then and closed
 	 * with the last; one wanted later, or given up, is said to it by a
 	 * POST, its id from the "page" event, which lists what the console
@@ -3332,9 +3335,12 @@ addToLibrary({
 	$arcSse: { es: null, page: null, ids: {}, ended: {}, q: null },
 	$arcSseName: function (url) {
 		var m = /^\/restconf\/subscriptions\/([0-9]+)$/.exec(url);
+		var o = /^\/restconf\/streams\/out\/([0-9a-f]+)\/([0-9]+)\/([0-9]+)$/.exec(url);
 
 		if (url === "/restconf/streams/fleet/json")
 			return ("fleet");
+		if (o !== null)
+			return ("out-" + o[1] + "." + o[2] + "." + o[3]);
 		return (m !== null ? "sub-" + m[1] : null);
 	},
 	/* Said to each id of source name (null: every id). */
@@ -3411,7 +3417,7 @@ addToLibrary({
 		names.forEach(function (n) {
 			if (n === "fleet")
 				q.push("fleet=1");
-			else
+			else if (n.slice(0, 4) === "sub-")
 				subs.push(n.slice(4));
 		});
 		if (subs.length > 0)

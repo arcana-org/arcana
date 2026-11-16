@@ -5176,6 +5176,68 @@ jobs_cleanup()
 	stop_daemon
 }
 
+job_follow_head()
+{
+	atf_set "descr" "a job's program followed while it runs (arcana-stream's exec-follow): what it wrote so far at once, the rest as it comes, both outputs, the end when it exits; refused once it has and for a step that runs nothing"
+}
+job_follow_body()
+{
+	start_daemon
+	# The service's program says one line, waits for go, says two more.
+	mv fake-service fake-service.real
+	cat > fake-service <<EOS
+#!/bin/sh
+echo first
+while [ ! -e $(pwd)/go ]; do sleep 0.1; done
+echo second >&2
+# Two pipes: a moment apart, read in this order.
+sleep 0.3
+echo third
+exec $(pwd)/fake-service.real "\$@"
+EOS
+	chmod +x fake-service
+	atf_check -o match:'^ +1 queued' "$JGC" -q -c "$SOCK" service sshd restart
+	# The step of the program, by its label.
+	n=0
+	while :; do
+		"$JGC" --libxo json -c "$SOCK" job 1 > job.json
+		step=$(python3 -I -c 'import json,sys
+for s in json.load(open("job.json"))["arcana"].get("step", []):
+    if s.get("kind") == "exec" and "fake-service" in s.get("label", ""):
+        print(s["id"]); break' 2>/dev/null)
+		[ -n "$step" ] && break
+		n=$((n + 1)); [ $n -lt 50 ] || atf_fail "no program step: $(head -c 1500 job.json)"
+		sleep 0.1
+	done
+	"$JGC" -c "$SOCK" job-follow 1 "$step" > follow.out 2> follow.err &
+	fpid=$!
+	# What it wrote so far, while it still runs.
+	n=0
+	until grep -q '^first$' follow.out; do
+		n=$((n + 1)); [ $n -lt 50 ] || atf_fail "nothing followed"
+		sleep 0.1
+	done
+	atf_check -s exit:1 grep -q second follow.out
+	kill -0 $fpid || atf_fail "the follow ended while the program ran"
+	# The rest, then the end when it exits.
+	touch go
+	wait $fpid || atf_fail "job-follow: $(cat follow.err)"
+	atf_check -o inline:'first\nsecond\nthird\nRestarting sshd.\n' \
+	    sed -n '/^first$/,$p' follow.out
+	atf_check -o ignore "$JGC" -c "$SOCK" job -w 1
+	# Exited: its output is in the trace.
+	atf_check -s exit:1 -e match:'has exited' \
+	    "$JGC" -c "$SOCK" job-follow 1 "$step"
+	atf_check -s exit:1 -e match:'runs no program' \
+	    "$JGC" -c "$SOCK" job-follow 1 0
+	atf_check -s exit:1 -e match:'no such job' \
+	    "$JGC" -c "$SOCK" job-follow 99 0
+}
+job_follow_cleanup()
+{
+	stop_daemon
+}
+
 # A trace as arcanactl prints it, each step's kind and label in its
 # tree: what a dry run and the job it stands for are compared by.
 trace_steps()
@@ -18441,5 +18503,6 @@ atf_init_test_cases()
 	atf_add_test_case jail_base
 	atf_add_test_case jail_base_links
 	atf_add_test_case jobs
+	atf_add_test_case job_follow
 	atf_add_test_case dry_run
 }

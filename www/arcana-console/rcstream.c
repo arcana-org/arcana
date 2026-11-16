@@ -65,6 +65,17 @@
  * <name>}), by the session that opened it alone.  The lost events, the
  * keep-alives and the error the reply ends with are the reply's.
  *
+ * A page's stream has one more kind of source, a program of a host's
+ * job followed while it runs, "out-<host>.<job>.<step>": judged as a
+ * read of the host is, it is the host's arcana-stream exec-follow
+ * stream (the agent's ira/live.c), each piece of what the program wrote
+ * an event of that name, {"text": ...}, from the program's start; it
+ * ends ("<name>.end", {"done": true}) when the program has exited and
+ * all of it went.  It is not replayed: taken again, after the reply
+ * went, it is sent from the program's start again, its open event the
+ * page's sign to start over.  Pieces are whole UTF-8 characters, a
+ * character cut by a piece's end kept for the next.
+ *
  * Records left out, the client being slow, are said in a lost event:
  * a page then reads again what it shows.
  *
@@ -101,6 +112,7 @@
 #include "console.h"
 #include "restconf.h"
 #include "ymodel.h"
+#include "ystream.h"
 
 #define	RCS_MAX		128		/* at once, of every client */
 #define	RCS_WHO		8		/* ... of one principal (a token's,
@@ -118,6 +130,8 @@
 #define	PAGE_SRC_WHO	32		/* ... of one principal's pages */
 #define	PAGE_SRC_ALL	256		/* ... of every page */
 #define	PAGE_ID_LEN	32		/* a page's stream's id, hex */
+#define	PAGE_NAME_LEN	48		/* a source's name */
+#define	PAGE_ID_EACH	(PAGE_NAME_LEN + 48)	/* in an id: name@time; */
 
 /* An establish-subscription's input, as the POST said it. */
 struct rcsub {
@@ -164,7 +178,9 @@ struct rch {
 struct rcsrc {
 	TAILQ_ENTRY(rcsrc)	 link;
 	struct rcs		*rs;
-	char			 name[24];	/* "fleet", "sub-<id>"; "" */
+	char			 name[PAGE_NAME_LEN];	/* "fleet", "sub-<id>",
+						 * "out-<host>.<job>.<step>";
+						 * "" */
 	struct rch		*h;
 	size_t			 nh;
 	bool			 fleet;	/* records nested in their hosts */
@@ -176,6 +192,13 @@ struct rcsrc {
 	char			 last[40];	/* its last record's event time
 						 * (the lock's) */
 	char			 why[200];	/* why it ended */
+	bool			 out;	/* a program followed: */
+	uint64_t		 job;
+	unsigned		 step;
+	bool			 done;	/* it exited, all of it sent */
+	unsigned char		 cut[4];	/* a character's start, its
+						 * rest in the next piece */
+	size_t			 ncut;
 };
 
 TAILQ_HEAD(rcsrcs, rcsrc);
@@ -330,7 +353,7 @@ static void
 src_say(struct rcsrc *src, const char *event, const char *data, bool id)
 {
 	struct rcs	*rs = src->rs;
-	char		 ids[PAGE_SRC_MAX * 72];
+	char		 ids[PAGE_SRC_MAX * PAGE_ID_EACH];
 
 	pthread_mutex_lock(&rs->lock);
 	if (src->name[0] == '\0')
@@ -385,7 +408,7 @@ rcs_data(cbl_stream *s, cbl_msg *data, void *arg)
 	struct rch	*h = arg;
 	struct rcsrc	*src = h->src;
 	struct rcs	*rs = src->rs;
-	char		*json, when[64], ids[PAGE_SRC_MAX * 72];
+	char		*json, when[64], ids[PAGE_SRC_MAX * PAGE_ID_EACH];
 	bool		 timed;
 
 	(void)s;
@@ -436,6 +459,141 @@ static const struct cbl_stream_cbs rcs_cbs = {
 	.on_data = rcs_data,
 	.on_close = rcs_close,
 };
+
+/* ---- A program followed --------------------------------------------- */
+
+/* How long the first n bytes of p are that end with a whole character
+ * (what is cut at the end kept for later); invalid bytes pass as they
+ * are, the page's decoder replacing them. */
+static size_t
+utf8_whole(const unsigned char *p, size_t n)
+{
+	size_t	i, k, need;
+
+	/* The last character's start, at most three back. */
+	for (k = 1; k <= 3 && k <= n; k++) {
+		i = n - k;
+		if ((p[i] & 0xc0) == 0x80)
+			continue;
+		need = (p[i] & 0xe0) == 0xc0 ? 2 : (p[i] & 0xf0) == 0xe0 ? 3 :
+		    (p[i] & 0xf8) == 0xf0 ? 4 : 1;
+		return (need > k ? i : n);
+	}
+	return (n);
+}
+
+static void
+out_open(cbl_stream *s, cbl_msg *accept, int error, void *arg)
+{
+	struct rch	*h = arg;
+
+	(void)s;
+	if (error != 0) {
+		snprintf(h->why, sizeof(h->why), "%s", accept != NULL &&
+		    cbl_msg_err_str(accept) != NULL ? cbl_msg_err_str(accept) :
+		    strerror(error));
+		h->closed = true;
+	}
+}
+
+/* A piece of what the program wrote: an event, its whole characters. */
+static void
+out_data(cbl_stream *s, cbl_msg *data, void *arg)
+{
+	struct rch			*h = arg;
+	struct rcsrc			*src = h->src;
+	struct rcs			*rs = src->rs;
+	struct arcana_stream_chunk	 c;
+	ucl_object_t			*o;
+	cbl_yarena			*a;
+	unsigned char			*p;
+	size_t				 n, whole;
+	char				*json;
+
+	if ((a = cbl_yarena_new()) == NULL || ys_chunk(data, &c, a) != 0) {
+		if (a != NULL)
+			cbl_yarena_free(a);
+		(void)cbl_stream_reset(s, EBADMSG);
+		return;
+	}
+	n = src->ncut + c.data.len;
+	p = xmalloc(n + 1);
+	memcpy(p, src->cut, src->ncut);
+	memcpy(p + src->ncut, c.data.p, c.data.len);
+	cbl_yarena_free(a);
+	whole = utf8_whole(p, n);
+	src->ncut = n - whole;
+	memcpy(src->cut, p + whole, src->ncut);
+	if (whole == 0) {
+		free(p);
+		return;
+	}
+	o = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(o, ucl_object_fromlstring((char *)p, whole),
+	    "text", 0, false);
+	free(p);
+	json = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(o);
+	if (json == NULL)
+		return;
+	pthread_mutex_lock(&rs->lock);
+	if (rs->out->offset + strlen(json) > RCS_OUT_MAX)
+		rs->lost = true;
+	else
+		buf_appendf(rs->out, "event: %s\ndata: %s\n\n", src->name, json);
+	pthread_mutex_unlock(&rs->lock);
+	free(json);
+}
+
+static void
+out_hclose(cbl_stream *s, void *arg)
+{
+	struct rch	*h = arg;
+
+	h->src->done = true;
+	snprintf(h->why, sizeof(h->why), "the program has exited");
+	(void)cbl_stream_close(s, 0, NULL);
+}
+
+static void
+out_close(cbl_stream *s, int code, const char *text, void *arg)
+{
+	struct rch	*h = arg;
+
+	(void)s;
+	h->closed = true;
+	if (!h->src->done)
+		snprintf(h->why, sizeof(h->why), "%s", text != NULL &&
+		    text[0] != '\0' ? text : code != 0 ? strerror(code) :
+		    "the host ended the stream");
+}
+
+static const struct cbl_stream_cbs out_cbs = {
+	.on_open = out_open,
+	.on_data = out_data,
+	.on_hclose = out_hclose,
+	.on_close = out_close,
+};
+
+/* Host h's exec-follow stream of src's job and step opened. */
+static bool
+out_follow(struct rch *h)
+{
+	struct arcana_stream_open	 rq;
+	const char			*names[2];
+	char				 job[32], step[32];
+
+	snprintf(job, sizeof(job), "job=%ju", (uintmax_t)h->src->job);
+	snprintf(step, sizeof(step), "step=%u", h->src->step);
+	names[0] = job;
+	names[1] = step;
+	memset(&rq, 0, sizeof(rq));
+	rq.name.v = names;
+	rq.name.n = 2;
+	h->src->ncut = 0;
+	return (ys_open(h->conn, YS_EXEC_FOLLOW, &rq, YS_WINDOW, 0, &out_cbs,
+	    h, &h->s) == 0);
+}
 
 /* establish-subscription's input node, in the tables. */
 static const struct cbl_ynode *
@@ -554,6 +712,15 @@ rch_open(struct rch *h)
 		h->conn = NULL;
 		snprintf(h->why, sizeof(h->why), "the host does not answer: %s",
 		    msg);
+		return (false);
+	}
+	if (h->src->out) {
+		if (out_follow(h))
+			return (true);
+		snprintf(h->why, sizeof(h->why), "the host's stream could not "
+		    "be opened");
+		hosts_release(h->uri, h->peer, h->conn, h->tls, false);
+		h->conn = NULL;
 		return (false);
 	}
 	/* Again: from its last record, or from when it was first heard. */
@@ -715,8 +882,10 @@ src_drop(struct rcs *rs, struct rcsrc *src)
 	for (size_t i = 0; i < src->nh; i++)
 		if (src->h[i].conn != NULL)
 			rch_done(&src->h[i], false);
-	if (rs->page && !atomic_load(&src->end) && (why = restconf_errors(502,
-	    src->why)) != NULL) {
+	if (rs->page && !atomic_load(&src->end) && src->done)
+		src_say(src, "end", "{\"done\":true}", false);
+	else if (rs->page && !atomic_load(&src->end) &&
+	    (why = restconf_errors(502, src->why)) != NULL) {
 		src_say(src, "end", why, false);
 		free(why);
 	}
@@ -1383,18 +1552,57 @@ api_restconf_subscription(struct http_request *req)
 /* A source a page's stream is asked for: its name, replayed from since
  * ("" from now). */
 struct pagesrc {
-	char	name[24];
+	char	name[PAGE_NAME_LEN];
 	char	since[40];
 };
 
-/* Is name one of a page's sources: "fleet", or "sub-<id>" (its id into
- * idp)? */
+/* Is name a followed program's, "out-<host>.<job>.<step>": the host's
+ * id, the job's number, the step's into sid, jobp, stepp. */
+static bool
+page_out(const char *name, char *sid, size_t sidlen, uint64_t *jobp,
+    unsigned *stepp)
+{
+	const char	*p, *d1, *d2, *e;
+	char		 num[24];
+	size_t		 k;
+
+	if (strncmp(name, "out-", 4) != 0)
+		return (false);
+	p = name + 4;
+	if ((d1 = strchr(p, '.')) == NULL || (d2 = strchr(d1 + 1, '.')) ==
+	    NULL)
+		return (false);
+	k = (size_t)(d1 - p);
+	if (k == 0 || k >= sidlen || strspn(p, "0123456789abcdef") != k)
+		return (false);
+	memcpy(sid, p, k);
+	sid[k] = '\0';
+	k = (size_t)(d2 - d1 - 1);
+	if (k == 0 || k >= sizeof(num))
+		return (false);
+	memcpy(num, d1 + 1, k);
+	num[k] = '\0';
+	*jobp = (uint64_t)strtonum(num, 1, INT64_MAX, &e);
+	if (e != NULL)
+		return (false);
+	*stepp = (unsigned)strtonum(d2 + 1, 0, 65535, &e);
+	return (e == NULL);
+}
+
+/* Is name one of a page's sources: "fleet", "sub-<id>" (its id into
+ * idp), or a followed program's (idp 0, page_out() says which)? */
 static bool
 page_name(const char *name, unsigned long *idp)
 {
-	char		*end;
+	char		*end, sid[9];
 	unsigned long	 id;
+	uint64_t	 job;
+	unsigned	 step;
 
+	if (page_out(name, sid, sizeof(sid), &job, &step)) {
+		*idp = 0;
+		return (true);
+	}
 	if (strcmp(name, "fleet") == 0) {
 		*idp = 0;
 		return (true);
@@ -1440,12 +1648,12 @@ page_last(struct http_request *req, struct pagesrc *l, size_t *n,
     size_t max)
 {
 	const char	*leid, *p, *at, *e;
-	char		 name[24], since[40];
+	char		 name[PAGE_NAME_LEN], since[40];
 	unsigned long	 id;
 	size_t		 k;
 
 	if (!http_request_header(req, "last-event-id", &leid) ||
-	    strlen(leid) >= PAGE_SRC_MAX * 72)
+	    strlen(leid) >= PAGE_SRC_MAX * PAGE_ID_EACH)
 		return;
 	for (p = leid; *p != '\0'; p = *e == ';' ? e + 1 : e) {
 		e = p + strcspn(p, ";");
@@ -1499,14 +1707,17 @@ page_add(struct http_request *req, struct rcs *rs, const char *name,
 	const struct server	**sv, *s;
 	struct rcsub		 *sb;
 	struct rcsrc		 *src;
-	char			  who[256];
+	char			  who[256], sid[9];
 	struct rcs		 *o;
 	unsigned long		  id;
+	uint64_t		  job;
+	unsigned		  step;
 	size_t			  n, k, mine, all;
 	bool			  have;
 
 	if (!page_name(name, &id)) {
-		snprintf(why, len, "a source is fleet or sub-<id>");
+		snprintf(why, len, "a source is fleet, sub-<id> or "
+		    "out-<host>.<job>.<step>");
 		return (400);
 	}
 	pthread_mutex_lock(&rs->lock);
@@ -1545,7 +1756,18 @@ page_add(struct http_request *req, struct rcs *rs, const char *name,
 		return (503);
 	}
 	(void)session_owner(req, who, sizeof(who));
-	if (id == 0) {
+	if (page_out(name, sid, sizeof(sid), &job, &step)) {
+		/* As a read of the host's jobs is judged. */
+		if ((s = server_find(sid)) == NULL ||
+		    !host_role_ok(req, sid, false, false)) {
+			snprintf(why, len, "no such server");
+			return (404);
+		}
+		src = src_new(rs, name, &s, 1, false, NULL, NULL);
+		src->out = true;
+		src->job = job;
+		src->step = step;
+	} else if (id == 0) {
 		if ((n = fleet_hosts(req, &sv)) == 0) {
 			free(sv);
 			snprintf(why, len, "no host to hear");
@@ -1598,7 +1820,7 @@ api_restconf_page_stream(struct http_request *req)
 	struct buf	*said, *page;
 	uint8_t		 raw[PAGE_ID_LEN / 2];
 	const char	*v, *p;
-	char		 name[24], why[200], first[80], *err;
+	char		 name[PAGE_NAME_LEN], why[200], first[80], *err;
 	unsigned long	 id;
 	size_t		 n = 0, k;
 	int		 st;
@@ -1713,7 +1935,7 @@ api_restconf_page_change(struct http_request *req)
 	ucl_object_t	*body;
 	struct rcs	*rs;
 	const char	*add, *end;
-	char		 pid[PAGE_ID_LEN + 8], who[256], why[200], name[24];
+	char		 pid[PAGE_ID_LEN + 8], who[256], why[200], name[PAGE_NAME_LEN];
 	bool		 adding;
 	int		 st;
 

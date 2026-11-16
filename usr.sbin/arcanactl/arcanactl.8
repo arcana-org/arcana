@@ -2548,6 +2548,18 @@ waits until it has finished, confirming a change made in safe mode
 Take a job that has not started out of the queue, its
 .Ic cancel
 action.
+.It Cm job-follow Ar id step
+What a program of a job writes, the job's step
+.Ar step
+as
+.Cm job
+shows its trace: standard output and standard error as they come,
+from its start, until it has exited; arcana-stream's
+.Ic exec-follow
+stream.
+A step whose output is not kept (keys in its words) has none to follow,
+and once its program has exited its output is in the job's trace
+instead.
 .It Cm interface Ar name Cm up | down
 Bring a network interface up or down.
 .It Cm interface Ar name Cm add | remove Ar address

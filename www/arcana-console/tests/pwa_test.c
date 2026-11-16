@@ -10190,6 +10190,75 @@ ATF_TC_CLEANUP(pwa_ipsec_sa, tc)
 	browser_stop();
 }
 
+/*
+ * A job's program followed from its step in the trace: Follow output
+ * while it runs, what it wrote so far at once, the rest as it comes,
+ * the end said; Stop lets it go.
+ */
+static void
+part_follow(void)
+{
+	FILE	*fp;
+
+	host_open("lab");
+	ATF_REQUIRE((fp = fopen("chatty", "w")) != NULL);
+	fclose(fp);
+	click_when("button.tab[data-arg=services]", 10);
+	wait_js("document.querySelector('.svc[data-arg=sshd] button"
+	    "[data-value=restart]')", 20);
+	run("document.querySelector('.svc[data-arg=sshd] button"
+	    "[data-value=restart]').click()");
+	wait_js("document.querySelector('form[data-form=confirm]')", 5);
+	run("document.querySelector('form[data-form=confirm]')"
+	    ".requestSubmit()");
+	click_when("button[data-act=queue-run]", 5);
+	/* The program's step, picked while it runs. */
+	wait_js("[...document.querySelectorAll('.graph .node.k-exec')].some("
+	    "n => n.title.includes('fake-service'))", 30);
+	run("[...document.querySelectorAll('.graph .node.k-exec')].find(n => "
+	    "n.title.includes('fake-service')).click()");
+	click_when(".step-pane button[data-act=follow]", 10);
+	wait_js("(() => { const p = document.querySelector('.follow .out.live')"
+	    "; return p && p.textContent.includes('first'); })()", 20);
+	ATF_CHECK(js_true("!document.querySelector('.follow .out.live')"
+	    ".textContent.includes('second')"));
+	ATF_CHECK(js_true("Object.values(window.arcanaStreams).some(n => "
+	    "n.startsWith('out-'))"));
+	shot("follow-running");
+	/* The rest, then the end. */
+	ATF_REQUIRE((fp = fopen("go", "w")) != NULL);
+	fclose(fp);
+	wait_js("(() => { const f = document.querySelector('.follow'); return "
+	    "f && f.textContent.includes('second') && f.textContent.includes("
+	    "'has exited'); })()", 20);
+	shot("follow-done");
+	run("document.querySelector('.follow button[data-act=follow]')"
+	    ".click()");
+	wait_js("!document.querySelector('.follow') && !Object.values(window."
+	    "arcanaStreams).some(n => n.startsWith('out-'))", 10);
+	(void)unlink("chatty");
+	(void)unlink("go");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_follow);
+ATF_TC_HEAD(pwa_follow, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A job's program followed from its step in the trace: what it wrote so far, the rest as it comes, the end said, let go by Stop");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_follow, tc)
+{
+
+	prologue(tc, 1);
+	part_follow();
+}
+ATF_TC_CLEANUP(pwa_follow, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_address_job);
 ATF_TC_HEAD(pwa_address_job, tc)
 {
@@ -14097,6 +14166,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_routes);
 	ATF_TP_ADD_TC(tp, pwa_streams);
 	ATF_TP_ADD_TC(tp, pwa_page_stream);
+	ATF_TP_ADD_TC(tp, pwa_follow);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);
 	ATF_TP_ADD_TC(tp, pwa_nacm);

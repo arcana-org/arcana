@@ -2264,6 +2264,41 @@ jobs_get(struct work *w, uint64_t id, const struct arcana_jobs_step **vp,
 }
 
 /*
+ * The live copy of step step of job id, referenced; NULL and *whyp when
+ * it has none: no such job or step, not a program's, or one whose output
+ * is not kept.
+ */
+struct live *
+jobs_live(uint64_t id, int step, const char **whyp)
+{
+	struct qjob	*j;
+	struct live	*l;
+
+	l = NULL;
+	*whyp = "no such job: it may have been forgotten (the last 64 are "
+	    "kept)";
+	pthread_mutex_lock(&jobs_lock);
+	TAILQ_FOREACH(j, &jobs, link) {
+		if (j->id != id)
+			continue;
+		pthread_mutex_lock(&j->w.lock);
+		if (step >= j->w.nsteps)
+			*whyp = "the job has no such step (yet)";
+		else if (j->w.steps[step].kind != STEP_EXEC)
+			*whyp = "the step runs no program";
+		else if ((l = j->w.steps[step].live) == NULL)
+			*whyp = "the step's output is not kept (keys in it), "
+			    "or its program was not started";
+		else
+			live_ref(l);
+		pthread_mutex_unlock(&j->w.lock);
+		break;
+	}
+	pthread_mutex_unlock(&jobs_lock);
+	return (l);
+}
+
+/*
  * Take a queued job out of the queue; a safe change waiting to be
  * confirmed is undone now, as it would be when its timer runs out.
  * NULL and *errp if neither can be: a job at work is left to finish,

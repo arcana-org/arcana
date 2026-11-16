@@ -25,6 +25,7 @@ struct app app = {
 	.sel = -1,
 	.trace_op = -1,
 	.trace_step = -1,
+	.follow = { .step = -1 },
 	.raw_op = -1,
 	.net = { .sort = -1 },
 };
@@ -2030,8 +2031,17 @@ dispatch(const char *act, const char *arg, const char *value)
 	} else if (strcmp(act, "trace") == 0) {
 		app.trace_op = atoi(arg);
 		app.trace_step = -1;
+		sse_follow(NULL, 0, -1);
 		app.dock_open = true;
 		op_trace_fetch(op_find(app.trace_op));
+	} else if (strcmp(act, "follow") == 0) {
+		struct op *o;
+
+		if ((o = op_find(app.trace_op)) != NULL && atoi(arg) >= 0)
+			sse_follow(o->sid, o->job > 0 ? o->job : o->watched,
+			    atoi(arg));
+		else
+			sse_follow(NULL, 0, -1);
 	} else if (strcmp(act, "schema") == 0) {
 		app.trace_schema = !app.trace_schema;
 	} else if (strcmp(act, "op-retry") == 0) {

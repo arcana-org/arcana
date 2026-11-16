@@ -161,6 +161,54 @@ step_details(struct html *h, const ucl_object_t *s)
 	h_raw(h, "</dl></div>");
 }
 
+/*
+ * A job's program that still runs: Follow output, or what it has
+ * written so far when it is the one followed (sse.c), newest last.
+ */
+static void
+follow_pane(struct html *h, const struct op *o, const ucl_object_t *s)
+{
+	long long	 job;
+	int		 step;
+	bool		 running, this;
+
+	job = o->job > 0 ? o->job : o->watched;
+	if (job <= 0 || o->sid[0] == '\0' || jget(s, "host_step") == NULL)
+		return;
+	step = (int)jint(s, "host_step", -1);
+	running = jstr(s, "status") != NULL && strcmp(jstr(s, "status"),
+	    "incomplete") == 0;
+	this = app.follow.step == step && app.follow.job == job &&
+	    strcmp(app.follow.sid, o->sid) == 0;
+	if (!this) {
+		if (running)
+			h_fmt(h, "<button class=\"small\" data-act=\"follow\" "
+			    "data-arg=\"%d\" title=\"What the program writes, "
+			    "as it writes it\">Follow output</button>", step);
+		return;
+	}
+	h_raw(h, "<div class=\"follow\"><header>");
+	if (app.follow.err[0] != '\0') {
+		h_raw(h, "<span class=\"err\">");
+		h_txt(h, app.follow.err);
+		h_raw(h, "</span>");
+	} else if (app.follow.done)
+		h_raw(h, "<span class=\"dim\">The program has exited.</span>");
+	else
+		h_raw(h, "<span class=\"live-dot\"></span><span>Following"
+		    "</span>");
+	h_fmt(h, "<button class=\"ghost small\" data-act=\"follow\" "
+	    "data-arg=\"-1\">%s</button></header>", app.follow.done ||
+	    app.follow.err[0] != '\0' ? "Close" : "Stop");
+	/* Its last lines at the bottom, kept there as they grow. */
+	h_raw(h, "<div class=\"out live\"><pre>");
+	if (app.follow.len > 0)
+		h_txt(h, app.follow.text);
+	else if (!app.follow.up)
+		h_raw(h, "<span class=\"dim\">Asking the host…</span>");
+	h_raw(h, "</pre></div></div>");
+}
+
 /* Every program the operation ran, as a terminal would show it. */
 static void
 raw(struct html *h, const struct op *o)
@@ -410,6 +458,7 @@ view_trace(struct html *h, const struct op *o)
 			step_details(h, s);
 			if (jstr(s, "kind") != NULL && strcmp(jstr(s, "kind"),
 			    "exec") == 0) {
+				follow_pane(h, o, s);
 				lines(h, jstr(s, "output"), "out preview", 12);
 				lines(h, jstr(s, "error_output"),
 				    "out err preview", 12);

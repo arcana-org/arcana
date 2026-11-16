@@ -763,7 +763,9 @@ job_finished(struct op *op, bool ok, const char *err)
 		s->services_loading = false;
 		if (s->services != NULL)
 			refresh_services(s, false);
-		if (strcmp(app.service, op->target) == 0)
+		/* The service open, if it is the job's: none open is none. */
+		if (app.service[0] != '\0' && strcmp(app.service,
+		    op->target) == 0)
 			service_config(op->target);
 		break;
 	case JOB_SVC_OFF:
@@ -929,6 +931,9 @@ steps_trace(const ucl_object_t *steps)
 		r = jmap(e, map);
 		ucl_object_replace_key(r, ucl_object_fromint(jint(e, "id", 0) +
 		    3), "id", 0, false);
+		/* Its number on the host, which a follow names. */
+		ucl_object_insert_key(r, ucl_object_fromint(jint(e, "id", 0)),
+		    "host_step", 0, false);
 		ucl_object_replace_key(r, ucl_object_fromint(jint(e, "parent",
 		    -1) < 0 ? 2 : jint(e, "parent", 0) + 3), "parent", 0, false);
 		if (jget(e, "output") != NULL)

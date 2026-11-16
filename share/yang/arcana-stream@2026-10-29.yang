@@ -27,7 +27,11 @@ module arcana-stream {
      pool's own; suricata-pcap-put (3), a capture for a Suricata
      instance to replay, the names instance=, file=, offset= and
      last=1; suricata-pcap-get (4), a file of what an instance logged
-     for its alerts, the names instance= and file=.  Each opened by an
+     for its alerts, the names instance= and file=; exec-follow (5),
+     what a job's program writes, both outputs as they come, from its
+     start, the names job= and step= (its step in the job's trace),
+     the host half-closing it once the program has exited and all of
+     it went.  Each opened by an
      open structure, accepted by an opened, each data message a chunk.
      The zfs-send, zfs-receive, suricata-pcap-put and suricata-pcap-get
      operations of arcana.yaml, moved off the interim family (Y-3).";

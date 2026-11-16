@@ -258,6 +258,14 @@ pcap_get_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
 #define	STREAM_OPF	(CBL_OPF_STREAM | CBL_OPF_AUTH | CBL_OPF_NACM | \
 	CBL_OPF_DENY)
 
+static int
+exec_follow_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
+    void *arg __unused)
+{
+
+	return (stream_opened(req, msg, s, exec_follow_open));
+}
+
 static const struct cbl_op stream_ops[] = {
 	{ .cmd = YS_ZFS_SEND, .flags = STREAM_OPF, .name = "zfs-send",
 	    .stream_open = zfs_send_sopen },
@@ -267,6 +275,11 @@ static const struct cbl_op stream_ops[] = {
 	    .name = "suricata-pcap-put", .stream_open = pcap_put_sopen },
 	{ .cmd = YS_PCAP_GET, .flags = STREAM_OPF,
 	    .name = "suricata-pcap-get", .stream_open = pcap_get_sopen },
+	/* A job's program as it runs: read as its trace is, by every
+	 * role, NACM's default unless a rule says. */
+	{ .cmd = YS_EXEC_FOLLOW, .flags = CBL_OPF_STREAM | CBL_OPF_AUTH |
+	    CBL_OPF_NACM, .name = "exec-follow",
+	    .stream_open = exec_follow_sopen },
 };
 
 static const struct cbl_family_def stream_def = {

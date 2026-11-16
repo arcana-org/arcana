@@ -17,7 +17,7 @@ SRCS+=		bird.c birdwatch.c ipsec.c plugins.c sdbird.c sddhcp.c sddns.c sdproxy.c
 		ybird.c ybuilder.c
 # Ira: action and execution.
 SRCS+=		build.c exec.c jail.c jails.c jailwatch.c jobs.c lifecycle.c jailmake.c jailallow.c packages.c pkgbase.c \
-		services.c update.c zprog.c yflat.c ystream.c yjailedit.c yjails.c yjf.c yjobs.c \
+		services.c update.c zprog.c yflat.c ystream.c live.c yjailedit.c yjails.c yjf.c yjobs.c \
 		ypackages.c yservices.c ysvcedit.c
 # Acedia: storage.  Avaritia: resources.  Gula: observation.
 SRCS+=		record.c \

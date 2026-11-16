@@ -22181,6 +22181,97 @@ ATF_TC_BODY(page_stream_reach, tc)
 	free(buf);
 }
 
+CONSOLE_TC(page_stream_follow, "A page's stream follows a job's program "
+    "while it runs (out-<host>.<job>.<step>): what it wrote at once, the "
+    "rest as it comes, ended when it exits; refused once it has, and a "
+    "name that is no source")
+ATF_TC_BODY(page_stream_follow, tc)
+{
+	struct authn	 a;
+	struct resp	 r;
+	char		 id[16], jid[32], jpath[256], pid[40], path[96];
+	char		 body[160], name[64], want[80], key[80], *buf;
+	const char	*k, *l;
+	size_t		 len = 0, cap = 1 << 20;
+	int		 s, i, j, step = -1;
+
+	ATF_REQUIRE((buf = calloc(1, cap)) != NULL);
+	start(tc, 0, NULL);
+	enrol(&a);
+	watch_host(id, sizeof(id));
+	put("chatty", "");
+	r1_submit(id, "{\"service-action\":{\"service\":\"sshd\",\"action\":"
+	    "\"restart\"}}", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE_MSG(jstr(&r, "arcana-jobs:output.id.0") != NULL, "%s",
+	    r.body);
+	snprintf(jid, sizeof(jid), "%s", jstr(&r, "arcana-jobs:output.id.0"));
+	resp_free(&r);
+	/* The step of the program, by its label, once it runs. */
+	snprintf(jpath, sizeof(jpath), FLEET "%s/arcana-jobs:jobs/job=%s/read",
+	    id, jid);
+	for (i = 0; i < 100 && step < 0; i++) {
+		http("POST", jpath, NULL, &r);
+		EXPECT(&r, 200);
+		for (j = 0; step < 0; j++) {
+			snprintf(key, sizeof(key), "arcana-jobs:output.step.%d."
+			    "kind", j);
+			if ((k = jstr(&r, key)) == NULL)
+				break;
+			snprintf(key, sizeof(key), "arcana-jobs:output.step.%d."
+			    "label", j);
+			l = jstr(&r, key);
+			snprintf(key, sizeof(key), "arcana-jobs:output.step.%d."
+			    "id", j);
+			if (strcmp(k, "exec") == 0 && l != NULL &&
+			    strstr(l, "fake-service") != NULL &&
+			    jstr(&r, key) != NULL)
+				step = atoi(jstr(&r, key));
+		}
+		resp_free(&r);
+		if (step < 0)
+			usleep(50000);
+	}
+	ATF_REQUIRE_MSG(step >= 0, "no program step");
+	s = ps_open("", NULL, buf, &len, cap);
+	ps_id(buf, pid, sizeof(pid));
+	snprintf(path, sizeof(path), "/restconf/streams/page/%s", pid);
+	snprintf(name, sizeof(name), "out-%s.%s.%d", id, jid, step);
+	snprintf(body, sizeof(body), "{\"add\":\"%s\"}", name);
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(want, sizeof(want), "%s.open", name);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, NULL, 10), "%s", buf);
+	/* What it wrote so far, while it runs; nothing more yet. */
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, name, "\"text\":\"first\\n\"",
+	    10), "%s", buf);
+	ATF_CHECK_MSG(!ps_event(buf, name, "second"), "%s", buf);
+	/* The rest, standard error too, then the end. */
+	put("go", "");
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, name, "second", 10), "%s",
+	    buf);
+	snprintf(want, sizeof(want), "%s.end", name);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, "\"done\":true", 10),
+	    "%s", buf);
+	/* Exited: asked again, it ends saying so. */
+	http("POST", path, body, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	ATF_CHECK_MSG(ps_wait(s, buf, &len, cap, want, "has exited", 10),
+	    "%s", buf);
+	/* Not a source's name. */
+	http("POST", path, "{\"add\":\"out-xyz.1.1\"}", &r);
+	EXPECT(&r, 400);
+	resp_free(&r);
+	snprintf(body, sizeof(body), "{\"add\":\"out-%s.0.1\"}", id);
+	http("POST", path, body, &r);
+	EXPECT(&r, 400);
+	resp_free(&r);
+	close(s);
+	free(buf);
+}
+
 CONSOLE_TC(page_stream_freed, "A page's stream is one thread; a source given "
     "up, and the stream ended, leave no thread or descriptor behind")
 ATF_TC_BODY(page_stream_freed, tc)
@@ -27246,6 +27337,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, page_stream_owner);
 	ATF_TP_ADD_TC(tp, page_stream_cap);
 	ATF_TP_ADD_TC(tp, page_stream_reach);
+	ATF_TP_ADD_TC(tp, page_stream_follow);
 	ATF_TP_ADD_TC(tp, page_stream_freed);
 	ATF_TP_ADD_TC(tp, workflows_arcana);
 	ATF_TP_ADD_TC(tp, feeds);

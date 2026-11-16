@@ -32,7 +32,10 @@ void
 work_free(struct work *w)
 {
 	size_t	i;
+	int	k;
 
+	for (k = 0; k < w->nsteps; k++)
+		live_rele(w->steps[k].live);
 	for (i = 0; i < w->nptrs; i++)
 		free(w->ptrs[i]);
 	free(w->ptrs);
