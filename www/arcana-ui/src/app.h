@@ -638,6 +638,8 @@ struct app {
 	bool		 acct_open;	/* the account button's menu */
 	char		 theme[96];	/* "" for the default; a plugin's "p:..." */
 	ucl_object_t	*settings;	/* settings, while its dialog is open */
+	ucl_object_t	*alarm_types;	/* the hosts' alarm inventories:
+					 * {type: label} (actions.c) */
 	ucl_object_t	*push;		/* push: the devices that are told */
 	ucl_object_t	*tokens;	/* tokens: the API tokens */
 	char		 token_name[65];	/* the name typed for a new one */

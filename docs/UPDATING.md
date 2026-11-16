@@ -93,6 +93,14 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Every alarm type a row of the alerts' cases, console 0.442.2
+
+- Settings, Notifications: the mail's and Telegram's cases have a row
+  for each type a host's alarm inventory (`ietf-alarms:alarms/
+  alarm-inventory`, RFC 8632) has that the page does not name, labelled
+  with the host's description; before, a newer agent's type had no row
+  until a case was kept for it (the agent's `alarm-list-full` had none).
+
 ### A job's program followed while it runs, agent 0.291.0, console 0.442.0
 
 - **Follow output**: a job's program step, picked in its trace while it

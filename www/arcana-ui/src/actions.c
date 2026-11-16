@@ -4665,11 +4665,23 @@ case_row(ucl_object_t *a, const char *type, const char *label,
 	ucl_array_append(a, o);
 }
 
+/* Is type one of known_cases? */
+static bool
+case_known(const char *type)
+{
+
+	for (size_t i = 0; i < nitems(known_cases); i++)
+		if (strcmp(known_cases[i].type, type) == 0)
+			return (true);
+	return (false);
+}
+
 /*
  * Setting key's cases (mail_case, telegram_case) as its table has
- * them: each case known, then each kept the page does not know (a newer
- * agent's), {type, label, include "yes" or "no", cooldown "" for the
- * one for all}.  To be freed.
+ * them: each case known, then each type a host's alarm inventory has
+ * that the page does not know (a newer agent's), by its description,
+ * then each kept that neither has, {type, label, include "yes" or "no",
+ * cooldown "" for the one for all}.  To be freed.
  */
 ucl_object_t *
 alert_cases(const char *key)
@@ -4689,16 +4701,58 @@ alert_cases(const char *key)
 	for (i = 0; i < nitems(known_cases); i++)
 		case_row(a, known_cases[i].type, known_cases[i].label, kept);
 	it = NULL;
+	while ((c = ucl_object_iterate(app.alarm_types, &it, true)) != NULL)
+		if (!case_known(ucl_object_key(c)))
+			case_row(a, ucl_object_key(c), ucl_object_tostring(c),
+			    kept);
+	it = NULL;
 	while ((c = ucl_object_iterate(kept, &it, true)) != NULL) {
-		if (jstr(c, "type") == NULL)
+		if (jstr(c, "type") == NULL || case_known(jstr(c, "type")) ||
+		    ucl_object_lookup(app.alarm_types, jstr(c, "type")) !=
+		    NULL)
 			continue;
-		for (i = 0; i < nitems(known_cases); i++)
-			if (strcmp(known_cases[i].type, jstr(c, "type")) == 0)
-				break;
-		if (i == nitems(known_cases))
-			case_row(a, jstr(c, "type"), jstr(c, "type"), kept);
+		case_row(a, jstr(c, "type"), jstr(c, "type"), kept);
 	}
 	return (a);
+}
+
+/*
+ * A host's alarm inventory (RFC 8632): each type it may raise, by its
+ * description, kept for the alerts' cases, a type the page does not
+ * name among them.
+ */
+static void
+inventory_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	const ucl_object_t	*t;
+	ucl_object_iter_t	 it = NULL;
+	const char		*id, *c, *d;
+	char			 label[200];
+
+	(void)err;
+	(void)arg;
+	if (status != 200)
+		return;
+	if (app.alarm_types == NULL)
+		app.alarm_types = ucl_object_typed_new(UCL_OBJECT);
+	/* rc_get() gives the node's inside: its list. */
+	while ((t = ucl_object_iterate(jget(o, "alarm-type"), &it, true)) !=
+	    NULL) {
+		if ((id = jstr(t, "alarm-type-id")) == NULL)
+			continue;
+		if ((c = strchr(id, ':')) != NULL)
+			id = c + 1;
+		if (*id == '\0' || ucl_object_lookup(app.alarm_types, id) !=
+		    NULL)
+			continue;
+		d = jstr(t, "description");
+		snprintf(label, sizeof(label), "%s", d != NULL && *d != '\0' ?
+		    d : id);
+		if (label[0] >= 'a' && label[0] <= 'z')
+			label[0] = (char)(label[0] - 'a' + 'A');
+		ucl_object_insert_key(app.alarm_types,
+		    ucl_object_fromstring(label), id, 0, true);
+	}
 }
 
 void
@@ -4712,6 +4766,10 @@ load_settings(void)
 	if (app.by_token)
 		return;
 	rc_get(rc_c(url, sizeof(url), "settings"), NULL, settings_cb, NULL);
+	for (int i = 0; i < app.nservers; i++)
+		rc_get(rc_h(url, sizeof(url), app.servers[i].id,
+		    "ietf-alarms:alarms/alarm-inventory"), NULL, inventory_cb,
+		    NULL);
 }
 
 /* The settings merged: read again, said saved. */

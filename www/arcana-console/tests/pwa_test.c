@@ -9250,6 +9250,12 @@ ATF_TC_BODY(pwa_notify_cases, tc)
 	    "tr[data-case=bfd]').textContent.includes('BFD session') && "
 	    "[...document.querySelectorAll('table.mailcases input[type="
 	    "checkbox]')].every(c => c.checked)"));
+	/* A type the host's alarm inventory has and the page does not
+	 * name: a row of its own, by the host's description. */
+	wait_js("(() => { const r = document.querySelector('table.mailcases "
+	    "tr[data-case=alarm-list-full]'); return r && r.textContent."
+	    "includes('Every place of the alarm list is an open alarm'); })()",
+	    10);
 	/* Filtered: the neighbour's row alone; sorted by the type. */
 	run("const i = document.querySelector('input[data-input=case-filter]"
 	    "[data-arg=mail]'); i.value = 'OSPF'; i.dispatchEvent(new Event("
@@ -9264,8 +9270,9 @@ ATF_TC_BODY(pwa_notify_cases, tc)
 	    "> 1", 10);
 	run("document.querySelector('table.mailcases th[data-act=t-sort]"
 	    "[data-value=\"1\"]').click()");
+	/* alarm-list-full first: a type the inventory alone names. */
 	wait_js("document.querySelector('table.mailcases tbody tr')."
-	    "dataset.case === 'bfd'", 10);
+	    "dataset.case === 'alarm-list-full'", 10);
 	run("document.querySelector('fieldset.cases').scrollIntoView()");
 	shot("0c-notify-cases");
 	/* The neighbour left out of the mail, the limits' cool-down five
