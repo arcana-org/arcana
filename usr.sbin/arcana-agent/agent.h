@@ -143,6 +143,7 @@ struct opts {
 	const char	*speederv2_log;	/* where syslogd(8) writes its lines */
 	const char	*log_dir;	/* where syslogd(8) writes */
 	const char	*history_conf;	/* how the host is sampled */
+	const char	*archive_dir;	/* --archive: the samples' long run */
 	const char	*tools_dir;	/* where programs without an option are */
 	const char	*helper_bin;	/* this program, run again with -Q */
 	bool		 helper_self;	/* it is this program: the host's own is read here */
@@ -924,6 +925,66 @@ const char	*kmsg_find(const char *, size_t, const char *, size_t, size_t,
 		    bool);
 void		 history_save(void);
 void		 history_look(void);
+/* gula/archive.c: the long run of the samples, on the disk, by class
+ * (PLAN-SDN-YANG 5.6.3). */
+enum { ARC_HOST, ARC_INTERFACE, ARC_DISK, ARC_JAIL, ARC_RELAY, ARC_PROBE,
+    ARC_CLASSES };
+#define	ARC_COLS_MAX	11		/* figures of a class's series */
+#define	ARC_STEP	60		/* s a point stands for, unless set */
+#define	ARC_STEP_MIN	10
+#define	ARC_STEP_MAX	3600
+#define	ARC_KEEP_MAX	3660		/* days */
+#define	ARC_BUDGET	128		/* MiB, unless set */
+#define	ARC_BUDGET_MIN	1
+#define	ARC_BUDGET_MAX	1048576
+/* Its settings: each class's step and retention, 0 its default. */
+struct arc_conf {
+	bool		 on;
+	uint32_t	 budget;		/* MiB */
+	uint16_t	 step[ARC_CLASSES];
+	uint16_t	 keep[ARC_CLASSES];	/* days */
+};
+struct arc_state {
+	bool		 ok;			/* its directory there */
+	uint64_t	 bytes, budget;
+	struct {
+		uint64_t	 bytes;
+		unsigned int	 files, series, step, keep;
+		long		 oldest;	/* day since the epoch, -1 */
+		bool		 full;
+	}		 c[ARC_CLASSES];
+};
+/* What a read gives: each series' points, oldest first, each ncols
+ * integers (the figure times its field's scale; -1 none). */
+struct arc_series {
+	char		*name;
+	size_t		 npoints;
+	int64_t		*t;
+	int64_t		*v;
+};
+struct arc_read {
+	int			 c;
+	size_t			 ncols;
+	const char *const	*fields;
+	const uint32_t		*scale;
+	uint32_t		 step;
+	struct arc_series	*s;
+	size_t			 ns;
+};
+void		 archive_start(void);
+void		 archive_add(int, const char *, time_t, const double *, size_t);
+void		 archive_sync(bool);
+bool		 archive_conf_line(const char *);
+void		 archive_conf_write(FILE *);
+void		 archive_conf_get(struct arc_conf *);
+const char	*archive_conf_set(const struct arc_conf *);
+void		 archive_state(struct arc_state *);
+const char	*archive_class_name(int);
+int		 archive_class(const char *);
+unsigned int	 archive_default_keep(int);
+int		 archive_read(int, const char *, time_t, time_t, unsigned int,
+		    struct arc_read *, const char **);
+void		 archive_read_free(struct arc_read *);
 /* gula/probe*.c: the tunnels measured, STAMP to Arcana's far ends, ICMP echo
  * to the others, again and again. */
 enum { PROBE_NONE = -1, PROBE_UNKNOWN, PROBE_UP, PROBE_DOWN, PROBE_ENDED,

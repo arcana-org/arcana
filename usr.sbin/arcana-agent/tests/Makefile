@@ -158,10 +158,18 @@ LDADD.faults+=	${CBLINK_LIBS} ${UCL_LIBS} -lpthread
 # hist: history.c's looks over interfaces that come and go (its places
 # given back, its totals of every one).
 PROGS+=		hist
-SRCS.hist=	hist_test.c history.c
+SRCS.hist=	hist_test.c history.c archive.c
 CFLAGS.hist_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
 CFLAGS.history.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
-LDADD.hist+=	${CBLINK_LIBS} -ldevstat -ljail -lpthread
+CFLAGS.archive.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.hist+=	${CBLINK_LIBS} -ldevstat -ljail -lpthread -lz -lm
+# arch: archive.c alone, the clock the test's: a week of samples of
+# every class at the sampler's widest, against the budget; what is read
+# back; a file cut short at its end; retention and the budget.
+PROGS+=		arch
+SRCS.arch=	arch_test.c archive.c
+CFLAGS.arch_test.c+=	-I${.CURDIR}/.. -I${.OBJDIR}/.. -I${.CURDIR}/../../../lib/libvarconf ${UCL_CFLAGS}
+LDADD.arch+=	${CBLINK_LIBS} -lz -lm -lpthread
 # echoid: gula/probe_echo.c alone: an echo reply told to its target by
 # its id, to its probe by its sequence.
 PROGS+=		echoid

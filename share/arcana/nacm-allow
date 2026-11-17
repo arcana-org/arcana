@@ -19,6 +19,7 @@ arcana-events:/events/read	the agent's own events after a number
 arcana-firewall:/firewall/firewall/trace	dtrace of ipfw's rule-matched for an address checked as one: the rule and the ports, no payload; a viewer's
 arcana-firewall:/kept-host/from-rc	the firewall script read and turned into kept rules, nothing written; a viewer's
 arcana-history:/history/read	the agent's own samples
+arcana-history:/history/read-archive	the agent's own samples kept on its disk, the points of a read bounded
 arcana-host:/host/read-certificates	the trusted certificates, public, parsed
 arcana-jail-files://arcj:jails/read-files	jail.conf(5)'s files, as a read of running has the jails, each secret masked below an operator
 arcana-jobs:/jobs/job/read	a job's trace, keys kept out of it: its argv, title and steps' details masked for every role

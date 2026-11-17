@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-history",
     "module-revision": "2026-10-15",
-    "sid-file-version": 5,
+    "sid-file-version": 6,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -559,6 +559,216 @@
         "namespace": "data",
         "identifier": "/arcana-history:history/sampling/hold",
         "sid": "80006"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive",
+        "sid": "80007"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/budget",
+        "sid": "80008"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/class",
+        "sid": "80009"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/class/name",
+        "sid": "80010"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/class/retention",
+        "sid": "80011"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/class/step",
+        "sid": "80012"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/archive/enabled",
+        "sid": "80013"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive",
+        "sid": "80014"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input",
+        "sid": "80015"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input/class",
+        "sid": "80016"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input/from",
+        "sid": "80017"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input/name",
+        "sid": "80018"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input/points",
+        "sid": "80019"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/input/to",
+        "sid": "80020"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output",
+        "sid": "80021"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/field",
+        "sid": "80022"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/scale",
+        "sid": "80023"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/series",
+        "sid": "80024"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/series/name",
+        "sid": "80025"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/series/point",
+        "sid": "80026"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/series/point/time",
+        "sid": "80027"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/series/point/value",
+        "sid": "80028"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read-archive/output/step",
+        "sid": "80029"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive",
+        "sid": "80030"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/budget",
+        "sid": "80031"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/class",
+        "sid": "80032"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/class/name",
+        "sid": "80033"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/class/retention",
+        "sid": "80034"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/class/step",
+        "sid": "80035"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/read/output/archive/enabled",
+        "sid": "80036"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive",
+        "sid": "80037"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/budget",
+        "sid": "80038"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/bytes",
+        "sid": "80039"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class",
+        "sid": "80040"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/bytes",
+        "sid": "80041"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/files",
+        "sid": "80042"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/full",
+        "sid": "80043"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/name",
+        "sid": "80044"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/oldest",
+        "sid": "80045"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/retention",
+        "sid": "80046"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/series",
+        "sid": "80047"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-history:history/state/archive/class/step",
+        "sid": "80048"
       }
     ]
   }

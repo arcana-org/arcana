@@ -10753,6 +10753,16 @@ ATF_TC_BODY(services, tc)
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(jstr(&r, "sample.0.time") == NULL, "%.600s", r.body);
 	resp_free(&r);
+	/* Its archive read through as any host's action (PLAN-SDN-YANG
+	 * 5.6.3): the fields and their scales, a point a step. */
+	r3_act(id, "/arcana-history:history/read-archive", "\"class\":"
+	    "\"host\",\"points\":10000", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "step") != NULL && strcmp(jstr(&r, "step"),
+	    "60") == 0, "%.600s", r.body);
+	ATF_CHECK_STREQ("cpu", jstr(&r, "field.0"));
+	ATF_CHECK_STREQ("10", jstr(&r, "scale.0"));
+	resp_free(&r);
 	/* What happened there: numbered, to be asked for from a number. */
 	r3_act(id, "/arcana-events:events/read", NULL, &r);
 	EXPECT(&r, 200);

@@ -140,7 +140,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
-    OPT_BMP_PORT };
+    OPT_BMP_PORT, OPT_ARCHIVE };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -170,6 +170,9 @@ static const struct option longopts[] = {
 	/* The port of FIB 0's BMP station (gula/bmp.c), FIB N's this plus
 	 * N: a test's own. */
 	{ "bmp-port", required_argument, NULL, OPT_BMP_PORT },
+	/* Where the samples' long run is kept (gula/archive.c): a test's
+	 * own. */
+	{ "archive", required_argument, NULL, OPT_ARCHIVE },
 	/* This host's clock as STAMP tells it, for one ntp_gettime(2)
 	 * does not know is synchronised: source[:error]. */
 	{ "stamp-clock", required_argument, NULL, OPT_STAMP_CLOCK },
@@ -242,7 +245,7 @@ usage(void)
 	    "                 [--exports file] [--ctl-conf file] [--hast-conf file]\n"
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
-	    "                 [--bmp-port port]\n"
+	    "                 [--bmp-port port] [--archive directory]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
@@ -315,6 +318,7 @@ stopper(void *arg __unused)
 		;
 	logmsg(LOG_NOTICE, "signal %d, stopping", sig);
 	history_save();
+	archive_sync(true);
 	faults_save();
 	changes_stop(true);
 	jobs_wake();
@@ -521,6 +525,12 @@ main(int argc, char *argv[])
 			    &errstr);
 			if (errstr != NULL)
 				errx(1, "--routes-cache %s: %s", optarg, errstr);
+			break;
+		case OPT_ARCHIVE:
+			if (optarg[0] != '/')
+				errx(1, "--archive %s: not an absolute path",
+				    optarg);
+			opts.archive_dir = optarg;
 			break;
 		case OPT_BMP_PORT:
 			opts.bmp_port = (int)strtonum(optarg, 1, 65535, &errstr);

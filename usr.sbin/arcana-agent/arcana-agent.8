@@ -71,6 +71,7 @@
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -stamp-port Ar port
 .Op Fl -bmp-port Ar port
+.Op Fl -archive Ar directory
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
@@ -802,6 +803,29 @@ The TCP port of FIB 0's BGP Monitoring Protocol (RFC 7854) station, a
 FIB's this plus its number: an SD-WAN service that monitors its routes
 has its BIRD instances send BMP to 127.0.0.1 there, and the agent keeps
 their peers and updates for the console; default 1790.
+.It Fl -archive Ar directory
+Where the archive is kept, the long run of the samples on the disk:
+the host's figures, each interface's, disk's, jail's and FEC relay's,
+and each probe target's, a file a class a day (UTC),
+.Pa class/YYYYMMDD.arc .
+A point stands for each class's step (60 seconds unless set), the
+samples within it merged; each class's days are kept for its
+retention (30 of the host's, 7 of the others unless set) and the whole
+within its budget (128 MiB unless set), the oldest day of any class
+going first.
+The settings are kept in
+.Ar history.conf
+.Pq Cm archive= , budget= , class= Ns Ar name : Ns Ar step : Ns Ar retention
+and are arcana-history's archive; arcana-history's read-archive action
+reads the points.
+A record cut short at a file's end (a power lost) is cut off at the
+next start; a file that is not one is put aside as
+.Pa .bad .
+Default:
+.Pa archive
+beside
+.Ar history.conf ,
+.Pa /usr/local/etc/arcana/archive .
 .It Fl -stamp-clock Ar source Ns Op : Ns Ar error
 This host's clock as the STAMP probes tell it, for one that
 .Xr ntp_gettime 2

@@ -3734,6 +3734,93 @@ whose first part is served.
   be there before its instance runs.
 - 5.6.3 C: a compact time-series store with retention per class;
   check: a week of samples on the VM's disk budget.
+  Design (2026-11-17): the archive is the agent's, beside the history
+  it already keeps (gula/archive.c, fed by history.c's sampler and the
+  prober's eval intervals), and the console reads it through the
+  agent's YANG action as it reads the rest (RESTCONF passes it through
+  as any host's action, a viewer's by its read- name): the samples are
+  taken on the host, so a console that is down or a host behind NAT
+  loses none, and nothing of a host's figures crosses the wire but
+  what is asked for.  The history in memory stays what it is (the last
+  hour, thinned), the archive the long run.
+  Classes, each its own series: host (one series: CPU, load, memory,
+  swap, the totals in, out, read and written), interface, disk, jail,
+  relay (a series each, as the sampler tells them apart) and probe (a
+  series a target, by its name id[@jail][/class]: delay, IPDV, loss,
+  least, most, loss and delay each way, sent and received).  Each
+  class has a step, the seconds a point stands for (60 unless set,
+  10 to 3600), the samples within one merged (the mean of each figure,
+  the least of the least, the most of the most, the sum of sent and
+  received; a figure not told, -1, left out of the mean), and a
+  retention in days (host 30, the others 7 unless set, 1 to 3660); and
+  the whole archive a budget, 128 MiB unless set: over it, the oldest
+  day of any class goes first, and a class whose day alone is over it
+  stops until the next (said in the log and in its state).  The VM's
+  disk budget is that default, about 1 % of the arcana-lab VM's 12 GB
+  disk.  The settings are history.conf's (archive=, budget=,
+  class=name:step:retention) and arcana-history's archive container;
+  the directory is archive beside history.conf, as the agent's other
+  state is (the samples, the probes' targets), unless --archive names
+  another.
+  On disk: a file a class a UTC day, <class>/YYYYMMDD.arc, so that
+  retention and the budget unlink whole files; a magic, then records,
+  each its length (a varint), its payload and the payload's CRC-32
+  (zlib's, which the agent links already).  A series record names a
+  series once a file (its number, its name); a block record is one
+  bucket of the class: its time (seconds into the day), then each
+  series that has a point, its number and each figure as an integer
+  (the figure times the field's scale: CPU in tenths, load in
+  hundredths, delays in microseconds, loss in ten-thousandths, bytes as
+  they are), zigzag varint of its difference from the series' point
+  before in the file.  A file reads alone, from its start.  Crash
+  safety: appended by write(2) a record whole, fsync(2) when the
+  sampler writes its samples (every five minutes) and at the agent's
+  stop, when the buckets under way are written too; at the start
+  today's file is read through, and a record cut short or whose CRC is
+  wrong (what a power lost leaves at the end) is cut off there; a file
+  whose magic is wrong is put aside (.bad).  A power lost loses at most
+  the minutes since the last fsync.
+  The read, arcana-history's read-archive action: a class, a series or
+  all of the class, from and to (the last day unless said), and the
+  most points a series is given (1000 unless said, at most 10000): the
+  class's points merged into buckets of a multiple of its step when
+  there are more, as they were merged when written; the fields and
+  each one's scale, then each series' points, oldest first.  Its state
+  (history's state, archive): each class's bytes, files and oldest
+  day, the whole's bytes and budget.
+  Subtasks: 5.6.3a the archive, its settings and the read (agent and
+  YANG); 5.6.3b the page's long-run view (a host's charts over a day or
+  a week, a target's), once the read is there.
+  5.6.3a done (gula/archive.c, gula/yarchive.c; the agent and
+  arcana-history, 42 SIDs in its second range).  A week measured: the arch
+  harness feeds a week up to now of every class at the sampler's
+  widest (the host, 16 interfaces, disks, jails and relays every 5 s,
+  256 probe targets every 10 s, each figure a random walk) and the
+  files come to some 52 MB, 40 % of the 128 MiB budget: 0.3 MB host,
+  1.2 to 1.3 MB each device class, 46.6 MB the probes (some 18 bytes a
+  target's point of eleven figures, framing and CRC included).  What
+  is kept does not grow with how often samples come, only with the
+  step and the series.  Checked: agent_test:archive_week (that week,
+  under half the budget; read back as at most 1000 points, a multiple
+  of the step; one target at its finest; all 256 at 1000 points
+  refused as more than a read gives), agent_test:archive_files (the
+  merging, exact: means, the least, the most, counts summed, figures
+  not told left out; merged again on a read of fewer points; the last
+  record cut short and cut off at the next start; a file not one put
+  aside; retention per class, its default and set; over the budget the
+  oldest day of any class first), agent_test:archive_agent (the
+  agent's own: the host's and a STAMP target's samples, the buckets
+  under way written at its stop, read by read-archive after it starts
+  again; the settings in history.conf and as YANG, an edit committed
+  and written down; the state's bytes, files and oldest day),
+  console_test:services (read-archive through RESTCONF as any host's
+  action), and history_slots, yang_history, history_samples_bad and
+  faults_held still passing.  Not checked: a power lost for real (the
+  cut is made by truncate(1)), a day turning over while the agent runs
+  (the files a day are made by the harness's clock, the rollover in
+  flush() by no case with a real clock), the jail and relay classes
+  fed from a host that has them (the harness feeds them), and the page
+  (5.6.3b).
 - 5.7.1 D: the measurement chapter; TODO.
   The chapter done (the book's sdwan/measurement.md, 2026-11-17): what
   is measured, STAMP and its fallback to ICMP, the delay and loss each

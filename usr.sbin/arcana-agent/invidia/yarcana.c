@@ -2003,8 +2003,10 @@ arcana_history_history_edit(cbl_req *req, const struct arcana_history *before,
 	static const char *const kinds[] = { "net", "disk", "jail-cpu",
 	    "jail-mem" };
 	const struct arcana_history_history	*h;
+	struct arc_conf				 was;
 	struct json_rsp				 r;
 	struct work				 w;
+	const char				*e;
 	uint32_t				 lim[4];
 	uint32_t				 step, keep;
 	int					 hold, on;
@@ -2046,10 +2048,19 @@ arcana_history_history_edit(cbl_req *req, const struct arcana_history *before,
 		    i > 0 ? "," : "", kinds[ru->kind], ru->name, (uintmax_t)
 		    (ru->has_limit ? ru->limit : 0));
 	}
+	/* The archive's first, written down with the rest: the settings
+	 * before kept, in force again when they are not written. */
+	archive_conf_get(&was);
+	if ((e = yarchive_set(h != NULL ? h->archive : NULL)) != NULL) {
+		free(rl);
+		return (said(req, e));
+	}
 	work_init(&w);
 	memset(&r, 0, sizeof(r));
 	(void)do_history(&w, UINT64_MAX, true, step, keep, hold, on, lim, rl,
 	    &r);
+	if (!r.ok)
+		(void)archive_conf_set(&was);
 	rc = r.ok ? 0 : said(req, r.error);
 	work_free(&w);
 	free(rl);
@@ -2060,10 +2071,11 @@ int
 arcana_history_history_get(cbl_req *req, struct arcana_history *data,
     cbl_yarena *a)
 {
-	struct json_rsp			 r;
-	struct arcana_history_history	*o;
-	struct work			*w;
-	int				 error;
+	struct json_rsp				 r;
+	struct arcana_history_history		*o;
+	struct arcana_history_history_state	*st;
+	struct work				*w;
+	int					 error;
 
 	(void)req;
 	if ((w = ywork(a)) == NULL)
@@ -2076,6 +2088,17 @@ arcana_history_history_get(cbl_req *req, struct arcana_history *data,
 		return (ENOMEM);
 	if ((error = yhist_from_json(r.json, a, o)) != 0)
 		return (error);
+	/* And the archive's settings and what it holds. */
+	if ((o->archive = yarchive_conf(a)) == NULL || (st = cbl_yarena_alloc(
+	    a, sizeof(*st))) == NULL)
+		return (ENOMEM);
+	if (o->state != NULL)
+		*st = *o->state;
+	else
+		memset(st, 0, sizeof(*st));
+	if ((st->archive = yarchive_state(a)) == NULL)
+		return (ENOMEM);
+	o->state = st;
 	data->history = o;
 	return (0);
 }
@@ -2110,6 +2133,7 @@ arcana_history_history_read_action(cbl_req *req, const struct cbl_bytes *target,
 	out->limits = (const void *)o.limits;
 	out->rule.n = o.rule.n;
 	out->rule.v = (const void *)o.rule.v;
+	out->archive = (const void *)yarchive_conf(a);
 	if (o.state != NULL) {
 		const struct arcana_history_history_state *st = o.state;
 
@@ -2134,6 +2158,46 @@ arcana_history_history_read_action(cbl_req *req, const struct cbl_bytes *target,
 		out->sample.n = st->sample.n;
 		out->sample.v = st->sample.v;
 	}
+	return (0);
+}
+
+/*
+ * A class's points from the archive (gula/archive.c): from and to as
+ * given, else the day up to now; at most points a series, 1000 unless
+ * said.
+ */
+int
+arcana_history_history_read_archive_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_history_history_read_archive_input *in,
+    struct arcana_history_history_read_archive_output *out, cbl_yarena *a)
+{
+	const char	*why;
+	time_t		 from, to;
+	unsigned int	 points;
+	int		 error;
+
+	(void)target;
+	if (!in->has_class || (unsigned int)in->class >= ARC_CLASSES)
+		return (said(req, "a class is given: host, interface, disk, "
+		    "jail, relay or probe"));
+	to = time(NULL);
+	if (in->to != NULL && !ytime_parse(in->to, &to))
+		return (said(req, "to is no date-and-time"));
+	from = to - 86400;
+	if (in->from != NULL && !ytime_parse(in->from, &from))
+		return (said(req, "from is no date-and-time"));
+	if (from < 0 || to < from)
+		return (said(req, "from is after to"));
+	points = in->has_points ? in->points : 1000;
+	if (points < 1 || points > 10000)
+		return (said(req, "points is 1 to 10000"));
+	if (in->name != NULL && (in->name[0] == '\0' || strlen(in->name) >
+	    255))
+		return (said(req, "a series' name is 1 to 255 bytes"));
+	if ((error = yarchive_read((int)in->class, in->name, from, to, points,
+	    a, out, &why)) != 0)
+		return (error == ENOMEM ? ENOMEM : said(req, why));
 	return (0);
 }
 

@@ -566,6 +566,15 @@ int	yalarms_control_from_json(const char *json, cbl_yarena *a,
 /* arcana-history (gula/yhist.c): the history operation's JSON. */
 int	yhist_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_history_history *out);
+/* Its archive (gula/yarchive.c): the settings, the state, the read. */
+const struct arcana_history_history_archive *yarchive_conf(cbl_yarena *a);
+const struct arcana_history_history_state_archive *yarchive_state(
+	    cbl_yarena *a);
+const char *yarchive_set(const struct arcana_history_history_archive *h);
+int	yarchive_read(int c, const char *name, time_t from, time_t to,
+	    unsigned int points, cbl_yarena *a,
+	    struct arcana_history_history_read_archive_output *out,
+	    const char **why);
 
 /* arcana-events (gula/yev.c): the events operation's JSON, and one
  * event's (the event mcast) as the notification. */

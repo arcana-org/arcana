@@ -3175,6 +3175,208 @@ history_slots_body()
 	    atf_fail "the totals $rx, the placed ones' $placed: $(cat wide)"
 }
 
+atf_test_case archive_week
+archive_week_head()
+{
+	atf_set "descr" "a week of samples of every class at the sampler's" \
+	    "widest (16 interfaces, disks, jails and relays every 5 s, 256" \
+	    "probe targets every 10 s, each figure a random walk) within" \
+	    "the archive's default budget, 128 MiB; the week read back as" \
+	    "1000 points at most, each a multiple of the step (the arch" \
+	    "harness)"
+	atf_set "timeout" "600"
+}
+archive_week_body()
+{
+	local f="$(atf_get_srcdir)/arch" now n step total
+
+	atf_check -o save:week "$f" week "$(pwd)/a"
+	atf_check -o match:'^total [0-9]+ budget 134217728 fits$' \
+	    -o match:'^host [1-9][0-9]* bytes [0-9]+ files 1 series$' \
+	    -o match:'^interface [1-9][0-9]* bytes [0-9]+ files 16 series$' \
+	    -o match:'^probe [1-9][0-9]* bytes [0-9]+ files 256 series$' \
+	    cat week
+	# Under half the budget: room for what the guess leaves out.
+	total=$(sed -n 's/^total \([0-9]*\) .*/\1/p' week)
+	[ "$total" -lt 67108864 ] || atf_fail "a week is $total bytes"
+	now=$(date +%s)
+	atf_check -o save:host "$f" dump "$(pwd)/a" host - \
+	    $((now - 7 * 86400)) $now 1000
+	n=$(sed -n 's/^series host \([0-9]*\)$/\1/p' host)
+	step=$(sed -n 's/^step \([0-9]*\)$/\1/p' host)
+	[ "$n" -gt 900 ] && [ "$n" -le 1001 ] && [ $((step % 60)) -eq 0 ] ||
+	    atf_fail "$n points of $step s"
+	# Every class read: one series a probe target, at its finest.
+	atf_check -o match:'^series tunnel-7@edge7/af3 ' -o match:'^step 60$' \
+	    "$f" dump "$(pwd)/a" probe tunnel-7@edge7/af3 $((now - 3600)) \
+	    $now 1000
+	# All 256 targets at 1000 points each: more than a read gives.
+	atf_check -s exit:1 -o match:'^error more points than a read gives' \
+	    "$f" dump "$(pwd)/a" probe - $((now - 7 * 86400)) $now 1000
+}
+
+atf_test_case archive_files
+archive_files_head()
+{
+	atf_set "descr" "the archive's files: samples merged into a point a" \
+	    "step (means, the least, the most, the counts summed, a figure" \
+	    "not told left out); a record cut short at a file's end cut" \
+	    "off at the next start, the rest kept; a file not one put" \
+	    "aside; the days past a class's retention let go, and over the" \
+	    "budget the oldest day of any class first (the arch harness)"
+}
+archive_files_body()
+{
+	local f="$(atf_get_srcdir)/arch" now t0 day old
+
+	now=$(date +%s)
+	# On a multiple of 120 s, for the read of one point below.
+	t0=$((now - now % 120 - 600))
+	{
+		echo "host host $t0 10 1.5 100 0 5 5 0 0"
+		echo "host host $((t0 + 5)) 20 0.5 300 0 5 5 0 0"
+		echo "host host $((t0 + 60)) 30 1 100 0 5 5 0 0"
+		echo "probe t1 $t0 10 1 0.5 5 20 -1 -1 -1 -1 10 5"
+		echo "probe t1 $((t0 + 10)) 20 3 0 2 30 0.1 0 8 9 10 10"
+		echo "probe t1 $((t0 + 70)) 5 -1 1 -1 -1 -1 -1 -1 -1 10 0"
+	} > in
+	atf_check "$f" feed "$(pwd)/a" < in
+	# Each step's point, the integers kept: CPU in tenths, load in
+	# hundredths; delays in microseconds, loss in ten-thousandths.
+	cat > want <<EOF
+step 60
+series host 2
+$t0 150 100 200 0 5 5 0 0
+$((t0 + 60)) 300 100 100 0 5 5 0 0
+EOF
+	atf_check -o file:want "$f" dump "$(pwd)/a" host host $t0 \
+	    $((t0 + 119)) 1000
+	cat > want <<EOF
+step 60
+series t1 2
+$t0 15000 2000 2500 2000 30000 1000 0 8000 9000 20 15
+$((t0 + 60)) 5000 -1 10000 -1 -1 -1 -1 -1 -1 10 0
+EOF
+	atf_check -o file:want "$f" dump "$(pwd)/a" probe t1 $t0 \
+	    $((t0 + 119)) 1000
+	# Fewer points asked for: merged as when written.
+	atf_check -o match:"^$t0 225 100 150 0 5 5 0 0\$" -o match:'^step 120$' \
+	    "$f" dump "$(pwd)/a" host host $t0 $((t0 + 119)) 1
+	# The last record cut short, as a power lost leaves it: cut off at
+	# the next start, a new point after it.
+	day=$(date -u -r $((t0 + 60)) +%Y%m%d)
+	truncate -s -3 "a/host/$day.arc"
+	echo "host host $((t0 + 120)) 50 1 100 0 5 5 0 0" > in2
+	atf_check -e match:"host/$day.arc: [0-9]+ bytes at its end not whole, cut off" \
+	    "$f" feed "$(pwd)/a" < in2
+	cat > want <<EOF
+step 60
+series host 2
+$t0 150 100 200 0 5 5 0 0
+$((t0 + 120)) 500 100 100 0 5 5 0 0
+EOF
+	atf_check -o file:want "$f" dump "$(pwd)/a" host host $t0 \
+	    $((t0 + 179)) 1000
+	# A file that is not one: put aside, a new one begun.
+	echo "not an archive" > "a/host/$day.arc"
+	atf_check -e match:"is not one: put aside as .*host/$day.arc.bad" \
+	    "$f" feed "$(pwd)/a" < in2
+	test -f "a/host/$day.arc.bad" || atf_fail "not put aside"
+	atf_check -o match:"^series host 1\$" "$f" dump "$(pwd)/a" host
+	# Retention: host's 30 days, the others' 7, unless set.
+	for old in 6 20 40; do
+		d=$(date -u -r $((now - old * 86400)) +%Y%m%d)
+		cp "a/probe/$(date -u -r $t0 +%Y%m%d).arc" "a/probe/$d.arc"
+		cp "a/host/$day.arc" "a/host/$d.arc"
+	done
+	atf_check -o ignore "$f" state "$(pwd)/a"
+	d6=$(date -u -r $((now - 6 * 86400)) +%Y%m%d)
+	d20=$(date -u -r $((now - 20 * 86400)) +%Y%m%d)
+	d40=$(date -u -r $((now - 40 * 86400)) +%Y%m%d)
+	test -f a/probe/$d6.arc && ! test -f a/probe/$d20.arc &&
+	    ! test -f a/probe/$d40.arc || atf_fail "probe: $(ls a/probe)"
+	test -f a/host/$d20.arc && ! test -f a/host/$d40.arc ||
+	    atf_fail "host: $(ls a/host)"
+	# A class's own retention.
+	atf_check -o ignore "$f" -c class=host:0:10 state "$(pwd)/a"
+	! test -f a/host/$d20.arc || atf_fail "host kept 20 days back"
+	# Over the budget (1 MiB): the oldest days go first, whatever
+	# their class.
+	dd if=/dev/zero bs=1k count=700 2>/dev/null | tr '\0' 'x' > big
+	cp a/probe/$d6.arc a/probe/x && cat big >> a/probe/x
+	mv a/probe/x a/probe/$d6.arc
+	d5=$(date -u -r $((now - 5 * 86400)) +%Y%m%d)
+	cp a/probe/$d6.arc a/interface/$d5.arc
+	atf_check -o ignore -e match:"over its budget of 1 MiB: .*probe/$d6.arc let go" \
+	    "$f" -c budget=1 state "$(pwd)/a"
+	! test -f a/probe/$d6.arc && test -f a/interface/$d5.arc ||
+	    atf_fail "not the oldest first: $(ls a/*)"
+}
+
+atf_test_case archive_agent cleanup
+archive_agent_head()
+{
+	atf_set "descr" "the agent's archive (--archive): the host's," \
+	    "its interfaces' and a probe target's samples kept, the buckets" \
+	    "under way written at its stop and read after it starts again" \
+	    "by arcana-history's read-archive; its settings in history.conf" \
+	    "and as YANG, an edit's written down; what it holds in the" \
+	    "history's state; a read refused with why"
+}
+archive_agent_body()
+{
+	local P
+
+	P=$(jot -r 1 20000 59999)
+	echo '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"timeout":100,"down":2,"eval":200}]' \
+	    > sdwan-probes.json
+	printf 'step=1\nkeep=20\nhold=0\nclass=host:10:0\n' > history.conf
+	DAEMON_ARGS="--stamp-port $P --archive $(pwd)/arch" start_daemon
+	wait_match '"samples":\[\[[^]]*\],\[' "$JGC" -c "$SOCK" history ||
+	    atf_fail "no sampling"
+	sleep 1
+	stop_daemon
+	test -d arch/host && test -d arch/probe || atf_fail "$(ls -R arch)"
+	DAEMON_ARGS="--stamp-port $P --archive $(pwd)/arch" start_daemon
+	atf_check -o save:host.json "$JGC" -c "$SOCK" action history \
+	    read-archive class=host points=10000
+	atf_check -o match:'"step":10' \
+	    -o match:'"field":\["cpu","load","memory","swap","received","sent","read","written"\]' \
+	    -o match:'"scale":\[10,100,1,1,1,1,1,1\]' \
+	    -o match:'"series":\[\{"name":"host","point":\[\{"time":"[0-9T:-]+Z","value":\["[0-9]+",' \
+	    cat host.json
+	# The probe target unanswered: every probe lost.
+	atf_check -o match:'"name":"t1","point":\[\{"time":"[^"]*","value":\["-1","-1","10000","-1","-1",' \
+	    "$JGC" -c "$SOCK" action history read-archive class=probe name=t1
+	# Its settings and what it holds.
+	atf_check -o save:get.json "$JGC" -c "$SOCK" get history
+	atf_check -o match:'"archive":\{"budget":128,"class":\[\{"name":"host","step":10\}\],"enabled":true\}' \
+	    -o match:'"budget":"134217728","bytes":"[1-9][0-9]*","class":\[\{"bytes":"[1-9][0-9]*","files":1,"full":false,"name":"host","oldest":"[0-9-]+T00:00:00Z","retention":30,"series":[0-9]+,"step":10\}' \
+	    -o match:'\{"bytes":"[1-9][0-9]*","files":1,"full":false,"name":"probe","oldest":"[0-9-]+T00:00:00Z","retention":7,"series":[0-9]+,"step":60\}' \
+	    cat get.json
+	# An edit's settings written down for the next start.
+	cat > h.json <<'EOF'
+{"arcana-history:history":{"sampling":{"step":1,"keep":20,"hold":0},"archive":{"budget":64,"class":[{"name":"probe","step":30,"retention":3}]}}}
+EOF
+	atf_check "$JGC" -c "$SOCK" edit history @h.json
+	atf_check -o ignore "$JGC" -c "$SOCK" commit
+	atf_check -o match:'^budget=64$' -o match:'^class=probe:30:3$' \
+	    -o not-match:'^class=host' -o match:'^archive=yes$' cat history.conf
+	atf_check -o match:'"name":"probe",("oldest":"[^"]*",)?"retention":3,"series":[0-9]+,"step":30\}' \
+	    "$JGC" -c "$SOCK" get history
+	# Refused with why.
+	atf_check -s exit:1 -e match:'from is after to' -o ignore \
+	    "$JGC" -c "$SOCK" action history read-archive class=host \
+	    from=2026-11-02T00:00:00Z to=2026-11-01T00:00:00Z
+	# A class with nothing archived: no series.
+	atf_check -o match:'"step":120' -o not-match:'"series"' \
+	    "$JGC" -c "$SOCK" action history read-archive class=jail
+}
+archive_agent_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case probe_echo_ids cleanup
 probe_echo_ids_head()
 {
@@ -18851,6 +19053,9 @@ atf_init_test_cases()
 	atf_add_test_case alarm_control_bad
 	atf_add_test_case history_samples_bad
 	atf_add_test_case history_slots
+	atf_add_test_case archive_week
+	atf_add_test_case archive_files
+	atf_add_test_case archive_agent
 	atf_add_test_case probe_echo_ids
 	atf_add_test_case probe_open_backoff
 	atf_add_test_case probe_echo_demux

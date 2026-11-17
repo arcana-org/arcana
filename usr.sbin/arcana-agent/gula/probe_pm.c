@@ -635,6 +635,34 @@ samples_reset(struct target *t)
 	rows_clear(&t->samp);
 }
 
+/*
+ * A sample into the archive (archive.c), the target's series by its
+ * name: an interval that sent nothing is none; delays and loss as the
+ * sample has them, those not told (-1) left out there.
+ */
+static void
+archive_sample(const struct target *t, const struct sample *s)
+{
+	char	name[TNAME_MAX];
+	double	v[11];
+
+	if (s->sent == 0)
+		return;
+	v[0] = s->recv > 0 ? s->delay : -1;
+	v[1] = s->recv > 1 ? s->ipdv : -1;
+	v[2] = s->loss;
+	v[3] = s->recv > 0 ? s->min : -1;
+	v[4] = s->recv > 0 ? s->max : -1;
+	v[5] = s->fwd;
+	v[6] = s->back;
+	v[7] = s->dfwd;
+	v[8] = s->dback;
+	v[9] = s->sent;
+	v[10] = s->recv;
+	archive_add(ARC_PROBE, target_name(t, name, sizeof(name)),
+	    (time_t)s->t, v, nitems(v));
+}
+
 void
 window_end(struct target *t, double now)
 {
@@ -672,6 +700,7 @@ window_end(struct target *t, double now)
 		stamp_window(t, s);
 	if (t->w_sent > 0 && t->cls[0] == '\0')
 		tca_check(t, s);
+	archive_sample(t, s);
 reset:
 	t->w_sent = t->w_recv = t->w_ipdv_n = 0;
 	t->w_sum = t->w_ipdv_sum = 0;

@@ -30,11 +30,52 @@ module arcana-history {
      the limits above which an event (threshold) is made are
      configuration, kept for the agent's next start; the samples are
      state, written down when the agent stops and read again when it
-     starts.  The history operation of arcana.yaml converted (Y-3).";
+     starts.  The archive keeps their long run on the disk by class,
+     the host's, each interface's, disk's, jail's and relay's, and each
+     probe target's, read by read-archive (PLAN-SDN-YANG 5.6.3).  The
+     history operation of arcana.yaml converted (Y-3).";
 
   revision 2026-10-15 {
     description
       "Initial revision.";
+  }
+
+  typedef archive-class {
+    type enumeration {
+      enum host {
+        description
+          "The host's figures, one series, host: CPU in tenths of a
+           percent, the load in hundredths, memory and swap in bytes,
+           the totals in bytes a second.";
+      }
+      enum interface {
+        description
+          "Each interface told apart, a series by its name: in and out,
+           bytes a second.";
+      }
+      enum disk {
+        description
+          "Each disk: read and written, bytes a second.";
+      }
+      enum jail {
+        description
+          "Each jail: its CPU in tenths of a percent of one, its memory
+           in bytes.";
+      }
+      enum relay {
+        description
+          "Each FEC relay: plain and added, bytes a second.";
+      }
+      enum probe {
+        description
+          "Each probe target, a series by its name (id, id@jail at a
+           jail's edge, /class for a class's session): delays in
+           microseconds, loss in ten-thousandths, probes sent and
+           received.";
+      }
+    }
+    description
+      "A class of the archive.";
   }
 
   typedef percent {
@@ -323,6 +364,133 @@ module arcana-history {
           "Over it at the last sample.";
       }
     }
+    container archive {
+      description
+        "The archive, the long run of the samples on the host's disk
+         (archive beside history.conf, or the agent's --archive):
+         each class's series, a point every step seconds (the
+         samples within one merged: the mean of each figure, the least
+         of the least, the most of the most, the sum of the probes
+         sent and received), a file a day, each class's days kept for
+         its retention and the whole within its budget, the oldest day
+         of any class going first.";
+      leaf enabled {
+        type boolean;
+        default "true";
+        description
+          "Whether the samples are archived.  Off, the files kept stay
+           to be read.";
+      }
+      leaf budget {
+        type uint32 {
+          range "1..1048576";
+        }
+        units "mebibytes";
+        default "128";
+        description
+          "The most the archive takes on the disk.  A class whose day
+           under way alone keeps it over is archived no more until
+           the next day (UTC).";
+      }
+      list class {
+        key "name";
+        description
+          "A class's step and retention; a class not here, or a leaf
+           not said, has its default.";
+        leaf name {
+          type archive-class;
+          description
+            "The class.";
+        }
+        leaf step {
+          type uint16 {
+            range "10..3600";
+          }
+          units "seconds";
+          description
+            "What a point stands for; 60 unless said.";
+        }
+        leaf retention {
+          type uint16 {
+            range "1..3660";
+          }
+          units "days";
+          description
+            "How many days are kept, today's among them: 30 of host
+             unless said, 7 of the others.";
+        }
+      }
+    }
+  }
+
+  grouping archive-totals {
+    description
+      "The archive as it is.";
+    container archive {
+      description
+        "What the archive holds.";
+      leaf bytes {
+        type uint64;
+        units "bytes";
+        description
+          "Its files, all told.";
+      }
+      leaf budget {
+        type uint64;
+        units "bytes";
+        description
+          "The most they may take.";
+      }
+      list class {
+        key "name";
+        description
+          "Each class.";
+        leaf name {
+          type archive-class;
+          description
+            "The class.";
+        }
+        leaf bytes {
+          type uint64;
+          units "bytes";
+          description
+            "Its files.";
+        }
+        leaf files {
+          type uint32;
+          description
+            "How many days it has.";
+        }
+        leaf series {
+          type uint32;
+          description
+            "The series the agent has archived since it started.";
+        }
+        leaf oldest {
+          type yang:date-and-time;
+          description
+            "The start of its oldest day.";
+        }
+        leaf step {
+          type uint16;
+          units "seconds";
+          description
+            "What a point stands for.";
+        }
+        leaf retention {
+          type uint16;
+          units "days";
+          description
+            "How many days are kept.";
+        }
+        leaf full {
+          type boolean;
+          description
+            "Archived no more until tomorrow: the budget is reached
+             with today's files alone.";
+        }
+      }
+    }
   }
 
   grouping history-totals {
@@ -388,6 +556,7 @@ module arcana-history {
       description
         "The sampler as it is.";
       uses history-totals;
+      uses archive-totals;
       list sample {
         cg:struct "sample";
         key "time";
@@ -417,6 +586,96 @@ module arcana-history {
           description
             "The samples, oldest first.";
           uses sample;
+        }
+      }
+    }
+    action read-archive {
+      description
+        "A class's points from the archive between two times, each
+         series given at most so many: the archive's points merged
+         into longer ones, a multiple of the class's step, when there
+         are more.  The point under way is not written yet.";
+      input {
+        leaf class {
+          type archive-class;
+          mandatory true;
+          description
+            "The class.";
+        }
+        leaf name {
+          type string {
+            length "1..255";
+          }
+          description
+            "One series; all of the class when not said.";
+        }
+        leaf from {
+          type yang:date-and-time;
+          description
+            "From when; a day before to unless said.";
+        }
+        leaf to {
+          type yang:date-and-time;
+          description
+            "To when; now unless said.";
+        }
+        leaf points {
+          type uint16 {
+            range "1..10000";
+          }
+          default "1000";
+          description
+            "The most points a series is given.  The points of every
+             series together are at most 100000.";
+        }
+      }
+      output {
+        leaf step {
+          type uint32;
+          units "seconds";
+          description
+            "What a point stands for.";
+        }
+        leaf-list field {
+          type string;
+          ordered-by user;
+          description
+            "What each value of a point is.";
+        }
+        leaf-list scale {
+          type uint32;
+          ordered-by user;
+          description
+            "What each field's value is divided by to be in its unit:
+             10 for CPU in tenths of a percent, 1000 for a delay in
+             microseconds to be in milliseconds, 10000 for a loss in
+             ten-thousandths to be a ratio.";
+        }
+        list series {
+          key "name";
+          description
+            "Each series that has a point.";
+          leaf name {
+            type string;
+            description
+              "The series.";
+          }
+          list point {
+            description
+              "Its points, oldest first.";
+            leaf time {
+              type yang:date-and-time;
+              description
+                "The start of what it stands for.";
+            }
+            leaf-list value {
+              type int64;
+              ordered-by user;
+              description
+                "Its values, as field names them; -1 when none of the
+                 samples told it.";
+            }
+          }
         }
       }
     }

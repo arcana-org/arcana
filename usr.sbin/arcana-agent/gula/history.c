@@ -47,6 +47,9 @@
  * at the next start: a file whose head is not what it should be is put
  * aside (.bad) and sampling starts anew; a row that is not whole is
  * left out.
+ *
+ * Each look's row goes on to the archive (archive.c), the long run on
+ * the disk by class, whose settings history.conf keeps with these.
  */
 
 #include <sys/param.h>
@@ -531,6 +534,39 @@ jail_figures(struct jfig *v, size_t max)
 	return (n);
 }
 
+/*
+ * A look's row into the archive (archive.c): the host's figures, and
+ * each interface, disk, jail and relay seen in it, its own series.
+ * Called with the lock held.
+ */
+static void
+archive_row(const float *row, time_t t)
+{
+	static const struct {
+		int		 c;
+		struct dev	*v;
+		size_t		*n;
+	} kinds[] = {
+		{ ARC_INTERFACE, nets, &nnets }, { ARC_DISK, disks, &ndisks },
+		{ ARC_JAIL, jails, &njails }, { ARC_RELAY, relays, &nrelays },
+	};
+	double	v[H_BASE];
+	size_t	i, k, c;
+
+	for (c = 0; c < H_BASE; c++)
+		v[c] = row[c];
+	archive_add(ARC_HOST, "host", t, v, H_BASE);
+	for (i = 0; i < nitems(kinds); i++)
+		for (k = 0; k < *kinds[i].n; k++) {
+			if (!kinds[i].v[k].now)
+				continue;
+			c = col_first(kinds[i].v, k);
+			v[0] = row[c];
+			v[1] = row[c + 1];
+			archive_add(kinds[i].c, kinds[i].v[k].name, t, v, 2);
+		}
+}
+
 /* One look: a row more, the oldest dropped when there is no room.  The
  * sampler's (and the tests' hist harness's). */
 void
@@ -682,8 +718,10 @@ history_look(void)
 	at_was = at;
 	have_was = true;
 	/* The first look has nothing to be the difference from. */
-	if (!first)
+	if (!first) {
 		times[nrows++] = (double)time(NULL);
+		archive_row(row, (time_t)times[nrows - 1]);
+	}
 	if (!first)
 		thresholds(row);
 	pthread_mutex_unlock(&hist_lock);
@@ -1455,6 +1493,8 @@ hconf_read(void)
 			if (nrules < HIST_RULES && rule_parse(line + 5,
 			    &rules[nrules]))
 				nrules++;
+		} else if (archive_conf_line(line)) {
+			/* The archive's: archive=, budget=, class=. */
 		} else if (strncmp(line, "cpu=", 4) == 0 || strncmp(line,
 		    "mem=", 4) == 0 || strncmp(line, "swap=", 5) == 0 ||
 		    strncmp(line, "storage=", 8) == 0) {
@@ -1484,6 +1524,7 @@ hconf_write(unsigned int step, unsigned int keep, unsigned int hold, bool on)
 	for (i = 0; i < nrules; i++)
 		fprintf(fp, "rule=%s:%s=%.0f\n", rule_kinds[rules[i].kind],
 		    rules[i].name, rules[i].limit);
+	archive_conf_write(fp);
 	if (fclose(fp) != 0 || rename(tmp, opts.history_conf) == -1) {
 		(void)unlink(tmp);
 		return (-1);
@@ -1508,6 +1549,8 @@ history_start(void)
 	}
 	(void)pthread_condattr_destroy(&ca);
 	hconf_read();
+	/* The long run on the disk, its settings read with the rest. */
+	archive_start();
 	pthread_mutex_lock(&hist_lock);
 	reshape(hist_keep, 0, 0, 0, 0);
 	samples_read();

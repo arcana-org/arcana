@@ -144,7 +144,7 @@ on the wire.
 | 79 400 | 100 | `arcana-ra`, rtadvd.conf(5) beyond RFC 8349 and rtadvctl(8) show | `share/yang/arcana-ra@2026-10-28.sid` (61 used) |
 | 79 500 | 100 | `arcana-packages`, its second range: the read action, pkgbase, the refresh action's update, ignore-osversion and output, every-jail | `share/yang/arcana-packages@2026-10-14.sid` (17 used) |
 | 79 600 | 200 | `arcana-storage`, its second range: the read action's output, create-encrypted | `share/yang/arcana-storage@2026-10-14.sid` (76 used) |
-| 80 000 | 100 | `arcana-history`, its second range: the read action's settings and totals | `share/yang/arcana-history@2026-10-15.sid` (3 used) |
+| 80 000 | 100 | `arcana-history`, its second range: the read action's settings and totals, the archive and read-archive | `share/yang/arcana-history@2026-10-15.sid` (49 used) |
 | 80 100 | 100 | `arcana-events`, its second range: a route's nexthop and paths, a neighbour's family, a tunnel's jail, undo-failed's data, the read's kept, a job's user, numbered again in path order with sdwan-altmark (PLAN-SDN-YANG 5.5) | `share/yang/arcana-events@2026-10-15.sid` (62 used) |
 | 80 300 | 100 | `arcana-probe`, its second range | `share/yang/arcana-probe@2026-10-15.sid` (100 used) |
 | 80 400 | 300 | `arcana-bird`, its second range: the read, ospf and check actions, a protocol's detail, the jails' configuration | `share/yang/arcana-bird@2026-10-15.sid` (153 used) |
