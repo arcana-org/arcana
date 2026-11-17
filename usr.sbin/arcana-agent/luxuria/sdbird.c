@@ -824,6 +824,8 @@ protocols_watch(struct work *w, const struct instance *in, char (*bgp)[160],
 				    strcmp(instances[k].jail, again.jail) == 0)
 					instances[k] = again;
 			pthread_mutex_unlock(&lock);
+			/* Its station, in the jail's network as it is now. */
+			bmp_rejail(again.jail, name, again.jid);
 		}
 		if (inst_start(w, &again, &e) != 0)
 			logmsg(LOG_WARNING, "sdwan bird: %s not started again: %s",
@@ -832,6 +834,8 @@ protocols_watch(struct work *w, const struct instance *in, char (*bgp)[160],
 	}
 	fault_clear("bird-instance", name, "the BIRD instance %s answers again",
 	    name);
+	/* Its station listening, if it could not before. */
+	bmp_rejail(in->jail, name, in->jail[0] != '\0' ? in->jid : 0);
 	text = wstrdup(w, res.out);
 	while ((line = strsep(&text, "\n")) != NULL) {
 		char	*f[4];

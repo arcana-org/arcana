@@ -141,6 +141,8 @@ watcher(void *arg __unused)
 		told(w->name, w->jid, "stopped");
 		/* Its logical network element's helper, killed with it. */
 		lne_gone(w->jid);
+		/* Its BMP stations' listeners, which would hold it dying. */
+		bmp_jail_gone(w->jid);
 		LIST_REMOVE(w, list);
 		free(w->name);
 		free(w);

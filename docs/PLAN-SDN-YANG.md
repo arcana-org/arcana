@@ -3715,9 +3715,23 @@ whose first part is served.
   and filtered).  It found the page's read through the fleet mount
   (sdread.c) leaving the station out, so the view never showed, the
   Paths tab with no filter for its tables, and a host's edge given its
-  jails' BIRD instances.
-  Not run yet: a vnet jail's edge's station (the helper makes its
-  listener in the jail).
+  jails' BIRD instances;
+  agent_root_test:sdwan_bmp_jail_lab (a vnet jail's edge: the instance
+  run in the jail's FIB 2 by jexec, eBGP to a second jail's BIRD; the
+  station's listener made in the jail's network by the helper, none of
+  the host's on the port; the peer up, its routes before and after
+  policy and their withdrawal; a connection from the other jail closed;
+  the jail stopped: the listener closed, so the jail does not stay
+  dying on it; started again with another jid: BIRD started there again
+  and the station listening in the new network, hearing the peer; the
+  jail's instances taken away, the station and listener gone).  A bug
+  the lab found: a station's listener made in a jail held the jail
+  dying after jail -r, and after a restart the station listened in the
+  old network while BIRD sent to the new one; the jail watch now closes
+  it (bmp_jail_gone) and the instances' watch makes it again where the
+  jail is (bmp_rejail), as does a new set when the jid changed.  A
+  jail's net.fibs is its vnet's own (1 when made): the edge's FIB must
+  be there before its instance runs.
 - 5.6.3 C: a compact time-series store with retention per class;
   check: a week of samples on the VM's disk budget.
 - 5.7.1 D: the measurement chapter; TODO.

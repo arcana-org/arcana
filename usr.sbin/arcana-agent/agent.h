@@ -1037,6 +1037,8 @@ struct bmp_station {
 int		 bmp_port(int);
 int		 bmp_listen(int, int);
 void		 bmp_set(const char *, const struct bmp_station *, int);
+void		 bmp_jail_gone(int);
+void		 bmp_rejail(const char *, const char *, int);
 struct ucl_object_s *bmp_json(const char *, const char *);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);

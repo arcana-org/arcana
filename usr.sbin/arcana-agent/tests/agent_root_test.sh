@@ -1849,6 +1849,169 @@ sdwan_bmp_lab_cleanup()
 	true
 }
 
+atf_test_case sdwan_bmp_jail_lab cleanup
+sdwan_bmp_jail_lab_head()
+{
+	atf_set "descr" "BMP of a vnet jail's edge for real (PLAN-SDN-YANG" \
+	    "5.6.2): the service's BIRD instance applied with the jail's" \
+	    "name runs in it (jexec) in the jail's FIB 2, with eBGP to a" \
+	    "second jail's BIRD; the station's listener, made in the edge" \
+	    "jail's network by the helper, hears the peer up, its routes" \
+	    "before and after policy and their withdrawal; a connection" \
+	    "from the other jail to the listener closed, BIRD's kept; the" \
+	    "station gone with the jail's instances"
+	atf_set "require.user" "root"
+	atf_set "timeout" "300"
+}
+sdwan_bmp_jail_lab_body()
+{
+	local d="$(pwd)" e i j P
+
+	[ -x /usr/local/sbin/bird ] || atf_skip "no BIRD (net/bird3)"
+	for j in arcw_mja arcw_mjb; do
+		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
+	done
+	atf_check -o ignore jail -c name=arcw_mja vnet persist path=/
+	atf_check -o ignore jail -c name=arcw_mjb vnet persist path=/
+	e=$(epair_create)
+	echo "${e%a}" > epair.name
+	atf_check ifconfig $e vnet arcw_mja
+	atf_check ifconfig ${e%a}b vnet arcw_mjb
+	# The edge: the epair's end in FIB 2 of the jail's own (a vnet's
+	# net.fibs is its own, 1 when it is made), the loopback (FIB 0's)
+	# where BIRD sends its BMP.
+	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3
+	atf_check jexec arcw_mja ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check jexec arcw_mja ifconfig $e fib 2
+	atf_check jexec arcw_mja ifconfig $e inet 10.95.0.1/24 up
+	atf_check jexec arcw_mjb ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check jexec arcw_mjb ifconfig ${e%a}b inet 10.95.0.2/24 up
+	printf '%s\n' 'router id 10.95.0.2;' '' 'protocol device device1 {' '}' '' \
+	    'protocol static own {' '	ipv4;' '	route 192.0.2.0/24 blackhole;' \
+	    '	route 198.51.100.0/24 blackhole;' '}' '' 'protocol bgp uplink {' \
+	    '	local as 65002;' '	neighbor 10.95.0.1 as 65001;' '	ipv4 {' \
+	    '		import all;' '		export where proto = "own";' '	};' '}' \
+	    > bird-mjb.conf
+	atf_check /usr/local/sbin/bird -p -c bird-mjb.conf
+	jexec arcw_mjb /usr/local/sbin/bird -c "$d/bird-mjb.conf" -s "$d/mjb.ctl" \
+	    -P "$d/mjb.pid" || atf_fail "the peer jail's bird did not start"
+	P=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1] - 2)')
+	DAEMON_ARGS="--bmp-port $P"
+	start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    "{\"jail\":\"arcw_mja\",\"instances\":[{\"name\":\"arcwmj\",\"fib\":2,\"spec\":{\"service\":\"arcwmj\",\"fib\":2,\"table\":2,\"as\":65001,\"router_id\":\"10.95.0.1\",\"route_monitoring\":{\"kept\":16},\"unis\":[{\"id\":\"u1\",\"end_point\":\"e1\",\"interface\":\"$e\",\"bgp\":{\"as\":65002,\"neighbors\":[\"10.95.0.2\"]}}]}}]}"
+	# BIRD in the edge jail, in its FIB 2, by the jail's own setfib.
+	atf_check -o match:'bird' pgrep -lf -j arcw_mja 'sdwan-bird-arcwmj'
+	for i in $(seq 1 90); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"prefix":"198.51.100.0/24"' sdwan.out &&
+		    grep -q '"prefix":"192.0.2.0/24"' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:'"name":"arcwmj","fib":2,"jail":"arcw_mja","running":true' \
+	    -o match:"\"bmp\":\\{\"port\":$((P + 2)),\"listening\":true,\"connected\":true" \
+	    -o match:'"address":"10.95.0.2","as":65002,"bgp_id":"10.95.0.2","local":"10.95.0.1","up":true' \
+	    -o match:'"policy":"pre","action":"announce","prefix":"198.51.100.0/24","next_hop":"10.95.0.2","as_path":"65002"' \
+	    -o match:'"policy":"post","action":"announce","prefix":"192.0.2.0/24","next_hop":"10.95.0.2","as_path":"65002"' \
+	    cat sdwan.out
+	# The listener is the edge jail's network's, not the host's.
+	atf_check -o match:"\*:$((P + 2)) " jexec arcw_mja sockstat -4 -l -q \
+	    -P tcp -p $((P + 2))
+	atf_check -o empty sockstat -4 -l -q -P tcp -p $((P + 2))
+	# A far end not the loopback: the other jail, by the epair, reaches
+	# the wildcard listener of the edge's FIB 2 and is closed at once;
+	# BIRD's connection kept.
+	atf_check -o inline:"closed\n" jexec arcw_mjb python3 -c "
+import socket
+s = socket.create_connection(('10.95.0.1', $((P + 2))), timeout=5)
+s.sendall(b'\x03\x00\x00\x00\x06\x05')
+s.settimeout(5)
+print('closed' if s.recv(1) == b'' else 'open')"
+	atf_check -o match:'"connected":true' -o not-match:'"error"' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The peer's routes taken away: withdrawn, as the station says.
+	atf_check -o ignore /usr/local/sbin/birdc -s mjb.ctl disable own
+	for i in $(seq 1 30); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"action":"withdraw","prefix":"198.51.100.0/24"' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:'"policy":"pre","action":"withdraw","prefix":"198.51.100.0/24"' \
+	    -o match:'"address":"10.95.0.2","as":65002,[^}]*"withdrawn":2,' cat sdwan.out
+	atf_check -o ignore /usr/local/sbin/birdc -s mjb.ctl enable own
+	# The edge jail stopped: the station lets its network go (the jail
+	# is not left dying on the listener), and says why it does not
+	# listen.
+	# The session closed by the peer first: a connection whose far end
+	# the epair no longer reaches would hold the jail, retransmitting
+	# its FIN.  The BMP connection, BIRD's, killed with it, is in
+	# TIME_WAIT for 2 MSL, which holds the jail too: waited out.
+	atf_check -o ignore /usr/local/sbin/birdc -s mjb.ctl disable uplink
+	for i in $(seq 1 30); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"local":"10.95.0.1","up":false' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:'"local":"10.95.0.1","up":false' cat sdwan.out
+	atf_check ifconfig $e -vnet arcw_mja
+	atf_check -o ignore jail -r arcw_mja
+	for i in $(seq 1 $(($(sysctl -n net.inet.tcp.msl) * 2 / 1000 + 30))); do
+		jls -d -j arcw_mja >/dev/null 2>&1 || break
+		sleep 1
+	done
+	atf_check -s not-exit:0 -o ignore -e match:'not found' jls -d -j arcw_mja
+	atf_check -o match:'"listening":false,"connected":false' \
+	    -o match:'"error":"the jail arcw_mja is not running' \
+	    "$JGC" -c "$SOCK" sdwan
+	# Started again (another jid): BIRD started in it again on its file,
+	# the station listening in its new network and hearing the peer.
+	atf_check -o ignore jail -c name=arcw_mja vnet persist path=/
+	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3
+	atf_check jexec arcw_mja ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check ifconfig $e vnet arcw_mja
+	atf_check jexec arcw_mja ifconfig $e fib 2
+	atf_check jexec arcw_mja ifconfig $e inet 10.95.0.1/24 up
+	atf_check -o ignore /usr/local/sbin/birdc -s mjb.ctl enable uplink
+	for i in $(seq 1 90); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"connected":true' sdwan.out &&
+		    grep -q '"local":"10.95.0.1","up":true' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:"\"bmp\":\\{\"port\":$((P + 2)),\"listening\":true,\"connected\":true" \
+	    -o match:'"address":"10.95.0.2","as":65002,"bgp_id":"10.95.0.2","local":"10.95.0.1","up":true' \
+	    -o not-match:'"error"' cat sdwan.out
+	atf_check -o match:"\*:$((P + 2)) " jexec arcw_mja sockstat -4 -l -q \
+	    -P tcp -p $((P + 2))
+	# The jail's instances taken away: BIRD stopped there, the station
+	# and its listener gone.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    '{"jail":"arcw_mja","instances":[]}'
+	atf_check -o not-match:'"name":"arcwmj"' -o not-match:'"bmp"' "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty jexec arcw_mja sockstat -4 -l -q -P tcp \
+	    -p $((P + 2))
+}
+sdwan_bmp_jail_lab_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	pkill -j arcw_mja -f 'sdwan-bird-arcwmj\.conf' 2>/dev/null
+	[ -f mjb.pid ] && kill "$(cat mjb.pid)" 2>/dev/null
+	sleep 0.5
+	# Its interfaces out of each jail before the jail goes.
+	if [ -f epair.name ]; then
+		e=$(cat epair.name)
+		ifconfig ${e}a -vnet arcw_mja 2>/dev/null
+		ifconfig ${e}b -vnet arcw_mjb 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
+	jail -r arcw_mja 2>/dev/null
+	jail -r arcw_mjb 2>/dev/null
+	rm -f /var/run/arcana-sdwan-bird-arcwmj.conf \
+	    /var/run/arcana-sdwan-bird-arcwmj.pid \
+	    /var/run/arcana-sdwan-bird-arcwmj.ctl
+	true
+}
+
 atf_test_case pkg_lanes cleanup
 pkg_lanes_head()
 {
@@ -5591,6 +5754,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_links
 	atf_add_test_case bird_live
 	atf_add_test_case sdwan_bmp_lab
+	atf_add_test_case sdwan_bmp_jail_lab
 	atf_add_test_case sctp_multihome
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback

@@ -20,7 +20,8 @@
  * loopback is closed at once (a packet from 127/8 that came in on
  * another interface is dropped by the kernel).  A vnet jail's edge has
  * its listener made in the jail's network by the helper and handed
- * over.
+ * over; closed when the jail goes, which it would hold dying, and made
+ * again in its new network when it runs again.
  *
  * One thread reads every station.  A station has one connection, its
  * instance's; a new one takes its place (BIRD connects again after a
@@ -187,6 +188,39 @@ st_drop(struct bmpst *st)
 			st->peers[i].since = st->since;
 			st->peers[i].down_reason = 0;
 		}
+}
+
+/*
+ * Its listener made again where its edge is now: the host's, or the
+ * jail's network by its jid (none while the jail is not running, jid
+ * 0).  The one before closed, with its connection: a listener made in a
+ * jail holds the jail, dying, until it is closed.
+ */
+static void
+st_listen(struct bmpst *st)
+{
+
+	if (st->lfd != -1)
+		close(st->lfd);
+	st->lfd = -1;
+	st_drop(st);
+	if (st->port == -1) {
+		st_error(st, "FIB %d has no port: --bmp-port %d and the FIB "
+		    "pass 65535", st->s.fib, opts.bmp_port);
+		return;
+	}
+	if (st->s.jail[0] != '\0' && st->s.jid <= 0) {
+		st_error(st, "the jail %s is not running: its station listens "
+		    "when it runs again", st->s.jail);
+		return;
+	}
+	if ((st->lfd = st->s.jid > 0 ? helper_bmp_socket(st->s.jid, st->s.fib,
+	    st->port) : bmp_listen(st->s.fib, st->port)) == -1)
+		st_error(st, "no listener on port %d of FIB %d: %s", st->port,
+		    st->s.fib, st->s.jid > 0 ? "the helper made none" :
+		    strerror(errno));
+	else
+		st->error[0] = '\0';
 }
 
 static void
@@ -704,6 +738,12 @@ bmp_set(const char *jail, const struct bmp_station *v, int n)
 				break;
 		if (i < nstations) {
 			st = stations[i];
+			/* Its jail started again since: listening in its new
+			 * network. */
+			if (st->s.jid != v[k].jid) {
+				st->s.jid = v[k].jid;
+				st_listen(st);
+			}
 			/* How many kept may change; what was kept goes. */
 			if (st->s.kept != v[k].kept) {
 				free(st->upd);
@@ -728,17 +768,9 @@ bmp_set(const char *jail, const struct bmp_station *v, int n)
 		    sizeof(*st->upd)) : NULL;
 		if (st->upd == NULL)
 			st->s.kept = 0;
+		st->lfd = -1;
 		st->port = bmp_port(v[k].fib);
-		if (st->port == -1) {
-			st->lfd = -1;
-			st_error(st, "FIB %d has no port: --bmp-port %d and the "
-			    "FIB pass 65535", v[k].fib, opts.bmp_port);
-		} else if ((st->lfd = v[k].jid > 0 ? helper_bmp_socket(v[k].jid,
-		    v[k].fib, st->port) : bmp_listen(v[k].fib, st->port)) ==
-		    -1)
-			st_error(st, "no listener on port %d of FIB %d: %s",
-			    st->port, v[k].fib, v[k].jid > 0 ? "the helper "
-			    "made none" : strerror(errno));
+		st_listen(st);
 		stations[nstations++] = st;
 	}
 	if (nstations > 0 && !bmp_running) {
@@ -749,6 +781,62 @@ bmp_set(const char *jail, const struct bmp_station *v, int n)
 	}
 	pthread_mutex_unlock(&bmp_lock);
 	(void)write(wake[1], "", 1);
+}
+
+/*
+ * The jail jid gone (ira/jailwatch.c): its stations' listeners closed,
+ * which would hold it dying, until it runs again (bmp_rejail()).
+ */
+void
+bmp_jail_gone(int jid)
+{
+	int	i;
+	bool	any;
+
+	if (jid <= 0)
+		return;
+	any = false;
+	pthread_mutex_lock(&bmp_lock);
+	for (i = 0; i < nstations; i++)
+		if (stations[i]->s.jail[0] != '\0' && stations[i]->s.jid ==
+		    jid) {
+			stations[i]->s.jid = 0;
+			st_listen(stations[i]);
+			any = true;
+		}
+	pthread_mutex_unlock(&bmp_lock);
+	if (any && wake[1] != -1)
+		(void)write(wake[1], "", 1);
+}
+
+/*
+ * Instance name of jail's edge where it runs now (jid, the host's 0):
+ * its station listening there when it does not yet, as after the jail
+ * started again, or a listener that could not be made before.
+ */
+void
+bmp_rejail(const char *jail, const char *name, int jid)
+{
+	struct bmpst	*st;
+	int		 i;
+	bool		 any;
+
+	if (jail == NULL)
+		jail = "";
+	any = false;
+	pthread_mutex_lock(&bmp_lock);
+	for (i = 0; i < nstations; i++) {
+		st = stations[i];
+		if (strcmp(st->s.jail, jail) != 0 || strcmp(st->s.name, name) !=
+		    0 || st->port == -1 || (st->s.jid == jid && st->lfd != -1))
+			continue;
+		st->s.jid = jid;
+		st_listen(st);
+		any = true;
+	}
+	pthread_mutex_unlock(&bmp_lock);
+	if (any && wake[1] != -1)
+		(void)write(wake[1], "", 1);
 }
 
 static void
