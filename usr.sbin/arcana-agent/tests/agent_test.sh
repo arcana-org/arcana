@@ -17337,17 +17337,95 @@ EOF
 	"$JGC" -c "$SOCK" get -d operational interfaces > oper.json
 	atf_check -o match:'"arcana-ra:rtadvd":\{"clock-skew":10,"cur-hop-limit":64,"default-lifetime":1800,"dnssl":\[\{"domain":"example.com","lifetime":600\}\],"flags":"UP,CONFIGURED,PERSIST","interface-prefixes":false,"link-mtu":1280,"managed-flag":true,"max-rtr-adv-interval":400,"min-rtr-adv-interval":200,"next-send":"2026-10-27T[0-9:]*Z","other-config-flag":false,"pref64":\[\{"lifetime":3600,"prefix":"64:ff9b::/96"\}\],"prefix":\[\{"autonomous-flag":false,"on-link-flag":true,"origin":"config","preferred-expires":1740,"preferred-lifetime":1800,"prefix":"2001:db8:57::/64","valid-expires":3540,"valid-lifetime":3600\}\],"rdnss":\[\{"address":"2001:db8::53","lifetime":600\},\{"address":"2001:db8::54","lifetime":600\}\],"reachable-time":0,"retrans-timer":0,"route":\[\{"lifetime":900,"preference":"low","prefix":"2001:db8:100::/48"\}\],"router-preference":"high","status":"RA_SEND"\}' \
 	    cat oper.json
-	# Taken out of the advertising interfaces: rtadvd stopped.
+	# Taken out of the advertising interfaces: rtadvd stopped, and not
+	# enabled (an empty rtadvd_interfaces is rc.d/rtadvd's auto, every
+	# interface, at boot).
 	"$JGC" -c "$SOCK" get -d running interfaces > run.json
 	sed -e 's|"send-advertisements":true|"send-advertisements":false|' \
 	    run.json > new.json
 	atf_check "$JGC" -c "$SOCK" edit interfaces @new.json
 	atf_check "$JGC" -c "$SOCK" commit
 	atf_check -o match:'^rtadvd_interfaces=""' \
+	    -o match:'^rtadvd_enable="NO"' \
 	    cat root/usr/local/etc/rc.conf.d/arcana
 	atf_check test ! -f running.rtadvd
+	atf_check -o match:'"send-advertisements":false' \
+	    "$JGC" -c "$SOCK" get -d running interfaces
 }
 datastores_ra_cleanup()
+{
+	stop_daemon
+}
+
+# rtadvd_interfaces as rc.d/rtadvd reads it (PLAN-SDN-YANG 2.5.1): unset
+# or auto with rtadvd enabled is every IPv6 interface but lo0, "none" is
+# none.  A record's change under auto reloads rtadvd and leaves rc.conf
+# alone; an interface auto has not (lo0) is refused, not made the only
+# one; "none" is replaced, not added to.
+atf_test_case datastores_ra_auto cleanup
+datastores_ra_auto_head()
+{
+	atf_set "descr" "Router advertisements committed where" \
+	    "rtadvd_interfaces is auto or none, as rc.d/rtadvd reads them"
+}
+datastores_ra_auto_body()
+{
+	mkdir -p root/etc/defaults root/usr/local/etc
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'hostname="lab"\nrtadvd_enable="YES"\n' > root/etc/rc.conf
+	printf 'lo0:\\\n\t:maxinterval#300:\n' > rtadvd.conf
+	cat > fake-rtadvctl <<EOF
+#!/bin/sh
+echo "rtadvctl \$*" >> $(pwd)/rtadvctl.log
+exit 0
+EOF
+	chmod +x fake-rtadvctl
+	touch running.rtadvd
+	DAEMON_ARGS="--root $(pwd)/root"
+	start_daemon
+	# Auto: lo0 is not one rc.d/rtadvd runs rtadvd on.
+	"$JGC" -c "$SOCK" get -d running interfaces > run.json
+	atf_check -o match:'"max-rtr-adv-interval":300' \
+	    -o match:'"send-advertisements":false' cat run.json
+	# A record changed: written, rtadvd reloaded for it, not stopped;
+	# rtadvd_interfaces not written.
+	sed -e 's|"max-rtr-adv-interval":300|"max-rtr-adv-interval":400|' \
+	    run.json > new.json
+	atf_check "$JGC" -c "$SOCK" edit interfaces @new.json
+	atf_check -o ignore -e ignore "$JGC" -c "$SOCK" commit -a rc-conf-files
+	atf_check -o match:'maxinterval#400' cat rtadvd.conf
+	atf_check -o inline:'rtadvctl reload lo0\n' cat rtadvctl.log
+	atf_check test -f running.rtadvd
+	atf_check -o not-match:'^rtadvd_' \
+	    cat root/usr/local/etc/rc.conf.d/arcana
+	# lo0 to advertise under auto: refused, the files as they were.
+	cp rtadvd.conf rtadvd.before
+	"$JGC" -c "$SOCK" get -d running interfaces > run.json
+	sed -e 's|"send-advertisements":false|"send-advertisements":true|' \
+	    run.json > new.json
+	atf_check "$JGC" -c "$SOCK" edit interfaces @new.json
+	atf_check -s exit:1 \
+	    -e match:'lo0: rtadvd_interfaces is auto, rtadvd advertises on every IPv6 interface but lo0: name the interfaces in rtadvd_interfaces to add it' \
+	    "$JGC" -c "$SOCK" commit
+	atf_check cmp rtadvd.before rtadvd.conf
+	atf_check -o not-match:'^rtadvd_' \
+	    cat root/usr/local/etc/rc.conf.d/arcana
+	atf_check test -f running.rtadvd
+	atf_check "$JGC" -c "$SOCK" discard
+	# "none": lo0 in its place, rtadvd restarted on it.
+	printf 'rtadvd_interfaces="none"\n' >> root/etc/rc.conf
+	: > rtadvctl.log
+	atf_check "$JGC" -c "$SOCK" edit interfaces @new.json
+	atf_check -o ignore -e ignore "$JGC" -c "$SOCK" commit \
+	    -a rc-conf-files -a rc-conf-conflict
+	atf_check -o match:'^rtadvd_interfaces="lo0"$' \
+	    cat root/usr/local/etc/rc.conf.d/arcana
+	atf_check -o match:'^rtadvd onerestart$' cat service.log
+	atf_check -o empty cat rtadvctl.log
+	atf_check -o match:'"send-advertisements":true' \
+	    "$JGC" -c "$SOCK" get -d running interfaces
+}
+datastores_ra_auto_cleanup()
 {
 	stop_daemon
 }
@@ -18555,6 +18633,7 @@ atf_init_test_cases()
 	atf_add_test_case observe_log_jail
 	atf_add_test_case datastores_syslog
 	atf_add_test_case datastores_ra
+	atf_add_test_case datastores_ra_auto
 	atf_add_test_case datastores_sysctl
 	atf_add_test_case datastores_boot
 	atf_add_test_case datastores_services

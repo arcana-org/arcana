@@ -164,23 +164,55 @@ yif_running(struct ietf_interfaces *data, cbl_yarena *a)
 typedef struct ietf_interfaces_interfaces_interface_ip_ipv6_v6ur_ipv6_router_advertisements
     yra;
 
+/* rc.subr's checkyesno. */
+static bool
+yes(const char *on)
+{
+
+	return (on != NULL && (strcasecmp(on, "YES") == 0 || strcasecmp(on,
+	    "TRUE") == 0 || strcasecmp(on, "ON") == 0 || strcmp(on, "1") == 0));
+}
+
+/* rtadvd_interfaces as rc.d/rtadvd reads it: unset, empty or "auto",
+ * every IPv6 interface but lo0; "none", none; else the words. */
+enum rtl { RTL_AUTO, RTL_NONE, RTL_LIST };
+
+static enum rtl
+rtadvd_list(const char *list)
+{
+	size_t	n;
+
+	if (list == NULL)
+		return (RTL_AUTO);
+	list += strspn(list, " \t");
+	n = strcspn(list, " \t");
+	if (list[n + strspn(list + n, " \t")] != '\0')
+		return (RTL_LIST);
+	if (n == 0 || (n == 4 && strncasecmp(list, "auto", 4) == 0))
+		return (RTL_AUTO);
+	return (n == 4 && strncasecmp(list, "none", 4) == 0 ? RTL_NONE :
+	    RTL_LIST);
+}
+
 /* Whether rtadvd(8) advertises on ifname: rtadvd_enable, and the
- * interface on rtadvd_interfaces (none listed: every one it has a
- * record of, as rc.d/rtadvd's "auto" does). */
+ * interface on rtadvd_interfaces, or not lo0 where it is auto. */
 static bool
 advertises(struct rca *x, const char *ifname)
 {
-	const char	*on = rca_get(x, "rtadvd_enable");
 	const char	*list = rca_get(x, "rtadvd_interfaces");
 	char		*copy, *p, *w;
 	bool		 found = false;
 
-	if (on == NULL || (strcasecmp(on, "YES") != 0 && strcasecmp(on,
-	    "TRUE") != 0 && strcasecmp(on, "ON") != 0 && strcmp(on, "1") != 0))
+	if (!yes(rca_get(x, "rtadvd_enable")))
 		return (false);
-	if (list == NULL || list[strspn(list, " \t")] == '\0' ||
-	    strcmp(list, "auto") == 0)
-		return (true);
+	switch (rtadvd_list(list)) {
+	case RTL_AUTO:
+		return (strcmp(ifname, "lo0") != 0);
+	case RTL_NONE:
+		return (false);
+	case RTL_LIST:
+		break;
+	}
 	if ((copy = strdup(list)) == NULL)
 		return (false);
 	for (p = copy; !found && (w = strsep(&p, " \t")) != NULL;)
@@ -935,24 +967,25 @@ struct rtadv_change {
 	size_t			 nnames;
 };
 
-static bool
-yes(const char *on)
-{
-
-	return (on != NULL && (strcasecmp(on, "YES") == 0 || strcasecmp(on,
-	    "TRUE") == 0 || strcasecmp(on, "ON") == 0 || strcmp(on, "1") == 0));
-}
-
-/* The interface's record, or none, in rtadvd.conf; it on
- * rtadvd_interfaces where it advertises (RFC 8349's default: not). */
+/*
+ * The interface's record, or none, in rtadvd.conf; it on
+ * rtadvd_interfaces where it advertises (RFC 8349's default: not).
+ * rtadvd_interfaces auto (or unset) with rtadvd enabled is rc.d/rtadvd's
+ * every IPv6 interface but lo0: left as it is where the interface is to
+ * advertise as auto has it, refused where not (which interfaces auto
+ * takes is rc.d's to say at boot, not Arcana's to guess); "none" is no
+ * interface.  The last one taken off: rtadvd_enable NO, as an empty
+ * rtadvd_interfaces is auto again at boot.
+ */
 static int
 keep_ra(struct work *w, struct rca *x, struct rtadv_change *rt,
     const char *ifname, const yra *ra, char *err, size_t errlen)
 {
 	char	**wv;
-	size_t	  n;
+	size_t	  n, left = 0;
 	bool	  send = ra != NULL && ra->has_send_advertisements &&
-		    ra->send_advertisements, there = false;
+		    ra->send_advertisements, there = false, on;
+	enum rtl  kind;
 	int	  error;
 
 	if (!rt->read) {
@@ -972,13 +1005,31 @@ keep_ra(struct work *w, struct rca *x, struct rtadv_change *rt,
 	rt->changed = true;
 	if (rt->nnames < 64)
 		rt->names[rt->nnames++] = wstrdup(w, ifname);
-	wv = words(w, rca_get(x, "rtadvd_interfaces"), &n);
+	on = yes(rca_get(x, "rtadvd_enable"));
+	kind = rtadvd_list(rca_get(x, "rtadvd_interfaces"));
+	if (on && kind == RTL_AUTO) {
+		if (send != (strcmp(ifname, "lo0") != 0)) {
+			(void)snprintf(err, errlen, "%s: rtadvd_interfaces is "
+			    "auto, rtadvd advertises on every IPv6 interface "
+			    "but lo0: name the interfaces in rtadvd_interfaces "
+			    "to %s it", ifname, send ? "add" : "leave out");
+			return (EINVAL);
+		}
+		rt->sends = send;
+		return (0);
+	}
+	/* Not enabled, or none: nothing advertised. */
+	wv = words(w, kind == RTL_LIST ? rca_get(x, "rtadvd_interfaces") :
+	    "", &n);
 	for (size_t i = 0; i < n; i++)
 		if (strcmp(wv[i], ifname) == 0) {
 			there = true;
 			if (!send)
 				wv[i] = NULL;
 		}
+	for (size_t i = 0; i < n; i++)
+		if (wv[i] != NULL)
+			left++;
 	if (send && !there)
 		error = rca_set(x, "rtadvd_interfaces", wfmt(w, "%s%s%s",
 		    joined(w, wv, n), n > 0 ? " " : "", ifname), err, errlen);
@@ -990,7 +1041,8 @@ keep_ra(struct work *w, struct rca *x, struct rtadv_change *rt,
 	if (error == 0 && send) {
 		rt->sends = true;
 		error = rca_set(x, "rtadvd_enable", "YES", err, errlen);
-	}
+	} else if (error == 0 && there && left == 0 && on)
+		error = rca_set(x, "rtadvd_enable", "NO", err, errlen);
 	return (error);
 }
 
@@ -1031,16 +1083,16 @@ rtadvd_again(struct work *w, struct rca *x, const struct rtadv_change *rt,
     const char **errp)
 {
 	struct execres	 res;
-	const char	*list = rca_get(x, "rtadvd_interfaces");
 	char		*argv[70];
-	bool		 none = list == NULL || list[strspn(list, " \t")] ==
-			    '\0' || strcasecmp(list, "none") == 0;
+	bool		 none = !yes(rca_get(x, "rtadvd_enable")) ||
+			    rtadvd_list(rca_get(x, "rtadvd_interfaces")) ==
+			    RTL_NONE;
 
 	argv[0] = (char *)(uintptr_t)opts.service_bin;
 	argv[1] = (char *)(uintptr_t)"rtadvd";
 	argv[2] = (char *)(uintptr_t)"onestatus";
 	argv[3] = NULL;
-	if (!none && yes(rca_get(x, "rtadvd_enable")) && same_set(w, x, rt) &&
+	if (!none && same_set(w, x, rt) &&
 	    rt->nnames > 0 && run_exec(w, argv, &res) == 0 &&
 	    res.status == 0) {
 		size_t	n = 0;

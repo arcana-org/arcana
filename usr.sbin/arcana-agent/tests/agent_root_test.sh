@@ -4657,6 +4657,112 @@ yang_rtadv_cleanup()
 	true
 }
 
+# PLAN-SDN-YANG 2.5.1's check, through the agent: the agent run in a vnet
+# jail with an epair's end and a real rtadvd(8) on it; a confirmed
+# commit of the interface's router advertisements written to rtadvd.conf
+# and reloaded by rtadvctl(8) (rtadvctl show has it), not confirmed and
+# undone at its timeout: the file as it was and rtadvd reloaded again.
+# rc.d/rtadvd stood in for (it reads the host's rc.conf): rtadvd run on
+# the case's file and Arcana's rtadvd_interfaces.
+atf_test_case commit_rtadv cleanup
+commit_rtadv_head()
+{
+	atf_set "descr" "A confirmed commit of router advertisements:" \
+	    "rtadvd.conf, rtadvctl reload, rtadvctl show, undone"
+	atf_set "require.user" "root"
+}
+commit_rtadv_body()
+{
+	local b=epair72b i
+
+	pgrep -x rtadvd >/dev/null && atf_skip "rtadvd runs here"
+	ifconfig epair72a >/dev/null 2>&1 && atf_skip "epair72a exists"
+	jls -j "$YJAIL" >/dev/null 2>&1 && atf_skip "a jail named $YJAIL exists"
+	programs
+	atf_check -o ignore ifconfig epair72 create
+	echo epair72a > made
+	atf_check -o ignore jail -c name="$YJAIL" path=/ vnet persist
+	atf_check ifconfig "$b" vnet "$YJAIL"
+	atf_check jexec "$YJAIL" ifconfig "$b" inet6 2001:db8:72::1/64 up \
+	    no_dad
+	atf_check -o ignore jexec "$YJAIL" sysctl net.inet6.ip6.forwarding=1
+	mkdir -p root/etc/defaults root/usr/local/etc etc etc/jail.conf.d
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'hostname="lab"\nrtadvd_enable="YES"\nrtadvd_interfaces="%s"\n' \
+	    "$b" > root/etc/rc.conf
+	: > etc/jail.conf
+	printf '%s:\\\n\t:maxinterval#600:mininterval#200:\n' "$b" \
+	    > rtadvd.conf
+	cat > fake-service <<EOF
+#!/bin/sh
+echo "\$*" >> $PWD/service.log
+[ "\$1" = rtadvd ] || exit 0
+up() { [ -f $PWD/rtadvd.pid ] && kill -0 \$(cat $PWD/rtadvd.pid) 2>/dev/null; }
+case "\$2" in
+onestatus)	up ;;
+onestop)	up && kill \$(cat $PWD/rtadvd.pid); sleep 0.5; exit 0 ;;
+onerestart)	up && kill \$(cat $PWD/rtadvd.pid) && sleep 0.5
+		rtadvd_interfaces=\$(sed -n 's/^rtadvd_interfaces="\(.*\)"/\1/p' \
+		    $PWD/root/etc/rc.conf $PWD/root/usr/local/etc/rc.conf.d/arcana \
+		    2>/dev/null | tail -1)
+		exec /usr/sbin/rtadvd -c $PWD/rtadvd.conf -p $PWD/rtadvd.pid \
+		    \$rtadvd_interfaces ;;
+*)		exit 1 ;;
+esac
+EOF
+	chmod +x fake-service
+	atf_check jexec "$YJAIL" "$PWD/fake-service" rtadvd onerestart
+	for i in $(seq 1 20); do
+		jexec "$YJAIL" rtadvctl show "$b" 2>/dev/null | \
+		    grep -q 'MaxAdvInterval' && break
+		sleep 0.5
+	done
+	atf_check -o match:'MinAdvInterval/MaxAdvInterval: 3m20s/10m' \
+	    jexec "$YJAIL" rtadvctl show "$b"
+	SOCK="unix:$PWD/s.sock"
+	jexec "$YJAIL" "$JGD" -F -l "$SOCK" -f "$PWD/etc/jail.conf" \
+	    -D "$PWD/etc/jail.conf.d" -1 "$PWD/history.conf" \
+	    --nacm "$PWD/nacm.cbor" --root "$PWD/root" -s "$PWD/fake-service" \
+	    -6 "$PWD/rtadvd.conf" > daemon.out 2>&1 &
+	echo $! > daemon.pid
+	wait_for "grep -q ready daemon.out"
+	grep -q ready daemon.out || atf_fail "no agent: $(cat daemon.out)"
+	# Running has the record, advertised.
+	"$JGC" -c "$SOCK" get -d running interfaces > run.json
+	atf_check -o match:'"max-rtr-adv-interval":600' \
+	    -o match:'"send-advertisements":true' cat run.json
+	# Confirmed commit: the file written, rtadvd reloaded, not restarted.
+	cp rtadvd.conf rtadvd.before
+	sed -e 's|"max-rtr-adv-interval":600|"max-rtr-adv-interval":300|' \
+	    run.json > new.json
+	atf_check "$JGC" -c "$SOCK" edit interfaces @new.json
+	: > service.log
+	atf_check -o match:'^confirm within 6 seconds' \
+	    "$JGC" -c "$SOCK" commit -c 6 -a rc-conf-files
+	atf_check -o match:'maxinterval#300' cat rtadvd.conf
+	atf_check -o match:'MinAdvInterval/MaxAdvInterval: 3m20s/5m$' \
+	    jexec "$YJAIL" rtadvctl show "$b"
+	atf_check -o not-match:'onerestart' cat service.log
+	atf_check -o match:'"max-rtr-adv-interval":300' \
+	    "$JGC" -c "$SOCK" get -d operational interfaces
+	# Not confirmed: the file as it was, rtadvd reloaded by it.
+	wait_for "cmp -s rtadvd.before rtadvd.conf"
+	wait_for "jexec $YJAIL rtadvctl show $b | grep -q '/10m\$'"
+	atf_check cmp rtadvd.before rtadvd.conf
+	atf_check -o match:'MinAdvInterval/MaxAdvInterval: 3m20s/10m$' \
+	    jexec "$YJAIL" rtadvctl show "$b"
+}
+commit_rtadv_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" >/dev/null 2>&1
+	[ -f rtadvd.pid ] && kill "$(cat rtadvd.pid)" >/dev/null 2>&1
+	sleep 0.5
+	ifconfig epair72b -vnet "$YJAIL" >/dev/null 2>&1
+	[ -f made ] && ifconfig "$(cat made)" destroy >/dev/null 2>&1
+	jail -r "$YJAIL" >/dev/null 2>&1
+	true
+}
+
 yang_static_apply_cleanup()
 {
 	ifconfig epair73b -vnet "$YJAIL" >/dev/null 2>&1
@@ -5441,6 +5547,7 @@ atf_init_test_cases()
 	atf_add_test_case yang_static_apply
 	atf_add_test_case yang_route_times
 	atf_add_test_case yang_rtadv
+	atf_add_test_case commit_rtadv
 	atf_add_test_case yang_lne
 	atf_add_test_case yang_ni
 	atf_add_test_case yang_ni_bind

@@ -813,6 +813,21 @@ whose first part is served.
   a restart where not; `arcana-ra:rtadvd` in operational from
   `rtadvctl -v show`; the console's form on an interface's row
   (ra.c), saved by a confirmed commit, its warnings accepted there.
+  rtadvd_interfaces read as rc.d/rtadvd reads it (decided 2026-11-17):
+  unset, empty or `auto` with rtadvd enabled is every IPv6 interface
+  but lo0, `none` none; under auto a record's change leaves rc.conf
+  alone (rtadvctl reload), an interface auto does not have it as is
+  refused (Arcana does not guess rc.d's list); `none` is replaced, not
+  added to; the last interface taken off sets rtadvd_enable NO, as the
+  empty list is auto again at boot (superbia's rtadvd job did so
+  already). Done: `agent_test:datastores_ra`, `datastores_ra_auto`
+  (stand-ins: service, rtadvctl), `agent_root_test:commit_rtadv` (the
+  agent in a vnet jail, a real rtadvd: a confirmed commit reloaded,
+  `rtadvctl show` has it, undone at its timeout and reloaded back),
+  `pwa_test`'s RA form cases. Not checked: a restart of a real rtadvd
+  by rc.d/rtadvd (stood in for, it reads the host's rc.conf), a real
+  boot reading Arcana's rtadvd_* variables; the older job path
+  (superbia/rtadvd.c) still narrows an auto list to the one interface.
 - 2.6.2 A (done): `vrf-root` mount serving routing per FIB, with
   `parent-reference` (`/if:interfaces`, in `schema-mounts`); check: the
   FIB's table under the mount.

@@ -29,8 +29,8 @@
   To do, the datastores first, to the safety design decided on
   2026-10-28 (in the plan, 2.3): 2.3.x (candidate and
   running), 2.3.5 the rc.conf.d
-  fragments rendered (the agent edits rc.conf through sysrc(8)), the
-  running datastore's use of rtadvd.conf (2.5.1); RESTCONF (Y-4).
+  fragments rendered (the agent edits rc.conf through sysrc(8));
+  RESTCONF (Y-4).
   The interim family is gone (3.8, 0.238.0/0.336.0): every operation
   is a YANG module's, its task's { } Schema panel showing the
   module's tree.
