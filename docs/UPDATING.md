@@ -93,6 +93,57 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The archive, ACLs, rtadvd; agent 0.294.0, console 0.445.0
+
+- **The archive** (PLAN-SDN-YANG 5.6.3): the agent keeps the long run
+  of its samples on disk, in `archive/` beside history.conf
+  (`/usr/local/etc/arcana/archive`; `--archive` moves it): the host's
+  figures, each interface's, disk's, jail's and FEC relay's, and each
+  probe target's, a point every 60 s per class, a file per class per
+  UTC day.  The host is kept 30 days and the others 7, the whole
+  within 128 MiB, the oldest day of any class going first.  Settings in
+  history.conf (`archive=`, `budget=`, `class=name:step:retention`)
+  and in arcana-history's new `archive` container; read with
+  arcana-history's `read-archive` action (`arcanactl action history
+  read-archive class=host`), also over the console's RESTCONF, which a
+  viewer may use.  The history state gains `archive`.  Expect up to
+  about 50 MB a week on a host with many probe targets.  The page's
+  long-run view is not made yet.
+- **Access control lists** (RFC 8519, PLAN-SDN-YANG 6.1.1): the agent
+  serves ietf-access-control-list and compiles it to ipfw: set 29,
+  staged in set 28 and swapped in whole, rule 8 and rules 60000 to
+  64999.  An ACL change is refused while an admin rule sits at those
+  numbers or in those sets.  The ACLs are kept in acls.cbor beside the
+  agent's files and applied again at its start; nothing changes on a
+  host until ACLs are configured.  New SIDs: 93 400 to 93 599.  The
+  console's schema carries the module; nothing in the page reads it
+  yet.
+- **Router advertisements by commit**: `rtadvd_interfaces` is read as
+  rc.d/rtadvd reads it.  With rtadvd enabled and the list unset or
+  `auto`, a record's change leaves rc.conf alone and reloads rtadvd; it
+  no longer stops rtadvd or narrows the list to one interface.  A
+  change auto cannot express is refused: name the interfaces in
+  `rtadvd_interfaces` first.  Taking the last interface off sets
+  `rtadvd_enable=NO`.  A host already left with `rtadvd_enable="YES"`
+  and an empty `rtadvd_interfaces` in /usr/local/etc/rc.conf.d/arcana
+  runs rtadvd on every IPv6 interface at its next boot: set
+  `rtadvd_enable="NO"` there.
+- **BGP routes on the page**: the SD-WAN Paths tab now shows each
+  service's BGP routes (BMP) from the agents' reads, which the page's
+  own read had left out, so the view showed nothing before; its tables
+  have a filter, cleared when SD-WAN opens or the tab changes; a host's
+  edge no longer shows its vnet jails' BIRD instances.
+- **BMP of a vnet jail's edge**: a station's listener, made in the
+  jail, is closed when the jail stops (it held the jail dying) and made
+  again in the jail's new network when it runs again, so the station
+  hears BIRD after a jail restart without the service applied again.
+- **libcblink 0.2.28**: a list's keys, `unique` statements and a
+  leaf-list's values are checked in linear time (they were quadratic
+  in a peer's edit); an optional connection limit per source address
+  (`CBL_LIM_MAX_CONNS_PER_SRC`, off unless set); a union's string
+  member chosen by the validator's own patterns, in C.UTF-8; a mounted
+  node keyed twice refused.
+
 ### Route monitoring, agent 0.293.0, console 0.444.0
 
 - **BMP** (RFC 7854, PLAN-SDN-YANG 5.6.2): a service's **Route

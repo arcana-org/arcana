@@ -22,10 +22,10 @@ GH_PROJECT=	arcana
 # tarball does not carry: jailconf(8) and libjailconf; libipfeeds and
 # libwebpush, linked in; stamp: stampd(8), the STAMP reflector the agent
 # runs in the FIBs of its services, built and installed with the rest.
-GH_TUPLE=	spmzt:jailconf:19c06d0a74a4d074414c4fd4010f4aa05c6f00c1:jailconf/jailconf \
-		spmzt:ipfeeds:c1b04e5362bdb6f7584cb5a54faaddeb744c274e:ipfeeds/ipfeeds \
-		spmzt:libwebpush:e23bc37c0ad6d535b5be9ddb36d73e3d816e561c:libwebpush/libwebpush \
-		spmzt:stamp:1ac31b181f540915f2fa4e3a47b9fa0994181fe3:stamp/stamp
+GH_TUPLE=	arcana-org:jailconf:b0e9d5db52594b38382d61c1febb2036994a02bb:jailconf/jailconf \
+		arcana-org:ipfeeds:14b8f4b50046babc0d2582c27c2852ea7eeee5f4:ipfeeds/ipfeeds \
+		arcana-org:libwebpush:6b2c1c42761d67b88c547867fd7a90851e4e8e84:libwebpush/libwebpush \
+		arcana-org:stamp:052c098738611a2999e313569d2a5fd8797e364b:stamp/stamp
 
 # stampd gives up root to its own user once bound; the agent builds
 # itself as a user nothing else is (arcana-agent(8), BUILDS); not in
