@@ -515,6 +515,8 @@ sdwan_open(void)
 
 	app.node = NODE_SDWAN;
 	app.jail[0] = '\0';
+	/* Another page's filter text hides no row here. */
+	app.filter[0] = '\0';
 	app.rail_open = false;
 	sd_load();
 	if (sd.tab == SD_OVERVIEW)
@@ -943,7 +945,8 @@ of_jail(const char *object, const char *jail)
 
 /*
  * The server's sdwan read made the edge's own: a jail's (server/jail)
- * targets, faults, rules and steering, the host's without its jails'.
+ * targets, faults, BIRD instances, rules and steering, the host's
+ * without its jails'.
  */
 static void
 edge_view(ucl_object_t *data, const char *edge)
@@ -969,6 +972,16 @@ edge_view(ucl_object_t *data, const char *edge)
 		if (of_jail(jstr(t, "object"), jail))
 			ucl_array_append(keep, ucl_object_copy(t));
 	ucl_object_replace_key(data, keep, "faults", 0, false);
+	/* Its BIRD instances, their BMP stations with them: the host's
+	 * read has every jail's too. */
+	keep = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(jget(data, "bird"), &it, true)) !=
+	    NULL)
+		if (strcmp(jstr(t, "jail") != NULL ? jstr(t, "jail") : "",
+		    jail) == 0)
+			ucl_array_append(keep, ucl_object_copy(t));
+	ucl_object_replace_key(data, keep, "bird", 0, false);
 	if (jail[0] != '\0') {
 		e = NULL;
 		it = NULL;
@@ -4357,6 +4370,12 @@ view_paths(struct html *h)
 			    " on" : "", secs[i], secs[i] / 60);
 		h_raw(h, "</nav></div>");
 	}
+	/* The tables below sort and filter (tbl.c): their filter. */
+	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
+	    "data-input=\"filter\" placeholder=\"Filter the tables\" "
+	    "autocomplete=\"off\" spellcheck=\"false\"");
+	h_attr(h, "value", app.filter);
+	h_raw(h, "></div>");
 	it = NULL;
 	while ((t = ucl_object_iterate(jget(sd.plan, "tunnels"), &it, true)) !=
 	    NULL) {
@@ -10822,6 +10841,8 @@ sdwan_action(const char *act, const char *arg, const char *value)
 		    "paths") == 0 ? SD_PATHS : strcmp(arg, "security") == 0 ?
 		    SD_SECURITY : strcmp(arg, "identities") == 0 ? SD_IDENTITIES :
 		    strcmp(arg, "document") == 0 ? SD_DOCUMENT : SD_OVERVIEW;
+		/* Another tab's tables: not filtered by this one's text. */
+		app.filter[0] = '\0';
 		if (sd.tab == SD_EDGES || sd.tab == SD_OVERVIEW)
 			plan_load();
 		else if (sd.tab == SD_PATHS || sd.tab == SD_SECURITY)

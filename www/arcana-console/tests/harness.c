@@ -60,6 +60,7 @@ bool		 harness_newer_agent;
 bool		 harness_local_agent;
 bool		 harness_bird_watch;
 int		 harness_stamp_port;
+int		 harness_bmp_port;
 /* web.conf's local_agent is the test's own line. */
 bool		 harness_webconf_only_local;
 char		 harness_telegram_api[128];	/* the agent's Bot API, or "" */
@@ -412,7 +413,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 fstab[MAXPATHLEN], pdetc[MAXPATHLEN], surules[MAXPATHLEN];
 	char	 fjl[MAXPATHLEN], fjf[MAXPATHLEN + 8], tls[4 * MAXPATHLEN + 128];
 	char	 ca[MAXPATHLEN], acert[MAXPATHLEN], akey[MAXPATHLEN];
-	char	 sport[16];
+	char	 sport[16], bport[16];
 	char	*argv[144];
 	FILE	*fp;
 	pid_t	 pid;
@@ -1644,6 +1645,13 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);
 		argv[n++] = (char *)(uintptr_t)"--stamp-port";
 		argv[n++] = sport;
+	}
+	/* Its BMP stations' ports (gula/bmp.c), apart from the other
+	 * cases' agents. */
+	if (harness_bmp_port != 0) {
+		snprintf(bport, sizeof(bport), "%d", harness_bmp_port);
+		argv[n++] = (char *)(uintptr_t)"--bmp-port";
+		argv[n++] = bport;
 	}
 	/* Its certificate, to reach the console's receiver. */
 	if (harness_tls_port != 0) {

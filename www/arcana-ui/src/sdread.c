@@ -380,6 +380,61 @@ clamav_json(ucl_object_t *top, const ucl_object_t *c)
 	put(top, "clamav", o);
 }
 
+/* A BIRD instance's BMP station (PLAN-SDN-YANG 5.6.2): its peers and
+ * its last updates, newest first, as the agent's read has them. */
+static ucl_object_t *
+bmp_json(const ucl_object_t *b)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*o, *arr, *e;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	cp_int(o, "port", b, "port");
+	cp_yes(o, "listening", b, "listening");
+	cp_yes(o, "connected", b, "connected");
+	cp_time(o, "since", b, "since");
+	cp(o, "sys_name", b, "sys-name");
+	cp(o, "sys_descr", b, "sys-descr");
+	cp_int(o, "messages", b, "messages");
+	cp(o, "error", b, "error");
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((v = ucl_object_iterate(jget(b, "peer"), &it, true)) != NULL) {
+		e = ucl_object_typed_new(UCL_OBJECT);
+		cp(e, "address", v, "address");
+		cp_int(e, "distinguisher", v, "distinguisher");
+		cp_int(e, "as", v, "as");
+		cp(e, "bgp_id", v, "bgp-id");
+		cp(e, "local", v, "local");
+		put(e, "up", ucl_object_frombool(jbool(v, "up")));
+		cp_time(e, "since", v, "since");
+		cp_int(e, "down_reason", v, "down-reason");
+		cp_int(e, "announced", v, "announced");
+		cp_int(e, "withdrawn", v, "withdrawn");
+		cp_int(e, "announced_post", v, "announced-post");
+		cp_int(e, "withdrawn_post", v, "withdrawn-post");
+		cp_time(e, "last", v, "last");
+		ucl_array_append(arr, e);
+	}
+	put(o, "peers", arr);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((v = ucl_object_iterate(jget(b, "update"), &it, true)) != NULL) {
+		e = ucl_object_typed_new(UCL_OBJECT);
+		cp_time(e, "t", v, "time");
+		cp(e, "peer", v, "peer");
+		cp(e, "policy", v, "policy");
+		cp(e, "action", v, "action");
+		cp(e, "prefix", v, "prefix");
+		cp(e, "next_hop", v, "next-hop");
+		cp(e, "as_path", v, "as-path");
+		ucl_array_append(arr, e);
+	}
+	put(o, "updates", arr);
+	return (o);
+}
+
 /*
  * The SD-WAN read as the pages have it: sd arcana-sdwan's sdwan (its
  * state, its instances), pr running's probes, rd the probes' read.
@@ -444,6 +499,8 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 			ucl_array_append(ps, c);
 		}
 		put(o, "bfd", ps);
+		if (jget(v, "bmp") != NULL)
+			put(o, "bmp", bmp_json(jget(v, "bmp")));
 		ucl_array_append(arr, o);
 	}
 	put(top, "bird", arr);

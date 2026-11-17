@@ -3706,10 +3706,18 @@ whose first part is served.
   disables them; a connection from the FIB's own address on the epair,
   not the loopback, closed, BIRD's kept), console_test:sdwan_flowexp
   (the setting checked, each BIRD spec given it), pwa_test:
-  pwa_flows_sdwan (the form's setting kept in L3NM and shown again).
+  pwa_flows_sdwan (the form's setting kept in L3NM and shown again),
+  pwa_test:pwa_sdwan_bmp (a UNI's BGP and the setting by their forms,
+  applied, the agent on a --bmp-port of its own; no BGP routes before
+  the apply, the empty tables after; BMP sent by a script from FIB 1:
+  the peers with their AS, up or down with the reason, their counts,
+  the updates newest first and kept to the count, both tables sorted
+  and filtered).  It found the page's read through the fleet mount
+  (sdread.c) leaving the station out, so the view never showed, the
+  Paths tab with no filter for its tables, and a host's edge given its
+  jails' BIRD instances.
   Not run yet: a vnet jail's edge's station (the helper makes its
-  listener in the jail), and the page's BGP routes tables with a peer
-  (the browser cases' agents have no BIRD).
+  listener in the jail).
 - 5.6.3 C: a compact time-series store with retention per class;
   check: a week of samples on the VM's disk budget.
 - 5.7.1 D: the measurement chapter; TODO.

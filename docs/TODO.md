@@ -22,8 +22,7 @@
   VM round (it skips in a vnet jail).
 - Route monitoring (BMP, PLAN-SDN-YANG 5.6.2, agent 0.293.0): a vnet
   jail's edge's station (its listener made in the jail by the helper)
-  has run in no lab yet, nor the page's BGP routes tables with a peer
-  (the browser cases' agents have no BIRD).
+  has run in no lab yet.
 - The SDN and YANG redesign: docs/PLAN-SDN-YANG.md. Open decisions:
   D-5, D-11, D-12 (D-6 taken: a FIB per vpn-node).
   To do, the datastores first, to the safety design decided on

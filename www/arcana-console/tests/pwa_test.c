@@ -13656,6 +13656,279 @@ ATF_TC_CLEANUP(pwa_forms_sdwan, tc)
 }
 
 /*
+ * BIRD as BMP has it (RFC 7854), to the station of FIB argv[2] on port
+ * argv[1]: its Initiation, two peers up, IPv4 announcements before and
+ * after the import policy, the second peer down (reason 4); a second
+ * later a withdrawal and one more announcement; then connected still.
+ */
+static const char bmp_script[] =
+    "import socket, struct, sys, time\n"
+    "def msg(t, body):\n"
+    "    return struct.pack('!BIB', 3, 6 + len(body), t) + body\n"
+    "def pph(peer, asn, flags=0):\n"
+    "    return struct.pack('!BBQ', 0, flags, 0) + "
+    "socket.inet_aton(peer).rjust(16, b'\\0') + struct.pack('!I', asn) + "
+    "socket.inet_aton(peer) + struct.pack('!II', 0, 0)\n"
+    "def pfx(p):\n"
+    "    a, l = p.split('/')\n"
+    "    return bytes([int(l)]) + socket.inet_aton(a)[:(int(l) + 7) // 8]\n"
+    "def update(wd=None, ann=None, path=(), nh=None):\n"
+    "    w = pfx(wd) if wd else b''\n"
+    "    a = b''\n"
+    "    if ann:\n"
+    "        a = bytes([0x40, 1, 1, 0, 0x40, 2, 2 + 4 * len(path), 2, "
+    "len(path)]) + b''.join(struct.pack('!I', x) for x in path) + "
+    "bytes([0x40, 3, 4]) + socket.inet_aton(nh)\n"
+    "    body = struct.pack('!H', len(w)) + w + struct.pack('!H', len(a)) "
+    "+ a + (pfx(ann) if ann else b'')\n"
+    "    return b'\\xff' * 16 + struct.pack('!HB', 19 + len(body), 2) + "
+    "body\n"
+    "s = socket.socket()\n"
+    "s.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_SETFIB', 0x1014), "
+    "int(sys.argv[2]))\n"
+    "s.connect(('127.0.0.1', int(sys.argv[1])))\n"
+    "a, b = '10.10.0.2', '198.51.100.7'\n"
+    "up = socket.inet_aton('10.10.0.1').rjust(16, b'\\0') + "
+    "struct.pack('!HH', 179, 40000)\n"
+    "m = msg(4, struct.pack('!HH', 1, 10) + b'BIRD 3.4.0' + "
+    "struct.pack('!HH', 2, 6) + b'edge-a')\n"
+    "m += msg(3, pph(a, 65010) + up) + msg(3, pph(b, 64999) + up)\n"
+    "m += msg(0, pph(a, 65010) + update(ann='10.2.0.0/16', "
+    "path=(65010, 65002), nh=a))\n"
+    "m += msg(0, pph(a, 65010) + update(ann='10.1.0.0/24', path=(65010,), "
+    "nh=a))\n"
+    "m += msg(0, pph(a, 65010, 0x40) + update(ann='10.1.0.0/24', "
+    "path=(65010,), nh=a))\n"
+    "m += msg(2, pph(b, 64999) + bytes([4]))\n"
+    "s.sendall(m)\n"
+    "time.sleep(1.5)\n"
+    "s.sendall(msg(0, pph(a, 65010) + update(wd='10.2.0.0/16')) + "
+    "msg(0, pph(a, 65010) + update(ann='10.3.0.0/24', path=(65010, 65003), "
+    "nh=a)))\n"
+    "time.sleep(600)\n";
+
+/*
+ * Route monitoring (PLAN-SDN-YANG 5.6.2) with a peer: the office
+ * service's form turns it on, four updates kept; applied, its BIRD
+ * instance (sw1, FIB 1) has a station on the agent, which the Paths
+ * tab shows as BGP routes with no peer yet (none before the apply).
+ * BMP sent to it as BIRD would: the peers with their AS, up or down,
+ * their counts; the updates newest first, kept to four; both tables
+ * sorted by a column picked, and filtered.
+ */
+static void
+part_sdwan_bmp(void)
+{
+	char	 port[16], doc[2048];
+	char	*argv[5];
+	int	 ok;
+
+	if (access("/usr/local/bin/python3", X_OK) != 0)
+		atf_tc_skip("no python3 to send BMP");
+	run("document.querySelector('li[data-act=select-sdwan]').click()");
+	click_when("button[data-act=sd-tab][data-arg=document]", 20);
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')", 10);
+	run("document.querySelector('button[data-act=sd-example]').click()");
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')"
+	    ".value.includes('\"office\"')", 10);
+	run("const t = document.querySelector('form[data-form=sd-doc] "
+	    "textarea'); t.value = t.value.replaceAll('\"vtnet2\"', '\"lo0\"')"
+	    ".replace('\"geneve\"', '\"gif\"').replace(', \"fd00:64::/64\"', "
+	    "'');");
+	run("document.querySelector('form[data-form=sd-doc] button[value="
+	    "keep]').click()");
+	wait_js("/version [0-9]+/.test((document.querySelector('section."
+	    "sdwan .notice') || {}).textContent)", 20);
+	/* Not monitored yet: no station, so no BGP routes on Paths. */
+	click_when("button[data-act=sd-tab][data-arg=paths]", 10);
+	wait_js("document.querySelectorAll('.sd-path').length === 2", 30);
+	usleep(2500000);
+	ATF_CHECK_MSG(js_true("!document.querySelector('.sd-bmp')"), "BGP "
+	    "routes shown with no station");
+	/* BGP with the subscriber at hq's UNI, by the end point's form:
+	 * the service's BIRD instance on lab. */
+	click_when("button[data-act=sd-tab][data-arg=overview]", 10);
+	click_when("button[data-act=sd-swvc]", 20);
+	run("[...document.querySelectorAll('button[data-act=sd-ep-edit]')]"
+	    ".find(b => b.dataset.arg === 'hq').click()");
+	wait_js("document.querySelector('form[data-form=sd-ep] input[name="
+	    "bgp_as]')", 15);
+	run("const f = document.querySelector('form[data-form=sd-ep]'); "
+	    "f.bgp_as.value = '65010'; f.bgp_nb.value = '10.10.0.2'; "
+	    "f.bgp_fam.value = 'ipv4'; f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=sd-ep]')", 20);
+	ok = -1;
+	for (int i = 0; i < 100 && ok != 0; i++)
+		if ((ok = system("grep -q 10.10.0.2 data/l3nm.json")) != 0)
+			usleep(100000);
+	ATF_REQUIRE_MSG(ok == 0, "the UNI's BGP is not kept");
+	/* Turned on by the service's form, four updates kept: after the
+	 * end point's save, the version it made the next one's. */
+	usleep(1500000);
+	click_when("button[data-act=sd-swvc-edit]", 20);
+	wait_js("document.querySelector('form[data-form=sd-swvc] input[name="
+	    "rm_on]')", 5);
+	run("const f = document.querySelector('form[data-form=sd-swvc]'); "
+	    "f.rm_on.checked = true; f.rm_kept.value = '4'; f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
+	ok = -1;
+	for (int i = 0; i < 100 && ok != 0; i++)
+		if ((ok = system("grep -Eq '\"updates-kept\": *4' "
+		    "data/l3nm.json")) != 0)
+			usleep(100000);
+	ATF_REQUIRE_MSG(ok == 0, "route monitoring is not kept");
+	/* Applied: the station, BIRD's file naming it. */
+	click_when("button[data-act=sd-tab][data-arg=edges]", 10);
+	/* The plan, made and its edits' warnings read from the hosts: as
+	 * long as the machine takes. */
+	wait_js("document.querySelector('button[data-act=sd-apply-ask]') && "
+	    "!document.querySelector('button[data-act=sd-apply-ask]').disabled",
+	    60);
+	run("document.querySelector('button[data-act=sd-apply-ask]').click()");
+	wait_js("document.querySelector('form[data-form=confirm]')", 5);
+	run("document.querySelector('form[data-form=confirm]').requestSubmit();");
+	wait_js("(document.querySelector('.sd-applied h3') || {}).textContent"
+	    "?.startsWith('Last apply') && document.querySelector("
+	    "'button[data-act=sd-apply-ask]').disabled", 60);
+	js_str(doc, sizeof(doc), "document.querySelector('.sd-applied')"
+	    ".textContent.slice(0, 2000)");
+	ATF_REQUIRE_MSG(js_true("document.querySelector('.sd-applied h3')"
+	    ".textContent.startsWith('Last apply: done')"), "%s", doc);
+	snprintf(port, sizeof(port), "%d", harness_bmp_port + 1);
+	snprintf(doc, sizeof(doc), "grep -q 'station address ip 127.0.0.1 "
+	    "port %s;' sdwan-bird-sw1.conf", port);
+	ATF_CHECK_MSG(system(doc) == 0, "BIRD's file names no station on "
+	    "port %s", port);
+	/* The empty state: the tables, their headings, no peer yet. */
+	click_when("button[data-act=sd-tab][data-arg=paths]", 10);
+	wait_js("document.querySelector('.sd-bmp h3') && document."
+	    "querySelector('.sd-bmp h3').textContent.startsWith('BGP routes') "
+	    "&& document.querySelector('.sd-bmp tbody').textContent.includes("
+	    "'No BGP peer heard yet')", 30);
+	ATF_CHECK(js_true("[...document.querySelectorAll('.sd-bmp th[data-arg="
+	    "sd-bmp]')].map(t => t.textContent).join('|') === 'Service|Edge|"
+	    "Peer|AS|State|Since|Announced|Withdrawn|Accepted|Last update' && "
+	    "[...document.querySelectorAll('.sd-bmp th[data-arg=sd-bmpu]')]"
+	    ".map(t => t.textContent).join('|') === 'Time|Service|Edge|Peer|"
+	    "RIB-in|Action|Prefix|Next hop|AS path' && document.querySelectorAll("
+	    "'.sd-bmp table')[1].textContent.includes('No update yet')"));
+	run("document.querySelector('.sd-bmp').scrollIntoView()");
+	shot("9-sdwan-bmp-empty");
+	/* BIRD's messages, from the instance's FIB. */
+	ATF_REQUIRE((argv[0] = strdup("/usr/local/bin/python3")) != NULL);
+	put("bmp.py", bmp_script);
+	argv[1] = (char *)(uintptr_t)"bmp.py";
+	argv[2] = port;
+	argv[3] = (char *)(uintptr_t)"1";
+	argv[4] = NULL;
+	(void)spawn_server(argv, "bmp.out");
+	free(argv[0]);
+	/* The peers: each a row an edge, its address, AS and state; the
+	 * first peer's counts, the second's down with its reason. */
+	run("window.bmpRows = (k) => [...document.querySelectorAll('.sd-bmp "
+	    "table')[k].querySelectorAll('tbody tr')].map(r => [...r.cells]"
+	    ".map(c => c.textContent));");
+	wait_js("window.bmpRows(1).some(r => r[6] === '10.3.0.0/24')", 30);
+	js_str(doc, sizeof(doc), "JSON.stringify(window.bmpRows(0))."
+	    "slice(0, 2000)");
+	ATF_CHECK_MSG(js_true("(rs => rs.length === 4 && ['lab', 'lab2']."
+	    "every(e => rs.some(r => r[0] === 'office' && r[1] === e && r[2] "
+	    "=== '10.10.0.2' && r[3] === '65010' && r[4] === 'up' && r[6] === "
+	    "'3' && r[7] === '1' && r[8] === '1' && r[9] !== 'none yet') && "
+	    "rs.some(r => r[1] === e && r[2] === '198.51.100.7' && r[3] === "
+	    "'64999' && r[4] === 'down reason 4' && r[9] === 'none yet')))("
+	    "window.bmpRows(0))"), "the peers: %s", doc);
+	/* The updates: kept to four an edge, newest first; the
+	 * withdrawal and the latest announcement before the two of a
+	 * second earlier, received and accepted; the first announcement
+	 * gone. */
+	js_str(doc, sizeof(doc), "JSON.stringify(window.bmpRows(1))."
+	    "slice(0, 2000)");
+	ATF_CHECK_MSG(js_true("(rs => rs.length === 8 && !rs.some(r => r[5] "
+	    "=== 'announce' && r[6] === '10.2.0.0/16') && rs.slice(0, 4)"
+	    ".every(r => r[6] !== '10.1.0.0/24') && rs.slice(4).every(r => "
+	    "r[6] === '10.1.0.0/24' && r[5] === 'announce' && r[7] === "
+	    "'10.10.0.2' && r[8] === '65010') && rs.some(r => r[4] === "
+	    "'accepted') && rs.some(r => r[5] === 'withdraw' && r[6] === "
+	    "'10.2.0.0/16' && r[8] === '') && rs.some(r => r[0] && r[1] === "
+	    "'office' && r[3] === '10.10.0.2' && r[4] === 'received' && r[6] "
+	    "=== '10.3.0.0/24' && r[8] === '65010 65003') && rs[0][0] >= "
+	    "rs[7][0])(window.bmpRows(1))"), "the updates: %s", doc);
+	run("document.querySelector('.sd-bmp').scrollIntoView()");
+	shot("9-sdwan-bmp");
+	/* Sorted by a column picked: the peers by AS, then the other way;
+	 * the updates by prefix. */
+	run("document.querySelector('.sd-bmp th[data-arg=sd-bmp][data-value="
+	    "\"3\"]').click()");
+	wait_js("document.querySelector('.sd-bmp th[data-arg=sd-bmp][data-value="
+	    "\"3\"]').classList.contains('asc') && window.bmpRows(0)[0][3] === "
+	    "'64999' && window.bmpRows(0)[3][3] === '65010'", 10);
+	run("document.querySelector('.sd-bmp th[data-arg=sd-bmp][data-value="
+	    "\"3\"]').click()");
+	wait_js("document.querySelector('.sd-bmp th[data-arg=sd-bmp][data-value="
+	    "\"3\"]').classList.contains('desc') && window.bmpRows(0)[0][3] === "
+	    "'65010' && window.bmpRows(0)[3][3] === '64999'", 10);
+	run("document.querySelector('.sd-bmp th[data-arg=sd-bmpu][data-value="
+	    "\"6\"]').click()");
+	wait_js("document.querySelector('.sd-bmp th[data-arg=sd-bmpu]"
+	    "[data-value=\"6\"]').classList.contains('asc') && (rs => rs."
+	    "length === 8 && rs.slice(0, 4).every(r => r[6] === '10.1.0.0/24') "
+	    "&& rs.slice(6).every(r => r[6] === '10.3.0.0/24'))(window."
+	    "bmpRows(1))", 10);
+	/* Filtered: by the second peer's AS, its rows alone and no update;
+	 * by a prefix, its updates alone and no peer; then all again. */
+	run("const i = document.querySelector('section.sdwan input[data-input="
+	    "filter]'); i.value = '64999'; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("(rs => rs.length === 2 && rs.every(r => r[2] === "
+	    "'198.51.100.7'))(window.bmpRows(0)) && window.bmpRows(1).length "
+	    "=== 1 && window.bmpRows(1)[0][0].includes('nothing matches')", 10);
+	run("const i = document.querySelector('section.sdwan input[data-input="
+	    "filter]'); i.value = '10.3.0.0'; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("(rs => rs.length === 2 && rs.every(r => r[6] === "
+	    "'10.3.0.0/24'))(window.bmpRows(1)) && window.bmpRows(0).length "
+	    "=== 1 && window.bmpRows(0)[0][0].includes('nothing matches')", 10);
+	run("const i = document.querySelector('section.sdwan input[data-input="
+	    "filter]'); i.value = ''; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("window.bmpRows(0).length === 4 && window.bmpRows(1).length "
+	    "=== 8", 10);
+	/* Another tab's tables are not filtered by it. */
+	run("const i = document.querySelector('section.sdwan input[data-input="
+	    "filter]'); i.value = 'nothing-here'; i.dispatchEvent(new Event("
+	    "'input', { bubbles: true }));");
+	wait_js("window.bmpRows(0).length === 1", 10);
+	click_when("button[data-act=sd-tab][data-arg=edges]", 10);
+	click_when("button[data-act=sd-tab][data-arg=paths]", 10);
+	wait_js("document.querySelector('section.sdwan input[data-input="
+	    "filter]')?.value === '' && document.querySelector('.sd-bmp') && "
+	    "window.bmpRows(0).length === 4", 20);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_sdwan_bmp);
+ATF_TC_HEAD(pwa_sdwan_bmp, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "SD-WAN's route monitoring: turned on by the service's form, applied, BMP sent to the agent's station, the BGP routes' peers and updates shown, sorted and filtered");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_sdwan_bmp, tc)
+{
+
+	need_fibs(2);
+	/* Its own stations' ports, apart from the other cases' agents. */
+	harness_bmp_port = free_port();
+	prologue(tc, 2);
+	part_sdwan_bmp();
+}
+ATF_TC_CLEANUP(pwa_sdwan_bmp, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * The Builder's make.conf: a new one, a jail's, written in
  * poudriere.d by its form; changed again from its button.
  */
@@ -14149,6 +14422,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_nettab_ifaces);
 	ATF_TP_ADD_TC(tp, pwa_route_early);
 	ATF_TP_ADD_TC(tp, pwa_flows_sdwan);
+	ATF_TP_ADD_TC(tp, pwa_sdwan_bmp);
 	ATF_TP_ADD_TC(tp, pwa_firewall_host);
 	ATF_TP_ADD_TC(tp, pwa_firewall_rules);
 	ATF_TP_ADD_TC(tp, pwa_plugins_bird);
