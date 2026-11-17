@@ -454,8 +454,9 @@ routes_body()
 	# Read by the daemon itself, from the kernel's own lists, as
 	# netstat and sockstat would list them: what sockstat has, this has,
 	# and in parts too.
-	# A socket of its own, for a host where nothing else listens.
-	python3 -c 'import socket, time; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); time.sleep(30)' &
+	# A connection of its own, for a host with none (connections leave
+	# out what listens).
+	python3 -c 'import socket, time; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); c = socket.create_connection(s.getsockname()); a = s.accept(); time.sleep(30)' &
 	echo $! > listener.pid
 	sleep 0.5
 	atf_check -o match:'^\{"socket":\[' "$JGC" -c "$SOCK" net connections
