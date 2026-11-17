@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Route monitoring, agent 0.293.0, console 0.444.0
+
+- **BMP** (RFC 7854, PLAN-SDN-YANG 5.6.2): a service's **Route
+  monitoring** (the service form's last fieldset; arcana-l3nm's
+  route-monitoring, updates-kept 64 unless set) has each of its BIRD
+  instances send BMP to the edge's agent, on 127.0.0.1 port 1790 plus
+  the instance's FIB (arcana-agent's new `--bmp-port` moves the base).
+  The agent keeps each BGP peer, up or down, its prefixes announced and
+  withdrawn before and after the import policy, and the last updates;
+  the console reads them with the edge's state (arcana-sdwan's bmp
+  under each BIRD instance) and the service's page shows them under
+  **BGP routes**.  A monitoring instance's BGP channels keep their
+  import table, which BIRD needs for the pre-policy view: more memory,
+  a full table's worth for a full table.
+- arcana-sdwan has a third SID range (93 200); arcana-l3nm two new
+  items.
+
 ### libcblink 0.2.27, agent 0.292.2, console 0.443.2
 
 - **libcblink 0.2.27**: once `cbl_conn_free()` returns on a thread other

@@ -787,6 +787,9 @@ static const struct fm fe_m[] = {
 	F("sampling", "sampling", C), F("active_timeout", "active-timeout", C),
 	F("inactive_timeout", "inactive-timeout", C), FEND
 };
+static const struct fm rm_m[] = {
+	F("kept", "updates-kept", C), FEND
+};
 static const struct fm rl_m[] = {
 	F("name", "name", C), F("commit", "commit", N),
 	F("limit", "limit", N), FEND
@@ -879,6 +882,7 @@ static const struct fm sw_m[] = {
 	FS("bfd", "bfd", O, bfd_m), FS("tca", "tca", O, tca_m),
 	FS("probe", "probe", O, probe_m),
 	FS("flow_export", "flow-export", O, fe_m),
+	FS("route_monitoring", "route-monitoring", O, rm_m),
 	FS("rate_limiters", "rate-limiter", L, rl_m),
 	FP("security_function_policies", "security-function-policy", L,
 	    sfp_m, sfp_imp, sfp_exp),

@@ -3633,17 +3633,68 @@ whose first part is served.
   flows are taken away, the refusals, a jail's edge among them, kept
   through YANG), console_test:sdwan_flowexp (the checks, the plan's
   flowexp and the modules), pwa_test:pwa_flows_sdwan (the form's
-  collector and sampling kept in L3NM and shown again).  Not run yet:
+  collector and sampling kept in L3NM and shown again).  Run in the
+  VM round (2026-11-17, passed):
   agent_root_test:sdwan_flowexp_lab (the agent's own edge, a gre tunnel
   to a vnet jail: the rules and nodes for real, UDP to 200 ports, NetFlow
   v9 datagrams with their records at the jail's collector, the last
   when the flows are taken away; a jail's edge refused): it skips in
-  devenv, itself a vnet jail with no ng_ipfw node, and waits for the VM
-  round.  A bug the agent's case found on the way: the set's shortcut
+  devenv, itself a vnet jail with no ng_ipfw node; in the VM, 9
+  datagrams carried the 200 flows' records and the template.  A bug the agent's case found on the way: the set's shortcut
   that reloads tables alone took no account of flowexp, so flows taken
   away left their ngtee rules loaded.
 - 5.6.2 C: BMP from BIRD to the console; check: a session's updates
   seen.
+  Design (2026-11-17): the agent is each edge's BMP station (RFC 7854),
+  the console hears it through the agent's sdwan read as it hears the
+  rest, so no port opens on the console and an edge behind NAT is
+  heard alike.  A service turns it on (arcana-l3nm's route-monitoring:
+  enabled, and how many updates are kept, 64 unless set); the plan
+  gives each of the service's BIRD instances route_monitoring, and the
+  instance's file a `protocol bmp` to 127.0.0.1, port 1790 + the
+  instance's FIB (the agent's --bmp-port moves the base), monitoring
+  its RIB-in before and after policy.  The agent listens on that port
+  in that FIB (SO_SETFIB; a jail's edge's socket made in the jail by
+  the helper and handed over): wildcard, since lo0 is FIB 0's and with
+  net.inet.tcp.bind_all_fibs 0 a socket of FIB N binds no address of
+  it, while a loopback connection from FIB N reaches a wildcard
+  listener of FIB N alone; a far end not 127.0.0.1 is closed.  The port
+  a FIB apart keeps instances apart when bind_all_fibs is 1.  A thread
+  (gula/bmp.c) reads the stations: Initiation (sysName, sysDescr), Peer
+  Up and Down (the reason), Route Monitoring's BGP UPDATEs (IPv4 NLRI
+  and withdrawals, MP_REACH and MP_UNREACH for IPv4 and IPv6 unicast,
+  AS_PATH in 4 octets or 2 by the peer's A flag, NEXT_HOP), counted by
+  peer and by pre or post policy, the last updates kept; Statistics
+  and Mirroring counted and passed over; Termination closes.  Every
+  length checked against what is there; a message over 256 KiB, a
+  version not 3 or a BGP message not an UPDATE where one is due is an
+  error and the connection is dropped (BIRD connects again).  The sdwan
+  read's bird instances carry it (arcana-sdwan's bmp under each
+  instance: connected, since, the peers, the updates); the page shows a
+  service's BGP peers and updates, sorted and filtered.
+  Subtasks: 5.6.2a the station and its read (agent), 5.6.2b the
+  setting, the rendering and the page (console).
+  Done (agent 0.293.0, console 0.444.0).  The port follows the spec's
+  table, the FIB the instance runs in (on an own-table edge the edge's,
+  not the service's).  BIRD 3.4 sends pre-policy routes only from a
+  channel with its import table on, so a monitoring instance's BGP
+  channels (the UNIs' sessions and the edges' template) keep it.
+  Checked: agent_test:sdwan_bmp (BMP built by a script: Initiation, a
+  peer up, IPv4 announcements and a withdrawal, a post-policy one,
+  MP_REACH for IPv6, a message across two reads; the counts, the last
+  updates newest first, kept to the count; a connection that sends
+  version 4 dropped and said, its peers down; the station gone with the
+  setting), agent_test:yang_sdwan (the station through YANG and back),
+  agent_root_test:sdwan_bmp_lab (BIRD for real: an instance in FIB 2
+  with eBGP to a vnet jail's BIRD; the peer up, the jail's routes with
+  their AS path before and after policy, their withdrawal when the jail
+  disables them; a connection from the FIB's own address on the epair,
+  not the loopback, closed, BIRD's kept), console_test:sdwan_flowexp
+  (the setting checked, each BIRD spec given it), pwa_test:
+  pwa_flows_sdwan (the form's setting kept in L3NM and shown again).
+  Not run yet: a vnet jail's edge's station (the helper makes its
+  listener in the jail), and the page's BGP routes tables with a peer
+  (the browser cases' agents have no BIRD).
 - 5.6.3 C: a compact time-series store with retention per class;
   check: a week of samples on the VM's disk budget.
 - 5.7.1 D: the measurement chapter; TODO.

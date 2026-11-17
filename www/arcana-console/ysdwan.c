@@ -855,6 +855,73 @@ put_time(ucl_object_t *o, const char *key, const char *s)
 		put(o, key, ucl_object_fromint(epoch(s)));
 }
 
+/* An instance's BMP station (PLAN-SDN-YANG 5.6.2), as the agent's
+ * sdwan read has it. */
+static ucl_object_t *
+bmp_json(const struct arcana_sdwan_sdwan_state_bird_bmp *b)
+{
+	ucl_object_t	*o, *arr, *e;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	if (b->has_port)
+		put(o, "port", ucl_object_fromint(b->port));
+	put(o, "listening", ucl_object_frombool(b->listening));
+	put(o, "connected", ucl_object_frombool(b->connected));
+	put_time(o, "since", b->since);
+	put_str(o, "sys_name", b->sys_name);
+	put_str(o, "sys_descr", b->sys_descr);
+	put(o, "messages", ucl_object_fromint((int64_t)b->messages));
+	put_str(o, "error", b->error);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t k = 0; k < b->peer.n; k++) {
+		const struct arcana_sdwan_sdwan_state_bird_bmp_peer *p =
+		    &b->peer.v[k];
+
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put_str(e, "address", p->address.v.m0);
+		if (p->distinguisher != 0)
+			put(e, "distinguisher", ucl_object_fromint((int64_t)
+			    p->distinguisher));
+		put(e, "as", ucl_object_fromint(p->as));
+		put_str(e, "bgp_id", p->bgp_id);
+		if (p->has_local)
+			put_str(e, "local", p->local.v.m0);
+		put(e, "up", ucl_object_frombool(p->up));
+		put_time(e, "since", p->since);
+		if (p->has_down_reason)
+			put(e, "down_reason", ucl_object_fromint(p->down_reason));
+		put(e, "announced", ucl_object_fromint((int64_t)p->announced));
+		put(e, "withdrawn", ucl_object_fromint((int64_t)p->withdrawn));
+		put(e, "announced_post", ucl_object_fromint((int64_t)
+		    p->announced_post));
+		put(e, "withdrawn_post", ucl_object_fromint((int64_t)
+		    p->withdrawn_post));
+		put_time(e, "last", p->last);
+		ucl_array_append(arr, e);
+	}
+	put(o, "peers", arr);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t k = 0; k < b->update.n; k++) {
+		const struct arcana_sdwan_sdwan_state_bird_bmp_update *u =
+		    &b->update.v[k];
+
+		e = ucl_object_typed_new(UCL_OBJECT);
+		put_time(e, "t", u->time);
+		if (u->has_peer)
+			put_str(e, "peer", u->peer.v.m0);
+		put_str(e, "policy", u->policy ? "post" : "pre");
+		put_str(e, "action", u->action ? "withdraw" : "announce");
+		if (u->has_prefix)
+			put_str(e, "prefix", u->prefix.v.m0);
+		if (u->has_next_hop)
+			put_str(e, "next_hop", u->next_hop.v.m0);
+		put_str(e, "as_path", u->as_path);
+		ucl_array_append(arr, e);
+	}
+	put(o, "updates", arr);
+	return (o);
+}
+
 static ucl_object_t *
 strs(size_t n, const char *const *v)
 {
@@ -1532,6 +1599,8 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 			ucl_array_append(ps, c);
 		}
 		put(o, "bfd", ps);
+		if (b->bmp != NULL)
+			put(o, "bmp", bmp_json(b->bmp));
 		ucl_array_append(arr, o);
 	}
 	put(top, "bird", arr);

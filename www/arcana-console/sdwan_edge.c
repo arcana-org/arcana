@@ -6870,6 +6870,16 @@ bird_spec(struct plan *pl, const ucl_object_t *sw, const char *sid)
 	/* The service's table on this edge; on an own-table edge the
 	 * host's own, the first, which BIRD takes without being told. */
 	put(spec, "table", I(efib(pl, sw, sid)));
+	/* Its BGP routes monitored: BMP to the agent's station of the FIB
+	 * the instance runs in, its table. */
+	if ((v = ucl_object_lookup(sw, "route_monitoring")) != NULL) {
+		ucl_object_t	*rm;
+
+		rm = ucl_object_typed_new(UCL_OBJECT);
+		put(rm, "kept", I(ucl_object_lookup(v, "kept") != NULL ?
+		    ucl_object_toint(ucl_object_lookup(v, "kept")) : 64));
+		put(spec, "route_monitoring", rm);
+	}
 	/* The node's AS and router id where its profile says them
 	 * (l3nm_plan.c), else the service's. */
 	snprintf(nk, sizeof(nk), "%s/%s", str(sw, "id"), sid);

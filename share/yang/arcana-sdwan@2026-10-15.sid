@@ -2,8 +2,8 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sdwan",
     "module-revision": "2026-10-15",
-    "sid-file-version": 8,
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, and 81 000, 200.",
+    "sid-file-version": 9,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, and 93 200, 100.",
     "dependency-revision": [
       {
         "module-name": "cblink-gen",
@@ -34,6 +34,10 @@
       {
         "entry-point": "81000",
         "size": "200"
+      },
+      {
+        "entry-point": "93200",
+        "size": "100"
       }
     ],
     "item": [
@@ -2016,6 +2020,161 @@
         "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/steer/route/fib",
         "sid": "81195"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp",
+        "sid": "81196"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/connected",
+        "sid": "81197"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/error",
+        "sid": "81198"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/listening",
+        "sid": "81199"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/messages",
+        "sid": "93200"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer",
+        "sid": "93201"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/address",
+        "sid": "93202"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/announced",
+        "sid": "93203"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/announced-post",
+        "sid": "93204"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/as",
+        "sid": "93205"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/bgp-id",
+        "sid": "93206"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/distinguisher",
+        "sid": "93207"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/down-reason",
+        "sid": "93208"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/last",
+        "sid": "93209"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/local",
+        "sid": "93210"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/since",
+        "sid": "93211"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/up",
+        "sid": "93212"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/withdrawn",
+        "sid": "93213"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/peer/withdrawn-post",
+        "sid": "93214"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/port",
+        "sid": "93215"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/since",
+        "sid": "93216"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/sys-descr",
+        "sid": "93217"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/sys-name",
+        "sid": "93218"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update",
+        "sid": "93219"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/action",
+        "sid": "93220"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/as-path",
+        "sid": "93221"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/next-hop",
+        "sid": "93222"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/peer",
+        "sid": "93223"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/policy",
+        "sid": "93224"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/prefix",
+        "sid": "93225"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/bird/bmp/update/time",
+        "sid": "93226"
       }
     ]
   }

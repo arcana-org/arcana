@@ -2482,6 +2482,16 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 		    "inactive_timeout")) != NULL && !is_int(e, 1, 65535, NULL)))
 			return (fail(c, "flow_export: a timeout is 1 to 65535 s"));
 	}
+	/* Route monitoring (BMP to the edges' agents): how many updates
+	 * each station keeps. */
+	if ((v = ucl_object_lookup(sw, "route_monitoring")) != NULL) {
+		if (ucl_object_type(v) != UCL_OBJECT)
+			return (fail(c, "route_monitoring is an object"));
+		if ((e = ucl_object_lookup(v, "kept")) != NULL &&
+		    !is_int(e, 1, 1024, NULL))
+			return (fail(c, "route_monitoring: kept is 1 to 1024 "
+			    "updates"));
+	}
 	return (true);
 }
 

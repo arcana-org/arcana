@@ -24,7 +24,7 @@ SRCS+=		record.c \
 		pools.c storage.c zfskey.c xfer.c health.c resources.c stats.c trace.c procs.c log.c \
 		history.c events.c faults.c kmsg.c probe.c probe_echo.c \
 		probe_engine.c probe_icmp.c probe_link.c probe_mon.c probe_pm.c \
-		probe_stamp.c probe_view.c stampd.c hostwatch.c crashes.c altmark.c \
+		probe_stamp.c probe_view.c stampd.c hostwatch.c crashes.c altmark.c bmp.c \
 		ystorage.c yev.c yhist.c ylog.c ysyslog.c yprobe.c yprocs.c yalarms.c
 .PATH:		${.CURDIR}/superbia ${.CURDIR}/invidia ${.CURDIR}/ira \
 		${.CURDIR}/acedia ${.CURDIR}/avaritia ${.CURDIR}/gula \

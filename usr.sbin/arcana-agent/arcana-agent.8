@@ -3,7 +3,7 @@
 .\"
 .\" Copyright (c) 2026 Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>
 .\"
-.Dd November 11, 2026
+.Dd November 17, 2026
 .Dt ARCANA-AGENT 8
 .Os
 .Sh NAME
@@ -70,6 +70,7 @@
 .Op Fl -routes-cache Ar seconds
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -stamp-port Ar port
+.Op Fl -bmp-port Ar port
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
@@ -770,6 +771,11 @@ The UDP port the far ends'
 .Xr stampd 8
 answers STAMP on, for the probes to Arcana's far ends; default 862, 0
 to ping every target.
+.It Fl -bmp-port Ar port
+The TCP port of FIB 0's BGP Monitoring Protocol (RFC 7854) station, a
+FIB's this plus its number: an SD-WAN service that monitors its routes
+has its BIRD instances send BMP to 127.0.0.1 there, and the agent keeps
+their peers and updates for the console; default 1790.
 .It Fl -stamp-clock Ar source Ns Op : Ns Ar error
 This host's clock as the STAMP probes tell it, for one that
 .Xr ntp_gettime 2

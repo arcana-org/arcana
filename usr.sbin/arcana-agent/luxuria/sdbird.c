@@ -275,10 +275,12 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 	const ucl_object_t	*in, *v;
 	ucl_object_iter_t	 it;
 	struct instance		 ni[INSTANCES_MAX], keep[INSTANCES_MAX];
+	struct bmp_station	 mons[INSTANCES_MAX];
+	const ucl_object_t	*rm;
 	struct execres		 res;
 	char			*argv[5], path[MAXPATHLEN], *confs[INSTANCES_MAX];
 	const char		*conf, *e, *jail, *file, *host;
-	int			 n, i, k, step, nkeep;
+	int			 n, i, k, step, nkeep, nm;
 	bool			 was, ok;
 
 	if ((top = parse(json)) == NULL || ucl_object_type(top) != UCL_OBJECT) {
@@ -304,6 +306,7 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 		return (-1);
 	}
 	n = 0;
+	nm = 0;
 	it = NULL;
 	while ((in = ucl_object_iterate(ucl_object_lookup(top, "instances"),
 	    &it, true)) != NULL) {
@@ -343,6 +346,28 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 			ucl_object_unref(top);
 			*errp = wfmt(w, "%s: %s", ni[n].name, e);
 			return (-1);
+		}
+		/* Its BMP station, in the FIB it runs in: its table, the one
+		 * its file names the port of. */
+		if ((rm = ucl_object_lookup(ucl_object_lookup(in, "spec"),
+		    "route_monitoring")) != NULL) {
+			if (ucl_object_toint(ucl_object_lookup(ucl_object_lookup(
+			    in, "spec"), "table")) != ni[n].fib) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "%s: route monitoring needs the "
+				    "form's table to be the instance's fib, %d",
+				    ni[n].name, ni[n].fib);
+				return (-1);
+			}
+			memset(&mons[nm], 0, sizeof(mons[nm]));
+			snprintf(mons[nm].name, sizeof(mons[nm].name), "%s",
+			    ni[n].name);
+			mons[nm].jid = ni[n].jid;
+			mons[nm].fib = ni[n].fib;
+			mons[nm].kept = ucl_object_lookup(rm, "kept") != NULL ?
+			    (int)ucl_object_toint(ucl_object_lookup(rm, "kept")) :
+			    64;
+			nm++;
 		}
 		n++;
 	}
@@ -425,6 +450,9 @@ do_sdwan_bird(struct work *w, const char *json, const char **errp)
 	ucl_object_unref(top);
 	if (!ok)
 		return (-1);
+	/* The stations of the instances that monitor their routes; BIRD
+	 * connects again until one listens. */
+	bmp_set(jail, mons, nm);
 	/* Kept, a file per edge; a jail's with no instance goes, so that a
 	 * start makes none for a jail that has none now. */
 	file = jail[0] != '\0' ? wfmt(w, "sdwan-bird@%s.json", jail) : BIRD_FILE;
@@ -1000,6 +1028,9 @@ sdwan_bird_json(struct work *w, ucl_object_t *top)
 			ucl_array_append(ps, p);
 		}
 		ucl_object_insert_key(o, ps, "bfd", 0, false);
+		/* Its BMP station, when it monitors its routes. */
+		if ((p = bmp_json(iv[i].jail, iv[i].name)) != NULL)
+			ucl_object_insert_key(o, p, "bmp", 0, false);
 		ucl_array_append(arr, o);
 	}
 	ucl_object_insert_key(top, arr, "bird", 0, false);

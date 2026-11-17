@@ -108,6 +108,7 @@ struct opts opts = {
 	.routes_cache_s = 30,
 	.smtpd_watch_s = 60,
 	.stamp_port = 862,
+	.bmp_port = 1790,
 	.stampd_keys = "/usr/local/etc/stampd.keys",
 	.pkg_idle_s = PKG_IDLE_SEC,
 	.pkg_lanes = PKG_LANES,
@@ -138,7 +139,8 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
-    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER };
+    OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
+    OPT_BMP_PORT };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -165,6 +167,9 @@ static const struct option longopts[] = {
 	/* The UDP port Arcana's far ends reflect STAMP on (stampd(8)): a
 	 * test's own; 0, every target pinged. */
 	{ "stamp-port", required_argument, NULL, OPT_STAMP_PORT },
+	/* The port of FIB 0's BMP station (gula/bmp.c), FIB N's this plus
+	 * N: a test's own. */
+	{ "bmp-port", required_argument, NULL, OPT_BMP_PORT },
 	/* This host's clock as STAMP tells it, for one ntp_gettime(2)
 	 * does not know is synchronised: source[:error]. */
 	{ "stamp-clock", required_argument, NULL, OPT_STAMP_CLOCK },
@@ -237,6 +242,7 @@ usage(void)
 	    "                 [--exports file] [--ctl-conf file] [--hast-conf file]\n"
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
+	    "                 [--bmp-port port]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
@@ -515,6 +521,11 @@ main(int argc, char *argv[])
 			    &errstr);
 			if (errstr != NULL)
 				errx(1, "--routes-cache %s: %s", optarg, errstr);
+			break;
+		case OPT_BMP_PORT:
+			opts.bmp_port = (int)strtonum(optarg, 1, 65535, &errstr);
+			if (errstr != NULL)
+				errx(1, "--bmp-port %s: %s", optarg, errstr);
 			break;
 		case OPT_STAMP_PORT:
 			opts.stamp_port = (int)strtonum(optarg, 0, 65535, &errstr);

@@ -1759,6 +1759,96 @@ bird_live_cleanup()
 	true
 }
 
+atf_test_case sdwan_bmp_lab cleanup
+sdwan_bmp_lab_head()
+{
+	atf_set "descr" "BMP for real (PLAN-SDN-YANG 5.6.2): a service's" \
+	    "BIRD instance in FIB 2 with an eBGP session to a vnet jail's" \
+	    "BIRD, monitoring its routes; the agent's station of FIB 2" \
+	    "hears the peer up, the jail's routes with their AS path before" \
+	    "and after policy, and their withdrawal; a connection to the" \
+	    "station from the FIB's address on the epair (not the" \
+	    "loopback) closed, BIRD's kept"
+	atf_set "require.user" "root"
+	atf_set "timeout" "180"
+}
+sdwan_bmp_lab_body()
+{
+	local d="$(pwd)" e i P fibs
+
+	[ -x /usr/local/sbin/bird ] || atf_skip "no BIRD (net/bird3)"
+	fibs=$(sysctl -n net.fibs)
+	[ "$fibs" -ge 3 ] || atf_skip "net.fibs is under 3"
+	jls -j arcw_mb >/dev/null 2>&1 && atf_skip "a jail arcw_mb is there already"
+	atf_check -o ignore jail -c name=arcw_mb vnet persist path=/
+	e=$(epair_create)
+	echo "${e%a}" > epair.name
+	atf_check ifconfig $e fib 2
+	atf_check ifconfig $e inet 10.94.0.1/24 up
+	atf_check ifconfig ${e%a}b vnet arcw_mb
+	atf_check jexec arcw_mb ifconfig ${e%a}b inet 10.94.0.2/24 up
+	atf_check jexec arcw_mb ifconfig lo0 inet 127.0.0.1/8 up
+	printf '%s\n' 'router id 10.94.0.2;' '' 'protocol device device1 {' '}' '' \
+	    'protocol static own {' '	ipv4;' '	route 192.0.2.0/24 blackhole;' \
+	    '	route 198.51.100.0/24 blackhole;' '}' '' 'protocol bgp uplink {' \
+	    '	local as 65002;' '	neighbor 10.94.0.1 as 65001;' '	ipv4 {' \
+	    '		import all;' '		export where proto = "own";' '	};' '}' \
+	    > bird-mb.conf
+	atf_check /usr/local/sbin/bird -p -c bird-mb.conf
+	jexec arcw_mb /usr/local/sbin/bird -c "$d/bird-mb.conf" -s "$d/mb.ctl" \
+	    -P "$d/mb.pid" || atf_fail "the jail's bird did not start"
+	P=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1] - 2)')
+	DAEMON_ARGS="--bmp-port $P"
+	start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    "{\"instances\":[{\"name\":\"bmplab\",\"fib\":2,\"spec\":{\"service\":\"bmplab\",\"fib\":2,\"table\":2,\"as\":65001,\"router_id\":\"10.94.0.1\",\"route_monitoring\":{\"kept\":16},\"unis\":[{\"id\":\"u1\",\"end_point\":\"e1\",\"interface\":\"$e\",\"bgp\":{\"as\":65002,\"neighbors\":[\"10.94.0.2\"]}}]}}]}"
+	for i in $(seq 1 90); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"prefix":"198.51.100.0/24"' sdwan.out &&
+		    grep -q '"prefix":"192.0.2.0/24"' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:"\"bmp\":\\{\"port\":$((P + 2)),\"listening\":true,\"connected\":true" \
+	    -o match:'"address":"10.94.0.2","as":65002,"bgp_id":"10.94.0.2","local":"10.94.0.1","up":true' \
+	    -o match:'"policy":"pre","action":"announce","prefix":"198.51.100.0/24","next_hop":"10.94.0.2","as_path":"65002"' \
+	    -o match:'"policy":"post","action":"announce","prefix":"192.0.2.0/24","next_hop":"10.94.0.2","as_path":"65002"' \
+	    cat sdwan.out
+	# A far end not the loopback: the FIB's own address on the epair,
+	# reaching its wildcard listener (the host's firewall may keep the
+	# jail's from it); closed at once, BIRD's connection kept.
+	atf_check -o inline:"closed\n" setfib 2 python3 -c "
+import socket
+s = socket.create_connection(('10.94.0.1', $((P + 2))), timeout=5)
+s.sendall(b'\x03\x00\x00\x00\x06\x05')
+s.settimeout(5)
+print('closed' if s.recv(1) == b'' else 'open')"
+	atf_check -o match:'"connected":true' -o not-match:'"error"' \
+	    "$JGC" -c "$SOCK" sdwan
+	# The jail's routes taken away: withdrawn, as the station says.
+	atf_check -o ignore /usr/local/sbin/birdc -s mb.ctl disable own
+	for i in $(seq 1 30); do
+		"$JGC" -c "$SOCK" sdwan > sdwan.out 2>/dev/null
+		grep -q '"action":"withdraw","prefix":"198.51.100.0/24"' sdwan.out && break
+		sleep 1
+	done
+	atf_check -o match:'"policy":"pre","action":"withdraw","prefix":"198.51.100.0/24"' \
+	    -o match:'"address":"10.94.0.2","as":65002,[^}]*"withdrawn":2,' cat sdwan.out
+}
+sdwan_bmp_lab_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	pkill -f 'sdwan-bird-bmplab\.conf' 2>/dev/null
+	[ -f mb.pid ] && kill "$(cat mb.pid)" 2>/dev/null
+	sleep 0.5
+	if [ -f epair.name ]; then
+		e=$(cat epair.name)
+		ifconfig ${e}b -vnet arcw_mb 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
+	jail -r arcw_mb 2>/dev/null
+	true
+}
+
 atf_test_case pkg_lanes cleanup
 pkg_lanes_head()
 {
@@ -5393,6 +5483,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_flowexp_lab
 	atf_add_test_case sdwan_links
 	atf_add_test_case bird_live
+	atf_add_test_case sdwan_bmp_lab
 	atf_add_test_case sctp_multihome
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback

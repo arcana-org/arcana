@@ -1095,6 +1095,181 @@ module arcana-sdwan {
               "Since when.";
           }
         }
+        container bmp {
+          description
+            "Its BMP station (RFC 7854) on the agent, when the service
+             monitors its routes: what BIRD said of its BGP peers and
+             their updates.";
+          leaf port {
+            type inet:port-number;
+            description
+              "The station's port, on 127.0.0.1 of the instance's FIB.";
+          }
+          leaf listening {
+            type boolean;
+            description
+              "The station listens.";
+          }
+          leaf connected {
+            type boolean;
+            description
+              "BIRD is connected to it.";
+          }
+          leaf since {
+            type yang:date-and-time;
+            description
+              "Connected, or not, since.";
+          }
+          leaf sys-name {
+            type string;
+            description
+              "The sysName of BIRD's Initiation.";
+          }
+          leaf sys-descr {
+            type string;
+            description
+              "The sysDescr of BIRD's Initiation.";
+          }
+          leaf messages {
+            type yang:counter64;
+            description
+              "The messages read.";
+          }
+          leaf error {
+            type string;
+            description
+              "Why the connection was last dropped, or the station does
+               not listen.";
+          }
+          list peer {
+            key "address distinguisher";
+            description
+              "A BGP peer BIRD monitors.";
+            leaf address {
+              type inet:ip-address-no-zone;
+              description
+                "The peer.";
+            }
+            leaf distinguisher {
+              type uint64;
+              description
+                "Its route distinguisher; 0 for a global instance's.";
+            }
+            leaf as {
+              type inet:as-number;
+              description
+                "Its AS.";
+            }
+            leaf bgp-id {
+              type inet:ipv4-address-no-zone;
+              description
+                "Its BGP identifier.";
+            }
+            leaf local {
+              type inet:ip-address-no-zone;
+              description
+                "The local address of the session.";
+            }
+            leaf up {
+              type boolean;
+              description
+                "The session is up.";
+            }
+            leaf since {
+              type yang:date-and-time;
+              description
+                "Up, or down, since.";
+            }
+            leaf down-reason {
+              type uint8;
+              description
+                "Why it went down, RFC 7854 4.9's code.";
+            }
+            leaf announced {
+              type yang:counter64;
+              description
+                "Prefixes announced, before policy.";
+            }
+            leaf withdrawn {
+              type yang:counter64;
+              description
+                "Prefixes withdrawn, before policy.";
+            }
+            leaf announced-post {
+              type yang:counter64;
+              description
+                "Prefixes announced, after policy.";
+            }
+            leaf withdrawn-post {
+              type yang:counter64;
+              description
+                "Prefixes withdrawn, after policy.";
+            }
+            leaf last {
+              type yang:date-and-time;
+              description
+                "Its last update.";
+            }
+          }
+          list update {
+            description
+              "The last updates, newest first.";
+            leaf time {
+              type yang:date-and-time;
+              description
+                "When it came.";
+            }
+            leaf peer {
+              type inet:ip-address-no-zone;
+              description
+                "From which peer.";
+            }
+            leaf policy {
+              type enumeration {
+                enum pre {
+                  description
+                    "Before the import policy.";
+                }
+                enum post {
+                  description
+                    "After it.";
+                }
+              }
+              description
+                "Which RIB-in.";
+            }
+            leaf action {
+              type enumeration {
+                enum announce {
+                  description
+                    "Announced.";
+                }
+                enum withdraw {
+                  description
+                    "Withdrawn.";
+                }
+              }
+              description
+                "What happened to the prefix.";
+            }
+            leaf prefix {
+              type inet:ip-prefix;
+              description
+                "The prefix.";
+            }
+            leaf next-hop {
+              type inet:ip-address-no-zone;
+              description
+                "Its next hop, announced.";
+            }
+            leaf as-path {
+              type string;
+              description
+                "Its AS path, announced: the AS numbers, sets in
+                 braces.";
+            }
+          }
+        }
       }
       list dhcp {
         key "name";

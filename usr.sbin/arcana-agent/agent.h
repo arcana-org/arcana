@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.292.2"
+#define	ARCANA_AGENT_VERSION	"0.293.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -190,6 +190,7 @@ struct opts {
 	int		 routes_cache_s;	/* --routes-cache: a FIB's count kept */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
 	int		 stamp_port;	/* --stamp-port: far ends' STAMP; 0 none */
+	int		 bmp_port;	/* --bmp-port: FIB 0's BMP station */
 	const char	*stampd_keys;	/* --stampd-keys: stampd(8)'s key file */
 	const char	*stamp_clock;	/* --stamp-clock, as given; NULL none */
 	int		 pkg_idle_s;	/* --pkg-idle: a silent pkg, stopped after */
@@ -1023,6 +1024,20 @@ int		 altmark_rules_out(FILE *, const char *,
 bool		 altmark_marks_before(const char *);
 void		 altmark_set(const char *, int, const struct am_service *, int);
 struct ucl_object_s *altmark_json(const char *);
+
+/* gula/bmp.c: an instance's BMP station (RFC 7854). */
+struct bmp_station {
+	char	name[40];	/* the BIRD instance */
+	char	jail[64];	/* its edge, a vnet jail; "" the host */
+	int	jid;
+	int	fib;
+	int	kept;		/* updates kept */
+};
+#define	BMP_KEPT_MAX	1024
+int		 bmp_port(int);
+int		 bmp_listen(int, int);
+void		 bmp_set(const char *, const struct bmp_station *, int);
+struct ucl_object_s *bmp_json(const char *, const char *);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);
@@ -1494,6 +1509,7 @@ int		 route_socket(void);
 int		 helper_netlink(int);
 int		 helper_icmp_socket(int, int);
 int		 helper_ipfw_socket(int);
+int		 helper_bmp_socket(int, int, int);
 unsigned int	 plugins_here(void);
 int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);

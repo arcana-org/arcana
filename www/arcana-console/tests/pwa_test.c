@@ -6965,7 +6965,8 @@ part_flows_sdwan(void)
 	    "'99.9'; f.pb_measurement_interval.value = '30'; f.pb_classes."
 	    "value = 'voice=46'; "
 	    "f.fe_collector.value = '192.0.2.10'; f.fe_sampling.value = "
-	    "'100'; f.requestSubmit();");
+	    "'100'; f.rm_on.checked = true; f.rm_kept.value = '8'; "
+	    "f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
 	/* Kept once the save is answered, which the form's closing does not
 	 * wait for. */
@@ -6982,6 +6983,7 @@ part_flows_sdwan(void)
 			    "grep -Eq '\"collector\": "
 			    "*\"192.0.2.10\"' data/l3nm.json && grep -Eq "
 			    "'\"sampling\": *100' data/l3nm.json && "
+			    "grep -Eq '\"updates-kept\": *8' data/l3nm.json && "
 			    "grep -Eq '\"name\": *\"voice\"' data/l3nm.json")) !=
 			    0)
 				usleep(100000);
@@ -7002,7 +7004,9 @@ part_flows_sdwan(void)
 	    "document.querySelector('form[data-form=sd-swvc] input[name="
 	    "fe_collector]').value === '192.0.2.10' && document."
 	    "querySelector('form[data-form=sd-swvc] input[name=fe_sampling]')"
-	    ".value === '100'", 10);
+	    ".value === '100' && document.querySelector('form[data-form="
+	    "sd-swvc] input[name=rm_on]').checked && document.querySelector("
+	    "'form[data-form=sd-swvc] input[name=rm_kept]').value === '8'", 10);
 	run("document.querySelector('.modal button[data-act=close]').click()");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 10);
 	/*

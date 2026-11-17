@@ -634,6 +634,46 @@ main(int argc, char **argv)
 				    s.bird.v[i].bfd.v[k].has_state ? cstates[
 				    s.bird.v[i].bfd.v[k].state] : "-", str(
 				    s.bird.v[i].bfd.v[k].since));
+			if (s.bird.v[i].bmp != NULL) {
+				const struct arcana_sdwan_sdwan_state_bird_bmp
+				    *b = s.bird.v[i].bmp;
+
+				printf("  bmp port=%u listening=%s connected=%s "
+				    "since=%s name=%s descr=%s messages=%ju "
+				    "error=%s\n", b->port, b->listening ? "yes" :
+				    "no", b->connected ? "yes" : "no",
+				    str(b->since), str(b->sys_name),
+				    str(b->sys_descr), (uintmax_t)b->messages,
+				    str(b->error));
+				for (size_t k = 0; k < b->peer.n; k++)
+					printf("    peer %s rd=%ju as=%u id=%s local=%s "
+					    "up=%s since=%s reason=%s %ju/%ju %ju/%ju "
+					    "last=%s\n", b->peer.v[k].address.v.m0,
+					    (uintmax_t)b->peer.v[k].distinguisher,
+					    b->peer.v[k].as, str(b->peer.v[k].bgp_id),
+					    b->peer.v[k].has_local ?
+					    b->peer.v[k].local.v.m0 : "-",
+					    b->peer.v[k].up ? "yes" : "no",
+					    str(b->peer.v[k].since),
+					    b->peer.v[k].has_down_reason ? "set" : "-",
+					    (uintmax_t)b->peer.v[k].announced,
+					    (uintmax_t)b->peer.v[k].withdrawn,
+					    (uintmax_t)b->peer.v[k].announced_post,
+					    (uintmax_t)b->peer.v[k].withdrawn_post,
+					    str(b->peer.v[k].last));
+				for (size_t k = 0; k < b->update.n; k++)
+					printf("    update %s %s %s %s %s nh=%s path=%s\n",
+					    str(b->update.v[k].time),
+					    b->update.v[k].has_peer ?
+					    b->update.v[k].peer.v.m0 : "-",
+					    b->update.v[k].policy ? "post" : "pre",
+					    b->update.v[k].action ? "withdraw" :
+					    "announce", b->update.v[k].has_prefix ?
+					    b->update.v[k].prefix.v.m0 : "-",
+					    b->update.v[k].has_next_hop ?
+					    b->update.v[k].next_hop.v.m0 : "-",
+					    str(b->update.v[k].as_path));
+			}
 		}
 		for (size_t i = 0; i < s.dhcp.n; i++) {
 			printf("dhcp %s fib=%u running=%s\n", s.dhcp.v[i].name,

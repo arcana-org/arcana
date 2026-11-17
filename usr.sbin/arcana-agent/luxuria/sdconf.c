@@ -36,6 +36,8 @@
 #include "agent.h"
 
 #define	SPEC_DEPTH	8
+/* A BGP channel's Adj-RIB-In kept, for BMP's pre-policy monitoring. */
+#define	ITAB		"\t\timport table on;\n"
 #define	WORD_MAX	1024
 #define	LIST_MAX	4096	/* addresses, prefixes or names a list */
 
@@ -2071,7 +2073,7 @@ bird_channel(FILE *b, const char *fam, int64_t pref, const char *export,
 static void
 bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
     const char *what, const char *id, const char *sym, const char *ifn,
-    int64_t as)
+    int64_t as, bool itab)
 {
 	const ucl_object_t	*rs, *r, *m, *cm;
 	ucl_object_iter_t	 nit, cit;
@@ -2132,12 +2134,14 @@ bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
 				    "hold_time")));
 			if (strcmp(fam, "ipv6") != 0 && family(
 			    ucl_object_tostring_forced(m)) == AF_INET)
-				bird_channel(b, "ipv4", 256 - dist, exp, ibgp ?
-				    "\t\tnext hop self;\n" : "");
+				bird_channel(b, "ipv4", 256 - dist, exp, wfmt(w,
+				    "%s%s", ibgp ? "\t\tnext hop self;\n" : "",
+				    itab ? ITAB : ""));
 			if (strcmp(fam, "ipv4") != 0 && family(
 			    ucl_object_tostring_forced(m)) == AF_INET6)
-				bird_channel(b, "ipv6", 256 - dist, exp, ibgp ?
-				    "\t\tnext hop self;\n" : "");
+				bird_channel(b, "ipv6", 256 - dist, exp, wfmt(w,
+				    "%s%s", ibgp ? "\t\tnext hop self;\n" : "",
+				    itab ? ITAB : ""));
 			fprintf(b, "}\n\n");
 		}
 	}
@@ -2433,6 +2437,13 @@ bird_wrong(const ucl_object_t *spec)
 	    !num_ok(o, "multiplier", 1, 255)))
 		return ("bfd's interfaces are names, its interval and "
 		    "multiplier numbers in range");
+	if ((o = ucl_object_lookup(spec, "route_monitoring")) != NULL &&
+	    (ucl_object_type(o) != UCL_OBJECT || !num_ok(o, "kept", 1,
+	    BMP_KEPT_MAX)))
+		return ("route_monitoring is an object, its kept a number from "
+		    "1 to 1024");
+	if (o != NULL && bmp_port((int)sint(spec, "table", 0)) == -1)
+		return ("route_monitoring's table has no BMP port");
 	it = NULL;
 	while ((e = ucl_object_iterate(ucl_object_lookup(ucl_object_lookup(
 	    spec, "sets"), "sets"), &it, true)) != NULL) {
@@ -2517,7 +2528,7 @@ bird_ucs(struct work *w, FILE *b, const ucl_object_t *spec, const char *host)
 	    sval(spec, "router_id"), sval(spec, "interface"), ktab, ktab);
 	bird_routing(w, b, spec, "UCS", sval(spec, "end_point"), symbol(w,
 	    sstr(spec, "end_point")), sval(spec, "interface"), sint(spec, "as",
-	    DEFAULT_AS));
+	    DEFAULT_AS), false);
 }
 
 /*
@@ -2547,7 +2558,7 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 {
 	const ucl_object_t	*bfd, *pe, *u;
 	ucl_object_iter_t	 it;
-	const char		*ktab, *kexp, *kexp6, *role, *why;
+	const char		*ktab, *kexp, *kexp6, *role, *why, *itab;
 	FILE			*b;
 	char			*buf;
 	size_t			 len;
@@ -2625,6 +2636,15 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	    "merge paths on;\n\tpersist;\n\tipv6 {\n\t\timport filter { "
 	    "preference = 200; accept; };\n\t\t%s\n\t};\n}\n\n", ktab, kexp,
 	    ktab, kexp6);
+	/* The BGP sessions' updates, to the agent's station of the FIB it
+	 * runs in, its table (BMP, RFC 7854; gula/bmp.c): the RIB-in before
+	 * and after its policy. */
+	if (ucl_object_lookup(spec, "route_monitoring") != NULL)
+		fprintf(b, "# The BGP sessions' updates, to arcana-agent (BMP)\n"
+		    "protocol bmp arcana_bmp {\n\tstation address ip 127.0.0.1 "
+		    "port %d;\n\tmonitoring rib in pre_policy;\n\tmonitoring "
+		    "rib in post_policy;\n}\n\n", bmp_port((int)sint(spec, "table",
+		    0)));
 	/* BFD on each tunnel interface here (R58, R59, R159) and the UNIs
 	 * whose neighbours are watched by it: the iBGP sessions go down
 	 * with it, and the agent reads the sessions. */
@@ -2664,9 +2684,10 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	if (sstr(spec, "md5") != NULL)
 		fprintf(b, "\tauthentication md5;\n\tpassword \"%s\";\n",
 		    sstr(spec, "md5"));
+	itab = ucl_object_lookup(spec, "route_monitoring") != NULL ? ITAB : "";
 	fprintf(b, "\tipv4 {\n\t\timport all;\n\t\texport filter to_edges;\n"
-	    "\t\tnext hop self;\n\t};\n\tipv6 {\n\t\timport all;\n\t\texport "
-	    "filter to_edges;\n\t\tnext hop self;\n\t};\n}\n\n");
+	    "\t\tnext hop self;\n%s\t};\n\tipv6 {\n\t\timport all;\n\t\texport "
+	    "filter to_edges;\n\t\tnext hop self;\n%s\t};\n}\n\n", itab, itab);
 	/* Between the loopbacks, one session with each edge; or by each
 	 * tunnel, or with the control plane's host alone, which reflects
 	 * to all (RFC 4456). */
@@ -2697,6 +2718,7 @@ bird_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 	while ((u = ucl_object_iterate(ucl_object_lookup(spec, "unis"), &it,
 	    true)) != NULL)
 		bird_routing(w, b, u, "UNI", sval(u, "id"), symbol(w, sstr(u,
-		    "end_point")), sval(u, "interface"), as);
+		    "end_point")), sval(u, "interface"), as, ucl_object_lookup(spec,
+		    "route_monitoring") != NULL);
 	return (closed(w, b, &buf, errp));
 }

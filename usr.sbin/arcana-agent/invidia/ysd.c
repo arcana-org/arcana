@@ -79,6 +79,89 @@ addr_union(cbl_yarena *a, const ucl_object_t *o, const char *key, void *u)
 #define	ALLOC_N(a, p, n)	(((p) = cbl_yarena_alloc((a), ((n) + 1) * \
 	sizeof(*(p)))) != NULL)
 
+/* An instance's BMP station, as gula/bmp.c reads it: NULL when it has
+ * none, or there is no memory for it. */
+static const struct arcana_sdwan_sdwan_state_bird_bmp *
+bmp_of(cbl_yarena *a, const ucl_object_t *o)
+{
+	struct arcana_sdwan_sdwan_state_bird_bmp		*b;
+	struct arcana_sdwan_sdwan_state_bird_bmp_peer		*p;
+	struct arcana_sdwan_sdwan_state_bird_bmp_update		*u;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	const char		*s;
+	int64_t			 n;
+	size_t			 k;
+
+	if (o == NULL || (b = cbl_yarena_alloc(a, sizeof(*b))) == NULL)
+		return (NULL);
+	memset(b, 0, sizeof(*b));
+	YJ_NUM(o, "port", b, port);
+	b->listening = yj_yes(o, "listening", &b->has_listening);
+	b->connected = yj_yes(o, "connected", &b->has_connected);
+	if (yj_num(o, "since", &n))
+		b->since = datetime(a, n);
+	b->sys_name = yj_str(a, o, "sys_name");
+	b->sys_descr = yj_str(a, o, "sys_descr");
+	YJ_NUM(o, "messages", b, messages);
+	b->error = yj_str(a, o, "error");
+	if (!ALLOC_N(a, p, yj_count(ucl_object_lookup(o, "peers"))) ||
+	    !ALLOC_N(a, u, yj_count(ucl_object_lookup(o, "updates"))))
+		return (NULL);
+	k = 0;
+	YJ_EACH(ucl_object_lookup(o, "peers"), it, e) {
+		memset(&p[k], 0, sizeof(p[k]));
+		if (!addr_union(a, e, "address", &p[k].address))
+			continue;
+		if (yj_num(e, "distinguisher", &n))
+			p[k].distinguisher = (uint64_t)n;
+		YJ_NUM(e, "as", &p[k], as);
+		p[k].bgp_id = yj_str(a, e, "bgp_id");
+		p[k].has_local = addr_union(a, e, "local", &p[k].local);
+		p[k].up = yj_yes(e, "up", &p[k].has_up);
+		if (yj_num(e, "since", &n))
+			p[k].since = datetime(a, n);
+		YJ_NUM(e, "down_reason", &p[k], down_reason);
+		YJ_NUM(e, "announced", &p[k], announced);
+		YJ_NUM(e, "withdrawn", &p[k], withdrawn);
+		YJ_NUM(e, "announced_post", &p[k], announced_post);
+		YJ_NUM(e, "withdrawn_post", &p[k], withdrawn_post);
+		if (yj_num(e, "last", &n))
+			p[k].last = datetime(a, n);
+		k++;
+	}
+	b->peer.n = k;
+	b->peer.v = p;
+	k = 0;
+	YJ_EACH(ucl_object_lookup(o, "updates"), it, e) {
+		memset(&u[k], 0, sizeof(u[k]));
+		if (yj_num(e, "t", &n))
+			u[k].time = datetime(a, n);
+		u[k].has_peer = addr_union(a, e, "peer", &u[k].peer);
+		if ((s = ucl_object_tostring(ucl_object_lookup(e, "policy"))) !=
+		    NULL) {
+			u[k].has_policy = true;
+			u[k].policy = strcmp(s, "post") == 0 ?
+			    ARCANA_SDWAN_SDWAN_STATE_BIRD_BMP_UPDATE_POLICY_POST :
+			    ARCANA_SDWAN_SDWAN_STATE_BIRD_BMP_UPDATE_POLICY_PRE;
+		}
+		if ((s = ucl_object_tostring(ucl_object_lookup(e, "action"))) !=
+		    NULL) {
+			u[k].has_action = true;
+			u[k].action = strcmp(s, "withdraw") == 0 ?
+			    ARCANA_SDWAN_SDWAN_STATE_BIRD_BMP_UPDATE_ACTION_WITHDRAW :
+			    ARCANA_SDWAN_SDWAN_STATE_BIRD_BMP_UPDATE_ACTION_ANNOUNCE;
+		}
+		u[k].has_prefix = addr_union(a, e, "prefix", &u[k].prefix);
+		u[k].has_next_hop = addr_union(a, e, "next_hop", &u[k].next_hop);
+		u[k].as_path = yj_str(a, e, "as_path");
+		k++;
+	}
+	b->update.n = k;
+	b->update.v = u;
+	return (b);
+}
+
 /* An object of o's (lists, lua) as name and text pairs. */
 struct named {
 	const char	*name;
@@ -1467,6 +1550,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 		}
 		bi[k].bfd.n = m;
 		bi[k].bfd.v = bb;
+		bi[k].bmp = bmp_of(a, ucl_object_lookup(e, "bmp"));
 		k++;
 	}
 	out->bird.n = k;

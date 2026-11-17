@@ -16836,7 +16836,8 @@ CONSOLE_TC(sdwan_flowexp, "Flow records (PLAN-SDN-YANG 5.6.1): a service's "
     "flow_export checked (an IPv4 collector, a sampling of 1 to 65535) "
     "and kept through L3NM; the plan gives each edge its services' "
     "flowexp, their tunnels there, and ng_ipfw, ng_netflow and ng_ksocket "
-    "loaded and kept")
+    "loaded and kept; route monitoring (5.6.2) checked and given each "
+    "BIRD instance's spec")
 ATF_TC_BODY(sdwan_flowexp, tc)
 {
 	struct authn	a;
@@ -16899,6 +16900,17 @@ ATF_TC_BODY(sdwan_flowexp, tc)
 	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "alternate marking is "
 	    "off") != NULL, "%s", r.body);
 	resp_free(&r);
+	/* Route monitoring (BMP, 5.6.2): a count out of range refused; kept,
+	 * each BIRD instance's spec monitors its routes. */
+	ATF_REQUIRE(swap_in(doc, "\"flow_export\":{", "\"route_monitoring\":{"
+	    "\"kept\":0},\"flow_export\":{", t1, sizeof(t1)));
+	r4_check(t1, &r);
+	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "route_monitoring: kept "
+	    "is 1 to 1024 updates") != NULL, "%s", r.body);
+	resp_free(&r);
+	ATF_REQUIRE(swap_in(doc, "\"flow_export\":{", "\"route_monitoring\":{"
+	    "\"kept\":8},\"flow_export\":{", t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
 	r4_keep(doc, &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
@@ -16916,6 +16928,8 @@ ATF_TC_BODY(sdwan_flowexp, tc)
 	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"kmod-ng_ipfw\"") != NULL &&
 	    strstr(r.body, "\"args\":[\"ng_netflow\"]") != NULL && strstr(r.body,
 	    "\"args\":[\"ng_ksocket\"]") != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"route_monitoring\":{\"kept\":8}") !=
+	    NULL, "%s", r.body);
 	resp_free(&r);
 }
 

@@ -1461,6 +1461,27 @@ module arcana-l3nm {
             "A flow exported once so long has passed without a packet.";
         }
       }
+      container route-monitoring {
+        presence
+          "The service's BGP routes monitored.";
+        description
+          "The BGP Monitoring Protocol (RFC 7854) from each of the
+           service's BIRD instances to its edge's agent, its station on
+           127.0.0.1 of the instance's FIB: the BGP peers, up and down,
+           and their updates before and after the import policy, read
+           by the console with the edge's state.  Each BGP channel keeps
+           its Adj-RIB-In (BIRD's import table) for the pre-policy
+           view.";
+        leaf updates-kept {
+          type uint16 {
+            range "1..1024";
+          }
+          default "64";
+          description
+            "How many of the last updates each instance's station
+             keeps.";
+        }
+      }
       list rate-limiter {
         key "name";
         ordered-by user;

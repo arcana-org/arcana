@@ -148,7 +148,7 @@ on the wire.
 | 80 100 | 100 | `arcana-events`, its second range: a route's nexthop and paths, a neighbour's family, a tunnel's jail, undo-failed's data, the read's kept, a job's user, numbered again in path order with sdwan-altmark (PLAN-SDN-YANG 5.5) | `share/yang/arcana-events@2026-10-15.sid` (62 used) |
 | 80 300 | 100 | `arcana-probe`, its second range | `share/yang/arcana-probe@2026-10-15.sid` (100 used) |
 | 80 400 | 300 | `arcana-bird`, its second range: the read, ospf and check actions, a protocol's detail, the jails' configuration | `share/yang/arcana-bird@2026-10-15.sid` (153 used) |
-| 81 000 | 200 | `arcana-sdwan`, its second range: the forms (spec, host), the jails' edges, the breakout's routes, a rule's place, the IDS' and the proxies' settings, the apply action, the state's routes, bfd, ClamAV and the IDS' build, host, ruleset, statistics and captures | `share/yang/arcana-sdwan@2026-10-15.sid` (196 used) |
+| 81 000 | 200 | `arcana-sdwan`, its second range: the forms (spec, host), the jails' edges, the breakout's routes, a rule's place, the IDS' and the proxies' settings, the apply action, the state's routes, bfd, ClamAV and the IDS' build, host, ruleset, statistics and captures | `share/yang/arcana-sdwan@2026-10-15.sid` (200 used) |
 | 82 000 | 100 | `arcana-host`, its second range: the read-certificates action, the plugins poudriere, smtpd and speederv2 | `share/yang/arcana-host@2026-10-15.sid` (17 used) |
 | 82 100 | 100 | `arcana-agent`, its second range: the transport's time, the TLS chain's certificates, config-files (82 107 on), update's downgrade and version (82 161, 82 162) | `share/yang/arcana-agent@2026-10-15.sid` (63 used) |
 | 83 000 | 100 | `arcana-host`, its third range: the agent's features and safe-wait, what hello said | `share/yang/arcana-host@2026-10-15.sid` (2 used) |
@@ -187,6 +187,7 @@ on the wire.
 | 92 800 | 200 | `ietf-network-vpn-pm@2023-03-20`, RFC 9375 (no IETF range): the services' performance view, the console's | `share/yang/ietf-network-vpn-pm@2023-03-20.sid` (116 used) |
 | 93 000 | 100 | `ietf-lime-time-types@2019-04-16`, RFC 8532 (no IETF range; imported by `ietf-network-vpn-pm`, its time units used) | `share/yang/ietf-lime-time-types@2019-04-16.sid` (14 used) |
 | 93 100 | 100 | `arcana-network-vpn-pm`, the performance view's augments: WireGuard and route-based IPsec as tunnel types, ICMP echo as a PM source, which end measured a link's one way, its DSCP and the round trip, the console's | `share/yang/arcana-network-vpn-pm@2026-11-10.sid` (44 used) |
+| 93 200 | 100 | `arcana-sdwan`, its third range: the BIRD instances' BMP stations in the state (PLAN-SDN-YANG 5.6.2) | `share/yang/arcana-sdwan@2026-10-15.sid` (27 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

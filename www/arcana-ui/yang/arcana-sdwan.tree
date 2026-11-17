@@ -256,10 +256,41 @@ module: arcana-sdwan
      |  |  |  +--ro state?   string
      |  |  |  +--ro info?    string
      |  |  +--ro bfd*
-     |  |     +--ro address?     string
-     |  |     +--ro interface?   string
-     |  |     +--ro state?       enumeration
-     |  |     +--ro since?       string
+     |  |  |  +--ro address?     string
+     |  |  |  +--ro interface?   string
+     |  |  |  +--ro state?       enumeration
+     |  |  |  +--ro since?       string
+     |  |  +--ro bmp
+     |  |     +--ro port?        inet:port-number
+     |  |     +--ro listening?   boolean
+     |  |     +--ro connected?   boolean
+     |  |     +--ro since?       yang:date-and-time
+     |  |     +--ro sys-name?    string
+     |  |     +--ro sys-descr?   string
+     |  |     +--ro messages?    yang:counter64
+     |  |     +--ro error?       string
+     |  |     +--ro peer* [address distinguisher]
+     |  |     |  +--ro address           inet:ip-address-no-zone
+     |  |     |  +--ro distinguisher     uint64
+     |  |     |  +--ro as?               inet:as-number
+     |  |     |  +--ro bgp-id?           inet:ipv4-address-no-zone
+     |  |     |  +--ro local?            inet:ip-address-no-zone
+     |  |     |  +--ro up?               boolean
+     |  |     |  +--ro since?            yang:date-and-time
+     |  |     |  +--ro down-reason?      uint8
+     |  |     |  +--ro announced?        yang:counter64
+     |  |     |  +--ro withdrawn?        yang:counter64
+     |  |     |  +--ro announced-post?   yang:counter64
+     |  |     |  +--ro withdrawn-post?   yang:counter64
+     |  |     |  +--ro last?             yang:date-and-time
+     |  |     +--ro update*
+     |  |        +--ro time?       yang:date-and-time
+     |  |        +--ro peer?       inet:ip-address-no-zone
+     |  |        +--ro policy?     enumeration
+     |  |        +--ro action?     enumeration
+     |  |        +--ro prefix?     inet:ip-prefix
+     |  |        +--ro next-hop?   inet:ip-address-no-zone
+     |  |        +--ro as-path?    string
      |  +--ro dhcp* [name]
      |  |  +--ro name       string
      |  |  +--ro fib?       uint16

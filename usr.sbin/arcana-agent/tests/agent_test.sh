@@ -2345,7 +2345,7 @@ EOT
 	atf_check -o file:want "$y" ids ids.json
 	# The state, all of it.
 	cat > state.json <<'EOT'
-{"targets":[],"probing":false,"time":1791995110,"rules":{"set":30,"rules":3,"tables":[{"name":"sw1_zone","count":2}],"objects":2,"counters":[{"rule":100,"pkts":12,"bytes":900,"text":"skipto 999 ip from any to any not recv vtnet1"}]},"steer":[{"table":"sw1_p1","prefix":"10.3.0.0/24","chosen":0,"candidates":[{"id":"tvc-1","via":"10.202.0.2","state":"up","bfd":"up"},{"id":"tvc-2","via":"10.203.0.2","state":"not probed"}]}],"steered":true,"routes":[{"fib":2,"destination":"0.0.0.0/0","chosen":0,"candidates":[{"id":"bo:a-inet","via":"192.0.2.254","state":"down"}]}],"bird":[{"name":"svc1","fib":1,"jail":"gateway","running":true,"protocols":[{"name":"peer1","proto":"BGP","state":"up","info":"Established"}],"bfd":[{"address":"10.202.0.2","interface":"wg0","state":"up","since":"2026-10-15 19:00:06"}]}],"dhcp":[{"name":"svc1","fib":1,"running":true,"leases":[{"expires":1792081510,"id":"02:00:00:00:00:09","address":"10.1.0.50","name":"laptop"}]}],"dns":[{"name":"svc1","fib":1,"running":false,"tls_cert":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"proxy":[{"name":"svc1","fib":1,"mode":"inspect","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"clamav":{"databases":[{"name":"main","file":"/var/db/clamav/main.cvd","built":"16 Sep 2021","version":62,"signatures":6647427}],"freshclam":true,"conf":true,"mirrors":["database.clamav.net"],"log":["ClamAV update process started"]},"ids":[{"name":"svc1","interfaces":["vtnet1"],"mode":"prevent","divert":8000,"running":true,"alerts_seen":4,"alerts":[{"name":"svc1","time":"2026-10-15T19:30:00.123456+0000","src":"10.1.0.50","sport":4000,"dst":"10.3.0.2","dport":23,"proto":"TCP","iface":"vtnet1","sid":1,"rev":2,"signature":"telnet","category":"","severity":2,"action":"blocked"}],"stats":{"fields":["t","pkts"],"series":[[1791995100,10],[1791995110,20]],"flows":{"http":7}},"capture":"divert","pcaps":[{"path":"/x/log.pcap.1791995000","size":24,"at":1791995000,"from":1791995000}],"captures":[],"replay":{"file":"a.pcap","alerts":1},"offload":{"vtnet1":["rxcsum","tso4"]}}],"ids_build":{"version":"8.0.7","lua":true,"ipfw":true},"ids_host":{"ncpu":4,"ndomains":1,"irqs":[{"irq":20,"name":"vtnet1:rxq0","cpus":"0-3"}]},"ids_ruleset":{"path":"/var/lib/suricata/rules/suricata.rules","at":1791990000,"size":1024},"record":{"count":7,"seq":7,"untold":1,"last":[{"t":1791995119,"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"vtnet1","comment":"deny-ssh"}]},"keys":[{"interface":"ipsec0","public":"AAAA","next":"BBBB","keyed_at":1791990000,"lifetime":86400,"spi_in":1001,"spi_out":1002,"pending":true}],"faults":[{"t":1791995118,"type":"tunnel","severity":"Major","object":"tvc-2","by":"probe","description":"no reply","cleared":false,"compressed":true}]}
+{"targets":[],"probing":false,"time":1791995110,"rules":{"set":30,"rules":3,"tables":[{"name":"sw1_zone","count":2}],"objects":2,"counters":[{"rule":100,"pkts":12,"bytes":900,"text":"skipto 999 ip from any to any not recv vtnet1"}]},"steer":[{"table":"sw1_p1","prefix":"10.3.0.0/24","chosen":0,"candidates":[{"id":"tvc-1","via":"10.202.0.2","state":"up","bfd":"up"},{"id":"tvc-2","via":"10.203.0.2","state":"not probed"}]}],"steered":true,"routes":[{"fib":2,"destination":"0.0.0.0/0","chosen":0,"candidates":[{"id":"bo:a-inet","via":"192.0.2.254","state":"down"}]}],"bird":[{"name":"svc1","fib":1,"jail":"gateway","running":true,"protocols":[{"name":"peer1","proto":"BGP","state":"up","info":"Established"}],"bfd":[{"address":"10.202.0.2","interface":"wg0","state":"up","since":"2026-10-15 19:00:06"}],"bmp":{"port":1791,"listening":true,"connected":true,"since":1791995100,"sys_name":"edge-a","sys_descr":"BIRD 3.4.0","messages":9,"peers":[{"address":"10.202.0.2","as":65000,"bgp_id":"10.0.0.2","local":"10.202.0.1","up":true,"since":1791995101,"announced":3,"withdrawn":1,"announced_post":2,"withdrawn_post":0,"last":1791995105},{"address":"2001:db8::2","distinguisher":4294967297,"as":65001,"up":false,"since":1791995106,"down_reason":4,"announced":0,"withdrawn":0,"announced_post":0,"withdrawn_post":0}],"updates":[{"t":1791995105,"peer":"10.202.0.2","policy":"post","action":"announce","prefix":"10.3.0.0/24","next_hop":"10.202.0.2","as_path":"65000 {65010,65011}"},{"t":1791995104,"peer":"10.202.0.2","policy":"pre","action":"withdraw","prefix":"2001:db8:3::/48"}]}}],"dhcp":[{"name":"svc1","fib":1,"running":true,"leases":[{"expires":1792081510,"id":"02:00:00:00:00:09","address":"10.1.0.50","name":"laptop"}]}],"dns":[{"name":"svc1","fib":1,"running":false,"tls_cert":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"proxy":[{"name":"svc1","fib":1,"mode":"inspect","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"clamav":{"databases":[{"name":"main","file":"/var/db/clamav/main.cvd","built":"16 Sep 2021","version":62,"signatures":6647427}],"freshclam":true,"conf":true,"mirrors":["database.clamav.net"],"log":["ClamAV update process started"]},"ids":[{"name":"svc1","interfaces":["vtnet1"],"mode":"prevent","divert":8000,"running":true,"alerts_seen":4,"alerts":[{"name":"svc1","time":"2026-10-15T19:30:00.123456+0000","src":"10.1.0.50","sport":4000,"dst":"10.3.0.2","dport":23,"proto":"TCP","iface":"vtnet1","sid":1,"rev":2,"signature":"telnet","category":"","severity":2,"action":"blocked"}],"stats":{"fields":["t","pkts"],"series":[[1791995100,10],[1791995110,20]],"flows":{"http":7}},"capture":"divert","pcaps":[{"path":"/x/log.pcap.1791995000","size":24,"at":1791995000,"from":1791995000}],"captures":[],"replay":{"file":"a.pcap","alerts":1},"offload":{"vtnet1":["rxcsum","tso4"]}}],"ids_build":{"version":"8.0.7","lua":true,"ipfw":true},"ids_host":{"ncpu":4,"ndomains":1,"irqs":[{"irq":20,"name":"vtnet1:rxq0","cpus":"0-3"}]},"ids_ruleset":{"path":"/var/lib/suricata/rules/suricata.rules","at":1791990000,"size":1024},"record":{"count":7,"seq":7,"untold":1,"last":[{"t":1791995119,"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"vtnet1","comment":"deny-ssh"}]},"keys":[{"interface":"ipsec0","public":"AAAA","next":"BBBB","keyed_at":1791990000,"lifetime":86400,"spi_in":1001,"spi_out":1002,"pending":true}],"faults":[{"t":1791995118,"type":"tunnel","severity":"Major","object":"tvc-2","by":"probe","description":"no reply","cleared":false,"compressed":true}]}
 EOT
 	cat > want <<'EOT'
 rules set=30 rules=3 objects=2
@@ -2357,6 +2357,11 @@ route fib=2 0.0.0.0/0 chosen=0: bo:a-inet down
 bird svc1 fib=1 running=yes jail=gateway
   protocol peer1 BGP up Established
   bfd 10.202.0.2 wg0 up since=2026-10-15 19:00:06
+  bmp port=1791 listening=yes connected=yes since=2026-10-14T16:25:00Z name=edge-a descr=BIRD 3.4.0 messages=9 error=-
+    peer 10.202.0.2 rd=0 as=65000 id=10.0.0.2 local=10.202.0.1 up=yes since=2026-10-14T16:25:01Z reason=- 3/1 2/0 last=2026-10-14T16:25:05Z
+    peer 2001:db8::2 rd=4294967297 as=65001 id=- local=- up=no since=2026-10-14T16:25:06Z reason=set 0/0 0/0 last=-
+    update 2026-10-14T16:25:05Z 10.202.0.2 post announce 10.3.0.0/24 nh=10.202.0.2 path=65000 {65010,65011}
+    update 2026-10-14T16:25:04Z 10.202.0.2 pre withdraw 2001:db8:3::/48 nh=- path=-
 dhcp svc1 fib=1 running=yes
   lease 2026-10-15T16:25:10Z 02:00:00:00:00:09 10.1.0.50 laptop
 dns svc1 fib=1 running=no tls-cert=59
@@ -2375,7 +2380,7 @@ record count=7 seq=7
   2026-10-14T16:25:19Z 7 rule=30010 Deny 10.1.0.2:4000 -> 10.3.0.2:22 vtnet1 (deny-ssh)
 key ipsec0 public=AAAA next=BBBB at=2026-10-14T15:00:00Z lifetime=86400 spi=1001/1002 next-spi=0 pending=yes
 fault 2026-10-14T16:25:18Z tunnel Major was=- tvc-2 by=probe cleared=no at=-: no reply
-yang-cbor 1317 bytes, the same back
+yang-cbor 1689 bytes, the same back
 EOT
 	atf_check -o file:want "$y" state state.json
 }
@@ -8460,7 +8465,7 @@ EOS
 	printf '#!/bin/sh\necho "kldload $*" >> %s/kldload.log\nexit 0\n' "$(pwd)" > fake-kldload
 	chmod +x fake-kldload
 	mkdir -p root/var/db/clamav
-	DAEMON_ARGS="-h $(pwd)/fake-ipfw -3 $(pwd)/fake-setfib -2 $(pwd)/tools --suricata-rules $(pwd)/rules --root $(pwd)/root"
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -3 $(pwd)/fake-setfib -2 $(pwd)/tools --suricata-rules $(pwd)/rules --root $(pwd)/root $SDWAN_ARGS"
 	sdwan_daemons
 	# suricata: -T checks, and refuses BROKEN, and a ruleset whose rule
 	# negates any as Suricata does; run, it writes an alert and a flow
@@ -10271,6 +10276,118 @@ EOS
 }
 sdwan_bird_cleanup()
 {
+	stop_daemon
+}
+
+atf_test_case sdwan_bmp cleanup
+sdwan_bmp_head()
+{
+	atf_set "descr" "BMP (RFC 7854, PLAN-SDN-YANG 5.6.2): an instance that monitors its routes has a protocol bmp to the agent's station of its FIB; the station keeps BIRD's Initiation, its peers up and down with their counts before and after policy, the last updates (IPv4 NLRI, withdrawals, MP_REACH for IPv6), a message across two reads; a connection that breaks the protocol dropped and said; gone with the instance"
+	atf_set "timeout" "120"
+}
+sdwan_bmp_body()
+{
+	local P i
+	P=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+	SDWAN_ARGS="--bmp-port $P"
+	sdwan_start
+	# BIRD as BMP has it: messages built here, sent to the station.
+	cat > tools/bmpsend.py <<'EOS'
+import socket, struct, sys, time
+def msg(t, body):
+    return struct.pack("!BIB", 3, 6 + len(body), t) + body
+def pph(peer, asn, bgpid, flags=0):
+    a = socket.inet_pton(socket.AF_INET6 if ":" in peer else socket.AF_INET, peer)
+    a = a.rjust(16, b"\0")
+    return struct.pack("!BBQ", 0, flags | (0x80 if ":" in peer else 0), 0) + a + \
+        struct.pack("!I", asn) + socket.inet_aton(bgpid) + struct.pack("!II", 0, 0)
+def pfx(p):
+    a, l = p.split("/")
+    l = int(l)
+    fam = socket.AF_INET6 if ":" in a else socket.AF_INET
+    return bytes([l]) + socket.inet_pton(fam, a)[:(l + 7) // 8]
+def attr(t, v, f=0x40):
+    return bytes([f, t, len(v)]) + v
+def update(wd=(), ann=(), path=(), nh=None, mp6=(), nh6=None):
+    w = b"".join(pfx(p) for p in wd)
+    a = b""
+    if ann or mp6:
+        a += attr(1, b"\0")
+        a += attr(2, bytes([2, len(path)]) + b"".join(struct.pack("!I", x) for x in path))
+    if nh:
+        a += attr(3, socket.inet_aton(nh))
+    if mp6:
+        n = socket.inet_pton(socket.AF_INET6, nh6)
+        a += attr(14, struct.pack("!HBB", 2, 1, 16) + n + b"\0" + b"".join(pfx(p) for p in mp6), 0x80)
+    body = struct.pack("!H", len(w)) + w + struct.pack("!H", len(a)) + a + b"".join(pfx(p) for p in ann)
+    return b"\xff" * 16 + struct.pack("!HB", 19 + len(body), 2) + body
+def tlv(t, v):
+    return struct.pack("!HH", t, len(v)) + v
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+if sys.argv[2] == "bad":
+    s.sendall(struct.pack("!BIB", 4, 6, 4))
+    time.sleep(30)
+    sys.exit(0)
+peer = pph("192.0.2.1", 65001, "192.0.2.1")
+up = socket.inet_aton("192.0.2.2").rjust(16, b"\0") + struct.pack("!HH", 179, 40000)
+m = msg(4, tlv(1, b"BIRD 3.4.0") + tlv(2, b"edge-a\x1b[31m"))
+m += msg(3, peer + up)
+m += msg(0, peer + update(ann=["10.1.0.0/24", "10.2.0.0/16"], path=[65001, 65002], nh="192.0.2.1"))
+m += msg(0, pph("192.0.2.1", 65001, "192.0.2.1", 0x40) + update(ann=["10.1.0.0/24"], path=[65001], nh="192.0.2.1"))
+m += msg(0, peer + update(wd=["10.2.0.0/16"]))
+# The last message across two reads.
+last = msg(0, peer + update(path=[65001], mp6=["2001:db8::/32"], nh6="2001:db8::1"))
+s.sendall(m + last[:20])
+time.sleep(0.5)
+s.sendall(last[20:])
+time.sleep(30)
+EOS
+	# Refused: a count out of range, a FIB the instance does not run in.
+	atf_check -s exit:1 -e match:'sw1: the form.s route_monitoring is an object, its kept a number from 1 to 1024' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan bird '{"instances":[{"name":"sw1","fib":0,"spec":{"router_id":"100.64.0.0","route_monitoring":{"kept":0}}}]}'
+	atf_check -s exit:1 -e match:'sw1: route monitoring needs the form.s table to be the instance.s fib, 0' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan bird '{"instances":[{"name":"sw1","fib":0,"spec":{"router_id":"100.64.0.0","fib":2,"table":2,"route_monitoring":{}}}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":0,"spec":{"service":"acme","router_id":"100.64.0.0","route_monitoring":{"kept":4}}}]}'
+	atf_check -o match:"^	station address ip 127.0.0.1 port $P;\$" \
+	    -o match:'^	monitoring rib in pre_policy;$' -o match:'^	monitoring rib in post_policy;$' \
+	    cat "$(dirname "$f")/sdwan-bird-sw1.conf"
+	atf_check -o match:"\"bmp\":\\{\"port\":$P,\"listening\":true,\"connected\":false" "$JGC" -c "$SOCK" sdwan
+	python3 tools/bmpsend.py "$P" good > /dev/null 2>&1 &
+	echo $! > bmpsend.pid
+	for i in $(seq 1 30); do
+		"$JGC" -c "$SOCK" sdwan | grep -q '2001:db8::/32' && break
+		sleep 0.2
+	done
+	"$JGC" -c "$SOCK" sdwan > sdwan.out
+	atf_check -o match:'"connected":true' -o match:'"sys_name":"edge-a\?\[31m"' \
+	    -o match:'"sys_descr":"BIRD 3.4.0","messages":6,' \
+	    -o match:'"peers":\[\{"address":"192.0.2.1","as":65001,"bgp_id":"192.0.2.1","local":"192.0.2.2","up":true,"since":[0-9]+,"announced":3,"withdrawn":1,"announced_post":1,"withdrawn_post":0,"last":[0-9]+\}\]' \
+	    -o match:'"updates":\[\{"t":[0-9]+,"peer":"192.0.2.1","policy":"pre","action":"announce","prefix":"2001:db8::/32","next_hop":"2001:db8::1","as_path":"65001"\},\{"t":[0-9]+,"peer":"192.0.2.1","policy":"pre","action":"withdraw","prefix":"10.2.0.0/16"\},\{"t":[0-9]+,"peer":"192.0.2.1","policy":"post","action":"announce","prefix":"10.1.0.0/24","next_hop":"192.0.2.1","as_path":"65001"\},\{"t":[0-9]+,"peer":"192.0.2.1","policy":"pre","action":"announce","prefix":"10.2.0.0/16","next_hop":"192.0.2.1","as_path":"65001 65002"\}\]' \
+	    cat sdwan.out
+	# One that breaks the protocol takes the connection's place, and is
+	# dropped: its peers down, why said.
+	python3 tools/bmpsend.py "$P" bad > /dev/null 2>&1 &
+	echo $! > bmpbad.pid
+	for i in $(seq 1 30); do
+		"$JGC" -c "$SOCK" sdwan | grep -q 'not 3' && break
+		sleep 0.2
+	done
+	atf_check -o match:'"connected":false' -o match:'"error":"BMP version 4, not 3"' \
+	    -o match:'"address":"192.0.2.1","as":65001,"bgp_id":"192.0.2.1","local":"192.0.2.2","up":false' \
+	    "$JGC" -c "$SOCK" sdwan
+	# Monitoring no more: the station gone, its port free.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":0,"spec":{"service":"acme","router_id":"100.64.0.0"}}]}'
+	atf_check -o not-match:'"bmp"' "$JGC" -c "$SOCK" sdwan
+	atf_check -o not-match:'protocol bmp' cat "$(dirname "$f")/sdwan-bird-sw1.conf"
+	atf_check -o not-match:":$P " sockstat -4l -P tcp
+}
+sdwan_bmp_cleanup()
+{
+	for p in bmpsend.pid bmpbad.pid; do
+		[ -f $p ] && kill "$(cat $p)" 2>/dev/null
+	done
 	stop_daemon
 }
 
@@ -18414,6 +18531,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_flowexp
 	atf_add_test_case vpn_bird
 	atf_add_test_case sdwan_bird
+	atf_add_test_case sdwan_bmp
 	atf_add_test_case vpn_wireguard
 	atf_add_test_case safe_mode_confirm
 	atf_add_test_case sdwan_ids_pcap

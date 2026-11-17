@@ -324,6 +324,17 @@ helper_ipfw_socket(int jid)
 	return (helper_socket(jid, "ipfw-socket", NULL));
 }
 
+/* A BMP station's listener of FIB fib on port, in a jail's own network
+ * (gula/bmp.c). */
+int
+helper_bmp_socket(int jid, int fib, int port)
+{
+	char	word[32];
+
+	snprintf(word, sizeof(word), "%d:%d", fib, port);
+	return (helper_socket(jid, "bmp-socket", word));
+}
+
 /* The helper's side: fd handed over on its standard output. */
 static int
 fd_send(int fd)
@@ -829,6 +840,19 @@ scope_helper(int argc, char **argv)
 		if ((fd = socket(af, SOCK_RAW, af == AF_INET ? IPPROTO_ICMP :
 		    IPPROTO_ICMPV6)) == -1) {
 			fprintf(stderr, "socket: %s\n", strerror(errno));
+			return (1);
+		}
+		return (fd_send(fd));
+	}
+	/* A BMP station's listener, its FIB's, for gula/bmp.c. */
+	if (strcmp(argv[1], "bmp-socket") == 0 && argc == 3) {
+		int	fd, fib, port;
+
+		if (sscanf(argv[2], "%d:%d", &fib, &port) != 2 || fib < 0 ||
+		    port < 1 || port > 65535)
+			return (2);
+		if ((fd = bmp_listen(fib, port)) == -1) {
+			fprintf(stderr, "bmp-socket: %s\n", strerror(errno));
 			return (1);
 		}
 		return (fd_send(fd));

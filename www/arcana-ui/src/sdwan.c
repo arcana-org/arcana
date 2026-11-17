@@ -3967,6 +3967,190 @@ view_pm(struct html *h)
 	ucl_object_unref(all);
 }
 
+/* The service of a BIRD instance named sw<fib>, or sw<fib>-<jail>: the
+ * one of that FIB; the instance's name when none is. */
+static const char *
+bmp_service(const char *inst)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it;
+	long long		 fib;
+	char			*end;
+
+	if (inst == NULL || strncmp(inst, "sw", 2) != 0)
+		return (inst);
+	fib = strtoll(inst + 2, &end, 10);
+	if (end == inst + 2 || (*end != '\0' && *end != '-'))
+		return (inst);
+	it = NULL;
+	while ((v = ucl_object_iterate(jget(sd.doc, "swvcs"), &it, true)) !=
+	    NULL)
+		if (jint(v, "fib", -1) == fib && jstr(v, "id") != NULL)
+			return (jstr(v, "id"));
+	return (inst);
+}
+
+/*
+ * Route monitoring (BMP, RFC 7854; PLAN-SDN-YANG 5.6.2): what each
+ * edge's agent heard from the services' BIRD instances, read with the
+ * edge's state: each BGP peer, up or down, its prefixes announced and
+ * withdrawn before and after the import policy; then the last updates,
+ * newest first.  Sorted and filtered as every table is (tbl.c).
+ */
+static void
+view_bmp(struct html *h)
+{
+	static struct tcol	 pcols[] = {
+		{ "Service", "service", false }, { "Edge", "edge", false },
+		{ "Peer", "address", false }, { "AS", "as", true },
+		{ "State", "state", false }, { "Since", "since", true },
+		{ "Announced", "announced", true },
+		{ "Withdrawn", "withdrawn", true },
+		{ "Accepted", "announced_post", true },
+		{ "Last update", "last", true },
+	};
+	static struct tcol	 ucols[] = {
+		{ "Time", "t", true }, { "Service", "service", false },
+		{ "Edge", "edge", false }, { "Peer", "peer", false },
+		{ "RIB-in", "policy", false }, { "Action", "action", false },
+		{ "Prefix", "prefix", false }, { "Next hop", "next_hop", false },
+		{ "AS path", "as_path", false },
+	};
+	const ucl_object_t	*st, *bi, *b, *e, **rows, *r;
+	ucl_object_iter_t	 it, bit, eit;
+	ucl_object_t		*peers, *upds, *o;
+	const char		*sid, *svc;
+	char			 when[32], age[32];
+	struct tm		 tm;
+	time_t			 at;
+	int			 n, stations;
+
+	peers = ucl_object_typed_new(UCL_ARRAY);
+	upds = ucl_object_typed_new(UCL_ARRAY);
+	stations = 0;
+	it = NULL;
+	while ((st = ucl_object_iterate(sd.paths, &it, true)) != NULL) {
+		sid = ucl_object_key(st);
+		bit = NULL;
+		while ((bi = ucl_object_iterate(jget(st, "bird"), &bit, true)) !=
+		    NULL) {
+			if ((b = jget(bi, "bmp")) == NULL)
+				continue;
+			stations++;
+			svc = bmp_service(jstr(bi, "name"));
+			eit = NULL;
+			while ((e = ucl_object_iterate(jget(b, "peers"), &eit,
+			    true)) != NULL) {
+				o = ucl_object_copy(e);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    svc != NULL ? svc : ""), "service", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    host_name(sid)), "edge", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    jbool(e, "up") ? "up" : "down"), "state", 0,
+				    true);
+				ucl_array_append(peers, o);
+			}
+			eit = NULL;
+			while ((e = ucl_object_iterate(jget(b, "updates"), &eit,
+			    true)) != NULL) {
+				o = ucl_object_copy(e);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    svc != NULL ? svc : ""), "service", 0, true);
+				ucl_object_insert_key(o, ucl_object_fromstring(
+				    host_name(sid)), "edge", 0, true);
+				ucl_array_append(upds, o);
+			}
+		}
+	}
+	if (stations == 0) {
+		ucl_object_unref(peers);
+		ucl_object_unref(upds);
+		return;
+	}
+	h_raw(h, "<div class=\"sd-block sd-bmp\"><h3>BGP routes <small "
+	    "class=\"dim\">BMP (RFC 7854) from each service's BIRD to its "
+	    "edge's agent: the BGP peers with what they announced and "
+	    "withdrew before the import policy, and what it accepted"
+	    "</small></h3><table class=\"net sd\">");
+	tbl_head(h, "sd-bmp", pcols, (int)nitems(pcols), 0);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-bmp", peers, pcols, (int)nitems(pcols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		fmt_age(age, sizeof(age), (double)jint(r, "since", 0) * 1000);
+		h_raw(h, "<tr><td>");
+		h_txt(h, jstr(r, "service"));
+		h_raw(h, "</td><td>");
+		h_txt(h, jstr(r, "edge"));
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "address"));
+		h_fmt(h, "</td><td class=\"num\">%lld</td><td><span class=\"chip "
+		    "st-%s\">%s</span>", (long long)jint(r, "as", 0),
+		    jbool(r, "up") ? "up" : "down", jbool(r, "up") ? "up" :
+		    "down");
+		if (!jbool(r, "up") && jget(r, "down_reason") != NULL)
+			h_fmt(h, " <small class=\"dim\" title=\"RFC 7854 4.9\">"
+			    "reason %lld</small>", (long long)jint(r,
+			    "down_reason", 0));
+		h_raw(h, "</td><td>");
+		h_txt(h, age);
+		h_fmt(h, "</td><td class=\"num\">%lld</td><td class=\"num\">%lld"
+		    "</td><td class=\"num\">%lld</td><td>", (long long)jint(r,
+		    "announced", 0), (long long)jint(r, "withdrawn", 0),
+		    (long long)jint(r, "announced_post", 0));
+		if (jget(r, "last") != NULL) {
+			fmt_age(age, sizeof(age), (double)jint(r, "last", 0) *
+			    1000);
+			h_txt(h, age);
+		} else
+			h_raw(h, "<span class=\"dim\">none yet</span>");
+		h_raw(h, "</td></tr>");
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"10\" class=\"dim\">No BGP peer heard "
+		    "yet: BIRD connects to the agent once its instance runs, "
+		    "or nothing matches the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table><h3>Updates <small class=\"dim\">the last "
+	    "of each edge's, newest first</small></h3><table class=\"net sd\">");
+	tbl_head(h, "sd-bmpu", ucols, (int)nitems(ucols), 0);
+	if (!tbl_sorted("sd-bmpu"))
+		tbl_set("sd-bmpu", 0, true);
+	h_raw(h, "<tbody>");
+	rows = tbl_rows("sd-bmpu", upds, ucols, (int)nitems(ucols), app.filter);
+	for (n = 0; (r = rows[n]) != NULL; n++) {
+		at = (time_t)jint(r, "t", 0);
+		gmtime_r(&at, &tm);
+		strftime(when, sizeof(when), "%H:%M:%S", &tm);
+		h_fmt(h, "<tr><td class=\"mono\">%s</td><td>", when);
+		h_txt(h, jstr(r, "service"));
+		h_raw(h, "</td><td>");
+		h_txt(h, jstr(r, "edge"));
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "peer"));
+		h_raw(h, "</td><td>");
+		h_txt(h, jstr(r, "policy") != NULL && strcmp(jstr(r, "policy"),
+		    "post") == 0 ? "accepted" : "received");
+		h_fmt(h, "</td><td><span class=\"chip st-%s\">%s</span></td><td "
+		    "class=\"mono\">", jstr(r, "action") != NULL && strcmp(jstr(r,
+		    "action"), "withdraw") == 0 ? "down" : "up", jstr(r,
+		    "action") != NULL ? jstr(r, "action") : "");
+		h_txt(h, jstr(r, "prefix"));
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "next_hop"));
+		h_raw(h, "</td><td class=\"mono\">");
+		h_txt(h, jstr(r, "as_path"));
+		h_raw(h, "</td></tr>");
+	}
+	if (n == 0)
+		h_raw(h, "<tr><td colspan=\"9\" class=\"dim\">No update yet, or "
+		    "nothing matches the filter.</td></tr>");
+	free(rows);
+	h_raw(h, "</tbody></table></div>");
+	ucl_object_unref(peers);
+	ucl_object_unref(upds);
+}
+
 /*
  * Alternate marking (RFC 9341, PLAN-SDN-YANG 5.5): the services' own
  * packets counted at both ends of each tunnel, in blocks of the
@@ -4283,6 +4467,7 @@ view_paths(struct html *h)
 		view_pm(h);
 		view_altmark(h);
 	}
+	view_bmp(h);
 	/* The uswe tunnels' keys: each end's, when they were set and the
 	 * half-life they turn at; a rotation on its way; one by hand. */
 	n = 0;
@@ -6939,6 +7124,30 @@ sdwan_modal_service(struct html *h)
 				}
 				h_raw(h, "</div></fieldset>");
 			}
+			/* Route monitoring: BMP from BIRD to each edge's agent. */
+			{
+				const ucl_object_t	*rm = jget(o,
+				    "route_monitoring");
+
+				h_fmt(h, "<fieldset><legend>Route monitoring <small "
+				    "class=\"dim\">BMP (RFC 7854) from each edge's "
+				    "BIRD to its agent</small></legend><div class="
+				    "\"two\"><label class=\"toggle\"><input type="
+				    "\"checkbox\" name=\"rm_on\" value=\"1\"%s> "
+				    "Monitor the BGP routes</label>", rm != NULL ?
+				    " checked" : "");
+				snprintf(buf, sizeof(buf), "%lld", (long long)
+				    jint(rm, "kept", 0));
+				text_field(h, "Updates kept at each edge",
+				    "rm_kept", jget(rm, "kept") != NULL ? buf : "",
+				    "64", "Each BIRD instance of the service sends "
+				    "its BGP peers and their updates, before and "
+				    "after its import policy, to the agent on "
+				    "127.0.0.1 of its FIB; the service's page shows "
+				    "them. Its BGP channels keep their Adj-RIB-In "
+				    "(BIRD's import table) for it.");
+				h_raw(h, "</div></fieldset>");
+			}
 			h_raw(h, "</details>");
 		}
 		return (true);
@@ -9203,6 +9412,12 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 		(void)ucl_object_delete_key(o, "importance");
 		(void)ucl_object_delete_key(o, "probe");
 		(void)ucl_object_delete_key(o, "flow_export");
+		(void)ucl_object_delete_key(o, "route_monitoring");
+		if (checked(f, "rm_on")) {
+			t = ucl_object_typed_new(UCL_OBJECT);
+			put_int(t, "kept", jstr(f, "rm_kept"));
+			ucl_object_insert_key(o, t, "route_monitoring", 0, false);
+		}
 		/* Flow records: a collector, or none. */
 		if (jstr(f, "fe_collector") != NULL && jstr(f,
 		    "fe_collector")[0] != '\0') {
