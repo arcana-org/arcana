@@ -188,6 +188,7 @@ on the wire.
 | 93 000 | 100 | `ietf-lime-time-types@2019-04-16`, RFC 8532 (no IETF range; imported by `ietf-network-vpn-pm`, its time units used) | `share/yang/ietf-lime-time-types@2019-04-16.sid` (14 used) |
 | 93 100 | 100 | `arcana-network-vpn-pm`, the performance view's augments: WireGuard and route-based IPsec as tunnel types, ICMP echo as a PM source, which end measured a link's one way, its DSCP and the round trip, the console's | `share/yang/arcana-network-vpn-pm@2026-11-10.sid` (44 used) |
 | 93 200 | 100 | `arcana-sdwan`, its third range: the BIRD instances' BMP stations in the state (PLAN-SDN-YANG 5.6.2) | `share/yang/arcana-sdwan@2026-10-15.sid` (27 used) |
+| 93 400 | 200 | `ietf-access-control-list@2019-03-04`, RFC 8519 (no IETF range): the ACLs compiled to ipfw (PLAN-SDN-YANG 6.1); `ietf-packet-fields`' groupings numbered in it, the module itself having no items but its name | `share/yang/ietf-access-control-list@2019-03-04.sid` (127 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

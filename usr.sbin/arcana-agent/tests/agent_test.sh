@@ -2752,6 +2752,192 @@ alarm_shelving_cleanup()
 	stop_daemon
 }
 
+# ipfw(8) as a stand-in that keeps what it was given (fw.state, a rule
+# a line: number, set, text): ipfw -S list prints it as the kernel's
+# would, a file's "add N set S ..." lines go in, set swap and delete set
+# act on it, set enable and disable change nothing it lists.  Every
+# command logged in ipfw.log, a file's lines after it.
+acl_fake_ipfw()
+{
+	local d="$(pwd)"
+
+	cat > fake-ipfw <<EOS
+#!/bin/sh
+st=$d/fw.state
+echo "ipfw \$*" >> $d/ipfw.log
+[ "\$1" = -q ] && shift
+case "\$1 \$2 \$3" in
+"-S list ")
+	sort -n "\$st" | awk '{ n = \$1; s = \$2; \$1 = ""; \$2 = ""; sub(/^ +/, ""); printf "%05d set %d %s\n", n, s, \$0 }'
+	exit 0 ;;
+"-f delete set")
+	awk -v s="\$4" '\$2 != s' "\$st" > "\$st.t"; mv "\$st.t" "\$st"
+	exit 0 ;;
+"set disable "*|"set enable "*)
+	exit 0 ;;
+"set swap "*)
+	awk -v a="\$3" -v b="\$4" '{ if (\$2 == a) \$2 = b; else if (\$2 == b) \$2 = a; print }' "\$st" > "\$st.t"
+	mv "\$st.t" "\$st"
+	exit 0 ;;
+esac
+if [ -f "\$1" ]; then
+	cat "\$1" >> $d/ipfw.log
+	awk '\$1 == "add" && \$3 == "set" { n = \$2; s = \$4; \$1 = \$2 = \$3 = \$4 = ""; sub(/^ +/, ""); print n, s, \$0 }' "\$1" >> "\$st"
+	exit 0
+fi
+exit 1
+EOS
+	chmod +x fake-ipfw
+	# The admin's rules: set 0's, and the default.
+	printf '100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' > fw.state
+}
+
+atf_test_case acl_rfc8519 cleanup
+acl_rfc8519_head()
+{
+	atf_set "descr" "RFC 8519's ACLs compiled to ipfw (PLAN-SDN-YANG 6.1.1)," \
+	    "a stand-in ipfw that keeps what it is given: section 4.3's," \
+	    "4.4's and Appendix A.2's examples installed, each a band of" \
+	    "set 29 ended by a return with its names in the comments, the" \
+	    "attachment a call from rule 8's block, swapped in from set 28;" \
+	    "read back as the operational datastore's; 4.4's ICMP example" \
+	    "refused (its code), nothing loaded; an admin's rule at the" \
+	    "ACLs' numbers refusing an edit; kept across a restart; taken" \
+	    "out, set 29 deleted and the admin's rules as they were"
+	atf_set "timeout" "120"
+}
+acl_rfc8519_body()
+{
+	acl_fake_ipfw
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw" start_daemon
+	# Section 4.3: TCP from 192.0.2.0/24 to 198.51.100.0/24 denied.
+	cat > a43.json <<'EOF'
+{"acl":[{"name":"sample-ipv4-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"ipv4":{"protocol":6,"destination-ipv4-network":"198.51.100.0/24","source-ipv4-network":"192.0.2.0/24"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @a43.json
+	atf_check -o match:'^add 60000 set 28 skipto 65000 ip from any to any // acl:guard$' \
+	    -o match:'^add 61000 set 28 deny tcp from 192.0.2.0/24 to 198.51.100.0/24 ip4 // acl:0.1 sample-ipv4-acl/rule1$' \
+	    -o match:'^add 61001 set 28 return ip from any to any // acl:0.end sample-ipv4-acl$' \
+	    -o not-match:'call' cat ipfw.log
+	# All at once: staged in set 28, disabled, swapped with 29.
+	atf_check -o inline:'ipfw -q -f delete set 28\nipfw -q set disable 28\nipfw -q set swap 28 29\nipfw -q set enable 29\nipfw -q -f delete set 28\n' \
+	    sh -c "grep -E '^ipfw -q (-f delete|set)' ipfw.log"
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n60000 29 skipto 65000 ip from any to any // acl:guard\n61000 29 deny tcp from 192.0.2.0/24 to 198.51.100.0/24 ip4 // acl:0.1 sample-ipv4-acl/rule1\n61001 29 return ip from any to any // acl:0.end sample-ipv4-acl\n' \
+	    cat fw.state
+	atf_check -o match:'"name":"sample-ipv4-acl"' -o match:'"source-ipv4-network":"192.0.2.0/24"' \
+	    "$JGC" -c "$SOCK" get -d running acls
+	atf_check -o match:'"name":"sample-ipv4-acl","type":"ietf-access-control-list:ipv4-acl-type"' \
+	    -o match:'"forwarding":"ietf-access-control-list:drop"' \
+	    "$JGC" -c "$SOCK" get acls
+	# Read back from the kernel: a band not whole is not installed.
+	sed -e '/acl:0.1 /d' fw.state > fw.t && mv fw.t fw.state
+	atf_check -o not-match:'sample-ipv4-acl' "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'sample-ipv4-acl' "$JGC" -c "$SOCK" get -d running acls
+
+	# Section 4.3's second: DNS to 2001:db8::/32 accepted, UDP port 53
+	# by eq; and 4.4's: a source port range dropped, port 21 accepted by
+	# eq, every port but 21 dropped by neq, each an ACL of its own.
+	cat > a44.json <<'EOF'
+{"acl":[{"name":"allow-dns-packets","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"rule1","matches":{"ipv6":{"destination-ipv6-network":"2001:db8::/32"},"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"sample-port-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"tcp":{"source-port":{"lower-port":16384,"upper-port":16387}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}},{"name":"sample-ipv4-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"tcp":{"destination-port":{"operator":"eq","port":21}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"sample-ipv4-acl-neq","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"tcp":{"destination-port":{"operator":"neq","port":21}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @a44.json
+	atf_check -o match:'^add 61000 set 28 allow udp from any to 2001:db8::/32 dst-port 53 ip6 // acl:0.1 allow-dns-packets/rule1$' \
+	    -o match:'^add 61010 set 28 deny tcp from any to any src-port 16384-16387 ip4 // acl:1.1 sample-port-acl/rule1$' \
+	    -o match:'^add 61020 set 28 allow tcp from any to any dst-port 21 ip4 // acl:2.1 sample-ipv4-acl/rule1$' \
+	    -o match:'^add 61030 set 28 deny tcp from any to any not dst-port 21 ip4 // acl:3.1 sample-ipv4-acl-neq/rule1$' \
+	    -o match:'^add 61031 set 28 return ip from any to any // acl:3.end sample-ipv4-acl-neq$' \
+	    cat ipfw.log
+	# The old set gone with the swap: set 29 the new alone.
+	atf_check -o not-match:'192.0.2.0' -o match:'^61030 29 ' cat fw.state
+	atf_check -o save:g44.json "$JGC" -c "$SOCK" get acls
+	for n in allow-dns-packets sample-port-acl sample-ipv4-acl \
+	    sample-ipv4-acl-neq; do
+		atf_check -o match:"\"name\":\"$n\"" cat g44.json
+	done
+	atf_check -o match:'"source-port":\{"lower-port":16384,"upper-port":16387\}' \
+	    -o match:'"destination-port":\{"operator":"neq","port":21\}' cat g44.json
+
+	# Appendix A.2: section 4.3's ACL on the way in, as nftables' input
+	# chain has it: attached to an interface's ingress, a call from the
+	# attachment block that rule 8 enters.
+	cat > a2.json <<'EOF'
+{"acl":[{"name":"sample-ipv4-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"ipv4":{"protocol":6,"destination-ipv4-network":"198.51.100.0/24","source-ipv4-network":"192.0.2.0/24"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"sample-ipv4-acl"}]}},"egress":{"acl-sets":{"acl-set":[{"name":"sample-ipv4-acl"}]}}}]}}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @a2.json
+	atf_check -o match:'^add 60001 set 28 call 61000 ip from any to any in recv lo0 // acl:0.in lo0$' \
+	    -o match:'^add 60002 set 28 call 61000 ip from any to any out xmit lo0 // acl:0.out lo0$' \
+	    -o match:'^add 60003 set 28 return ip from any to any // acl:attach-end$' \
+	    -o match:'^add 8 set 28 call 60001 ip from any to any // acl:entry$' \
+	    cat ipfw.log
+	atf_check -o match:'"attachment-points":\{"interface":\[\{"egress":\{"acl-sets":\{"acl-set":\[\{"name":"sample-ipv4-acl"\}\]\}\},"ingress":\{"acl-sets":\{"acl-set":\[\{"name":"sample-ipv4-acl"\}\]\}\},"interface-id":"lo0"\}\]\}' \
+	    "$JGC" -c "$SOCK" get acls
+	# An attachment's call gone from the kernel: that attachment not
+	# installed, the other is.
+	sed -e '/acl:0.out /d' fw.state > fw.t && mv fw.t fw.state
+	atf_check -o match:'"ingress":\{"acl-sets"' -o not-match:'"egress"' \
+	    "$JGC" -c "$SOCK" get acls
+
+	# Section 4.4's ICMP example as the RFC writes it: no type, so its
+	# ipv4 container's when (the ACL's type derived from IPv4's) is
+	# false and the model refuses it.  With the type: its code is no
+	# match of ipfw's; refused, nothing loaded, running as it was.
+	cat > aicmp.json <<'EOF'
+{"acl":[{"name":"sample-icmp-acl","aces":{"ace":[{"name":"rule1","matches":{"ipv4":{"protocol":1},"icmp":{"type":8,"code":0}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}
+EOF
+	sed -e 's|"name":"sample-icmp-acl",|&"type":"ietf-access-control-list:ipv4-acl-type",|' \
+	    aicmp.json > aicmp4.json
+	cp fw.state before.state
+	: > ipfw.log
+	atf_check -s exit:1 -e match:'ipv4: when derived-from-or-self' \
+	    -o ignore "$JGC" -c "$SOCK" set /ietf-access-control-list:acls @aicmp.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -s exit:1 -e match:'acl sample-icmp-acl, ace rule1: icmp code is not compiled into ipfw' \
+	    -o ignore "$JGC" -c "$SOCK" set /ietf-access-control-list:acls @aicmp4.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -o not-match:'^ipfw -q' cat ipfw.log
+	atf_check -o file:before.state cat fw.state
+	atf_check -o not-match:'sample-icmp-acl' "$JGC" -c "$SOCK" get -d running acls
+
+	# An admin's rule at the ACLs' numbers: refused, nothing loaded.
+	echo '60500 0 count ip from any to any' >> fw.state
+	cp fw.state before.state
+	: > ipfw.log
+	atf_check -s exit:1 -e match:'rule 60500 of set 0 is at a number the ACLs keep' \
+	    -o ignore "$JGC" -c "$SOCK" set /ietf-access-control-list:acls @a43.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -o not-match:'^ipfw -q' cat ipfw.log
+	atf_check -o file:before.state cat fw.state
+	sed -e '/^60500 /d' fw.state > fw.t && mv fw.t fw.state
+
+	# Kept: applied again at the start, read back whole.
+	stop_daemon
+	: > ipfw.log
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw" start_daemon
+	atf_check -o match:'^ipfw -q set swap 28 29$' \
+	    -o match:'acl:0.out lo0$' cat ipfw.log
+	atf_check -o match:'"egress":\{"acl-sets"' -o match:'"ingress":\{"acl-sets"' \
+	    "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'acls\.cbor' sh -c 'ls'
+
+	# Taken out: set 29 deleted, the admin's rules as they were.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    cat fw.state
+	atf_check -o not-match:'acls\.cbor' sh -c 'ls'
+	atf_check -o not-match:'sample' "$JGC" -c "$SOCK" get acls
+}
+acl_rfc8519_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case faults_store
 faults_store_head()
 {
@@ -18658,6 +18844,7 @@ atf_init_test_cases()
 	atf_add_test_case faults_owners_gone
 	atf_add_test_case viewer_programs
 	atf_add_test_case alarm_shelving
+	atf_add_test_case acl_rfc8519
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key

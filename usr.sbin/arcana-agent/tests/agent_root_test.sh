@@ -1652,6 +1652,85 @@ sctp_multihome_cleanup()
 	true
 }
 
+atf_test_case acl_vnet cleanup
+acl_vnet_head()
+{
+	atf_set "descr" "RFC 8519's ACLs for real (PLAN-SDN-YANG 6.1.1): the agent" \
+	    "in a vnet jail of its own, its ipfw the jail's: section 4.3's" \
+	    "and 4.4's examples with Appendix A.2's attachment loaded by" \
+	    "ipfw, set 29 holding the bands, the attachment block and rule" \
+	    "8 with their comments, set 28 empty; read back whole; a ping" \
+	    "over lo0 dropped by an ICMP ACE attached to it; taken out, set" \
+	    "29 empty again"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+acl_vnet_body()
+{
+	local d="$(pwd)" i
+
+	programs
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	jls -j arcw_acl >/dev/null 2>&1 && atf_skip "a jail arcw_acl is there already"
+	atf_check -o ignore jail -c name=arcw_acl vnet persist path=/
+	atf_check jexec arcw_acl ifconfig lo0 inet 127.0.0.1/8 up
+	# The jail's own firewall open, whatever its default: the ACLs'
+	# drops are what is seen.
+	atf_check jexec arcw_acl ipfw -q add 1000 allow ip from any to any
+	mkdir -p etc/jail.conf.d
+	: > etc/jail.conf
+	SOCK="unix:$d/s.sock"
+	jexec arcw_acl "$JGD" -F -l "$SOCK" -f "$d/etc/jail.conf" \
+	    -D "$d/etc/jail.conf.d" -1 "$d/history.conf" \
+	    --nacm "$d/nacm.cbor" > daemon.out 2>&1 &
+	echo $! > daemon.pid
+	for i in $(seq 1 100); do
+		grep -q 'ready' daemon.out 2>/dev/null && break
+		sleep 0.05
+	done
+	atf_check -o match:'1 packets transmitted, 1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.1
+	cat > acls.json <<'EOF'
+{"acl":[{"name":"sample-ipv4-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"ipv4":{"protocol":6,"destination-ipv4-network":"198.51.100.0/24","source-ipv4-network":"192.0.2.0/24"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}},{"name":"allow-dns-packets","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"rule1","matches":{"ipv6":{"destination-ipv6-network":"2001:db8::/32"},"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"sample-port-acl","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"rule1","matches":{"tcp":{"source-port":{"lower-port":16384,"upper-port":16387}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}},{"name":"no echo","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"echo #1","matches":{"ipv4":{"protocol":1},"icmp":{"type":8}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"sample-ipv4-acl"},{"name":"no echo"}]}}}]}}
+EOF
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @acls.json
+	atf_check -o save:list jexec arcw_acl ipfw -S list
+	atf_check -o match:'^00008 set 29 call 60001 ip from any to any // acl:entry$' \
+	    -o match:'^60000 set 29 skipto 65000 ip from any to any // acl:guard$' \
+	    -o match:'^60001 set 29 call 61000 ip from any to any in recv lo0 // acl:0.in lo0$' \
+	    -o match:'^60002 set 29 call 61030 ip from any to any in recv lo0 // acl:3.in lo0$' \
+	    -o match:'^60003 set 29 return .*// acl:attach-end$' \
+	    -o match:'^61000 set 29 deny ip4 from 192.0.2.0/24 to 198.51.100.0/24 proto tcp // acl:0.1 sample-ipv4-acl/rule1$' \
+	    -o match:'^61010 set 29 allow .*2001:db8::/32 53 .*// acl:1.1 allow-dns-packets/rule1$' \
+	    -o match:'^61020 set 29 deny .*16384-16387.*// acl:2.1 sample-port-acl/rule1$' \
+	    -o match:'^61030 set 29 deny .*icmptypes 8.*// acl:3.1 no%20echo/echo%20%231$' \
+	    -o match:'^61031 set 29 return .*// acl:3.end no%20echo$' \
+	    -o not-match:' set 28 ' cat list
+	atf_check -o save:g.json "$JGC" -c "$SOCK" get acls
+	for n in sample-ipv4-acl allow-dns-packets sample-port-acl 'no echo'; do
+		atf_check -o match:"\"name\":\"$n\"" cat g.json
+	done
+	atf_check -o match:'"interface-id":"lo0"' cat g.json
+	# The echo ACE dropping, the admin's allow after it never reached.
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.1
+	atf_check -o match:'1000 set 0 allow' jexec arcw_acl ipfw -S list
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o not-match:' set 29 ' -o match:'1000 set 0 allow' \
+	    jexec arcw_acl ipfw -S list
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.1
+}
+acl_vnet_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	sleep 0.5
+	jail -r arcw_acl 2>/dev/null
+	true
+}
+
 atf_test_case bird_live cleanup
 bird_live_head()
 {
@@ -5756,6 +5835,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_bmp_lab
 	atf_add_test_case sdwan_bmp_jail_lab
 	atf_add_test_case sctp_multihome
+	atf_add_test_case acl_vnet
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback
 	atf_add_test_case sdwan_record

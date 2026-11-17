@@ -1040,6 +1040,8 @@ void		 bmp_set(const char *, const struct bmp_station *, int);
 void		 bmp_jail_gone(int);
 void		 bmp_rejail(const char *, const char *, int);
 struct ucl_object_s *bmp_json(const char *, const char *);
+/* invidia/acl.c: the kept ACLs applied again at the start. */
+void		 acl_start(void);
 /* invidia/sdwan.c: the rules that steer, and the steering. */
 void		 sdwan_start(void);
 int		 do_sdwan_rules(struct work *, const char *, const char **);

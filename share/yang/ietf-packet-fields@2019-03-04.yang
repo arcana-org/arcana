@@ -86,7 +86,6 @@ module ietf-packet-fields {
         description
           "Not equal to.";
       }
-
     }
     description
       "The source and destination port range definitions
@@ -135,7 +134,6 @@ module ietf-packet-fields {
              match.";
         }
       }
-
       description
         "Choice of specifying a port range or a single
          port along with an operator.";
@@ -184,7 +182,6 @@ module ietf-packet-fields {
          of the packet following the IPv6 header, in octets.";
       reference
         "RFC 791: Internet Protocol
-
          RFC 8200: Internet Protocol, Version 6 (IPv6) Specification.";
     }
     leaf ttl {
@@ -233,7 +230,6 @@ module ietf-packet-fields {
             "Reserved.  Must be zero.";
         }
         bit fragment {
-
           position 1;
           description
             "Setting the value to 0 indicates may fragment, while
@@ -282,7 +278,6 @@ module ietf-packet-fields {
       case source-ipv4-network {
         leaf source-ipv4-network {
           type inet:ipv4-prefix;
-
           description
             "Source IPv4 address prefix.";
         }
@@ -331,7 +326,6 @@ module ietf-packet-fields {
     }
     reference
       "RFC 4291: IP Version 6 Addressing Architecture
-
        RFC 4007: IPv6 Scoped Address Architecture
        RFC 5952: A Recommendation for IPv6 Address Text
                  Representation.";
@@ -380,7 +374,6 @@ module ietf-packet-fields {
     description
       "Collection of TCP header fields that can be used to
        set up a match filter.";
-
     leaf sequence-number {
       type uint32;
       description
@@ -429,7 +422,6 @@ module ietf-packet-fields {
             "ECN-Echo has a dual role, depending on the value
              of the SYN flag.  It indicates the following: if
              the SYN flag is set (1), the TCP peer is ECN
-
              capable, and if the SYN flag is clear (0), a packet
              with the Congestion Experienced flag set (ECN=11)
              in the IP header was received during normal
@@ -478,7 +470,6 @@ module ietf-packet-fields {
             "Last package from the sender.";
         }
       }
-
       description
         "Also known as Control Bits.  Contains nine 1-bit flags.";
       reference
@@ -527,7 +518,6 @@ module ietf-packet-fields {
       type uint16;
       description
         "A field that specifies the length in bytes of
-
          the UDP header and UDP data.  The minimum
          length is 8 bytes because that is the length of
          the header.  The field size sets a theoretical
@@ -576,7 +566,6 @@ module ietf-packet-fields {
         "Unbounded in length, the contents vary based on the
          ICMP type and code.  Also referred to as 'Message Body'
          in ICMPv6.";
-
       reference
         "RFC 792: Internet Control Message Protocol
          RFC 4443: Internet Control Message Protocol (ICMPv6)

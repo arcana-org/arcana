@@ -19,7 +19,6 @@ module ietf-access-control-list {
   import ietf-interfaces {
     prefix if;
     reference
-
       "RFC 8343 - A YANG Data Model for Interface Management.";
   }
 
@@ -68,7 +67,6 @@ module ietf-access-control-list {
       "Initial version.";
     reference
       "RFC 8519: YANG Data Model for Network Access Control
-
                  Lists (ACLs).";
   }
 
@@ -117,7 +115,6 @@ module ietf-access-control-list {
     description
       "System log (syslog) the information for the packet.";
   }
-
   identity log-none {
     base log-action;
     description
@@ -166,7 +163,6 @@ module ietf-access-control-list {
 
   identity mixed-eth-ipv4-acl-type {
     base acl:eth-acl-type;
-
     base acl:ipv4-acl-type;
     if-feature "mixed-eth-ipv4";
     description
@@ -263,7 +259,6 @@ module ietf-access-control-list {
     description
       "Ethernet and IPv4 ACL combinations supported.";
   }
-
   feature mixed-eth-ipv6 {
     if-feature "match-on-eth and match-on-ipv6";
     description
@@ -312,7 +307,6 @@ module ietf-access-control-list {
   }
 
   /*
-
    * Groupings
    */
   grouping acl-counters {
@@ -409,7 +403,6 @@ module ietf-access-control-list {
             description
               "A unique name identifying this ACE.";
           }
-
           container matches {
             description
               "The rules in this set determine what fields will be
@@ -458,7 +451,6 @@ module ietf-access-control-list {
               description
                 "Choice of either IPv4 or IPv6 headers";
             }
-
             choice l4 {
               container tcp {
                 if-feature "match-on-tcp";
@@ -507,7 +499,6 @@ module ietf-access-control-list {
                 container source-port {
                   choice source-port {
                     case range-or-operator {
-
                       uses pf:port-range-or-operator;
                       description
                         "Source port definition from range or
@@ -556,7 +547,6 @@ module ietf-access-control-list {
             leaf egress-interface {
               type if:interface-ref;
               description
-
                 "Egress interface.  This should not be used if this ACL
                  is attached as an egress ACL (or the value should
                  equal the interface to which the ACL is attached).";
@@ -605,7 +595,6 @@ module ietf-access-control-list {
         }
       }
     }
-
     container attachment-points {
       description
         "Enclosing container for the list of
@@ -654,7 +643,6 @@ module ietf-access-control-list {
       list interface {
         if-feature "interface-attachment";
         key "interface-id";
-
         description
           "List of interfaces on which ACLs are set.";
 

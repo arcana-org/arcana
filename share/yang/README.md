@@ -55,7 +55,7 @@ origin.
 | `ieee802-ethernet-interface@2025-09-10.yang` | module | IEEE Std 802.3 (YangModels/yang, standard/ieee/published/802.3) |
 | `ieee802-ethernet-phy-type@2025-09-10.yang` | module | IEEE Std 802.3 (YangModels/yang, standard/ieee/published/802.3) |
 | `ieee802-types@2023-10-22.yang` | module | IEEE Std 802 (YangModels/yang, standard/ieee/published/802) |
-| `ietf-access-control-list@2019-03-04.yang` | module | RFC 8519 |
+| `ietf-access-control-list@2019-03-04.yang` | module | RFC 8519 (YangModels/yang standard/ietf/RFC, the same bytes); the ACLs compiled to ipfw, served by the agent (invidia/acl.c) |
 | `ietf-alarms-x733@2019-09-11.yang` | module | RFC 8632 |
 | `ietf-alarms@2019-09-11.yang` | module | RFC 8632 |
 | `ietf-babel@2024-10-10.yang` | module | RFC 9647 |
@@ -77,7 +77,7 @@ origin.
 | `ietf-keystore@2024-10-10.yang` | module | RFC 9642; `ietf-syslog`'s TLS import |
 | `ietf-datastores@2018-02-14.yang` | module | RFC 8342 |
 | `ietf-defaults@2024-04-03.yang` | module | draft-ietf-netconf-default-attribute (RFC 6243's `default` annotation) |
-| `ietf-ethertypes@2019-03-04.yang` | module | RFC 8519 |
+| `ietf-ethertypes@2019-03-04.yang` | module | RFC 8519 (YangModels/yang standard/ietf/RFC, the same bytes) |
 | `ietf-http-client@2024-08-15.yang` | module | draft-ietf-netconf-http-client-server (YangModels/yang, experimental); `ietf-https-notif-transport`'s endpoints |
 | `ietf-https-notif-transport@2026-06-30.yang` | module | draft-ietf-netconf-https-notif (YangModels/yang, experimental); a configured subscription's HTTPS receiver |
 | `ietf-i2nsf-ike@2021-07-14.yang` | module | RFC 9061 |
@@ -108,7 +108,7 @@ origin.
 | `ietf-network@2018-02-26.yang` | module | RFC 8345; the agent's SAP network, its node the host; the console's merges every host's, a node each |
 | `ietf-origin@2018-02-14.yang` | module | RFC 8342 |
 | `ietf-ospf@2022-10-19.yang` | module | RFC 9129 |
-| `ietf-packet-fields@2019-03-04.yang` | module | RFC 8519 |
+| `ietf-packet-fields@2019-03-04.yang` | module | RFC 8519 (YangModels/yang standard/ietf/RFC, the same bytes); its groupings `ietf-access-control-list`'s nodes |
 | `ietf-restconf-monitoring@2017-01-26.yang` | module | RFC 8040 |
 | `ietf-restconf@2017-01-26.yang` | module | RFC 8040 |
 | `ietf-rip@2020-02-20.yang` | module | RFC 8695 |
@@ -209,7 +209,7 @@ The `.sid` files of the IETF and IANA modules the agent fills
 publishes no file, so they are numbered here (SIDS.md). So are those
 of the ones with no IETF range (`ietf-routing`, its address families,
 `ietf-network-instance`, `ietf-logical-network-element`, `ietf-network`,
-`ietf-network-topology`, `ietf-sap-ntw`, `ietf-te-types`,
+`ietf-network-topology`, `ietf-sap-ntw`, `ietf-access-control-list`, `ietf-te-types`,
 `ietf-te-topology`, `ietf-vn`), from Arcana's block. A module's file numbers every item of it, whatever
 another module deviates:
 `arcana-network-instance` takes `vsi-root` away, its number stays.

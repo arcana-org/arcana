@@ -3746,6 +3746,62 @@ whose first part is served.
 - 6.1.1 A: ACL bands and the name map; `call`/`return`; attachment
   rules `in recv`/`out xmit`/`via`; names in comments; check: RFC
   8519's Appendix A examples installed and read back.
+  Design (decided here, the plan leaving it open): the ACLs are set 29
+  alone, staged in set 28 (both kept from the admin's and the SD-WAN's,
+  set 30).  Rule 8 calls the attachment block (60001 to 60999: one
+  call a number, an interface's ingress ACLs `in recv`, then its egress
+  ones `out xmit`, its `return` last), so ACLs act before the SD-WAN's
+  rules (9 to 99); a return resumes past the call's number, hence a
+  number each.  The bands are 61000 to 64999, each from a multiple of
+  10 in configuration order, an ACE a number, the band's `return` last.
+  Rule 60000 is the guard, `skipto 65000`: nothing reaches a band but by
+  a call, and a packet the admin's rules let fall through meets 65000 on
+  as before.  `via` is left for 6.1.8's attachment to all interfaces
+  (`via any`).  The name map is positional (the n-th ACL band n, its
+  m-th ACE rule m), each rule's comment `acl:n.m ACL/ACE` (`acl:n.in`
+  and `.out` an attachment, `.end` a return, `acl:entry`, `acl:guard`,
+  `acl:attach-end`), the names %XX outside [A-Za-z0-9._-] and cut with
+  `~` at ipfw's 80 characters; read back by comparing each comment with
+  the one the kept configuration makes.  Running is the YANG-CBOR of
+  the acls kept in `acls.cbor` beside the agent's files, applied again
+  at the start; an edit is the whole set compiled, loaded into set 28
+  disabled and `set swap 28 29` (no gap, no half), then kept.  Refused,
+  nothing loaded: a rule of another set at 8 or 60000 to 64999, a rule
+  in set 28 or 29 without an `acl:` comment, ipfw unreadable with ACLs
+  to install, and every match 6.1.1 does not compile (named: dscp, ECN,
+  lengths, TTL, ihl, flags, offset, identification, flow label, the TCP
+  fields but ports, UDP length, ICMP code and rest-of-header,
+  interface matches, logging but log-none).  Compiled already, for the
+  examples: the ACL type as the family (`ip4`/`ip6`), the networks and
+  protocol, TCP and UDP ports with every operator (`src-port`,
+  `dst-port`, `not` for neq, `0-p`, `p-65535`), the ICMP type
+  (`icmptypes`, `icmp6types`), accept `allow`, drop `deny`, reject an
+  unreachable administratively prohibited (both families' where the
+  ACL has none).  Features advertised: match-on-ipv4/-ipv6/-tcp/-udp/
+  -icmp, ipv4, ipv6, interface-attachment (eth, mixed and
+  acl-aggregate-stats with 6.1.2 and 6.1.4).  SIDs: 93 400 (200).
+  Done.  Checked: agent_test:acl_rfc8519 (a stand-in ipfw that keeps
+  what it is given: section 4.3's two examples, 4.4's port range, eq
+  and neq, Appendix A.2's (4.3's ACL on an interface's way in, as
+  nftables' input chain) with an egress attachment too, each loaded as
+  the rules above and swapped in, set 29 holding them alone after;
+  read back as the operational datastore's, an ACL whose band lost a
+  rule and an attachment whose call is gone left out; 4.4's ICMP
+  example refused, as the RFC writes it by the model's own `when` (no
+  type, so no ipv4 container), with the type by its code, nothing
+  loaded; an admin's rule at 60500 refusing an edit, nothing loaded;
+  the ACLs kept across a restart and applied again; taken out, set 29
+  deleted and the admin's rules as they were), agent_root_test:
+  acl_vnet (ipfw for real, the agent in a vnet jail of its own: the
+  examples and a name needing %XX loaded, the kernel's normalised rules
+  with their comments in set 29 and none in 28, read back whole; a ping
+  over lo0 dropped by an attached ICMP echo ACE ahead of the jail's
+  allow rule, and passing again once the ACLs are taken out).  Not
+  checked: Appendix A.1 (example-newco-acl is a vendor's module, not
+  served; its augments are what 6.1.4 and 6.1.8 bring as Arcana's);
+  ACLs in a vnet jail's edge from the host (6.1.8), the transaction
+  with the SD-WAN set (6.1.9); a console or page view of ACLs (the
+  console's tables carry the module, nothing reads it yet).
 - 6.1.2 A: the match table of RFC 8519 (eth, ipv4, ipv6, tcp, udp,
   icmp, ports with operators, interfaces); check: one test per field.
 - 6.1.3 A: the refusals with extended acks (ICMP code, ECN, ihl,

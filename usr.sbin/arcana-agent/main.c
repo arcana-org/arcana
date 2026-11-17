@@ -875,6 +875,7 @@ main(int argc, char *argv[])
 	record_start();
 	sdwan_conf_tighten();
 	sdwan_start();
+	acl_start();
 	stampd_start();
 	feeds_start();
 	sdwan_bird_start();

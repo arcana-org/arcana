@@ -72,6 +72,15 @@ int	yni_instances(cbl_yarena *a,
 int	ysap_network(const struct ietf_interfaces *ifs, const char *host,
 	    cbl_yarena *a, struct ietf_network *out);
 
+/* RFC 8519's ACLs compiled to ipfw (invidia/acl.c): running's kept, the
+ * operational datastore's those the kernel has; an edit made the
+ * kernel's at once, then kept, or refused (why in err) with nothing
+ * changed. */
+int	acl_get(bool operational, cbl_yarena *a,
+	    struct ietf_access_control_list *data);
+int	acl_edit(const struct ietf_access_control_list *after, char *err,
+	    size_t errlen);
+
 /*
  * Arcana's rc.conf variables in a file of its own, named in
  * rc_conf_files (invidia/rcarcana.c).  rca_open(): it, and the user's

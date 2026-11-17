@@ -1054,6 +1054,38 @@ ietf_network_networks_edit(cbl_req *req, const struct ietf_network *before,
 	return (EOPNOTSUPP);
 }
 
+/*
+ * RFC 8519's ACLs, compiled to ipfw (acl.c): running's as kept; the
+ * operational datastore's those of them the kernel has, read back by
+ * their rules' comments.
+ */
+int
+ietf_access_control_list_acls_get(cbl_req *req,
+    struct ietf_access_control_list *data, cbl_yarena *a)
+{
+
+	return (acl_get(cbl_req_ydatastore(req) == CBL_YDS_OPERATIONAL, a,
+	    data));
+}
+
+/* The whole set compiled and swapped in at once, then kept; refused,
+ * nothing loaded and running as it was. */
+int
+ietf_access_control_list_acls_edit(cbl_req *req,
+    const struct ietf_access_control_list *before,
+    const struct ietf_access_control_list *after)
+{
+	char	err[256];
+
+	(void)before;
+	if (acl_edit(after, err, sizeof(err)) != 0) {
+		(void)cbl_req_set_yerr(req, err, 0);
+		return (strstr(err, "is not compiled") != NULL ? EOPNOTSUPP :
+		    EIO);
+	}
+	return (0);
+}
+
 /* RFC 8348's hardware: the chassis, CPUs and disks (superbia/yhw.c). */
 int
 ietf_hardware_hardware_get(cbl_req *req, struct ietf_hardware *data,

@@ -360,6 +360,32 @@ them back; arcana-firewall's
 makes them of what the host boots now.
 A confirmed commit whose time is up puts every file it changed back.
 .Pp
+RFC 8519's access control lists
+.Pq Li ietf-access-control-list
+are compiled to
+.Xr ipfw 8 :
+an ACL a band of rule numbers of its own from 61000, its ACEs one rule
+each, ended by a
+.Ic return ;
+an interface's ingress ACLs a
+.Ic call
+from rules 60001 to 60999
+.Pq Ic in recv ,
+its egress ones
+.Pq Ic out xmit ,
+entered by a
+.Ic call
+at rule 8; rule 60000 skips to 65000.
+Each rule's comment says its ACL and ACE.
+The whole is loaded into set 28, disabled, and swapped with set 29 at
+once; it is kept as
+.Pa acls.cbor
+beside the agent's files and applied again when the agent starts.
+A change is refused, nothing loaded, where a rule of the admin's is at
+rule 8 or 60000 to 64999, or in set 28 or 29, and where an ACE matches
+what ipfw cannot (an ICMP code, ECN, TCP flags and the like).
+The operational datastore has the ACLs the kernel has whole.
+.Pp
 Every request has a trace: the library calls, system calls, files and
 programs it used, with the output of every program, told to the peer
 that asked as it runs (arcana-jobs'
