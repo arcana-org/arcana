@@ -1443,7 +1443,7 @@ EOS
 	atf_check -o match:'^9 ' cat got
 	atf_check -o not-match:'^[^9]' cat got
 	# Records for the 200 flows at least (and the templates).
-	atf_check -o inline:'yes\n' awk '{ n += $2 } END { print n >= 200 ? "yes" : "no " n }' got
+	atf_check -o inline:'yes\n' awk '{ n += $2 } END { print ((n >= 200) ? "yes" : "no " n) }' got
 }
 sdwan_flowexp_lab_cleanup()
 {
