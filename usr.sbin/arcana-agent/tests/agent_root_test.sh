@@ -454,6 +454,10 @@ routes_body()
 	# Read by the daemon itself, from the kernel's own lists, as
 	# netstat and sockstat would list them: what sockstat has, this has,
 	# and in parts too.
+	# A socket of its own, for a host where nothing else listens.
+	python3 -c 'import socket, time; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); time.sleep(30)' &
+	echo $! > listener.pid
+	sleep 0.5
 	atf_check -o match:'^\{"socket":\[' "$JGC" -c "$SOCK" net connections
 	pid=$(sockstat -46w | awk 'NR > 1 && $3 ~ /^[0-9]+$/ { print $3; exit }')
 	atf_check -o match:"\"pid\":$pid," -o match:'"user":"' \
@@ -542,6 +546,7 @@ routes_cleanup()
 {
 	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
 	[ -f follow.pid ] && kill "$(cat follow.pid)" 2>/dev/null
+	[ -f listener.pid ] && kill "$(cat listener.pid)" 2>/dev/null
 	if [ -f mine ]; then
 		route -q delete 198.51.100.0/24 >/dev/null 2>&1
 		ifconfig lo7 destroy >/dev/null 2>&1
@@ -910,10 +915,12 @@ for i, l in enumerate(lines):
         r = re.search(r'ICMP echo request, id (\d+),', lines[i + 1])
         if r:
             tos.setdefault(r.group(1), set()).add(m.group(1))
-    m = re.search(r'IP6 \(class (0x[0-9a-f]+),.*ICMP6, echo request, id (\d+),',
-        l)
+    # tcpdump leaves the class out when it is 0.
+    m = re.search(r'IP6 \((?:class (0x[0-9a-f]+), )?.*ICMP6, echo request, '
+        r'id (\d+),', l)
     if m:
-        tos.setdefault(m.group(2), set()).add(m.group(1))
+        tos.setdefault(m.group(2), set()).add(hex(int(m.group(1) or "0",
+            16)))
 for t in ("ef", "be", "af11", "be6"):
     print(t, " ".join(sorted(tos.get(ids.get(t, "-"), ["none"]))))
 EOF
@@ -2081,7 +2088,7 @@ jail_make_body()
 	atf_check -o match:'done +jail remove arcw-jm3' \
 	    "$JGC" -c "$SOCK" jailconf remove arcw-jm3 arcw_jm/more/jails/arcw-jm3
 	printf '.include "%s/jail.conf";\nother {\n}\n' "$d" > arcw-jm4.conf
-	atf_check -s exit:1 -o match:'not the one jail arcw-jm4' \
+	atf_check -s exit:1 -o match:'the file has a block of other' \
 	    "$JGC" -c "$SOCK" jailconf make arcw-jm4 arcw-jm4.conf arcw_jm/new/jails/arcw-jm4 arcw_jm/jails/base@1 clone "$r/arcw-jm4"
 	atf_check -s exit:1 -e ignore zfs list arcw_jm/new
 	# Taken away: not with a dataset that is not its; then with its own,

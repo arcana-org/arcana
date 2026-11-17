@@ -93,6 +93,17 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### libcblink 0.2.27, agent 0.292.2, console 0.443.2
+
+- **libcblink 0.2.27**: once `cbl_conn_free()` returns on a thread other
+  than the connection's loop, nothing more is delivered on it (before,
+  the loop could still answer a request already arriving before the
+  posted teardown ran).  Found by the VM round.
+- Agent root tests: `routes` opens a socket of its own (a host with no
+  listener had none to list), `probe_dscp_packets` reads tcpdump's IPv6
+  lines that leave out a class of 0, `jail_make` expects the refusal of
+  a file with another jail's block.
+
 ### Alternate marking off, agent 0.292.1, console 0.443.1
 
 - **Alternate marking is refused** (the service form's block, the
