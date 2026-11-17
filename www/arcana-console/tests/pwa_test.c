@@ -4713,8 +4713,13 @@ part_storage_zfs(void)
 	    "[type=password][name=key]')", 5);
 	run("const f = document.querySelector('form[data-form=st-typekey]'); "
 	    "f.key.value = 'short'; f.requestSubmit();");
-	wait_js("document.querySelector('.modal').textContent.includes("
-	    "'8 characters at least')", 10);
+	/*
+	 * The host's answer, not the box's own hint (which says the same),
+	 * and the form answered: one sent and not answered drops the next.
+	 */
+	wait_js("document.querySelector('.modal .err')?.textContent.includes("
+	    "'8 characters at least') && !(document.querySelector("
+	    "'form[data-form=st-typekey]')._arcBusy > 0)", 10);
 	run("const f = document.querySelector('form[data-form=st-typekey]'); "
 	    "f.key.value = 'correct horse battery'; f.requestSubmit();");
 	wait_js("[...document.querySelectorAll('.toast')].some(t => t."
