@@ -1407,6 +1407,60 @@ module arcana-l3nm {
           }
         }
       }
+      container flow-export {
+        presence
+          "The service's flows recorded.";
+        description
+          "NetFlow version 9 records (RFC 3954) of the traffic of the
+           service's tunnels, made at each edge by ng_netflow(4), a node
+           a service given a copy of each packet into and out of its
+           tunnels by ipfw ngtee through ng_ipfw(4), in the SD-WAN set,
+           and sent by ng_ksocket(4) over UDP to the collector from the
+           edge's FIB 0.  ng_netflow sends a datagram once it is full:
+           an expired flow of a quiet service waits until more come.";
+        leaf collector {
+          type inet:ipv4-address-no-zone;
+          mandatory true;
+          description
+            "Where the records go: an IPv4 address (an IPv6 one is not
+             taken yet).";
+        }
+        leaf port {
+          type inet:port-number {
+            range "1..65535";
+          }
+          default "2055";
+          description
+            "The collector's UDP port.";
+        }
+        leaf sampling {
+          type uint16 {
+            range "1..65535";
+          }
+          default "1";
+          description
+            "One packet in so many recorded (ipfw prob before ngtee);
+             1, every one.";
+        }
+        leaf active-timeout {
+          type uint16 {
+            range "1..65535";
+          }
+          units "seconds";
+          default "1800";
+          description
+            "A flow still active exported after so long.";
+        }
+        leaf inactive-timeout {
+          type uint16 {
+            range "1..65535";
+          }
+          units "seconds";
+          default "15";
+          description
+            "A flow exported once so long has passed without a packet.";
+        }
+      }
       list rate-limiter {
         key "name";
         ordered-by user;

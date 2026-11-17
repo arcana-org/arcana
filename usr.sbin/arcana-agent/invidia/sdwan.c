@@ -589,9 +589,11 @@ tables_only(const struct edge *e, const ucl_object_t *top,
 	free(jb);
 	if (!same)
 		return (false);
-	/* Alternate marking's tunnels, whose rules are the set's too. */
+	/* Alternate marking's tunnels and the flows' services, whose rules
+	 * are the set's too. */
 	if (!entries_same(ucl_object_lookup(top, "altmark"), ucl_object_lookup(
-	    kept, "altmark")))
+	    kept, "altmark")) || !entries_same(ucl_object_lookup(top,
+	    "flowexp"), ucl_object_lookup(kept, "flowexp")))
 		return (false);
 	if (ucl_array_size(ucl_object_lookup(top, "tables")) != ucl_array_size(
 	    ucl_object_lookup(kept, "tables")))
@@ -1746,18 +1748,20 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	struct object		*no;
 	struct edge		*ed;
 	struct am_service	*am;
-	int			 nam, nar;
+	struct fe_service	*fe;
+	int			 nam, nar, nfe;
 	char			 path[MAXPATHLEN], tmp[MAXPATHLEN], num[16];
 	char			*text, alt[72], *buf;
 	FILE			*fp;
 	size_t			 blen;
 	int64_t			 s;
 	int			 n, nr, step, fd, nob, kk;
-	const char		*line, *err, *jail, *rfile, *load;
+	const char		*line, *err, *jail, *rfile, *load, *e2;
 	bool			 ok, dn, natm, n64, empty, marked;
 
 	am = NULL;
-	nam = nar = 0;
+	nam = nar = nfe = 0;
+	fe = NULL;
 	if ((top = parse(json)) == NULL || ucl_object_type(top) != UCL_OBJECT) {
 		if (top != NULL)
 			ucl_object_unref(top);
@@ -1776,6 +1780,15 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		return (-1);
 	}
 	jail = wstrdup(w, jail);
+	/* Flow records at a vnet jail's edge: ng_ipfw's node is the host's
+	 * network's alone, so its copies would go nowhere. */
+	if (jail[0] != '\0' && ucl_array_size(ucl_object_lookup(top,
+	    "flowexp")) > 0) {
+		ucl_object_unref(top);
+		*errp = "flow records are a host's edge's alone: ng_ipfw's node "
+		    "is the host's network's, and a vnet jail has none";
+		return (-1);
+	}
 	rfile = jail[0] == '\0' ? RULES_FILE : wfmt(w, "sdwan-rules@%s.json",
 	    jail);
 	if (jail[0] != '\0' && scope_enter(w, jail, errp) != 0) {
@@ -1872,6 +1885,16 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	if (altmark_parse(ucl_object_lookup(top, "altmark"), &am, &nam,
 	    errp) != 0)
 		goto bad;
+	/* The services whose flows are recorded (NetFlow v9): their ngtee
+	 * rules, refused where ng_ipfw is not loaded, since such a rule
+	 * then drops what it matches. */
+	if (netflow_parse(ucl_object_lookup(top, "flowexp"), &fe, &nfe,
+	    errp) != 0)
+		goto bad;
+	if (nfe > 0 && (e2 = netflow_ready(w)) != NULL) {
+		*errp = e2;
+		goto bad;
+	}
 	if (nam > 0 && n + nam + 1 > TABLES_MAX) {
 		*errp = wfmt(w, "%d tables at most", TABLES_MAX);
 		goto bad;
@@ -1939,6 +1962,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		free(nt);
 		free(no);
 		altmark_free(am, nam);
+		netflow_free(fe, nfe);
 		ucl_object_unref(top);
 		if (!ok) {
 			*errp = err;
@@ -2030,6 +2054,10 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		nar = altmark_rules_in(fp, num, am, nam);
 		marked = false;
 	}
+	/* The flows' copies, after the colour is off what comes out of a
+	 * tunnel and before the console's rules can end a packet's pass. */
+	if (nr > 0 && nfe > 0)
+		nar += netflow_rules(fp, num, fe, nfe);
 	it = NULL;
 	while ((r = ucl_object_iterate(ucl_object_lookup(top, "rules"), &it,
 	    true)) != NULL) {
@@ -2125,6 +2153,10 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 		(void)scope_rename(w, load, strrchr(load, '/') + 1, NULL);
 	/* Measured from now in the set loaded; nothing where it is not. */
 	altmark_set(jail, ok ? ed->set : 0, am, ok && ed->set != 0 ? nam : 0);
+	/* The flows' nodes as the set loaded says; none where it is not. */
+	if (netflow_set(w, fe, ok && ed->set != 0 ? nfe : 0, &e2) != 0)
+		logmsg(LOG_WARNING, "sdwan%s%s: flow records: %s",
+		    jail[0] != '\0' ? " of " : "", jail, e2);
 	if (!ok) {
 		pthread_mutex_unlock(&lock);
 		*errp = err;
@@ -2144,6 +2176,7 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	free(nt);
 	free(no);
 	altmark_free(am, nam);
+	netflow_free(fe, nfe);
 	ucl_object_unref(top);
 	if (edge_keep(jail, rfile, json, empty, &err) != 0) {
 		*errp = wfmt(w, "%s: %s", rfile, err);
@@ -2154,6 +2187,7 @@ bad:
 	free(nt);
 	free(no);
 	altmark_free(am, nam);
+	netflow_free(fe, nfe);
 	ucl_object_unref(top);
 	return (-1);
 }

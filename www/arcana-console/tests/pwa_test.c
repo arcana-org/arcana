@@ -6964,7 +6964,8 @@ part_flows_sdwan(void)
 	    "f.pb_low_percentile.value = '25'; f.pb_high_percentile.value = "
 	    "'99.9'; f.pb_measurement_interval.value = '30'; f.pb_classes."
 	    "value = 'voice=46'; f.pb_alt_marking.value = '10'; "
-	    "f.requestSubmit();");
+	    "f.fe_collector.value = '192.0.2.10'; f.fe_sampling.value = "
+	    "'100'; f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
 	/* Kept once the save is answered, which the form's closing does not
 	 * wait for. */
@@ -6978,7 +6979,9 @@ part_flows_sdwan(void)
 			    "intermediate-percentile data/l3nm.json && grep -Eq "
 			    "'\"measurement-interval\": *30' data/l3nm.json && "
 			    "grep -Eq '\"alt-marking-period\": *10' "
-			    "data/l3nm.json && "
+			    "data/l3nm.json && grep -Eq '\"collector\": "
+			    "*\"192.0.2.10\"' data/l3nm.json && grep -Eq "
+			    "'\"sampling\": *100' data/l3nm.json && "
 			    "grep -Eq '\"name\": *\"voice\"' data/l3nm.json")) !=
 			    0)
 				usleep(100000);
@@ -6995,7 +6998,11 @@ part_flows_sdwan(void)
 	    "pb_measurement_interval]').value === '30' && document."
 	    "querySelector('form[data-form=sd-swvc] input[name=pb_classes]')"
 	    ".value === 'voice=46' && document.querySelector('form[data-form="
-	    "sd-swvc] input[name=pb_alt_marking]').value === '10'", 10);
+	    "sd-swvc] input[name=pb_alt_marking]').value === '10' && "
+	    "document.querySelector('form[data-form=sd-swvc] input[name="
+	    "fe_collector]').value === '192.0.2.10' && document."
+	    "querySelector('form[data-form=sd-swvc] input[name=fe_sampling]')"
+	    ".value === '100'", 10);
 	run("document.querySelector('.modal button[data-act=close]').click()");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 10);
 	/*

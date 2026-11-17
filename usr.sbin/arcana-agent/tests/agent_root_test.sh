@@ -1355,6 +1355,118 @@ sdwan_altmark_lab_cleanup()
 	true
 }
 
+atf_test_case sdwan_flowexp_lab cleanup
+sdwan_flowexp_lab_head()
+{
+	atf_set "descr" "flow records for real (PLAN-SDN-YANG 5.6.1): the" \
+	    "agent's own edge (ng_ipfw's node is the host network's alone)," \
+	    "a gre tunnel over an epair to a vnet jail: the ngtee rules in" \
+	    "set 30 at 9, the ng_netflow and ng_ksocket nodes; UDP to 200" \
+	    "ports across the tunnel; the jail's collector receives NetFlow" \
+	    "version 9 datagrams with records, the last when the node is" \
+	    "shut down with the flows taken away; a jail's edge refused"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+	atf_set "is.exclusive" "true"
+}
+sdwan_flowexp_lab_body()
+{
+	local e R
+
+	kldstat -q -m ng_ipfw || atf_skip "ng_ipfw is not loaded"
+	kldstat -q -m ng_netflow || atf_skip "ng_netflow is not loaded"
+	kldstat -q -m ng_ksocket || atf_skip "ng_ksocket is not loaded"
+	# ng_ipfw's node is in the host's network alone: not in a vnet
+	# jail's, which this one may be.
+	ngctl info ipfw: >/dev/null 2>&1 ||
+	    atf_skip "no ng_ipfw node in this network (a vnet jail's)"
+	jls -j arcw_feb >/dev/null 2>&1 && atf_skip "a jail arcw_feb is there"
+	ipfw set 30 list >/dev/null 2>&1 || atf_skip "no ipfw here"
+	[ -z "$(ipfw set 30 list 2>/dev/null | grep -v '^65535')" ] ||
+	    atf_skip "this host's ipfw has rules in set 30"
+	atf_check -o ignore jail -c name=arcw_feb vnet persist path=/
+	atf_check jexec arcw_feb ifconfig lo0 inet 127.0.0.1/8 up
+	e=$(epair_create) || atf_fail "no epair"
+	echo "${e%a}" > epair
+	atf_check ifconfig ${e%a}b vnet arcw_feb
+	atf_check ifconfig ${e%a}a inet 198.51.100.1/30 up
+	atf_check jexec arcw_feb ifconfig ${e%a}b inet 198.51.100.2/30 up
+	gre=$(ifconfig gre create) || atf_skip "no gre(4)"
+	echo "$gre" > gre
+	atf_check ifconfig $gre inet 10.255.0.0 10.255.0.1 netmask \
+	    255.255.255.255 tunnel 198.51.100.1 198.51.100.2 up
+	atf_check -o ignore jexec arcw_feb ifconfig gre0 create
+	atf_check jexec arcw_feb ifconfig gre0 inet 10.255.0.1 10.255.0.0 \
+	    netmask 255.255.255.255 tunnel 198.51.100.2 198.51.100.1 up
+	# The jail's collector: each datagram's NetFlow version and record
+	# count.
+	cat > collector.py <<'EOS'
+import socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("198.51.100.2", 2055))
+out = open(sys.argv[1], "a", buffering=1)
+while True:
+    d, a = s.recvfrom(65535)
+    v, n = struct.unpack("!HH", d[:4])
+    out.write("%d %d %d\n" % (v, n, len(d)))
+EOS
+	: > got
+	jexec arcw_feb python3 -I "$(pwd)/collector.py" "$(pwd)/got" &
+	echo $! > collector.pid
+	start_daemon
+	R='"tables":[],"rules":["99 count ip from any to any"]'
+	# A jail's edge: refused, no ng_ipfw node there.
+	atf_check -s exit:1 -e match:"host's edge" -o ignore "$JGC" -c "$SOCK" \
+	    sdwan rules "{\"jail\":\"arcw_feb\",\"set\":30,$R,\"flowexp\":[{\"service\":\"lab\",\"collector\":\"198.51.100.1\",\"tunnels\":[{\"id\":\"lab/a-b\",\"interface\":\"gre0\"}]}]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,$R,\"flowexp\":[{\"service\":\"lab\",\"collector\":\"198.51.100.2\",\"inactive_timeout\":1,\"active_timeout\":5,\"tunnels\":[{\"id\":\"lab/a-b\",\"interface\":\"$gre\"}]}]}"
+	atf_check -o match:"^00009 +[0-9]+ +[0-9]+ set 30 ngtee 61000 ip from any to any in recv $gre" \
+	    -o match:"^00009 +[0-9]+ +[0-9]+ set 30 ngtee 61001 ip from any to any out xmit $gre" \
+	    ipfw -S show
+	atf_check -o match:'Name: arcnf0 +Type: netflow' \
+	    -o match:'Name: arcnf0x +Type: ksocket' ngctl list
+	# 200 flows across the tunnel, a UDP datagram to each of 200 ports.
+	cat > send.py <<'EOS'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for p in range(20000, 20200):
+    s.sendto(b"x" * 32, ("10.255.0.1", p))
+EOS
+	atf_check python3 -I send.py
+	sleep 3
+	# Taken away: the node shut down, what it held sent.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules "{\"set\":30,$R}"
+	sleep 1
+	atf_check -o not-match:'arcnf' ngctl list
+	atf_check -o not-match:'ngtee' ipfw -S show
+	cat got
+	atf_check -o match:'^9 ' cat got
+	atf_check -o not-match:'^[^9]' cat got
+	# Records for the 200 flows at least (and the templates).
+	atf_check -o inline:'yes\n' awk '{ n += $2 } END { print n >= 200 ? "yes" : "no " n }' got
+}
+sdwan_flowexp_lab_cleanup()
+{
+	local e
+
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f collector.pid ] && kill "$(cat collector.pid)" 2>/dev/null
+	sleep 0.5
+	ipfw -q delete set 30 2>/dev/null
+	for n in $(ngctl list 2>/dev/null | awk '/Name: arcnf[0-9]+ /{print $2}'); do
+		ngctl shutdown $n: 2>/dev/null
+	done
+	[ -f gre ] && ifconfig "$(cat gre)" destroy 2>/dev/null
+	jexec arcw_feb ifconfig gre0 destroy 2>/dev/null
+	if [ -f epair ]; then
+		e=$(cat epair)
+		ifconfig ${e}b -vnet arcw_feb 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
+	jail -r arcw_feb 2>/dev/null
+	true
+}
+
 atf_test_case sdwan_links cleanup
 sdwan_links_head()
 {
@@ -5267,6 +5379,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_control
 	atf_add_test_case sdwan_jail_edge
 	atf_add_test_case sdwan_altmark_lab
+	atf_add_test_case sdwan_flowexp_lab
 	atf_add_test_case sdwan_links
 	atf_add_test_case bird_live
 	atf_add_test_case sctp_multihome

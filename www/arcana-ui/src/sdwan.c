@@ -6893,7 +6893,50 @@ sdwan_modal_service(struct html *h)
 			    "voice=46, bulk=10", "Each tunnel measured in each "
 			    "too, a session of its own with that DSCP: name=dscp "
 			    "by commas, 8 at most.");
-			h_raw(h, "</div></fieldset></details>");
+			h_raw(h, "</div></fieldset>");
+			/* Flow records: NetFlow v9 by ng_netflow at each edge. */
+			{
+				const ucl_object_t	*fe = jget(o, "flow_export");
+				static const struct {
+					const char	*key, *label, *ph;
+				} fes[] = {
+					{ "port", "Collector's UDP port", "2055" },
+					{ "sampling", "One packet recorded in", "1" },
+					{ "active_timeout", "An active flow sent after, "
+					    "s", "1800" },
+					{ "inactive_timeout", "An idle flow sent after, "
+					    "s", "15" },
+				};
+
+				h_raw(h, "<fieldset><legend>Flow records <small "
+				    "class=\"dim\">NetFlow v9 by ng_netflow at "
+				    "each edge; empty: none</small></legend><div "
+				    "class=\"two\">");
+				text_field(h, "Collector, IPv4", "fe_collector",
+				    jstr(fe, "collector"), "192.0.2.10", "Where "
+				    "each edge sends the records of its tunnels' "
+				    "traffic, over UDP from its FIB 0: a copy of "
+				    "each packet by ipfw ngtee to an ng_netflow "
+				    "node of the service's. A record is sent once "
+				    "its datagram is full, so a quiet service's "
+				    "come late. Edges that are hosts alone: a vnet "
+				    "jail's has no ng_ipfw node.");
+				for (i = 0; i < (int)nitems(fes); i++) {
+					char	name[40];
+
+					snprintf(name, sizeof(name), "fe_%s",
+					    fes[i].key);
+					snprintf(buf, sizeof(buf), "%lld", (long long)
+					    jint(fe, fes[i].key, 0));
+					text_field(h, fes[i].label, name, jget(fe,
+					    fes[i].key) != NULL ? buf : "", fes[i].ph,
+					    NULL);
+					if (i % 2 == 0)
+						h_raw(h, "</div><div class=\"two\">");
+				}
+				h_raw(h, "</div></fieldset>");
+			}
+			h_raw(h, "</details>");
 		}
 		return (true);
 	}
@@ -9156,6 +9199,22 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 		(void)ucl_object_delete_key(o, "groups");
 		(void)ucl_object_delete_key(o, "importance");
 		(void)ucl_object_delete_key(o, "probe");
+		(void)ucl_object_delete_key(o, "flow_export");
+		/* Flow records: a collector, or none. */
+		if (jstr(f, "fe_collector") != NULL && jstr(f,
+		    "fe_collector")[0] != '\0') {
+			static const char *const fk[] = { "port", "sampling",
+			    "active_timeout", "inactive_timeout" };
+			char	name[40];
+
+			t = ucl_object_typed_new(UCL_OBJECT);
+			put_str(t, "collector", jstr(f, "fe_collector"));
+			for (size_t k = 0; k < nitems(fk); k++) {
+				snprintf(name, sizeof(name), "fe_%s", fk[k]);
+				put_int(t, fk[k], jstr(f, name));
+			}
+			ucl_object_insert_key(o, t, "flow_export", 0, false);
+		}
 		put_list(o, "groups", jstr(f, "groups"));
 		if (jstr(f, "imp_levels") != NULL && jstr(f, "imp_levels")[0] !=
 		    '\0') {

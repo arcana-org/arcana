@@ -2245,7 +2245,7 @@ rule 2: 120 fwd tablearg ip from any to table(sw1_p1)
 rule 3: 110 count ip from any to any
 set {"set":30,"tables":[{"name":"sw1_zone","valtype":"legacy","entries":[["10.1.0.0/24","1"],["10.2.0.0/24","2"]]},{"name":"sw1_p1","valtype":"ipv4","entries":[["10.3.0.0/24","10.202.0.2"]]}],"objects":["pipe 1 config bw 10Mbit/s","queue 2 config pipe 1 weight 30"],"rules":["100 skipto 999 ip from any to any not recv vtnet1","110 setfib 1 ip from table(sw1_zone) to any","120 fwd tablearg ip from any to table(sw1_p1)","110 count ip from any to any"]}
 emptied {"set":30,"tables":[],"objects":[],"rules":[]}
-yang-cbor 343 bytes, the same back
+yang-cbor 345 bytes, the same back
 EOT
 	atf_check -o file:want "$y" rules rules.json
 	# The steering, with the breakout's routes.
@@ -9852,6 +9852,78 @@ sdwan_rules_cleanup()
 }
 
 atf_test_case sdwan_altmark cleanup
+sdwan_flowexp_head()
+{
+	atf_set "descr" "Flow records (PLAN-SDN-YANG 5.6.1): each service's ngtee rules at rule 9 of the set, both ways of each tunnel, sampled by prob; its ng_netflow node made by ngctl (two hooks of ng_ipfw, DLT_RAW, the timeouts, an ng_ksocket to the IPv4 collector), the node there before shut down, none left with the set; refused without ng_ipfw, an IPv6 collector, a sampling of 0"
+}
+sdwan_flowexp_body()
+{
+	local R FE
+	# ngctl as a stand-in: its words, and the script it reads on its
+	# standard input; an arcnf node there already, with its ksocket.
+	cat > fake-ngctl <<EOS
+#!/bin/sh
+echo "ngctl \$*" >> $(pwd)/ngctl.log
+[ "\$1" = -f ] && cat >> $(pwd)/ngctl.log
+[ "\$1" = list ] && printf 'There are 2 total nodes:\n  Name: arcnf0          Type: netflow         ID: 00000020   Num hooks: 3\n  Name: arcnf0x         Type: ksocket         ID: 00000021   Num hooks: 1\n'
+exit 0
+EOS
+	chmod +x fake-ngctl
+	sdwan_start
+	R='"tables":[{"name":"sw1_zone","valtype":"skipto"}],"rules":["10 skipto tablearg ip from table(sw1_zone) to any in recv lo1","99 count ip from any to any"]'
+	FE='{"service":"sw1","collector":"192.0.2.10","sampling":100,"inactive_timeout":10,"tunnels":[{"id":"sw1/a-b","interface":"gre100"},{"id":"sw1/a-c","interface":"gre101"}]}'
+	atf_check -s exit:1 -e match:'collector' -o ignore "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,$R,\"flowexp\":[{\"service\":\"sw1\",\"collector\":\"2001:db8::10\",\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"}]}]}"
+	atf_check -s exit:1 -e match:'sampling' -o ignore "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,$R,\"flowexp\":[{\"service\":\"sw1\",\"collector\":\"192.0.2.10\",\"sampling\":0,\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"}]}]}"
+	# A vnet jail's edge has no ng_ipfw node: refused.
+	atf_check -s exit:1 -e match:"host's edge" -o ignore "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"jail\":\"gw\",\"set\":30,$R,\"flowexp\":[$FE]}"
+	: > ipfw.log
+	: > ngctl.log
+	# Without ng_ipfw an ngtee rule drops what it matches: refused.
+	if ! /sbin/kldstat -q -m ng_ipfw; then
+		atf_check -s exit:1 -e match:'ng_ipfw' -o ignore "$JGC" -c "$SOCK" \
+		    sdwan rules "{\"set\":30,$R,\"flowexp\":[$FE]}"
+		atf_check -o empty cat ngctl.log
+		return
+	fi
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,$R,\"flowexp\":[$FE]}"
+	# The copies at 9, before the console's rules, one in 100.
+	atf_check -o match:'^add 9 set 30 prob 0.010000 ngtee 61000 ip from any to any in recv gre100 // fe 0.0 in sw1$' \
+	    -o match:'^add 9 set 30 prob 0.010000 ngtee 61001 ip from any to any out xmit gre100 // fe 0.0 out sw1$' \
+	    -o match:'^add 9 set 30 prob 0.010000 ngtee 61001 ip from any to any out xmit gre101 // fe 0.1 out sw1$' \
+	    cat ipfw.log
+	atf_check -o inline:'yes\n' sh -c "test \$(grep -n '^add 9 ' ipfw.log | tail -1 | cut -d: -f1) -lt \$(grep -n '^add 10 ' ipfw.log | head -1 | cut -d: -f1) && echo yes"
+	# The graph: what was there shut down (its ksocket goes with it),
+	# then the service's node, its hooks raw IP, its timeouts, its
+	# ksocket to the collector on 2055.
+	atf_check -o match:'^shutdown arcnf0:$' -o not-match:'^shutdown arcnf0x:' \
+	    -o match:'^mkpeer ipfw: netflow 61000 iface0$' \
+	    -o match:'^name ipfw:61000 arcnf0$' \
+	    -o match:'^connect ipfw: arcnf0: 61001 iface1$' \
+	    -o match:'^msg arcnf0: setdlt \{ iface=0 dlt=12 \}$' \
+	    -o match:'^msg arcnf0: setdlt \{ iface=1 dlt=12 \}$' \
+	    -o match:'^msg arcnf0: settimeouts \{ inactive=10 active=1800 \}$' \
+	    -o match:'^mkpeer arcnf0: ksocket export9 inet/dgram/udp$' \
+	    -o match:'^msg arcnf0x: connect inet/192.0.2.10:2055$' \
+	    cat ngctl.log
+	# Kept: through YANG and back, the agent's own kept file.
+	atf_check -o match:'"flowexp"' -o match:'"collector":"192.0.2.10"' \
+	    cat sdwan-rules.json
+	# Without flowexp: the node shut down, none made.
+	: > ngctl.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules "{\"set\":30,$R}"
+	atf_check -o match:'^shutdown arcnf0:$' -o not-match:'^mkpeer' \
+	    cat ngctl.log
+	atf_check -o not-match:'ngtee' sh -c "tail -20 ipfw.log"
+}
+sdwan_flowexp_cleanup()
+{
+	stop_daemon
+}
+
 sdwan_altmark_head()
 {
 	atf_set "descr" "Alternate marking (RFC 9341, PLAN-SDN-YANG 5.5.1 and 5.5.2): the count and unmark rules of the way out of a tunnel first in the SD-WAN set, the colour and count rules of the way in after the console's rules that only count and before its queue, the outer rule by the tunnel's kind, the colour tables swapped at each block's start, the counters read by IP_FW3 in the middle of the block after (libfakejail's), each block's gain with its number, its timing in the guard band, told as sdwan-altmark; taken away with the set"
@@ -18331,6 +18403,7 @@ atf_init_test_cases()
 	atf_add_test_case history_hold_off
 	atf_add_test_case sdwan_rules
 	atf_add_test_case sdwan_altmark
+	atf_add_test_case sdwan_flowexp
 	atf_add_test_case vpn_bird
 	atf_add_test_case sdwan_bird
 	atf_add_test_case vpn_wireguard

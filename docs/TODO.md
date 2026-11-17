@@ -4,11 +4,15 @@
 
 - IPFIX export in ng_netflow(4), kernel work and the user's:
   ng_netflow exports NetFlow v5 and v9 only (both hooks at once,
-  nothing else); pflow(4) has IPFIX but serves pf.
-  docs/PLAN-SDN-YANG.md's flow telemetry (5.6) waits on it or takes v9.
-  An expired flow also waits in a partly filled export datagram until
-  it fills or the node shuts down, with no timer to send it; a flush
-  belongs to the same work.
+  nothing else); pflow(4) has IPFIX but serves pf.  The flow records
+  (PLAN-SDN-YANG 5.6.1, agent 0.292.0) take v9.  An expired flow
+  waits in a partly filled export datagram until it fills or the node
+  shuts down, with no timer to send it; a flush belongs to the same
+  work.  The flow records' collector is IPv4 alone: ng_ksocket's inet
+  form; an IPv6 one needs its generic sockaddr form.  And they are a
+  host's edge's alone: ng_ipfw makes its node in the host's network,
+  none in a vnet jail's; agent_root_test:sdwan_flowexp_lab waits for
+  the VM round (it skips in a vnet jail).
 - The SDN and YANG redesign: docs/PLAN-SDN-YANG.md. Open decisions:
   D-5, D-11, D-12 (D-6 taken: a FIB per vpn-node).
   To do, the datastores first, to the safety design decided on

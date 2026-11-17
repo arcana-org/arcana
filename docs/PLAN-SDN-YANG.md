@@ -3605,6 +3605,43 @@ whose first part is served.
   way none; the set taken away, the jail's rules as they were).
 - 5.6.1 A: `ng_netflow` per service FIB with sampling (v9); check:
   records at a collector jail.
+  Done (agent 0.292.0, console 0.443.0), per service on its tunnels
+  rather than by FIB: ipfw has no match of a packet's FIB that sees
+  both ways, and a service's traffic is what its tunnels carry.  A
+  service's `flow_export` (arcana-l3nm's flow-export: an IPv4
+  collector, its port, 2055; a sampling, one in 1 to 65535; the active
+  and inactive timeouts, 1800 and 15 s) gives each edge, in the rules'
+  flowexp (arcana-sdwan's flow-export), the service with its tunnels
+  there; the console has the edge load and keep ng_ipfw, ng_netflow and
+  ng_ksocket.  Host edges alone: ng_ipfw makes its netgraph node in the
+  host's network only, so a vnet jail's edge (and an agent that is
+  itself in a vnet jail) has none for its copies to go to; the console
+  gives a jail's edge no flowexp and the agent refuses one there.  The
+  agent (invidia/netflow.c) refuses flowexp where ng_ipfw is not loaded,
+  since an ngtee rule then drops what it matches, or where its node is
+  not in the edge's network; writes in the set, rule 9 after alternate marking's way out
+  and before the console's rules, `[prob 1/N] ngtee 61000+2K` in recv
+  and `ngtee 61001+2K` out xmit of each tunnel; and makes by ngctl, in
+  the edge's own graph (a jail's in the jail), an ng_netflow node
+  arcnfK on those two ng_ipfw hooks (iface0 and iface1, both DLT_RAW),
+  its timeouts set, its export9 joined to an ng_ksocket arcnfKx
+  connected to the collector over UDP; at each load every arcnf node
+  there is shut down first (what it holds sent), none left with no
+  flowexp, and at the agent's start the kept payload makes them again.
+  Checked: agent_test:sdwan_flowexp (the rules, prob for the sampling,
+  the ngctl script, the node there before shut down, none left when the
+  flows are taken away, the refusals, a jail's edge among them, kept
+  through YANG), console_test:sdwan_flowexp (the checks, the plan's
+  flowexp and the modules), pwa_test:pwa_flows_sdwan (the form's
+  collector and sampling kept in L3NM and shown again).  Not run yet:
+  agent_root_test:sdwan_flowexp_lab (the agent's own edge, a gre tunnel
+  to a vnet jail: the rules and nodes for real, UDP to 200 ports, NetFlow
+  v9 datagrams with their records at the jail's collector, the last
+  when the flows are taken away; a jail's edge refused): it skips in
+  devenv, itself a vnet jail with no ng_ipfw node, and waits for the VM
+  round.  A bug the agent's case found on the way: the set's shortcut
+  that reloads tables alone took no account of flowexp, so flows taken
+  away left their ngtee rules loaded.
 - 5.6.2 C: BMP from BIRD to the console; check: a session's updates
   seen.
 - 5.6.3 C: a compact time-series store with retention per class;

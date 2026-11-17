@@ -782,6 +782,11 @@ static const struct fm probe_m[] = {
 	F("alt_marking", "alt-marking-period", C),
 	FS("classes", "class", L, pclassm), FEND
 };
+static const struct fm fe_m[] = {
+	F("collector", "collector", C), F("port", "port", C),
+	F("sampling", "sampling", C), F("active_timeout", "active-timeout", C),
+	F("inactive_timeout", "inactive-timeout", C), FEND
+};
 static const struct fm rl_m[] = {
 	F("name", "name", C), F("commit", "commit", N),
 	F("limit", "limit", N), FEND
@@ -873,6 +878,7 @@ static const struct fm sw_m[] = {
 	FS("intervals", "intervals", O, intervals_m),
 	FS("bfd", "bfd", O, bfd_m), FS("tca", "tca", O, tca_m),
 	FS("probe", "probe", O, probe_m),
+	FS("flow_export", "flow-export", O, fe_m),
 	FS("rate_limiters", "rate-limiter", L, rl_m),
 	FP("security_function_policies", "security-function-policy", L,
 	    sfp_m, sfp_imp, sfp_exp),

@@ -304,6 +304,33 @@ rules_of(const ucl_object_t *in)
 		ucl_array_append(arr, r);
 	}
 	put_list(m, "alt-marking", arr);
+	/* The services whose flows are recorded, their tunnels. */
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(ucl_object_lookup(in, "flowexp"), &it,
+	    true)) != NULL) {
+		ucl_object_t	*ts, *u;
+
+		r = ucl_object_typed_new(UCL_OBJECT);
+		copy(r, "service", t, "service");
+		copy(r, "collector", t, "collector");
+		copy(r, "port", t, "port");
+		copy(r, "sampling", t, "sampling");
+		copy(r, "active-timeout", t, "active_timeout");
+		copy(r, "inactive-timeout", t, "inactive_timeout");
+		ts = ucl_object_typed_new(UCL_ARRAY);
+		eit = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(t, "tunnels"),
+		    &eit, true)) != NULL) {
+			u = ucl_object_typed_new(UCL_OBJECT);
+			copy(u, "id", e, "id");
+			copy(u, "interface", e, "interface");
+			ucl_array_append(ts, u);
+		}
+		put_list(r, "tunnel", ts);
+		ucl_array_append(arr, r);
+	}
+	put_list(m, "flow-export", arr);
 	return (m);
 }
 

@@ -3722,6 +3722,7 @@ dns_build(struct plan *pl, const ucl_object_t *doc)
 #define	RULE_TO		99	/* to here, the way out of them */
 #define	IPFW_SET	30
 #define	AM_RULE		9	/* the agent's alternate marking's, before */
+#define	FE_RULE		9	/* the agent's flow records' ngtee, before */
 
 /* APPID (Table 8): what each application is, as ports and a protocol. */
 static const struct {
@@ -5517,6 +5518,72 @@ altmark_of(struct plan *pl, const char *sid)
 }
 
 /*
+ * Flow records (PLAN-SDN-YANG 5.6.1) at edge sid: each service whose
+ * flow_export gives a collector, its settings and its tunnels that have
+ * an end here, each its interface here, for the agent to make its
+ * ng_netflow node and ngtee rule (rule FE_RULE of the set,
+ * invidia/netflow.c).  NULL where none is, and at a vnet jail's edge.
+ */
+static ucl_object_t *
+flowexp_of(struct plan *pl, const char *sid)
+{
+	static const char *const keys[] = { "port", "sampling",
+	    "active_timeout", "inactive_timeout" };
+	const ucl_object_t	*sw, *t, *a, *fe, *v;
+	ucl_object_iter_t	 it, tit;
+	ucl_object_t		*arr, *s, *ts, *u;
+	int			 k;
+
+	/* A vnet jail's edge has no ng_ipfw node to send copies to (it is
+	 * the host's network's alone): its flows are not recorded. */
+	if (edge_jailed(sid))
+		return (NULL);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((sw = ucl_object_iterate(ucl_object_lookup(pl->doc, "swvcs"),
+	    &it, true)) != NULL) {
+		if ((fe = ucl_object_lookup(sw, "flow_export")) == NULL ||
+		    str(fe, "collector") == NULL)
+			continue;
+		ts = ucl_object_typed_new(UCL_ARRAY);
+		tit = NULL;
+		while ((t = ucl_object_iterate(pl->tunnels, &tit, true)) != NULL) {
+			if (strcmp(str(t, "swvc"), str(sw, "id")) != 0 ||
+			    ucl_flag(t, "control"))
+				continue;
+			for (k = 0; k < 2; k++) {
+				a = ucl_array_find_index(ucl_object_lookup(t,
+				    "ends"), (unsigned int)k);
+				if (strcmp(str(a, "edge"), sid) != 0 ||
+				    str(a, "ifname") == NULL)
+					continue;
+				u = ucl_object_typed_new(UCL_OBJECT);
+				put(u, "id", S(str(t, "id")));
+				put(u, "interface", S(str(a, "ifname")));
+				ucl_array_append(ts, u);
+			}
+		}
+		if (ucl_array_size(ts) == 0) {
+			ucl_object_unref(ts);
+			continue;
+		}
+		s = ucl_object_typed_new(UCL_OBJECT);
+		put(s, "service", S(str(sw, "id")));
+		put(s, "collector", S(str(fe, "collector")));
+		for (k = 0; k < (int)nitems(keys); k++)
+			if ((v = ucl_object_lookup(fe, keys[k])) != NULL)
+				put(s, keys[k], I(ucl_object_toint(v)));
+		put(s, "tunnels", ts);
+		ucl_array_append(arr, s);
+	}
+	if (ucl_array_size(arr) == 0) {
+		ucl_object_unref(arr);
+		return (NULL);
+	}
+	return (arr);
+}
+
+/*
  * The rules of one edge, and its steering: for each service with an
  * end point here, the zone table and each zone's block, each flow
  * with the policy it gets, each policy's tables; what a flow may do beyond the tunnels
@@ -5531,7 +5598,7 @@ rules_build(struct plan *pl, const char *sid)
 	char			 n64n[32];
 	ucl_object_iter_t	 it, eit, zit, ait;
 	ucl_object_t		*o, *tables, *rules, *entries, *zt, *j, *pre;
-	ucl_object_t		*objects, *kt, *am;
+	ucl_object_t		*objects, *kt, *am, *fx;
 	struct dn		*dn;
 	char			 ifn[32], tname[64], zname[64], words[2000];
 	char			 wide[2100];
@@ -6376,12 +6443,29 @@ rules_build(struct plan *pl, const char *sid)
 		    "; %u service%s' tunnels measured by alternate marking (ipfw "
 		    "setdscp and count, rule %d)", ucl_array_size(am),
 		    ucl_array_size(am) == 1 ? "" : "s", AM_RULE);
+	fx = flowexp_of(pl, sid);
+	/* netgraph's nodes for it, loaded before the rules: an ngtee rule
+	 * with no ng_ipfw drops what it matches. */
+	if (fx != NULL) {
+		kmod_obj(pl, sid, "kmod-ng_ipfw", "ng_ipfw", "flow records");
+		kmod_obj(pl, sid, "kmod-ng_netflow", "ng_netflow",
+		    "flow records");
+		kmod_obj(pl, sid, "kmod-ng_ksocket", "ng_ksocket",
+		    "flow records");
+	}
+	if (fx != NULL)
+		snprintf(words + strlen(words), sizeof(words) - strlen(words),
+		    "; %u service%s' flows recorded (NetFlow v9 by ng_netflow, "
+		    "ipfw ngtee, rule %d)", ucl_array_size(fx),
+		    ucl_array_size(fx) == 1 ? "" : "s", FE_RULE);
 	o = object(pl, sid, key, PH_RULES, "%s", words);
 	if (o != NULL) {
 		j = job("sdwan-rules", "set", I(IPFW_SET), "tables", tables,
 		    "rules", rules, "objects", objects, NULL);
 		if (am != NULL)
 			put(j, "altmark", am);
+		if (fx != NULL)
+			put(j, "flowexp", fx);
 		make(o, j);
 		unmake(o, job("sdwan-rules", "set", I(IPFW_SET), "tables",
 		    ucl_object_typed_new(UCL_ARRAY), "rules",
@@ -6393,6 +6477,8 @@ rules_build(struct plan *pl, const char *sid)
 		ucl_object_unref(objects);
 		if (am != NULL)
 			ucl_object_unref(am);
+		if (fx != NULL)
+			ucl_object_unref(fx);
 	}
 	o = object(pl, sid, "steer", PH_STEER, "the steering: %u far "
 	    "prefix%s, each by the tunnels that may carry it",

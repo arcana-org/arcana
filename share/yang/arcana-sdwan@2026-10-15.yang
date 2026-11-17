@@ -569,6 +569,86 @@ module arcana-sdwan {
           }
         }
       }
+      list flow-export {
+        key "service";
+        description
+          "The services whose tunnels' traffic this edge records as
+           NetFlow version 9 (RFC 3954): an ng_netflow(4) node a
+           service, given a copy of each packet into and out of its
+           tunnels by ipfw ngtee through ng_ipfw(4) (rule 12 of the
+           set, after alternate marking's), its export9 hook joined to
+           an ng_ksocket(4) sending to the collector over UDP from FIB
+           0.  The nodes go and come with the set.";
+        leaf service {
+          type string {
+            length "1..63";
+            pattern '[A-Za-z0-9_.-]+';
+          }
+          description
+            "The service.";
+        }
+        leaf collector {
+          type inet:ipv4-address-no-zone;
+          mandatory true;
+          description
+            "Where the records go: an IPv4 address, as ng_ksocket's
+             inet form takes it.";
+        }
+        leaf port {
+          type inet:port-number {
+            range "1..65535";
+          }
+          default "2055";
+          description
+            "The collector's UDP port.";
+        }
+        leaf sampling {
+          type uint16 {
+            range "1..65535";
+          }
+          default "1";
+          description
+            "One packet in so many recorded (ipfw prob); 1, every one.";
+        }
+        leaf active-timeout {
+          type uint16 {
+            range "1..65535";
+          }
+          units "seconds";
+          default "1800";
+          description
+            "A flow still active exported after so long.";
+        }
+        leaf inactive-timeout {
+          type uint16 {
+            range "1..65535";
+          }
+          units "seconds";
+          default "15";
+          description
+            "A flow exported once so long has passed without a packet.";
+        }
+        list tunnel {
+          key "id";
+          description
+            "Its tunnels with an end at this edge.";
+          leaf id {
+            type string {
+              length "1..127";
+            }
+            description
+              "The tunnel, as both its ends name it.";
+          }
+          leaf interface {
+            type string {
+              length "1..15";
+            }
+            mandatory true;
+            description
+              "Its interface at this end.";
+          }
+        }
+      }
     }
     container steer {
       cg:struct "steer-config";

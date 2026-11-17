@@ -2448,6 +2448,32 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 					    "dscp"))));
 		}
 	}
+	/* Flow records (NetFlow v9 by ng_netflow): the collector, its
+	 * port, the sampling and the timeouts. */
+	if ((v = ucl_object_lookup(sw, "flow_export")) != NULL) {
+		struct in_addr	a4;
+		const char	*col;
+
+		if (ucl_object_type(v) != UCL_OBJECT)
+			return (fail(c, "flow_export is an object"));
+		/* IPv4: ng_ksocket's inet form; IPv6 not taken yet. */
+		if ((e = ucl_object_lookup(v, "collector")) == NULL ||
+		    (col = ucl_object_tostring(e)) == NULL ||
+		    inet_pton(AF_INET, col, &a4) != 1)
+			return (fail(c, "flow_export: collector is an IPv4 "
+			    "address"));
+		if ((e = ucl_object_lookup(v, "port")) != NULL &&
+		    !is_int(e, 1, 65535, NULL))
+			return (fail(c, "flow_export: port is 1 to 65535"));
+		if ((e = ucl_object_lookup(v, "sampling")) != NULL &&
+		    !is_int(e, 1, 65535, NULL))
+			return (fail(c, "flow_export: sampling is one packet in "
+			    "1 to 65535"));
+		if (((e = ucl_object_lookup(v, "active_timeout")) != NULL &&
+		    !is_int(e, 1, 65535, NULL)) || ((e = ucl_object_lookup(v,
+		    "inactive_timeout")) != NULL && !is_int(e, 1, 65535, NULL)))
+			return (fail(c, "flow_export: a timeout is 1 to 65535 s"));
+	}
 	return (true);
 }
 

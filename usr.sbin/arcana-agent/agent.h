@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.291.1"
+#define	ARCANA_AGENT_VERSION	"0.292.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -983,7 +983,34 @@ struct am_service {
 	int		  ntun;
 	struct am_tunnel *tun;
 };
+/* invidia/netflow.c: a service's flows recorded, NetFlow v9 */
+#define	FE_SERVICES	16
+#define	FE_TUNNELS	64
+#define	FE_COOKIE	61000		/* ng_ipfw's hooks, 2 a service */
+#define	FE_RULE		9		/* the ngtee rules' number in the set */
+struct fe_tunnel {
+	char		 id[128];
+	char		 ifname[16];
+};
+struct fe_service {
+	char		  name[64];
+	char		  collector[16];	/* IPv4, dotted */
+	int		  port;
+	int		  sampling;	/* one packet in so many */
+	int		  active;	/* timeouts, s */
+	int		  inactive;
+	int		  ntun;
+	struct fe_tunnel *tun;
+};
 struct ucl_object_s;
+int		 netflow_parse(const struct ucl_object_s *, struct fe_service **,
+		    int *, const char **);
+void		 netflow_free(struct fe_service *, int);
+const char	*netflow_ready(struct work *);
+int		 netflow_rules(FILE *, const char *, const struct fe_service *,
+		    int);
+int		 netflow_set(struct work *, const struct fe_service *, int,
+		    const char **);
 int		 altmark_parse(const struct ucl_object_s *, struct am_service **,
 		    int *, const char **);
 void		 altmark_free(struct am_service *, int);

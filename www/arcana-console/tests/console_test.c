@@ -16832,6 +16832,86 @@ ATF_TC_BODY(sdwan_breakout, tc)
 	resp_free(&r);
 }
 
+CONSOLE_TC(sdwan_flowexp, "Flow records (PLAN-SDN-YANG 5.6.1): a service's "
+    "flow_export checked (an IPv4 collector, a sampling of 1 to 65535) "
+    "and kept through L3NM; the plan gives each edge its services' "
+    "flowexp, their tunnels there, and ng_ipfw, ng_netflow and ng_ksocket "
+    "loaded and kept")
+ATF_TC_BODY(sdwan_flowexp, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sb[16];
+	char		doc[12288], t1[12288];
+	size_t		i;
+	static const char fe[] = "\"reserved_prefixes\":[\"100.64.0.0/24\"],"
+	    "\"flow_export\":{\"collector\":\"192.0.2.10\",\"sampling\":100,"
+	    "\"inactive_timeout\":10},";
+	/* The end points' addresses, which the tunnels' outer ends are. */
+	static const char *const edits[][2] = {
+		{ "\"id\":\"a-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\"",
+		    "\"id\":\"a-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\","
+		    "\"address\":\"192.0.2.1\",\"gateway\":\"192.0.2.254\"" },
+		{ "\"id\":\"a-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\"",
+		    "\"id\":\"a-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\","
+		    "\"address\":\"10.99.0.1\"" },
+		{ "\"id\":\"b-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\"",
+		    "\"id\":\"b-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\","
+		    "\"address\":\"192.0.2.2\"" },
+		{ "\"id\":\"b-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\"",
+		    "\"id\":\"b-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\","
+		    "\"address\":\"10.99.0.2\"" },
+	};
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r4_hosts(sa, sb, sizeof(sa));
+	snprintf(doc, sizeof(doc), "%s", sdwan_good);
+	for (i = 0; i < nitems(edits); i++) {
+		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
+		    sizeof(t1)), "%s", edits[i][0]);
+		snprintf(doc, sizeof(doc), "%s", t1);
+	}
+	while (swap_in(doc, "@A", sa, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	while (swap_in(doc, "@B", sb, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	ATF_REQUIRE(swap_in(doc, "\"reserved_prefixes\":[\"100.64.0.0/24\"],", fe,
+	    t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	/* An IPv6 collector, a sampling of 0: refused. */
+	ATF_REQUIRE(swap_in(doc, "\"collector\":\"192.0.2.10\"",
+	    "\"collector\":\"2001:db8::10\"", t1, sizeof(t1)));
+	r4_check(t1, &r);
+	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "collector is an IPv4 "
+	    "address") != NULL, "%s", r.body);
+	resp_free(&r);
+	ATF_REQUIRE(swap_in(doc, "\"sampling\":100", "\"sampling\":0", t1,
+	    sizeof(t1)));
+	r4_check(t1, &r);
+	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "sampling is one packet "
+	    "in 1 to 65535") != NULL, "%s", r.body);
+	resp_free(&r);
+	r4_keep(doc, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	/* Each edge its services' flowexp, the collector and its settings
+	 * as said, the tunnels by their interfaces there; the modules
+	 * loaded and kept. */
+	r4_read("plan", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"flowexp\":[{\"service\":\"acme\","
+	    "\"collector\":\"192.0.2.10\"") != NULL && strstr(r.body,
+	    "\"sampling\":100") != NULL && strstr(r.body,
+	    "\"inactive_timeout\":10") != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "flows recorded (NetFlow v9 by ng_netflow, "
+	    "ipfw ngtee, rule 9)") != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"kmod-ng_ipfw\"") != NULL &&
+	    strstr(r.body, "\"args\":[\"ng_netflow\"]") != NULL && strstr(r.body,
+	    "\"args\":[\"ng_ksocket\"]") != NULL, "%s", r.body);
+	resp_free(&r);
+}
+
 CONSOLE_TC(sdwan_nat64, "NAT64 at one edge (nat64lsn, its pool among the "
     "known prefixes, the way in before the zones, the way back after the "
     "NAT) and CLAT at a UNI (nat64clat), ipfw_nat64 kept; checked")
@@ -27571,6 +27651,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_infeasible);
 	ATF_TP_ADD_TC(tp, sdwan_breakout);
 	ATF_TP_ADD_TC(tp, sdwan_nat64);
+	ATF_TP_ADD_TC(tp, sdwan_flowexp);
 	ATF_TP_ADD_TC(tp, sdwan_sets);
 	ATF_TP_ADD_TC(tp, sdwan_neigh);
 	ATF_TP_ADD_TC(tp, sdwan_lists);

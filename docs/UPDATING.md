@@ -93,6 +93,30 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Flow records, agent 0.292.0, console 0.443.0
+
+- **A service may record its flows** (NetFlow version 9, RFC 3954;
+  PLAN-SDN-YANG 5.6.1): the service form's **Flow records** (an IPv4
+  collector, its UDP port, 2055 by default; one packet recorded in N;
+  the active and inactive timeouts, 1800 and 15 s), arcana-l3nm's
+  `flow-export`.  Each edge then has, for each such service, an
+  ng_netflow(4) node `arcnfK` given a copy of each packet into and out
+  of the service's tunnels by ipfw `ngtee` through ng_ipfw(4) (rule 9
+  of the SD-WAN set, hooks 61000 and up), its records sent by an
+  ng_ksocket(4) over UDP from FIB 0.  The console has each such edge
+  load and keep ng_ipfw, ng_netflow and ng_ksocket; the agent refuses
+  the records where ng_ipfw is not loaded, since an `ngtee` rule then
+  drops what it matches.  The nodes go and come with the set.
+- **Host edges alone**: ng_ipfw's netgraph node is the host network's,
+  so an edge that is a vnet jail (or an agent itself in one) cannot
+  record flows; the console leaves such edges out and the agent
+  refuses flowexp there.
+- ng_netflow sends a datagram once it is full: a quiet service's
+  expired flows wait until more come (a flush is kernel work, TODO.md).
+- An agent before 0.292.0 refuses the rules' `flowexp`: update the
+  agents before turning it on.  arcana-sdwan and arcana-l3nm are
+  numbered again.
+
 ### A commit's warning always said, console 0.442.3
 
 - What the host warns of in a commit it took (a condition it had

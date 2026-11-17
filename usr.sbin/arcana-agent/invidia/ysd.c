@@ -193,6 +193,49 @@ altmark_of(cbl_yarena *a, const ucl_object_t *arr,
 	return (0);
 }
 
+/* The rules' flowexp: each service's name, collector, port, sampling,
+ * timeouts and tunnels (id, interface). */
+static int
+flowexp_of(cbl_yarena *a, const ucl_object_t *arr,
+    struct arcana_sdwan_rules_config *out)
+{
+	struct arcana_sdwan_rules_config_flow_export		*m;
+	struct arcana_sdwan_rules_config_flow_export_tunnel	*t;
+	const ucl_object_t					*s, *e;
+	ucl_object_iter_t					 it, eit;
+	size_t							 n, k;
+
+	if (!ALLOC_N(a, m, yj_count(arr)))
+		return (ENOMEM);
+	n = 0;
+	YJ_EACH(arr, it, s) {
+		memset(&m[n], 0, sizeof(m[n]));
+		if ((m[n].service = yj_str(a, s, "service")) == NULL)
+			continue;
+		m[n].collector = yj_str(a, s, "collector");
+		YJ_NUM(s, "port", &m[n], port);
+		YJ_NUM(s, "sampling", &m[n], sampling);
+		YJ_NUM(s, "active_timeout", &m[n], active_timeout);
+		YJ_NUM(s, "inactive_timeout", &m[n], inactive_timeout);
+		if (!ALLOC_N(a, t, yj_count(ucl_object_lookup(s, "tunnels"))))
+			return (ENOMEM);
+		k = 0;
+		YJ_EACH(ucl_object_lookup(s, "tunnels"), eit, e) {
+			memset(&t[k], 0, sizeof(t[k]));
+			if ((t[k].id = yj_str(a, e, "id")) == NULL)
+				continue;
+			t[k].interface = yj_str(a, e, "interface");
+			k++;
+		}
+		m[n].tunnel.n = k;
+		m[n].tunnel.v = t;
+		n++;
+	}
+	out->flow_export.n = n;
+	out->flow_export.v = m;
+	return (0);
+}
+
 int
 ysd_rules_from_json(const char *json, cbl_yarena *a,
     struct arcana_sdwan_rules_config *out)
@@ -288,6 +331,9 @@ ysd_rules_from_json(const char *json, cbl_yarena *a,
 	out->rule.v = r;
 	/* The services measured by alternate marking, their tunnels. */
 	if (altmark_of(a, ucl_object_lookup(top, "altmark"), out) != 0)
+		goto nomem;
+	/* The services whose flows are recorded, their tunnels. */
+	if (flowexp_of(a, ucl_object_lookup(top, "flowexp"), out) != 0)
 		goto nomem;
 	ucl_object_unref(top);
 	return (0);
@@ -621,6 +667,39 @@ ysd_rules_json(const char *jail, const struct arcana_sdwan_rules_config *r,
 			ucl_array_append(arr, s);
 		}
 		put(top, "altmark", arr);
+	}
+	if (r != NULL && r->flow_export.n > 0) {
+		ucl_object_t	*s, *ts, *u;
+
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < r->flow_export.n; i++) {
+			const struct arcana_sdwan_rules_config_flow_export *f =
+			    &r->flow_export.v[i];
+
+			s = ucl_object_typed_new(UCL_OBJECT);
+			put_str(s, "service", f->service);
+			put_str(s, "collector", f->collector);
+			if (f->has_port)
+				put(s, "port", ucl_object_fromint(f->port));
+			if (f->has_sampling)
+				put(s, "sampling", ucl_object_fromint(f->sampling));
+			if (f->has_active_timeout)
+				put(s, "active_timeout",
+				    ucl_object_fromint(f->active_timeout));
+			if (f->has_inactive_timeout)
+				put(s, "inactive_timeout",
+				    ucl_object_fromint(f->inactive_timeout));
+			ts = ucl_object_typed_new(UCL_ARRAY);
+			for (size_t k = 0; k < f->tunnel.n; k++) {
+				u = ucl_object_typed_new(UCL_OBJECT);
+				put_str(u, "id", f->tunnel.v[k].id);
+				put_str(u, "interface", f->tunnel.v[k].interface);
+				ucl_array_append(ts, u);
+			}
+			put(s, "tunnels", ts);
+			ucl_array_append(arr, s);
+		}
+		put(top, "flowexp", arr);
 	}
 	return (emit(top));
 }

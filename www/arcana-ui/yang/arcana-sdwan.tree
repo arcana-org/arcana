@@ -14,15 +14,25 @@ module: arcana-sdwan
      |  |  +--rw number    arcfw:rule-number
      |  |  +--rw text?     string
      |  +--rw alt-marking* [service]
-     |     +--rw service    string
-     |     +--rw period     uint16
+     |  |  +--rw service    string
+     |  |  +--rw period     uint16
+     |  |  +--rw tunnel* [id]
+     |  |     +--rw id           string
+     |  |     +--rw interface    string
+     |  |     +--rw outer?       inet:ip-address-no-zone
+     |  |     +--rw kind?        enumeration
+     |  |     +--rw port?        inet:port-number
+     |  |     +--rw ipsec?       boolean
+     |  +--rw flow-export* [service]
+     |     +--rw service             string
+     |     +--rw collector           inet:ipv4-address-no-zone
+     |     +--rw port?               inet:port-number
+     |     +--rw sampling?           uint16
+     |     +--rw active-timeout?     uint16
+     |     +--rw inactive-timeout?   uint16
      |     +--rw tunnel* [id]
      |        +--rw id           string
      |        +--rw interface    string
-     |        +--rw outer?       inet:ip-address-no-zone
-     |        +--rw kind?        enumeration
-     |        +--rw port?        inet:port-number
-     |        +--rw ipsec?       boolean
      +--rw steer
      |  +--rw entry* [table prefix]
      |  |  +--rw table     string
@@ -97,15 +107,25 @@ module: arcana-sdwan
      |  |  |  +--rw number    arcfw:rule-number
      |  |  |  +--rw text?     string
      |  |  +--rw alt-marking* [service]
-     |  |     +--rw service    string
-     |  |     +--rw period     uint16
+     |  |  |  +--rw service    string
+     |  |  |  +--rw period     uint16
+     |  |  |  +--rw tunnel* [id]
+     |  |  |     +--rw id           string
+     |  |  |     +--rw interface    string
+     |  |  |     +--rw outer?       inet:ip-address-no-zone
+     |  |  |     +--rw kind?        enumeration
+     |  |  |     +--rw port?        inet:port-number
+     |  |  |     +--rw ipsec?       boolean
+     |  |  +--rw flow-export* [service]
+     |  |     +--rw service             string
+     |  |     +--rw collector           inet:ipv4-address-no-zone
+     |  |     +--rw port?               inet:port-number
+     |  |     +--rw sampling?           uint16
+     |  |     +--rw active-timeout?     uint16
+     |  |     +--rw inactive-timeout?   uint16
      |  |     +--rw tunnel* [id]
      |  |        +--rw id           string
      |  |        +--rw interface    string
-     |  |        +--rw outer?       inet:ip-address-no-zone
-     |  |        +--rw kind?        enumeration
-     |  |        +--rw port?        inet:port-number
-     |  |        +--rw ipsec?       boolean
      |  +--rw steer
      |  |  +--rw entry* [table prefix]
      |  |  |  +--rw table     string
