@@ -1159,6 +1159,9 @@ sdwan_altmark_lab_body()
 {
 	local d="$(pwd)" j e i n odd am
 
+	atf_skip "alternate marking is off: ipfw's table swap corrupts" \
+	    "valtype dscp tables and their flush panics the kernel"
+
 	for j in arcw_ama arcw_amb arcw_amc; do
 		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
 	done

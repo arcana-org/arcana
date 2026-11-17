@@ -6963,7 +6963,7 @@ part_flows_sdwan(void)
 	run("const f = document.querySelector('form[data-form=sd-swvc]'); "
 	    "f.pb_low_percentile.value = '25'; f.pb_high_percentile.value = "
 	    "'99.9'; f.pb_measurement_interval.value = '30'; f.pb_classes."
-	    "value = 'voice=46'; f.pb_alt_marking.value = '10'; "
+	    "value = 'voice=46'; "
 	    "f.fe_collector.value = '192.0.2.10'; f.fe_sampling.value = "
 	    "'100'; f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
@@ -6978,8 +6978,8 @@ part_flows_sdwan(void)
 			    "*\"?99.9' data/l3nm.json && ! grep -q "
 			    "intermediate-percentile data/l3nm.json && grep -Eq "
 			    "'\"measurement-interval\": *30' data/l3nm.json && "
-			    "grep -Eq '\"alt-marking-period\": *10' "
-			    "data/l3nm.json && grep -Eq '\"collector\": "
+			    "! grep -q alt-marking-period data/l3nm.json && "
+			    "grep -Eq '\"collector\": "
 			    "*\"192.0.2.10\"' data/l3nm.json && grep -Eq "
 			    "'\"sampling\": *100' data/l3nm.json && "
 			    "grep -Eq '\"name\": *\"voice\"' data/l3nm.json")) !=
@@ -6998,7 +6998,7 @@ part_flows_sdwan(void)
 	    "pb_measurement_interval]').value === '30' && document."
 	    "querySelector('form[data-form=sd-swvc] input[name=pb_classes]')"
 	    ".value === 'voice=46' && document.querySelector('form[data-form="
-	    "sd-swvc] input[name=pb_alt_marking]').value === '10' && "
+	    "sd-swvc] input[name=pb_alt_marking]').value === '' && "
 	    "document.querySelector('form[data-form=sd-swvc] input[name="
 	    "fe_collector]').value === '192.0.2.10' && document."
 	    "querySelector('form[data-form=sd-swvc] input[name=fe_sampling]')"
@@ -7135,19 +7135,10 @@ part_flows_sdwan(void)
 	    "\"6\"]').click()");
 	wait_js("document.querySelector('.sd-pm th[data-value=\"6\"]')"
 	    ".classList.contains('asc')", 5);
-	/* Alternate marking (5.5), the form's block of 10 s: the edges'
-	 * ipfw given its rules in the SD-WAN set (the way out of each
-	 * tunnel at 9, the colour on the way in at 11, the outer header's
-	 * by the tunnel's protocol); the tables, sorted and filtered, empty
-	 * here (no IP_FW3 without root) and saying so. */
-	ATF_CHECK(system("grep -Eq '^add 11 set 30 setdscp tablearg ip from "
-	    "any to any out xmit [a-z]+[0-9]+ lookup dscp:0x3e arcam0 // am "
-	    "0\\.0 mark ' ipfw.log && grep -Eq '^add 9 set 30 count ip from any "
-	    "to any in recv [a-z]+[0-9]+ dscp 1,3,[0-9,]*,63 // am 0\\.0 in 1 ' "
-	    "ipfw.log && grep -Eq '^add 11 set 30 setdscp tablearg (ip from any "
-	    "to [0-9a-f.:]+ out \\{ proto|udp from any to [0-9a-f.:]+ dst-port "
-	    "[0-9]+ out )' ipfw.log && grep -q '^set 30 table arcam0_alt create "
-	    "type number valtype dscp$' ipfw.log") == 0);
+	/* Alternate marking (5.5) is off for now (ipfw's table swap bug):
+	 * no colour rule nor table in the edges' ipfw; its tables still
+	 * shown, sorted and filtered, empty and saying so. */
+	ATF_CHECK(system("! grep -q 'arcam' ipfw.log") == 0);
 	wait_js("[...document.querySelectorAll('.sd-am table')[0]."
 	    "querySelectorAll('th.sortable')].map(t => t.textContent).join('|')"
 	    " === 'Service|Tunnel|From|To|Block|Sent|Arrived|Lost|Loss %' && "

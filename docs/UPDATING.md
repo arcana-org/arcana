@@ -93,6 +93,17 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Alternate marking off, agent 0.292.1, console 0.443.1
+
+- **Alternate marking is refused** (the service form's block, the
+  rules' `altmark`): it swaps two ipfw tables of `valtype dscp` each
+  block (`IP_FW_TABLE_XSWAP`), and the kernel's ipfw corrupts their
+  values when it does (three swaps leave `62 61` where `62 63` was) and
+  panics when they are flushed (`Refcount is 0 on kidx`, in
+  unref_table_value; on a kernel with INVARIANTS).  Found in the VM
+  round with plain ipfw commands.  The code stays, refused at the
+  console's check and at the agent, until ipfw is fixed.
+
 ### Flow records, agent 0.292.0, console 0.443.0
 
 - **A service may record its flows** (NetFlow version 9, RFC 3954;

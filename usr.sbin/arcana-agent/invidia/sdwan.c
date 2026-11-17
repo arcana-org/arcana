@@ -1885,6 +1885,19 @@ do_sdwan_rules(struct work *w, const char *json, const char **errp)
 	if (altmark_parse(ucl_object_lookup(top, "altmark"), &am, &nam,
 	    errp) != 0)
 		goto bad;
+	/*
+	 * Refused for now: swapping two valtype dscp tables (alternate
+	 * marking's colour, IP_FW_TABLE_XSWAP each block) corrupts their
+	 * values in the kernel's ipfw, and a flush then panics it
+	 * ("Refcount is 0 on kidx", unref_table_value).  The rest of the
+	 * marking is kept for when ipfw is fixed.
+	 */
+	if (nam > 0) {
+		*errp = "alternate marking is off: swapping its colour tables "
+		    "corrupts ipfw's table values in the kernel, and a flush of "
+		    "them then panics it (Refcount is 0 on kidx)";
+		goto bad;
+	}
 	/* The services whose flows are recorded (NetFlow v9): their ngtee
 	 * rules, refused where ng_ipfw is not loaded, since such a rule
 	 * then drops what it matches. */

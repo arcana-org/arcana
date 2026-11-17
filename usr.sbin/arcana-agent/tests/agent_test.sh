@@ -9950,7 +9950,15 @@ sdwan_altmark_body()
 	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[{\"service\":\"sw1\",\"period\":1,\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"}]}]}"
 	atf_check -s exit:1 -e match:'an interface is one tunnel' -o ignore "$JGC" -c "$SOCK" sdwan rules \
 	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[{\"service\":\"sw1\",\"period\":2,\"tunnels\":[{\"id\":\"t\",\"interface\":\"gre100\"},{\"id\":\"u\",\"interface\":\"gre100\"}]}]}"
+	# Off for now: the kernel's ipfw corrupts swapped valtype dscp
+	# tables and panics on their flush.  Refused, nothing loaded; the
+	# rest of the case is kept for when ipfw is fixed.
 	: > ipfw.log
+	atf_check -s exit:1 -e match:'alternate marking is off' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan rules \
+	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[$AM]}"
+	atf_check -o not-match:'arcam' cat ipfw.log
+	return
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
 	    "{\"set\":30,\"tables\":[{\"name\":\"sw1_zone\",\"valtype\":\"skipto\"}],$R,\"altmark\":[$AM]}"
 	# The tables: a class to itself, and the colours, the one now's in

@@ -2,6 +2,13 @@
 
 ## To do
 
+- ipfw's table swap (IP_FW_TABLE_XSWAP) of two `number valtype dscp`
+  tables corrupts their values, and a flush of them then panics
+  (`Refcount is 0 on kidx`, unref_table_value): a kernel fix, the
+  user's.  Alternate marking (PLAN-SDN-YANG 5.5) is refused until then
+  (agent 0.292.1, console 0.443.1); agent_root_test:sdwan_altmark_lab
+  skips.  The plain-ipfw reproducer is in the arcana-lab VM's
+  /root/repro.
 - IPFIX export in ng_netflow(4), kernel work and the user's:
   ng_netflow exports NetFlow v5 and v9 only (both hooks at once,
   nothing else); pflow(4) has IPFIX but serves pf.  The flow records

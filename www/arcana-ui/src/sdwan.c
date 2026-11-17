@@ -6809,7 +6809,10 @@ sdwan_modal_service(struct html *h)
 				    "s", "60", "Aligned to the clock: 60 begins "
 				    "at each minute." },
 				{ "alt_marking", "Alternate marking block, s",
-				    "off", "RFC 9341 on every tunnel, the packets "
+				    "off", "Off for now, refused: swapping its "
+				    "colour tables corrupts ipfw's table values in "
+				    "the kernel and a flush of them panics it. "
+				    "RFC 9341 on every tunnel, the packets "
 				    "themselves counted: ipfw setdscp sets the "
 				    "DSCP's lowest bit in every other block and "
 				    "count rules at both ends count each colour; "

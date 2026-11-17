@@ -2424,6 +2424,14 @@ swvc(struct ck *c, const ucl_object_t *doc, const ucl_object_t *sw,
 		/* Alternate marking (RFC 9341): its blocks' length; the DSCP's
 		 * lowest bit is its colour, so the probes' and the classes'
 		 * DSCPs are even (no standard class's is odd). */
+		/* Off for now: the kernel's ipfw corrupts swapped valtype
+		 * dscp tables and panics on their flush (the agent refuses
+		 * it too). */
+		if ((e = ucl_object_lookup(v, "alt_marking")) != NULL)
+			return (fail(c, "probe: alternate marking is off: "
+			    "swapping its colour tables corrupts ipfw's table "
+			    "values in the kernel, and a flush of them then "
+			    "panics it"));
 		if ((e = ucl_object_lookup(v, "alt_marking")) != NULL) {
 			const ucl_object_t	*cl;
 			ucl_object_iter_t	 cit = NULL;

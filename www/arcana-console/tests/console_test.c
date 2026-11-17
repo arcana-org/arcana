@@ -16892,6 +16892,13 @@ ATF_TC_BODY(sdwan_flowexp, tc)
 	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "sampling is one packet "
 	    "in 1 to 65535") != NULL, "%s", r.body);
 	resp_free(&r);
+	/* Alternate marking: off for now (ipfw's table swap bug). */
+	ATF_REQUIRE(swap_in(doc, "\"flow_export\":{", "\"probe\":{"
+	    "\"alt_marking\":10},\"flow_export\":{", t1, sizeof(t1)));
+	r4_check(t1, &r);
+	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "alternate marking is "
+	    "off") != NULL, "%s", r.body);
+	resp_free(&r);
 	r4_keep(doc, &r);
 	EXPECT(&r, 204);
 	resp_free(&r);
