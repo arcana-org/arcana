@@ -217,13 +217,16 @@
   stamp-unauthenticated is raised.  Whether the console applies both
   ends when it remakes a pair (or a pair's change is told to it and
   answered by an apply) is open.
-- The prober's engine (agent 0.288.0, gula/probe_engine.c) still has
-  the steering made again on its own thread when a target's state
-  changes (sdwan_probe_changed(), ipfw run by invidia/sdwan.c), as the
-  prober's thread did before: its worker could take it, the changes in
-  their order.  A jail's echo targets keep a socket each, made by the
-  helper inside the jail: one a jail's FIB and family would need the
-  helper to hand one socket to several targets.
+- The steering is made again on the prober's worker when a target's
+  state changes, a burst in one run, and a jail's echo targets share
+  one socket a jail, FIB and family (gula/probe_engine.c,
+  gula/probe_icmp.c).  Left: BFD's changes (luxuria/sdbird.c) still
+  make it again on the BFD reader's thread, beside the worker (both
+  under invidia/sdwan.c's lock, so in turn, not counted together); and
+  a jail's socket hears only the replies that come in on its FIB's
+  interfaces, where the host keeps a socket every FIB for a target in
+  another table than 0 (a jail's would need one per FIB from the
+  helper too).
 - The agent's allocations (work.c's wcalloc, wmalloc and the rest, and
   err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
   root daemon when memory runs out, a change half done with it; a

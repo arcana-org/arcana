@@ -215,16 +215,14 @@ conf_path(char *buf, size_t len, const char *jail, const char *owner)
 	return (buf);
 }
 
-/* Its sockets closed, its STAMP sender given up: its FIB's echo socket
- * is the FIBs' table's (probe_icmp.c), a jail's its own. */
+/* Its sockets closed, its STAMP sender given up: its echo socket is
+ * the FIBs' or the jails' table's (probe_icmp.c), closed there when no
+ * target uses it. */
 void
 target_close(struct target *t)
 {
 
-	if (t->sock != -1 && t->own)
-		close(t->sock);
 	t->sock = -1;
-	t->own = false;
 	if (t->usock != -1)
 		close(t->usock);
 	t->usock = -1;

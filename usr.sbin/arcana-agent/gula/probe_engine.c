@@ -23,12 +23,30 @@
  * What would hold the engine up is done off its thread by the worker,
  * one thread beside it: a plain tunnel's STAMP key derived (a file read
  * and an X25519, probe_stamp.c) and a jail's echo socket made (the
- * helper's fork and exec, probe_icmp.c), each answer handed back to the
- * engine, which takes it as its target asked for it (its serial, a
- * key's generation) and passes over one of a target gone.  The faults
- * and events it raises go through faults.c's and events.c's own
- * writers.  A socket wakes it, and so does its own pipe, written by an
- * asker or the worker.
+ * helper's fork and exec, probe_icmp.c; one a jail, a FIB and a family,
+ * its targets waiting for the same answer), each answer handed back to
+ * the engine, which takes it as its target asked for it (its serial, a
+ * key's generation, a jail's socket's) and passes over one of a target
+ * gone.  The faults and events it raises go through faults.c's and
+ * events.c's own writers.  A socket wakes it, and so does its own pipe,
+ * written by an asker or the worker.
+ *
+ * The steering made again when a target's state changed (invidia/
+ * sdwan.c's sdwan_probe_changed(), ipfw run, at each edge) is the
+ * worker's too, before any job: the engine publishes the snapshot the
+ * steering reads, then counts the changes for the worker (steer_due).
+ * The changes are applied in their order: one worker, one steering at a
+ * time, each reading the snapshot as it is when it begins, which has
+ * every change it was counted for (published before), so the tables
+ * never go back to an older state than one they had.  A burst is one
+ * run: the changes counted while the worker is busy (a steering, a
+ * socket made) are taken together by the next, on the states they end
+ * in; the steering being made of the states and the pins alone, that is
+ * what the changes one after the other would end in, the tables in
+ * between, never in use but for the time of a swap, not made, and no
+ * ipfw run at all where the burst ends where it began (a flap: no
+ * choice changed).  What one run does not see is a choice that was and
+ * went within it: not told as steer-changed, not counted in its changes.
  *
  * Its own count, for -d: the probes sent LATE_S or more after they were
  * due, said each second it grew.
@@ -59,12 +77,14 @@
 #define	OPEN_RETRY_MAX	60.0
 #define	PUB_S		0.1	/* s: the snapshot published, at most */
 #define	LATE_S		0.01	/* s: a probe later than this is late */
+/* Each target's STAMP socket and its jail's echo socket at most (one a
+ * target), the FIBs' (probe_icmp.c's FSOCKS_MAX), the pipe. */
 #define	POLL_MAX	(2 * TARGETS_MAX + 2 * (16 + TARGETS_MAX) + 1)
 
 /* The engine's: the table, its state. */
 static struct target	*targets;
 static int		 ntargets;
-static bool		 changed;	/* a state did, since the steering looked */
+static unsigned		 changed;	/* state changes not yet steered */
 static bool		 dirty;		/* a key or a method did: published at once */
 static bool		 started, watching;
 static double		 published = -1;
@@ -86,7 +106,8 @@ static struct req	*reqs, **reqs_end = &reqs;
 static bool		 running;
 static int		 wake[2] = { -1, -1 };
 
-/* The worker's: what it is asked, and what it answers. */
+/* The worker's: what it is asked, and what it answers; the steering
+ * due, for how many changes of a state. */
 enum { JOB_KEY, JOB_JAIL };
 struct job {
 	struct job		*next;
@@ -94,7 +115,7 @@ struct job {
 	uint64_t		 serial;
 	uint32_t		 gen;
 	char			 jail[64];
-	int			 af, fd;
+	int			 af, fib, fd;
 	char			 ifname[IFNAMSIZ];
 	char			 peer[PUB_B64 + 1];
 	int			 cls;
@@ -107,6 +128,7 @@ static pthread_mutex_t	 wk_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t	 wk_cv = PTHREAD_COND_INITIALIZER;
 static struct job	*jobs, **jobs_end = &jobs;
 static struct job	*answers, **answers_end = &answers;
+static unsigned		 steer_due;
 static bool		 worker_up;
 
 double
@@ -134,7 +156,7 @@ void
 engine_changed(void)
 {
 
-	changed = true;
+	changed++;
 }
 
 /* A target's key changed, or how it is measured: the readers' copy
@@ -179,15 +201,33 @@ job_answer(struct job *j)
 	engine_wake();
 }
 
+/* The steering made again, for n changes of a state. */
+static void
+steer_run(unsigned n)
+{
+
+	logmsg(LOG_DEBUG, "probe: steering made again: %u state change%s, "
+	    "one run", n, n == 1 ? "" : "s");
+	sdwan_probe_changed();
+}
+
 static void *
 worker(void *arg __unused)
 {
 	struct job	*j;
+	unsigned	 n;
 
 	for (;;) {
 		pthread_mutex_lock(&wk_mtx);
-		while (jobs == NULL)
+		while (jobs == NULL && steer_due == 0)
 			pthread_cond_wait(&wk_cv, &wk_mtx);
+		/* The steering first: a failover waits for no socket. */
+		if ((n = steer_due) > 0) {
+			steer_due = 0;
+			pthread_mutex_unlock(&wk_mtx);
+			steer_run(n);
+			continue;
+		}
 		j = jobs;
 		if ((jobs = j->next) == NULL)
 			jobs_end = &jobs;
@@ -216,6 +256,22 @@ job_post(struct job *j)
 	pthread_mutex_unlock(&wk_mtx);
 }
 
+/* The steering asked of the worker for n changes, with those it has
+ * not begun on yet (done here, the worker not running). */
+static void
+engine_steer(unsigned n)
+{
+
+	if (!worker_up) {
+		steer_run(n);
+		return;
+	}
+	pthread_mutex_lock(&wk_mtx);
+	steer_due += n;
+	pthread_cond_signal(&wk_cv);
+	pthread_mutex_unlock(&wk_mtx);
+}
+
 /* A plain tunnel's key asked of the worker: its STAMP waits for it. */
 void
 engine_key(struct target *t)
@@ -238,20 +294,65 @@ engine_key(struct target *t)
 	job_post(j);
 }
 
-/* A jail's echo socket asked of the worker. */
-static void
-engine_jail(struct target *t)
+/* A jail's echo socket of t's FIB and family asked of the worker, its
+ * answer gen; false, not asked. */
+static bool
+engine_jail(struct target *t, uint32_t gen)
 {
 	struct job	*j;
 
-	if ((j = calloc(1, sizeof(*j))) == NULL)
-		return;
-	t->opening = true;
+	if ((j = calloc(1, sizeof(*j))) == NULL) {
+		snprintf(t->error, sizeof(t->error), "%s", strerror(errno));
+		return (false);
+	}
 	j->kind = JOB_JAIL;
-	j->serial = t->serial;
+	j->gen = gen;
 	snprintf(j->jail, sizeof(j->jail), "%s", t->jail);
 	j->af = t->af;
+	j->fib = t->fib;
 	job_post(j);
+	return (true);
+}
+
+/* Whether t waits for the jail's socket of FIB fib and family af. */
+static bool
+waits_for(const struct target *t, const char *jail, int fib, int af)
+{
+
+	return (t->id[0] != '\0' && t->opening && t->sock == -1 && t->af ==
+	    af && t->fib == fib && strcmp(t->jail, jail) == 0);
+}
+
+/* The worker's answer j, a jail's socket: to each target that waits for
+ * it, or why there is none. */
+static void
+jail_answer(struct job *j, double now)
+{
+	struct target	*t;
+	int		 i, fd, waiting;
+
+	waiting = 0;
+	for (i = 0; i < ntargets; i++)
+		if (waits_for(&targets[i], j->jail, j->fib, j->af))
+			waiting++;
+	if ((fd = jsock_made(j->jail, j->fib, j->af, j->gen, j->fd,
+	    waiting > 0, j->err, sizeof(j->err))) == -2)
+		return;
+	for (i = 0; i < ntargets; i++) {
+		t = &targets[i];
+		if (!waits_for(t, j->jail, j->fib, j->af))
+			continue;
+		t->opening = false;
+		if (fd == -1) {
+			snprintf(t->error, sizeof(t->error), "%s", j->err);
+			open_later(t, now);
+			state_set(t, ST_ERROR);
+		} else {
+			t->sock = fd;
+			t->error[0] = '\0';
+			t->open_wait = 0;
+		}
+	}
 }
 
 static struct target *
@@ -279,26 +380,12 @@ engine_answers(double now)
 	pthread_mutex_unlock(&wk_mtx);
 	for (; j != NULL; j = next) {
 		next = j->next;
-		t = by_serial(j->serial);
 		if (j->kind == JOB_KEY) {
+			t = by_serial(j->serial);
 			if (t != NULL && t->key_pending && t->key_gen == j->gen)
 				stamp_key_told(t, j->ok, &j->key, j->err);
-		} else if (t == NULL || !t->opening || t->sock != -1) {
-			if (j->fd != -1)
-				close(j->fd);
-		} else {
-			t->opening = false;
-			if (j->fd == -1)
-				snprintf(t->error, sizeof(t->error), "%s",
-				    j->err);
-			else
-				t->sock = j->fd;
-			if (j->fd == -1 || !target_setup(t)) {
-				open_later(t, now);
-				state_set(t, ST_ERROR);
-			} else
-				t->open_wait = 0;
-		}
+		} else
+			jail_answer(j, now);
 		explicit_bzero(&j->key, sizeof(j->key));
 		free(j);
 	}
@@ -468,13 +555,15 @@ prober(void *arg __unused)
 	struct pollfd	*pfd;
 	struct target	*t;
 	double		 now, wait, d;
+	uint32_t	 gen;
+	unsigned	 moved;
 	int		 i, j, n, ms, *pt, *pk;
-	bool		 moved, held;
+	bool		 held;
 	char		 c[64];
 
-	/* Each jail's echo socket and each target's STAMP one, the FIBs'
-	 * sockets, the pipe; whose each is, by its index (-1 a FIB's, its
-	 * family in pk; -2 the pipe). */
+	/* Each target's STAMP socket, the FIBs' and the jails' echo
+	 * sockets, the pipe; whose each is, by its index (-1 an echo
+	 * socket, its family in pk; -2 the pipe). */
 	pfd = calloc(POLL_MAX, sizeof(*pfd));
 	pt = calloc(POLL_MAX, sizeof(*pt));
 	pk = calloc(POLL_MAX, sizeof(*pk));
@@ -491,7 +580,9 @@ prober(void *arg __unused)
 		for (i = 0; i < ntargets; i++) {
 			t = &targets[i];
 			/* An echo socket it needs and has not: tried when it
-			 * is due, a jail's by the worker. */
+			 * is due; a jail's its jail's, FIB's and family's, made
+			 * by the worker for the first that needs it, the rest
+			 * waiting for the same. */
 			if (t->kind != KIND_STAMP && t->sock == -1) {
 				if (t->opening)
 					continue;
@@ -501,10 +592,28 @@ prober(void *arg __unused)
 					continue;
 				}
 				if (t->jail[0] != '\0') {
-					engine_jail(t);
-					continue;
-				}
-				if (!target_open(t)) {
+					switch (jsock_want(t, &gen)) {
+					case JS_HAVE:
+						break;
+					case JS_ASK:
+						if (!engine_jail(t, gen)) {
+							(void)jsock_made(t->jail,
+							    t->fib, t->af, gen,
+							    -1, false, NULL, 0);
+							open_later(t, now);
+							state_set(t, ST_ERROR);
+							continue;
+						}
+						/* FALLTHROUGH */
+					case JS_WAIT:
+						t->opening = true;
+						continue;
+					default:
+						open_later(t, now);
+						state_set(t, ST_ERROR);
+						continue;
+					}
+				} else if (!target_open(t)) {
 					open_later(t, now);
 					state_set(t, ST_ERROR);
 					continue;
@@ -536,19 +645,11 @@ prober(void *arg __unused)
 				wait = d;
 			if (t->pm_start != 0 && (d = t->pm_due - now) < wait)
 				wait = d;
-			if (t->own && t->sock != -1) {
-				pfd[n].fd = t->sock;
-				pfd[n].events = POLLIN;
-				pfd[n].revents = 0;
-				pt[n] = i;
-				pk[n++] = 0;
-			}
 			if (t->usock != -1) {
 				pfd[n].fd = t->usock;
 				pfd[n].events = POLLIN;
 				pfd[n].revents = 0;
-				pt[n] = i;
-				pk[n++] = 1;
+				pt[n++] = i;
 			}
 		}
 		j = icmp_pollfds(&pfd[n], &pk[n], POLL_MAX - 1 - n);
@@ -559,7 +660,7 @@ prober(void *arg __unused)
 		pfd[n].revents = 0;
 		pt[n++] = -2;
 		moved = changed;
-		changed = false;
+		changed = 0;
 		/* The readers' copy: at once when a state changed, which the
 		 * steering is about to ask, else every PUB_S. */
 		if (moved || dirty || (ntargets > 0 && now - published >=
@@ -570,10 +671,11 @@ prober(void *arg __unused)
 		}
 		if (ntargets > 0 && (d = published + PUB_S - now) < wait)
 			wait = d;
-		/* A tunnel down or up: the steering made again, as it asks
-		 * the states back. */
-		if (moved)
-			sdwan_probe_changed();
+		/* A tunnel down or up: the steering made again by the
+		 * worker, as it asks the states back from what was just
+		 * published. */
+		if (moved > 0)
+			engine_steer(moved);
 		if (late != late_said && now - late_at >= 1) {
 			logmsg(LOG_DEBUG, "probe: engine: %ju of %ju probes sent "
 			    "%.0f ms or more late", (uintmax_t)late,
@@ -594,14 +696,12 @@ prober(void *arg __unused)
 				continue;
 			}
 			if (pt[j] == -1) {
-				icmp_recv_fib(pfd[j].fd, pk[j], targets, ntargets,
-				    now);
+				icmp_recv_sock(pfd[j].fd, pk[j], targets,
+				    ntargets, now);
 				continue;
 			}
 			t = &targets[pt[j]];
-			if (pk[j] == 0 && t->sock == pfd[j].fd)
-				icmp_recv_own(t, now);
-			else if (pk[j] == 1 && t->usock == pfd[j].fd)
+			if (t->usock == pfd[j].fd)
 				stamp_recv_all(t);
 		}
 	}

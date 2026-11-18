@@ -31,12 +31,17 @@
  * sets nothing else on its socket (no source, interface, TTL nor
  * don't-fragment), so none needs a socket of its own.
  *
- * A jail's target is the exception: its socket is made by the helper
- * inside the jail (jail_socket(), on the engine's worker), so that the
- * jail's routing tables carry its probes: a host socket cannot stand in.
- * It is its own (own), its FIB and DSCP set on it, its replies read from
- * it alone.  An echo's round trip is timed by the kernel (SO_TIMESTAMP,
- * the monotonic clock), not by when the prober got to its reply.
+ * A jail's targets share a socket too, one a jail, a FIB and a family
+ * (struct jsock): made by the helper inside the jail (jail_socket(), on
+ * the engine's worker) and handed over (SCM_RIGHTS), so that the jail's
+ * routing tables carry the probes, a host socket cannot stand in; once,
+ * for the first target that needs it, the others waiting for the same
+ * answer (jsock_want(), jsock_made()), and closed when none uses it.
+ * Its FIB is set on it here, the DSCP as on a FIB's, and its replies are
+ * told to the jail's targets by their ids as the host's are (the ids are
+ * each family's own among all the targets, the jails' too).  An echo's
+ * round trip is timed by the kernel (SO_TIMESTAMP, the monotonic clock),
+ * not by when the prober got to its reply.
  */
 
 #include <sys/param.h>
@@ -82,6 +87,25 @@ static int		 nfsocks;
 static int		 nfibs = -1;
 /* The host's targets' echo ids, the table's (icmp_table()). */
 static struct echo_ids	 ids;
+
+/* A jail's socket of a FIB and a family: being made by the worker
+ * (opening, gen the answer it waits for), the TOS it has (IPv4's), the
+ * targets that send on it. */
+struct jsock {
+	char		jail[64];
+	int		fd, af, fib, tos;
+	uint32_t	gen;
+	bool		opening;
+	int		users;
+};
+
+#define	JSOCKS_MAX	TARGETS_MAX
+
+static struct jsock	 jsocks[JSOCKS_MAX];
+static int		 njsocks;
+static uint32_t		 jgen;
+/* The jails' targets' echo ids. */
+static struct echo_ids	 jids;
 
 /* An echo socket's replies timed by the kernel, on the prober's
  * clock (CLOCK_MONOTONIC, SCM_MONOTONIC). */
@@ -164,6 +188,36 @@ fsock_of(int fd)
 	return (NULL);
 }
 
+static struct jsock *
+jsock_of(int fd)
+{
+
+	for (int i = 0; fd != -1 && i < njsocks; i++)
+		if (jsocks[i].fd == fd)
+			return (&jsocks[i]);
+	return (NULL);
+}
+
+static struct jsock *
+jsock_find(const char *jail, int fib, int af)
+{
+
+	for (int i = 0; i < njsocks; i++)
+		if (jsocks[i].af == af && jsocks[i].fib == fib &&
+		    strcmp(jsocks[i].jail, jail) == 0)
+			return (&jsocks[i]);
+	return (NULL);
+}
+
+static void
+jsock_drop(struct jsock *j)
+{
+
+	if (j->fd != -1)
+		close(j->fd);
+	*j = jsocks[--njsocks];
+}
+
 /* Every FIB's socket of family af, up to RX_FIBS, kept from now on: a
  * reply may come in on an interface of another table. */
 static void
@@ -190,8 +244,8 @@ fsock_listen(int af)
 }
 
 /*
- * Its echo socket, its FIB's, the host's (a jail's is made by the
- * worker: jail_socket()); false and why when it is not made.
+ * Its echo socket, its FIB's, the host's (a jail's is its jail's, FIB's
+ * and family's: jsock_want()); false and why when it is not made.
  */
 bool
 target_open(struct target *t)
@@ -208,7 +262,6 @@ target_open(struct target *t)
 	if ((t->sock = fsock_get(t->af, t->fib, t->error,
 	    sizeof(t->error))) == -1)
 		return (false);
-	t->own = false;
 	/* Its reply may come in on an interface of another table. */
 	if (t->fib != 0)
 		fsock_listen(t->af);
@@ -240,39 +293,88 @@ jail_socket(const char *jail, int af, char *err, size_t len)
 	return (s);
 }
 
-/* A jail's echo socket (t->sock, its own) set: its table, its DSCP, the
- * replies alone and timed; false and why when its table is refused. */
-bool
-target_setup(struct target *t)
+/*
+ * A jail's target's echo socket, the one of its jail, FIB and family:
+ * JS_HAVE, t->sock it; JS_WAIT, being made, the target waits for the
+ * worker's answer (jsock_made()); JS_ASK, the target the first to need
+ * it, the worker to be asked for answer *genp; JS_FULL, none to be had,
+ * why in t->error.
+ */
+int
+jsock_want(struct target *t, uint32_t *genp)
 {
-	int	v;
+	struct jsock	*j;
 
-	t->own = true;
-	icmp_timed(t->sock);
-	v = t->fib;
-	if (setsockopt(t->sock, SOL_SOCKET, SO_SETFIB, &v, sizeof(v)) == -1) {
-		snprintf(t->error, sizeof(t->error), "fib %d: %s", t->fib,
-		    strerror(errno));
-		target_close(t);
-		return (false);
+	if ((j = jsock_find(t->jail, t->fib, t->af)) != NULL) {
+		if (j->opening)
+			return (JS_WAIT);
+		t->sock = j->fd;
+		t->error[0] = '\0';
+		return (JS_HAVE);
 	}
-	v = t->dscp << 2;
-	if (t->af == AF_INET)
-		(void)setsockopt(t->sock, IPPROTO_IP, IP_TOS, &v, sizeof(v));
-	else {
-		(void)setsockopt(t->sock, IPPROTO_IPV6, IPV6_TCLASS, &v,
-		    sizeof(v));
-		icmp6_replies(t->sock);
+	if (njsocks == JSOCKS_MAX) {
+		snprintf(t->error, sizeof(t->error), "socket: %s",
+		    strerror(EMFILE));
+		return (JS_FULL);
 	}
-	t->error[0] = '\0';
-	return (true);
+	j = &jsocks[njsocks++];
+	memset(j, 0, sizeof(*j));
+	snprintf(j->jail, sizeof(j->jail), "%s", t->jail);
+	j->fd = -1;
+	j->af = t->af;
+	j->fib = t->fib;
+	j->opening = true;
+	j->gen = *genp = ++jgen;
+	return (JS_ASK);
 }
 
 /*
- * The table's targets (n of them) as the FIBs' sockets know them, at
- * each change of them: the host's echo ids for the replies, and each
- * socket's users; one no target uses, and kept for no FIB's replies,
- * closed.
+ * The worker's answer gen for jail's socket of FIB fib and family af: fd
+ * the helper's, or -1 and why in err.  Set up (timed, in its table,
+ * IPv6's replies alone) and kept, its descriptor for the targets that
+ * wait for it (wanted); -1, the waiting told why in err (len); -2,
+ * nothing to tell (not waited for: closed).
+ */
+int
+jsock_made(const char *jail, int fib, int af, uint32_t gen, int fd,
+    bool wanted, char *err, size_t len)
+{
+	struct jsock	*j;
+	int		 rcv;
+
+	if ((j = jsock_find(jail, fib, af)) == NULL || !j->opening ||
+	    j->gen != gen) {
+		if (fd != -1)
+			close(fd);
+		return (-2);
+	}
+	j->fd = fd;
+	if (fd == -1 || !wanted) {
+		jsock_drop(j);
+		return (wanted ? -1 : -2);
+	}
+	icmp_timed(fd);
+	for (rcv = RCVBUF; rcv >= 16 * 1024 && setsockopt(fd, SOL_SOCKET,
+	    SO_RCVBUF, &rcv, sizeof(rcv)) == -1; rcv /= 2)
+		;
+	if (setsockopt(fd, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) == -1) {
+		snprintf(err, len, "fib %d: %s", fib, strerror(errno));
+		jsock_drop(j);
+		return (-1);
+	}
+	if (af == AF_INET6)
+		icmp6_replies(fd);
+	j->opening = false;
+	logmsg(LOG_DEBUG, "probe: echo socket of jail %s, FIB %d, %s", jail,
+	    fib, af == AF_INET ? "inet" : "inet6");
+	return (fd);
+}
+
+/*
+ * The table's targets (n of them) as the sockets know them, at each
+ * change of them: the host's echo ids and the jails' for the replies,
+ * and each socket's users; one no target uses, and kept for no FIB's
+ * replies (nor being made), closed.
  */
 void
 icmp_table(struct target *v, int n)
@@ -281,13 +383,17 @@ icmp_table(struct target *v, int n)
 	bool	other[2] = { false, false };
 
 	echo_ids_clear(&ids);
+	echo_ids_clear(&jids);
 	for (i = 0; i < n; i++)
-		if (v[i].id[0] != '\0' && v[i].jail[0] == '\0') {
+		if (v[i].id[0] != '\0' && v[i].jail[0] != '\0')
+			echo_ids_add(&jids, v[i].af, v[i].ident, i);
+		else if (v[i].id[0] != '\0') {
 			echo_ids_add(&ids, v[i].af, v[i].ident, i);
 			if (v[i].fib != 0 && v[i].kind != KIND_STAMP)
 				other[v[i].af == AF_INET6] = true;
 		}
 	echo_ids_sort(&ids);
+	echo_ids_sort(&jids);
 	/* No target of a family in another table than 0 any more: its
 	 * sockets no longer kept for the replies. */
 	for (k = 0; k < nfsocks; k++) {
@@ -295,31 +401,51 @@ icmp_table(struct target *v, int n)
 		if (!other[fsocks[k].af == AF_INET6])
 			fsocks[k].listen = false;
 	}
-	for (i = 0; i < n; i++)
-		if (v[i].sock != -1 && !v[i].own)
-			for (k = 0; k < nfsocks; k++)
-				if (fsocks[k].fd == v[i].sock)
-					fsocks[k].users++;
+	for (k = 0; k < njsocks; k++)
+		jsocks[k].users = 0;
+	for (i = 0; i < n; i++) {
+		if (v[i].sock == -1)
+			continue;
+		for (k = 0; k < nfsocks; k++)
+			if (fsocks[k].fd == v[i].sock)
+				fsocks[k].users++;
+		for (k = 0; k < njsocks; k++)
+			if (jsocks[k].fd == v[i].sock)
+				jsocks[k].users++;
+	}
 	for (k = 0; k < nfsocks; )
 		if (fsocks[k].users == 0 && !fsocks[k].listen) {
 			close(fsocks[k].fd);
 			fsocks[k] = fsocks[--nfsocks];
 		} else
 			k++;
+	for (k = 0; k < njsocks; )
+		if (jsocks[k].users == 0 && !jsocks[k].opening)
+			jsock_drop(&jsocks[k]);
+		else
+			k++;
 }
 
-/* The FIBs' sockets to poll, into pfd (max), each one's family into
- * afs: how many. */
+/* The sockets to poll, the FIBs' and the jails', into pfd (max), each
+ * one's family into afs: how many. */
 int
 icmp_pollfds(struct pollfd *pfd, int *afs, int max)
 {
-	int	n;
+	int	i, n;
 
 	for (n = 0; n < nfsocks && n < max; n++) {
 		pfd[n].fd = fsocks[n].fd;
 		pfd[n].events = POLLIN;
 		pfd[n].revents = 0;
 		afs[n] = fsocks[n].af;
+	}
+	for (i = 0; i < njsocks && n < max; i++) {
+		if (jsocks[i].opening)
+			continue;
+		pfd[n].fd = jsocks[i].fd;
+		pfd[n].events = POLLIN;
+		pfd[n].revents = 0;
+		afs[n++] = jsocks[i].af;
 	}
 	return (n);
 }
@@ -342,12 +468,13 @@ cksum(const void *p, size_t len)
 	return ((uint16_t)~sum);
 }
 
-/* An echo request (len bytes) to the target, with its DSCP: on its own
- * socket, set; on its FIB's, for this packet. */
+/* An echo request (len bytes) to the target, with its DSCP, on its
+ * FIB's socket or its jail's: for this packet. */
 static ssize_t
 icmp_out(struct target *t, const unsigned char *pkt, size_t len)
 {
 	struct fsock	*f;
+	struct jsock	*j;
 	struct msghdr	 msg;
 	struct iovec	 iov;
 	struct cmsghdr	*cm;
@@ -357,14 +484,20 @@ icmp_out(struct target *t, const unsigned char *pkt, size_t len)
 	}		 cout;
 	int		 v = t->dscp << 2;
 
-	if (t->own || (f = fsock_of(t->sock)) == NULL)
+	int		*tos;
+
+	if ((f = fsock_of(t->sock)) != NULL)
+		tos = &f->tos;
+	else if ((j = jsock_of(t->sock)) != NULL)
+		tos = &j->tos;
+	else
 		return (sendto(t->sock, pkt, len, 0, (const struct sockaddr *)
 		    &t->sa, t->sa.ss_len));
 	if (t->af == AF_INET) {
-		if (f->tos != v && setsockopt(f->fd, IPPROTO_IP, IP_TOS, &v,
+		if (*tos != v && setsockopt(t->sock, IPPROTO_IP, IP_TOS, &v,
 		    sizeof(v)) == 0)
-			f->tos = v;
-		return (sendto(f->fd, pkt, len, 0, (const struct sockaddr *)
+			*tos = v;
+		return (sendto(t->sock, pkt, len, 0, (const struct sockaddr *)
 		    &t->sa, t->sa.ss_len));
 	}
 	memset(&msg, 0, sizeof(msg));
@@ -382,7 +515,7 @@ icmp_out(struct target *t, const unsigned char *pkt, size_t len)
 	cm->cmsg_type = IPV6_TCLASS;
 	cm->cmsg_len = CMSG_LEN(sizeof(v));
 	memcpy(CMSG_DATA(cm), &v, sizeof(v));
-	return (sendmsg(f->fd, &msg, 0));
+	return (sendmsg(t->sock, &msg, 0));
 }
 
 /* An echo request, timed as it goes (not by the prober's pass). */
@@ -487,42 +620,29 @@ icmp_reply(struct target *t, uint16_t seq, double at)
 	pm_hit(t, (at - t->out[slot].sent) * 1000, NULL);
 }
 
-/* What a FIB's socket fd of family af has: each echo reply to the
- * host's target of its id, of the table v (n of them). */
+/* What a socket fd of family af has, a FIB's or a jail's: each echo
+ * reply to the target of its id, of the table v (n of them), the host's
+ * or, on a jail's socket, one of those that send on it. */
 void
-icmp_recv_fib(int fd, int af, struct target *v, int n, double now)
+icmp_recv_sock(int fd, int af, struct target *v, int n, double now)
 {
-	unsigned char	 pkt[PKT_MAX + 64];
-	ssize_t		 len;
-	double		 at;
-	uint16_t	 id, seq;
-	int		 i;
+	const struct echo_ids	*e;
+	unsigned char		 pkt[PKT_MAX + 64];
+	ssize_t			 len;
+	double			 at;
+	uint16_t		 id, seq;
+	int			 i;
+	bool			 jail;
 
+	jail = jsock_of(fd) != NULL;
+	e = jail ? &jids : &ids;
 	for (;;) {
 		if ((len = icmp_recv(fd, pkt, sizeof(pkt), now, &at)) <= 0)
 			return;
 		if (echo_parse(af, pkt, (size_t)len, &id, &seq) != 0 ||
-		    (i = echo_ids_find(&ids, af, id)) < 0 || i >= n)
+		    (i = echo_ids_find(e, af, id)) < 0 || i >= n ||
+		    (jail && v[i].sock != fd))
 			continue;
 		icmp_reply(&v[i], seq, at);
-	}
-}
-
-/* What a jail's target's own socket has: its echo replies. */
-void
-icmp_recv_own(struct target *t, double now)
-{
-	unsigned char	 pkt[PKT_MAX + 64];
-	ssize_t		 len;
-	double		 at;
-	uint16_t	 id, seq;
-
-	for (;;) {
-		if ((len = icmp_recv(t->sock, pkt, sizeof(pkt), now, &at)) <= 0)
-			return;
-		if (echo_parse(t->af, pkt, (size_t)len, &id, &seq) != 0 ||
-		    id != t->ident)
-			continue;
-		icmp_reply(t, seq, at);
 	}
 }

@@ -4128,6 +4128,172 @@ probe_open_backoff_cleanup()
 	stop_daemon
 }
 
+atf_test_case probe_jail_sockets cleanup
+probe_jail_sockets_head()
+{
+	atf_set "descr" "a jail's echo targets share one socket a jail, a FIB" \
+	    "and a family, made once by the helper in the jail and handed" \
+	    "over: three of a family in one jail, one of the other, one in" \
+	    "another jail, three sockets asked for; a target added to them" \
+	    "takes the one there"
+	atf_set "timeout" "60"
+}
+probe_jail_sockets_body()
+{
+	local d="$(pwd)"
+
+	command -v python3 >/dev/null || atf_skip "no python3 to hand a socket over"
+	mkdir -p jroot jroot2
+	printf 'gw 4 new %s/jroot\ngw2 5 new %s/jroot2\n' "$d" "$d" > jails
+	DAEMON_ARGS="-d" start_daemon
+	# The helper's icmp-socket: a datagram socket of the family (one a
+	# user may make), handed over as the helper hands its raw one; each
+	# asked for logged.
+	mv fake-helper fake-helper.real
+	cat > fake-helper <<EOS
+#!/bin/sh
+if [ "\$3" = icmp-socket ]; then
+	echo "\$2 icmp-socket \$4" >> $d/sockets.log
+	exec python3 -I -c 'import socket, sys
+s = socket.socket(socket.AF_INET6 if sys.argv[1] == "inet6" else socket.AF_INET, socket.SOCK_DGRAM)
+socket.send_fds(socket.socket(fileno=1), [b"x"], [s.fileno()])' "\$4"
+fi
+exec $d/fake-helper.real "\$@"
+EOS
+	chmod +x fake-helper
+	: > sockets.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw","targets":[{"id":"t1","address":"127.0.0.1"},{"id":"t2","address":"127.0.0.1","dscp":46},{"id":"t3","address":"127.0.0.1","interval":200},{"id":"t4","address":"::1"}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw2","targets":[{"id":"t5","address":"127.0.0.1"}]}'
+	wait_match 'jail gw2, FIB 0, inet$' cat daemon.out ||
+	    atf_fail "no socket made: $(cat daemon.out)"
+	wait_match 'jail gw, FIB 0, inet6$' cat daemon.out ||
+	    atf_fail "no socket made: $(cat daemon.out)"
+	sleep 2
+	atf_check -o inline:'4 icmp-socket inet\n4 icmp-socket inet6\n5 icmp-socket inet\n' \
+	    sort sockets.log
+	atf_check -o inline:'1\n' grep -c 'probe: echo socket of jail gw, FIB 0, inet$' \
+	    daemon.out
+	# Each target on it, none in error for a socket.
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	for t in t1 t2 t3 t4 t5; do
+		atf_check -o match:"\"id\":\"$t\",\"address\":\"[^\"]*\",\"family\":\"inet6?\",\"jail\":\"gw2?\",\"fib\":0,\"state\":\"(unknown|up|down)\"" \
+		    cat sd.json
+	done
+	atf_check -o not-match:'no socket in jail' cat sd.json
+	# One more of the jail's, the others kept: the socket there.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw","targets":[{"id":"t1","address":"127.0.0.1"},{"id":"t4","address":"::1"},{"id":"t6","address":"127.0.0.1"}]}'
+	sleep 1
+	atf_check -o inline:'3\n' sh -c 'wc -l < sockets.log | tr -d " "'
+	atf_check -o match:'"id":"t6","address":"127.0.0.1","family":"inet","jail":"gw","fib":0,"state":"(unknown|up|down)"' \
+	    "$JGC" -c "$SOCK" sdwan
+	# None left in a jail: its socket closed, a new target there asks
+	# for another.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '{"jail":"gw2","targets":[]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw2","targets":[{"id":"t7","address":"127.0.0.1"}]}'
+	wait_match '^5 icmp-socket inet$' sed -n 4p sockets.log ||
+	    atf_fail "not asked again: $(cat sockets.log)"
+}
+probe_jail_sockets_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case probe_steer_burst cleanup
+probe_steer_burst_head()
+{
+	atf_set "descr" "the steering made again on the prober's worker as" \
+	    "the targets' states change, in their order: three tunnels up" \
+	    "where nothing was down, no ipfw run; the three down at once" \
+	    "while ipfw is slow, at most two runs, changes taken together," \
+	    "the last one's table the final steering (none)"
+	atf_set "timeout" "120"
+}
+probe_steer_burst_body()
+{
+	local d="$(pwd)" P i n s
+
+	stamp_programs
+	P=$(jot -r 1 20000 59999)
+	"$SD" -d -r 0 -R 0 -p $P -P "$d/stampd.pid" > sd.out 2>&1 &
+	echo $! > sd.spid
+	for i in $(seq 1 100); do
+		grep -q started sd.out && break
+		sleep 0.05
+	done
+	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
+	# ipfw: logged; slow while ./slow is there.
+	cat > fake-ipfw <<EOS
+#!/bin/sh
+[ -f $d/slow ] && sleep 0.3
+echo "ipfw \$*" >> $d/ipfw.log
+exit 0
+EOS
+	chmod +x fake-ipfw
+	printf '#!/bin/sh\nexit 0\n' > fake-kldload
+	chmod +x fake-kldload
+	mkdir -p tools
+	DAEMON_ARGS="-d --stamp-port $P -h $d/fake-ipfw -2 $d/tools"
+	start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
+	    '{"set":30,"tables":[{"name":"sw1_p0","valtype":"ipv4","entries":[]}],"rules":["00500 fwd tablearg ip from any to table(sw1_p0)"]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan steer \
+	    '{"entries":[{"table":"sw1_p0","prefix":"10.1.0.0/24","candidates":[{"id":"t1","via":"100.64.0.1"},{"id":"t2","via":"100.64.0.2"}]},{"table":"sw1_p0","prefix":"10.2.0.0/24","candidates":[{"id":"t2","via":"100.64.0.2"},{"id":"t3","via":"100.64.0.3"}]},{"table":"sw1_p0","prefix":"10.3.0.0/24","candidates":[{"id":"t3","via":"100.64.0.3"},{"id":"t1","via":"100.64.0.1"}]}]}'
+	atf_check -o match:'^ipfw -q set 30 table sw1_p0_alt atomic add 10.1.0.0/24 100.64.0.1 10.2.0.0/24 100.64.0.2 10.3.0.0/24 100.64.0.3$' \
+	    cat ipfw.log
+	: > ipfw.log
+	# Up, each from unknown: no choice changes, no ipfw run.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3},{"id":"t2","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3},{"id":"t3","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3}]'
+	for i in 1 2 3; do
+		wait_match "\"id\":\"t$i\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"up\"" \
+		    "$JGC" -c "$SOCK" sdwan || atf_fail "t$i not up: $("$JGC" -c "$SOCK" sdwan)"
+	done
+	wait_match 'probe: steering made again: [1-3] state changes?, one run' \
+	    cat daemon.out || atf_fail "no steering: $(cat daemon.out)"
+	sleep 1
+	atf_check -o not-match:'^ipfw -q set 30 table' cat ipfw.log
+	# All three down at once, ipfw slow: the changes that come while a
+	# run is in ipfw are the next run's, together.
+	n=$(grep -c 'probe: steering made again' daemon.out)
+	touch slow
+	kill "$(cat sd.spid)"
+	for i in 1 2 3; do
+		wait_match "\"id\":\"t$i\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"down\"" \
+		    "$JGC" -c "$SOCK" sdwan || atf_fail "t$i not down: $("$JGC" -c "$SOCK" sdwan)"
+	done
+	# ipfw done: nothing more in two seconds.
+	s=-1
+	for i in $(seq 1 30); do
+		[ "$(wc -c < ipfw.log)" = "$s" ] && break
+		s=$(wc -c < ipfw.log)
+		sleep 2
+	done
+	rm -f slow
+	atf_check -o match:'probe: steering made again: [23] state changes, one run' \
+	    sed -n "$((n + 1)),\$p" daemon.out
+	i=$(grep -c '^ipfw -q set 30 table sw1_p0 swap sw1_p0_alt$' ipfw.log)
+	[ "$i" -ge 1 ] && [ "$i" -le 2 ] ||
+	    atf_fail "$i swaps for three changes: $(cat ipfw.log)"
+	# The last run's table: emptied, nothing added, swapped in (the
+	# reads' ipfw runs passed over).
+	atf_check -o inline:'ipfw -q set 30 table sw1_p0_alt flush\nipfw -q set 30 table sw1_p0 swap sw1_p0_alt\nipfw -q set 30 table sw1_p0_alt flush\n' \
+	    sh -c "grep '^ipfw -q ' ipfw.log | tail -3"
+	atf_check -o match:'"steer":\[\{"table":"sw1_p0","prefix":"10.1.0.0/24","chosen":-1,' \
+	    "$JGC" -c "$SOCK" sdwan
+	# Only the console's set: never a rule or a table outside it.
+	atf_check -o not-match:'^ipfw -q (add|delete|flush|table)' cat ipfw.log
+}
+probe_steer_burst_cleanup()
+{
+	stop_daemon
+	[ -f sd.spid ] && kill "$(cat sd.spid)" 2>/dev/null
+	true
+}
+
 atf_test_case probe_echo_demux
 probe_echo_demux_head()
 {
@@ -20618,6 +20784,8 @@ atf_init_test_cases()
 	atf_add_test_case archive_agent
 	atf_add_test_case probe_echo_ids
 	atf_add_test_case probe_open_backoff
+	atf_add_test_case probe_jail_sockets
+	atf_add_test_case probe_steer_burst
 	atf_add_test_case probe_echo_demux
 	atf_add_test_case probe_views_swap
 	atf_add_test_case probe_reader_late

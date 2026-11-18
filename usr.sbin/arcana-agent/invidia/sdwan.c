@@ -966,7 +966,8 @@ routes_apply(struct work *w, struct edge *e, bool force, int by,
 }
 
 /* A probe's state changed: the choices made again, here, at each edge
- * that steers. */
+ * that steers; on the prober's worker (gula/probe_engine.c), the
+ * changes of a burst at once, or on BFD's reader (luxuria/sdbird.c). */
 void
 sdwan_probe_changed(void)
 {

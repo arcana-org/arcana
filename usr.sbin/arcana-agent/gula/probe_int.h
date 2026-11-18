@@ -106,7 +106,8 @@ struct echo_out {
 	bool		 live;
 };
 
-/* The echo ids of the host's targets, each family's, sorted. */
+/* The echo ids of the host's targets, or the jails', each family's,
+ * sorted. */
 struct echo_id {
 	uint16_t	 id;
 	uint8_t		 af;
@@ -192,10 +193,9 @@ struct target {
 	double			 tca[3];
 	int			 damping, tca_over[3], tca_under[3];
 	bool			 tca_on[3];
-	/* Its echo socket: its FIB's, the host's (probe_icmp.c), or one of
-	 * its own (own), a jail's. */
+	/* Its echo socket: its FIB's, the host's, or its jail's, FIB's and
+	 * family's (probe_icmp.c); shared, neither its own. */
 	int			 sock;
-	bool			 own;
 	/* Which it is to the engine, for what is handed back to it: the
 	 * same while it is kept. */
 	uint64_t		 serial;
@@ -264,7 +264,8 @@ struct target {
 	int			 state;
 	char			 error[128];
 	/* Its echo socket not made: tried again at open_at, the wait
-	 * open_wait doubling; a jail's made by the worker (opening). */
+	 * open_wait doubling; a jail's made by the worker, waited for
+	 * (opening). */
 	double			 open_at, open_wait;
 	bool			 opening;
 	int			 misses, hits;	/* in a row */
@@ -407,12 +408,15 @@ const char	*addr_port(const struct sockaddr_storage *, char *, size_t);
 
 /* ---- ICMP (probe_icmp.c) -------------------------------------------- */
 
+enum { JS_HAVE, JS_WAIT, JS_ASK, JS_FULL };
+
 bool		 target_open(struct target *);
-bool		 target_setup(struct target *);
+int		 jsock_want(struct target *, uint32_t *);
+int		 jsock_made(const char *, int, int, uint32_t, int, bool, char *,
+		    size_t);
 int		 jail_socket(const char *, int, char *, size_t);
 void		 icmp_send(struct target *);
-void		 icmp_recv_own(struct target *, double);
-void		 icmp_recv_fib(int, int, struct target *, int, double);
+void		 icmp_recv_sock(int, int, struct target *, int, double);
 void		 icmp_table(struct target *, int);
 int		 icmp_pollfds(struct pollfd *, int *, int);
 

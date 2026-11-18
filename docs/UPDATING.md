@@ -93,6 +93,19 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Steering on the prober's worker; agent 0.306.0
+
+- When a probe target's state changes, the SD-WAN steering is made
+  again on the prober's worker thread, not a thread of its own, so ipfw
+  runs no longer delay probes.  Changes that arrive while a steering
+  runs are applied together in the next run, on the states they end in
+  (the same tables as one by one); a burst that ends where it began
+  runs no ipfw; a choice that came and went within one run is not
+  reported as steer-changed.
+- A vnet jail's echo targets share one raw socket per jail, FIB and
+  family, made once by the helper inside the jail and handed over;
+  replies are matched to targets by ICMP id and sequence.
+
 ### arcana-enrol checks the CA first; agent 0.305.0, console 0.454.0
 
 - arcana-enrol first asks the console for its CA (`GET /api/enrol`, no
