@@ -360,6 +360,11 @@ submodule arcana-jobs-kinds {
             description
               "Repository";
           }
+          leaf no-repo-check {
+            type boolean;
+            description
+              "Don't check the repository";
+          }
         }
       }
       case if-address {
@@ -1405,6 +1410,11 @@ submodule arcana-jobs-kinds {
             description
               "Repository";
           }
+          leaf no-repo-check {
+            type boolean;
+            description
+              "Don't check the repository";
+          }
         }
       }
       case jail-base {
@@ -1453,6 +1463,11 @@ submodule arcana-jobs-kinds {
             type string;
             description
               "Repository";
+          }
+          leaf no-repo-check {
+            type boolean;
+            description
+              "Don't check the repository";
           }
         }
       }

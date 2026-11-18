@@ -113,6 +113,7 @@ struct opts opts = {
 	.pkg_idle_s = PKG_IDLE_SEC,
 	.terminal_login = PATH_LOGIN_BIN,
 	.terminal_idle_s = TERM_IDLE_SEC,
+	.repo_reach_s = REPO_REACH_SEC,
 	.pkg_lanes = PKG_LANES,
 	.bird_bin = PATH_BIRD_BIN,
 	.bird_conf = PATH_BIRD_CONF,
@@ -142,7 +143,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
-    OPT_TERMINAL_IDLE };
+    OPT_TERMINAL_IDLE, OPT_REPO_REACH };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -153,6 +154,9 @@ static const struct option longopts[] = {
 	 * test's stand-in; and how long one nobody types in is kept. */
 	{ "terminal-login", required_argument, NULL, OPT_TERMINAL_LOGIN },
 	{ "terminal-idle", required_argument, NULL, OPT_TERMINAL_IDLE },
+	/* pkg's repository, asked first whether it answers, is given up
+	 * after this long. */
+	{ "repo-reach", required_argument, NULL, OPT_REPO_REACH },
 	{ "jobs-conf", required_argument, NULL, OPT_JOBS_CONF },
 	/* NACM's rules (RFC 8341), as family 1 serves and edits them. */
 	{ "nacm", required_argument, NULL, OPT_NACM },
@@ -538,6 +542,12 @@ main(int argc, char *argv[])
 			if (errstr != NULL)
 				errx(1, "--terminal-idle %s: %s", optarg, errstr);
 			break;
+		case OPT_REPO_REACH:
+			opts.repo_reach_s = (int)strtonum(optarg, 1, 60,
+			    &errstr);
+			if (errstr != NULL)
+				errx(1, "--repo-reach %s: %s", optarg, errstr);
+			break;
 		case OPT_BIRD_WATCH:
 			opts.bird_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);
 			if (errstr != NULL)
@@ -840,6 +850,8 @@ main(int argc, char *argv[])
 	 * on.  Problems after this point go to syslog.
 	 */
 	pfh = NULL;
+	/* Who started it, while that can still be seen (exec_orphans()). */
+	exec_note_ancestors();
 	if (!foreground) {
 		if ((pfh = pidfile_open(pidpath, 0600, &other)) == NULL) {
 			if (errno == EEXIST)
@@ -901,6 +913,8 @@ main(int argc, char *argv[])
 	cf_load();
 	jobs_conf_load();
 	jobs_init();
+	/* What a job of the agent before this one left running. */
+	jobs_orphans_start();
 	/* The faults before the sampler, which may clear its own. */
 	faults_start();
 	history_start();

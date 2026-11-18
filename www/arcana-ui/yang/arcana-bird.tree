@@ -18,16 +18,17 @@ module: arcana-bird
      |  |  +--ro description?   string
      |  |  +--ro detail*        string
      |  |  +--ro bgp
-     |  |  |  +--ro state?         string
-     |  |  |  +--ro neighbor?      inet:ip-address-no-zone
-     |  |  |  +--ro neighbor-as?   inet:as-number
-     |  |  |  +--ro local-as?      inet:as-number
-     |  |  |  +--ro neighbor-id?   string
-     |  |  |  +--ro source?        inet:ip-address-no-zone
-     |  |  |  +--ro session?       string
-     |  |  |  +--ro hold?          string
-     |  |  |  +--ro keepalive?     string
-     |  |  |  +--ro last-error?    string
+     |  |  |  +--ro state?                string
+     |  |  |  +--ro neighbor?             inet:ip-address-no-zone
+     |  |  |  +--ro neighbor-interface?   string
+     |  |  |  +--ro neighbor-as?          inet:as-number
+     |  |  |  +--ro local-as?             inet:as-number
+     |  |  |  +--ro neighbor-id?          string
+     |  |  |  +--ro source?               inet:ip-address-no-zone
+     |  |  |  +--ro session?              string
+     |  |  |  +--ro hold?                 string
+     |  |  |  +--ro keepalive?            string
+     |  |  |  +--ro last-error?           string
      |  |  +--ro rpki
      |  |  |  +--ro cache?         string
      |  |  |  +--ro status?        string
@@ -35,6 +36,7 @@ module: arcana-bird
      |  |  |  +--ro last-update?   string
      |  |  +--ro channel* [name]
      |  |     +--ro name             string
+     |  |     +--ro family?          string
      |  |     +--ro state?           string
      |  |     +--ro table?           string
      |  |     +--ro input-filter?    string
@@ -42,6 +44,8 @@ module: arcana-bird
      |  |     +--ro routes?          string
      |  |     +--ro imported?        uint64
      |  |     +--ro exported?        uint64
+     |  |     +--ro preferred?       uint64
+     |  |     +--ro filtered?        uint64
      |  +--ro ospf-neighbor*
      |  |  +--ro protocol?    string
      |  |  +--ro router-id?   string
@@ -85,16 +89,17 @@ module: arcana-bird
      |     |  +--ro description?   string
      |     |  +--ro detail*        string
      |     |  +--ro bgp
-     |     |  |  +--ro state?         string
-     |     |  |  +--ro neighbor?      inet:ip-address-no-zone
-     |     |  |  +--ro neighbor-as?   inet:as-number
-     |     |  |  +--ro local-as?      inet:as-number
-     |     |  |  +--ro neighbor-id?   string
-     |     |  |  +--ro source?        inet:ip-address-no-zone
-     |     |  |  +--ro session?       string
-     |     |  |  +--ro hold?          string
-     |     |  |  +--ro keepalive?     string
-     |     |  |  +--ro last-error?    string
+     |     |  |  +--ro state?                string
+     |     |  |  +--ro neighbor?             inet:ip-address-no-zone
+     |     |  |  +--ro neighbor-interface?   string
+     |     |  |  +--ro neighbor-as?          inet:as-number
+     |     |  |  +--ro local-as?             inet:as-number
+     |     |  |  +--ro neighbor-id?          string
+     |     |  |  +--ro source?               inet:ip-address-no-zone
+     |     |  |  +--ro session?              string
+     |     |  |  +--ro hold?                 string
+     |     |  |  +--ro keepalive?            string
+     |     |  |  +--ro last-error?           string
      |     |  +--ro rpki
      |     |  |  +--ro cache?         string
      |     |  |  +--ro status?        string
@@ -102,6 +107,7 @@ module: arcana-bird
      |     |  |  +--ro last-update?   string
      |     |  +--ro channel* [name]
      |     |     +--ro name             string
+     |     |     +--ro family?          string
      |     |     +--ro state?           string
      |     |     +--ro table?           string
      |     |     +--ro input-filter?    string
@@ -109,6 +115,8 @@ module: arcana-bird
      |     |     +--ro routes?          string
      |     |     +--ro imported?        uint64
      |     |     +--ro exported?        uint64
+     |     |     +--ro preferred?       uint64
+     |     |     +--ro filtered?        uint64
      |     +--ro ospf-neighbor*
      |     |  +--ro protocol?    string
      |     |  +--ro router-id?   string

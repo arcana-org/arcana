@@ -3342,6 +3342,14 @@ part_plugins_bird(void)
 	ATF_CHECK(js_true("document.querySelector('.modal dl.kv').textContent"
 	    ".includes('65001') && document.querySelector('.modal table.net')"
 	    ".textContent.includes('bgp_out')"));
+	/* Of each channel its family and its routes' counts, the best of
+	 * them (preferred) among them; our AS beside the neighbour's. */
+	ATF_CHECK(js_true("(() => { const r = document.querySelector('.modal "
+	    "table.bird-chan tbody tr'); return r && r.children[1].textContent "
+	    "=== 'ipv4-unicast' && r.children[6].textContent === '845233' && "
+	    "r.children[7].textContent === '12' && r.children[8].textContent "
+	    "=== '400000'; })() && document.querySelector('.modal dl.kv')"
+	    ".textContent.includes('Local AS65000')"));
 	shot("7e-bird-neighbour");
 	run("const t = document.querySelector('form[data-form=bird-block] "
 	    "textarea'); t.value = t.value.replace('Core uplink', 'Core uplink, "

@@ -290,6 +290,8 @@ struct pkgview {
 	char		*names;		/* what it was asked of: JSON, or NULL */
 	int		 mode;		/* 0 the installed, 1 the upgrades */
 	int		 ip;		/* pkg -4 or -6, or 0 either */
+	bool		 nocheck;	/* pkg run without its repository
+					 * asked first; not kept */
 	char		 repo[65];	/* pkg -r: one repository, or "" */
 	bool		 anyos;		/* reads past OSVERSION: approved */
 	bool		 base_up;	/* the jail-base modal: upgrade, not convert */
@@ -848,6 +850,7 @@ void		 cancel_queued_jobs(struct server *);
 void		 open_job(struct server *, long long, const char *);
 void		 refresh_packages(struct server *, bool);
 void		 pkg_upgrade(struct server *, const char *, bool, bool);
+const char	*pkg_job_net(void);
 const char	*pkg_repo_kept(const struct server *, const char *,
 		    const char *);
 void		 pkg_repo_keep(struct server *, const char *, const char *,

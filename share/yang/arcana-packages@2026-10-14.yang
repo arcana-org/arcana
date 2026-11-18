@@ -170,6 +170,14 @@ module arcana-packages {
               "Past a repository for a newer FreeBSD
                (IGNORE_OSVERSION).";
           }
+          leaf no-repo-check {
+            type boolean;
+            default "false";
+            description
+              "pkg started without first asking the repository, from
+               where pkg runs, whether it answers (one request, a few
+               seconds; the job fails at once when it does not).";
+          }
         }
         output {
           uses listed;
@@ -217,6 +225,14 @@ module arcana-packages {
               "Of the host's: in every running jail that has pkg
                instead, one after the other, a jail that fails not
                stopping the others, which the error names.";
+          }
+          leaf no-repo-check {
+            type boolean;
+            default "false";
+            description
+              "pkg started without first asking the repository, from
+               where pkg runs, whether it answers (one request, a few
+               seconds; the job fails at once when it does not).";
           }
         }
         output {

@@ -93,6 +93,31 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### pkg asks its repository first; agent 0.302.0, console 0.450.0
+
+- Before pkg update, upgrade, install, or a jail's base by pkg, the
+  agent fetches the repository's meta.conf from where pkg runs:
+  attached to the jail, the SRV record followed, PKG_ENV's proxies
+  used, IPv6 and IPv4 raced.  If nothing answers within `--repo-reach`
+  seconds (8), pkg is not started and the job fails saying what was
+  tried and which address families the jail or host has.  A job's
+  `no-repo-check` skips this (arcana-jobs pkg-upgrade, pkg-install and
+  jail-base; arcana-packages refresh and upgrade; `arcanactl -R`; the
+  package boxes' "Don't check the repository").  A pkg stopped for
+  silence now says whether the repository answered when asked after.
+- Watched pkg runs carry ARCANA_AGENT_JOB and ARCANA_AGENT_JOB_TITLE; at
+  start the agent stops what a predecessor left of them (SIGTERM, then
+  SIGKILL after 5 s) and lists each as a job that failed, "stopped: the
+  agent restarted under it".
+- arcana-bird gains a channel's family, preferred and filtered, and a
+  BGP neighbour's interface; a link-local neighbour's address no longer
+  carries `%iface`; routes counts are read when BIRD prints filtered, and
+  a since of date and time is kept whole.  The BIRD tab shows the
+  neighbour's interface and local AS, and each channel's family with
+  its counts.
+- Update the agents with the console: the jobs and packages actions
+  gained a leaf, and arcana-bird four.
+
 ### IPsec policies by PF_KEY; agent 0.301.0, console 0.449.1
 
 - **Policies** (PLAN-SDN-YANG 6.2.2): `ipsec-sa policy` sends a

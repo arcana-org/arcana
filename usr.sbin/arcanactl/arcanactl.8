@@ -2450,7 +2450,7 @@ and the ZFS pools: a read of arcana-host's
 .Ic host ,
 its
 .Ic stats .
-.It Cm packages Oo Fl i Oc Oo Fl r Oc Oo Fl 4 | Fl 6 Oc Op Ar jail
+.It Cm packages Oo Fl i Oc Oo Fl r Oo Fl R Oc Oc Oo Fl 4 | Fl 6 Oc Op Ar jail
 Packages of the host, or of the running
 .Ar jail ,
 that the repository has newer versions of
@@ -2458,7 +2458,13 @@ that the repository has newer versions of
 arcana-packages' refresh action;
 .Fl r
 fetches the catalogue first
-.Pq Nm pkg update .
+.Pq Nm pkg update ,
+once the repository answers from where pkg runs: the agent fetches its
+.Pa meta.conf
+there first, and gives up after a few seconds saying what it tried and
+what the jail or host has to reach it with;
+.Fl R
+does not ask.
 With
 .Fl i ,
 the packages installed instead, the read action, from the host's own
@@ -2471,7 +2477,7 @@ automatically as what another needs, its size and what it is.
 or
 .Fl 6
 has pkg reach the repository over IPv4 or IPv6 only.
-.It Cm pkg-upgrade Oo Fl n Oc Oo Fl O Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl j Ar jail | Fl J Oc Op Ar package ...
+.It Cm pkg-upgrade Oo Fl n Oc Oo Fl O Oc Oo Fl R Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl j Ar jail | Fl J Oc Op Ar package ...
 .Nm pkg upgrade Fl y
 of the named packages, or of all of them, on the host or in the running
 .Ar jail ,
@@ -2494,9 +2500,13 @@ takes them from that repository alone
 one of those
 .Cm packages
 lists, enabled or not.
+The repository is asked first whether it answers, as for
+.Cm packages Fl r ;
+.Fl R
+does not ask.
 What is still pending follows.
-.It Cm jail-base Ar jail Cm convert Oo Fl O Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl b Ar release Oc Op Ar set ...
-.It Cm jail-base Ar jail Cm upgrade Oo Fl O Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Ar release
+.It Cm jail-base Ar jail Cm convert Oo Fl O Oc Oo Fl R Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl b Ar release Oc Op Ar set ...
+.It Cm jail-base Ar jail Cm upgrade Oo Fl O Oc Oo Fl R Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Ar release
 A running jail's base system by
 .Xr pkg 8 ,
 as pkgbase; a job.
@@ -2539,9 +2549,10 @@ named at the end to merge; the jail is to be restarted after.
 reads past
 .Ev OSVERSION
 for the other packages;
-.Fl 4
-and
+.Fl 4 ,
 .Fl 6
+and
+.Fl R
 as for
 .Cm pkg-upgrade .
 Needs FreeBSD 15.1 or later in the jail.
@@ -2557,7 +2568,7 @@ With
 .Fl J ,
 in every running jail instead, one batch of a job each, so that a jail
 whose pkg refuses fails alone.
-.It Cm pkg-install Oo Fl O Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl j Ar jail Oc Ar package ...
+.It Cm pkg-install Oo Fl O Oc Oo Fl R Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl j Ar jail Oc Ar package ...
 .Nm pkg install Fl y ,
 a job, on the host or in the running
 .Ar jail ;
@@ -2565,7 +2576,10 @@ with
 .Fl O ,
 also packages built for a newer FreeBSD; with
 .Fl r ,
-from that repository alone.
+from that repository alone;
+.Fl R
+as for
+.Cm pkg-upgrade .
 .It Cm jobs
 The host's queued, running and recently finished jobs, arcana-jobs'
 state.

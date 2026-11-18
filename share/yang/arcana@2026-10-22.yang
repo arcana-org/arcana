@@ -653,6 +653,15 @@ module arcana {
          accepted (rc-conf-files, rc-conf-conflict), a commit's
          accept.";
     }
+    leaf no-repo-check {
+      type empty;
+      description
+        "For pkg-upgrade, pkg-install and jail-base, pkg started
+         without first fetching the repository's meta.conf from where
+         pkg runs (the jail's network); without it the job fails at
+         once, saying what was tried, when the repository does not
+         answer within a few seconds.";
+    }
   }
 
   grouping set-job {

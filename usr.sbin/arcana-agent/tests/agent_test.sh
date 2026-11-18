@@ -204,7 +204,10 @@ EOS
 	chmod +x fake-netstat
 	# The helper, which speaks netlink(4) for the routes: what it is
 	# asked is logged, what it answers is canned.  ./huge is a table
-	# of 3000 routes; ./covers the routes an address is in.
+	# of 3000 routes; ./covers the routes an address is in.  Asked
+	# whether pkg's repository answers: it does, unless ./noreach
+	# (nothing ever comes) or ./reach.refused; the jail or host has
+	# IPv6 addresses alone, IPv4 alone with ./reach.v4.
 	[ -f fake-helper ] || cat > fake-helper <<EOS
 #!/bin/sh
 echo "fake-helper \$*" >&2
@@ -242,6 +245,14 @@ route-neighs)
 	echo "#total 2" ;;
 carp-set)
 	echo "carp-set \$* key=\$(cat)" >> $(pwd)/carp.log ;;
+repo-reach)
+	echo "\$jid \$* env=\$(cat | tr '\\n' ' ')" >> $(pwd)/reach.log
+	[ -f $(pwd)/reach.v4 ] && echo "addrs 2 0" || echo "addrs 0 2"
+	[ "\$2" = srv ] && echo "srv none"
+	echo "url \${1#pkg+}/meta.conf"
+	[ -f $(pwd)/reach.refused ] && { echo "fail connect Connection refused"; exit 0; }
+	[ -f $(pwd)/noreach ] && exec sleep 60
+	echo "ok 120 bytes of meta.conf" ;;
 route-add|route-del)
 	echo "\$jid \$verb \$*" >> $(pwd)/route.log
 	case "\$1" in 10.66.0.0/16) echo "10.66.0.0/16: the route is there already" >&2; exit 1 ;; esac ;;
@@ -273,7 +284,7 @@ case "$1" in
 # pkgbase: FreeBSD-runtime is installed once the file pkgbase is there.
 info)	[ -e pkgbase ] && exit 0 || exit 1 ;;
 rquery)	printf 'FreeBSD-runtime\nFreeBSD-set-base-jail\nFreeBSD-set-base-jail-dbg\nFreeBSD-set-minimal-jail\n' ;;
--vv)	printf 'Version                 : 2.3.1\nRepositories:\n  FreeBSD-ports: { \n    url             : "pkg+https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest",\n    enabled         : yes,\n  }\n  builder: { \n    url             : "file:///usr/local/poudriere/data/packages/lab",\n    enabled         : no,\n  }\n' ;;
+-vv)	printf 'Version                 : 2.3.1\nIP_VERSION = 0;\nPKG_ENV {\n    HTTP_PROXY = "http://proxy.example:3128";\n    LD_PRELOAD = "/tmp/x.so";\n}\nRepositories:\n  FreeBSD-ports: { \n    url             : "pkg+https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest",\n    enabled         : yes,\n    mirror_type     : "SRV",\n  }\n  builder: { \n    url             : "file:///usr/local/poudriere/data/packages/lab",\n    enabled         : no,\n  }\n' ;;
 update)	exit 0 ;;
 query)	printf 'aria2\t1.37.0_1\t0\t5242880\twww/aria2\tDownload utility\npimd\t3.1.0\t1\t102400\tnet/pimd\tPIM-SM daemon\n' ;;
 clean)	echo "$*" >> clean.log ;;
@@ -292,6 +303,16 @@ version)
 ' "$nv" "$remote"
 	done < pending ;;
 upgrade|install)
+	# A fetch that never ends: pkg silent, with a child; with
+	# ./pkg.stall the repository stops answering too.
+	if [ -e pkg.hang ]; then
+		[ -e pkg.stall ] && touch noreach
+		echo $$ > hang.pid
+		sleep 300 &
+		echo $! > hang.child
+		wait
+		exit 1
+	fi
 	# A jail that may not set files' flags (allow.chflags=0): pkg
 	# fails as it extracts the base's flagged files.
 	if [ -e noflags ]; then
@@ -5919,6 +5940,139 @@ packages_cleanup()
 	stop_daemon
 }
 
+atf_test_case pkg_reach cleanup
+pkg_reach_head()
+{
+	atf_set "descr" "pkg's repository asked first whether it answers, from where pkg runs: pkg not started when it does not, and why said; not asked when the job says so; the stall's message says what it finds then"
+	atf_set "timeout" "120"
+}
+pkg_reach_body()
+{
+	local R
+
+	R="$(pwd)/web"
+	mkdir -p "$R/etc"
+	DAEMON_ARGS="--repo-reach 1 --pkg-idle 2"
+	start_daemon
+	# It answers: pkg runs, after one question of the helper on the
+	# host (jid 0), the URL pkg -vv gives, its SRV record followed;
+	# PKG_ENV's proxy on its standard input, nothing else of it.
+	atf_check -o match:'done +pkg install aria2' "$JGC" -c "$SOCK" pkg-install aria2
+	atf_check -o match:'^0 pkg\+https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest srv 0 1 env=HTTP_PROXY=http://proxy.example:3128 $' \
+	    cat reach.log
+	atf_check -o match:'^install -y aria2$' cat install.log
+	# Nothing comes: given up after --repo-reach, pkg never started,
+	# what was tried said, and that the host has IPv6 addresses alone.
+	rm install.log
+	touch noreach
+	atf_check -s exit:1 -o save:no.out "$JGC" -c "$SOCK" pkg-install aria2
+	atf_check -o match:'the repository FreeBSD-ports does not answer from this host: fetching https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest/meta.conf \(the host itself: no SRV record for it\), nothing came in 1 seconds; this host has IPv6 addresses only' \
+	    -o match:'pkg was not started' cat no.out
+	atf_check test ! -e install.log
+	# In a jail, over IPv4 as told: the jail named, pkg -j not run; the
+	# helper attached to it (its jid).
+	cat > jails <<EOS
+web 7 inherit $R 16.0-CURRENT
+EOS
+	touch reach.v4
+	atf_check -s exit:1 -o match:'does not answer from jail web: .* over IPv4 \(pkg -4\), nothing came in 1 seconds; the jail has IPv4 addresses only' \
+	    "$JGC" -c "$SOCK" pkg-install -4 -j web aria2
+	atf_check -o match:'^7 pkg\+https://.* srv 4 1 ' cat reach.log
+	atf_check test ! -e install.log
+	# Refused at once; the pkg update of a refresh too, and the
+	# upgrade action, on the host and in the jail.
+	rm noreach reach.v4
+	touch reach.refused
+	atf_check -s exit:1 -o ignore -e match:'it failed \(Connection refused\)' \
+	    "$JGC" -c "$SOCK" packages -r
+	atf_check -s exit:1 -o ignore -e match:'does not answer from this host' \
+	    "$JGC" -c "$SOCK" pkg-upgrade -n
+	atf_check -s exit:1 -o ignore -e match:'does not answer from jail web' \
+	    "$JGC" -c "$SOCK" pkg-upgrade -j web -n
+	# Not asked when the job says so: pkg runs.
+	: > reach.log
+	atf_check -o match:'done +pkg install aria2' "$JGC" -c "$SOCK" pkg-install -R aria2
+	atf_check -o ignore "$JGC" -c "$SOCK" pkg-upgrade -n -R
+	atf_check -o ignore "$JGC" -c "$SOCK" packages -r -R
+	atf_check -o inline:'' cat reach.log
+	atf_check -o match:'^install -y aria2$' cat install.log
+	# pkg silent past --pkg-idle once started: stopped, and the message
+	# says what the repository did when asked after.
+	rm reach.refused
+	touch pkg.hang pkg.stall
+	atf_check -s exit:1 -o save:st.out "$JGC" -c "$SOCK" pkg-install aria2
+	atf_check -o match:'pkg install was killed: nothing came from it for 2 seconds; asked after: the repository FreeBSD-ports does not answer from this host' \
+	    cat st.out
+	rm noreach pkg.stall
+	atf_check -s exit:1 -o match:'asked after, so the stall was elsewhere' \
+	    "$JGC" -c "$SOCK" pkg-install aria2
+	rm pkg.hang
+}
+pkg_reach_cleanup()
+{
+	[ -f hang.child ] && kill "$(cat hang.child)" 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case job_orphan cleanup
+job_orphan_head()
+{
+	atf_set "descr" "a job's pkg left running by an agent that went: found at the next start by its marks, stopped with its process group, and listed as a job that was stopped because the agent restarted under it"
+	atf_set "timeout" "120"
+}
+job_orphan_body()
+{
+	local pid child i
+
+	# The marks are read from the environment of another process,
+	# which only root may where unprivileged_proc_debug is 0.
+	env ARCANA_PROBE=1 sleep 5 &
+	procstat -e $! 2>/dev/null | grep -q ARCANA_PROBE=1 ||
+	    atf_skip "another process's environment cannot be read here (security.bsd.unprivileged_proc_debug=0): run as root"
+	start_daemon
+	touch pkg.hang
+	atf_check -o match:'queued +pkg install aria2' \
+	    "$JGC" -q -c "$SOCK" pkg-install -R aria2
+	for i in $(seq 1 200); do
+		[ -s hang.child ] && break
+		sleep 0.05
+	done
+	pid=$(cat hang.pid)
+	child=$(cat hang.child)
+	# Marked as the job's: the agent's pid, the job, its kind; its title.
+	atf_check -o match:"ARCANA_AGENT_JOB=$(cat daemon.pid):1:" \
+	    -o match:'ARCANA_AGENT_JOB_TITLE=pkg install aria2' \
+	    procstat -e "$pid"
+	# The agent goes without a word (its watchdog with it); pkg stays.
+	kill -9 "$(cat daemon.pid)"
+	for i in $(seq 1 100); do
+		alive "$(cat daemon.pid)" || break
+		sleep 0.05
+	done
+	alive "$pid" || atf_fail "pkg went with the agent"
+	rm -f daemon.pid s.sock
+	# The next agent finds it, stops it and its child, and says so.
+	start_daemon
+	wait_match 'stopped: the agent restarted under it' \
+	    "$JGC" -c "$SOCK" job 1 || atf_fail "no job says pkg was stopped"
+	atf_check -s exit:1 -o match:'failed +pkg install aria2' \
+	    -o match:'stopped: the agent restarted under it \(job 1 of the agent before; pid [0-9]+, SIGTERM' \
+	    "$JGC" -c "$SOCK" job 1
+	for i in $(seq 1 100); do
+		alive "$pid" || alive "$child" || break
+		sleep 0.1
+	done
+	alive "$pid" && atf_fail "pkg left running"
+	alive "$child" && atf_fail "pkg's child left running"
+	rm pkg.hang
+}
+job_orphan_cleanup()
+{
+	[ -f hang.child ] && kill "$(cat hang.child)" 2>/dev/null
+	[ -f hang.pid ] && kill "$(cat hang.pid)" 2>/dev/null
+	stop_daemon
+}
+
 # jexec(8) for a jail rooted at $1: what it runs logged in jexec.log;
 # its tar (the /etc kept aside) the host's, of that root, on standard
 # output as the jail's own would be.
@@ -7402,6 +7556,31 @@ bgp_edge   BGP        ---        start  12:01:02.345  Active        Socket: Conn
     Local AS:         65000
     Last error:       Socket: Connection refused
 
+bgp_ll     BGP        ---        up     2026-11-18 10:00:01  Established   
+  Created:            2026-11-18 10:00:00
+  BGP state:          Established
+    Neighbor address: fe80::2%epair0b
+    Neighbor port:    179
+    Neighbor AS:      65003
+    Local AS:         65000
+    Neighbor ID:      192.0.2.3
+    Local capabilities
+      Multiprotocol
+        AF announced: ipv6
+    Session:          external AS4
+    Source address:   fe80::1
+  Channel ipv6
+    State:          UP
+    Import state:   UP
+    Export state:   READY
+    Table:          master6
+    Preference:     100
+    Input filter:   (unnamed)
+    Output filter:  ACCEPT
+    Routes:         7 imported, 2 filtered, 3 exported, 5 preferred
+    Route change stats:     received   rejected   filtered    ignored   RX limit      limit   accepted
+      Import updates:              9          0          2          0          0          0          7
+
 rpki1      RPKI       ---        up     2026-10-01    Established
   Cache server:     rpki.example.net
   Status:           Established
@@ -7579,11 +7758,14 @@ vpn_bird_body()
 	# Of a neighbour: who it is, and of each channel its filters and
 	# how many routes came and went; show protocols all's lines too.
 	atf_check -o match:'"bgp":\{"hold":"150.012/240","local-as":65000,"neighbor":"192.0.2.1","neighbor-as":65001,"neighbor-id":"192.0.2.1","state":"Established"\}' \
-	    -o match:'\{"exported":"12","imported":"845233","input-filter":"bgp_in","name":"ipv4","output-filter":"bgp_out","routes":"845233 imported, 12 exported, 400000 preferred","state":"UP","table":"master4"\}' \
-	    -o match:'"exported":"0","imported":"190000","input-filter":"bgp_in","name":"ipv6","output-filter":"REJECT"' \
+	    -o match:'\{"exported":"12","imported":"845233","input-filter":"bgp_in","name":"ipv4","output-filter":"bgp_out","routes":"845233 imported, 12 exported, 400000 preferred","state":"UP","table":"master4","family":"ipv4-unicast","preferred":"400000"\}' \
+	    -o match:'"exported":"0","imported":"190000","input-filter":"bgp_in","name":"ipv6","output-filter":"REJECT",.*"family":"ipv6-unicast","preferred":"180000"' \
 	    -o match:'"description":"Core uplink","detail":\["  Description:    Core uplink","  BGP state:          Established"' \
 	    -o match:'"bgp":\{"last-error":"Socket: Connection refused","local-as":65000,"neighbor":"198.51.100.7","neighbor-as":65002,"state":"Active"\}' \
 	    -o match:'"rpki":\{"cache":"rpki.example.net","serial":"42","status":"Established"\}' \
+	    -o match:'"bgp":\{"local-as":65000,"neighbor":"fe80::2","neighbor-as":65003,"neighbor-id":"192.0.2.3","session":"external AS4","source":"fe80::1","state":"Established","neighbor-interface":"epair0b"\}' \
+	    -o match:'\{"exported":"3","imported":"7","input-filter":"\(unnamed\)","name":"ipv6","output-filter":"ACCEPT","routes":"7 imported, 2 filtered, 3 exported, 5 preferred","state":"UP","table":"master6","family":"ipv6-unicast","filtered":"2","preferred":"5"\}' \
+	    -o match:'"info":"Established","name":"bgp_ll","since":"2026-11-18 10:00:01","state":"up"' \
 	    -o match:'"ospf-neighbor":\[\{"address":"10.255.0.2","dead-time":"00:00:35","interface":"gif0","priority":"1","protocol":"ospf1","router-id":"10.0.0.2","state":"Full/PtP"\}\]' \
 	    -o match:'"bfd-session":\[\{"address":"fe80::1","interface":"gif0","interval":"0.200","protocol":"bfd1","since":"13:01:27.605","state":"Up","timeout":"1.000"\},\{"address":"fe80::2","interface":"gre1","interval":"1.000","protocol":"bfd1","since":"13:02:00.000","state":"Down"' \
 	    -o match:'"table":\[\{"name":"master4","networks":"845233","routes":"845236"\},\{"name":"r4","networks":"512345","routes":"512345"\}\]' \
@@ -20169,6 +20351,8 @@ atf_init_test_cases()
 	atf_add_test_case network
 	atf_add_test_case ipsec
 	atf_add_test_case packages
+	atf_add_test_case pkg_reach
+	atf_add_test_case job_orphan
 	atf_add_test_case jail_base
 	atf_add_test_case jail_base_links
 	atf_add_test_case jobs

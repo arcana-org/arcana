@@ -2554,6 +2554,12 @@ pkg_net_select(struct html *h)
 	    "(pkg -6)</option></select><small>Kept for the next time.</small>"
 	    "</label>", app.pkg.ip == 0 ? " selected" : "", app.pkg.ip == 4 ?
 	    " selected" : "", app.pkg.ip == 6 ? " selected" : "");
+	/* The agent asks the repository first, from where pkg runs. */
+	h_fmt(h, "<label class=\"toggle\"><input type=\"checkbox\" name=\""
+	    "no_repo_check\"%s><span>Don't check the repository</span><small>"
+	    "Otherwise its meta.conf is fetched first from where pkg runs, "
+	    "and nothing is started when it does not answer in a few "
+	    "seconds.</small></label>", app.pkg.nocheck ? " checked" : "");
 }
 
 /*

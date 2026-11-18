@@ -406,15 +406,17 @@ bird_protocol(const ucl_object_t *y)
 	    "table", "table", "state", "state", "since", "since", "info",
 	    "info", "detail", "detail", "description", "description",
 	    "bgp.state", "bgp-state", "bgp.neighbor", "neighbor",
+	    "bgp.neighbor-interface", "neighbor-interface",
 	    "bgp.neighbor-id", "neighbor-id", "bgp.source", "source",
 	    "bgp.session", "session", "bgp.hold", "hold", "bgp.keepalive",
 	    "keepalive", "bgp.last-error", "last-error", "rpki.cache", "cache",
 	    "rpki.status", "rpki-status", "rpki.serial", "serial",
 	    "rpki.last-update", "last-update", NULL };
-	static const char *const chan[] = { "name", "name", "state", "state",
-	    "table", "table", "input-filter", "input-filter", "output-filter",
-	    "output-filter", "routes", "routes", "imported", "imported",
-	    "exported", "exported", NULL };
+	static const char *const chan[] = { "name", "name", "family", "family",
+	    "state", "state", "table", "table", "input-filter", "input-filter",
+	    "output-filter", "output-filter", "routes", "routes", "imported",
+	    "imported", "exported", "exported", "preferred", "preferred",
+	    "filtered", "filtered", NULL };
 	ucl_object_t	*o;
 
 	o = jmap(y, proto);

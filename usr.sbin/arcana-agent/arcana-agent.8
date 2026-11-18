@@ -63,6 +63,7 @@
 .Op Fl -pkg-idle Ar seconds
 .Op Fl -terminal-login Ar login
 .Op Fl -terminal-idle Ar seconds
+.Op Fl -repo-reach Ar seconds
 .Op Fl -jobs-conf Ar file
 .Op Fl -nacm Ar file
 .Op Fl -build-user Ar user
@@ -703,6 +704,10 @@ Default
 .It Fl -terminal-idle Ar seconds
 How long a terminal nobody types in is kept before it is hung up.
 Default 1800.
+.It Fl -repo-reach Ar seconds
+How long pkg's repository, asked first whether it answers from where
+pkg will run, has to answer before pkg is not started, 1 to 60.
+Default 8.
 .It Fl -jobs-conf Ar file
 Where how many jobs of pkg in jails run at once is kept
 .Pq arcana-jobs' Li lanes , written by a commit ;
@@ -1104,7 +1109,35 @@ upgrade actions, and the pkg jobs.
 Upgrades may run for up to an hour, and are stopped sooner when pkg
 says nothing for
 .Fl -pkg-idle
+seconds; the error then says whether the repository answered from
+there when asked after.
+Before pkg update, upgrade or install, and a jail's base by pkg, the
+repository pkg will reach is asked whether it answers from where pkg
+runs: the agent runs again attached to the jail (or on the host),
+fetches the repository's
+.Pa meta.conf
+by
+.Xr fetch 3
+from the URL
+.Nm pkg Fl vv
+gives (an SRV record followed, as pkg follows one; the proxies of its
+.Ev PKG_ENV ) ,
+and gives up after
+.Fl -repo-reach
 seconds.
+When nothing answers, pkg is not started and the job fails saying what
+was tried and which families of address the jail or host has; a job's
+.Li no-repo-check
+skips the question.
+A program a job ran watched (pkg) has
+.Ev ARCANA_AGENT_JOB
+and
+.Ev ARCANA_AGENT_JOB_TITLE
+in its environment, in a process group of its own: an agent started
+after the one that ran it went (an update) stops what it finds of such
+a group that its predecessor left, SIGTERM then SIGKILL after 5
+seconds, and lists it as a finished job that failed, stopped because
+the agent restarted under it.
 .El
 .Pp
 A program run for a read, and for the samples the history keeps, runs

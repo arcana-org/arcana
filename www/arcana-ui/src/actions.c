@@ -2681,13 +2681,32 @@ static const char *const pkg_map[] = { "name", "name", "installed",
     "installed", "available", "available", "origin", "origin", "comment",
     "comment", "automatic", "automatic", "size", "size", NULL };
 
-/* How the repository is reached, as input's member, or "". */
+/* How the repository is reached, as input's members, or "": over
+ * which family; and whether it is asked first that it answers. */
 static const char *
 pkg_ipv(void)
 {
 
+	if (app.pkg.nocheck)
+		return (app.pkg.ip == 4 ? ",\"ip-version\":\"ipv4\","
+		    "\"no-repo-check\":true" : app.pkg.ip == 6 ?
+		    ",\"ip-version\":\"ipv6\",\"no-repo-check\":true" :
+		    ",\"no-repo-check\":true");
 	return (app.pkg.ip == 4 ? ",\"ip-version\":\"ipv4\"" : app.pkg.ip ==
 	    6 ? ",\"ip-version\":\"ipv6\"" : "");
+}
+
+/* The same as a job's members: pkg_ip, no_repo_check; or "". */
+const char *
+pkg_job_net(void)
+{
+
+	if (app.pkg.nocheck)
+		return (app.pkg.ip == 4 ? ",\"pkg_ip\":4,\"no_repo_check\":"
+		    "true" : app.pkg.ip == 6 ? ",\"pkg_ip\":6,\"no_repo_"
+		    "check\":true" : ",\"no_repo_check\":true");
+	return (app.pkg.ip == 4 ? ",\"pkg_ip\":4" : app.pkg.ip == 6 ?
+	    ",\"pkg_ip\":6" : "");
 }
 
 /* Where a jail's packages are: arcana-packages below its entry. */
@@ -2844,8 +2863,7 @@ pkg_upgrade(struct server *s, const char *names, bool dry_run, bool anyos)
 		    "\"packages\":%s%s%s%s%s}", app.pkg.jail[0] != '\0' ?
 		    ",\"jail\":" : "", app.pkg.jail[0] != '\0' ? qj : "",
 		    names != NULL ? names : "[]", anyos ? ",\"force\":true" :
-		    "", app.pkg.ip == 4 ? ",\"pkg_ip\":4" : app.pkg.ip == 6 ?
-		    ",\"pkg_ip\":6" : "", app.pkg.repo[0] != '\0' ?
+		    "", pkg_job_net(), app.pkg.repo[0] != '\0' ?
 		    ",\"pkg_repo\":" : "", app.pkg.repo[0] != '\0' ? qr : "") ==
 		    -1)
 			abort();

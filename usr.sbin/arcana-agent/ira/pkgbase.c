@@ -126,6 +126,9 @@ pkg(struct work *w, const struct arc_job_spec *sp, bool anyos,
 	exec_set_watch(opts.pkg_idle_s);
 	rc = run_exec(w, argv, res);
 	exec_set_watch(0);
+	if (res->stalled > 0)
+		res->note = pkg_stall_note(w, sp->jail, sp->has_pkg_ip ?
+		    sp->pkg_ip : 0, sp->pkg_repo);
 	return (rc);
 }
 
@@ -872,6 +875,12 @@ do_jail_base(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	}
 	osrelease = NULL;
 	if ((e = jail_of(w, sp->jail, &osrelease)) != NULL) {
+		*errp = e;
+		return (-1);
+	}
+	/* Its repository answers from the jail, or pkg is not started. */
+	if (!sp->no_repo_check && (e = pkg_reach(w, sp->jail, sp->has_pkg_ip ?
+	    sp->pkg_ip : 0, sp->pkg_repo)) != NULL) {
 		*errp = e;
 		return (-1);
 	}

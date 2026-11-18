@@ -81,11 +81,12 @@ module: arcana-jobs
     |  |     |  |     +---w accept*    string
     |  |     |  +--:(pkg-upgrade)
     |  |     |  |  +---w pkg-upgrade!
-    |  |     |  |     +---w jail?       string
-    |  |     |  |     +---w packages*   string
-    |  |     |  |     +---w force?      boolean
-    |  |     |  |     +---w pkg-ip?     uint32
-    |  |     |  |     +---w pkg-repo?   string
+    |  |     |  |     +---w jail?            string
+    |  |     |  |     +---w packages*        string
+    |  |     |  |     +---w force?           boolean
+    |  |     |  |     +---w pkg-ip?          uint32
+    |  |     |  |     +---w pkg-repo?        string
+    |  |     |  |     +---w no-repo-check?   boolean
     |  |     |  +--:(if-address)
     |  |     |  |  +---w if-address!
     |  |     |  |     +---w interface    string
@@ -281,20 +282,22 @@ module: arcana-jobs
     |  |     |  |     +---w persist?         boolean
     |  |     |  +--:(pkg-install)
     |  |     |  |  +---w pkg-install!
-    |  |     |  |     +---w packages*   string
-    |  |     |  |     +---w jail?       string
-    |  |     |  |     +---w force?      boolean
-    |  |     |  |     +---w pkg-ip?     uint32
-    |  |     |  |     +---w pkg-repo?   string
+    |  |     |  |     +---w packages*        string
+    |  |     |  |     +---w jail?            string
+    |  |     |  |     +---w force?           boolean
+    |  |     |  |     +---w pkg-ip?          uint32
+    |  |     |  |     +---w pkg-repo?        string
+    |  |     |  |     +---w no-repo-check?   boolean
     |  |     |  +--:(jail-base)
     |  |     |  |  +---w jail-base!
-    |  |     |  |     +---w jail        string
-    |  |     |  |     +---w verb        enumeration
-    |  |     |  |     +---w packages*   string
-    |  |     |  |     +---w release?    string
-    |  |     |  |     +---w force?      boolean
-    |  |     |  |     +---w pkg-ip?     uint32
-    |  |     |  |     +---w pkg-repo?   string
+    |  |     |  |     +---w jail             string
+    |  |     |  |     +---w verb             enumeration
+    |  |     |  |     +---w packages*        string
+    |  |     |  |     +---w release?         string
+    |  |     |  |     +---w force?           boolean
+    |  |     |  |     +---w pkg-ip?          uint32
+    |  |     |  |     +---w pkg-repo?        string
+    |  |     |  |     +---w no-repo-check?   boolean
     |  |     |  +--:(reboot)
     |  |     |  |  +---w reboot!
     |  |     |  +--:(jail-conf)
@@ -438,11 +441,12 @@ module: arcana-jobs
        |  |  |  |     +---w accept*    string
        |  |  |  +--:(pkg-upgrade)
        |  |  |  |  +---w pkg-upgrade!
-       |  |  |  |     +---w jail?       string
-       |  |  |  |     +---w packages*   string
-       |  |  |  |     +---w force?      boolean
-       |  |  |  |     +---w pkg-ip?     uint32
-       |  |  |  |     +---w pkg-repo?   string
+       |  |  |  |     +---w jail?            string
+       |  |  |  |     +---w packages*        string
+       |  |  |  |     +---w force?           boolean
+       |  |  |  |     +---w pkg-ip?          uint32
+       |  |  |  |     +---w pkg-repo?        string
+       |  |  |  |     +---w no-repo-check?   boolean
        |  |  |  +--:(if-address)
        |  |  |  |  +---w if-address!
        |  |  |  |     +---w interface    string
@@ -638,20 +642,22 @@ module: arcana-jobs
        |  |  |  |     +---w persist?         boolean
        |  |  |  +--:(pkg-install)
        |  |  |  |  +---w pkg-install!
-       |  |  |  |     +---w packages*   string
-       |  |  |  |     +---w jail?       string
-       |  |  |  |     +---w force?      boolean
-       |  |  |  |     +---w pkg-ip?     uint32
-       |  |  |  |     +---w pkg-repo?   string
+       |  |  |  |     +---w packages*        string
+       |  |  |  |     +---w jail?            string
+       |  |  |  |     +---w force?           boolean
+       |  |  |  |     +---w pkg-ip?          uint32
+       |  |  |  |     +---w pkg-repo?        string
+       |  |  |  |     +---w no-repo-check?   boolean
        |  |  |  +--:(jail-base)
        |  |  |  |  +---w jail-base!
-       |  |  |  |     +---w jail        string
-       |  |  |  |     +---w verb        enumeration
-       |  |  |  |     +---w packages*   string
-       |  |  |  |     +---w release?    string
-       |  |  |  |     +---w force?      boolean
-       |  |  |  |     +---w pkg-ip?     uint32
-       |  |  |  |     +---w pkg-repo?   string
+       |  |  |  |     +---w jail             string
+       |  |  |  |     +---w verb             enumeration
+       |  |  |  |     +---w packages*        string
+       |  |  |  |     +---w release?         string
+       |  |  |  |     +---w force?           boolean
+       |  |  |  |     +---w pkg-ip?          uint32
+       |  |  |  |     +---w pkg-repo?        string
+       |  |  |  |     +---w no-repo-check?   boolean
        |  |  |  +--:(reboot)
        |  |  |  |  +---w reboot!
        |  |  |  +--:(jail-conf)

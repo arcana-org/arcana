@@ -131,6 +131,64 @@ after(const char *line, const char *key)
 #define	DETAIL_MAX	60	/* lines of a protocol kept as they are */
 
 /*
+ * A channel's address family, by BIRD's name of it: as ietf-bgp-types
+ * names the AFI/SAFI pairs it has, BIRD's own name for the others.
+ */
+static const char *
+family_of(const char *chan)
+{
+	static const struct {
+		const char	*bird, *name;
+	} fam[] = {
+		{ "ipv4", "ipv4-unicast" },
+		{ "ipv6", "ipv6-unicast" },
+		{ "ipv4-mpls", "ipv4-labeled-unicast" },
+		{ "ipv6-mpls", "ipv6-labeled-unicast" },
+		{ "vpn4", "l3vpn-ipv4-unicast" },
+		{ "vpn6", "l3vpn-ipv6-unicast" },
+		{ "vpn4-mc", "l3vpn-ipv4-multicast" },
+		{ "vpn6-mc", "l3vpn-ipv6-multicast" },
+		{ "vpn4-mpls", "l3vpn-ipv4-unicast" },
+		{ "vpn6-mpls", "l3vpn-ipv6-unicast" },
+		{ "ipv4-mc", "ipv4-multicast" },
+		{ "ipv6-mc", "ipv6-multicast" },
+		{ "flow4", "ipv4-flowspec" },
+		{ "flow6", "ipv6-flowspec" },
+	};
+	size_t	i;
+
+	for (i = 0; i < nitems(fam); i++)
+		if (strcmp(chan, fam[i].bird) == 0)
+			return (fam[i].name);
+	return (chan);
+}
+
+/*
+ * A channel's "Routes:" counts, "845233 imported, 12 exported, 400000
+ * preferred", with "N filtered" after imported where its filtered
+ * routes are kept: each a number of the channel's.
+ */
+static void
+route_counts(ucl_object_t *c, const char *val)
+{
+	static const char *const what[] = { "imported", "filtered",
+	    "exported", "preferred" };
+	char		 word[16];
+	long long	 n;
+	int		 used;
+	size_t		 i;
+
+	while (sscanf(val, " %lld %15[a-z]%n", &n, word, &used) == 2) {
+		for (i = 0; i < nitems(what); i++)
+			if (strcmp(word, what[i]) == 0)
+				ucl_object_insert_key(c, ucl_object_fromint(n),
+				    what[i], 0, false);
+		val += used;
+		val += strspn(val, ", ");
+	}
+}
+
+/*
  * What "show protocols all" says under a protocol's line: kept as it
  * is, up to a point, and the parts a page draws picked out of it.  A
  * BGP neighbour's address and AS, the state of its session; of each
@@ -166,9 +224,9 @@ proto_line(ucl_object_t *o, ucl_object_t **chanp, char *line)
 	};
 	ucl_object_t		*d, *chans, *c;
 	const ucl_object_t	*v;
-	const char		*t, *val;
+	const char		*t, *val, *pct;
+	char			*addr;
 	size_t			 i;
-	long long		 imp, exp, pref;
 
 	if ((v = ucl_object_lookup(o, "detail")) == NULL) {
 		d = ucl_object_typed_new(UCL_ARRAY);
@@ -187,6 +245,7 @@ proto_line(ucl_object_t *o, ucl_object_t **chanp, char *line)
 			chans = (ucl_object_t *)(uintptr_t)v;
 		c = ucl_object_typed_new(UCL_OBJECT);
 		put(c, "name", t + 8);
+		put(c, "family", family_of(t + 8));
 		ucl_array_append(chans, c);
 		*chanp = c;
 		return;
@@ -196,21 +255,23 @@ proto_line(ucl_object_t *o, ucl_object_t **chanp, char *line)
 			if ((val = after(t, chan[i].key)) == NULL)
 				continue;
 			put(*chanp, chan[i].name, val);
-			/* "845233 imported, 12 exported, 400000 preferred" */
-			if (i == 4 && sscanf(val, "%lld imported, %lld "
-			    "exported, %lld preferred", &imp, &exp, &pref) >=
-			    2) {
-				ucl_object_insert_key(*chanp, ucl_object_fromint(
-				    imp), "imported", 0, false);
-				ucl_object_insert_key(*chanp, ucl_object_fromint(
-				    exp), "exported", 0, false);
-			}
+			if (i == 4)
+				route_counts(*chanp, val);
 			return;
 		}
 	}
 	for (i = 0; i < nitems(top); i++)
 		if ((val = after(t, top[i].key)) != NULL &&
 		    ucl_object_lookup(o, top[i].name) == NULL) {
+			/* A link-local neighbour's: "fe80::1%vtnet0", its
+			 * interface after the %. */
+			if (i == 2 && (pct = strchr(val, '%')) != NULL) {
+				put(o, "neighbor-interface", pct + 1);
+				put(o, top[i].name, addr = strndup(val,
+				    (size_t)(pct - val)));
+				free(addr);
+				return;
+			}
 			put(o, top[i].name, val);
 			return;
 		}
@@ -364,6 +425,16 @@ do_bird_locked(struct work *w, struct net_rsp *rsp)
 			    "Access") == 0)
 				continue;
 			f[5] = p + strspn(p, " \t");
+			/* A since of a date and a time (timeformat protocol
+			 * iso long): both, not the time as the info's. */
+			if (strlen(f[4]) == 10 && f[4][4] == '-' && f[4][7] ==
+			    '-' && isdigit((unsigned char)f[5][0]) &&
+			    isdigit((unsigned char)f[5][1]) && f[5][2] == ':') {
+				i = (int)strcspn(f[5], " \t");
+				f[4] = wfmt(w, "%s %.*s", f[4], i, f[5]);
+				f[5] += i;
+				f[5] += strspn(f[5], " \t");
+			}
 			f[5][strcspn(f[5], "\r")] = '\0';
 			while (f[5][0] != '\0' && f[5][strlen(f[5]) - 1] == ' ')
 				f[5][strlen(f[5]) - 1] = '\0';

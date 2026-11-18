@@ -27,6 +27,7 @@ module: arcana-packages
      |  |  +---w ip-version?         ip-version
      |  |  +---w update?             boolean
      |  |  +---w ignore-osversion?   boolean
+     |  |  +---w no-repo-check?      boolean
      |  +--ro output
      |     +--ro package* [name]
      |     |  +--ro name         string
@@ -46,6 +47,7 @@ module: arcana-packages
         |  +---w ip-version?         ip-version
         |  +---w repository?         string
         |  +---w every-jail?         boolean
+        |  +---w no-repo-check?      boolean
         +--ro output
            +--ro upgraded?   uint32
            +--ro package* [name]

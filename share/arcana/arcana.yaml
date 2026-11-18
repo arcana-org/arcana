@@ -1254,6 +1254,14 @@ attribute-sets:
           accept.
         checks:
           max-len: 32
+      - name: no-repo-check
+        type: flag
+        doc: |
+          For pkg-upgrade, pkg-install and jail-base, pkg started
+          without first fetching the repository's meta.conf from where
+          pkg runs (the jail's network); without it the job fails at
+          once, saying what was tried, when the repository does not
+          answer within a few seconds.
   - name: job
     doc: |
       A job, as the agent's queue keeps it; arcana-jobs has it now:

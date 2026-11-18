@@ -1793,6 +1793,7 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		uq.ignore_osversion = sp->force;
 		uq.pkg_ip = sp->has_pkg_ip ? sp->pkg_ip : 0;
 		uq.pkg_repo = sp->pkg_repo;
+		uq.no_repo_check = sp->no_repo_check;
 		do_pkg_upgrade(w, &uq, &ur);
 		ok = ur.ok;
 		error = ur.error;
@@ -1816,6 +1817,8 @@ run(struct qjob *j, bool lane)
 
 	held = false;
 	sp = &j->spec;
+	/* What it runs watched (pkg) is marked as this job's. */
+	exec_set_job(j->id, sp->kind, j->title);
 	root = step_begin(&j->w, STEP_DAEMON, "arcana-agent", "job %ju: %s",
 	    (uintmax_t)j->id, j->title);
 	if (lane)
@@ -1864,6 +1867,7 @@ run(struct qjob *j, bool lane)
 	if (!ok && j->w.cancel)
 		error = "cancelled while at work: pkg was stopped";
 	step_end(&j->w, root, ok, NULL);
+	exec_set_job(0, 0, NULL);
 
 	/* Said while the job is still ours: once done, it may be forgotten. */
 	logmsg(ok ? LOG_INFO : LOG_NOTICE, "%s: job %ju: %s: %s", j->peer,
@@ -2110,6 +2114,79 @@ runner(void *arg __unused)
 		run(j, false);
 	}
 	return (NULL);
+}
+
+/*
+ * A job of the agent before this one, whose program was left running
+ * when it went and has been stopped now (exec_orphans()): one more
+ * finished job, failed, for the panel to say what became of it.  Its
+ * number is this agent's; the other's is in its title and error.
+ */
+static void
+orphan_found(uint64_t oldid, uint8_t kind, const char *title, pid_t pid,
+    time_t started, const char *how, void *arg __unused)
+{
+	struct qjob	*j;
+	char		*t;
+	int		 root;
+
+	if ((j = calloc(1, sizeof(*j))) == NULL)
+		err(1, "calloc");
+	if (asprintf(&t, "%s", title != NULL && title[0] != '\0' ? title :
+	    "a job's pkg") == -1)
+		err(1, "asprintf");
+	work_init(&j->w);
+	j->w.told = true;
+	j->spec.has_kind = true;
+	j->spec.kind = kind;
+	j->title = t;
+	j->peer = xdup("arcana-agent");
+	j->ok = false;
+	root = step_begin(&j->w, STEP_DAEMON, "arcana-agent", "job %ju of "
+	    "the agent before: %s", (uintmax_t)oldid, j->title);
+	step_end(&j->w, root, false, "pid %d, left running when that agent "
+	    "went, stopped by %s", (int)pid, how);
+	j->error = wfmt(&j->w, "stopped: the agent restarted under it (job "
+	    "%ju of the agent before; pid %d, %s)", (uintmax_t)oldid,
+	    (int)pid, how);
+	logmsg(LOG_NOTICE, "job of the agent before: %s: %s", j->title,
+	    j->error);
+	pthread_mutex_lock(&jobs_lock);
+	j->id = nextid++;
+	j->created = j->started = started > 0 ? started : time(NULL);
+	j->finished = time(NULL);
+	j->state = ARC_JOB_STATE_DONE;
+	TAILQ_INSERT_TAIL(&jobs, j, link);
+	trim();
+	yang_changed(YANG_JOBS);
+	pthread_mutex_unlock(&jobs_lock);
+}
+
+static void *
+orphans(void *arg __unused)
+{
+
+	(void)exec_orphans(orphan_found, NULL);
+	return (NULL);
+}
+
+/*
+ * What a job of the agent before this one left running looked for,
+ * stopped and recorded, by a thread of its own: the grace each is given
+ * holds up nothing.  After jobs_init().
+ */
+void
+jobs_orphans_start(void)
+{
+	pthread_attr_t	attr;
+	pthread_t	tid;
+	int		error;
+
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if ((error = pthread_create(&tid, &attr, orphans, NULL)) != 0)
+		errc(1, error, "pthread_create");
+	pthread_attr_destroy(&attr);
 }
 
 /* Start the thread that runs the queue; after daemon(3). */

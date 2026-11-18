@@ -391,14 +391,15 @@ usage(void)
 	    "    gpart destroy disk\n"
 	    "    cam rescan\n"
 	    "    fstab [-w new-text [-n]]\n"
-	    "    packages [-i] [-r] [-4 | -6] [jail]\n"
-	    "    pkg-upgrade [-n] [-O] [-4 | -6] [-r repo] [-j jail | -J] "
+	    "    packages [-i] [-r [-R]] [-4 | -6] [jail]\n"
+	    "    pkg-upgrade [-n] [-O] [-R] [-4 | -6] [-r repo] [-j jail | -J] "
 	    "[package ...]\n"
 	    "    pkg-clean [-a] [-j jail | -J]\n"
-	    "    pkg-install [-O] [-4 | -6] [-r repo] [-j jail] package ...\n"
-	    "    jail-base jail convert [-O] [-4 | -6] [-r repo] [-b release] "
-	    "[set ...]\n"
-	    "    jail-base jail upgrade [-O] [-4 | -6] [-r repo] release\n"
+	    "    pkg-install [-O] [-R] [-4 | -6] [-r repo] [-j jail] "
+	    "package ...\n"
+	    "    jail-base jail convert [-O] [-R] [-4 | -6] [-r repo] "
+	    "[-b release] [set ...]\n"
+	    "    jail-base jail upgrade [-O] [-R] [-4 | -6] [-r repo] release\n"
 	    "    jobs [lanes number]\n"
 	    "    job [-w] id\n"
 	    "    job-cancel id\n"
@@ -7375,9 +7376,10 @@ ypkg_node(const char *jail, const char **keyp, const void **vals,
 }
 
 /*
- * packages [-i] [-r] [-4 | -6] [jail]: what has a newer version in the
- * repository, arcana-packages' refresh action (with -r, pkg update
- * first); with -i, what is installed, its read action.
+ * packages [-i] [-r [-R]] [-4 | -6] [jail]: what has a newer version in
+ * the repository, arcana-packages' refresh action (with -r, pkg update
+ * first, -R without the repository asked first whether it answers);
+ * with -i, what is installed, its read action.
  */
 static int
 cmd_packages(cbl_conn *conn, int argc, char **argv)
@@ -7398,13 +7400,18 @@ cmd_packages(cbl_conn *conn, int argc, char **argv)
 	memset(&ri, 0, sizeof(ri));
 	inst = false;
 	optind = 1;
-	while ((ch = getopt(argc, argv, "46ir")) != -1) {
+	while ((ch = getopt(argc, argv, "46Rir")) != -1) {
 		switch (ch) {
 		case '4':
 		case '6':
 			/* ip-version's values are pkg's: 4, 6. */
 			ri.has_ip_version = true;
 			ri.ip_version = ch - '0';
+			break;
+		case 'R':
+			/* pkg update without the repository asked first. */
+			ri.has_no_repo_check = true;
+			ri.no_repo_check = true;
 			break;
 		case 'i':
 			inst = true;
@@ -7486,7 +7493,7 @@ cmd_jobs_set(cbl_conn *conn, const char *number)
 }
 
 /*
- * jail-base jail convert [-O] [-4 | -6] [-b release] [set ...] |
+ * jail-base jail convert [-O] [-R] [-4 | -6] [-b release] [set ...] |
  * upgrade [-O] [-4 | -6] release: a running jail's base system by pkg
  * as pkgbase, a job.
  */
@@ -7508,12 +7515,15 @@ cmd_jail_base(cbl_conn *conn, int argc, char **argv)
 	if (!up && strcmp(argv[2], "convert") != 0)
 		usage();
 	optind = 3;
-	while ((ch = getopt(argc, argv, "46Ob:r:")) != -1) {
+	while ((ch = getopt(argc, argv, "46ORb:r:")) != -1) {
 		switch (ch) {
 		case '4':
 		case '6':
 			sp.has_pkg_ip = true;
 			sp.pkg_ip = ch == '4' ? 4 : 6;
+			break;
+		case 'R':
+			sp.no_repo_check = true;
 			break;
 		case 'O':
 			sp.force = true;
@@ -7614,7 +7624,8 @@ cmd_pkg_clean(cbl_conn *conn, int argc, char **argv)
 	return (0);
 }
 
-/* pkg-install [-O] [-4 | -6] [-r repo] [-j jail] package ...: a job. */
+/* pkg-install [-O] [-R] [-4 | -6] [-r repo] [-j jail] package ...: a
+ * job; -R, pkg started without the repository asked first. */
 static int
 cmd_pkg_install(cbl_conn *conn, int argc, char **argv)
 {
@@ -7625,12 +7636,15 @@ cmd_pkg_install(cbl_conn *conn, int argc, char **argv)
 	sp.has_kind = true;
 	sp.kind = ARC_JOB_KIND_PKG_INSTALL;
 	optind = 1;
-	while ((ch = getopt(argc, argv, "46Oj:r:")) != -1) {
+	while ((ch = getopt(argc, argv, "46ORj:r:")) != -1) {
 		switch (ch) {
 		case '4':
 		case '6':
 			sp.has_pkg_ip = true;
 			sp.pkg_ip = (uint8_t)(ch - '0');
+			break;
+		case 'R':
+			sp.no_repo_check = true;
 			break;
 		case 'O':
 			sp.force = true;
@@ -7747,7 +7761,7 @@ cmd_ipsec(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
-/* pkg-upgrade [-n] [-O] [-4 | -6] [-r repo] [-j jail | -J] [package ...]:
+/* pkg-upgrade [-n] [-O] [-R] [-4 | -6] [-r repo] [-j jail | -J] [package ...]:
  * -J, of every running jail, by the agent, one after the other; -r, from
  * that repository alone. */
 static int
@@ -7766,7 +7780,7 @@ cmd_pkg_upgrade(cbl_conn *conn, int argc, char **argv)
 	memset(&ui, 0, sizeof(ui));
 	jail = NULL;
 	optind = 1;
-	while ((ch = getopt(argc, argv, "46OJj:nr:")) != -1) {
+	while ((ch = getopt(argc, argv, "46ORJj:nr:")) != -1) {
 		switch (ch) {
 		case '4':
 		case '6':
@@ -7789,6 +7803,11 @@ cmd_pkg_upgrade(cbl_conn *conn, int argc, char **argv)
 			ui.has_dry_run = true;
 			ui.dry_run = true;
 			break;
+		case 'R':
+			/* pkg run without the repository asked first. */
+			ui.has_no_repo_check = true;
+			ui.no_repo_check = true;
+			break;
 		case 'r':
 			ui.repository = optarg;
 			break;
@@ -7809,6 +7828,7 @@ cmd_pkg_upgrade(cbl_conn *conn, int argc, char **argv)
 		sp.has_pkg_ip = ui.has_ip_version;
 		sp.pkg_ip = (uint8_t)ui.ip_version;
 		sp.pkg_repo = ui.repository;
+		sp.no_repo_check = ui.no_repo_check;
 		sp.names.v = ui.name.v;
 		sp.names.n = ui.name.n;
 		return (submit(conn, &sp));

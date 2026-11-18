@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 21,
+    "sid-file-version": 22,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3608,6 +3608,36 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/ipfw/accept",
         "sid": "63109"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/jail-base/no-repo-check",
+        "sid": "63110"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-install/no-repo-check",
+        "sid": "63111"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-upgrade/no-repo-check",
+        "sid": "63112"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/jail-base/no-repo-check",
+        "sid": "63113"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-install/no-repo-check",
+        "sid": "63114"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-upgrade/no-repo-check",
+        "sid": "63115"
       },
       {
         "namespace": "data",

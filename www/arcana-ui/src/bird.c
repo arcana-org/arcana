@@ -1808,8 +1808,16 @@ view_bird(struct html *h, struct server *s, const ucl_object_t *data)
 		h_raw(h, "</td><td>");
 		if (jstr(o, "neighbor") != NULL) {
 			h_txt(h, jstr(o, "neighbor"));
+			if (jstr(o, "neighbor-interface") != NULL) {
+				h_raw(h, "%");
+				h_txt(h, jstr(o, "neighbor-interface"));
+			}
 			h_raw(h, "<small>AS");
 			h_txt(h, jstr(o, "neighbor-as"));
+			if (jstr(o, "local-as") != NULL) {
+				h_raw(h, ", local AS");
+				h_txt(h, jstr(o, "local-as"));
+			}
 			h_raw(h, "</small>");
 		} else if (jstr(o, "cache") != NULL)
 			h_txt(h, jstr(o, "cache"));
@@ -2152,6 +2160,56 @@ filter_cell(struct html *h, int block, const char *chan, const char *dir,
 	h_raw(h, "</select>");
 }
 
+/* A number of a channel's, as it came (text or a number), or nothing. */
+static void
+chan_num(struct html *h, const ucl_object_t *c, const char *key)
+{
+
+	if (jget(c, key) != NULL)
+		h_txt(h, ucl_object_tostring_forced(jget(c, key)));
+}
+
+/*
+ * A channel of a protocol (block i of the configuration): its family,
+ * state, table, filters (each a cell that edits it), and its routes'
+ * counts; BIRD's own words where it gave none (a channel down).
+ */
+static void
+chan_row(struct html *h, int i, const ucl_object_t *c)
+{
+
+	h_raw(h, "<tr><td>");
+	h_txt(h, jstr(c, "name"));
+	h_raw(h, "</td><td>");
+	h_txt(h, jstr(c, "family"));
+	h_raw(h, "</td><td>");
+	h_txt(h, jstr(c, "state"));
+	h_raw(h, "</td><td>");
+	h_txt(h, jstr(c, "table"));
+	h_raw(h, "</td><td>");
+	filter_cell(h, i, jstr(c, "name"), "import", jstr(c, "input-filter"));
+	h_raw(h, "</td><td>");
+	filter_cell(h, i, jstr(c, "name"), "export", jstr(c, "output-filter"));
+	if (jget(c, "imported") == NULL) {
+		h_raw(h, "</td><td colspan=\"3\">");
+		h_txt(h, jstr(c, "routes"));
+		h_raw(h, "</td></tr>");
+		return;
+	}
+	h_raw(h, "</td><td class=\"num\">");
+	chan_num(h, c, "imported");
+	if (jget(c, "filtered") != NULL) {
+		h_raw(h, "<small>");
+		chan_num(h, c, "filtered");
+		h_raw(h, " filtered</small>");
+	}
+	h_raw(h, "</td><td class=\"num\">");
+	chan_num(h, c, "exported");
+	h_raw(h, "</td><td class=\"num\">");
+	chan_num(h, c, "preferred");
+	h_raw(h, "</td></tr>");
+}
+
 bool
 bird_modal(struct html *h)
 {
@@ -2188,6 +2246,7 @@ bird_modal(struct html *h)
 			} facts[] = {
 				{ "description", "Description" },
 				{ "neighbor", "Neighbour" },
+				{ "neighbor-interface", "On interface" },
 				{ "neighbor-as", "Its AS" },
 				{ "local-as", "Local AS" },
 				{ "neighbor-id", "Its router ID" },
@@ -2212,29 +2271,16 @@ bird_modal(struct html *h)
 			}
 			h_raw(h, "</dl>");
 			if (ucl_array_size(jget(o, "channels")) > 0) {
-				h_raw(h, "<table class=\"net\"><thead><tr><th>"
-				    "Channel</th><th>State</th><th>Table</th>"
-				    "<th>Import filter</th><th>Export filter"
-				    "</th><th>Routes</th></tr></thead><tbody>");
+				h_raw(h, "<table class=\"net bird-chan\">"
+				    "<thead><tr><th>Channel</th><th>Family</th><th>"
+				    "State</th><th>Table</th><th>Import filter"
+				    "</th><th>Export filter</th><th>Imported"
+				    "</th><th>Exported</th><th>Preferred</th>"
+				    "</tr></thead><tbody>");
 				it = NULL;
 				while ((c = ucl_object_iterate(jget(o,
-				    "channels"), &it, true)) != NULL) {
-					h_raw(h, "<tr><td>");
-					h_txt(h, jstr(c, "name"));
-					h_raw(h, "</td><td>");
-					h_txt(h, jstr(c, "state"));
-					h_raw(h, "</td><td>");
-					h_txt(h, jstr(c, "table"));
-					h_raw(h, "</td><td>");
-					filter_cell(h, i, jstr(c, "name"),
-					    "import", jstr(c, "input-filter"));
-					h_raw(h, "</td><td>");
-					filter_cell(h, i, jstr(c, "name"),
-					    "export", jstr(c, "output-filter"));
-					h_raw(h, "</td><td>");
-					h_txt(h, jstr(c, "routes"));
-					h_raw(h, "</td></tr>");
-				}
+				    "channels"), &it, true)) != NULL)
+					chan_row(h, i, c);
 				h_raw(h, "</tbody></table>");
 			}
 			h_raw(h, "<div class=\"pane-actions\">");

@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -293,6 +294,29 @@ exec_set_watch(int idle)
 	exec_idle = idle;
 }
 
+/*
+ * The job this thread is at, for the marks a watched program is given
+ * in its environment: ARCANA_AGENT_JOB=<agent's pid>:<job>:<kind> and
+ * ARCANA_AGENT_JOB_TITLE=<title>.  An agent started after this one went
+ * finds by them what it left running (exec_orphans()).  0: none, a
+ * request's.
+ */
+#define	JOB_MARK	"ARCANA_AGENT_JOB="
+#define	JOB_MARK_TITLE	"ARCANA_AGENT_JOB_TITLE="
+
+static _Thread_local uint64_t	 exec_job;
+static _Thread_local uint8_t	 exec_job_kind;
+static _Thread_local const char	*exec_job_title;
+
+void
+exec_set_job(uint64_t id, uint8_t kind, const char *title)
+{
+
+	exec_job = id;
+	exec_job_kind = kind;
+	exec_job_title = title;
+}
+
 /* The program stopped, its process group with it when it has one. */
 static void
 exec_kill(pid_t pid, bool group)
@@ -356,13 +380,13 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	static char			 gitglobal[] =
 	    "GIT_CONFIG_GLOBAL=/dev/null";
 	static char			 gitsystem[] = "GIT_CONFIG_NOSYSTEM=1";
-	char				*env[6];
+	char				*env[8];
 	const char			*cmdline;
 	char				**targv;
 	size_t				 i;
 	time_t				 deadline, heard, drain;
 	int				 ne, limit, idle;
-	bool				 group, secret;
+	bool				 group, secret, watched;
 
 	ne = 0;
 	env[ne++] = pathenv;
@@ -392,6 +416,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	    opts.jexec_bin || argv[0] == opts.sysrc_bin))
 		limit = JAIL_READ_SEC;
 	idle = exec_idle;
+	watched = idle > 0;
 	if (limit > 0 && (idle == 0 || idle > limit))
 		idle = limit;
 	in = exec_in;
@@ -453,6 +478,14 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	group = idle > 0;
 	if (group)
 		posix_spawnattr_setpgroup(&sa, 0);
+	/* Watched: marked, for the agent after this one to find. */
+	if (watched) {
+		env[ne++] = wfmt(w, JOB_MARK "%d:%ju:%u", (int)getpid(),
+		    (uintmax_t)exec_job, (unsigned int)exec_job_kind);
+		env[ne++] = wfmt(w, JOB_MARK_TITLE "%s", exec_job_title !=
+		    NULL ? exec_job_title : "");
+		env[ne] = NULL;
+	}
 	posix_spawnattr_setflags(&sa, POSIX_SPAWN_SETSIGMASK |
 	    POSIX_SPAWN_SETSIGDEF | (group ? POSIX_SPAWN_SETPGROUP : 0));
 	rc = agent_spawn(&pid, argv[0], &fa, &sa, argv, env);
@@ -636,6 +669,11 @@ exec_error(struct work *w, const struct execres *res, const char *prog)
 		return (wfmt(w, "%s was killed: it did not finish in time", prog));
 	if (res->cancelled)
 		return (wfmt(w, "%s was stopped: the job was cancelled", prog));
+	if (res->stalled > 0 && res->note != NULL)
+		return (wfmt(w, "%s was killed: nothing came from it for %d "
+		    "%s; %s", prog, res->stalled >= 120 ? res->stalled / 60 :
+		    res->stalled, res->stalled >= 120 ? "minutes" : "seconds",
+		    res->note));
 	if (res->stalled > 0)
 		return (wfmt(w, "%s was killed: nothing came from it for %d "
 		    "%s (a download that stalled, or a question it waits on)",
@@ -905,4 +943,179 @@ pid_stop(pid_t pid, const char *prog, int wait_ms)
 		usleep(20000);
 	if (pid_is(pid, prog))
 		(void)kill(pid, SIGKILL);
+}
+
+/*
+ * The marks of a job's watched program in the environment of process
+ * pid, when it has them (run_exec_max()): whose agent's job it is (that
+ * agent's pid, the job and its kind) and the job's title.  Our own
+ * marks come first in what the program was given, so the start of its
+ * environment is enough.
+ */
+static bool
+job_mark(pid_t pid, pid_t *agentp, uint64_t *idp, uint8_t *kindp,
+    char *title, size_t tlen)
+{
+	int		 mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ENV, pid };
+	char		 buf[16384], *p;
+	size_t		 len;
+	uintmax_t	 id;
+	unsigned int	 kind;
+	int		 apid;
+	bool		 found;
+
+	len = sizeof(buf) - 1;
+	if (sysctl(mib, 4, buf, &len, NULL, 0) == -1 && errno != ENOMEM)
+		return (false);
+	if (len == 0 || len >= sizeof(buf))
+		return (false);
+	buf[len] = '\0';
+	found = false;
+	title[0] = '\0';
+	for (p = buf; p < buf + len; p += strlen(p) + 1) {
+		if (strncmp(p, JOB_MARK, sizeof(JOB_MARK) - 1) == 0 &&
+		    sscanf(p + sizeof(JOB_MARK) - 1, "%d:%ju:%u", &apid, &id,
+		    &kind) == 3 && apid > 1) {
+			*agentp = (pid_t)apid;
+			*idp = (uint64_t)id;
+			*kindp = (uint8_t)kind;
+			found = true;
+		} else if (strncmp(p, JOB_MARK_TITLE, sizeof(JOB_MARK_TITLE) -
+		    1) == 0)
+			strlcpy(title, p + sizeof(JOB_MARK_TITLE) - 1, tlen);
+	}
+	return (found);
+}
+
+/*
+ * The processes this agent was started under, while it still knows
+ * them (before daemon(3) leaves them): a pkg job that upgrades Arcana
+ * restarts the agent from its script, and is not this agent's
+ * predecessor's to stop.  exec_orphans() leaves their process groups.
+ */
+static pid_t	ancestors[32];
+static size_t	nancestors;
+
+void
+exec_note_ancestors(void)
+{
+	struct kinfo_proc	*kp;
+	pid_t			 pid;
+
+	nancestors = 0;
+	for (pid = getppid(); pid > 1 && nancestors < nitems(ancestors); ) {
+		if ((kp = kinfo_getproc(pid)) == NULL)
+			break;
+		ancestors[nancestors++] = pid;
+		pid = kp->ki_ppid;
+		free(kp);
+	}
+}
+
+/*
+ * What a job's watched program (pkg) left running when the agent that
+ * ran it went (an update restarts the agent under a pkg in a jail that
+ * waits on a mirror for hours): no thread of this agent waits on it,
+ * reads it or watches it.  Each is known by its marks (job_mark()), an
+ * agent's that is not this one and no longer runs, and by being in a
+ * process group of its own that is not its session's: the group that
+ * agent made for it (POSIX_SPAWN_SETPGROUP), which a daemon it started
+ * left by setsid(2).  Stopped, not adopted: this agent cannot wait on a
+ * process that is not its child, nor read its output, nor tell its
+ * silence; its job was the other agent's, whose queue is gone.  Each
+ * group is sent SIGTERM, and SIGKILL when anything of it is left after
+ * ORPHAN_GRACE_SEC; then told to fn.  How many groups.
+ */
+size_t
+exec_orphans(void (*fn)(uint64_t, uint8_t, const char *, pid_t, time_t,
+    const char *, void *), void *arg)
+{
+	struct orphan {
+		pid_t		 pgid;
+		pid_t		 pid;
+		uint64_t	 id;
+		uint8_t		 kind;
+		time_t		 started;
+		char		 title[160];
+		bool		 left;
+	}			*v;
+	struct kinfo_proc	*kp;
+	char			 title[160];
+	pid_t			 agent, skip[nitems(ancestors)];
+	uint64_t		 id;
+	uint8_t			 kind;
+	size_t			 n, i, k, nskip;
+	int			 cnt, j, waited;
+	bool			 any;
+
+	if ((kp = kinfo_getallproc(&cnt)) == NULL)
+		return (0);
+	/* The groups of what this agent was started under. */
+	nskip = 0;
+	for (j = 0; j < cnt; j++)
+		for (k = 0; k < nancestors && nskip < nitems(skip); k++)
+			if (kp[j].ki_pid == ancestors[k])
+				skip[nskip++] = kp[j].ki_pgid;
+	if ((v = calloc((size_t)cnt + 1, sizeof(*v))) == NULL) {
+		free(kp);
+		return (0);
+	}
+	n = 0;
+	for (j = 0; j < cnt; j++) {
+		if (kp[j].ki_pid == getpid() || kp[j].ki_stat == SZOMB ||
+		    kp[j].ki_pgid <= 1 || kp[j].ki_sid == kp[j].ki_pgid)
+			continue;
+		for (k = 0; k < nskip && skip[k] != kp[j].ki_pgid; k++)
+			;
+		if (k < nskip)
+			continue;
+		if (!job_mark(kp[j].ki_pid, &agent, &id, &kind, title,
+		    sizeof(title)) || agent == getpid() ||
+		    pid_is(agent, "arcana-agent"))
+			continue;
+		for (i = 0; i < n && v[i].pgid != kp[j].ki_pgid; i++)
+			;
+		if (i == n) {
+			v[n].pgid = kp[j].ki_pgid;
+			v[n].pid = kp[j].ki_pid;
+			v[n].id = id;
+			v[n].kind = kind;
+			v[n].started = kp[j].ki_start.tv_sec;
+			strlcpy(v[n].title, title, sizeof(v[n].title));
+			n++;
+		} else if (kp[j].ki_pid == kp[j].ki_pgid ||
+		    kp[j].ki_start.tv_sec < v[i].started) {
+			/* The one that leads it, or began first: the
+			 * program the job ran. */
+			v[i].pid = kp[j].ki_pid;
+			v[i].started = kp[j].ki_start.tv_sec;
+		}
+	}
+	free(kp);
+	for (i = 0; i < n; i++) {
+		logmsg(LOG_NOTICE, "job %ju of the agent before (%s): pid %d "
+		    "left running, stopped", (uintmax_t)v[i].id, v[i].title,
+		    (int)v[i].pid);
+		(void)kill(-v[i].pgid, SIGTERM);
+	}
+	/* Gone within the grace, or killed. */
+	for (waited = 0; n > 0 && waited < ORPHAN_GRACE_SEC * 10; waited++) {
+		any = false;
+		for (i = 0; i < n; i++)
+			if (kill(-v[i].pgid, 0) == 0)
+				any = true;
+		if (!any)
+			break;
+		usleep(100000);
+	}
+	for (i = 0; i < n; i++)
+		if (kill(-v[i].pgid, 0) == 0) {
+			v[i].left = true;
+			(void)kill(-v[i].pgid, SIGKILL);
+		}
+	for (i = 0; i < n; i++)
+		fn(v[i].id, v[i].kind, v[i].title, v[i].pid, v[i].started,
+		    v[i].left ? "SIGTERM, then SIGKILL" : "SIGTERM", arg);
+	free(v);
+	return (n);
 }

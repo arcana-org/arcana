@@ -169,6 +169,10 @@ fields:
     type: text
     label: Repository
     help: Only from this one of pkg's repositories (pkg -r); empty, from where pkg's configuration has each package.
+  - field: no_repo_check
+    type: bool
+    label: Don't check the repository
+    help: Start pkg without first asking the repository, from where pkg runs, whether it answers; checked, the job fails at once when it does not.
   - field: release
     type: text
     label: Release
@@ -270,7 +274,7 @@ kinds:
     uses: set unset safe accept
   - kind: pkg-upgrade
     title: Packages upgraded
-    uses: jail packages force pkg_ip pkg_repo
+    uses: jail packages force pkg_ip pkg_repo no_repo_check
   - kind: if-address
     title: An interface's address added or taken off
     needs: interface address
@@ -395,11 +399,11 @@ kinds:
   - kind: pkg-install
     title: Packages installed
     needs: packages
-    uses: jail force pkg_ip pkg_repo
+    uses: jail force pkg_ip pkg_repo no_repo_check
   - kind: jail-base
     title: A jail's base system by pkg, to pkgbase or a newer release
     needs: jail verb
-    uses: packages release force pkg_ip pkg_repo
+    uses: packages release force pkg_ip pkg_repo no_repo_check
     values: verb=convert|upgrade
   - kind: reboot
     title: The host rebooted, a minute after

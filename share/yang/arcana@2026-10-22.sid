@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana",
     "module-revision": "2026-10-22",
-    "sid-file-version": 13,
+    "sid-file-version": 14,
     "description": "Arcana's SIDs for arcana (RFC 9595's experimental range; share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -10954,6 +10954,11 @@
         "namespace": "data",
         "identifier": "/arcana:jail/dying/path",
         "sid": "74841"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana:job-spec/no-repo-check",
+        "sid": "74842"
       }
     ]
   }

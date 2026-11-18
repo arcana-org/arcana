@@ -2,12 +2,16 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-bird",
     "module-revision": "2026-10-15",
-    "sid-file-version": 3,
+    "sid-file-version": 4,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 71 200, 200, and 80 400, 300.",
     "dependency-revision": [
       {
         "module-name": "cblink-gen",
         "module-revision": "2026-10-22"
+      },
+      {
+        "module-name": "ietf-netconf-acm",
+        "module-revision": "2018-02-14"
       },
       {
         "module-name": "ietf-inet-types",
@@ -1959,6 +1963,46 @@
         "namespace": "data",
         "identifier": "/arcana-bird:bird/routes/input/jail",
         "sid": "80552"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/read/output/protocol/bgp/neighbor-interface",
+        "sid": "80553"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/read/output/protocol/channel/family",
+        "sid": "80554"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/read/output/protocol/channel/filtered",
+        "sid": "80555"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/read/output/protocol/channel/preferred",
+        "sid": "80556"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/state/protocol/bgp/neighbor-interface",
+        "sid": "80557"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/state/protocol/channel/family",
+        "sid": "80558"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/state/protocol/channel/filtered",
+        "sid": "80559"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-bird:bird/state/protocol/channel/preferred",
+        "sid": "80560"
       }
     ]
   }

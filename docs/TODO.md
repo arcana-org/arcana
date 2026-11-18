@@ -16,11 +16,16 @@
     pidfile with the processes it already reads and say so.
   - Nothing in Arcana shows /dev's mounts (stray devfs mounts over the
     host's /dev hid devctl, mdctl and vmmctl) nor that devd is down.
-  - A job's child left running by an agent that restarted (pkg -j ...
-    update, hours on a stalled fetch) is tracked by nobody: the new
-    agent's job list is empty and the stall watchdog died with the old
-    one.  At start the agent could find its predecessor's children and
-    stop or adopt them.
+  - Done (agent 0.302.0): a job's watched program (pkg) has
+    ARCANA_AGENT_JOB=<agent pid>:<job>:<kind> and ARCANA_AGENT_JOB_TITLE
+    in its environment and runs in its own process group.  At start the
+    agent stops such a group left by a predecessor that is gone
+    (SIGTERM, then SIGKILL after 5 s) and lists it as a failed job,
+    "stopped: the agent restarted under it".  Stopped, not adopted: a
+    process not the agent's child cannot be waited on, read or watched
+    for silence, and the job's queue went with the old agent.  It skips
+    groups that started this agent (a pkg upgrade that restarts it) and
+    groups that left for a session of their own (daemons).
 - ipfw's table swap (IP_FW_TABLE_XSWAP) of two `number valtype dscp`
   tables corrupts their values, and a flush of them then panics
   (`Refcount is 0 on kidx`, unref_table_value): a kernel fix, the

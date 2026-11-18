@@ -79,6 +79,7 @@ protocol_of(cbl_yarena *a, const ucl_object_t *o, yproto *p)
 		memset(b, 0, sizeof(*b));
 		b->state = yj_str(a, o, "bgp-state");
 		b->has_neighbor = addr_union(a, o, "neighbor", &b->neighbor);
+		b->neighbor_interface = yj_str(a, o, "neighbor-interface");
 		YJ_TEXTNUM(o, "neighbor-as", b, neighbor_as);
 		YJ_TEXTNUM(o, "local-as", b, local_as);
 		b->neighbor_id = yj_str(a, o, "neighbor-id");
@@ -106,6 +107,7 @@ protocol_of(cbl_yarena *a, const ucl_object_t *o, yproto *p)
 		memset(&c[n], 0, sizeof(c[n]));
 		if ((c[n].name = yj_str(a, e, "name")) == NULL)
 			continue;
+		c[n].family = yj_str(a, e, "family");
 		c[n].state = yj_str(a, e, "state");
 		c[n].table = yj_str(a, e, "table");
 		c[n].input_filter = yj_str(a, e, "input-filter");
@@ -113,6 +115,8 @@ protocol_of(cbl_yarena *a, const ucl_object_t *o, yproto *p)
 		c[n].routes = yj_str(a, e, "routes");
 		YJ_NUM(e, "imported", &c[n], imported);
 		YJ_NUM(e, "exported", &c[n], exported);
+		YJ_NUM(e, "preferred", &c[n], preferred);
+		YJ_NUM(e, "filtered", &c[n], filtered);
 		n++;
 	}
 	p->channel.n = n;

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.301.0"
+#define	ARCANA_AGENT_VERSION	"0.302.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -106,6 +106,16 @@
 #define	PATH_LOGIN_BIN		"/usr/bin/login"
 /* Jobs of pkg in jails, each its own jail, at work at once. */
 #define	PKG_LANES		4
+/*
+ * The repository asked whether it answers, from where pkg will run,
+ * before pkg is: its meta.conf fetched, given up after this long.
+ */
+#define	REPO_REACH_SEC		8
+/*
+ * What a job's watched program (pkg) left running by an agent before
+ * this one is given after SIGTERM before SIGKILL (exec_orphans()).
+ */
+#define	ORPHAN_GRACE_SEC	5
 #define	TRACE_MAX		ARC_MAX_STEPS
 #define	TRACE_DEPTH		16
 
@@ -200,6 +210,8 @@ struct opts {
 	const char	*terminal_login; /* --terminal-login: login(1) */
 	int		 terminal_idle_s; /* --terminal-idle: a terminal not
 					 * typed in, hung up after */
+	int		 repo_reach_s;	/* --repo-reach: pkg's repository
+					 * asked first, given up after */
 	int		 pkg_lanes;	/* jobs of pkg in jails at once, at start */
 	const char	*jobs_conf;	/* where lanes is kept */
 	const char	*nacm_file;	/* NACM's rules (superbia/ynacm.c) */
@@ -332,6 +344,8 @@ struct execres {
 	bool		 timedout;	/* killed: it did not finish in time */
 	int		 stalled;	/* killed: silent this many seconds */
 	bool		 cancelled;	/* killed: its job was cancelled */
+	const char	*note;		/* after a stall: what was found of
+					 * its cause, exec_error() says it */
 };
 
 int		 run_exec(struct work *, char *const [], struct execres *);
@@ -350,7 +364,14 @@ const char	*tmp_dir(void);
 void		 exec_set_secret(bool);
 void		 exec_set_hide(const char *);
 void		 exec_set_watch(int);
+void		 exec_set_job(uint64_t, uint8_t, const char *);
+void		 exec_note_ancestors(void);
 void		 exec_set_limit(int);
+/* What a job's watched program left running by an agent before this
+ * one: stopped, each group told to fn (its job, kind, title, the pid
+ * that led it, when it began, how it ended); how many. */
+size_t		 exec_orphans(void (*)(uint64_t, uint8_t, const char *, pid_t,
+		    time_t, const char *, void *), void *);
 int		 mkdir_mode(const char *, mode_t);
 const char	*storage_protected(struct work *, const char *, bool);
 int		 agent_spawn(pid_t *, const char *, const posix_spawn_file_actions_t *,
@@ -1637,6 +1658,7 @@ int		 scope_unlink(struct work *, const char *);
 int		 scope_rename(struct work *, const char *, const char *,
 		    const char *);
 int		 scope_helper(int, char **);
+int		 repo_reach_helper(int, char **);
 const char	*scope_missing(struct work *, const struct execres *,
 		    const char *, const char *);
 char		*ifq_text(const char *, const char *, const char *);
@@ -1854,6 +1876,7 @@ struct pkg_upgrade {
 	bool			 ignore_osversion;
 	uint8_t			 pkg_ip;	/* 4, 6, or 0 */
 	const char		*pkg_repo;	/* from it alone, or NULL */
+	bool			 no_repo_check;	/* pkg_reach() not asked */
 };
 struct pkg_upgraded {
 	bool			 ok;
@@ -1864,7 +1887,7 @@ struct pkg_upgraded {
 	size_t			 npackages;
 };
 int		 do_packages(struct work *, const char *, bool, bool, uint8_t,
-		    bool, struct pkg_read *);
+		    bool, bool, struct pkg_read *);
 int		 do_pkg_upgrade(struct work *, const struct pkg_upgrade *,
 		    struct pkg_upgraded *);
 int		 do_pkg_clean(struct work *, const char *, bool, const char **);
@@ -1873,6 +1896,9 @@ int		 do_jail_base(struct work *, const struct arc_job_spec *,
 const char	*pkg_repo_error(struct work *, const struct execres *,
 		    const char *);
 const char	*pkg_repo_check(struct work *, const char *, const char *);
+const char	*pkg_reach(struct work *, const char *, uint8_t, const char *);
+const char	*pkg_stall_note(struct work *, const char *, uint8_t,
+		    const char *);
 int		 jobs_lanes(void);
 const char	*jobs_set_lanes(int);
 void		 jobs_conf_load(void);
@@ -1884,6 +1910,7 @@ int		 do_pkg_install(struct work *, const struct arc_job_spec *,
 
 /* ira/jobs.c: queued changes, run in order whoever is or is not connected. */
 void		 jobs_init(void);
+void		 jobs_orphans_start(void);
 int		 jobs_submit(const struct arc_job_spec *, size_t, const char *,
 		    const char *, struct work *, const struct arc_job **,
 		    size_t *);

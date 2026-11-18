@@ -291,6 +291,7 @@ bird_protocol(const struct arcana_bird_protocol *y)
 		put_str(o, "bgp-state", b->state);
 		if (b->has_neighbor)
 			put_str(o, "neighbor", b->neighbor.v.m0);
+		put_str(o, "neighbor-interface", b->neighbor_interface);
 		put_num_str(o, "neighbor-as", b->has_neighbor_as,
 		    b->neighbor_as);
 		put_num_str(o, "local-as", b->has_local_as, b->local_as);
@@ -316,6 +317,7 @@ bird_protocol(const struct arcana_bird_protocol *y)
 
 			c = ucl_object_typed_new(UCL_OBJECT);
 			put_str(c, "name", q->name);
+			put_str(c, "family", q->family);
 			put_str(c, "state", q->state);
 			put_str(c, "table", q->table);
 			put_str(c, "input-filter", q->input_filter);
@@ -327,6 +329,12 @@ bird_protocol(const struct arcana_bird_protocol *y)
 			if (q->has_exported)
 				put(c, "exported", ucl_object_fromint((int64_t)
 				    q->exported));
+			if (q->has_preferred)
+				put(c, "preferred", ucl_object_fromint((int64_t)
+				    q->preferred));
+			if (q->has_filtered)
+				put(c, "filtered", ucl_object_fromint((int64_t)
+				    q->filtered));
 			ucl_array_append(chans, c);
 		}
 		put(o, "channels", chans);

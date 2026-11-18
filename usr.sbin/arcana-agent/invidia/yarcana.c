@@ -2656,7 +2656,7 @@ arcana_packages_packages_get(cbl_req *req, struct arcana_packages *data,
 		return (ENOMEM);
 	/* Those installed; which are outdated asks the repository, not a
 	 * read's to do (the refresh action). */
-	(void)do_packages(w, NULL, false, true, 0, false, &r);
+	(void)do_packages(w, NULL, false, true, 0, false, true, &r);
 	if (!r.ok)
 		return (failed("packages", r.error));
 	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
@@ -2698,7 +2698,7 @@ arcana_packages_packages_read_action(cbl_req *req,
 	if ((w = ywork_told(req, a, jail != NULL ? "packages installed of "
 	    "a jail" : "packages installed", &root)) == NULL)
 		return (ENOMEM);
-	(void)do_packages(w, jail, false, true, 0, false, &r);
+	(void)do_packages(w, jail, false, true, 0, false, true, &r);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
@@ -2731,7 +2731,7 @@ arcana_packages_packages_refresh_action(cbl_req *req,
 	if (!update)
 		(void)do_packages(w, jail, false, false, in->has_ip_version ?
 		    (uint8_t)in->ip_version : 0, in->has_ignore_osversion &&
-		    in->ignore_osversion, &r);
+		    in->ignore_osversion, true, &r);
 	else if (!change_begin(jail != NULL ? wfmt(w, "packages of %s "
 	    "(refresh)", jail) : "packages (refresh)")) {
 		step_end(w, root, false, NULL);
@@ -2739,7 +2739,8 @@ arcana_packages_packages_refresh_action(cbl_req *req,
 	} else {
 		(void)do_packages(w, jail, true, false, in->has_ip_version ?
 		    (uint8_t)in->ip_version : 0, in->has_ignore_osversion &&
-		    in->ignore_osversion, &r);
+		    in->ignore_osversion, in->has_no_repo_check &&
+		    in->no_repo_check, &r);
 		change_end();
 	}
 	step_end(w, root, r.ok, NULL);
@@ -2786,6 +2787,7 @@ arcana_packages_packages_upgrade_action(cbl_req *req,
 	q.pkg_ip = in->has_ip_version ? (uint8_t)in->ip_version : 0;
 	q.pkg_repo = in->repository != NULL && in->repository[0] != '\0' ?
 	    in->repository : NULL;
+	q.no_repo_check = in->has_no_repo_check && in->no_repo_check;
 	what = jail == NULL ? "pkg upgrade" : strcmp(jail, "*") == 0 ?
 	    "pkg upgrade in every jail" : wfmt(w, "pkg upgrade in jail %s",
 	    jail);

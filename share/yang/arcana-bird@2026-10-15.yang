@@ -167,6 +167,12 @@ module arcana-bird {
           description
             "The neighbour's address.";
         }
+        leaf neighbor-interface {
+          type string;
+          description
+            "The interface a link-local neighbour is reached on: what
+             BIRD prints after its address's %.";
+        }
         leaf neighbor-as {
           type inet:as-number;
           description
@@ -241,6 +247,15 @@ module arcana-bird {
           description
             "The channel.";
         }
+        leaf family {
+          type string;
+          description
+            "Its address family, as ietf-bgp-types names AFI/SAFI pairs
+             where it is one of theirs: ipv4-unicast, ipv6-unicast,
+             ipv4-labeled-unicast, l3vpn-ipv4-unicast, ...; otherwise
+             BIRD's own name of it (ipv4-multicast, ipv4-flowspec, roa4,
+             eth, mpls).";
+        }
         leaf state {
           type string;
           description
@@ -264,7 +279,7 @@ module arcana-bird {
         leaf routes {
           type string;
           description
-            "As printed: imported, exported, preferred.";
+            "As printed: imported, filtered, exported, preferred.";
         }
         leaf imported {
           type uint64;
@@ -275,6 +290,17 @@ module arcana-bird {
           type uint64;
           description
             "Routes that went out.";
+        }
+        leaf preferred {
+          type uint64;
+          description
+            "Routes of it that are the best in their table.";
+        }
+        leaf filtered {
+          type uint64;
+          description
+            "Routes its input filter refused, kept (import keep
+             filtered).";
         }
       }
     }

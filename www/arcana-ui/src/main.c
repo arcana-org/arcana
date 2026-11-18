@@ -692,6 +692,9 @@ pkg_net_take(const ucl_object_t *f)
 {
 	const char	*v;
 
+	/* Not asking the repository first: for this page's while, never
+	 * kept for the next. */
+	app.pkg.nocheck = jbool(f, "no_repo_check");
 	if ((v = jstr(f, "pkg_ip")) == NULL)
 		return;
 	app.pkg.ip = atoi(v) == 4 ? 4 : atoi(v) == 6 ? 6 : 0;
@@ -890,8 +893,7 @@ submit_form(const char *form, const ucl_object_t *f)
 			if (asprintf(&q, "{\"kind\":\"pkg-install\",\"packages\":"
 			    "[%s]%s%s%s%s%s}", b.s, app.pkg.jail[0] != '\0' ?
 			    ",\"jail\":" : "", app.pkg.jail[0] != '\0' ? qj : "",
-			    app.pkg.ip != 0 ? (app.pkg.ip == 4 ? ",\"pkg_ip\":4" :
-			    ",\"pkg_ip\":6") : "", jbool(f, "anyos") ?
+			    pkg_job_net(), jbool(f, "anyos") ?
 			    ",\"force\":true" : "", rp) == -1)
 				abort();
 		}
@@ -973,8 +975,7 @@ submit_form(const char *form, const ucl_object_t *f)
 			    "\"verb\":\"%s\",\"packages\":[%s]%s%s%s%s%s}", qj,
 			    app.pkg.base_up ? "upgrade" : "convert", b.s != NULL ?
 			    b.s : "", s[0] != '\0' ? ",\"release\":" : "",
-			    s[0] != '\0' ? qr : "", app.pkg.ip != 0 ? (app.pkg.ip ==
-			    4 ? ",\"pkg_ip\":4" : ",\"pkg_ip\":6") : "", jbool(f,
+			    s[0] != '\0' ? qr : "", pkg_job_net(), jbool(f,
 			    "anyos") ? ",\"force\":true" : "", rp) == -1)
 				abort();
 			free(b.s);
@@ -1514,8 +1515,7 @@ dispatch(const char *act, const char *arg, const char *value)
 			    "\"jail\":%s%s%s%s}", qj, pkg_repo_kept(s, jstr(j, "name"),
 			    "upgrade")[0] != '\0' ? ",\"pkg_repo\":" : "",
 			    pkg_repo_kept(s, jstr(j, "name"), "upgrade")[0] != '\0' ?
-			    qr : "", app.pkg.ip == 4 ? ",\"pkg_ip\":4" : app.pkg.ip ==
-			    6 ? ",\"pkg_ip\":6" : "") == -1)
+			    qr : "", pkg_job_net()) == -1)
 				abort();
 			free(qj);
 			free(qr);
