@@ -1664,6 +1664,18 @@ ws_send(struct conn *c, uint8_t op, const void *d, size_t len)
 	lws_callback_on_writable(c->wsi);
 }
 
+size_t
+ws_queued(const struct conn *c)
+{
+	const struct wsmsg	*m;
+	size_t			 n;
+
+	n = 0;
+	STAILQ_FOREACH(m, &c->out, next)
+		n += m->len - m->off;
+	return (n);
+}
+
 void
 ws_close(struct conn *c)
 {

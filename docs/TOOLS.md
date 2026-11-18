@@ -200,8 +200,9 @@ docs/restconf-modules.py` prints each module's paths as Markdown.
 Beside it, `/api` keeps the console's plain-HTTP resources, no YANG
 data: `/api/health`, the sign-in ceremonies under `/api/auth/`,
 `/api/enrol`, the hosts' notification receiver `/api/notif/<host>/`,
-an IDS's pcap files `/api/servers/<id>/ids/pcap` and `pcap-log`, and
-the page's socket `/api/stream`.
+an IDS's pcap files `/api/servers/<id>/ids/pcap` and `pcap-log`, the
+page's socket `/api/stream`, and a host's terminal `/api/terminal`
+(login(1) on the host, relayed; docs/PLAN-TERMINAL.md).
 
 ## arcana-container
 

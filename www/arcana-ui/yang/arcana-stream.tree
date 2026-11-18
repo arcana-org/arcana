@@ -7,4 +7,7 @@ module: arcana-stream
     +-- ok?     boolean
     +-- json?   string
   structure chunk:
-    +-- data?   binary
+    +-- data?    binary
+    +-- rows?    uint16
+    +-- cols?    uint16
+    +-- login?   string

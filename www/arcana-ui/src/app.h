@@ -65,6 +65,10 @@ void		 arc_sw_register(void);
 double		 arc_now(void);
 int		 arc_narrow(void);
 void		 arc_stream_send(const char *);
+/* A host's terminal (term.c): opened in the Terminal tab's element,
+ * of the host and jail ("" the host); hung up. */
+void		 arc_term_open(const char *, const char *);
+void		 arc_term_close(void);
 void		 arc_sse_open(int, const char *);
 void		 arc_sse_close(int);
 int		 arc_map_w(void);
@@ -270,6 +274,7 @@ enum tab {
 	TAB_MONITORING,		/* utilization, sampling and limits */
 	TAB_ALERTS,		/* what the alerts leave out */
 	TAB_MODELS,		/* its YANG modules, their forms (yform.c) */
+	TAB_TERMINAL,		/* login(1) on the host or a jail (term.c) */
 };
 
 /* The packages tab: pending upgrades of the host or of one jail. */
@@ -1058,6 +1063,8 @@ void		 logs_lost(const char *);
 void		 view_logs(struct html *, struct server *);
 bool		 logs_form(const char *, const ucl_object_t *);
 bool		 logs_action(const char *, const char *, const char *);
+void		 view_terminal(struct html *, struct server *);
+bool		 term_action(const char *, const char *, const char *);
 void		 usage_open(void);
 void		 usage_host_open(struct server *);
 void		 usage_tick(double);

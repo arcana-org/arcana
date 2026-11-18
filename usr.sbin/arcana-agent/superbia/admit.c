@@ -266,6 +266,14 @@ exec_follow_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
 	return (stream_opened(req, msg, s, exec_follow_open));
 }
 
+static int
+terminal_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
+    void *arg __unused)
+{
+
+	return (stream_opened(req, msg, s, terminal_open));
+}
+
 static const struct cbl_op stream_ops[] = {
 	{ .cmd = YS_ZFS_SEND, .flags = STREAM_OPF, .name = "zfs-send",
 	    .stream_open = zfs_send_sopen },
@@ -280,6 +288,12 @@ static const struct cbl_op stream_ops[] = {
 	{ .cmd = YS_EXEC_FOLLOW, .flags = CBL_OPF_STREAM | CBL_OPF_AUTH |
 	    CBL_OPF_NACM, .name = "exec-follow",
 	    .stream_open = exec_follow_sopen },
+	/* A terminal: login(1), whose password is the host's to judge, not
+	 * NACM's; NACM's default lets it, a rule may refuse it.  The
+	 * console gives it to whom may change the host alone. */
+	{ .cmd = YS_TERMINAL, .flags = CBL_OPF_STREAM | CBL_OPF_AUTH |
+	    CBL_OPF_NACM, .name = "terminal",
+	    .stream_open = terminal_sopen },
 };
 
 static const struct cbl_family_def stream_def = {

@@ -10274,6 +10274,150 @@ ATF_TC_CLEANUP(pwa_follow, tc)
 	browser_stop();
 }
 
+/*
+ * Keys typed as a hand types them, into what has the focus: "\r" is
+ * Enter.
+ */
+static void
+keys(const char *text)
+{
+	ucl_object_t	*b, *src, *acts, *a;
+	char		*body, c[2];
+	const char	*v;
+	int		 down;
+
+	acts = ucl_object_typed_new(UCL_ARRAY);
+	for (; *text != '\0'; text++) {
+		c[0] = *text;
+		c[1] = '\0';
+		/* WebDriver's Enter, U+E007, in UTF-8. */
+		v = *text == '\r' ? "\xee\x80\x87" : c;
+		for (down = 1; down >= 0; down--) {
+			a = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(a, ucl_object_fromstring(down ?
+			    "keyDown" : "keyUp"), "type", 0, false);
+			ucl_object_insert_key(a, ucl_object_fromstring(v),
+			    "value", 0, false);
+			ucl_array_append(acts, a);
+		}
+	}
+	src = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(src, ucl_object_fromstring("key"), "type", 0,
+	    false);
+	ucl_object_insert_key(src, ucl_object_fromstring("keyboard"), "id", 0,
+	    false);
+	ucl_object_insert_key(src, acts, "actions", 0, false);
+	b = ucl_object_typed_new(UCL_OBJECT);
+	a = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(a, src);
+	ucl_object_insert_key(b, a, "actions", 0, false);
+	body = (char *)ucl_object_emit(b, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(b);
+	ucl_object_unref(wd("POST", "/session/actions", body));
+	free(body);
+}
+
+/* What the terminal shows, its rows' text. */
+#define	TERM_TEXT	"(document.querySelector('.termbox .xterm-rows') || " \
+			"{}).textContent"
+#define	TERM_ROWS	"document.querySelectorAll('.termbox .xterm-rows > " \
+			"div').length"
+
+/*
+ * A host's Terminal tab: Connect, the host's login (the agent's
+ * stand-in) asks, a name and a password typed into xterm.js, echo
+ * hello seen, the terminal made smaller and stty size telling its new
+ * height, Disconnect, and the session in the audit trail.
+ */
+static void
+part_terminal(void)
+{
+	FILE	*fp;
+	char	 expr[512], line[4096];
+	bool	 opened, closed;
+	int	 rows;
+
+	host_open("lab");
+	host_tab("terminal");
+	wait_js("document.querySelector('.termwrap[data-keep]') && "
+	    "document.querySelector('#term-jail option[value=\"\"]')", 10);
+	/* The host's running jails to pick from, once its list is in. */
+	wait_js("document.querySelector('#term-jail option[value=gw]')", 20);
+	click_when("#term-open", 10);
+	wait_js("document.querySelector('.termwrap').dataset.state === 'open'",
+	    20);
+	wait_js(TERM_TEXT ".includes('login:')", 20);
+	ATF_CHECK(js_true("document.activeElement && document.activeElement"
+	    ".classList.contains('xterm-helper-textarea')"));
+	keys("tester\r");
+	wait_js(TERM_TEXT ".includes('Password:')", 20);
+	keys("secret\r");
+	wait_js(TERM_TEXT ".includes('tester$')", 20);
+	keys("echo he''llo\r");
+	wait_js(TERM_TEXT ".includes('hello')", 20);
+	shot("terminal");
+	/* Smaller: fitted, and the host told. */
+	rows = (int)js_num(TERM_ROWS);
+	run("document.querySelector('.termbox').style.height = '160px'");
+	snprintf(expr, sizeof(expr), TERM_ROWS " > 0 && " TERM_ROWS " < %d",
+	    rows);
+	wait_js(expr, 10);
+	rows = (int)js_num(TERM_ROWS);
+	run("document.querySelector('.termbox textarea').focus()");
+	keys("clear; stty size\r");
+	snprintf(expr, sizeof(expr), "new RegExp('(^|\\\\s)%d \\\\d+')"
+	    ".test(" TERM_TEXT ")", rows);
+	wait_js(expr, 20);
+	/* Disconnect: hung up, said. */
+	click_when("#term-close", 10);
+	wait_js("document.querySelector('.termwrap').dataset.state === 'ended'"
+	    " && document.querySelector('.termstat').textContent.includes("
+	    "'Disconnected')", 10);
+	/* The audit trail has it, opened and closed with its bytes. */
+	opened = closed = false;
+	for (int i = 0; i < 100 && !closed; i++) {
+		if ((fp = fopen("data/sdwan-audit.jsonl", "r")) != NULL) {
+			while (fgets(line, sizeof(line), fp) != NULL) {
+				if (strstr(line, "\"terminal-opened\"") != NULL &&
+				    strstr(line, "host lab (") != NULL)
+					opened = true;
+				if (strstr(line, "\"terminal-closed\"") != NULL &&
+				    strstr(line, " bytes typed, ") != NULL &&
+				    strstr(line, "the page closed it") != NULL)
+					closed = true;
+			}
+			fclose(fp);
+		}
+		usleep(100000);
+	}
+	ATF_CHECK(opened);
+	ATF_CHECK(closed);
+	/* Another tab hangs up what is left; back, it is not connected. */
+	host_tab("summary");
+	host_tab("terminal");
+	wait_js("document.querySelector('.termwrap').dataset.state === 'idle'",
+	    10);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_terminal);
+ATF_TC_HEAD(pwa_terminal, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A host's Terminal tab: login asked in xterm.js, a name and a password typed, echo seen, a smaller terminal told to the host, Disconnect, the audit trail's rows");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_terminal, tc)
+{
+
+	prologue(tc, 1);
+	part_terminal();
+}
+ATF_TC_CLEANUP(pwa_terminal, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_address_job);
 ATF_TC_HEAD(pwa_address_job, tc)
 {
@@ -14916,6 +15060,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_streams);
 	ATF_TP_ADD_TC(tp, pwa_page_stream);
 	ATF_TP_ADD_TC(tp, pwa_follow);
+	ATF_TP_ADD_TC(tp, pwa_terminal);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);
 	ATF_TP_ADD_TC(tp, pwa_nacm);

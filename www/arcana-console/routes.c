@@ -173,6 +173,8 @@ const struct route routes[] = {
 	    api_ids_pcap_log_free, HTTP_METHOD_GET },
 	{ "/api/stream", api_stream, NULL,
 	    HTTP_METHOD_GET },
+	{ "/api/terminal", api_terminal, NULL,
+	    HTTP_METHOD_GET },
 	{ "^/plugins/[a-z0-9-]{1,40}/.+$", api_cplug_file, NULL,
 	    HTTP_METHOD_GET },
 };

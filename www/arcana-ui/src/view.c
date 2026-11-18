@@ -1022,6 +1022,8 @@ stage(struct html *h)
 			    TAB_CERTS, -1, -1 },
 			{ "log", "Log", TAB_LOG, -1, -1, -1, -1 },
 			{ "jobs", "Jobs", TAB_JOBS, -1, -1, -1, -1 },
+			{ "terminal", "Terminal", TAB_TERMINAL, -1, -1, -1,
+			    -1 },
 		};
 		size_t		 t;
 		bool		 on, mon;
@@ -1141,6 +1143,11 @@ stage(struct html *h)
 	}
 	if (app.tab == TAB_LOG) {
 		view_logs(h, s);
+		h_raw(h, "</main>");
+		return;
+	}
+	if (app.tab == TAB_TERMINAL) {
+		view_terminal(h, s);
 		h_raw(h, "</main>");
 		return;
 	}

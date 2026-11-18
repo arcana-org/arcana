@@ -3,7 +3,7 @@
 
 PROG=		arcana-console
 SRCS=		web.c keymgr.c routes.c api.c auth.c config.c hosts.c pki.c push.c servers.c settings.c troubleshoot.c \
-		stream.c watch.c tokens.c transfers.c workflows.c sdwan.c \
+		stream.c terminal.c watch.c tokens.c transfers.c workflows.c sdwan.c \
 		sdwan_edge.c amclust.c \
 		store.c update.c audit.c sen.c mail.c templates.c ldap.c labels.c notif.c prefixlists.c feeds.c users.c \
 		ytrans.c yjsonin.c restconf.c rcstream.c idsfiles.c drift.c \

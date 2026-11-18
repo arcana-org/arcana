@@ -1028,7 +1028,7 @@ addToLibrary({
 	 * changed (and the field being typed in) so transitions and focus
 	 * survive re-rendering.
 	 */
-	arc_patch__deps: ["$UTF8ToString", "$arcBusy"],
+	arc_patch__deps: ["$UTF8ToString", "$arcBusy", "$arcTerm"],
 	arc_patch: function (idp, htmlp) {
 		var el = document.getElementById(UTF8ToString(idp));
 		var html = UTF8ToString(htmlp);
@@ -1113,6 +1113,7 @@ addToLibrary({
 			arcCards(el);
 		if (typeof arcCsv === "function")
 			arcCsv(el);
+		arcTerm.check();
 	},
 
 	arc_set_class__deps: ["$UTF8ToString"],
@@ -2941,7 +2942,7 @@ addToLibrary({
 		a.remove();
 		setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
 	},
-	arc_theme_set__deps: ["$UTF8ToString", "$arcPlug"],
+	arc_theme_set__deps: ["$UTF8ToString", "$arcPlug", "$arcTerm"],
 	arc_theme_set: function (namep) {
 		var name = UTF8ToString(namep);
 
@@ -2962,6 +2963,7 @@ addToLibrary({
 		}
 		arcPlug.theme = name;
 		arcPlug.wear();
+		arcTerm.retheme();
 		Promise.resolve().then(function () {
 			arcPlug.emit("theme", { theme: name });
 		});
@@ -3312,6 +3314,233 @@ addToLibrary({
 			st.wait = [];
 			Module._arc_on_stream(arcStr("{\"closed\":true}"));
 		};
+	},
+
+	/*
+	 * A host's terminal (term.c): xterm.js and its fit addon
+	 * (vendor/xterm) in the Terminal tab's element, which the page
+	 * leaves alone (data-keep), over the console's /api/terminal
+	 * (terminal.c): the first message names the host and the jail and
+	 * the window's size, binary messages are what is typed and what
+	 * the terminal writes, {"resize": [rows, cols]} its new size; the
+	 * console says {"opened"}, {"login"}, {"end"} or {"error"}.  What
+	 * it says goes in the element's status line, its state in
+	 * data-state (connecting, open, ended, dropped); the terminal's
+	 * colours are the theme's.  The element gone from the page (another
+	 * tab, another host) hangs it up.
+	 */
+	$arcTerm: {
+		term: null, fit: null, ws: null, el: null, ro: null,
+		ended: false,
+		color: function (name, dflt) {
+			var v = getComputedStyle(document.documentElement)
+			    .getPropertyValue(name).trim();
+
+			return (v !== "" ? v : dflt);
+		},
+		theme: function () {
+			var T = this, acc = T.color("--accent-rgb", "76, 141, 255");
+
+			return ({
+				background: T.color("--bg", "#0f1216"),
+				foreground: T.color("--fg", "#e6e9ef"),
+				cursor: "rgb(" + acc + ")",
+				cursorAccent: T.color("--bg", "#0f1216"),
+				selectionBackground: "rgba(" + acc + ", 0.35)",
+				black: T.color("--bg-2", "#161b21"),
+				red: T.color("--red", "#f05d5e"),
+				green: T.color("--green", "#3fb97a"),
+				yellow: T.color("--amber", "#e3a33a"),
+				blue: T.color("--blue", "#60a5fa"),
+				magenta: T.color("--magenta", "#e879c6"),
+				cyan: T.color("--teal", "#2dd4bf"),
+				white: T.color("--fg-2", "#a7afbd"),
+				brightBlack: T.color("--dim", "#747d8d"),
+				brightRed: T.color("--red", "#f05d5e"),
+				brightGreen: T.color("--green", "#3fb97a"),
+				brightYellow: T.color("--amber", "#e3a33a"),
+				brightBlue: T.color("--cyan", "#4c8dff"),
+				brightMagenta: T.color("--violet", "#a78bfa"),
+				brightCyan: T.color("--teal", "#2dd4bf"),
+				brightWhite: T.color("--fg", "#e6e9ef")
+			});
+		},
+		say: function (text, state) {
+			var st;
+
+			if (this.el === null)
+				return;
+			st = this.el.querySelector(".termstat");
+			if (st !== null)
+				st.textContent = text;
+			this.el.dataset.state = state;
+		},
+		send: function (data) {
+			var ws = this.ws;
+
+			if (ws !== null && ws.readyState === 1)
+				ws.send(data);
+		},
+		/* Hung up; the terminal's text stays to be read. */
+		hangup: function (why) {
+			var ws = this.ws;
+
+			this.ws = null;
+			if (ws !== null) {
+				ws.onclose = null;
+				try {
+					ws.close(1000);
+				} catch (e) {
+				}
+				if (!this.ended)
+					this.say(why, "ended");
+			}
+		},
+		/* After each patch: the element gone, the terminal goes. */
+		check: function () {
+			var T = this;
+
+			if (T.el === null || document.contains(T.el))
+				return;
+			T.hangup("");
+			if (T.ro !== null)
+				T.ro.disconnect();
+			if (T.term !== null)
+				T.term.dispose();
+			T.term = T.fit = T.ro = T.el = null;
+		},
+		retheme: function () {
+			if (this.term !== null)
+				this.term.options.theme = this.theme();
+		},
+		open: function (sid, jail) {
+			var T = this, wrap, box, ws, enc = new TextEncoder();
+
+			wrap = document.getElementById("term-wrap-" + sid);
+			if (wrap === null)
+				return;
+			T.hangup("");
+			if (T.el !== wrap)
+				T.check();
+			T.el = wrap;
+			T.ended = false;
+			if (typeof Terminal !== "function" ||
+			    typeof FitAddon !== "object") {
+				T.say("xterm.js did not load: reload the page.",
+				    "dropped");
+				return;
+			}
+			if (T.term === null) {
+				box = wrap.querySelector(".termbox");
+				box.textContent = "";
+				T.term = new Terminal({
+					cursorBlink: true,
+					fontFamily: T.color("--mono", "monospace"),
+					fontSize: 13,
+					scrollback: 5000,
+					theme: T.theme()
+				});
+				T.fit = new FitAddon.FitAddon();
+				T.term.loadAddon(T.fit);
+				T.term.open(box);
+				T.term.onData(function (d) {
+					T.send(enc.encode(d));
+				});
+				T.term.onBinary(function (d) {
+					var b = new Uint8Array(d.length), i;
+
+					for (i = 0; i < d.length; i++)
+						b[i] = d.charCodeAt(i) & 0xff;
+					T.send(b);
+				});
+				T.term.onResize(function (sz) {
+					T.send(JSON.stringify({ resize:
+					    [sz.rows, sz.cols] }));
+				});
+				T.ro = new ResizeObserver(function () {
+					try {
+						T.fit.fit();
+					} catch (e) {
+					}
+				});
+				T.ro.observe(box);
+			} else
+				T.term.reset();
+			try {
+				T.fit.fit();
+			} catch (e) {
+			}
+			T.say("Connecting…", "connecting");
+			try {
+				ws = new WebSocket((location.protocol === "https:" ?
+				    "wss://" : "ws://") + location.host +
+				    "/api/terminal");
+			} catch (e) {
+				T.say("The console could not be reached: " +
+				    "Connect tries again.", "dropped");
+				return;
+			}
+			ws.binaryType = "arraybuffer";
+			T.ws = ws;
+			ws.onopen = function () {
+				var q = { server: sid, rows: T.term.rows,
+				    cols: T.term.cols };
+
+				if (jail !== "")
+					q.jail = jail;
+				ws.send(JSON.stringify(q));
+			};
+			ws.onmessage = function (e) {
+				var m;
+
+				if (T.ws !== ws)
+					return;
+				if (typeof e.data !== "string") {
+					T.term.write(new Uint8Array(e.data));
+					return;
+				}
+				try {
+					m = JSON.parse(e.data);
+				} catch (err) {
+					return;
+				}
+				if (m.opened !== undefined) {
+					T.say("Connected to " + (jail !== "" ?
+					    "jail " + jail : "the host") +
+					    (m.opened.tty ? " on " + m.opened.tty :
+					    "") + ": log in with an account of " +
+					    "its own.", "open");
+					T.term.focus();
+				} else if (m.login !== undefined)
+					T.say("Logged in as " + m.login + ".",
+					    "open");
+				else if (m.end !== undefined) {
+					T.ended = true;
+					T.say("Ended: " + m.end + ". Connect opens " +
+					    "a new session.", "ended");
+				} else if (m.error !== undefined) {
+					T.ended = true;
+					T.say("Refused: " + m.error + ".", "ended");
+				}
+			};
+			ws.onclose = function () {
+				if (T.ws !== ws)
+					return;
+				T.ws = null;
+				if (!T.ended)
+					T.say("The connection to the console " +
+					    "dropped: Connect opens a new session.",
+					    "dropped");
+			};
+		}
+	},
+	arc_term_open__deps: ["$arcTerm", "$UTF8ToString"],
+	arc_term_open: function (sidp, jailp) {
+		arcTerm.open(UTF8ToString(sidp), UTF8ToString(jailp));
+	},
+	arc_term_close__deps: ["$arcTerm"],
+	arc_term_close: function () {
+		arcTerm.hangup("Disconnected: Connect opens a new session.");
 	},
 
 	/*

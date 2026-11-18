@@ -188,6 +188,10 @@ LDADD.notifrecv+=	-lssl -lcrypto
 PROGS+=		ystreamc
 SRCS.ystreamc=	ystreamc.c ystream.c ymodel_schema.c
 LDADD.ystreamc+=	${CBLINK_LIBS}
+# ytermc: arcana-stream's terminal driven by a script.
+PROGS+=		ytermc
+SRCS.ytermc=	ytermc.c ystream.c ymodel_schema.c
+LDADD.ytermc+=	${CBLINK_LIBS}
 # ylane: notifications timed while dumps fill the association.
 PROGS+=		ylane
 SRCS.ylane=	ylane.c ymodel_schema.c

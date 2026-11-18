@@ -31,7 +31,15 @@ module arcana-stream {
      what a job's program writes, both outputs as they come, from its
      start, the names job= and step= (its step in the job's trace),
      the host half-closing it once the program has exited and all of
-     it went.  Each opened by an
+     it went; terminal (6), login(1) on a pseudo-terminal of the host,
+     or of the jail named by jail= (the jail's own login, its
+     accounts), sized by rows= and cols=, from= the address the person
+     comes from (login -h), what is typed sent as chunks' data and
+     what the terminal writes sent back, a chunk with rows and cols
+     its new size, the host's chunk with login the account that
+     logged in as utmpx(5) has it; the stream's end hangs the session
+     up (SIGHUP), and the session's end, its shell gone, ends the
+     stream.  Each opened by an
      open structure, accepted by an opened, each data message a chunk.
      The zfs-send, zfs-receive, suricata-pcap-put and suricata-pcap-get
      operations of arcana.yaml, moved off the interim family (Y-3).";
@@ -80,7 +88,32 @@ module arcana-stream {
       type binary;
       description
         "The next bytes of what zfs send wrote, or receive is to read;
-         of a capture, or of a pcap-log file.";
+         of a capture, or of a pcap-log file; of a terminal, what was
+         typed, or what it wrote.";
+    }
+    leaf rows {
+      type uint16 {
+        range "1..1000";
+      }
+      description
+        "terminal: the window's new height, in lines (TIOCSWINSZ),
+         with cols.";
+    }
+    leaf cols {
+      type uint16 {
+        range "1..1000";
+      }
+      description
+        "terminal: the window's new width, in columns, with rows.";
+    }
+    leaf login {
+      type string {
+        length "1..32";
+      }
+      description
+        "terminal, from the host: the account that logged in on it, as
+         utmpx(5) says once login(1) has written it there; a jail's
+         sessions say none.";
     }
   }
 }

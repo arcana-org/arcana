@@ -30,6 +30,7 @@ share/man/man8/arcana-agent.8.gz
 %%CONSOLE%%%%WWWDIR%%/icons/icon.svg
 %%CONSOLE%%%%WWWDIR%%/fx.js
 %%CONSOLE%%%%WWWDIR%%/index.html
+%%CONSOLE%%%%WWWDIR%%/addon-fit.js
 %%CONSOLE%%%%WWWDIR%%/arcana.js
 %%CONSOLE%%%%WWWDIR%%/arcana.wasm
 %%CONSOLE%%%%WWWDIR%%/jobs.json
@@ -37,4 +38,6 @@ share/man/man8/arcana-agent.8.gz
 %%CONSOLE%%%%WWWDIR%%/morphdom-umd.min.js
 %%CONSOLE%%%%WWWDIR%%/style.css
 %%CONSOLE%%%%WWWDIR%%/sw.js
+%%CONSOLE%%%%WWWDIR%%/xterm.css
+%%CONSOLE%%%%WWWDIR%%/xterm.js
 %%CONSOLE%%%%WWWDIR%%/yang.json

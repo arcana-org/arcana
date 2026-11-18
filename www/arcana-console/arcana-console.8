@@ -482,5 +482,12 @@ an intrusion detection's pcap files
 .Pa ( /api/servers/<id>/ids/pcap
 and
 .Pa pcap-log )
-and the page's socket
-.Pa /api/stream .
+the page's socket
+.Pa /api/stream ,
+and a host's terminal
+.Pa /api/terminal ,
+a WebSocket relayed to the host's
+.Xr login 1
+on a pseudo-terminal: an operator or an admin of the host alone may
+open one, signed in with a security key, and each is in the audit
+trail.

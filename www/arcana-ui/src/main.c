@@ -129,7 +129,7 @@ static const char *const tabnames[] = {
 	[TAB_PROCESSES] = "processes",
 	[TAB_LOG] = "log", [TAB_JOBS] = "jobs",
 	[TAB_MONITORING] = "monitoring", [TAB_ALERTS] = "monitoring/alerts",
-	[TAB_MODELS] = "models",
+	[TAB_MODELS] = "models", [TAB_TERMINAL] = "terminal",
 };
 
 /* A jail's name in the address: what is not a letter, a digit or ._- in
@@ -1279,6 +1279,7 @@ dispatch(const char *act, const char *arg, const char *value)
 	    macdo_action(act, arg, value) ||
 	    ra_action(act, arg, value) || yform_action(act, arg, value) ||
 	    procs_action(act, arg, value) || logs_action(act, arg, value) ||
+	    term_action(act, arg, value) ||
 	    usage_action(act, arg, value) || arch_action(act, arg, value) ||
 	    ecmp_action(act, arg, value) ||
 	    leaks_action(act, arg, value) ||
@@ -1391,7 +1392,8 @@ dispatch(const char *act, const char *arg, const char *value)
 		    strcmp(arg, "mail") == 0 ? TAB_MAIL :
 		    strcmp(arg, "relay") == 0 ? TAB_RELAY :
 		    strcmp(arg, "jails") == 0 ? TAB_JAILS :
-		    strcmp(arg, "jobs") == 0 ? TAB_JOBS : TAB_SUMMARY;
+		    strcmp(arg, "jobs") == 0 ? TAB_JOBS :
+		    strcmp(arg, "terminal") == 0 ? TAB_TERMINAL : TAB_SUMMARY;
 		app.node = NODE_HOST;
 		app.jail[0] = '\0';
 		if (app.tab == TAB_JAILS)
@@ -1410,6 +1412,9 @@ dispatch(const char *act, const char *arg, const char *value)
 			refresh_procs(s, true);
 		if (app.tab == TAB_LOG)
 			refresh_logs(s, false);
+		/* The terminal's picker: the running jails. */
+		if (app.tab == TAB_TERMINAL && s->list == NULL)
+			refresh_jails(s, false);
 		if (app.tab == TAB_FIREWALL)
 			refresh_firewall(s, true);
 		if (app.tab == TAB_STORAGE)

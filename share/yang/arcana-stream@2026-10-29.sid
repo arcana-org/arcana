@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-stream",
     "module-revision": "2026-10-29",
-    "sid-file-version": 0,
+    "sid-file-version": 1,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -61,6 +61,21 @@
         "namespace": "data",
         "identifier": "/arcana-stream:opened/ok",
         "sid": "85968"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stream:chunk/cols",
+        "sid": "85969"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stream:chunk/login",
+        "sid": "85970"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-stream:chunk/rows",
+        "sid": "85971"
       }
     ]
   }

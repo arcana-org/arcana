@@ -46,7 +46,7 @@ char		 harness_webconf[1024];	/* appended to web.conf */
 char		 harness_server[1024];	/* and inside its server { } */
 static char	 console_path[MAXPATHLEN];
 /* The agent's command line and stand-ins, for agent_restart(). */
-static char	*agent_argv[144];
+static char	*agent_argv[152];
 static char	 agent_fjl[MAXPATHLEN], agent_fjf[MAXPATHLEN + 8];
 
 static void	 terminate(const char *);
@@ -415,7 +415,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 ca[MAXPATHLEN], acert[MAXPATHLEN], akey[MAXPATHLEN];
 	char	 sport[16], bport[16], fpk[MAXPATHLEN], pks[MAXPATHLEN + 16];
 	char	 pkl[MAXPATHLEN + 16], pkr[MAXPATHLEN + 16];
-	char	*argv[144];
+	char	 login[MAXPATHLEN];
+	char	*argv[152];
 	FILE	*fp;
 	pid_t	 pid;
 	int	 n;
@@ -1674,7 +1675,21 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	/* Its configured subscriptions, the test's own. */
 	argv[130] = (char *)(uintptr_t)"--subscriptions";
 	argv[131] = (char *)(uintptr_t)"subscriptions.cbor";
-	n = 132;
+	/*
+	 * What its terminals run in place of login(1): what it was given,
+	 * a name and a password asked as login asks them (tester, secret),
+	 * then a shell whose prompt says so; a wrong pair refused.
+	 */
+	put("fake-login", "#!/bin/sh\necho \"args: $*\"\nprintf 'login: '\n"
+	    "read name\nstty -echo\nprintf 'Password:'\nread pw\nstty echo\n"
+	    "echo\nif [ \"$name\" != tester ] || [ \"$pw\" != secret ]; then\n"
+	    "\techo 'Login incorrect'\n\texit 1\nfi\n"
+	    "echo \"logged in as $name\"\nPS1='tester$ ' exec /bin/sh -i\n");
+	ATF_REQUIRE(chmod("fake-login", 0755) == 0);
+	snprintf(login, sizeof(login), "%s/fake-login", cwd);
+	argv[132] = (char *)(uintptr_t)"--terminal-login";
+	argv[133] = login;
+	n = 134;
 	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
 	if (harness_stamp_port != 0) {
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);
@@ -1745,7 +1760,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
 	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", fjl, 1) == 0);
-	for (int i = 0; i < 143 && argv[i] != NULL; i++) {
+	for (int i = 0; i < 151 && argv[i] != NULL; i++) {
 		free(agent_argv[i]);
 		agent_argv[i] = strdup(argv[i]);
 		agent_argv[i + 1] = NULL;

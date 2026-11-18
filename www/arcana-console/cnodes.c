@@ -142,6 +142,9 @@ static const struct cnode	cnodes[] = {
 	{ "/restconf/streams", false, M, M, T_ANY, TK_WRITE },
 	{ "/yang", false, M, M, T_ANY, TK_WRITE },
 	{ "/api/stream", false, M, M, T_ANY, TK_WRITE },
+	/* A terminal: a security key's session alone; the host's role is
+	 * terminal.c's to judge. */
+	{ "/api/terminal", false, M, M, T_ANY, TK_NO },
 	{ "/api/servers/*/ids/pcap", false, M, M, T_ANY, TK_WRITE },
 	{ "/api/servers/*/ids/pcap-log", false, M, M, T_ANY, TK_WRITE },
 };

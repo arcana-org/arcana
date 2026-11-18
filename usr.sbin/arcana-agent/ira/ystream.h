@@ -22,6 +22,8 @@
  * ys_accept(): an opened stream accepted, opened (NULL: none) its
  * answer, each data message's chunk handed to cbs.  ys_send(): data,
  * the next bytes, sent on s; EAGAIN, no credit (nothing sent).
+ * ys_send_chunk(): a chunk of more than bytes (a terminal's size, its
+ * login), the same way.
  * ys_family(): the family's id on conn, resolved.  ys_open(): a stream
  * of command cmd opened on conn with the open structure rq, cbs the
  * caller's own (cblink's), what it takes before it gives credit window
@@ -34,6 +36,7 @@
 #define	YS_PCAP_PUT		3
 #define	YS_PCAP_GET		4
 #define	YS_EXEC_FOLLOW		5
+#define	YS_TERMINAL		6
 #define	YS_WINDOW		4194304		/* what is taken before credit */
 
 struct ys_cbs {
@@ -47,6 +50,7 @@ struct ys_cbs {
 int	ys_accept(cbl_stream *s, const struct arcana_stream_opened *opened,
 	    const struct ys_cbs *cbs, void *arg);
 int	ys_send(cbl_stream *s, const void *data, size_t len);
+int	ys_send_chunk(cbl_stream *s, const struct arcana_stream_chunk *c);
 int	ys_family(cbl_conn *conn, uint16_t *id);
 int	ys_open(cbl_conn *conn, uint16_t cmd,
 	    const struct arcana_stream_open *rq, uint32_t window,

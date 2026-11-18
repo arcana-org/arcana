@@ -103,6 +103,8 @@ struct conn {
 };
 
 void		 ws_send(struct conn *, uint8_t, const void *, size_t);
+/* What waits to be sent on it, in bytes. */
+size_t		 ws_queued(const struct conn *);
 /* The socket closed by the server, once what was sent is out. */
 void		 ws_close(struct conn *);
 

@@ -7,7 +7,7 @@
 /*
  * arcana-stream (PLAN-SDN-YANG 3.8): the streams that carry bytes
  * between the console and its hosts (a snapshot sent and received, a
- * capture put, a pcap-log file got), on a cblink family of Arcana's
+ * capture put, a pcap-log file got, a job's output, a terminal), on a cblink family of Arcana's
  * own, as cblink's FAMILIES.md has a stream; its bodies are
  * arcana-stream's structures, put and read with what cblink-gen wrote.
  * The agent's, the console's and arcanactl's.
@@ -117,15 +117,22 @@ int
 ys_send(cbl_stream *s, const void *data, size_t len)
 {
 	struct arcana_stream_chunk	 c;
-	cbl_msg				*msg;
-	int				 error;
 
 	memset(&c, 0, sizeof(c));
 	c.data.p = data;
 	c.data.len = len;
+	return (ys_send_chunk(s, &c));
+}
+
+int
+ys_send_chunk(cbl_stream *s, const struct arcana_stream_chunk *c)
+{
+	cbl_msg				*msg;
+	int				 error;
+
 	if ((error = cbl_stream_msg_new(s, &msg)) != 0)
 		return (error);
-	if ((error = arcana_stream_chunk_put(msg, &c)) != 0) {
+	if ((error = arcana_stream_chunk_put(msg, c)) != 0) {
 		cbl_msg_free(msg);
 		return (error);
 	}

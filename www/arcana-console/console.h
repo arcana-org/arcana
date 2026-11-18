@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.448.3"
+#define	ARCW_VERSION		"0.449.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/arcana-org/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -789,6 +789,8 @@ int		 api_stream(struct http_request *);
 void		 stream_connect(struct conn *);
 void		 stream_message(struct conn *, u_int8_t, void *, size_t);
 void		 stream_disconnect(struct conn *);
+/* terminal.c: a host's terminal, login(1), relayed to the page. */
+int		 api_terminal(struct http_request *);
 void		 api_call_free(struct http_request *);
 
 

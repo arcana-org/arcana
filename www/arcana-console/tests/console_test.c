@@ -27607,6 +27607,285 @@ ATF_TC_BODY(theme_tokens_agree, tc)
 	free(css);
 }
 
+/*
+ * A terminal's socket (terminal.c), driven by hand: a frame of either
+ * kind sent masked, as a client's must be; what comes read as it
+ * comes, the bytes the terminal wrote kept in tw.out.
+ */
+struct tws {
+	int	 s;
+	char	 out[65536];
+	size_t	 len;
+	char	 last[1024];	/* the last text frame */
+};
+
+static void
+tws_send(struct tws *w, int op, const void *p, size_t len)
+{
+	unsigned char	 hdr[8], mask[4] = { 0x1a, 0x2b, 0x3c, 0x4d };
+	unsigned char	*body;
+	size_t		 h, i;
+
+	ATF_REQUIRE(len < 65536);
+	hdr[0] = 0x80 | (unsigned char)op;
+	if (len < 126) {
+		hdr[1] = 0x80 | (unsigned char)len;
+		h = 2;
+	} else {
+		hdr[1] = 0x80 | 126;
+		hdr[2] = (unsigned char)(len >> 8);
+		hdr[3] = (unsigned char)len;
+		h = 4;
+	}
+	memcpy(hdr + h, mask, 4);
+	h += 4;
+	ATF_REQUIRE((body = malloc(len + 1)) != NULL);
+	for (i = 0; i < len; i++)
+		body[i] = ((const unsigned char *)p)[i] ^ mask[i % 4];
+	ATF_REQUIRE(write(w->s, hdr, h) == (ssize_t)h);
+	ATF_REQUIRE(write(w->s, body, len) == (ssize_t)len);
+	free(body);
+}
+
+static bool
+tws_full(int s, void *p, size_t len)
+{
+	size_t	got;
+	ssize_t	n;
+
+	for (got = 0; got < len; got += (size_t)n)
+		if ((n = read(s, (char *)p + got, len - got)) <= 0)
+			return (false);
+	return (true);
+}
+
+/* The next frame, within secs: its opcode (0 none, -1 closed). */
+static int
+tws_frame(struct tws *w, int secs)
+{
+	struct pollfd	 pfd;
+	unsigned char	 hdr[8], *body;
+	uint64_t	 len;
+	int		 k, op;
+
+	pfd.fd = w->s;
+	pfd.events = POLLIN;
+	if (poll(&pfd, 1, secs * 1000) <= 0)
+		return (0);
+	if (!tws_full(w->s, hdr, 2))
+		return (-1);
+	op = hdr[0] & 0x0f;
+	len = hdr[1] & 0x7f;
+	if (len == 126) {
+		if (!tws_full(w->s, hdr + 2, 2))
+			return (-1);
+		len = ((uint64_t)hdr[2] << 8) | hdr[3];
+	} else if (len == 127) {
+		if (!tws_full(w->s, hdr, 8))
+			return (-1);
+		for (len = 0, k = 0; k < 8; k++)
+			len = (len << 8) | hdr[k];
+	}
+	ATF_REQUIRE(len < 1024 * 1024);
+	ATF_REQUIRE((body = malloc(len + 1)) != NULL);
+	if (!tws_full(w->s, body, len)) {
+		free(body);
+		return (-1);
+	}
+	body[len] = '\0';
+	if (op == 2 && w->len + len < sizeof(w->out)) {
+		memcpy(w->out + w->len, body, len);
+		w->len += len;
+		w->out[w->len] = '\0';
+	} else if (op == 1)
+		snprintf(w->last, sizeof(w->last), "%s", (char *)body);
+	free(body);
+	return (op == 8 ? -1 : op);
+}
+
+/* Until the terminal wrote want, or a text frame has it: true. */
+static bool
+tws_until(struct tws *w, const char *want, bool text)
+{
+	time_t	end;
+	int	op;
+
+	end = time(NULL) + 20;
+	while (time(NULL) < end) {
+		if (text ? strstr(w->last, want) != NULL : strstr(w->out,
+		    want) != NULL)
+			return (true);
+		if ((op = tws_frame(w, 1)) == -1)
+			break;
+	}
+	return (text ? strstr(w->last, want) != NULL : strstr(w->out, want) !=
+	    NULL);
+}
+
+static void
+tws_type(struct tws *w, const char *s)
+{
+
+	tws_send(w, 2, s, strlen(s));
+}
+
+/* A terminal of host sid (jail, or NULL) asked for; the socket's. */
+static void
+tws_open(struct tws *w, const char *sid, const char *jail)
+{
+	char	ask[300];
+
+	memset(w, 0, sizeof(*w));
+	w->s = ws_open("/api/terminal");
+	snprintf(ask, sizeof(ask), "{\"server\":\"%s\",%s%s%s\"rows\":30,"
+	    "\"cols\":100}", sid, jail != NULL ? "\"jail\":\"" : "",
+	    jail != NULL ? jail : "", jail != NULL ? "\"," : "");
+	tws_send(w, 1, ask, strlen(ask));
+}
+
+/* The audit trail's events of a terminal, once one has want: its body. */
+static char *
+term_audit(const char *want)
+{
+	struct resp	 r;
+	char		*body;
+	int		 i;
+
+	for (i = 0; i < 100; i++) {
+		http("GET", CC "sdwan/audit?q=terminal", NULL, &r);
+		EXPECT(&r, 200);
+		if (strstr(r.body, want) != NULL) {
+			body = strdup(r.body);
+			resp_free(&r);
+			return (body);
+		}
+		resp_free(&r);
+		usleep(100000);
+	}
+	return (NULL);
+}
+
+/*
+ * A host's terminal: the host's login (the agent's stand-in) through
+ * the socket, a name and a password, what is typed echoed, a resize
+ * seen by stty size; in a jail by jexec; refused without a session,
+ * from another page, and to a viewer, given to an operator; each in
+ * the audit trail with the bytes each way.
+ */
+CONSOLE_TC(terminal_socket, "A host's terminal: login through the socket, "
+    "who may, the audit trail")
+ATF_TC_BODY(terminal_socket, tc)
+{
+	struct authn	 a, b, c;
+	struct resp	 r;
+	struct tws	 w;
+	char		 id[16], owner[sizeof(cookie)], req[600], buf[512];
+	char		*au;
+	ssize_t		 n;
+	int		 s;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(owner, sizeof(owner), "%s", cookie);
+
+	/* The owner: login, a shell, a resize. */
+	tws_open(&w, id, NULL);
+	ATF_REQUIRE_MSG(tws_until(&w, "\"opened\":{\"tty\":\"pts/", true),
+	    "%s", w.last);
+	ATF_REQUIRE_MSG(tws_until(&w, "login: ", false), "%s", w.out);
+	ATF_CHECK_MSG(has(w.out, "args: -h unix:"), "%s", w.out);
+	tws_type(&w, "tester\r");
+	ATF_REQUIRE_MSG(tws_until(&w, "Password:", false), "%s", w.out);
+	tws_type(&w, "secret\r");
+	ATF_REQUIRE_MSG(tws_until(&w, "tester$ ", false), "%s", w.out);
+	tws_type(&w, "echo he''llo\r");
+	ATF_CHECK_MSG(tws_until(&w, "hello", false), "%s", w.out);
+	tws_send(&w, 1, "{\"resize\":[40,120]}", 19);
+	tws_type(&w, "stty size\r");
+	ATF_CHECK_MSG(tws_until(&w, "40 120", false), "%s", w.out);
+	close(w.s);
+	/* 7 + 7 + 13 + 10 bytes typed. */
+	au = term_audit("terminal-closed");
+	ATF_REQUIRE(au != NULL);
+	ATF_CHECK_MSG(has(au, "37 bytes typed") && has(au, "host lab (") &&
+	    has(au, "\"who\":\"user admin\"") && has(au, "terminal-opened") &&
+	    has(au, "the page closed it"), "%s", au);
+	free(au);
+
+	/* A jail's: its own login, by jexec. */
+	tws_open(&w, id, "gw");
+	ATF_REQUIRE_MSG(tws_until(&w, "\"opened\"", true), "%s", w.last);
+	ATF_CHECK_MSG(tws_until(&w, "login: ", false), "%s", w.out);
+	tws_type(&w, "tester\r");
+	ATF_CHECK(tws_until(&w, "Password:", false));
+	tws_type(&w, "nope\r");
+	/* A wrong password: login exits, the session ends, said. */
+	ATF_CHECK_MSG(tws_until(&w, "\"end\":\"the session ended\"", true),
+	    "%s / %s", w.last, w.out);
+	close(w.s);
+	{
+		FILE	*fp;
+		char	 line[512];
+		bool	 seen = false;
+
+		ATF_REQUIRE((fp = fopen("jexec.log", "r")) != NULL);
+		while (fgets(line, sizeof(line), fp) != NULL)
+			if (strncmp(line, "jexec 4 ", 8) == 0 && strstr(line,
+			    "/fake-login -h unix:") != NULL)
+				seen = true;
+		fclose(fp);
+		ATF_CHECK(seen);
+	}
+	au = term_audit("jail gw");
+	ATF_CHECK(au != NULL);
+	free(au);
+
+	/* Not from another page. */
+	s = console_socket();
+	snprintf(req, sizeof(req), "GET /api/terminal HTTP/1.1\r\nHost: "
+	    "localhost:8443\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+	    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	    "Sec-WebSocket-Version: 13\r\nOrigin: http://evil.example\r\n"
+	    "Cookie: %s\r\n\r\n", cookie);
+	ATF_REQUIRE(write(s, req, strlen(req)) == (ssize_t)strlen(req));
+	n = read(s, buf, sizeof(buf) - 1);
+	buf[n > 0 ? n : 0] = '\0';
+	ATF_CHECK_MSG(strncmp(buf, "HTTP/1.1 101", 12) != 0, "%s", buf);
+	close(s);
+	/* Nor without a session. */
+	cookie[0] = '\0';
+	http("GET", "/api/terminal", NULL, &r);
+	ATF_CHECK_MSG(r.status == 401, "%d %s", r.status, r.body);
+	resp_free(&r);
+
+	/* A viewer of the host: none, and that said in the trail. */
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	r1_role("look", "member", "viewer");
+	cc_user(&b, "vic", "\"role\":[\"look\"]", -8);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "a viewer gets none", true), "%s", w.last);
+	close(w.s);
+	/* An operator of the host: given one. */
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	r1_role("ops", "member", "operator");
+	cc_user(&c, "opal", "\"role\":[\"ops\"]", -8);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "\"opened\"", true), "%s", w.last);
+	ATF_CHECK(tws_until(&w, "login: ", false));
+	close(w.s);
+	/* Nor a host that is no host. */
+	tws_open(&w, "0badc0de", NULL);
+	ATF_CHECK_MSG(tws_until(&w, "no such server", true), "%s", w.last);
+	close(w.s);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	au = term_audit("user opal");
+	ATF_REQUIRE(au != NULL);
+	ATF_CHECK_MSG(has(au, "terminal-refused") && has(au, "user vic") &&
+	    has(au, "\"action\":\"Block\""), "%s", au);
+	free(au);
+}
+
 ATF_TP_ADD_TCS(tp)
 {
 	/* The longest first: kyua starts them in this order. */
@@ -27818,6 +28097,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, owner_walk);
 	ATF_TP_ADD_TC(tp, authz_no_user);
 	ATF_TP_ADD_TC(tp, authz_stream);
+	ATF_TP_ADD_TC(tp, terminal_socket);
 	ATF_TP_ADD_TC(tp, authz_hosts);
 	ATF_TP_ADD_TC(tp, authz_sdwan);
 	ATF_TP_ADD_TC(tp, sessions_many);

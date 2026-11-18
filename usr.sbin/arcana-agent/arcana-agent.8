@@ -61,6 +61,8 @@
 .Op Fl Z Ar zpool
 .Op Fl P Ar pkg
 .Op Fl -pkg-idle Ar seconds
+.Op Fl -terminal-login Ar login
+.Op Fl -terminal-idle Ar seconds
 .Op Fl -jobs-conf Ar file
 .Op Fl -nacm Ar file
 .Op Fl -build-user Ar user
@@ -688,6 +690,19 @@ may say nothing before it is stopped, with what it started
 a download that stalls, or a question pkg waits on.
 Off a terminal pkg prints a dot for each tenth of a download.
 Default 600.
+.It Fl -terminal-login Ar login
+What a terminal the console opens runs on its pseudo-terminal, as
+.Xr getty 8
+would on a line: the person logs in to an account of the host's, the
+host's PAM judging the password; in a jail, the program of that path in
+the jail, run there by
+.Xr jexec 8 .
+The agent picks no user.
+Default
+.Pa /usr/bin/login .
+.It Fl -terminal-idle Ar seconds
+How long a terminal nobody types in is kept before it is hung up.
+Default 1800.
 .It Fl -jobs-conf Ar file
 Where how many jobs of pkg in jails run at once is kept
 .Pq arcana-jobs' Li lanes , written by a commit ;

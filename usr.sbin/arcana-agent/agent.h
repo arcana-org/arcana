@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.299.0"
+#define	ARCANA_AGENT_VERSION	"0.300.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -101,6 +101,9 @@
  * not for ten.
  */
 #define	PKG_IDLE_SEC		600
+/* A terminal nobody typed in for this long is hung up. */
+#define	TERM_IDLE_SEC		1800
+#define	PATH_LOGIN_BIN		"/usr/bin/login"
 /* Jobs of pkg in jails, each its own jail, at work at once. */
 #define	PKG_LANES		4
 #define	TRACE_MAX		ARC_MAX_STEPS
@@ -194,6 +197,9 @@ struct opts {
 	const char	*stampd_keys;	/* --stampd-keys: stampd(8)'s key file */
 	const char	*stamp_clock;	/* --stamp-clock, as given; NULL none */
 	int		 pkg_idle_s;	/* --pkg-idle: a silent pkg, stopped after */
+	const char	*terminal_login; /* --terminal-login: login(1) */
+	int		 terminal_idle_s; /* --terminal-idle: a terminal not
+					 * typed in, hung up after */
 	int		 pkg_lanes;	/* jobs of pkg in jails at once, at start */
 	const char	*jobs_conf;	/* where lanes is kept */
 	const char	*nacm_file;	/* NACM's rules (superbia/ynacm.c) */
@@ -1515,6 +1521,9 @@ void		 live_end(struct live *);
 int		 exec_follow_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 struct live	*jobs_live(uint64_t, int, const char **);
+/* ira/terminal.c: login(1) on a terminal of the host's or a jail's */
+int		 terminal_open(cbl_req *, const struct arcana_stream_open *,
+		    cbl_stream *);
 /* superbia/tlsfiles.c: the agent's own TLS files renewed */
 const char	*tls_files_ca(void);
 const char	*tls_files_cert(void);

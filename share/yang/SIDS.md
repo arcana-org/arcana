@@ -164,7 +164,7 @@ on the wire.
 | 85 500 | 200 | `arcana-suricata` | `share/yang/arcana-suricata@2026-10-29.sid` (132 used) |
 | 85 700 | 100 | `arcana-smtpd` | `share/yang/arcana-smtpd@2026-10-29.sid` (68 used) |
 | 85 800 | 160 | `arcana-speeder` | `share/yang/arcana-speeder@2026-10-29.sid` (156 used) |
-| 85 960 | 40 | `arcana-stream`, the structures of Arcana's own stream family | `share/yang/arcana-stream@2026-10-29.sid` (9 used) |
+| 85 960 | 40 | `arcana-stream`, the structures of Arcana's own stream family | `share/yang/arcana-stream@2026-10-29.sid` (12 used) |
 | 86 000 | 100 | `arcana-steer`, the CAL: the steering's choices, why, its pins and steer-changed | `share/yang/arcana-steer@2026-11-04.sid` (65 used) |
 | 86 100 | 300 | `ietf-vpn-common@2022-02-11`, RFC 9181 (no IETF range), the console's | `share/yang/ietf-vpn-common@2022-02-11.sid` (199 used) |
 | 86 400 | 800 | `ietf-l3vpn-ntw@2022-02-14`, RFC 9182 (no IETF range): the services as the console stores them | `share/yang/ietf-l3vpn-ntw@2022-02-14.sid` (622 used) |

@@ -93,6 +93,25 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A host's terminal, agent 0.300.0, console 0.449.0
+
+- A host's **Terminal** tab runs that host's own login(1) on a
+  pseudo-terminal (arcana-stream's new terminal command), or a jail's
+  own login through jexec(8), in xterm.js (5.5.0, with addon-fit
+  0.10.0, vendored; MIT).  The person logs in with an account and
+  password the host checks with PAM; Arcana picks no user and runs no
+  shell of its own.  Only console users signed in with a security key
+  who are operators or admins of the host may open one (no API tokens),
+  and each session is in the audit trail (terminal-refused,
+  terminal-opened, terminal-closed with bytes each way, its length,
+  the login name when the host tells it, and why it ended).  The agent
+  allows 8 sessions at once and hangs up one nobody types in for 30
+  minutes (`--terminal-idle`); `--terminal-login` names the program for
+  tests.  Hosts whose NACM exec-default is deny give terminals to group
+  admin only until a rule permits `arcana-stream:terminal`.  Update the
+  agents before using the tab: an older agent refuses the stream.  The
+  plan is docs/PLAN-TERMINAL.md.
+
 ### SD-WAN's plan after a keep, console 0.448.3
 
 - SD-WAN: the Edges tab no longer shows a loader for good when the plan

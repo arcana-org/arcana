@@ -6280,6 +6280,169 @@ job_follow_cleanup()
 	stop_daemon
 }
 
+# login(1) stood in for, as --terminal-login names it: what it was
+# given, a name and a password asked as login asks them, then a shell
+# whose prompt says who logged in.  A wrong pair is refused, and it
+# exits as login does.
+terminal_login()
+{
+	cat > fake-login <<'EOF'
+#!/bin/sh
+echo "args: $*"
+printf 'login: '
+read name
+stty -echo
+printf 'Password:'
+read pw
+stty echo
+echo
+if [ "$name" != tester ] || [ "$pw" != secret ]; then
+	echo 'Login incorrect'
+	exit 1
+fi
+echo "logged in as $name"
+PS1='tester$ ' exec /bin/sh -i
+EOF
+	chmod +x fake-login
+	YTC="$(atf_get_srcdir)/ytermc"
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-login $(pwd)/fake-login"
+}
+
+atf_test_case terminal_session cleanup
+terminal_session_head()
+{
+	atf_set "descr" "a terminal (arcana-stream's terminal): login asked for a name and a password on a pseudo-terminal of its own, with -h where the person comes from; what is typed echoed by the shell, the window's size as opened and as changed seen by stty size; the stream's end hangs the session up, its shell gone; a wrong password and an exit end the stream"
+}
+terminal_session_body()
+{
+	terminal_login
+	start_daemon
+	cat > script <<'EOF'
+expect args: -h 192.0.2.7
+expect login:
+send tester\r
+expect Password:
+send secret\r
+expect logged in as tester
+expect tester$
+send echo he''llo\r
+expect hello
+send stty size\r
+expect 30 100
+resize 40 120
+send stty size\r
+expect 40 120
+send echo $$ > @DIR@/shell.pid; tty\r
+expect /dev/pts/
+expect tester$
+close
+EOF
+	sed -i '' "s|@DIR@|$(pwd)|" script
+	atf_check -o match:'hello' -e match:'^opened \{"tty":"pts/[0-9]+","pid":[0-9]+,"rows":30,"cols":100\}' \
+	    "$YTC" -r 30 -c 100 -f 192.0.2.7 "$SOCK" < script
+	# The shell hung up with the stream: gone soon after.
+	pid=$(cat shell.pid)
+	n=0
+	while alive "$pid"; do
+		n=$((n + 1)); [ $n -lt 100 ] || atf_fail "the shell $pid outlived its terminal"
+		sleep 0.1
+	done
+	atf_check -o match:'terminal pts/[0-9]+ on the host for .*ended: the console ended it; [0-9]+ bytes typed' \
+	    cat daemon.out
+	# A wrong password: login says so and exits, which ends it.
+	printf 'expect login: \nsend tester\\r\nexpect Password:\nsend nope\\r\nexpect Login incorrect\nend\n' > script
+	atf_check -o match:'Login incorrect' -e match:'^ended: 0 the session ended' \
+	    "$YTC" "$SOCK" < script
+	# The shell's exit ends it too; no from=, no -h.
+	printf 'expect args: \nexpect login: \nsend tester\\r\nexpect Password:\nsend secret\\r\nexpect tester$ \nsend exit\\r\nend\n' > script
+	atf_check -o not-match:'args: -h' -e match:'^ended: 0 the session ended' \
+	    "$YTC" "$SOCK" < script
+	# What the opening may name, and nothing else.
+	atf_check -s exit:1 -e match:'^refused: a terminal is opened by jail=' \
+	    "$YTC" -r 0 "$SOCK" < /dev/null
+	atf_check -s exit:1 -e match:'^refused: a terminal is opened by jail=' \
+	    "$YTC" -f '-oops' "$SOCK" < /dev/null
+	atf_check -s exit:1 -e match:'^refused: no jail of that name is running' \
+	    "$YTC" -j nosuch "$SOCK" < /dev/null
+}
+terminal_session_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case terminal_limits cleanup
+terminal_limits_head()
+{
+	atf_set "descr" "terminals: eight at once, a ninth refused until one ends; one nobody types in hung up after --terminal-idle"
+}
+terminal_limits_body()
+{
+	local i pids
+
+	terminal_login
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-idle 4"
+	start_daemon
+	printf 'expect login: \nsleep 60000\n' > hold
+	pids=
+	for i in 1 2 3 4 5 6 7 8; do
+		"$YTC" "$SOCK" < hold > hold.$i 2>&1 &
+		pids="$pids $!"
+	done
+	n=0
+	until [ "$(grep -l '^opened' hold.* 2>/dev/null | wc -l)" -eq 8 ]; do
+		n=$((n + 1)); [ $n -lt 200 ] || atf_fail "eight did not open: $(cat hold.*)"
+		sleep 0.1
+	done
+	atf_check -s exit:1 -e match:'^refused: eight terminals at most' \
+	    "$YTC" "$SOCK" < /dev/null
+	# One goes: its place is free once its login is reaped.
+	set -- $pids
+	kill "$1"
+	n=0
+	until printf 'expect login: \nclose\n' | "$YTC" "$SOCK" > /dev/null 2>&1; do
+		n=$((n + 1)); [ $n -lt 100 ] || atf_fail "no place came free"
+		sleep 0.1
+	done
+	kill $pids 2>/dev/null
+	wait $pids
+	# Typed in, then nothing: hung up the idle time after the last key.
+	printf 'expect login: \nsleep 2000\nsend x\nend\n' > script
+	atf_check -o ignore -e match:'^ended: 60 no typing for the idle time' \
+	    "$YTC" "$SOCK" < script
+}
+terminal_limits_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case terminal_jail cleanup
+terminal_jail_head()
+{
+	atf_set "descr" "a jail's terminal: the jail's own login, run in it by jexec(8) by the jail's number"
+}
+terminal_jail_body()
+{
+	terminal_login
+	start_daemon
+	printf 'gw 4 new %s 16.0-CURRENT host.hostname=gw\n' "$(pwd)/gw" > jails
+	cat > fake-jexec <<EOF
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+shift
+exec "\$@"
+EOF
+	chmod +x fake-jexec
+	printf 'expect login: \nsend tester\\r\nexpect Password:\nsend secret\\r\nexpect tester$ \nsend exit\\r\nend\n' > script
+	atf_check -o match:'logged in as tester' -e match:'^ended: 0 the session ended' \
+	    "$YTC" -j gw "$SOCK" < script
+	atf_check -o match:"^jexec 4 $(pwd)/fake-login\$" cat jexec.log
+	atf_check -o match:'terminal pts/[0-9]+ on jail gw for ' cat daemon.out
+}
+terminal_jail_cleanup()
+{
+	stop_daemon
+}
+
 # A trace as arcanactl prints it, each step's kind and label in its
 # tree: what a dry run and the job it stands for are compared by.
 trace_steps()
@@ -19917,5 +20080,8 @@ atf_init_test_cases()
 	atf_add_test_case jail_base_links
 	atf_add_test_case jobs
 	atf_add_test_case job_follow
+	atf_add_test_case terminal_session
+	atf_add_test_case terminal_limits
+	atf_add_test_case terminal_jail
 	atf_add_test_case dry_run
 }

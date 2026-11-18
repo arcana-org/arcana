@@ -16,7 +16,7 @@ WWWDIR?=	${PREFIX}/www/arcana-console
 DIST=		${.OBJDIR}/dist
 
 APP_SRCS=	cfgfiles.c cluster.c plugins.c glmap.c users.c pfxlists.c feeds.c iflabels.c templates.c main.c actions.c ca.c carp.c api.c bird.c ecmp.c mtr.c fleet.c ipfw.c l2.c kernel.c storage.c sysctl.c procs.c logs.c usage.c tbl.c topo.c vpn.c jailmk.c certs.c sshd.c span.c ipsec.c workflow.c sdwan.c graph.c html.c json.c netview.c \
-		schema.c view.c live.c yaml.c export.c hostconf.c trouble.c routing.c birdform.c help.c secpage.c surules.c idsown.c idsstats.c nas.c sysview.c builder.c res.c mail.c relay.c monitors.c nacm.c drift.c ra.c ycommit.c ycbor.c archive.c macdo.c hosttab.c rc.c netread.c sdread.c sse.c yform.c
+		schema.c view.c live.c yaml.c export.c hostconf.c trouble.c routing.c birdform.c help.c secpage.c surules.c idsown.c idsstats.c nas.c sysview.c builder.c res.c mail.c relay.c monitors.c nacm.c drift.c ra.c ycommit.c ycbor.c archive.c macdo.c hosttab.c rc.c netread.c sdread.c sse.c yform.c term.c
 UCL_SRCS=	ucl_emitter_streamline.c ucl_emitter_utils.c ucl_emitter.c \
 		ucl_hash.c ucl_msgpack.c ucl_parser.c ucl_schema.c ucl_sexp.c \
 		ucl_util.c
@@ -73,6 +73,8 @@ FONTS=		jetbrains-mono-latin-400-normal.woff2 \
 		jetbrains-mono-latin-700-normal.woff2 \
 		orbitron-latin-700-normal.woff2
 ICONS=		icon.svg icon-192.png icon-512.png icon-maskable-512.png
+# xterm.js and its fit addon, for a host's terminal (vendor/README).
+XTERM=		xterm.js xterm.css addon-fit.js
 STATIC=		index.html style.css manifest.webmanifest fx.js
 
 # Objects by their full path, so none is picked up from the source
@@ -185,13 +187,18 @@ check-yang: .PHONY
 SHELL_FILES=	${STATIC:S,^,${DIST}/,} ${DIST}/arcana.js \
 		${DIST}/yang.json ${DIST}/jobs.json \
 		${DIST}/morphdom-umd.min.js ${FONTS:S,^,${DIST}/fonts/,} \
-		${ICONS:S,^,${DIST}/icons/,}
+		${ICONS:S,^,${DIST}/icons/,} ${XTERM:S,^,${DIST}/,}
 
 ${STATIC:S,^,${DIST}/,}: ${STATIC:S,^,${.CURDIR}/web/,}
 	mkdir -p ${DIST}
 	cp ${.CURDIR}/web/${.TARGET:T} ${.TARGET}
 ${DIST}/morphdom-umd.min.js: ${.CURDIR}/vendor/morphdom/morphdom-umd.min.js
 	cp ${.ALLSRC} ${.TARGET}
+.for _x in ${XTERM}
+${DIST}/${_x}: ${.CURDIR}/vendor/xterm/${_x}
+	mkdir -p ${DIST}
+	cp ${.ALLSRC} ${.TARGET}
+.endfor
 ${FONTS:S,^,${DIST}/fonts/,}:
 	mkdir -p ${DIST}/fonts
 	cp ${.CURDIR}/vendor/fonts/${.TARGET:T} ${.TARGET}
