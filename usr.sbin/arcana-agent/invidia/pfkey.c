@@ -26,6 +26,11 @@
  * policy has it (key_spddelete()).  A policy of an ipsec(4) interface
  * is scoped to it (IPSEC_POLICYSCOPE_IFNET, its index in the priority
  * field); the rest are global, sorted by priority, setkey's 0 first.
+ *
+ * The kernel's news (6.2.3, sadb.c): a socket SADB_REGISTERed is sent
+ * SADB_ACQUIRE and SADB_EXPIRE as they happen, between the replies to
+ * what it asks; a thread that registered its socket gives them, as they
+ * come, to the hook it set (pfkey_news()).
  */
 
 #include <sys/param.h>
@@ -60,6 +65,20 @@ struct pkmsg {
 };
 
 static uint32_t	pk_seq;
+
+/* The kernel's news met on this thread's registered socket. */
+static __thread void	(*pk_news)(const struct sadb_msg *, size_t, void *);
+static __thread void	*pk_news_arg;
+
+/* What the kernel tells a registered socket, as it comes on this
+ * thread's sockets, given to fn; NULL none. */
+void
+pfkey_news(void (*fn)(const struct sadb_msg *, size_t, void *), void *arg)
+{
+
+	pk_news = fn;
+	pk_news_arg = arg;
+}
 
 /* The socket: a test's stand-in, the jail's, or the host's. */
 int
@@ -188,6 +207,8 @@ pk_name(uint8_t type)
 		return ("SADB_X_SPDDELETE2");
 	case SADB_X_SPDDUMP:
 		return ("SADB_X_SPDDUMP");
+	case SADB_REGISTER:
+		return ("SADB_REGISTER");
 	}
 	return ("PF_KEY");
 }
@@ -243,8 +264,13 @@ pk_call(struct work *w, int fd, struct pkmsg *m,
 		/* Another socket's, or the kernel's own news. */
 		if (r->sadb_msg_pid != q->sadb_msg_pid || r->sadb_msg_type !=
 		    q->sadb_msg_type || (!dump && r->sadb_msg_seq !=
-		    q->sadb_msg_seq))
+		    q->sadb_msg_seq)) {
+			if (pk_news != NULL && r->sadb_msg_pid == 0 &&
+			    (r->sadb_msg_type == SADB_ACQUIRE ||
+			    r->sadb_msg_type == SADB_EXPIRE))
+				pk_news(r, (size_t)n, pk_news_arg);
 			continue;
+		}
 		if (r->sadb_msg_errno != 0) {
 			errno = r->sadb_msg_errno;
 			*errp = wfmt(w, "%s: %s", pk_name(q->sadb_msg_type),
@@ -374,6 +400,7 @@ pk_parse(const struct sadb_msg *r, size_t len, struct pfkey_sa *sa)
 			s2 = (const struct sadb_x_sa2 *)(const void *)e;
 			sa->mode = s2->sadb_x_sa2_mode;
 			sa->reqid = s2->sadb_x_sa2_reqid;
+			sa->seq = s2->sadb_x_sa2_sequence;
 			break;
 		case SADB_X_EXT_SA_REPLAY:
 			if (n >= sizeof(struct sadb_x_sa_replay))
@@ -388,6 +415,13 @@ pk_parse(const struct sadb_msg *r, size_t len, struct pfkey_sa *sa)
 			sa->packets = lt->sadb_lifetime_allocations;
 			sa->bytes = lt->sadb_lifetime_bytes;
 			sa->added = lt->sadb_lifetime_addtime;
+			sa->used = lt->sadb_lifetime_usetime;
+			break;
+		case SADB_EXT_LIFETIME_SOFT:
+			sa->lifetimes |= PFKEY_LT_SOFT;
+			break;
+		case SADB_EXT_LIFETIME_HARD:
+			sa->lifetimes |= PFKEY_LT_HARD;
 			break;
 		case SADB_EXT_ADDRESS_SRC:
 		case SADB_EXT_ADDRESS_DST:
@@ -423,6 +457,25 @@ pk_one(const struct sadb_msg *r, size_t len, void *arg)
 {
 
 	pk_parse(r, len, arg);
+}
+
+/* A message's SA (an SADB_EXPIRE's), as a reply's. */
+void
+pfkey_sa_of(const struct sadb_msg *r, size_t len, struct pfkey_sa *sa)
+{
+
+	pk_parse(r, len, sa);
+}
+
+/* This socket told the kernel's news (SADB_REGISTER, for ESP): SADB_ACQUIRE
+ * and SADB_EXPIRE come to it from now on. */
+int
+pfkey_register(struct work *w, int fd, const char **errp)
+{
+	struct pkmsg	m;
+
+	pk_init(&m, SADB_REGISTER);
+	return (pk_call(w, fd, &m, NULL, NULL, errp));
 }
 
 /* The SA of spi from src to dst as the kernel has it (SADB_GET). */
@@ -567,6 +620,15 @@ pk_spparse(const struct sadb_msg *r, size_t len, struct pfkey_sp *sp)
 			break;
 		}
 	}
+}
+
+/* A message's policy (an SADB_ACQUIRE's: its id and direction, the
+ * SA's ends as the selector), as a reply's. */
+void
+pfkey_sp_of(const struct sadb_msg *r, size_t len, struct pfkey_sp *sp)
+{
+
+	pk_spparse(r, len, sp);
 }
 
 static void

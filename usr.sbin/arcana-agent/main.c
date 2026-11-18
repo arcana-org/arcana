@@ -1082,6 +1082,7 @@ main(int argc, char *argv[])
 	smtpd_watch_start();
 	services_collect_start();
 	sa_faults_start();
+	sadb_watch_start();
 	nacm_check(ctx);
 	logmsg(LOG_INFO, "version %s ready", ARCANA_AGENT_VERSION);
 	stop_loop = loop;

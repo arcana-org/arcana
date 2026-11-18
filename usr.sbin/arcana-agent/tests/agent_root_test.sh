@@ -1676,7 +1676,10 @@ acl_vnet_head()
 	    "not, ::1's echo by an IPv6 prefix set and an ICMPv6 type set;" \
 	    "the prefix sets read back from the tables; another edit's" \
 	    "tables a generation of their own, the old one destroyed;" \
-	    "taken out, no table left"
+	    "taken out, no table left.  6.1.6: RFC 9899's Appendix B.2" \
+	    "ACLs and TCP flag bitmasks loaded by ipfw; lo0 at an MTU of" \
+	    "1500, an echo of 3000 bytes dropped as fragments, IPv4's and" \
+	    "IPv6's, one of 100 bytes through"
 	atf_set "require.user" "root"
 	atf_set "timeout" "180"
 }
@@ -1891,6 +1894,40 @@ EOS
 	    /ietf-access-control-list:acls
 	atf_check -o not-match:' set 29 ' jexec arcw_acl ipfw -S list
 	atf_check -o not-match:'acl-' jexec arcw_acl ipfw table all list
+	# 6.1.6: Appendix B.2's two ACLs and B.1's and B.6's TCP flags
+	# loaded by ipfw; lo0's MTU at 1500, an echo of 3000 bytes goes as
+	# fragments, each dropped on the way in, while one of 100 passes.
+	atf_check jexec arcw_acl ifconfig lo0 mtu 1500
+	cat > frags.json <<'EOS'
+{"acl":[{"name":"dns-fragments","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"drop-all-fragments","matches":{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"match","type":"isf"}}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"allow-dns-packets","matches":{"ipv4":{"destination-ipv4-network":"198.51.100.0/24"},"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"dns-fragments6","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"drop-all-fragments","matches":{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"operator":"match","type":"isf"}}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"allow-dns-packets","matches":{"ipv6":{"destination-ipv6-network":"2001:db8::/32"},"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"tcp-flags","aces":{"ace":[{"name":"null-attack","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":63}}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"syn","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"not-ff","matches":{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"not match","type":"ff"}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}},{"name":"ext","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"route","matches":{"ipv6":{"ietf-acl-enh:extension-header":43}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"dns-fragments"},{"name":"dns-fragments6"}]}}}]}}
+EOS
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @frags.json
+	atf_check -o save:list jexec arcw_acl ipfw -S list
+	atf_check -o match:'^61000 set 29 deny ip4 from any to any \{ frag mf or frag offset \} // acl:0.1 dns-fragments/drop-all-fragments$' \
+	    -o match:'^61010 set 29 deny ip6 from any to any extension header: fragmentation // acl:1.1 dns-fragments6/drop-all-fragments$' \
+	    -o match:'^61020 set 29 deny tcp from any to any tcpflags !.*// acl:2.1 tcp-flags/null-attack$' \
+	    -o match:'^61021 set 29 allow tcp from any to any tcpflags syn // acl:2.2 tcp-flags/syn$' \
+	    -o match:'^61022 set 29 allow .*\{ frag !mf or frag offset \}.*// acl:2.3 tcp-flags/not-ff$' \
+	    -o match:'^61030 set 29 deny ip6 from any to any extension header: routing options // acl:3.1 ext/route$' \
+	    -o not-match:' set 28 ' cat list
+	atf_check -o match:'"type":"isf"' -o match:'"bitmask":63' \
+	    -o match:'"ietf-acl-enh:extension-header":43' "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 -s 100 127.0.0.1
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 -s 3000 127.0.0.1
+	atf_check -o match:'^61000 +[1-9][0-9]* ' jexec arcw_acl ipfw -a list 61000
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -6 -c 1 -t 2 -s 100 ::1
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -6 -c 1 -t 2 -s 3000 ::1
+	atf_check -o match:'^61010 +[1-9][0-9]* ' jexec arcw_acl ipfw -a list 61010
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 -s 3000 127.0.0.1
+	atf_check -o not-match:' set 29 ' jexec arcw_acl ipfw -S list
 }
 acl_vnet_cleanup()
 {
@@ -2222,6 +2259,75 @@ ipsec_sp_vnet_cleanup()
 	fi
 	jail -r arcw_spa 2>/dev/null
 	jail -r arcw_spb 2>/dev/null
+	true
+}
+
+atf_test_case sadb_vnet cleanup
+sadb_vnet_head()
+{
+	atf_set "descr" "The kernel's SAD news for real (PLAN-SDN-YANG 6.2.3):" \
+	    "the agent in a vnet jail of its own, its PF_KEY socket the" \
+	    "jail's and registered; an SA put in by setkey(8) with a soft" \
+	    "lifetime of 1 s and a hard one of 4 s told as sadb-expire, soft" \
+	    "then hard; a policy requiring ESP with no SA, a ping meeting" \
+	    "it, told as sadb-acquire with the policy's name and selector"
+	atf_set "require.user" "root"
+	atf_set "timeout" "60"
+}
+sadb_vnet_body()
+{
+	local d="$(pwd)" i
+
+	programs
+	kldstat -q -m ipsec || atf_skip "ipsec(4) is not loaded"
+	jls -j arcw_sadb >/dev/null 2>&1 && atf_skip "a jail arcw_sadb is there already"
+	atf_check -o ignore jail -c name=arcw_sadb vnet persist path=/
+	atf_check jexec arcw_sadb ifconfig lo0 inet 127.0.0.1/8 up
+	mkdir -p etc/jail.conf.d
+	: > etc/jail.conf
+	SOCK="unix:$d/s.sock"
+	jexec arcw_sadb "$JGD" -F -l "$SOCK" -f "$d/etc/jail.conf" \
+	    -D "$d/etc/jail.conf.d" -1 "$d/history.conf" \
+	    --nacm "$d/nacm.cbor" > daemon.out 2>&1 &
+	echo $! > daemon.pid
+	for i in $(seq 1 100); do
+		grep -q 'ready' daemon.out 2>/dev/null && break
+		sleep 0.05
+	done
+	grep -q 'ready' daemon.out || atf_fail "the agent did not start: $(cat daemon.out)"
+	"$JGC" -c "$SOCK" notifications > notif.out 2>&1 &
+	echo $! > notif.pid
+	sleep 0.5
+	# An SA of the admin's, soft at 1 s, hard at 4 s: the kernel's
+	# SADB_EXPIRE, soft then hard.
+	printf 'add 127.0.0.1 127.0.0.2 esp 0x2001 -m tunnel -ls 1 -lh 4 -E rijndael-cbc 0x00112233445566778899aabbccddeeff -A hmac-sha2-256 0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff;\n' > sa.conf
+	atf_check jexec arcw_sadb setkey -f "$d/sa.conf"
+	# A policy requiring ESP to 127.0.0.3 with no SA: a ping meets it,
+	# the kernel's SADB_ACQUIRE.
+	printf 'spdadd 127.0.0.1/32 127.0.0.3/32 icmp -P out ipsec esp/transport//require;\n' > sp.conf
+	atf_check jexec arcw_sadb setkey -f "$d/sp.conf"
+	atf_check -s not-exit:0 -o ignore -e ignore \
+	    jexec arcw_sadb ping -c 1 -t 1 -S 127.0.0.1 127.0.0.3
+	for i in $(seq 1 50); do
+		grep -q '"soft-lifetime-expire":false' notif.out && break
+		sleep 0.2
+	done
+	kill "$(cat notif.pid)"
+	atf_check -o match:'"ietf-i2nsf-ikeless:sadb-expire":\{"ipsec-sa-name":"esp/127.0.0.2/0x00002001","lifetime-current":\{"bytes":"0","packets":0,"time":[0-9]+\},"soft-lifetime-expire":true\}' \
+	    -o match:'"ietf-i2nsf-ikeless:sadb-expire":\{"ipsec-sa-name":"esp/127.0.0.2/0x00002001",[^}]*\},"soft-lifetime-expire":false\}' \
+	    -o match:'"ietf-i2nsf-ikeless:sadb-acquire":\{"ipsec-policy-name":"spd/[0-9]+","traffic-selector":\{"inner-protocol":1,"local-prefix":"127.0.0.1/32","remote-prefix":"127.0.0.3/32"\}\}' \
+	    cat notif.out
+	# The soft one first.
+	atf_check -o match:'^true$' sh -c "grep -o 'soft-lifetime-expire\":[a-z]*' notif.out | head -1 | cut -d: -f2"
+	atf_check -o ignore jexec arcw_sadb setkey -F
+	atf_check -o ignore jexec arcw_sadb setkey -FP
+}
+sadb_vnet_cleanup()
+{
+	[ -f notif.pid ] && kill "$(cat notif.pid)" 2>/dev/null
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	sleep 0.5
+	jail -r arcw_sadb 2>/dev/null
 	true
 }
 
@@ -6332,6 +6438,7 @@ atf_init_test_cases()
 	atf_add_test_case acl_vnet
 	atf_add_test_case ipsec_sa_vnet
 	atf_add_test_case ipsec_sp_vnet
+	atf_add_test_case sadb_vnet
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback
 	atf_add_test_case sdwan_record

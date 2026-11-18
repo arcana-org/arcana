@@ -83,7 +83,7 @@ origin.
 | `ietf-https-notif-transport@2026-06-30.yang` | module | draft-ietf-netconf-https-notif (YangModels/yang, experimental); a configured subscription's HTTPS receiver |
 | `ietf-i2nsf-ike@2021-07-14.yang` | module | RFC 9061 |
 | `ietf-i2nsf-ikec@2021-07-14.yang` | module | RFC 9061 |
-| `ietf-i2nsf-ikeless@2021-07-14.yang` | module | RFC 9061 |
+| `ietf-i2nsf-ikeless@2021-07-14.yang` | module | RFC 9061; its notifications served by the agent, the kernel's PF_KEY news (invidia/sadb.c) |
 | `ietf-if-ethernet-like@2026-06-19.yang` | module | draft-ietf-netmod-intf-ext-yang, its 2026-06-19 revision (YangModels/yang) |
 | `ietf-if-extensions@2025-08-07.yang` | module | draft-ietf-netmod-intf-ext-yang, its 2025-08-07 revision (YangModels/yang) |
 | `ietf-if-vlan-encapsulation@2026-07-06.yang` | module | draft-ietf-netmod-sub-intf-vlan-model, its 2026-07-06 revision (YangModels/yang) |
@@ -156,6 +156,7 @@ tree beside the operation's CBOR schema.
 |---|---|---|
 | `arcana-interfaces@2026-10-14.yang` | module | augments `ietf-interfaces`: driver name, groups, tunnel FIB, capabilities, media; a vlan(4)'s priority, a lagg(4)'s protocol, hash and ports' priorities and flags, a bridge(4) member's own flags; an epair(4) end's other in a vnet. What a standard has is the standard's: the MTU `ietf-ip`'s ipv4 mtu (and `ietf-if-extensions`' max-frame-size), the Ethernet addresses `ietf-if-ethernet-like`'s, the FIB RFC 8529's bind-ni-name, an epair's other end `ietf-if-extensions`' peer-interface, a vlan's tag `ietf-if-vlan-encapsulation`'s outer-tag and its parent `ietf-if-extensions`' parent-interface, an Ethernet's auto-negotiation, duplex and PMD IEEE 802.3's `ieee802-ethernet-interface`, a lagg IEEE 802.1AX's `ieee802-dot1ax-linkagg` (a key group and system each, LACP's state), a bridge IEEE 802.1Q's `ieee802-dot1q-bridge` and its members' RSTP `ieee802-dot1q-rstp-bridge`'s |
 | `arcana-acl-deviations@2026-11-18.yang` | module | deviates RFC 9899's `ietf-acl-enh`: its ipv4-fragment's must refuses RFC 8519's IPv4 flags wherever an ACE has an ipv4 match (the container's operator has a default, so it is in the accessible tree); it refuses them with a fragment type, as RFC 9899's Section 3.5 means |
+| `arcana-ikeless-deviations@2026-11-18.yang` | module | deviates RFC 9061's `ietf-i2nsf-ikeless`: its SAD and SPD lists not served yet (the agent's manual SAs are arcana-jobs' ipsec-sa), and no sadb-bad-spi, which FreeBSD's PF_KEY has no message for |
 | `arcana-ieee802-deviations@2026-10-14.yang` | module | deviates IEEE 802.1AX's `ieee802-dot1ax-linkagg`: FreeBSD's LACP keeps no administrative key (each port's is derived from its speed), so a key group's actor-admin-key is not mandatory |
 | `arcana-ip-deviations@2026-10-14.yang` | module | deviates `ietf-ip`: forwarding, DAD's probes and temporary addresses are the host's sysctls, IPv4 cannot be turned off on one interface, one MTU for both families, ipv4's (the link's), so ipv6's is config false |
 | `arcana-jails@2026-10-14.yang` | module | FreeBSD's jails (jail(8), jail(2)): those jail.conf(5) defines, as jail(8) -e resolves them, and those running, as jail_get(2) gives them; start, stop, restart, kill as actions; a vnet jail's logical network element (RFC 8530); the list and action operations of arcana.yaml as YANG |
@@ -211,7 +212,7 @@ The `.sid` files of the IETF and IANA modules the agent fills
 publishes no file, so they are numbered here (SIDS.md). So are those
 of the ones with no IETF range (`ietf-routing`, its address families,
 `ietf-network-instance`, `ietf-logical-network-element`, `ietf-network`,
-`ietf-network-topology`, `ietf-sap-ntw`, `ietf-access-control-list`, `ietf-acl-enh`, `ietf-te-types`,
+`ietf-network-topology`, `ietf-sap-ntw`, `ietf-access-control-list`, `ietf-acl-enh`, `ietf-i2nsf-ikeless`, `ietf-te-types`,
 `ietf-te-topology`, `ietf-vn`), from Arcana's block. A module's file numbers every item of it, whatever
 another module deviates:
 `arcana-network-instance` takes `vsi-root` away, its number stays.

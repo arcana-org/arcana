@@ -1,0 +1,45 @@
+module arcana-ikeless-deviations {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-ikeless-deviations";
+  prefix arcikld;
+
+  import ietf-i2nsf-ikeless {
+    prefix nsfikels;
+    reference
+      "RFC 9061: A YANG Data Model for IPsec Flow Protection
+                 Based on Software-Defined Networking (SDN)";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "Where Arcana's agent differs from RFC 9061's IKE-less model.
+
+     The agent tells what the kernel's PF_KEY (RFC 2367) says of its
+     SAs and policies as the model's notifications: sadb-acquire
+     (SADB_ACQUIRE), sadb-expire (SADB_EXPIRE, soft or hard) and
+     sadb-seq-overflow (the SAs' sequence counters read, the kernel
+     having no message for it).  The SAD and SPD lists, ipsec-ikeless,
+     are not served yet: the agent's manual SAs and their policies are
+     arcana-jobs' ipsec-sa.  FreeBSD's PF_KEY tells no packet of an
+     unknown SPI, so there is no sadb-bad-spi.";
+
+  revision 2026-11-18 {
+    description
+      "Initial revision.";
+  }
+
+  deviation "/nsfikels:ipsec-ikeless" {
+    description
+      "Not served yet.";
+    deviate not-supported;
+  }
+
+  deviation "/nsfikels:sadb-bad-spi" {
+    description
+      "FreeBSD's PF_KEY has no such message.";
+    deviate not-supported;
+  }
+}

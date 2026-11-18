@@ -97,6 +97,17 @@
  * table swap corrupts tables with values, docs/TODO.md) nor changed
  * while a rule uses it.  The operational datastore's prefix sets are
  * what the live tables hold.
+ *
+ * RFC 9899's matches (6.1.6): the fragment types and the TCP flags'
+ * bitmask are predicates over what ipfw reads (frag's df, mf and a
+ * non-zero offset; ext6hdr frag and frag offset for IPv6; tcpflags'
+ * six flags), written as the options and-ed within one alternative and
+ * or-ed in an or-block between them ({ frag !mf or frag offset } for
+ * not ff); an extension header is ext6hdr's word for it.  What ipfw
+ * cannot read is refused, whichever the operator: IPv6's last fragment
+ * (no M flag), its first where atomic fragments reach the rules, the
+ * flags tcpflags does not name (ECE, CWR, AE, reserved), the headers
+ * ipfw's IPv6 parser does not know (mobility, HIP, shim6).
  */
 
 #include <sys/param.h>
@@ -982,6 +993,357 @@ alias_words(char *b, size_t len, const ysets *ds, int gen, const char *name,
 	return (0);
 }
 
+/* ---- RFC 9899's bit matches (6.1.6) ---------------------------------- */
+
+#define	OP_NOT		0	/* RFC 9899's operator, its bits' positions */
+#define	OP_MATCH	1
+#define	OP_ANY		2
+#define	CUBES_MAX	8
+
+/* The minterms of a cube of n atoms: those whose atoms in care are as
+ * val has them. */
+static uint64_t
+cube_minterms(int n, unsigned care, unsigned val)
+{
+	uint64_t	t = 0;
+
+	for (unsigned m = 0; m < (1u << n); m++)
+		if ((m & care) == val)
+			t |= UINT64_C(1) << m;
+	return (t);
+}
+
+/*
+ * A predicate of n atoms (at most 6) as cubes, ipfw's options and-ed
+ * within one and or-ed between them: t its truth table (bit m the
+ * minterm m, atom i its bit i), dc the minterms no packet has.  Each
+ * cube's minterms are true or none's, every true one in a cube; the
+ * cube covering most of what is left first, the larger of two.  How
+ * many cubes into care[] and val[], at most max; -1 past that.
+ */
+static int
+cover(int n, uint64_t t, uint64_t dc, unsigned *care, unsigned *val,
+    int max)
+{
+	uint64_t	left = t, ok = t | dc, cm, bm;
+	unsigned	bc, bv;
+	int		k, best, cnt;
+
+	for (k = 0; left != 0; k++) {
+		if (k == max)
+			return (-1);
+		best = 0;
+		bm = 0;
+		bc = bv = 0;
+		for (unsigned c = 0; c < (1u << n); c++)
+			for (unsigned v = c; ; v = (v - 1) & c) {
+				cm = cube_minterms(n, c, v);
+				cnt = __builtin_popcountll(cm & left);
+				if ((cm & ~ok) == 0 && cnt > 0 && (cnt > best ||
+				    (cnt == best && __builtin_popcountll(cm) >
+				    __builtin_popcountll(bm)))) {
+					best = cnt;
+					bm = cm;
+					bc = c;
+					bv = v;
+				}
+				if (v == 0)
+					break;
+			}
+		care[k] = bc;
+		val[k] = bv;
+		left &= ~bm;
+	}
+	return (k);
+}
+
+/*
+ * RFC 9899's operator over the bits named: match all of them (the
+ * default), any of them, either negated by not; each bit's truth table
+ * in bt[], the minterms no packet has in dc.  The truth table, or
+ * where the operator says both match and any, *bad.
+ */
+static uint64_t
+op_truth(int n, const struct cbl_bytes *op, const uint64_t *bt,
+    unsigned nb, unsigned named, uint64_t dc, bool *bad)
+{
+	uint64_t	all = cube_minterms(n, 0, 0) & ~dc, t;
+	bool		any = bit_set(op, OP_ANY);
+
+	*bad = any && bit_set(op, OP_MATCH);
+	t = any ? 0 : all;
+	for (unsigned i = 0; i < nb; i++)
+		if (named & (1u << i))
+			t = any ? t | bt[i] : t & bt[i];
+	if (bit_set(op, OP_NOT))
+		t = ~t & all;
+	return (t & all);
+}
+
+/*
+ * Cubes of flags one ipfw option reads (frag, tcpflags), into b: the
+ * option once with the cube's flags ("frag mf,!offset"), an or-block of
+ * them where there are several.
+ */
+static void
+flags_words(char *b, size_t len, const char *opt, const char *const *name,
+    int n, const unsigned *care, const unsigned *val, int k)
+{
+	char	spec[96];
+
+	if (k > 1)
+		words_add(b, len, " {");
+	for (int j = 0; j < k; j++) {
+		spec[0] = '\0';
+		for (int i = 0; i < n; i++)
+			if (care[j] & (1u << i))
+				words_add(spec, sizeof(spec), ",%s%s",
+				    val[j] & (1u << i) ? "" : "!", name[i]);
+		words_add(b, len, "%s %s %s", j > 0 ? " or" : "", opt,
+		    spec + 1);
+	}
+	if (k > 1)
+		words_add(b, len, " }");
+}
+
+/* IPv4's fragment atoms: frag's df, mf, offset (not 0). */
+#define	F4_DF		0x1
+#define	F4_MF		0x2
+#define	F4_OFF		0x4
+/* IPv6's: a fragment header (ext6hdr frag), its offset not 0 (frag
+ * offset, all ipfw reads of it: not the M flag); an offset without
+ * the header is no packet's. */
+#define	F6_HDR		0x1
+#define	F6_OFF		0x2
+
+/*
+ * RFC 9899's ipv4-fragment or ipv6-fragment (op, type) as ipfw's
+ * options, into b.  IPv4's types from frag's flags: df the flag, isf a
+ * fragment (mf or an offset), ff the first (mf, no offset), lf the last
+ * (an offset, no mf).  IPv6's from ext6hdr frag and frag offset: isf a
+ * fragment header (atomic fragments too, as Appendix B.2 says), ff a
+ * header with no offset, which is the first fragment's alone where ipfw
+ * drops atomic ones (net.inet6.ip6.fw.permit_single_frag6=0 and
+ * deny_unknown_exthdrs=1; *ff6 set, the caller's to read); lf refused
+ * (ipfw reads no M flag of IPv6's), df no IPv6 flag.
+ */
+static int
+frag_words(char *b, size_t len, bool v6, const struct cbl_bytes *op,
+    const struct cbl_bytes *type, const char *acl, const char *ace,
+    bool *ff6, struct aclerr *ae)
+{
+	static const char *const f4[] = { "df", "mf", "offset" };
+	char		 node[96];
+	uint64_t	 bt[4], t, dc;
+	unsigned	 named, care[CUBES_MAX], val[CUBES_MAX];
+	int		 n, k;
+	bool		 bad;
+
+	snprintf(node, sizeof(node), "acl/aces/ace/matches/%s/"
+	    "ietf-acl-enh:%s-fragment/type", v6 ? "ipv6" : "ipv4",
+	    v6 ? "ipv6" : "ipv4");
+	named = 0;
+	for (unsigned i = 0; i < 4; i++)
+		if (bit_set(type, i))
+			named |= 1u << i;
+	if (named == 0)
+		return (0);
+	if (!v6) {
+		n = 3;
+		dc = 0;
+		bt[0] = bt[1] = bt[2] = bt[3] = 0;
+		for (unsigned m = 0; m < 8; m++) {
+			if (m & F4_DF)
+				bt[0] |= UINT64_C(1) << m;
+			if (m & (F4_MF | F4_OFF))
+				bt[1] |= UINT64_C(1) << m;
+			if ((m & (F4_MF | F4_OFF)) == F4_MF)
+				bt[2] |= UINT64_C(1) << m;
+			if ((m & (F4_MF | F4_OFF)) == F4_OFF)
+				bt[3] |= UINT64_C(1) << m;
+		}
+	} else {
+		if (named & 0x1)
+			return (fault(ae, EINVAL, node, "acl %s, ace %s: df in "
+			    "an ipv6-fragment: IPv6 has no don't-fragment flag "
+			    "(RFC 9899: it must be 0 there)", acl, ace));
+		if (named & 0x8)
+			return (fault(ae, EOPNOTSUPP, node, "acl %s, ace %s: "
+			    "ipv6-fragment lf is not compiled into ipfw by this "
+			    "agent: frag reads whether IPv6's offset is 0, "
+			    "never the M flag, so a last fragment is not told "
+			    "from one in the middle", acl, ace));
+		n = 2;
+		dc = UINT64_C(1) << F6_OFF;
+		bt[0] = bt[3] = 0;
+		bt[1] = cube_minterms(n, F6_HDR, F6_HDR);
+		bt[2] = cube_minterms(n, F6_HDR | F6_OFF, F6_HDR);
+		*ff6 |= (named & 0x4) != 0;
+	}
+	t = op_truth(n, op, bt, 4, named, dc, &bad);
+	if (bad)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: an operator "
+		    "of match and any at once (RFC 9899: not both)", acl, ace));
+	if (t == 0)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: these fragment "
+		    "types and operator match no packet", acl, ace));
+	if (t == (cube_minterms(n, 0, 0) & ~dc))
+		return (0);
+	if ((k = cover(n, t, dc, care, val, CUBES_MAX)) == -1)
+		return (fault(ae, EOPNOTSUPP, node, "acl %s, ace %s: these "
+		    "fragment types are not compiled into ipfw by this agent: "
+		    "more alternatives than it writes", acl, ace));
+	if (!v6) {
+		flags_words(b, len, "frag", f4, n, care, val, k);
+		return (0);
+	}
+	/* IPv6's atoms are two options: an or-block holds one each. */
+	if (k > 1)
+		for (int j = 0; j < k; j++)
+			if (__builtin_popcount(care[j]) > 1)
+				return (fault(ae, EOPNOTSUPP, node, "acl %s, ace "
+				    "%s: these fragment types are not compiled "
+				    "into ipfw by this agent: an or-block "
+				    "alternates single options", acl, ace));
+	if (k > 1)
+		words_add(b, len, " {");
+	for (int j = 0; j < k; j++) {
+		words_add(b, len, "%s", j > 0 ? " or" : "");
+		if (care[j] & F6_HDR)
+			words_add(b, len, " %sext6hdr frag", val[j] & F6_HDR ?
+			    "" : "not ");
+		if (care[j] & F6_OFF)
+			words_add(b, len, " %sfrag offset", val[j] & F6_OFF ?
+			    "" : "not ");
+	}
+	if (k > 1)
+		words_add(b, len, " }");
+	return (0);
+}
+
+/* RFC 9899's TCP flags by their bitmask's positions (RFC 9293's byte
+ * 13 from its low bit, then byte 12's low four): those tcpflags names. */
+static const struct {
+	const char	*ident;		/* ietf-acl-enh's identity */
+	const char	*word;		/* tcpflags', NULL none */
+} tcp_flag[12] = {
+	{ "fin", "fin" }, { "syn", "syn" }, { "rst", "rst" },
+	{ "psh", "psh" }, { "ack", "ack" }, { "urg", "urg" },
+	{ "ece", NULL }, { "cwr", NULL }, { "ae", NULL },
+	{ NULL, NULL }, { NULL, NULL }, { NULL, NULL },
+};
+#define	TCP_FLAGS_IPFW	0x03f	/* fin to urg */
+
+/* An identity of ietf-acl-enh's, its SID; 0: none. */
+static uint64_t
+enh_ident(const char *name)
+{
+	const struct cbl_yident	*id;
+
+	for (uint32_t i = 0; i < ymodel_schema.nident; i++) {
+		id = &ymodel_schema.ident[i];
+		if (strcmp(id->name, name) == 0 &&
+		    strcmp(id->module->name, "ietf-acl-enh") == 0)
+			return (id->sid);
+	}
+	return (0);
+}
+
+/*
+ * RFC 9899's flags-bitmask as tcpflags, into b: the flags named by the
+ * bitmask or explicitly; match all of them set, any of them, either
+ * negated (Appendix B.1's null scan, not any, is every flag clear).  A
+ * flag tcpflags does not name (ECE, CWR, AE, the reserved bits) is
+ * refused, whichever the operator: ipfw cannot read it, so the rule
+ * would match more or less than the ACE says.
+ */
+static int
+tcpmask_words(char *b, size_t len,
+    const struct ietf_access_control_list_acls_acl_aces_ace_matches_tcp_acl_enh_flags_bitmask
+    *fb, const char *acl, const char *ace, struct aclerr *ae)
+{
+	static const char *const node =
+	    "acl/aces/ace/matches/tcp/ietf-acl-enh:flags-bitmask";
+	const char	*word[6];
+	char		 path[96], off[64];
+	uint64_t	 bt[6], t;
+	unsigned	 mask, care[CUBES_MAX], val[CUBES_MAX];
+	int		 k;
+	bool		 bad;
+
+	mask = 0;
+	if (fb->has_bitmask)
+		mask = fb->bitmask;
+	for (size_t i = 0; i < fb->explicit_tcp_flag.n; i++)
+		for (unsigned f = 0; f < nitems(tcp_flag); f++)
+			if (tcp_flag[f].ident != NULL &&
+			    fb->explicit_tcp_flag.v[i] ==
+			    enh_ident(tcp_flag[f].ident))
+				mask |= 1u << f;
+	snprintf(path, sizeof(path), "%s/%s", node, fb->has_bitmask ?
+	    "bitmask" : "explicit-tcp-flag");
+	if (mask & 0xf000)
+		return (fault(ae, EINVAL, path, "acl %s, ace %s: bitmask 0x%04x "
+		    "has bits past the twelve flags (RFC 9899: byte 12's data "
+		    "offset is no flag)", acl, ace, mask));
+	if (mask & ~TCP_FLAGS_IPFW) {
+		off[0] = '\0';
+		for (unsigned f = 6; f < 9; f++)
+			if (mask & (1u << f))
+				words_add(off, sizeof(off), ",%s",
+				    tcp_flag[f].ident);
+		if (mask & 0xe00)
+			words_add(off, sizeof(off), ",reserved");
+		return (fault(ae, EOPNOTSUPP, path, "acl %s, ace %s: TCP flags "
+		    "%s are not compiled into ipfw by this agent: tcpflags "
+		    "names fin, syn, rst, psh, ack and urg alone", acl, ace,
+		    off + 1));
+	}
+	for (unsigned f = 0; f < 6; f++) {
+		word[f] = tcp_flag[f].word;
+		bt[f] = cube_minterms(6, 1u << f, 1u << f);
+	}
+	t = op_truth(6, &fb->operator, bt, 6, mask, 0, &bad);
+	if (bad)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: an operator "
+		    "of match and any at once (RFC 9899: not both)", acl, ace));
+	if (t == 0)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: these flags and "
+		    "operator match no packet", acl, ace));
+	if (t == cube_minterms(6, 0, 0))
+		return (0);
+	if ((k = cover(6, t, 0, care, val, CUBES_MAX)) == -1)
+		return (fault(ae, EOPNOTSUPP, node, "acl %s, ace %s: these "
+		    "flags are not compiled into ipfw by this agent: more "
+		    "alternatives than it writes", acl, ace));
+	flags_words(b, len, "tcpflags", word, 6, care, val, k);
+	return (0);
+}
+
+/* RFC 9899's extension-header as ext6hdr's word; NULL where ipfw's
+ * IPv6 parser knows no such header. */
+static const char *
+ext6_word(unsigned h)
+{
+
+	switch (h) {
+	case 0:
+		return ("hopopt");
+	case 43:
+		return ("route");
+	case 44:
+		return ("frag");
+	case 50:
+		return ("esp");
+	case 51:
+		return ("ah");
+	case 60:
+		return ("dstopt");
+	default:
+		return (NULL);
+	}
+}
+
 /* ---- The ACEs -------------------------------------------------------- */
 
 /*
@@ -1007,7 +1369,8 @@ alias_words(char *b, size_t len, const ysets *ds, int gen, const char *name,
  * An ACE as ipfw's rules at number num, into fp.  fam is the ACL's
  * family (4, 6; 0 either), att how the ACL is attached (ATT_IN,
  * ATT_OUT), l2 whether it has an Ethernet match, ds the defined sets
- * and gen their tables' generation.  An ACL with one
+ * and gen their tables' generation; *ff6 set where an IPv6 fragment
+ * match needs atomic fragments dropped (frag_words()).  An ACL with one
  * decides on the IP pass alone ("not layer2"): an Ethernet match is a
  * rule of the layer-2 pass that tags the frame with the ACE's number,
  * which the ACE's rule looks for on the IP pass ("tagged"); a frame
@@ -1018,7 +1381,7 @@ alias_words(char *b, size_t len, const ysets *ds, int gen, const char *name,
  */
 static int
 ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
-    const yace *e, const char *cm, const ysets *ds, int gen,
+    const yace *e, const char *cm, const ysets *ds, int gen, bool *ff6,
     struct aclerr *ae)
 {
 	const ymatch	*m = e->matches;
@@ -1130,9 +1493,13 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv4->has_identification)
 				words_add(more, sizeof(more), " ipid %u",
 				    m->ipv4->identification);
-			REFUSE(m->ipv4->acl_enh_ipv4_fragment != NULL,
-			    "matches/ipv4/ietf-acl-enh:ipv4-fragment",
-			    "ipv4-fragment", "not yet (frag and its offset)");
+			/* RFC 9899's fragment types (6.1.6). */
+			if (m->ipv4->acl_enh_ipv4_fragment != NULL &&
+			    frag_words(more, sizeof(more), false,
+			    &m->ipv4->acl_enh_ipv4_fragment->operator,
+			    &m->ipv4->acl_enh_ipv4_fragment->type, acl,
+			    e->name, ff6, ae) != 0)
+				return (-1);
 			if (m->ipv4->has_protocol)
 				p = m->ipv4->protocol;
 			if (m->ipv4->source_ipv4_network != NULL)
@@ -1183,12 +1550,36 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv6->has_flow_label)
 				words_add(more, sizeof(more), " flow-id %u",
 				    m->ipv6->flow_label);
-			REFUSE(m->ipv6->acl_enh_ipv6_fragment != NULL,
-			    "matches/ipv6/ietf-acl-enh:ipv6-fragment",
-			    "ipv6-fragment", "not yet (ext6 frag)");
-			REFUSE(m->ipv6->has_acl_enh_extension_header,
-			    "matches/ipv6/ietf-acl-enh:extension-header",
-			    "extension-header", "not yet (ext6)");
+			if (m->ipv6->acl_enh_ipv6_fragment != NULL &&
+			    frag_words(more, sizeof(more), true,
+			    &m->ipv6->acl_enh_ipv6_fragment->operator,
+			    &m->ipv6->acl_enh_ipv6_fragment->type, acl,
+			    e->name, ff6, ae) != 0)
+				return (-1);
+			/* An extension header, as ipfw's IPv6 parser reads
+			 * them: before the upper layer, or before a fragment
+			 * header of an offset (the rest is not parsed). */
+			if (m->ipv6->has_acl_enh_extension_header) {
+				const char *x;
+				unsigned h;
+
+				h = m->ipv6->acl_enh_extension_header.which ==
+				    0 ? m->ipv6->acl_enh_extension_header.v.m0 :
+				    (unsigned)
+				    m->ipv6->acl_enh_extension_header.v.m1;
+				x = ext6_word(h);
+				if (x == NULL)
+					return (fault(ae, EOPNOTSUPP,
+					    "acl/aces/ace/matches/ipv6/"
+					    "ietf-acl-enh:extension-header",
+					    "acl %s, ace %s: extension header %u "
+					    "is not compiled into ipfw by this "
+					    "agent: ext6hdr names hop-by-hop, "
+					    "routing, fragment, ESP, AH and "
+					    "destination options alone (0, 43, "
+					    "44, 50, 51, 60)", acl, e->name, h));
+				words_add(more, sizeof(more), " ext6hdr %s", x);
+			}
 			if (m->ipv6->has_protocol)
 				p = m->ipv6->protocol;
 			if (m->ipv6->source_ipv6_network != NULL)
@@ -1240,9 +1631,6 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			REFUSE(m->tcp->options.len > 0, "matches/tcp/options",
 			    "tcp options", "tcpoptions tells which options are "
 			    "there, never their bytes");
-			REFUSE(m->tcp->acl_enh_flags_bitmask != NULL,
-			    "matches/tcp/ietf-acl-enh:flags-bitmask",
-			    "flags-bitmask", "not yet (tcpflags)");
 			PMATCH(m->tcp->source_port, sp);
 			PMATCH(m->tcp->destination_port, dp);
 			if (p != -1 && p != 6)
@@ -1274,7 +1662,7 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				words_add(more, sizeof(more), " tcpack %u",
 				    m->tcp->acknowledgement_number);
 			/* The flags named set, the others as they may be
-			 * (RFC 9899's flags-bitmask says which, 6.1.6). */
+			 * (RFC 9899's flags-bitmask says which, below). */
 			if (bit_set(&m->tcp->flags, 3))
 				words_add(tcpf, sizeof(tcpf), ",urg");
 			if (bit_set(&m->tcp->flags, 4))
@@ -1290,6 +1678,11 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (tcpf[0] != '\0')
 				words_add(more, sizeof(more), " tcpflags %s",
 				    tcpf + 1);
+			if (m->tcp->acl_enh_flags_bitmask != NULL &&
+			    tcpmask_words(more, sizeof(more),
+			    m->tcp->acl_enh_flags_bitmask, acl, e->name,
+			    ae) != 0)
+				return (-1);
 			if (m->tcp->has_window_size)
 				words_add(more, sizeof(more), " tcpwin %u",
 				    m->tcp->window_size);
@@ -1522,22 +1915,23 @@ attached(const yacls *c, int *att, struct aclerr *ae)
 /*
  * The ACLs as ipfw's commands for the staging set, a line each, into
  * fp, the defined sets' tables of generation gen first; how many rules
- * into *nrules, the first ACL with an Ethernet match into *l2 (NULL
- * none).  -1 and why when one cannot be.
+ * into *nrules, the first ACL with an Ethernet match into *l2 and the
+ * first with an IPv6 first-fragment match into *ff6 (NULL none).  -1
+ * and why when one cannot be.
  */
 static int
 acl_compile(const yacls *c, int gen, FILE *fp, int *nrules, const char **l2,
-    struct aclerr *ae)
+    const char **ff6, struct aclerr *ae)
 {
 	const yacl	*l;
 	const yattach	*ap;
 	char		 cm[ACL_COMMENT + 1], tag[32];
 	int		*band, *att, fam, num, k;
 	size_t		 i, j;
-	bool		 eth;
+	bool		 eth, ff;
 
 	*nrules = 0;
-	*l2 = NULL;
+	*l2 = *ff6 = NULL;
 	if (c == NULL || (c->acl.n == 0 && (c->attachment_points == NULL ||
 	    c->attachment_points->interface.n == 0)))
 		return (0);
@@ -1588,10 +1982,13 @@ acl_compile(const yacls *c, int gen, FILE *fp, int *nrules, const char **l2,
 			snprintf(tag, sizeof(tag), "%zu.%zu", i, j + 1);
 			comment_of(cm, sizeof(cm), tag, l->name,
 			    l->aces->ace.v[j].name);
+			ff = false;
 			if (ace_compile(fp, l->name, fam, att[i], eth,
 			    band[i] + (int)j, &l->aces->ace.v[j], cm,
-			    c->acl_enh_defined_sets, gen, ae) != 0)
+			    c->acl_enh_defined_sets, gen, &ff, ae) != 0)
 				goto bad;
+			if (ff && *ff6 == NULL)
+				*ff6 = l->name;
 			(*nrules)++;
 		}
 		snprintf(tag, sizeof(tag), "%zu.end", i);
@@ -1934,7 +2331,7 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	size_t		 errlen = sizeof(ae->msg);
 	struct krule	*k;
 	struct ktable	*t;
-	const char	*l2;
+	const char	*l2, *ff6;
 	char		 path[MAXPATHLEN], *buf;
 	size_t		 nk, nt, blen;
 	FILE		*fp;
@@ -1953,7 +2350,7 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	if ((fp = open_memstream(&buf, &blen)) == NULL)
 		return (fault(ae, errno, NULL, "open_memstream: %s",
 		    strerror(errno)));
-	rc = acl_compile(c, gen, fp, &nrules, &l2, ae);
+	rc = acl_compile(c, gen, fp, &nrules, &l2, &ff6, ae);
 	if (fclose(fp) != 0 && rc == 0)
 		rc = fault(ae, errno, NULL, "the rules: %s", strerror(errno));
 	if (rc != 0) {
@@ -1966,6 +2363,19 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 		    "Ethernet match needs the frames on ipfw's layer-2 pass, "
 		    "net.link.ether.ipfw=1, which is the admin's to set (this "
 		    "agent does not)", l2));
+	/* ipfw reads no M flag of IPv6's: a fragment header of offset 0 is
+	 * the first fragment's where ipfw drops atomic ones. */
+	if (ff6 != NULL &&
+	    (fw_sysctl(w, "net.inet6.ip6.fw.permit_single_frag6") ||
+	    !fw_sysctl(w, "net.inet6.ip6.fw.deny_unknown_exthdrs")))
+		return (fault(ae, EOPNOTSUPP, "acl/aces/ace/matches/ipv6/"
+		    "ietf-acl-enh:ipv6-fragment/type", "acl %s: ipv6-fragment "
+		    "ff is not compiled into ipfw by this agent unless ipfw "
+		    "drops atomic fragments (net.inet6.ip6.fw."
+		    "permit_single_frag6=0 and deny_unknown_exthdrs=1, the "
+		    "admin's to set, not this agent's): ipfw reads no M flag of "
+		    "IPv6's, and an atomic fragment (offset 0, no M) would match "
+		    "as a first one", ff6));
 	if (!readable) {
 		if (nrules == 0)
 			return (0);

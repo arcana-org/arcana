@@ -1,0 +1,26 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-ikeless-deviations",
+    "module-revision": "2026-11-18",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 95 400, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-i2nsf-ikeless",
+        "module-revision": "2021-07-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "95400",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-ikeless-deviations",
+        "sid": "95400"
+      }
+    ]
+  }
+}

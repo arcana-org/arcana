@@ -397,7 +397,9 @@ line of RFC 8040's JSON, until interrupted: every event the agent tells
 .Pq Cm events
 as arcana-events' event, its kind and its data, and each change of an
 SD-WAN edge's steering as arcana-steer's steer-changed: the entry, the
-candidate before and now, and why.
+candidate before and now, and why; what the kernel's PF_KEY tells of
+the host's SAs as RFC 9061's sadb-acquire, sadb-expire and
+sadb-seq-overflow.
 .It Xo
 .Cm subscribe
 .Op Fl n Ar count

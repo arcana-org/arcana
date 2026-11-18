@@ -8,7 +8,7 @@ SRCS+=		yjson.c
 SRCS+=		admit.c ynacm.c secrets.c certs.c ssh.c tlsfiles.c confedit.c confread.c host.c kernel.c ntp.c rtadvd.c sysctl.c transport.c bundle.c l2.c ipfw.c netstore.c sysfiles.c geomjob.c \
 		yagent.c yhost.c yhw.c ysshd.c ysystem.c ysysedit.c yboot.c yreads.c
 # Invidia: the network.
-SRCS+=		sa.c pfkey.c address.c interfaces.c netgraph.c netflow.c network.c netdump.c nlroute.c fwmatch.c pathcheck.c neigh.c carp.c capture.c parts.c pcb.c rcconf.c \
+SRCS+=		sa.c pfkey.c sadb.c address.c interfaces.c netgraph.c netflow.c network.c netdump.c nlroute.c fwmatch.c pathcheck.c neigh.c carp.c capture.c parts.c pcb.c rcconf.c \
 		routes.c rtimes.c scope.c sdwan.c vnet.c wireguard.c feeds.c \
 		yif.c yip.c yni.c yrt.c rcroutes.c rcarcana.c ynetconf.c yifedit.c rtadv.c ylne.c lneroot.c yfw.c yng.c ysd.c \
 		yts.c ywg.c yserve.c yarcana.c ynotif.c ynet.c ysap.c cfgfiles.c acl.c

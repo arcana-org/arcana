@@ -1,0 +1,723 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "ietf-i2nsf-ikeless",
+    "module-revision": "2021-07-14",
+    "description": "No IETF range: RFC 9595's experimental range, for now (share/yang/SIDS.md).",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-inet-types",
+        "module-revision": "2025-12-22"
+      },
+      {
+        "module-name": "ietf-yang-types",
+        "module-revision": "2025-12-22"
+      },
+      {
+        "module-name": "ietf-i2nsf-ikec",
+        "module-revision": "2021-07-14"
+      },
+      {
+        "module-name": "ietf-netconf-acm",
+        "module-revision": "2018-02-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "95200",
+        "size": "200"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "ietf-i2nsf-ikeless",
+        "sid": "95200"
+      },
+      {
+        "namespace": "feature",
+        "identifier": "ikeless-notification",
+        "sid": "95201"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless",
+        "sid": "95202"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad",
+        "sid": "95203"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry",
+        "sid": "95204"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config",
+        "sid": "95205"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/anti-replay-window-size",
+        "sid": "95206"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/encapsulation-type",
+        "sid": "95207"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/encapsulation-type/dport",
+        "sid": "95208"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/encapsulation-type/espencap",
+        "sid": "95209"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/encapsulation-type/oaddr",
+        "sid": "95210"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/encapsulation-type/sport",
+        "sid": "95211"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa",
+        "sid": "95212"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/encryption",
+        "sid": "95213"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/encryption/encryption-algorithm",
+        "sid": "95214"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/encryption/iv",
+        "sid": "95215"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/encryption/key",
+        "sid": "95216"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/integrity",
+        "sid": "95217"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/integrity/integrity-algorithm",
+        "sid": "95218"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/esp-sa/integrity/key",
+        "sid": "95219"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/ext-seq-num",
+        "sid": "95220"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/mode",
+        "sid": "95221"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/protocol-parameters",
+        "sid": "95222"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-hard",
+        "sid": "95223"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-hard/bytes",
+        "sid": "95224"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-hard/idle",
+        "sid": "95225"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-hard/packets",
+        "sid": "95226"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-hard/time",
+        "sid": "95227"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft",
+        "sid": "95228"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft/action",
+        "sid": "95229"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft/bytes",
+        "sid": "95230"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft/idle",
+        "sid": "95231"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft/packets",
+        "sid": "95232"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/sa-lifetime-soft/time",
+        "sid": "95233"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/seq-overflow",
+        "sid": "95234"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/spi",
+        "sid": "95235"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector",
+        "sid": "95236"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/inner-protocol",
+        "sid": "95237"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/local-ports",
+        "sid": "95238"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/local-ports/end",
+        "sid": "95239"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/local-ports/start",
+        "sid": "95240"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/local-prefix",
+        "sid": "95241"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/remote-ports",
+        "sid": "95242"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/remote-ports/end",
+        "sid": "95243"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/remote-ports/start",
+        "sid": "95244"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/traffic-selector/remote-prefix",
+        "sid": "95245"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel",
+        "sid": "95246"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/bypass-dscp",
+        "sid": "95247"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/df-bit",
+        "sid": "95248"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/dscp-mapping",
+        "sid": "95249"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/dscp-mapping/id",
+        "sid": "95250"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/dscp-mapping/inner-dscp",
+        "sid": "95251"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/dscp-mapping/outer-dscp",
+        "sid": "95252"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/dscp-values",
+        "sid": "95253"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/local",
+        "sid": "95254"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/tunnel/remote",
+        "sid": "95255"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state",
+        "sid": "95256"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats",
+        "sid": "95257"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/failed",
+        "sid": "95258"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/packet-dropped",
+        "sid": "95259"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/replay-window",
+        "sid": "95260"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/replay-window/b",
+        "sid": "95261"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/replay-window/t",
+        "sid": "95262"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/replay-window/w",
+        "sid": "95263"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/replay-stats/seq-number-counter",
+        "sid": "95264"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/sa-lifetime-current",
+        "sid": "95265"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/sa-lifetime-current/bytes",
+        "sid": "95266"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/sa-lifetime-current/idle",
+        "sid": "95267"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/sa-lifetime-current/packets",
+        "sid": "95268"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-state/sa-lifetime-current/time",
+        "sid": "95269"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/name",
+        "sid": "95270"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/reqid",
+        "sid": "95271"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd",
+        "sid": "95272"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry",
+        "sid": "95273"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/direction",
+        "sid": "95274"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config",
+        "sid": "95275"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/anti-replay-window-size",
+        "sid": "95276"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info",
+        "sid": "95277"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/action",
+        "sid": "95278"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg",
+        "sid": "95279"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms",
+        "sid": "95280"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/encryption",
+        "sid": "95281"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/encryption/algorithm-type",
+        "sid": "95282"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/encryption/id",
+        "sid": "95283"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/encryption/key-length",
+        "sid": "95284"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/integrity",
+        "sid": "95285"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/esp-algorithms/tfc-pad",
+        "sid": "95286"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/ext-seq-num",
+        "sid": "95287"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/mode",
+        "sid": "95288"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/pfp-flag",
+        "sid": "95289"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/protocol-parameters",
+        "sid": "95290"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/seq-overflow",
+        "sid": "95291"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/stateful-frag-check",
+        "sid": "95292"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel",
+        "sid": "95293"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/bypass-dscp",
+        "sid": "95294"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/df-bit",
+        "sid": "95295"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/dscp-mapping",
+        "sid": "95296"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/dscp-mapping/id",
+        "sid": "95297"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/dscp-mapping/inner-dscp",
+        "sid": "95298"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/dscp-mapping/outer-dscp",
+        "sid": "95299"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/local",
+        "sid": "95300"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/processing-info/ipsec-sa-cfg/tunnel/remote",
+        "sid": "95301"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector",
+        "sid": "95302"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/inner-protocol",
+        "sid": "95303"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/local-ports",
+        "sid": "95304"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/local-ports/end",
+        "sid": "95305"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/local-ports/start",
+        "sid": "95306"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/local-prefix",
+        "sid": "95307"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/remote-ports",
+        "sid": "95308"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/remote-ports/end",
+        "sid": "95309"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/remote-ports/start",
+        "sid": "95310"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/ipsec-policy-config/traffic-selector/remote-prefix",
+        "sid": "95311"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/name",
+        "sid": "95312"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/reqid",
+        "sid": "95313"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire",
+        "sid": "95314"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/ipsec-policy-name",
+        "sid": "95315"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector",
+        "sid": "95316"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/inner-protocol",
+        "sid": "95317"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/local-ports",
+        "sid": "95318"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/local-ports/end",
+        "sid": "95319"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/local-ports/start",
+        "sid": "95320"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/local-prefix",
+        "sid": "95321"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/remote-ports",
+        "sid": "95322"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/remote-ports/end",
+        "sid": "95323"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/remote-ports/start",
+        "sid": "95324"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-acquire/traffic-selector/remote-prefix",
+        "sid": "95325"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-bad-spi",
+        "sid": "95326"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-bad-spi/spi",
+        "sid": "95327"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire",
+        "sid": "95328"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/ipsec-sa-name",
+        "sid": "95329"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/lifetime-current",
+        "sid": "95330"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/lifetime-current/bytes",
+        "sid": "95331"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/lifetime-current/idle",
+        "sid": "95332"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/lifetime-current/packets",
+        "sid": "95333"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/lifetime-current/time",
+        "sid": "95334"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-expire/soft-lifetime-expire",
+        "sid": "95335"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-seq-overflow",
+        "sid": "95336"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:sadb-seq-overflow/ipsec-sa-name",
+        "sid": "95337"
+      }
+    ]
+  }
+}

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.307.0"
+#define	ARCANA_AGENT_VERSION	"0.308.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1356,7 +1356,10 @@ struct pfkey_sa {
 	const unsigned char	*ekey, *akey;
 	size_t			 ekeylen, akeylen;
 	uint64_t		 bytes, added;	/* read: current lifetime */
+	uint64_t		 used;		/* first used */
 	uint32_t		 packets;
+	uint32_t		 seq;		/* the sequence counter's low 32 */
+	uint8_t			 lifetimes;	/* PFKEY_LT_*: those it has */
 	uint32_t		 spi, reqid;
 	uint32_t		 replay;	/* the window, bytes */
 	uint32_t		 flags;		/* SADB_X_EXT_*, SADB_X_SAFLAGS_* */
@@ -1364,7 +1367,14 @@ struct pfkey_sa {
 	uint8_t			 mode, state, ealg, aalg;
 	bool			 natt;		/* ESP in UDP */
 };
+#define	PFKEY_LT_SOFT	0x1
+#define	PFKEY_LT_HARD	0x2
 int		 pfkey_open(struct work *, const char **);
+int		 pfkey_register(struct work *, int, const char **);
+struct sadb_msg;
+void		 pfkey_news(void (*)(const struct sadb_msg *, size_t, void *),
+		    void *);
+void		 pfkey_sa_of(const struct sadb_msg *, size_t, struct pfkey_sa *);
 int		 pfkey_add(struct work *, int, const struct pfkey_sa *,
 		    const char **);
 int		 pfkey_delete(struct work *, int, const struct sockaddr *,
@@ -1399,7 +1409,10 @@ int		 pfkey_spddelete(struct work *, int, uint32_t, const char **);
 int		 pfkey_spddump(struct work *, int,
 		    void (*)(const struct pfkey_sp *, void *), void *,
 		    const char **);
+void		 pfkey_sp_of(const struct sadb_msg *, size_t, struct pfkey_sp *);
 const char	*pfkey_spd_text(struct work *);
+/* invidia/sadb.c: the kernel's SAD news as RFC 9061's notifications. */
+void		 sadb_watch_start(void);
 /* invidia/sa.c: manually keyed SAs, by PF_KEY. */
 const char	*sa_check(const struct arc_job_spec *);
 int		 do_sa_job(struct work *, const struct arc_job_spec *,
@@ -1760,6 +1773,13 @@ const struct cbl_ynode *ynode_named(const char *, const char *);
 /* A logical network element's root, by a helper attached to its jail
  * (invidia/lneroot.c). */
 void		 yang_lne_failed(const char *, const char *, const char *);
+struct ietf_i2nsf_ikeless_sadb_acquire;
+struct ietf_i2nsf_ikeless_sadb_expire;
+struct ietf_i2nsf_ikeless_sadb_seq_overflow;
+void		 yang_sadb_acquire(const struct ietf_i2nsf_ikeless_sadb_acquire *);
+void		 yang_sadb_expire(const struct ietf_i2nsf_ikeless_sadb_expire *);
+void		 yang_sadb_seq_overflow(
+		    const struct ietf_i2nsf_ikeless_sadb_seq_overflow *);
 int		 lne_serve(void);
 void		 lne_gone(int);
 void		 lne_bound(const char *, const char *, bool);

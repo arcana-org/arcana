@@ -3568,7 +3568,7 @@ acl_defined_sets_head()
 	    "generation of their own, the old one destroyed after the" \
 	    "swap; the prefix sets read back from the tables; refused," \
 	    "nothing loaded: a type's code, an FQDN, a port set too big," \
-	    "protocol 0, RFC 9899's matches and actions not compiled yet;" \
+	    "protocol 0, RFC 9899's actions not compiled yet;" \
 	    "taken out, every table destroyed"
 	atf_set "timeout" "120"
 }
@@ -3656,10 +3656,8 @@ EOF
 	    'port set big: 31 ranges and 31000 ports, more than ipfw.s port list \(30 ranges\) and this agent.s port table \(8192 ports\) hold'
 	acl_sets_refused '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv6":{"ietf-acl-enh:protocol-set":"z"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"protocol-sets":{"protocol-set":[{"name":"z","protocol":[0]}]}}}' \
 	    'protocol set z: protocol 0 is not compiled into ipfw by this agent: ipfw reads proto 0 as any protocol'
-	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":4095}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}' \
-	    'acl f, ace r: flags-bitmask is not compiled into ipfw by this agent.*flags-bitmask'
-	acl_sets_refused '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"match","type":"isf"}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}' \
-	    'acl f, ace r: ipv4-fragment is not compiled into ipfw by this agent'
+	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"destination-port":{"operator":"eq","port":22}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log"}}}]}}]}' \
+	    'acl f, ace r: log-action is not compiled into ipfw by this agent'
 	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"destination-port":{"operator":"eq","port":22}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}]}' \
 	    'acl f, ace r: rate-limit is not compiled into ipfw by this agent'
 
@@ -3671,6 +3669,150 @@ EOF
 	atf_check -o inline:'' ls fw.tables
 }
 acl_defined_sets_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case acl_rfc9899_matches cleanup
+acl_rfc9899_matches_head()
+{
+	atf_set "descr" "RFC 9899's matches compiled to ipfw (PLAN-SDN-YANG" \
+	    "6.1.6), the stand-in ipfw: Appendix B.2's two ACLs (IPv4's" \
+	    "fragments an or-block of frag, IPv6's ext6hdr frag), B.1's null" \
+	    "scan refused for the flags tcpflags does not name and compiled" \
+	    "over the six it does, B.6's SYN match (its rate-limit refused," \
+	    "6.1.7's); each fragment type and operator, IPv6's first" \
+	    "fragment by the atomic fragments' sysctls, explicit TCP flags," \
+	    "extension headers by number and name; refused, nothing loaded:" \
+	    "IPv6's last fragment and df, match and any at once, a header" \
+	    "ipfw does not parse"
+	atf_set "timeout" "300"
+}
+acl_rfc9899_matches_body()
+{
+	acl_fake_ipfw
+	# sysctl(8) as a stand-in: the atomic fragments' two, from files.
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+case "\$*" in
+"-n net.inet6.ip6.fw.permit_single_frag6") exec cat $(pwd)/permit ;;
+"-n net.inet6.ip6.fw.deny_unknown_exthdrs") exec cat $(pwd)/deny ;;
+esac
+exit 1
+EOS
+	chmod +x fake-sysctl
+	echo 1 > permit
+	echo 1 > deny
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -Q $(pwd)/fake-sysctl" start_daemon
+
+	# Appendix B.2, IPv4: every fragment dropped (mf or an offset),
+	# DNS to 198.51.100.0/24 accepted.
+	cat > b2v4.json <<'EOF2'
+{"acl":[{"name":"dns-fragments","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"drop-all-fragments","matches":{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"match","type":"isf"}}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"allow-dns-packets","matches":{"ipv4":{"destination-ipv4-network":"198.51.100.0/24"},"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}}]}
+EOF2
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b2v4.json
+	atf_check -o inline:'add 61000 set 28 deny ip from any to any { frag mf or frag offset } ip4 // acl:0.1 dns-fragments/drop-all-fragments\nadd 61001 set 28 allow udp from any to 198.51.100.0/24 dst-port 53 ip4 // acl:0.2 dns-fragments/allow-dns-packets\n' \
+	    sh -c "grep '^add 6100[01] ' ipfw.log"
+	atf_check -o match:'"ietf-acl-enh:ipv4-fragment":\{[^}]*"type":"isf"' \
+	    "$JGC" -c "$SOCK" get acls
+	# Appendix B.2, IPv6: a fragment header (atomic fragments too).
+	sed -e 's/ipv4/ipv6/g; s|198.51.100.0/24|2001:db8::/32|' b2v4.json > b2v6.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b2v6.json
+	atf_check -o inline:'add 61000 set 28 deny ip from any to any ext6hdr frag ip6 // acl:0.1 dns-fragments/drop-all-fragments\nadd 61001 set 28 allow udp from any to 2001:db8::/32 dst-port 53 ip6 // acl:0.2 dns-fragments/allow-dns-packets\n' \
+	    sh -c "grep '^add 6100[01] ' ipfw.log"
+	atf_check -o match:'"ietf-acl-enh:ipv6-fragment":\{[^}]*"type":"isf"' \
+	    "$JGC" -c "$SOCK" get acls
+
+	# Appendix B.1: the null scan, every flag clear, refused for the
+	# flags tcpflags does not name; over the six it does, compiled.
+	acl_refused - '{"acl":[{"name":"tcp-flags-example","aces":{"ace":[{"name":"null-attack","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":4095}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}' \
+	    'acl tcp-flags-example, ace null-attack: TCP flags ece,cwr,ae,reserved are not compiled into ipfw by this agent: tcpflags names fin, syn, rst, psh, ack and urg alone' \
+	    'acl/aces/ace/matches/tcp/(ietf-acl-enh:)?flags-bitmask/bitmask'
+	acl_field ipv4-acl-type \
+	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":63}}}' \
+	    '"bitmask":63' 'deny tcp from any to any tcpflags !fin,!syn,!rst,!psh,!ack,!urg ip4'
+	# Appendix B.6: SYN set; its rate-limit is 6.1.7's.
+	acl_field ipv4-acl-type \
+	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}}' \
+	    '"bitmask":2' 'deny tcp from any to any tcpflags syn ip4'
+	acl_field_refused - '{"acl":[{"name":"tcp-flags-example-with-rate-limit","aces":{"ace":[{"name":"rate-limit-syn","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}]}' \
+	    'ace rate-limit-syn: rate-limit is not compiled into ipfw by this agent'
+	# Explicit flags: all set, any set, not all set.
+	acl_field ipv4-acl-type \
+	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"explicit-tcp-flag":["ietf-acl-enh:syn","ietf-acl-enh:ack"]}}}' \
+	    '"explicit-tcp-flag":["ietf-acl-enh:syn","ietf-acl-enh:ack"]' \
+	    'deny tcp from any to any tcpflags syn,ack ip4'
+	acl_field ipv4-acl-type \
+	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"any","explicit-tcp-flag":["ietf-acl-enh:fin","ietf-acl-enh:rst"]}}}' \
+	    '"operator":"any"' 'deny tcp from any to any { tcpflags fin or tcpflags rst } ip4'
+	acl_field ipv4-acl-type \
+	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not match","bitmask":18}}}' \
+	    '"bitmask":18' 'deny tcp from any to any { tcpflags !syn or tcpflags !ack } ip4'
+
+	# IPv4's fragment types and operators.
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"type":"df"}}}' \
+	    '"type":"df"' 'deny ip from any to any frag df ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"type":"ff"}}}' \
+	    '"type":"ff"' 'deny ip from any to any frag mf,!offset ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"type":"lf"}}}' \
+	    '"type":"lf"' 'deny ip from any to any frag !mf,offset ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"not match","type":"ff"}}}' \
+	    '"type":"ff"' 'deny ip from any to any { frag !mf or frag offset } ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"any","type":"ff lf"}}}' \
+	    '"type":"ff lf"' 'deny ip from any to any { frag !mf,offset or frag mf,!offset } ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"not any","type":"df isf"}}}' \
+	    '"type":"df isf"' 'deny ip from any to any frag !df,!mf,!offset ip4'
+	acl_refused ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"type":"ff lf"}}}' \
+	    'acl f, ace r: these fragment types and operator match no packet' \
+	    'acl/aces/ace/matches/ipv4/(ietf-acl-enh:)?ipv4-fragment/type'
+	acl_refused ipv4-acl-type '{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"match any","type":"isf"}}}' \
+	    'acl f, ace r: an operator of match and any at once' \
+	    'acl/aces/ace/matches/ipv4/(ietf-acl-enh:)?ipv4-fragment/type'
+
+	# IPv6's: not a fragment; the first where ipfw drops atomic
+	# fragments, refused where it does not; the last and df refused.
+	acl_field ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"operator":"not match","type":"isf"}}}' \
+	    '"type":"isf"' 'deny ip from any to any not ext6hdr frag ip6'
+	acl_refused ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"type":"ff"}}}' \
+	    'acl f: ipv6-fragment ff is not compiled into ipfw by this agent unless ipfw drops atomic fragments' \
+	    'acl/aces/ace/matches/ipv6/(ietf-acl-enh:)?ipv6-fragment/type'
+	echo 0 > permit
+	acl_field ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"type":"ff"}}}' \
+	    '"type":"ff"' 'deny ip from any to any ext6hdr frag not frag offset ip6'
+	acl_field ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"operator":"not match","type":"ff"}}}' \
+	    '"type":"ff"' 'deny ip from any to any { not ext6hdr frag or frag offset } ip6'
+	echo 0 > deny
+	acl_refused ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"type":"ff"}}}' \
+	    'deny_unknown_exthdrs=1' \
+	    'acl/aces/ace/matches/ipv6/(ietf-acl-enh:)?ipv6-fragment/type'
+	acl_refused ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"type":"lf"}}}' \
+	    'acl f, ace r: ipv6-fragment lf is not compiled into ipfw by this agent: frag reads whether IPv6.s offset is 0, never the M flag' \
+	    'acl/aces/ace/matches/ipv6/(ietf-acl-enh:)?ipv6-fragment/type'
+	acl_refused ipv6-acl-type '{"ipv6":{"ietf-acl-enh:ipv6-fragment":{"type":"df"}}}' \
+	    'acl f, ace r: df in an ipv6-fragment: IPv6 has no don.t-fragment flag' \
+	    'acl/aces/ace/matches/ipv6/(ietf-acl-enh:)?ipv6-fragment/type'
+
+	# Extension headers by number and by name; one ipfw does not parse.
+	acl_field ipv6-acl-type '{"ipv6":{"ietf-acl-enh:extension-header":43}}' \
+	    '"ietf-acl-enh:extension-header":43' 'deny ip from any to any ext6hdr route ip6'
+	acl_field ipv6-acl-type '{"ipv6":{"ietf-acl-enh:extension-header":"AuthenticationHeader"}}' \
+	    '"ietf-acl-enh:extension-header":"AuthenticationHeader"' \
+	    'deny ip from any to any ext6hdr ah ip6'
+	acl_refused ipv6-acl-type '{"ipv6":{"ietf-acl-enh:extension-header":"MobilityHeader"}}' \
+	    'acl f, ace r: extension header 135 is not compiled into ipfw by this agent: ext6hdr names' \
+	    'acl/aces/ace/matches/ipv6/(ietf-acl-enh:)?extension-header'
+
+	# Taken out: the admin's rules as they were.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    cat fw.state
+}
+acl_rfc9899_matches_cleanup()
 {
 	stop_daemon
 }
@@ -17889,6 +18031,60 @@ ipsec_sp_cleanup()
 	stop_pfkey
 }
 
+atf_test_case sadb_news cleanup
+sadb_news_head()
+{
+	atf_set "descr" "The kernel's SAD news as RFC 9061's notifications" \
+	    "(PLAN-SDN-YANG 6.2.3), the stand-in PF_KEY: the agent's socket" \
+	    "SADB_REGISTERed at its start, nothing of it logged; an" \
+	    "SADB_ACQUIRE told as sadb-acquire with its policy's selector" \
+	    "(read by SADB_X_SPDDUMP by its id), SADB_EXPIRE soft and hard as" \
+	    "sadb-expire with the SA's current lifetime; an SA without ESN" \
+	    "whose sequence counter is near its end told once as" \
+	    "sadb-seq-overflow by the dump that reads the counters"
+	atf_set "timeout" "120"
+}
+sadb_news_body()
+{
+	local i
+
+	write_rc
+	start_pfkey news
+	start_daemon
+	"$JGC" -c "$SOCK" notifications > notif.out 2>&1 &
+	echo $! > notif.pid
+	# The stand-in sends its news once the agent has registered: again
+	# until they are heard.
+	for i in $(seq 1 100); do
+		grep -q 'sadb-expire' notif.out && break
+		[ -e pfkey.log.news ] || : > pfkey.log.news
+		sleep 0.2
+	done
+	# The counters read every 10 s: the SA near its end told by then.
+	for i in $(seq 1 75); do
+		grep -q 'sadb-seq-overflow' notif.out && break
+		sleep 0.2
+	done
+	sleep 1
+	kill "$(cat notif.pid)"
+	atf_check -o match:'"ietf-i2nsf-ikeless:sadb-acquire":\{"ipsec-policy-name":"spd/1","traffic-selector":\{"inner-protocol":"any","local-prefix":"10.77.0.0/24","remote-prefix":"10.78.0.0/24"\}\}' \
+	    -o match:'"ietf-i2nsf-ikeless:sadb-expire":\{"ipsec-sa-name":"esp/10.202.0.2/0x00001001","lifetime-current":\{"bytes":"1234","packets":5,"time":3[01]\},"soft-lifetime-expire":true\}' \
+	    -o match:'"ietf-i2nsf-ikeless:sadb-expire":\{"ipsec-sa-name":"esp/10.202.0.2/0x00001001","lifetime-current":\{[^}]*\},"soft-lifetime-expire":false\}' \
+	    -o match:'"ietf-i2nsf-ikeless:sadb-seq-overflow":\{"ipsec-sa-name":"esp/10.202.0.2/0x00001001"\}' \
+	    cat notif.out
+	# Told once, though the SA is there at every read.
+	atf_check -o inline:'1\n' sh -c "grep -c 'sadb-seq-overflow' notif.out"
+	# The watcher's register and dumps are not the jobs': none logged.
+	atf_check -o not-match:'dump esp' -o not-match:'spddump' \
+	    sh -c 'cat pfkey.log 2>/dev/null; true'
+}
+sadb_news_cleanup()
+{
+	[ -f notif.pid ] && kill "$(cat notif.pid)" 2>/dev/null
+	stop_daemon
+	stop_pfkey
+}
+
 atf_test_case rtadvd cleanup
 rtadvd_head()
 {
@@ -20813,6 +21009,7 @@ atf_init_test_cases()
 	atf_add_test_case acl_refusals
 	atf_add_test_case acl_actions
 	atf_add_test_case acl_defined_sets
+	atf_add_test_case acl_rfc9899_matches
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key
@@ -20837,6 +21034,7 @@ atf_init_test_cases()
 	atf_add_test_case rtadvd
 	atf_add_test_case ipsec_sa
 	atf_add_test_case ipsec_sp
+	atf_add_test_case sadb_news
 	atf_add_test_case interfaces
 	atf_add_test_case network_more
 	atf_add_test_case sdwan_forms

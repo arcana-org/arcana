@@ -4164,6 +4164,57 @@ whose first part is served.
 - 6.1.6 A: RFC 9899 matches: fragments v4 and v6 isf, extension
   headers, flags-bitmask, set references; check: Appendix B.1, B.2,
   B.6.
+  Design (decided here): the set references were 6.1.5's.  A fragment
+  type and a TCP flags bitmask are predicates over what ipfw reads,
+  RFC 9899's operator over the bits named (match all, the default, any
+  one, either negated by not; match and any at once invalid-value),
+  written as ipfw's options and-ed within an alternative and an
+  or-block between alternatives, the fewest a greedy cover of the truth
+  table finds (`{ frag !mf or frag offset }` for not ff).  IPv4's from
+  frag's flags (measured in ip_fw2.c: O_FRAG packs ip_off's flags and
+  a non-zero offset): df `frag df`, isf `{ frag mf or frag offset }`,
+  ff `frag mf,!offset`, lf `frag !mf,offset`.  IPv6's from `ext6hdr
+  frag` (a fragment header) and `frag offset` (ipfw's one reading of
+  IPv6's: the offset not 0, never the M flag): isf `ext6hdr frag`,
+  atomic fragments with it as Appendix B.2 says; ff `ext6hdr frag not
+  frag offset`, which is a first fragment alone where ipfw drops
+  atomic ones (net.inet6.ip6.fw.permit_single_frag6=0 and
+  deny_unknown_exthdrs=1, read as net.link.ether.ipfw is, the admin's;
+  refused otherwise, permit_single_frag6 being 1 by default); lf
+  refused (operation-not-supported: a last fragment is not told from
+  one in the middle), df invalid-value (RFC 9899: 0 in IPv6).  TCP's
+  bitmask (RFC 9293's byte 13, then byte 12's low four) or explicit
+  flags to `tcpflags` over fin, syn, rst, psh, ack and urg: Appendix
+  B.1's null scan, not any of 4095, is refused for ECE, CWR, AE and the
+  reserved bits, which tcpflags does not name (ip_fw2.c's O_TCPFLAGS
+  compares the low eight, but ipfw(8) names six), whatever the
+  operator, as the rule would match more or less than the ACE; over the
+  six it is `tcpflags !fin,!syn,!rst,!psh,!ack,!urg`; B.6's SYN match
+  `tcpflags syn`, its rate-limit 6.1.7's.  A bit past the twelve is
+  invalid-value.  An extension header is ext6hdr's word: 0 hopopt, 43
+  route, 44 frag, 50 esp, 51 ah, 60 dstopt; 135, 139 and 140 refused
+  (ipfw's IPv6 parser does not know them, and reads none past a
+  fragment header of an offset).  A predicate matching nothing is
+  invalid-value; matching everything adds no option.
+  Done.  Checked: agent_test:acl_rfc9899_matches (the stand-in ipfw:
+  Appendix B.2's IPv4 ACL as `deny ip from any to any { frag mf or
+  frag offset } ip4` and its DNS ACE, the IPv6 one as `ext6hdr frag`,
+  both read back; B.1 refused naming ece, cwr, ae and reserved, and
+  over 63 compiled; B.6's match `tcpflags syn` and B.6 whole refused
+  for its rate-limit; explicit flags all, any and not all; IPv4's df,
+  ff, lf, not ff, any of ff and lf, not any of df and isf; ff and lf
+  at once and match with any refused; IPv6's not isf, ff refused with
+  permit_single_frag6 1 and with deny_unknown_exthdrs 0, compiled and
+  not ff as an or-block with both right, lf and df refused; extension
+  headers by number and name, mobility refused; each refusal nothing
+  loaded and running as it was), acl_defined_sets (its refusals now
+  log-action's), acl_rfc8519, acl_match_fields, acl_refusals and
+  acl_actions still passing.  Written, not run here (root, vnet
+  jails): agent_root_test:acl_vnet's 6.1.6 part (B.2's ACLs and the
+  bitmasks loaded by the kernel, lo0 at an MTU of 1500, an echo of 3000
+  bytes dropped as fragments for both families and one of 100 through).
+  Not checked: an IPv6 first fragment and the or-blocks with `not` on a
+  real packet, a TCP packet by its flags.
 - 6.1.7 A: RFC 9899 actions: `rate-limit` as a pipe, `log-action`,
   `counter-action`; check: B.6 at 20 bytes per second.
 - 6.1.8 A: the Arcana augments: attachment to a FIB, a jail, all
@@ -4313,6 +4364,46 @@ whose first part is served.
 - 6.2.3 A: SADB_REGISTER; `sadb-acquire` and `sadb-expire`
   notifications; `sadb-seq-overflow` synthesised; check: a soft
   expiry seen.
+  Design (decided here): `ietf-i2nsf-ikeless` (RFC 9061, YangModels'
+  bytes) served for its notifications, feature ikeless-notification,
+  SIDs 95 200 (200; `ietf-i2nsf-ikec`'s groupings numbered in it, as
+  `ietf-packet-fields`' are in RFC 8519's); `arcana-ikeless-deviations`
+  (95 400, 100) takes away the ipsec-ikeless container until 6.2.4
+  serves it, and sadb-bad-spi, which FreeBSD's PF_KEY has no message
+  for.  A thread of the agent's (invidia/sadb.c) holds a PF_KEY socket
+  SADB_REGISTERed for ESP on the host's network (tried again every
+  minute where it cannot be opened, said once); the kernel sends a
+  registered socket SADB_ACQUIRE and SADB_EXPIRE (key.c's
+  KEY_SENDUP_REGISTERED).  sadb-acquire: the policy by its id
+  (SADB_X_SPDDUMP), the selector its prefixes, protocol (any as the
+  model's 256) and ports, local the source of an outbound policy; the
+  SA's ends as the kernel sent them where it is gone.  sadb-expire:
+  soft unless the message has the hard lifetime, lifetime-current the
+  seconds since the SA was added, its bytes and packets (allocations,
+  which count packets).  sadb-seq-overflow: every 10 s the SAs are
+  dumped, and one without ESN whose sequence counter (SADB_X_EXT_SA2's,
+  the packets sent; key.c gives its low 32 bits alone, so an SA with
+  ESN is never told) is past 0xe0000000 is told once.  News met while a
+  request of the thread's waits for its replies (pfkey.c's thread hook)
+  are queued and told after.  Names until 6.2.4's lists name them: an
+  SA `esp/<destination>/0x<SPI>`, the kernel's key, a policy
+  `spd/<id>`.  The SAs' lifetimes themselves are not put in by Arcana
+  yet (6.2.4's sa-lifetime-soft/hard): the news are of every SA of the
+  host's, setkey's and an IKE daemon's.
+  Done.  Checked: agent_test:sadb_news against tests/fakepfkey.c, now
+  answering SADB_REGISTER and, with `news`, sending registered sockets
+  an SADB_ACQUIRE of ipsec.conf's policy and SADB_EXPIRE soft and hard
+  of an SA whose counter is 0xfffff000 (the registered socket's own
+  messages not logged): sadb-acquire with the policy's selector
+  10.77.0.0/24 to 10.78.0.0/24, sadb-expire soft with the SA's bytes,
+  packets and age, then hard, sadb-seq-overflow told once across the
+  reads; ipsec_sa, safe_ipsec_sa, ipsec_sp and sysfiles still passing.
+  Written, not run here (root, vnet jails): agent_root_test:sadb_vnet
+  (the agent in a vnet jail; an SA by setkey(8) with -ls 1 -lh 4 told
+  soft, then hard; a policy requiring ESP with no SA, a ping meeting
+  it, sadb-acquire with the policy's selector).  Not checked: a vnet
+  jail's news from the host (not watched), the counters on a real SA
+  near 2^32.
 - 6.2.4 A: `ietf-i2nsf-ikeless` lists over the above; the refusals;
   `net.key.preferred_oldsa=0`; check: RFC 9061 Appendix B's example.
 - 6.2.5 A, C: uswe's keys as `esp-sa/key` from the agent's own

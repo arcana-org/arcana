@@ -93,6 +93,25 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### RFC 9899 matches, PF_KEY news; agent 0.308.0
+
+- ACL matches (PLAN-SDN-YANG 6.1.6): RFC 9899's ipv4-fragment,
+  ipv6-fragment, extension-header and TCP flags-bitmask are compiled to
+  ipfw (frag's df/mf/offset, `ext6hdr frag` and `frag offset`,
+  `tcpflags`, `ext6hdr`); alternatives become an or-block.  Refused,
+  nothing loaded: IPv6's last fragment; its first fragment unless
+  net.inet6.ip6.fw.permit_single_frag6=0 and deny_unknown_exthdrs=1
+  (the admin's to set); the ECE, CWR, AE and reserved flags (so RFC
+  9899 Appendix B.1 as written); mobility, HIP and shim6 headers; match
+  and any at once.
+- IPsec news (6.2.3): the agent registers a PF_KEY socket and tells the
+  kernel's SADB_ACQUIRE and SADB_EXPIRE as RFC 9061's sadb-acquire and
+  sadb-expire, and sadb-seq-overflow once for an SA without ESN whose
+  counter nears its end (read every 10 s); names `esp/<dst>/0x<SPI>`
+  and `spd/<id>` until 6.2.4.  New modules: ietf-i2nsf-ikeless
+  (SIDs from 95 200) and arcana-ikeless-deviations (95 400).  Where
+  ipsec.ko is not loaded the agent logs once and retries every minute.
+
 ### A remade STAMP pair reaches the far end; agent 0.307.0, console 0.456.0
 
 - The agent tells a tunnel interface's pair made, turned or put back as

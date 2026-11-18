@@ -19,7 +19,16 @@
  * Arcana's would have for ipsec0 of reqid 100 from 10.202.0.1 to
  * 10.202.0.2, and an ipsec(4) interface's own (ifnet scope, index 1).
  *
- * usage: fakepfkey socket log refuse [seed]
+ * SADB_REGISTER makes a client's socket one the kernel's news go to;
+ * what such a socket sends (the agent's watcher: its dumps) is not
+ * logged.  With news, seed's policies are there and, each time the file
+ * log.news is, it is taken away and the registered sockets are sent
+ * what the kernel would send: an SADB_ACQUIRE of ipsec.conf's policy
+ * (id 1) between 10.202.0.1 and 10.202.0.2, and SADB_EXPIRE soft, then
+ * hard, of an SA of SPI 0x1001 between them, which is there from then
+ * on, its sequence counter at 0xfffff000 and no ESN.
+ *
+ * usage: fakepfkey socket log refuse [seed | news]
  */
 
 #include <sys/param.h>
@@ -39,6 +48,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define	NCLIENTS	16
@@ -66,6 +76,7 @@ static struct policy	 sps[NSPS];
 static size_t		 nsps;
 static uint32_t		 spid = 1;
 static const char	*logpath, *refuse;
+static bool		 registered[NCLIENTS + 1];
 
 /* What a message says, as found in its extensions. */
 struct parsed {
@@ -559,7 +570,7 @@ seed(void)
 }
 
 static void
-handle(int fd, const unsigned char *buf, size_t len)
+handle(int fd, const unsigned char *buf, size_t len, bool *reg)
 {
 	const struct sadb_msg	*q = (const void *)buf;
 	struct parsed		 p;
@@ -569,8 +580,14 @@ handle(int fd, const unsigned char *buf, size_t len)
 
 	if (len < sizeof(*q) || (size_t)PFKEY_UNUNIT64(q->sadb_msg_len) != len)
 		return;
+	if (q->sadb_msg_type == SADB_REGISTER) {
+		*reg = true;
+		reply(fd, q, NULL, 0, 0, q->sadb_msg_seq);
+		return;
+	}
 	parse(buf, len, &p);
-	log_msg(q, &p);
+	if (!*reg)
+		log_msg(q, &p);
 	if (q->sadb_msg_type == SADB_X_SPDADD || q->sadb_msg_type ==
 	    SADB_X_SPDDELETE2 || q->sadb_msg_type == SADB_X_SPDDUMP) {
 		handle_spd(fd, q, buf, len, &p);
@@ -643,6 +660,134 @@ handle(int fd, const unsigned char *buf, size_t len)
 	reply(fd, q, NULL, 0, EOPNOTSUPP, q->sadb_msg_seq);
 }
 
+/* An address extension of 10.202.0.1 or .2 at buf + *len. */
+static void
+news_addr(unsigned char *buf, size_t *len, uint16_t type, const char *a,
+    uint8_t plen)
+{
+	struct sadb_address	*ad;
+	struct sockaddr_in	*sin;
+
+	ad = (struct sadb_address *)(void *)(buf + *len);
+	ad->sadb_address_len = PFKEY_UNIT64(sizeof(*ad) + sizeof(*sin));
+	ad->sadb_address_exttype = type;
+	ad->sadb_address_proto = IPSEC_ULPROTO_ANY;
+	ad->sadb_address_prefixlen = plen;
+	sin = (struct sockaddr_in *)(void *)(ad + 1);
+	sin->sin_len = sizeof(*sin);
+	sin->sin_family = AF_INET;
+	inet_pton(AF_INET, a, &sin->sin_addr);
+	*len += PFKEY_UNUNIT64(ad->sadb_address_len);
+}
+
+/* The SA of SPI 0x1001 as the kernel tells it, type's message: its SA,
+ * SA2 (the counter), current lifetime and lt's (0 none), its ends. */
+static size_t
+news_sa(unsigned char *buf, uint8_t type, uint16_t lt)
+{
+	struct sadb_msg		*m;
+	struct sadb_sa		*sa;
+	struct sadb_x_sa2	*s2;
+	struct sadb_lifetime	*l;
+	size_t			 len;
+
+	memset(buf, 0, 512);
+	m = (struct sadb_msg *)(void *)buf;
+	m->sadb_msg_version = PF_KEY_V2;
+	m->sadb_msg_type = type;
+	m->sadb_msg_satype = SADB_SATYPE_ESP;
+	len = sizeof(*m);
+	sa = (struct sadb_sa *)(void *)(buf + len);
+	sa->sadb_sa_len = PFKEY_UNIT64(sizeof(*sa));
+	sa->sadb_sa_exttype = SADB_EXT_SA;
+	sa->sadb_sa_spi = htonl(0x1001);
+	sa->sadb_sa_state = SADB_SASTATE_MATURE;
+	sa->sadb_sa_encrypt = SADB_EALG_NULL;
+	sa->sadb_sa_flags = SADB_X_EXT_CYCSEQ;
+	len += sizeof(*sa);
+	s2 = (struct sadb_x_sa2 *)(void *)(buf + len);
+	s2->sadb_x_sa2_len = PFKEY_UNIT64(sizeof(*s2));
+	s2->sadb_x_sa2_exttype = SADB_X_EXT_SA2;
+	s2->sadb_x_sa2_mode = IPSEC_MODE_TUNNEL;
+	s2->sadb_x_sa2_sequence = 0xfffff000u;
+	s2->sadb_x_sa2_reqid = 100;
+	len += sizeof(*s2);
+	l = (struct sadb_lifetime *)(void *)(buf + len);
+	l->sadb_lifetime_len = PFKEY_UNIT64(sizeof(*l));
+	l->sadb_lifetime_exttype = SADB_EXT_LIFETIME_CURRENT;
+	l->sadb_lifetime_allocations = 5;
+	l->sadb_lifetime_bytes = 1234;
+	l->sadb_lifetime_addtime = (uint64_t)time(NULL) - 30;
+	len += sizeof(*l);
+	if (lt != 0) {
+		l = (struct sadb_lifetime *)(void *)(buf + len);
+		l->sadb_lifetime_len = PFKEY_UNIT64(sizeof(*l));
+		l->sadb_lifetime_exttype = lt;
+		l->sadb_lifetime_addtime = lt == SADB_EXT_LIFETIME_SOFT ? 30 :
+		    60;
+		len += sizeof(*l);
+	}
+	news_addr(buf, &len, SADB_EXT_ADDRESS_SRC, "10.202.0.1", 32);
+	news_addr(buf, &len, SADB_EXT_ADDRESS_DST, "10.202.0.2", 32);
+	m->sadb_msg_len = PFKEY_UNIT64(len);
+	return (len);
+}
+
+/* log.news there: the kernel's news to the registered sockets. */
+static void
+news(struct pollfd *pfd)
+{
+	unsigned char		 buf[512] __aligned(8);
+	char			 path[PATH_MAX];
+	struct sadb_msg		*m;
+	struct sadb_x_policy	*x;
+	struct entry		*e;
+	size_t			 len[3];
+	unsigned char		 msg[3][512] __aligned(8);
+
+	snprintf(path, sizeof(path), "%s.news", logpath);
+	if (unlink(path) != 0)
+		return;
+	/* The SA there from now on, as a dump has it. */
+	if (nsas < NSAS) {
+		e = &sas[nsas++];
+		memset(e, 0, sizeof(*e));
+		e->len = news_sa(e->msg, SADB_DUMP, 0);
+		e->spi = htonl(0x1001);
+		inet_pton(AF_INET, "10.202.0.1",
+		    &((struct sockaddr_in *)&e->src)->sin_addr);
+		inet_pton(AF_INET, "10.202.0.2",
+		    &((struct sockaddr_in *)&e->dst)->sin_addr);
+		e->src.ss_len = e->dst.ss_len = sizeof(struct sockaddr_in);
+		e->src.ss_family = e->dst.ss_family = AF_INET;
+	}
+	/* SADB_ACQUIRE: the SA's ends at FULLMASK, the policy's id. */
+	memset(buf, 0, sizeof(buf));
+	m = (struct sadb_msg *)(void *)buf;
+	m->sadb_msg_version = PF_KEY_V2;
+	m->sadb_msg_type = SADB_ACQUIRE;
+	m->sadb_msg_satype = SADB_SATYPE_ESP;
+	m->sadb_msg_seq = 7;
+	len[0] = sizeof(*m);
+	news_addr(buf, &len[0], SADB_EXT_ADDRESS_SRC, "10.202.0.1", 0xff);
+	news_addr(buf, &len[0], SADB_EXT_ADDRESS_DST, "10.202.0.2", 0xff);
+	x = (struct sadb_x_policy *)(void *)(buf + len[0]);
+	x->sadb_x_policy_len = PFKEY_UNIT64(sizeof(*x));
+	x->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
+	x->sadb_x_policy_type = IPSEC_POLICY_IPSEC;
+	x->sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
+	x->sadb_x_policy_id = 1;
+	len[0] += sizeof(*x);
+	m->sadb_msg_len = PFKEY_UNIT64(len[0]);
+	memcpy(msg[0], buf, len[0]);
+	len[1] = news_sa(msg[1], SADB_EXPIRE, SADB_EXT_LIFETIME_SOFT);
+	len[2] = news_sa(msg[2], SADB_EXPIRE, SADB_EXT_LIFETIME_HARD);
+	for (int i = 1; i <= NCLIENTS; i++)
+		if (pfd[i].fd != -1 && registered[i])
+			for (int k = 0; k < 3; k++)
+				(void)send(pfd[i].fd, msg[k], len[k], MSG_EOR);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -651,11 +796,14 @@ main(int argc, char **argv)
 	unsigned char		 buf[4096] __aligned(8);
 	ssize_t			 n;
 	int			 ls, i, k;
+	bool			 newsy;
 
-	if (argc != 4 && (argc != 5 || strcmp(argv[4], "seed") != 0))
-		errx(2, "usage: fakepfkey socket log refuse [seed]");
+	if (argc != 4 && (argc != 5 || (strcmp(argv[4], "seed") != 0 &&
+	    strcmp(argv[4], "news") != 0)))
+		errx(2, "usage: fakepfkey socket log refuse [seed | news]");
 	logpath = argv[2];
 	refuse = argv[3];
+	newsy = argc == 5 && strcmp(argv[4], "news") == 0;
 	if (argc == 5)
 		seed();
 	memset(&sun, 0, sizeof(sun));
@@ -673,19 +821,23 @@ main(int argc, char **argv)
 		pfd[i].events = POLLIN;
 	}
 	for (;;) {
-		if (poll(pfd, 1 + NCLIENTS, -1) == -1) {
+		if (poll(pfd, 1 + NCLIENTS, newsy ? 100 : -1) == -1) {
 			if (errno == EINTR)
 				continue;
 			err(1, "poll");
 		}
+		if (newsy)
+			news(pfd);
 		if (pfd[0].revents & POLLIN) {
 			if ((k = accept(ls, NULL, NULL)) != -1) {
 				for (i = 1; i <= NCLIENTS && pfd[i].fd != -1; i++)
 					;
 				if (i > NCLIENTS)
 					close(k);
-				else
+				else {
 					pfd[i].fd = k;
+					registered[i] = false;
+				}
 			}
 		}
 		for (i = 1; i <= NCLIENTS; i++) {
@@ -696,7 +848,7 @@ main(int argc, char **argv)
 				pfd[i].fd = -1;
 				continue;
 			}
-			handle(pfd[i].fd, buf, (size_t)n);
+			handle(pfd[i].fd, buf, (size_t)n, &registered[i]);
 		}
 	}
 }

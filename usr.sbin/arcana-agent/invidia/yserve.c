@@ -1670,6 +1670,31 @@ yang_lne_failed(const char *ifname, const char *lne, const char *why)
 	    &f);
 }
 
+/* RFC 9061's IKE-less notifications: the kernel's SAD news (sadb.c). */
+void
+yang_sadb_acquire(const struct ietf_i2nsf_ikeless_sadb_acquire *n)
+{
+
+	if (yctx != NULL)
+		(void)ietf_i2nsf_ikeless_sadb_acquire_notify(yctx, n);
+}
+
+void
+yang_sadb_expire(const struct ietf_i2nsf_ikeless_sadb_expire *n)
+{
+
+	if (yctx != NULL)
+		(void)ietf_i2nsf_ikeless_sadb_expire_notify(yctx, n);
+}
+
+void
+yang_sadb_seq_overflow(const struct ietf_i2nsf_ikeless_sadb_seq_overflow *n)
+{
+
+	if (yctx != NULL)
+		(void)ietf_i2nsf_ikeless_sadb_seq_overflow_notify(yctx, n);
+}
+
 /*
  * What the agent tells the changes of, so that an on-change subscription
  * of them is read when told and not every period: the events, each

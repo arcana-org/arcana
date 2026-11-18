@@ -428,8 +428,60 @@ and the old generation is destroyed after it; no table is ever swapped.
 A rule of the admin's naming one refuses a change, as does
 .Va net.inet.ip.fw.tables_sets
 1.
+RFC 9899's matches are what
+.Xr ipfw 8
+reads of them: the fragment types IPv4's
+.Ic frag
+flags
+.Pq Ic df , mf , offset ,
+IPv6's
+.Ic ext6hdr frag
+and
+.Ic frag offset ,
+the TCP flags' bitmask
+.Ic tcpflags ,
+each operator's alternatives an or-block
+.Pq Ic "{ frag mf or frag offset }" ,
+an extension header
+.Ic ext6hdr .
+What
+.Xr ipfw 8
+cannot read is refused, whatever the operator: IPv6's last fragment
+(it reads no M flag), its first fragment unless atomic fragments are
+dropped
+.Pq Va net.inet6.ip6.fw.permit_single_frag6 No 0 and Va deny_unknown_exthdrs No 1, the admin's ,
+the flags
+.Ic tcpflags
+does not name (ECE, CWR, AE, the reserved bits), and the mobility, HIP
+and shim6 headers.
 The operational datastore has the ACLs the kernel has whole, and the
 prefix sets as their tables hold them.
+.Pp
+What the kernel's PF_KEY tells of the host's SAs is told as RFC 9061's
+IKE-less notifications
+.Pq Li ietf-i2nsf-ikeless ,
+to those who subscribed: a socket of the agent's own,
+.Dv SADB_REGISTER Ns ed ,
+hears
+.Dv SADB_ACQUIRE ,
+an outbound packet meeting a policy with no SA
+.Pq Li sadb-acquire , the policy and its selector ,
+and
+.Dv SADB_EXPIRE ,
+an SA's soft or hard lifetime reached
+.Pq Li sadb-expire , what it carried and how long it has been there ;
+every ten seconds the SAs' sequence counters are read and one without
+ESN an eighth from its end is told once
+.Pq Li sadb-seq-overflow .
+An SA is named
+.Li esp/ Ns Ar destination Ns Li /0x Ns Ar SPI ,
+a policy
+.Li spd/ Ns Ar id ,
+the kernel's own; the host's network only, not a vnet jail's.
+The model's SAD and SPD lists are not served yet, nor
+.Li sadb-bad-spi ,
+which PF_KEY has no message for
+.Pq Li arcana-ikeless-deviations .
 .Pp
 Every request has a trace: the library calls, system calls, files and
 programs it used, with the output of every program, told to the peer
@@ -913,8 +965,9 @@ A unix socket
 that answers the PF_KEY messages of the manually keyed SAs and their
 policies
 .Pq Ql ipsec-sa ,
-and the SPD's read of
-.Pa ipsec.conf ,
+the SPD's read of
+.Pa ipsec.conf
+and the registered socket the kernel's news come to,
 in place of the kernel's PF_KEY socket
 .Pq Xr ipsec 4 :
 a test's stand-in.
