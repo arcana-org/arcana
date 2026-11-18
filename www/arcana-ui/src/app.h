@@ -69,6 +69,7 @@ void		 arc_sse_open(int, const char *);
 void		 arc_sse_close(int);
 int		 arc_map_w(void);
 int		 arc_map_h(void);
+int		 arc_el_w(const char *);
 void		 arc_fullscreen(const char *, int);
 void		 arc_title(const char *);
 char		*arc_loc_get(void);
@@ -1122,6 +1123,17 @@ void		 view_usage(struct html *);
 void		 view_usage_host(struct html *, struct server *);
 bool		 usage_action(const char *, const char *, const char *);
 bool		 usage_form(const char *, const ucl_object_t *);
+double		 uplot_ceiling(double);
+void		 uplot_open(struct html *, const char *, const char *);
+void		 uplot_key(struct html *, const char *, const char *,
+		    const char *);
+void		 uplot_line(struct html *, const double *, const double *, int,
+		    double, double, double, const char *, bool, bool);
+/* archive.c: a host's long run, from its agent's archive. */
+void		 arch_open(struct server *);
+void		 arch_tick(double);
+void		 arch_view(struct html *, struct server *);
+bool		 arch_action(const char *, const char *, const char *);
 void		 fmt_size(char *, size_t, double);
 void		 refresh_sysctl(struct server *, bool);
 ucl_object_t	*sysctl_rows(const ucl_object_t *);

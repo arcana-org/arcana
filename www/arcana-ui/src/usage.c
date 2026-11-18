@@ -55,6 +55,8 @@ struct uhost {
 	bool	 racct;			/* the kernel accounts for jails */
 	char	 rules[1024];		/* limits of devices and jails, a line
 					   each */
+	char	*archive;		/* the archive's settings, as JSON:
+					   put back with the sampling's */
 	bool	 known;		/* how it samples was said */
 	bool	 cfg;		/* how it samples is being set */
 	bool	 loading;
@@ -95,6 +97,7 @@ uhost(const char *sid, bool make)
 	if (free_i == -1)
 		return (NULL);
 	free(uh[free_i].v);
+	free(uh[free_i].archive);
 	memset(&uh[free_i], 0, sizeof(uh[0]));
 	snprintf(uh[free_i].sid, sizeof(uh[0].sid), "%s", sid);
 	return (&uh[free_i]);
@@ -184,6 +187,11 @@ usage_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	other = devs(jget(d, "jail"), u->jails, &u->nj) || other;
 	other = devs(jget(d, "relay"), u->relays, &u->nr) || other;
 	u->racct = jbool(d, "racct");
+	/* The archive's settings (PLAN-SDN-YANG 5.6.3), which the
+	 * sampling's PUT would otherwise put back to their defaults. */
+	free(u->archive);
+	u->archive = jget(d, "archive") != NULL ? (char *)ucl_object_emit(
+	    jget(d, "archive"), UCL_EMIT_JSON_COMPACT) : NULL;
 	/* The rules as they are typed: "net:igb0=125000000", a line each. */
 	{
 		const ucl_object_t	*r;
@@ -426,8 +434,8 @@ stats(const struct uhost *u, int f, double t1, double *last, double *avg,
 }
 
 /* A round figure not under v, for the top of a plot. */
-static double
-ceiling(double v)
+double
+uplot_ceiling(double v)
 {
 	double	p;
 
@@ -438,61 +446,94 @@ ceiling(double v)
 }
 
 /*
- * Field f of the host as a line, and with area the ground under it,
- * in a box of PW by PH whose right edge is t1 and whose top is top.
- * Where the host did not answer for a while the line is broken.
+ * n values v at times t (seconds, the oldest first) as a line, and
+ * with area the ground under it, in a plot's box of PW by PH whose
+ * right edge is t1, that spans secs seconds and whose top is top.  A
+ * value that is NaN breaks the line there: what was not sampled is
+ * left out, not drawn across.  A point alone between two breaks is a
+ * short stroke, to be seen.
  */
-static void
-line(struct html *h, const struct uhost *u, int f, double t1, double top,
-    const char *colour, bool area, bool dashed)
+void
+uplot_line(struct html *h, const double *t, const double *v, int n,
+    double t1, double secs, double top, const char *colour, bool area,
+    bool dashed)
 {
-	double	x, y, x0, px;
-	int	i, i0;
-	bool	open;
+	double	x, y, px;
+	int	i, k, run;
 
-	i0 = first(u, t1);
-	if (u->n - i0 < 2)
+	if (n < 1 || secs <= 0 || top <= 0)
 		return;
 	for (i = area ? 0 : 1; i < 2; i++) {
 		h_fmt(h, "<path class=\"%s%s\" style=\"%s:%s\" d=\"", i == 0 ?
 		    "area" : "line", dashed ? " dash" : "", i == 0 ? "fill" :
 		    "stroke", colour);
-		open = false;
-		x0 = px = 0;
-		for (int k = i0; k < u->n; k++) {
-			x = PW * (1 - (t1 - T(u, k)[F_T]) / span);
-			y = value(u, k, f) / top;
-			y = PH - (PH - 2) * (y > 1 ? 1 : y < 0 ? 0 : y);
-			/* A gap the host was away: wider than the looks
-			 * around it, which further back are thinned. */
-			if (open && T(u, k)[F_T] - T(u, k - 1)[F_T] > 4 *
-			    fmax(u->step > 0 ? u->step : 5, k >= 2 ?
-			    T(u, k - 1)[F_T] - T(u, k - 2)[F_T] : 0)) {
-				if (i == 0)
+		run = 0;
+		px = 0;
+		for (k = 0; k <= n; k++) {
+			if (k == n || isnan(v[k])) {
+				if (run > 0 && i == 0)
 					h_fmt(h, "L%.1f %d Z ", px, PH);
-				open = false;
+				run = 0;
+				continue;
 			}
-			if (!open) {
-				if (i == 0)
-					h_fmt(h, "M%.1f %d L%.1f %.1f ", x, PH,
-					    x, y);
-				else
-					h_fmt(h, "M%.1f %.1f ", x, y);
-				x0 = x;
-				open = true;
-			} else
+			x = PW * (1 - (t1 - t[k]) / secs);
+			y = v[k] / top;
+			y = PH - (PH - 2) * (y > 1 ? 1 : y < 0 ? 0 : y);
+			if (run > 0)
 				h_fmt(h, "L%.1f %.1f ", x, y);
+			else if (i == 0)
+				h_fmt(h, "M%.1f %d L%.1f %.1f ", x, PH, x, y);
+			else if (k + 1 == n || isnan(v[k + 1]))
+				h_fmt(h, "M%.1f %.1f H%.1f ", x - .8, y,
+				    x + .8);
+			else
+				h_fmt(h, "M%.1f %.1f ", x, y);
 			px = x;
+			run++;
 		}
-		if (i == 0 && open)
-			h_fmt(h, "L%.1f %d Z", px, PH);
-		(void)x0;
 		h_raw(h, "\"/>");
 	}
 }
 
+/*
+ * Field f of the host as a line, and with area the ground under it,
+ * whose right edge is t1 and whose top is top.  Where the host did not
+ * answer for a while the line is broken.
+ */
 static void
-plot_open(struct html *h, const char *label, const char *top)
+line(struct html *h, const struct uhost *u, int f, double t1, double top,
+    const char *colour, bool area, bool dashed)
+{
+	double	*t, *v;
+	int	 i0, k, n;
+
+	i0 = first(u, t1);
+	if (u->n - i0 < 2)
+		return;
+	if ((t = calloc(2 * (size_t)(u->n - i0), sizeof(*t))) == NULL ||
+	    (v = calloc(2 * (size_t)(u->n - i0), sizeof(*v))) == NULL)
+		abort();
+	for (n = 0, k = i0; k < u->n; k++) {
+		/* A gap the host was away: wider than the looks around
+		 * it, which further back are thinned. */
+		if (k > i0 && T(u, k)[F_T] - T(u, k - 1)[F_T] > 4 * fmax(
+		    u->step > 0 ? u->step : 5, k >= 2 ? T(u, k - 1)[F_T] -
+		    T(u, k - 2)[F_T] : 0)) {
+			t[n] = T(u, k)[F_T];
+			v[n++] = NAN;
+		}
+		t[n] = T(u, k)[F_T];
+		v[n++] = value(u, k, f);
+	}
+	uplot_line(h, t, v, n, t1, span, top, colour, area, dashed);
+	free(t);
+	free(v);
+}
+
+/* A plot's frame: its label, what its top is, the grid; the lines
+ * (uplot_line()) and the closing </svg> to follow. */
+void
+uplot_open(struct html *h, const char *label, const char *top)
 {
 
 	h_raw(h, "<figure class=\"uplot\"><figcaption><b>");
@@ -505,8 +546,10 @@ plot_open(struct html *h, const char *label, const char *top)
 	    PH * .25, PW, PH * .5, PW, PH * .75, PW);
 }
 
-static void
-key(struct html *h, const char *colour, const char *name, const char *v)
+/* A line's key under a plot: its colour, its name and a figure. */
+void
+uplot_key(struct html *h, const char *colour, const char *name,
+    const char *v)
 {
 
 	h_fmt(h, "<span class=\"ukey\"><i style=\"background:%s\"></i>",
@@ -534,9 +577,9 @@ compare(struct html *h, const char *label, int f, double t1, bool pct)
 			if (peak > top)
 				top = peak;
 		}
-	top = pct ? 100 : ceiling(top);
+	top = pct ? 100 : uplot_ceiling(top);
 	snprintf(buf, sizeof(buf), pct ? "of 100%%" : "to %.4g", top);
-	plot_open(h, label, pct ? "of 100%" : buf);
+	uplot_open(h, label, pct ? "of 100%" : buf);
 	for (i = 0; i < app.nservers; i++)
 		if ((u = uhost(app.servers[i].id, false)) != NULL)
 			line(h, u, f, t1, top, palette[i % nitems(palette)],
@@ -547,7 +590,8 @@ compare(struct html *h, const char *label, int f, double t1, bool pct)
 			continue;
 		stats(u, f, t1, &last, &avg, &peak);
 		snprintf(buf, sizeof(buf), pct ? "%.0f%%" : "%.2f", last);
-		key(h, palette[i % nitems(palette)], app.servers[i].name, buf);
+		uplot_key(h, palette[i % nitems(palette)], app.servers[i].name,
+		    buf);
 	}
 	h_raw(h, "</div></figure>");
 }
@@ -564,8 +608,9 @@ single(struct html *h, const struct uhost *u, const char *label, int f1,
 	last2 = avg2 = peak2 = 0;
 	if (f2 >= 0)
 		stats(u, f2, t1, &last2, &avg2, &peak2);
-	top = unit == 0 ? 100 : unit == 4 ? (peak1 > 100 ? ceiling(peak1) :
-	    100) : ceiling(peak1 > peak2 ? peak1 : peak2);
+	top = unit == 0 ? 100 : unit == 4 ? (peak1 > 100 ?
+	    uplot_ceiling(peak1) :
+	    100) : uplot_ceiling(peak1 > peak2 ? peak1 : peak2);
 	if (unit == 0)
 		snprintf(buf, sizeof(buf), "avg %.0f%% · peak %.0f%%", avg1,
 		    peak1);
@@ -586,7 +631,7 @@ single(struct html *h, const struct uhost *u, const char *label, int f1,
 		}
 		snprintf(buf, sizeof(buf), "peak %s", a);
 	}
-	plot_open(h, label, buf);
+	uplot_open(h, label, buf);
 	line(h, u, f1, t1, top, "var(--c1)", true, false);
 	if (f2 >= 0)
 		line(h, u, f2, t1, top, "var(--c2)", false, f1 == F_MEM);
@@ -609,9 +654,9 @@ single(struct html *h, const struct uhost *u, const char *label, int f1,
 		fmt_size(b, sizeof(b), last2);
 		strlcat(b, "/s", sizeof(b));
 	}
-	key(h, "var(--c1)", n1, a);
+	uplot_key(h, "var(--c1)", n1, a);
 	if (f2 >= 0 && !(f2 == F_SWAP && u->swap_total <= 0))
-		key(h, "var(--c2)", n2, b);
+		uplot_key(h, "var(--c2)", n2, b);
 	h_raw(h, "</div></figure>");
 }
 
@@ -1075,6 +1120,7 @@ view_usage_host(struct html *h, struct server *s)
 	    "</span></div>");
 	t1 = ends(u, &have);
 	ucard(h, s, t1, true);
+	arch_view(h, s);
 	h_raw(h, "<section class=\"transport usampling\"><h3>Sampling</h3>");
 	if (u != NULL && u->known)
 		sampling(h, u, true);
@@ -1091,6 +1137,7 @@ usage_host_open(struct server *s)
 {
 
 	usage_poll(s, arc_now());
+	arch_open(s);
 }
 
 bool
@@ -1149,7 +1196,10 @@ usage_form(const char *form, const ucl_object_t *f)
 		    "name, = and its limit");
 		return (true);
 	}
-	h_raw(&b, "]}}");
+	h_raw(&b, "]");
+	if (u->archive != NULL)
+		h_strf(&b, ",\"archive\":%s", u->archive);
+	h_raw(&b, "}}");
 	body = h_take(&b);
 	rc_ds(url, sizeof(url), "candidate", u->sid, "arcana-history:history");
 	u->cfg = false;

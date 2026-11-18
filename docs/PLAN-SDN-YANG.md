@@ -3821,6 +3821,50 @@ whose first part is served.
   flush() by no case with a real clock), the jail and relay classes
   fed from a host that has them (the harness feeds them), and the page
   (5.6.3b).
+  5.6.3b done (www/arcana-ui/src/archive.c): a host's Monitoring tab
+  has its long run under the last hour's utilization.  A class at a
+  time (host, interfaces, disks, jails, FEC relays, probes) over 1 h,
+  6 h, 1 d, 7 d or all the class keeps (its retention, from the
+  archive's state); each series asked for as many points as its plot
+  is drawn wide (the first plot's width, 60 to 2000), so the agent
+  merges a week into as few as an hour.  The host's figures are drawn
+  at once; a class of many series is first a table of them, each with
+  its means over the range (one read of every series at a point each),
+  the one picked drawn (the first unless one is), so a probe target's
+  delay (mean, least, most), delay each way, IPDV and loss are its
+  plots.  A gap is a gap: a point more than a bucket and a half after
+  the one before, or a figure no sample told (-1), breaks the line,
+  never drawn across.  Under it what the agent keeps, a class a row
+  (step, retention, days on disk, size, oldest day, full), and the
+  budget.  The plots are the utilization's (usage.c's plot, key and
+  line, the line now taking any times and values with NaN as a break,
+  a point alone a short stroke), both tables sort by a column and
+  filter, and the view reads again every minute while shown.  The
+  sampling's form, which PUTs arcana-history whole, now puts the
+  archive's settings back as it read them; before, it set them to
+  their defaults.
+  Checked: pwa_test:pwa_archive (three days before today of the host,
+  an interface and a probe target fed by the arch harness before the
+  agent starts, the host's with six hours left out; the host's and the
+  interfaces' step set to 10 s by a PUT of the history settings,
+  written in history.conf; on the Monitoring tab: the day's five
+  plots, the points asked for within a quarter of the plot's width,
+  the step a multiple of the class's and the day in at most that many;
+  the week's CPU line broken where the six hours are, at their place;
+  the hour's points the agent archived itself while the case ran; all
+  30 days; the classes' table sorted by size and filtered; the
+  interfaces over the hour without the fed one, over the week with it,
+  filtered to it, picked and drawn, sorted; the probes over the hour
+  said empty, over the week the target's four plots, its mean delay and
+  loss; the sampling set by its form keeping the archive's steps) and
+  pwa_test:pwa_storage_relay (the utilization's plots drawn by the line
+  as it is now).  Not checked: a host whose agent lacks read-archive
+  (the page says the module's error as for any other read), the jail
+  and relay classes with series (no case's agent has them live; their
+  plots are the interface's code with other fields), a width change
+  read again on its own (the tick reads again when the plot's width is
+  a quarter off what was asked), and pwa_storage_procs' utilization
+  checks (it skips at the suite's nice).
 - 5.7.1 D: the measurement chapter; TODO.
   The chapter done (the book's sdwan/measurement.md, 2026-11-17): what
   is measured, STAMP and its fallback to ICMP, the delay and loss each

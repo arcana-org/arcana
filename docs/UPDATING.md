@@ -93,6 +93,17 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The long run on the page, console 0.446.0
+
+- A host's Monitoring tab shows its long run from the agent's archive
+  (PLAN-SDN-YANG 5.6.3b): pick a class (host, interfaces, disks, jails,
+  FEC relays, probes) and a range (1 h, 6 h, 1 d, 7 d or all the class
+  keeps); a class of many series is a table to pick one from; a gap is
+  drawn as a gap; what the agent keeps per class is a table too.
+  Setting the sampling on that tab no longer resets the archive's
+  settings to their defaults.  Needs an agent with read-archive
+  (0.294.0).
+
 ### Streams closed offline, console 0.445.1
 
 - The page closes its fleet event stream and subscriptions while the

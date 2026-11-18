@@ -4153,6 +4153,16 @@ section.ucard .uname:hover { color: var(--cyan); }
 .upick button { text-transform: none; letter-spacing: 0; }
 .upick button small { margin-left: .3rem; color: var(--fg-2); }
 .upick button.idle { opacity: .55; }
+/* A host's long run (archive.c): its classes and ranges, the series to
+ * pick from, the plots of the one picked. */
+section.arch .toolbar { flex-wrap: wrap; gap: .5rem; }
+section.arch .uplots { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: .7rem; }
+section.arch figure.uplot svg { height: 110px; }
+section.arch table.arch-series { margin-top: .6rem; }
+section.arch table.net tr.pick.on td { background: rgba(var(--accent-rgb), .1); }
+section.arch .arch-span, section.arch .arch-budget { margin-top: .45rem; font-size: .72rem; }
+section.arch h4 { margin-top: 1.1rem; }
+section.arch .arch-empty { margin-top: .7rem; }
 section.ucard h4 > button { margin-left: .8rem; }
 form.usample { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; margin: .2rem 0 .8rem; }
 form.usample label { display: inline-flex; align-items: center; gap: .4rem; margin: 0; font-size: .78rem; color: var(--fg-2); }

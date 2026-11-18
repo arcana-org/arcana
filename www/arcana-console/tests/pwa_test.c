@@ -13936,6 +13936,255 @@ ATF_TC_CLEANUP(pwa_sdwan_bmp, tc)
 }
 
 /*
+ * A host's long run (PLAN-SDN-YANG 5.6.3): three days before today of
+ * the host, an interface and a probe target fed into the agent's
+ * archive by the arch harness before it starts, the host's with six
+ * hours missing; the host's and the interfaces' step set to 10 s
+ * through the history settings, so that the agent archives points of
+ * its own while the case runs.  Drawn on the host's Monitoring tab:
+ * over the day, the week (the six hours a gap at their place), the
+ * hour (the agent's own points, of its step) and all the class
+ * keeps, each series given as many points as its plot is wide; the
+ * interfaces as a table to pick one from, sorted and filtered; the
+ * probes' target; nothing in the last hour of them said so.
+ */
+static void
+part_archive(const atf_tc_t *tc)
+{
+	char		 cmd[MAXPATHLEN + 64], expr[1024], doc[1024];
+	const char	*arch;
+	time_t		 now, day0, t, gap0, gap1;
+	FILE		*fp;
+
+	arch = locate(tc, "../../../usr.sbin/arcana-agent/tests/arch", "arch",
+	    "/usr/local/tests/arcana/arcana-agent/arch");
+	if (access(arch, X_OK) != 0)
+		atf_tc_skip("no arch harness at %s", arch);
+	now = time(NULL);
+	day0 = now - now % 86400;
+	gap0 = day0 - 2 * 86400 + 6 * 3600;
+	gap1 = gap0 + 6 * 3600;
+	ATF_REQUIRE((fp = fopen("feed.txt", "w")) != NULL);
+	for (t = day0 - 3 * 86400; t < day0; t += 60)
+		if (t < gap0 || t >= gap1)
+			fprintf(fp, "host host %jd %.1f 1.5 2000000000 0 "
+			    "1000000 500000 2000000 1000000\n", (intmax_t)t,
+			    20 + 10 * sin((double)t / 7200));
+	for (t = day0 - 3 * 86400; t < day0; t += 60)
+		fprintf(fp, "interface igb9 %jd 1000000 250000\n", (intmax_t)t);
+	for (t = day0 - 3 * 86400; t < day0; t += 60)
+		fprintf(fp, "probe hq-path/ef %jd 12.5 0.4 0.01 11 14 0.005 "
+		    "0.005 6.25 6.25 60 59\n", (intmax_t)t);
+	fclose(fp);
+	/* The agent's directory, archive beside its history.conf. */
+	snprintf(cmd, sizeof(cmd), "'%s' feed \"$PWD/archive\" < feed.txt",
+	    arch);
+	ATF_REQUIRE_MSG(system(cmd) == 0, "the arch harness feeds nothing");
+	prologue(tc, 1);
+
+	/* A point every 10 s of the host and its interfaces, set as any
+	 * of the history's settings, sampled every 2 s. */
+	run("window.archSet = false; fetch('/restconf/data/arcana-console:"
+	    "hosts').then(r => r.json()).then(j => Promise.all(j['arcana-"
+	    "console:hosts'].host.map(s => fetch('/restconf/ds/ietf-"
+	    "datastores:candidate/arcana-fleet:fleet/host=' + s.id + "
+	    "'/arcana-history:history', { method: 'PUT', headers: { "
+	    "'Content-Type': 'application/yang-data+json', 'X-Arcana': '1' }, "
+	    "body: JSON.stringify({ 'arcana-history:history': { sampling: { "
+	    "step: 2, keep: 720, hold: 0, enabled: true }, limits: { cpu: 0, "
+	    "memory: 0, swap: 0, storage: 0 }, rule: [], archive: { enabled: "
+	    "true, budget: 128, class: [{ name: 'host', step: 10 }, { name: "
+	    "'interface', step: 10 }] } } }) }).then(() => fetch('/restconf/"
+	    "data/arcana-fleet:fleet/host=' + s.id + '/ietf-netconf:commit', "
+	    "{ method: 'POST', headers: { 'Content-Type': 'application/yang-"
+	    "data+json', 'X-Arcana': '1' }, body: '{}' }))))).then(() => { "
+	    "window.archSet = true; });");
+	wait_js("window.archSet", 20);
+	for (int i = 0; i < 100 && system("grep -q '^class=host:10' "
+	    "history.conf") != 0; i++)
+		usleep(100000);
+	ATF_REQUIRE_MSG(system("grep -q '^class=host:10' history.conf && "
+	    "grep -q '^class=interface:10' history.conf") == 0, "the archive's "
+	    "steps are not in history.conf");
+
+	host_tabs();
+	host_tab("utilization");
+	/* The day, the host's five plots; what the archive holds, a class
+	 * a row, the host's three days fed and today. */
+	run("window.archPlots = () => document.querySelector('section.arch "
+	    ".arch-plots'); window.archCaps = () => [...document."
+	    "querySelectorAll('section.arch .arch-plots figcaption b')].map(b "
+	    "=> b.textContent); window.archRows = (c) => [...document."
+	    "querySelectorAll('section.arch table.' + c + ' tbody tr')].map(r "
+	    "=> [...r.cells].map(c => c.textContent));");
+	wait_js("window.archPlots() && +window.archPlots().dataset.points > 0 "
+	    "&& window.archRows('arch-classes').length === 6", 30);
+	js_str(doc, sizeof(doc), "JSON.stringify([window.archCaps(), window."
+	    "archRows('arch-classes')]).slice(0, 1000)");
+	ATF_CHECK_MSG(js_true("window.archCaps().join('|') === 'CPU|Load|"
+	    "Memory|Network|Disks' && document.querySelector('button[data-act="
+	    "arch-range][data-arg=\"86400\"].on') && document.querySelector("
+	    "'button[data-act=arch-class][data-arg=host].on') && window."
+	    "archRows('arch-classes').some(r => r[0] === 'host' && r[1] === "
+	    "'10 s' && r[2] === '30 d' && +r[3] >= 3) && window.archRows("
+	    "'arch-classes').some(r => r[0] === 'probe' && r[1] === '60 s' && "
+	    "r[2] === '7 d' && r[3] === '3')"), "%s", doc);
+	/* As many points as the plot is wide, the agent's own merged. */
+	js_str(doc, sizeof(doc), "JSON.stringify([window.archPlots().dataset, "
+	    "document.querySelector('section.arch figure.uplot svg')."
+	    "getBoundingClientRect().width])");
+	ATF_CHECK_MSG(js_true("(d => (w => Math.abs(+d.asked - w) <= Math.max("
+	    "+d.asked / 4, 2) && +d.step % 10 === 0 && 86400 / +d.step <= "
+	    "+d.asked + 1 && +d.points <= +d.asked + 1)(document.querySelector("
+	    "'section.arch figure.uplot svg').getBoundingClientRect().width))("
+	    "window.archPlots().dataset)"), "the points for the width: %s",
+	    doc);
+	run("document.querySelector('section.arch').scrollIntoView()");
+	shot("7v-archive-day");
+
+	/* The week: the six hours fed none of are a gap in the CPU's
+	 * line, where they are, not drawn across. */
+	click_when("button[data-act=arch-range][data-arg='604800']", 10);
+	wait_js("document.querySelector('button[data-act=arch-range][data-arg="
+	    "\"604800\"].on') && window.archPlots() && +window.archPlots()."
+	    "dataset.to - +window.archPlots().dataset.from === 604800", 20);
+	snprintf(expr, sizeof(expr), "(d => { const x = (t) => 300 * (1 - "
+	    "(+d.to - t) / (+d.to - +d.from)); const segs = document."
+	    "querySelector('section.arch figure.uplot path.line')."
+	    "getAttribute('d').split('M').slice(1).map(s => s.trim().split("
+	    "/[ LH]+/).map(Number)); const tol = 300 * 2 * +d.step / 604800 "
+	    "+ 1; return (segs.length >= 2 && segs.some((s, i) => i + 1 < "
+	    "segs.length && Math.abs(s[s.length - 2] - x(%jd)) <= tol && "
+	    "Math.abs(segs[i + 1][0] - x(%jd)) <= tol)); })(window.archPlots()"
+	    ".dataset)", (intmax_t)gap0, (intmax_t)gap1);
+	js_str(doc, sizeof(doc), "document.querySelector('section.arch figure."
+	    "uplot path.line').getAttribute('d').slice(0, 1000)");
+	ATF_CHECK_MSG(js_true(expr), "no gap where nothing was kept: %s", doc);
+	shot("7v-archive-week");
+
+	/* The hour: the agent's own points, of its 10 s merged into as
+	 * many as the plot is wide, as it archives them. */
+	for (int i = 0; i < 30; i++) {
+		click_when("button[data-act=arch-range][data-arg='21600']", 10);
+		click_when("button[data-act=arch-range][data-arg='3600']", 10);
+		usleep(3000000);
+		if (js_true("window.archPlots() && document.querySelector("
+		    "'button[data-act=arch-range][data-arg=\"3600\"].on') && "
+		    "+window.archPlots().dataset.points >= 3"))
+			break;
+	}
+	js_str(doc, sizeof(doc), "JSON.stringify(window.archPlots()?.dataset)");
+	ATF_CHECK_MSG(js_true("(d => +d.points >= 3 && +d.step === Math.ceil("
+	    "Math.ceil(3601 / +d.asked) / 10) * 10)(window.archPlots()."
+	    "dataset)"), "the agent's own points, a multiple of its 10 s: %s",
+	    doc);
+
+	/* All the class keeps: the host's 30 days. */
+	click_when("button[data-act=arch-range][data-arg='0']", 10);
+	wait_js("document.querySelector('button[data-act=arch-range][data-arg="
+	    "\"0\"].on').textContent === 'all 30 d' && window.archPlots() && "
+	    "+window.archPlots().dataset.to - +window.archPlots().dataset.from "
+	    "=== 30 * 86400", 20);
+
+	/* The classes' table sorted by size, and filtered. */
+	click_when("section.arch table.arch-classes th[data-value='4']", 10);
+	wait_js("document.querySelector('section.arch table.arch-classes "
+	    "th[data-value=\"4\"]').classList.contains('asc')", 10);
+	run("const i = document.querySelector('section.arch input[data-input="
+	    "filter]'); i.value = 'probe'; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("window.archRows('arch-classes').length === 1 && window."
+	    "archRows('arch-classes')[0][0] === 'probe'", 10);
+	run("const i = document.querySelector('section.arch input[data-input="
+	    "filter]'); i.value = ''; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("window.archRows('arch-classes').length === 6", 10);
+
+	/* The interfaces over the hour: the agent's own, the one fed days
+	 * ago not among them; over the week it is, filtered to, picked and
+	 * drawn. */
+	click_when("button[data-act=arch-range][data-arg='3600']", 10);
+	click_when("button[data-act=arch-class][data-arg=interface]", 10);
+	wait_js("document.querySelector('button[data-act=arch-class][data-arg="
+	    "interface].on') && window.archRows('arch-series').length >= 1 && "
+	    "window.archCaps().length === 1 && window.archCaps()[0]."
+	    "startsWith('Network · ')", 30);
+	ATF_CHECK(js_true("!window.archRows('arch-series').some(r => r[0] === "
+	    "'igb9')"));
+	click_when("button[data-act=arch-range][data-arg='604800']", 10);
+	wait_js("window.archRows('arch-series').some(r => r[0] === 'igb9' && "
+	    "r[1].includes('b/s'))", 20);
+	run("const i = document.querySelector('section.arch input[data-input="
+	    "filter]'); i.value = 'igb9'; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	wait_js("window.archRows('arch-series').length === 1", 10);
+	click_when("section.arch table.arch-series tr[data-arg='igb9']", 10);
+	wait_js("document.querySelector('section.arch table.arch-series "
+	    "tr.on[data-arg=\"igb9\"]') && window.archCaps()[0] === 'Network "
+	    "· igb9' && +window.archPlots().dataset.points > 0", 20);
+	shot("7v-archive-interface");
+	run("const i = document.querySelector('section.arch input[data-input="
+	    "filter]'); i.value = ''; i.dispatchEvent(new Event('input', "
+	    "{ bubbles: true }));");
+	/* Sorted by what came in: the fed one's 8 Mb/s against lo0's. */
+	click_when("section.arch table.arch-series th[data-value='1']", 10);
+	wait_js("document.querySelector('section.arch table.arch-series "
+	    "th[data-value=\"1\"]').classList.contains('asc')", 10);
+
+	/* The probes: nothing in the last hour, said so; the week's
+	 * target, its delay of 12.5 ms. */
+	click_when("button[data-act=arch-range][data-arg='3600']", 10);
+	click_when("button[data-act=arch-class][data-arg=probe]", 10);
+	wait_js("document.querySelector('section.arch .arch-empty') && "
+	    "document.querySelector('section.arch .arch-empty').textContent."
+	    "includes('Nothing archived of Probes in the last hour') && "
+	    "!window.archPlots()", 20);
+	shot("7v-archive-empty");
+	click_when("button[data-act=arch-range][data-arg='604800']", 10);
+	wait_js("window.archRows('arch-series').length === 1 && window."
+	    "archRows('arch-series')[0][0] === 'hq-path/ef' && window."
+	    "archCaps().join('|') === 'Delay · hq-path/ef|Delay each way · "
+	    "hq-path/ef|Delay variation · hq-path/ef|Loss · hq-path/ef'", 20);
+	js_str(doc, sizeof(doc), "document.querySelector('section.arch "
+	    ".arch-plots').textContent.slice(0, 600)");
+	ATF_CHECK_MSG(js_true("document.querySelector('section.arch "
+	    ".arch-plots figcaption span').textContent === 'avg 12.5 ms · "
+	    "peak 14.0 ms' && window.archRows('arch-series')[0][3] === "
+	    "'1.00%'"), "%s", doc);
+	shot("7v-archive-probe");
+
+	/* The sampling set by its own form, below: the archive's settings
+	 * are put back with it, not to their defaults. */
+	run("const f = document.querySelector('section.usampling form["
+	    "data-form=usage-set]'); f.step.value = '3'; f.requestSubmit();");
+	for (int i = 0; i < 200 && system("grep -q '^step=3$' history.conf") !=
+	    0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(system("grep -q '^step=3$' history.conf && grep -q "
+	    "'^class=host:10' history.conf && grep -q '^class=interface:10' "
+	    "history.conf") == 0, "the archive's settings are lost when the "
+	    "sampling is set");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_archive);
+ATF_TC_HEAD(pwa_archive, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A host's long run from its agent's archive: fed days and the agent's own points drawn over a day, a week with its gap, an hour and the class's retention; points for the plot's width; interfaces picked from a sorted, filtered table; a probe target; the empty state");
+	atf_tc_set_md_var(tc, "timeout", "300");
+}
+ATF_TC_BODY(pwa_archive, tc)
+{
+
+	part_archive(tc);
+}
+ATF_TC_CLEANUP(pwa_archive, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * The Builder's make.conf: a new one, a jail's, written in
  * poudriere.d by its form; changed again from its button.
  */
@@ -14430,6 +14679,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_route_early);
 	ATF_TP_ADD_TC(tp, pwa_flows_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_sdwan_bmp);
+	ATF_TP_ADD_TC(tp, pwa_archive);
 	ATF_TP_ADD_TC(tp, pwa_firewall_host);
 	ATF_TP_ADD_TC(tp, pwa_firewall_rules);
 	ATF_TP_ADD_TC(tp, pwa_plugins_bird);

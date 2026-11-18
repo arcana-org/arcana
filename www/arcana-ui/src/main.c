@@ -568,6 +568,7 @@ tick(void *arg)
 			procs_tick(now);
 			logs_tick(now);
 			usage_tick(now);
+			arch_tick(now);
 			ecmp_tick(now);
 			mtr_tick(now);
 			storage_tick(now);
@@ -1278,7 +1279,8 @@ dispatch(const char *act, const char *arg, const char *value)
 	    macdo_action(act, arg, value) ||
 	    ra_action(act, arg, value) || yform_action(act, arg, value) ||
 	    procs_action(act, arg, value) || logs_action(act, arg, value) ||
-	    usage_action(act, arg, value) || ecmp_action(act, arg, value) ||
+	    usage_action(act, arg, value) || arch_action(act, arg, value) ||
+	    ecmp_action(act, arg, value) ||
 	    leaks_action(act, arg, value) ||
 	    nhop_action(act, arg, value) || mtr_action(act, arg, value) ||
 	    firewall_action(act, arg, value) || l2_action(act, arg, value) ||

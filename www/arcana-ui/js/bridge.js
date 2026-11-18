@@ -3255,6 +3255,13 @@ addToLibrary({
 
 		return (el === null ? 0 : el.clientWidth);
 	},
+	/* How wide the first element sel matches is drawn, 0 none. */
+	arc_el_w: function (selp) {
+		var el = document.querySelector(UTF8ToString(selp));
+
+		return (el === null ? 0 : Math.round(el.getBoundingClientRect()
+		    .width));
+	},
 	arc_map_h: function () {
 		var el = document.querySelector(".netmap:not(.ngmap) " +
 		    "> .map-wrap");
