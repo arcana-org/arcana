@@ -5800,6 +5800,11 @@ section.ra { margin: 1rem 0; }
 /* A host's Monitoring tab: its plots, then how it is sampled. */
 section.hutil section.ucard h4 .uname { cursor: default; color: inherit; }
 section.usampling form.usample { margin-top: .5rem; }
+/* The archive's settings: a class a box, its step and retention side by side. */
+section.uarchive form.uarch { grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+section.uarchive fieldset.uarch-class { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem .6rem; margin: 0; padding: .3rem .7rem .5rem; min-width: 0; border: 1px solid var(--line); border-radius: 6px; }
+section.uarchive fieldset.uarch-class legend { font-size: .78rem; font-weight: 600; color: var(--fg); padding: 0 .3rem; }
+section.uarchive fieldset.uarch-class small.help { grid-column: 1 / -1; }
 
 /* pkg clean's box: each choice's explanation under its words. */
 form[data-form=pkg-clean] label.toggle small { display: block; margin-top: .1rem; color: var(--dim); }

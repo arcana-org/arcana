@@ -93,6 +93,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The archive's settings on the page, console 0.448.0
+
+- A host's Monitoring tab has an Archive form under Sampling
+  (PLAN-SDN-YANG 5.6.3): whether the agent archives its samples, the
+  budget in MiB, and each class's step (10 to 3600 s, 60 when empty)
+  and retention (1 to 3660 days, 30 for host and 7 for the others when
+  empty), checked as the agent checks them and saved with the sampling
+  in one commit of arcana-history, so neither form loses the other's
+  settings.  Kept in history.conf as `archive=`, `budget=` and
+  `class=name:step:retention`; before, only RESTCONF or the file set
+  them.
+
 ### BIRD's Configuration button, console 0.447.1
 
 - The BIRD tab's Configuration button stays disabled until the host's

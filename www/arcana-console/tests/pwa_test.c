@@ -14168,6 +14168,162 @@ part_archive(const atf_tc_t *tc)
 	    "sampling is set");
 }
 
+/* history.conf's lines as sh's test cond says, waited for (the file
+ * is written at the first commit). */
+static bool
+hist_wait(const char *cond, int seconds)
+{
+	char	cmd[1024];
+	int	i;
+
+	snprintf(cmd, sizeof(cmd), "{ %s; } 2>/dev/null", cond);
+	for (i = 0; i < seconds * 10 && system(cmd) != 0; i++)
+		usleep(100000);
+	return (system(cmd) == 0);
+}
+
+/*
+ * The archive's settings set by their form on the Monitoring tab:
+ * refused as the agent refuses them, written in history.conf, the
+ * archive's state as they are, kept by the sampling's form, a step
+ * emptied to its default, off, and shown again after a reload.
+ */
+static void
+part_archive_form(const atf_tc_t *tc)
+{
+	char	doc[1024];
+
+	prologue(tc, 1);
+	host_tabs();
+	host_tab("utilization");
+	run("window.af = () => document.querySelector('section.uarchive "
+	    "form[data-form=usage-arch]'); window.archRows = () => [...document."
+	    "querySelectorAll('section.arch table.arch-classes tbody tr')]."
+	    "map(r => [...r.cells].map(c => c.textContent)); window.toastHas = "
+	    "(s) => [...document.querySelectorAll('.toast')].some(t => "
+	    "t.textContent.includes(s));");
+	wait_js("window.af() && window.archRows().length === 6", 30);
+	/* As the agent has them unless set: on, 128 MiB, each class's
+	 * default its placeholder. */
+	js_str(doc, sizeof(doc), "(f => JSON.stringify([f.enabled.checked, "
+	    "f.budget.value, f['step-host'].value, f['step-host'].placeholder, "
+	    "f['keep-host'].placeholder, f['keep-probe'].placeholder]))("
+	    "window.af())");
+	ATF_CHECK_MSG(strcmp(doc, "[true,\"128\",\"\",\"60\",\"30\",\"7\"]") ==
+	    0, "the archive's form as the agent has it: %s", doc);
+	ATF_CHECK(js_true("window.af().querySelectorAll('fieldset.uarch-class')"
+	    ".length === 6 && window.af().querySelector('small.help')."
+	    "textContent.includes('fsync(2)')"));
+	shot("7v-archive-form");
+
+	/* Out of the agent's ranges: refused on the page, nothing sent. */
+	run("const f = window.af(); f.budget.value = '1048577'; "
+	    "f.requestSubmit();");
+	wait_js("window.toastHas('The archive\\'s budget is 1 to 1048576 MiB')",
+	    10);
+	run("const f = window.af(); f.budget.value = '256'; "
+	    "f['step-host'].value = '5'; f.requestSubmit();");
+	wait_js("window.toastHas('The archive\\'s host: a point every 10 to "
+	    "3600 seconds')", 10);
+	run("const f = window.af(); f['step-host'].value = ''; "
+	    "f['step-interface'].value = '3601'; f.requestSubmit();");
+	wait_js("window.toastHas('The archive\\'s interface: a point every')",
+	    10);
+	run("const f = window.af(); f['step-interface'].value = ''; "
+	    "f['keep-disk'].value = '0'; f.requestSubmit();");
+	wait_js("window.toastHas('The archive\\'s disk: kept 1 to 3660 days')",
+	    10);
+	run("const f = window.af(); f['keep-disk'].value = ''; "
+	    "f['keep-probe'].value = '3661'; f.requestSubmit();");
+	wait_js("window.toastHas('The archive\\'s probe: kept 1 to 3660 days')",
+	    10);
+	run("const f = window.af(); f['keep-probe'].value = '2.5'; "
+	    "f.requestSubmit();");
+	usleep(1000000);
+	ATF_CHECK_MSG(system("! grep -q '^class=' history.conf 2>/dev/null "
+	    "&& ! grep -q '^budget=256' history.conf 2>/dev/null") == 0,
+	    "a refused archive setting was sent");
+
+	/* Set: in history.conf, and the archive's state so. */
+	run("const f = window.af(); f.budget.value = '256'; "
+	    "f['step-host'].value = '30'; f['keep-host'].value = '60'; "
+	    "f['step-probe'].value = '20'; f['keep-probe'].value = '14'; "
+	    "f['keep-disk'].value = '3'; f.requestSubmit();");
+	ATF_CHECK_MSG(hist_wait("grep -qx 'budget=256' history.conf && "
+	    "grep -qx 'archive=yes' history.conf && grep -qx "
+	    "'class=host:30:60' history.conf && grep -qx 'class=probe:20:14' "
+	    "history.conf && grep -qx 'class=disk:0:3' history.conf && ! grep "
+	    "-q '^class=interface' history.conf", 30), "the archive's settings "
+	    "are not in history.conf");
+	wait_js("window.toastHas('Archive set')", 20);
+	wait_js("window.archRows().some(r => r[0] === 'host' && r[1] === "
+	    "'30 s' && r[2] === '60 d') && window.archRows().some(r => r[0] "
+	    "=== 'probe' && r[1] === '20 s' && r[2] === '14 d') && window."
+	    "archRows().some(r => r[0] === 'disk' && r[1] === '60 s' && r[2] "
+	    "=== '3 d') && document.querySelector('section.arch "
+	    ".arch-budget').textContent.includes('256')", 30);
+	js_str(doc, sizeof(doc), "(f => JSON.stringify([f.budget.value, "
+	    "f['step-host'].value, f['keep-host'].value, f['step-disk'].value, "
+	    "f['keep-disk'].value]))(window.af())");
+	ATF_CHECK_MSG(strcmp(doc, "[\"256\",\"30\",\"60\",\"\",\"3\"]") == 0,
+	    "the archive's form after its save: %s", doc);
+	shot("7v-archive-form-set");
+
+	/* The sampling set by its own form keeps them. */
+	run("const f = document.querySelector('section.usampling form["
+	    "data-form=usage-set]'); f.step.value = '3'; f.requestSubmit();");
+	ATF_CHECK_MSG(hist_wait("grep -qx 'step=3' history.conf", 30),
+	    "the sampling is not set");
+	ATF_CHECK_MSG(system("grep -qx 'budget=256' history.conf && grep -qx "
+	    "'class=host:30:60' history.conf && grep -qx 'class=probe:20:14' "
+	    "history.conf && grep -qx 'class=disk:0:3' history.conf") == 0,
+	    "the archive's settings are lost when the sampling is set");
+
+	/* Off, the host's step emptied to its default; the sampling kept,
+	 * and all of it shown again after a reload. */
+	wait_js("window.af() && window.af()['step-host'].value === '30' && "
+	    "document.querySelector('section.usampling form[data-form="
+	    "usage-set]').step.value === '3'", 20);
+	run("const f = window.af(); f.enabled.checked = false; "
+	    "f['step-host'].value = ''; f.requestSubmit();");
+	ATF_CHECK_MSG(hist_wait("grep -qx 'archive=no' history.conf && grep "
+	    "-qx 'class=host:0:60' history.conf", 30), "the archive is not "
+	    "off in history.conf");
+	ATF_CHECK(system("grep -qx 'step=3' history.conf && grep -qx "
+	    "'class=probe:20:14' history.conf") == 0);
+	run("window.before = 1; location.reload();");
+	wait_js("window.before === undefined && document.querySelector("
+	    "'section.uarchive form[data-form=usage-arch]')", 30);
+	run("window.af = () => document.querySelector('section.uarchive "
+	    "form[data-form=usage-arch]');");
+	js_str(doc, sizeof(doc), "(f => JSON.stringify([f.enabled.checked, "
+	    "f.budget.value, f['step-host'].value, f['keep-host'].value, "
+	    "f['step-probe'].value, f['keep-probe'].value, f['keep-disk']."
+	    "value, f['step-jail'].value]))(window.af())");
+	ATF_CHECK_MSG(strcmp(doc, "[false,\"256\",\"\",\"60\",\"20\",\"14\","
+	    "\"3\",\"\"]") == 0, "the archive's form after a reload: %s", doc);
+	ATF_CHECK(js_true("document.querySelector('section.usampling form["
+	    "data-form=usage-set]').step.value === '3'"));
+}
+
+ATF_TC_WITH_CLEANUP(pwa_archive_form);
+ATF_TC_HEAD(pwa_archive_form, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The archive's settings by their form on the Monitoring tab: out-of-range values refused, the settings in history.conf and the archive's state, kept by the sampling's form, a step emptied, off, and shown again after a reload");
+	atf_tc_set_md_var(tc, "timeout", "300");
+}
+ATF_TC_BODY(pwa_archive_form, tc)
+{
+
+	part_archive_form(tc);
+}
+ATF_TC_CLEANUP(pwa_archive_form, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_archive);
 ATF_TC_HEAD(pwa_archive, tc)
 {
@@ -14682,6 +14838,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_flows_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_sdwan_bmp);
 	ATF_TP_ADD_TC(tp, pwa_archive);
+	ATF_TP_ADD_TC(tp, pwa_archive_form);
 	ATF_TP_ADD_TC(tp, pwa_firewall_host);
 	ATF_TP_ADD_TC(tp, pwa_firewall_rules);
 	ATF_TP_ADD_TC(tp, pwa_plugins_bird);

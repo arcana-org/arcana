@@ -14,7 +14,7 @@
  * and the disks likewise; and each FEC relay's overhead, the bytes its
  * FEC adds beside the tunnel's rate it carries.  How often an agent
  * samples and how much it keeps is set here, with what that takes of
- * its memory.
+ * its memory, and what its archive keeps on the disk and for how long.
  */
 
 #include <math.h>
@@ -34,6 +34,43 @@
 #define	PH		70
 
 enum { F_T, F_CPU, F_LOAD, F_MEM, F_SWAP, F_RX, F_TX, F_RD, F_WR };
+
+/*
+ * The archive's classes (PLAN-SDN-YANG 5.6.3), as arcana-history names
+ * them, each with the days it keeps unless set; the agent's limits
+ * (gula/archive.c) checked here too.
+ */
+static const struct {
+	const char	*name;
+	int		 keep;
+	const char	*what;
+} aclass[] = {
+	{ "host", 30, "CPU, load, memory, swap and the totals in, out, read "
+	    "and written: one series" },
+	{ "interface", 7, "Each interface the sampler tells apart: in and "
+	    "out" },
+	{ "disk", 7, "Each disk, as devstat(3) counts it: read and written" },
+	{ "jail", 7, "Each jail, as the kernel's racct accounts it: CPU and "
+	    "memory" },
+	{ "relay", 7, "Each FEC relay, from its reports in syslog: carried "
+	    "and added" },
+	{ "probe", 7, "Each probe target, a tunnel's probe or an SD-WAN "
+	    "path's STAMP: delays, IPDV, loss, sent and received" },
+};
+#define	AC		nitems(aclass)
+#define	ARC_STEP_DEF	60
+#define	ARC_STEP_MIN	10
+#define	ARC_STEP_MAX	3600
+#define	ARC_KEEP_MAX	3660
+#define	ARC_BUDGET_DEF	128
+#define	ARC_BUDGET_MAX	1048576
+
+/* The archive's settings: each step and retention 0, its default. */
+struct uarch {
+	bool	 on;
+	int	 budget;		/* MiB */
+	int	 step[AC], keep[AC];
+};
 
 struct uhost {
 	char	 sid[9];
@@ -55,8 +92,9 @@ struct uhost {
 	bool	 racct;			/* the kernel accounts for jails */
 	char	 rules[1024];		/* limits of devices and jails, a line
 					   each */
-	char	*archive;		/* the archive's settings, as JSON:
-					   put back with the sampling's */
+	struct uarch arch;		/* the archive's settings, put back
+					   with the sampling's */
+	bool	 has_arch;		/* the agent said them */
 	bool	 known;		/* how it samples was said */
 	bool	 cfg;		/* how it samples is being set */
 	bool	 loading;
@@ -97,7 +135,6 @@ uhost(const char *sid, bool make)
 	if (free_i == -1)
 		return (NULL);
 	free(uh[free_i].v);
-	free(uh[free_i].archive);
 	memset(&uh[free_i], 0, sizeof(uh[0]));
 	snprintf(uh[free_i].sid, sizeof(uh[0].sid), "%s", sid);
 	return (&uh[free_i]);
@@ -132,11 +169,59 @@ static void	usage_saved(struct ycommit *, int);
 static bool	rules_json(struct html *, const char *);
 static void	usage_poll(struct server *, double);
 
-/* The sampling saved: arcana-history in the candidate, committed. */
+/* The sampling, or the archive, saved: arcana-history in the candidate,
+ * committed, the whole of it by either form. */
 static struct ycommit uyc = { .act = "usage-yc", .saved = "Saved: the "
     "agent samples so.", .undone = "Undone: the sampling is as it was.",
     .done = usage_saved };
+static bool	uyc_arch;	/* the last save was the archive's form */
 static void	sample_row(double *, const ucl_object_t *);
+
+/* The archive's settings as the agent said them (NULL: it has none). */
+static void
+uarch_read(struct uhost *u, const ucl_object_t *a)
+{
+	const ucl_object_t	*r;
+	ucl_object_iter_t	 it;
+	size_t			 c;
+
+	memset(&u->arch, 0, sizeof(u->arch));
+	u->has_arch = a != NULL;
+	u->arch.on = jget(a, "enabled") == NULL || jbool(a, "enabled");
+	u->arch.budget = (int)jint(a, "budget", ARC_BUDGET_DEF);
+	it = NULL;
+	while ((r = ucl_object_iterate(jget(a, "class"), &it, true)) != NULL)
+		for (c = 0; c < AC; c++)
+			if (jstr(r, "name") != NULL && strcmp(jstr(r, "name"),
+			    aclass[c].name) == 0) {
+				u->arch.step[c] = (int)jint(r, "step", 0);
+				u->arch.keep[c] = (int)jint(r, "retention", 0);
+			}
+}
+
+/* As arcana-history's archive container: a class where its step or
+ * retention is set. */
+static void
+uarch_json(struct html *b, const struct uarch *a)
+{
+	size_t	c;
+	int	n;
+
+	h_strf(b, ",\"archive\":{\"enabled\":%s,\"budget\":%d,\"class\":[",
+	    a->on ? "true" : "false", a->budget);
+	for (c = 0, n = 0; c < AC; c++) {
+		if (a->step[c] == 0 && a->keep[c] == 0)
+			continue;
+		h_strf(b, "%s{\"name\":\"%s\"", n++ > 0 ? "," : "",
+		    aclass[c].name);
+		if (a->step[c] != 0)
+			h_strf(b, ",\"step\":%d", a->step[c]);
+		if (a->keep[c] != 0)
+			h_strf(b, ",\"retention\":%d", a->keep[c]);
+		h_raw(b, "}");
+	}
+	h_raw(b, "]}");
+}
 
 static void
 usage_cb(int status, const ucl_object_t *o, const char *err, void *arg)
@@ -189,9 +274,7 @@ usage_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	u->racct = jbool(d, "racct");
 	/* The archive's settings (PLAN-SDN-YANG 5.6.3), which the
 	 * sampling's PUT would otherwise put back to their defaults. */
-	free(u->archive);
-	u->archive = jget(d, "archive") != NULL ? (char *)ucl_object_emit(
-	    jget(d, "archive"), UCL_EMIT_JSON_COMPACT) : NULL;
+	uarch_read(u, jget(d, "archive"));
 	/* The rules as they are typed: "net:igb0=125000000", a line each. */
 	{
 		const ucl_object_t	*r;
@@ -792,7 +875,7 @@ sampling(struct html *h, const struct uhost *u, bool alone)
 {
 	char	buf[32];
 
-	if (strcmp(uyc.sid, u->sid) == 0)
+	if (strcmp(uyc.sid, u->sid) == 0 && !uyc_arch)
 		ycommit_note(h, &uyc);
 	h_raw(h, "<form data-form=\"usage-set\" class=\"usample\"><input "
 	    "type=\"hidden\" name=\"sid\"");
@@ -848,6 +931,74 @@ sampling(struct html *h, const struct uhost *u, bool alone)
 	    "limit crossed, either way, is an event, listed under events in "
 	    "the Log tab; 0 is no limit.</small></form>", buf, u->stride - 1,
 	    u->nn, u->nd, u->nj, u->nr);
+}
+
+/*
+ * The archive's settings, said and set (PLAN-SDN-YANG 5.6.3): enabled,
+ * the budget, and each class's step and retention, empty its default.
+ * Checked here as the agent checks them, so the form says what is
+ * wrong before the host does.
+ */
+static void
+uarch_form(struct html *h, const struct uhost *u)
+{
+	size_t	c;
+
+	if (strcmp(uyc.sid, u->sid) == 0 && uyc_arch)
+		ycommit_note(h, &uyc);
+	h_raw(h, "<form data-form=\"usage-arch\" class=\"secform uarch\" "
+	    "novalidate><input type=\"hidden\" name=\"sid\"");
+	h_attr(h, "value", u->sid);
+	h_fmt(h, "><label class=\"check\"><input type=\"checkbox\" name=\""
+	    "enabled\"%s> Archived <small class=\"help\">The agent writes "
+	    "its samples to the disk as well as keeping the last hour in "
+	    "memory: a file a class a day (UTC) in its archive directory "
+	    "beside history.conf (or its --archive), each record appended "
+	    "by write(2) with its CRC-32, made durable by fsync(2) every "
+	    "five minutes and at its stop. Off, it writes no more; the files "
+	    "kept stay to be read.</small></label><label>Budget, MiB<input "
+	    "name=\"budget\" type=\"number\" min=\"1\" max=\"%d\" value=\""
+	    "%d\"><small class=\"help\">1 to %d: the most the archive takes "
+	    "on the disk. Over it the oldest day of any class is unlinked "
+	    "first; a class whose day alone is over it stops until the next "
+	    "day. A day's file is read whole at the agent's start (64 MiB at "
+	    "most), so a budget far above %d with many probe targets at a "
+	    "10 s step can leave a day too big to be taken up again.</small>"
+	    "</label>", u->arch.on ? " checked" : "", ARC_BUDGET_MAX,
+	    u->arch.budget, ARC_BUDGET_MAX, ARC_BUDGET_DEF);
+	for (c = 0; c < AC; c++) {
+		h_fmt(h, "<fieldset class=\"uarch-class\"><legend>%s</legend>"
+		    "<label>A point every, s<input name=\"step-%s\" type=\""
+		    "number\" min=\"%d\" max=\"%d\" placeholder=\"%d\"",
+		    aclass[c].name, aclass[c].name, ARC_STEP_MIN, ARC_STEP_MAX,
+		    ARC_STEP_DEF);
+		if (u->arch.step[c] != 0)
+			h_fmt(h, " value=\"%d\"", u->arch.step[c]);
+		else
+			h_raw(h, " value=\"\"");
+		h_fmt(h, "></label><label>Kept, days<input name=\"keep-%s\" "
+		    "type=\"number\" min=\"1\" max=\"%d\" placeholder=\"%d\"",
+		    aclass[c].name, ARC_KEEP_MAX, aclass[c].keep);
+		if (u->arch.keep[c] != 0)
+			h_fmt(h, " value=\"%d\"", u->arch.keep[c]);
+		else
+			h_raw(h, " value=\"\"");
+		h_raw(h, "></label><small class=\"help\">");
+		h_txt(h, aclass[c].what);
+		h_raw(h, "</small></fieldset>");
+	}
+	h_fmt(h, "<p class=\"help\">A point every: the seconds a point stands "
+	    "for, %d to %d, %d when empty; the samples within one are merged "
+	    "(the mean of each figure, the least of the least, the most of "
+	    "the most, the probes sent and received summed). A step changed "
+	    "begins with the next point; those written stay as they are. "
+	    "Kept: the days on the disk, today's among them, 1 to %d, 30 of "
+	    "the host and 7 of the others when empty; a day past it is "
+	    "unlinked whole. Kept in history.conf as archive=, budget= and "
+	    "class=name:step:retention, arcana-history's archive container."
+	    "</p><div class=\"actions\"><button class=\"small\">Set</button>"
+	    "</div></form>", ARC_STEP_MIN, ARC_STEP_MAX, ARC_STEP_DEF,
+	    ARC_KEEP_MAX);
 }
 
 /* The windows the plots span, chosen. */
@@ -1104,7 +1255,8 @@ view_usage(struct html *h)
 
 /*
  * A host's Monitoring tab: its utilization, and how its agent samples
- * it, its limits and the rules of its devices and jails.
+ * it, its limits and the rules of its devices and jails, and its
+ * archive's settings.
  */
 void
 view_usage_host(struct html *h, struct server *s)
@@ -1128,7 +1280,16 @@ view_usage_host(struct html *h, struct server *s)
 		h_raw(h, u != NULL && u->error[0] != '\0' ? "<p class=\"dim\">"
 		    "Not read: the host does not answer.</p>" : "<div class=\""
 		    "loader\"></div>");
-	h_raw(h, "</section></section>");
+	h_raw(h, "</section>");
+	/* What the archive keeps and for how long; an agent before it
+	 * says none. */
+	if (u != NULL && u->known && u->has_arch) {
+		h_raw(h, "<section class=\"transport uarchive\"><h3>Archive"
+		    "</h3>");
+		uarch_form(h, u);
+		h_raw(h, "</section>");
+	}
+	h_raw(h, "</section>");
 }
 
 /* The host's Monitoring tab opened: read at once. */
@@ -1140,20 +1301,131 @@ usage_host_open(struct server *s)
 	arch_open(s);
 }
 
+/*
+ * arcana-history put whole, as a PUT does: the sampling (step, keep,
+ * hold, on, the limits, the rules typed) and the archive's settings,
+ * one of them from its form, the other as the agent said it.  false:
+ * a rule is not one.
+ */
+static bool
+history_put(struct uhost *u, int step, int keep, int hold, bool on,
+    const int lim[4], const char *rules, const struct uarch *a, bool arch)
+{
+	struct html	 b;
+	char		 url[300], *body;
+
+	memset(&b, 0, sizeof(b));
+	h_strf(&b, "{\"arcana-history:history\":{\"sampling\":{\"step\":%d,"
+	    "\"keep\":%d", step, keep);
+	if (u->has_hold)
+		h_strf(&b, ",\"hold\":%d,\"enabled\":%s", hold, on ? "true" :
+		    "false");
+	h_strf(&b, "},\"limits\":{\"cpu\":%d,\"memory\":%d,\"swap\":%d,"
+	    "\"storage\":%d},\"rule\":[", lim[0], lim[1], lim[2], lim[3]);
+	if (!rules_json(&b, rules)) {
+		free(b.s);
+		return (false);
+	}
+	h_raw(&b, "]");
+	if (u->has_arch)
+		uarch_json(&b, a);
+	h_raw(&b, "}}");
+	body = h_take(&b);
+	rc_ds(url, sizeof(url), "candidate", u->sid, "arcana-history:history");
+	u->cfg = false;
+	if (uyc.busy)
+		toast(true, "A change of the history's settings is on its way "
+		    "already");
+	else {
+		uyc_arch = arch;
+		uyc.saved = arch ? "Saved: the agent archives so." : "Saved: "
+		    "the agent samples so.";
+		uyc.undone = arch ? "Undone: the archive is as it was." :
+		    "Undone: the sampling is as it was.";
+		ycommit_save(&uyc, u->sid, "PUT", url, body);
+	}
+	free(body);
+	return (true);
+}
+
+/* A whole number of the form's, lo to hi; empty is 0 when it may be. */
+static bool
+form_int(const ucl_object_t *f, const char *name, int lo, int hi,
+    bool empty, int *v)
+{
+	const char	*s;
+	char		*end;
+	long		 l;
+
+	s = jstr(f, name) != NULL ? jstr(f, name) : "";
+	s += strspn(s, " \t");
+	if (s[0] == '\0') {
+		*v = 0;
+		return (empty);
+	}
+	l = strtol(s, &end, 10);
+	end += strspn(end, " \t");
+	if (*end != '\0' || l < lo || l > hi)
+		return (false);
+	*v = (int)l;
+	return (true);
+}
+
+/* The archive's form: checked as the agent checks it, then put with
+ * the sampling as it is. */
+static void
+uarch_set(struct uhost *u, const ucl_object_t *f)
+{
+	struct uarch	a;
+	char		name[32];
+	size_t		c;
+
+	memset(&a, 0, sizeof(a));
+	a.on = jbool(f, "enabled");
+	if (!form_int(f, "budget", 1, ARC_BUDGET_MAX, false, &a.budget)) {
+		toast(true, "The archive's budget is 1 to %d MiB",
+		    ARC_BUDGET_MAX);
+		return;
+	}
+	for (c = 0; c < AC; c++) {
+		snprintf(name, sizeof(name), "step-%s", aclass[c].name);
+		if (!form_int(f, name, ARC_STEP_MIN, ARC_STEP_MAX, true,
+		    &a.step[c])) {
+			toast(true, "The archive's %s: a point every %d to %d "
+			    "seconds, or empty for %d", aclass[c].name,
+			    ARC_STEP_MIN, ARC_STEP_MAX, ARC_STEP_DEF);
+			return;
+		}
+		snprintf(name, sizeof(name), "keep-%s", aclass[c].name);
+		if (!form_int(f, name, 1, ARC_KEEP_MAX, true, &a.keep[c])) {
+			toast(true, "The archive's %s: kept 1 to %d days, or "
+			    "empty for %d", aclass[c].name, ARC_KEEP_MAX,
+			    aclass[c].keep);
+			return;
+		}
+	}
+	if (!history_put(u, u->step, u->keep, u->hold, !u->off, u->lim,
+	    u->rules, &a, true))
+		toast(true, "The sampling's rules as read are not ones; set "
+		    "them in the Sampling form first");
+}
+
 bool
 usage_form(const char *form, const ucl_object_t *f)
 {
 	struct uhost	*u;
-	struct html	 b;
 	const char	*sid;
-	char		 url[300], *body;
 	int		 step, keep, lim[4], k, hold;
 
-	if (strcmp(form, "usage-set") != 0)
+	if (strcmp(form, "usage-set") != 0 && strcmp(form, "usage-arch") != 0)
 		return (false);
 	sid = jstr(f, "sid") != NULL ? jstr(f, "sid") : "";
 	if ((u = uhost(sid, false)) == NULL)
 		return (true);
+	if (strcmp(form, "usage-arch") == 0) {
+		uarch_set(u, f);
+		return (true);
+	}
 	step = atoi(jstr(f, "step") != NULL ? jstr(f, "step") : "");
 	keep = jstr(f, "keep") != NULL && jstr(f, "keep")[0] != '\0' ?
 	    atoi(jstr(f, "keep")) : -1;
@@ -1181,31 +1453,10 @@ usage_form(const char *form, const ucl_object_t *f)
 			return (true);
 		}
 	}
-	memset(&b, 0, sizeof(b));
-	h_strf(&b, "{\"arcana-history:history\":{\"sampling\":{\"step\":%d,"
-	    "\"keep\":%d", step, keep);
-	if (u->has_hold)
-		h_strf(&b, ",\"hold\":%d,\"enabled\":%s", hold, jbool(f,
-		    "enabled") ? "true" : "false");
-	h_strf(&b, "},\"limits\":{\"cpu\":%d,\"memory\":%d,\"swap\":%d,"
-	    "\"storage\":%d},\"rule\":[", lim[0], lim[1], lim[2], lim[3]);
-	if (!rules_json(&b, jstr(f, "rules") != NULL ? jstr(f, "rules") :
-	    "")) {
-		free(b.s);
+	if (!history_put(u, step, keep, hold, jbool(f, "enabled"), lim,
+	    jstr(f, "rules") != NULL ? jstr(f, "rules") : "", &u->arch, false))
 		toast(true, "A rule is net:, disk:, jail-cpu: or jail-mem:, a "
 		    "name, = and its limit");
-		return (true);
-	}
-	h_raw(&b, "]");
-	if (u->archive != NULL)
-		h_strf(&b, ",\"archive\":%s", u->archive);
-	h_raw(&b, "}}");
-	body = h_take(&b);
-	rc_ds(url, sizeof(url), "candidate", u->sid, "arcana-history:history");
-	u->cfg = false;
-	if (!ycommit_save(&uyc, u->sid, "PUT", url, body))
-		toast(true, "A change of the sampling is on its way already");
-	free(body);
 	return (true);
 }
 
@@ -1262,13 +1513,19 @@ usage_saved(struct ycommit *yc, int how)
 	struct server	*s;
 
 	if (how == YC_SAVED)
-		toast(false, "Sampling set");
+		toast(false, uyc_arch ? "Archive set" : "Sampling set");
 	else if (how == YC_REFUSED)
-		toast(true, "Sampling not set: %s", yc->note);
+		toast(true, "%s not set: %s", uyc_arch ? "Archive" :
+		    "Sampling", yc->note);
+	/* What the archive holds read again too: its steps, retention
+	 * and budget as they are now. */
 	for (int i = 0; i < app.nservers; i++) {
 		s = &app.servers[i];
-		if (strcmp(s->id, yc->sid) == 0)
-			usage_poll(s, arc_now());
+		if (strcmp(s->id, yc->sid) != 0)
+			continue;
+		usage_poll(s, arc_now());
+		if (uyc_arch && app.node == NODE_HOST && cur_server() == s)
+			arch_open(s);
 	}
 }
 

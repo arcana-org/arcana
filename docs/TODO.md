@@ -21,12 +21,12 @@
   none in a vnet jail's; agent_root_test:sdwan_flowexp_lab runs in the
   VM round (it skips in a vnet jail).
 - The archive (PLAN-SDN-YANG 5.6.3, gula/archive.c; the page's long
-  run, www/arcana-ui/src/archive.c): the archive's settings (enabled,
-  budget, each class's step and retention) have no form on the page
-  yet, only RESTCONF and history.conf.  A day's file is read
+  run, www/arcana-ui/src/archive.c; its settings' form on the
+  Monitoring tab, www/arcana-ui/src/usage.c): a day's file is read
   whole into memory at the start and by a read (64 MiB at most), so a
   budget far above the default with a thousand targets at a 10 s step
-  can make a day's file too big to be taken up again.
+  can make a day's file too big to be taken up again; the form says
+  so, nothing refuses it.
 - The SDN and YANG redesign: docs/PLAN-SDN-YANG.md. Open decisions:
   D-5, D-11, D-12 (D-6 taken: a FIB per vpn-node).
   To do, the datastores first, to the safety design decided on
