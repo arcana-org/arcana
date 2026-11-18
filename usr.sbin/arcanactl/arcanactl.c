@@ -713,7 +713,8 @@ emit_trace(const struct arcana_jobs_step *v, size_t n)
 			xo_emit("{e:status/ok}");
 		xo_emit("\n");
 		xo_emit("{e:id/%u}{e:parent/%d}", s->id, s->parent);
-		if (s->argv.n > 0) {
+		/* A program still running: no argv yet, its output so far. */
+		if (s->argv.n > 0 || s->output.len > 0) {
 			for (k = 0; k < s->argv.n; k++)
 				xo_emit("{el:argv/%s}", s->argv.v[k]);
 			/* None: a dry run's, not run. */

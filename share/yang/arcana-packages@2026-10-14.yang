@@ -120,6 +120,13 @@ module arcana-packages {
         "Of a jail: whether its base system is pkgbase
          (FreeBSD-runtime is one of its packages).";
     }
+    leaf-list pkgbase-jail {
+      type string;
+      description
+        "Of the host's read and refresh: its running jails whose base
+         system is pkgbase, where a plain pkg upgrade (every-jail's)
+         upgrades the FreeBSD base packages too.";
+    }
   }
 
   grouping packages {

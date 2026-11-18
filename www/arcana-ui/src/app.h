@@ -558,7 +558,7 @@ enum modal {
 
 struct confirm {
 	char		 title[160];
-	char		 body[512];
+	char		 body[1024];
 	char		 button[32];
 	bool		 danger;
 	char		 typed[256];	/* must be typed to confirm, or "" */
@@ -846,6 +846,7 @@ const char	*schema_op(const ucl_object_t *);
 void		 view_schema(struct html *, const char *);
 void		 refresh_jobs(struct server *);
 void		 set_job_lanes(struct server *, int);
+bool		 job_lanes(const struct server *, int *, int *);
 void		 cancel_job(struct server *, long long, const char *);
 void		 cancel_queued_jobs(struct server *);
 void		 open_job(struct server *, long long, const char *);

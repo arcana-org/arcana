@@ -264,6 +264,11 @@ EOS
 
 # pkg(8) stand-in: the pending upgrades live in ./pending, one per line
 # as "name-installed remote"; upgrade -y removes the named ones (or all).
+# A pkg version that may ask the repository (no -U) is logged in
+# ./contact.log.  ./pkg.fetcherr: a fetch fails, pkg's lines of it on
+# standard error; ./pkg.fetch: silent once it begins to fetch;
+# ./pkg.script: silent for as many seconds as it says once it has begun
+# installing, as a package's script waiting on an rc stop.
 write_pkg()
 {
 	printf 'aria2-1.37.0_1 1.37.0_2
@@ -289,6 +294,7 @@ update)	exit 0 ;;
 query)	printf 'aria2\t1.37.0_1\t0\t5242880\twww/aria2\tDownload utility\npimd\t3.1.0\t1\t102400\tnet/pimd\tPIM-SM daemon\n' ;;
 clean)	echo "$*" >> clean.log ;;
 version)
+	case " $* " in *" -U "*) ;; *) echo "$*" >> contact.log ;; esac
 	# A repository for a newer FreeBSD: refused, as upgrade is.
 	if [ -e newer -a $anyos = no ]; then
 		echo 'Error updating repositories!'
@@ -303,6 +309,20 @@ version)
 ' "$nv" "$remote"
 	done < pending ;;
 upgrade|install)
+	if [ -e pkg.fetcherr ]; then
+		echo '[1/1] Fetching pimd-3.2.0.pkg: ..'
+		echo 'pkg: https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest/All/pimd-3.2.0.pkg: Not Found' >&2
+		echo 'pkg: An error occurred while fetching package' >&2
+		exit 3
+	fi
+	if [ -e pkg.fetch ]; then
+		echo '[1/1] Fetching pimd-3.2.0.pkg: ..'
+		echo $$ > hang.pid
+		sleep 300 &
+		echo $! > hang.child
+		wait
+		exit 1
+	fi
 	# A fetch that never ends: pkg silent, with a child; with
 	# ./pkg.stall the repository stops answering too.
 	if [ -e pkg.hang ]; then
@@ -346,7 +366,14 @@ upgrade|install)
 	[ -s pending ] || { echo "Your packages are up to date."; exit $([ $dry = yes ] && echo 1 || echo 0); }
 	while read nv remote; do
 		name=${nv%-*}
-		if [ $# -eq 0 ] || echo " $* " | grep -q " $name "; then
+		if [ -e pkg.script ] && { [ $# -eq 0 ] || echo " $* " | grep -q " $name "; }; then
+			echo "[1/1] Upgrading $name from ${nv##*-} to $remote..."
+			echo "[1/1] Extracting $name-$remote: done"
+			sleep "$(cat pkg.script)"
+			echo "$name restarted"
+			grep -v "^$nv " pending > pending.new
+			mv pending.new pending
+		elif [ $# -eq 0 ] || echo " $* " | grep -q " $name "; then
 			echo "Upgrading $name from ${nv##*-} to $remote..."
 			[ $dry = yes ] || grep -v "^$nv " pending > pending.new
 			[ $dry = yes ] || mv pending.new pending
@@ -5904,7 +5931,7 @@ packages_body()
 	atf_check -o match:'Repositories: +FreeBSD-ports +builder' \
 	    "$JGC" -c "$SOCK" packages
 	atf_check -o match:'fake-pkg upgrade -r builder -n' \
-	    -o match:'fake-pkg version -vR -r builder -l <' \
+	    -o match:'fake-pkg version -U -vR -r builder -l <' \
 	    "$JGC" -t -c "$SOCK" pkg-upgrade -n -r builder
 	atf_check -o inline:'upgrade from builder\n' cat repo.log
 	atf_check -s exit:1 -o ignore -e match:'pkg has no repository nosuch' \
@@ -6009,6 +6036,69 @@ EOS
 	rm pkg.hang
 }
 pkg_reach_cleanup()
+{
+	[ -f hang.child ] && kill "$(cat hang.child)" 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case pkg_watch cleanup
+pkg_watch_head()
+{
+	atf_set "descr" "pkg upgrade's failures and silences: the read of what is pending after it from pkg's catalogue (pkg version -U), the repository not asked again; a failed fetch's URL and reason kept; silence while it fetches killed, silence once it installs said in the trace and killed only far later; a running job's read with what pkg has printed so far"
+	atf_set "timeout" "120"
+}
+pkg_watch_body()
+{
+	local id
+
+	DAEMON_ARGS="--pkg-idle 2"
+	start_daemon
+	# A fetch that failed: pkg's lines of it in the error, the URL and
+	# the reason; what is pending read without asking the repository.
+	touch pkg.fetcherr
+	atf_check -s exit:1 -o save:fe.out -e save:fe.err \
+	    "$JGC" -t -c "$SOCK" pkg-upgrade -R pimd
+	atf_check -o match:'pkg upgrade exited with status 3: https://pkg\.FreeBSD\.org/FreeBSD:16:amd64/latest/All/pimd-3\.2\.0\.pkg: Not Found; An error occurred while fetching package' \
+	    cat fe.err
+	atf_check -o match:'fake-pkg version -U -vRl <' cat fe.out
+	atf_check test ! -e contact.log
+	rm pkg.fetcherr
+	# Silent while it fetches: a stalled download, killed at --pkg-idle.
+	touch pkg.fetch
+	atf_check -s exit:1 -o ignore \
+	    -e match:'pkg upgrade was killed: nothing came from it for 2 seconds' \
+	    "$JGC" -c "$SOCK" pkg-upgrade -R pimd
+	atf_check test ! -e contact.log
+	rm pkg.fetch
+	# Silent once it has begun installing: a package's script at work,
+	# not killed; the trace says it waits, and what pkg printed last.
+	echo 4 > pkg.script
+	atf_check -o save:sc.out "$JGC" -t -c "$SOCK" pkg-upgrade -R pimd
+	atf_check -o match:'Upgraded: 1' \
+	    -o match:"pkg waits on a package's script .*: nothing from it for 2 seconds; last it printed: .\[1/1\] Extracting pimd-3\.2\.0: done.; stopped once silent for 6 seconds" \
+	    -o match:'pimd restarted' cat sc.out
+	# A running job's read: what pkg has printed so far, before the
+	# program has exited.
+	printf 'pimd-3.1.0 3.2.0\n' > pending
+	echo 5 > pkg.script
+	id=$("$JGC" -q -c "$SOCK" pkg-upgrade -R pimd | awk '{ print $1 }')
+	wait_match 'Extracting pimd-3\.2\.0' "$JGC" -c "$SOCK" job "$id" ||
+	    atf_fail "the running job's read has no output so far"
+	atf_check -o match:'running' -o match:'\| \[1/1\] Upgrading pimd' \
+	    -o not-match:'pimd restarted' "$JGC" -c "$SOCK" job "$id"
+	atf_check -o match:'done +pkg upgrade' -o match:'pimd restarted' \
+	    "$JGC" -c "$SOCK" job -w "$id"
+	# Silent past PKG_BUSY_TIMES times --pkg-idle once it installs:
+	# killed then, and said so, what it printed last with it.
+	printf 'pimd-3.1.0 3.2.0\n' > pending
+	echo 300 > pkg.script
+	atf_check -s exit:1 -o ignore \
+	    -e match:"pkg upgrade was killed: nothing came from it for 6 seconds; it had begun installing and a package's script waited .*it printed last: .\[1/1\] Extracting pimd-3\.2\.0: done.; that package may be left half installed" \
+	    "$JGC" -c "$SOCK" pkg-upgrade -R pimd
+	rm pkg.script
+	atf_check test ! -e contact.log
+}
+pkg_watch_cleanup()
 {
 	[ -f hang.child ] && kill "$(cat hang.child)" 2>/dev/null
 	stop_daemon
@@ -20352,6 +20442,7 @@ atf_init_test_cases()
 	atf_add_test_case ipsec
 	atf_add_test_case packages
 	atf_add_test_case pkg_reach
+	atf_add_test_case pkg_watch
 	atf_add_test_case job_orphan
 	atf_add_test_case jail_base
 	atf_add_test_case jail_base_links

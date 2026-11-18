@@ -225,6 +225,26 @@ step_fill(struct work *dst, const struct step *s, int i, bool copy,
 		v->error_output.p = s->err == NULL ? "" : copy ?
 		    wstrndup(dst, s->err, s->errlen) : s->err;
 		v->error_output.len = s->errlen;
+	} else if (s->kind == STEP_EXEC && !s->done && s->live != NULL &&
+	    copy) {
+		const char	*t, *nl;
+		size_t		 len;
+		bool		 cut;
+
+		/*
+		 * Running, a job's: what it has printed so far, both
+		 * outputs as they came, the last of it (live.c), from the
+		 * start of a line when more came before.
+		 */
+		t = live_tail(dst, s->live, &len, &cut);
+		if (cut && (nl = memchr(t, '\n', len)) != NULL) {
+			len -= (size_t)(nl + 1 - t);
+			t = nl + 1;
+		}
+		v->output.p = t;
+		v->output.len = len;
+		v->error_output.p = "";
+		v->error_output.len = 0;
 	}
 }
 

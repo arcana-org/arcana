@@ -8,8 +8,9 @@ module: arcana-packages
      |  +--ro comment?     string
      |  +--ro size?        uint64
      |  +--ro origin?      string
-     +--ro repository*   string
-     +--ro pkgbase?      boolean
+     +--ro repository*     string
+     +--ro pkgbase?        boolean
+     +--ro pkgbase-jail*   string
      +---x read
      |  +--ro output
      |     +--ro package* [name]
@@ -20,8 +21,9 @@ module: arcana-packages
      |     |  +--ro comment?     string
      |     |  +--ro size?        uint64
      |     |  +--ro origin?      string
-     |     +--ro repository*   string
-     |     +--ro pkgbase?      boolean
+     |     +--ro repository*     string
+     |     +--ro pkgbase?        boolean
+     |     +--ro pkgbase-jail*   string
      +---x refresh
      |  +---w input
      |  |  +---w ip-version?         ip-version
@@ -37,8 +39,9 @@ module: arcana-packages
      |     |  +--ro comment?     string
      |     |  +--ro size?        uint64
      |     |  +--ro origin?      string
-     |     +--ro repository*   string
-     |     +--ro pkgbase?      boolean
+     |     +--ro repository*     string
+     |     +--ro pkgbase?        boolean
+     |     +--ro pkgbase-jail*   string
      +---x upgrade
         +---w input
         |  +---w name*               string

@@ -4278,12 +4278,23 @@ view_packages(struct html *h, struct server *s)
 		    "small\" data-act=\"jail-base\" data-arg=\"upgrade\" title=\"A "
 		    "jail on pkgbase taken to a newer FreeBSD release, base and "
 		    "packages\">Base upgrade\u2026</button>");
-	/* Of every running jail at once, from the host's page. */
-	if (app.pkg.jail[0] == '\0')
+	/* Of every running jail at once, from the host's page; beside it
+	 * how many of those jobs the host runs at once, and runs now. */
+	if (app.pkg.jail[0] == '\0') {
+		int	lanes, running;
+
 		h_raw(h, "<button class=\"ghost small\" data-act=\""
 		    "pkg-upgrade-jails\" title=\"pkg upgrade -y in every running "
 		    "jail, one batch of a job each\">Upgrade the jails"
 		    "</button>");
+		if (job_lanes(s, &lanes, &running))
+			h_fmt(h, "<span class=\"tally pkg-lanes\" title=\"Jobs of "
+			    "pkg in jails run beside each other, this many at "
+			    "once (the Jobs tab sets it); every other kind of "
+			    "job waits for them\">%d lane%s, %d job%s running"
+			    "</span>", lanes, lanes == 1 ? "" : "s", running,
+			    running == 1 ? "" : "s");
+	}
 	if (app.pkg.mode == 1)
 		h_fmt(h, "<button class=\"ghost small\" data-act=\"pkg-check\""
 		    "%s title=\"pkg update, then list what has a newer version"

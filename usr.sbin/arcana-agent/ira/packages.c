@@ -104,14 +104,136 @@ pkg_run(struct work *w, const char *jail, bool anyos, uint8_t ip,
 	argv[k] = NULL;
 	/* Watched: a pkg that hangs (a stalled fetch) is stopped, its
 	 * child in the jail with it. */
-	exec_set_watch(opts.pkg_idle_s);
+	pkg_watch(true);
 	rc = run_exec(w, argv, res);
-	exec_set_watch(0);
-	/* Stopped for its silence: whether the repository answers says
-	 * which silence it was. */
-	if (res->stalled > 0)
-		res->note = pkg_stall_note(w, jail, ip, NULL);
+	pkg_watch(false);
+	pkg_stalled(w, res, jail, ip, NULL);
 	return (rc);
+}
+
+/*
+ * What pkg prints as it begins to install, upgrade or remove a package
+ * ("[1/2] Upgrading pimd from 3.1.0 to 3.2.0...", "[1/2] Extracting
+ * pimd-3.2.0: ..."); "[1/2] Fetching" is not one.  From then on its
+ * silence is a package's script at work.
+ */
+static const char *const pkg_busy_marks[] = { "] Installing ",
+    "] Upgrading ", "] Downgrading ", "] Reinstalling ", "] Deinstalling ",
+    "] Deleting ", "] Extracting ", NULL };
+
+/*
+ * The pkg this thread runs next watched, or no longer: stopped once
+ * silent for --pkg-idle while it fetches (a stalled download), only
+ * once silent PKG_BUSY_TIMES as long once it installs, its waiting said
+ * in the trace before (exec_set_busy()).
+ */
+void
+pkg_watch(bool on)
+{
+
+	exec_set_watch(on ? opts.pkg_idle_s : 0);
+	exec_set_busy(on ? pkg_busy_marks : NULL, on ? opts.pkg_idle_s *
+	    PKG_BUSY_TIMES : 0, "pkg waits on a package's script (an rc stop "
+	    "of a service, or a question)");
+}
+
+/*
+ * A watched pkg stopped for its silence: which silence it was, in
+ * res->note.  While it installed, a package's script waited; else
+ * whether the repository answers now says it.
+ */
+void
+pkg_stalled(struct work *w, struct execres *res, const char *jail,
+    uint8_t ip, const char *repo)
+{
+
+	if (res->stalled == 0)
+		return;
+	if (res->waited != NULL)
+		res->note = wtext(w, wfmt(w, "it had begun installing and a "
+		    "package's script waited (an rc stop of a service that "
+		    "would not stop, or a question); it printed last: "
+		    "\"%s\"; that package may be left half installed",
+		    res->waited));
+	else
+		res->note = pkg_stall_note(w, jail, ip, repo);
+}
+
+/* pkg's line when a package could not be fetched. */
+#define	PKG_FETCH_FAILED	"An error occurred while fetching package"
+#define	PKG_FETCH_LINES		6	/* of pkg's before it, at most */
+
+/*
+ * A fetch that failed: pkg says only PKG_FETCH_FAILED last, the URL and
+ * libfetch's or curl's reason on the lines of standard error before it
+ * ("pkg: https://...: Not Found"), which are kept: the last of pkg's
+ * own ("pkg: ") and those that name a URL, up to that line.  NULL when
+ * pkg said no such thing.
+ */
+static const char *
+pkg_fetch_error(struct work *w, const struct execres *res, const char *prog)
+{
+	const char	*why, *v[PKG_FETCH_LINES];
+	char		*copy, *it, *line;
+	bool		 inerr;
+	size_t		 n, i;
+
+	inerr = res->err != NULL && strstr(res->err, PKG_FETCH_FAILED) != NULL;
+	if (!inerr && (res->out == NULL || strstr(res->out, PKG_FETCH_FAILED) ==
+	    NULL))
+		return (NULL);
+	n = 0;
+	copy = wstrndup(w, res->err != NULL ? res->err : "", res->errlen);
+	for (it = copy; (line = strsep(&it, "\n")) != NULL; ) {
+		line[strcspn(line, "\r")] = '\0';
+		if (strncmp(line, "pkg: ", 5) == 0)
+			line += 5;
+		else if (strncmp(line, "pkg-static: ", 12) == 0)
+			line += 12;
+		else if (strstr(line, "://") == NULL &&
+		    strstr(line, PKG_FETCH_FAILED) == NULL)
+			continue;
+		if (line[0] == '\0')
+			continue;
+		if (n == PKG_FETCH_LINES) {
+			memmove(v, v + 1, (n - 1) * sizeof(*v));
+			n--;
+		}
+		v[n++] = line;
+		if (strstr(line, PKG_FETCH_FAILED) != NULL)
+			break;
+	}
+	if (!inerr) {
+		if (n == PKG_FETCH_LINES) {
+			memmove(v, v + 1, (n - 1) * sizeof(*v));
+			n--;
+		}
+		v[n++] = PKG_FETCH_FAILED;
+	}
+	why = NULL;
+	for (i = 0; i < n; i++)
+		why = why == NULL ? wfmt(w, "%.300s", v[i]) : wfmt(w,
+		    "%s; %.300s", why, v[i]);
+	return (wtext(w, wfmt(w, "%s exited with status %d: %s", prog,
+	    res->status, why)));
+}
+
+/*
+ * Why pkg failed, as the job says it: a repository it could not read
+ * (pkg_repo_error()); killed or stopped, as exec_error() says; a fetch
+ * that failed, with pkg's lines of it; else its last line.
+ */
+const char *
+pkg_error(struct work *w, const struct execres *res, const char *prog)
+{
+	const char	*e;
+
+	if ((e = pkg_repo_error(w, res, prog)) != NULL)
+		return (e);
+	if (!res->timedout && !res->cancelled && res->stalled == 0 &&
+	    (e = pkg_fetch_error(w, res, prog)) != NULL)
+		return (e);
+	return (wtext(w, exec_error(w, res, prog)));
 }
 
 /*
@@ -932,6 +1054,37 @@ do_packages(struct work *w, const char *jail, bool refresh, bool inst,
 }
 
 /*
+ * The running jails whose base is pkgbase (FreeBSD-runtime one of their
+ * packages, pkg -j info), for the host's read: a plain pkg upgrade of
+ * every jail moves their FreeBSD base too, which the page says before
+ * it.  None when the jails cannot be listed.
+ */
+void
+pkg_pkgbase_jails(struct work *w, const char *const **vp, size_t *np)
+{
+	static const char *const runtime[] = { "info", "-q",
+	    "FreeBSD-runtime" };
+	struct execres	 res;
+	struct jinfo	*list;
+	const char	**v, *e;
+	size_t		 n, i, k;
+
+	*vp = NULL;
+	*np = 0;
+	list = NULL;
+	n = 0;
+	if (jails_running(w, &list, &n, &e) != 0 || n == 0)
+		return;
+	v = wcalloc(w, n + 1, sizeof(*v));
+	for (i = k = 0; i < n; i++)
+		if (!list[i].dying && list[i].name != NULL &&
+		    pkg_run(w, list[i].name, false, 0, runtime, 3, &res) == 0)
+			v[k++] = list[i].name;
+	*vp = v;
+	*np = k;
+}
+
+/*
  * Every running jail's packages upgraded, one jail after the other: one
  * without pkg (never bootstrapped, pkg -N says) left out and said so,
  * one that fails not stopping the rest; what each did is a step of the
@@ -998,8 +1151,10 @@ int
 do_pkg_upgrade(struct work *w, const struct pkg_upgrade *rq,
     struct pkg_upgraded *rsp)
 {
-	const char		*version[] = { "version", "-vRl", "<", NULL,
-				    NULL, NULL };
+	/* -U: from the catalogue pkg has, the repository not asked again
+	 * (pkg upgrade read it just now, or could not). */
+	const char		*version[] = { "version", "-U", "-vRl", "<",
+				    NULL, NULL, NULL };
 	struct package	*v;
 	struct execres		 res;
 	const char		**args, *e, *p;
@@ -1015,15 +1170,15 @@ do_pkg_upgrade(struct work *w, const struct pkg_upgrade *rq,
 		rsp->error = e;
 		return (0);
 	}
-	nv = 3;
+	nv = 4;
 	if (rq->pkg_repo != NULL && rq->pkg_repo[0] != '\0') {
 		/* What that repository has newer: pkg version -R -r. */
-		version[1] = "-vR";
-		version[2] = "-r";
-		version[3] = rq->pkg_repo;
-		version[4] = "-l";
-		version[5] = "<";
-		nv = 6;
+		version[2] = "-vR";
+		version[3] = "-r";
+		version[4] = rq->pkg_repo;
+		version[5] = "-l";
+		version[6] = "<";
+		nv = 7;
 	}
 	for (i = 0; i < rq->names.n; i++)
 		if (rq->names.v[i] == NULL || !valid_pkg(rq->names.v[i])) {
@@ -1047,9 +1202,9 @@ do_pkg_upgrade(struct work *w, const struct pkg_upgrade *rq,
 	    &res) != 0 &&
 	    !(rq->dry_run && res.status == 1)) {
 		/* A repository it could not read is said as such, the newer
-		 * FreeBSD's named, whatever pkg exited. */
-		rsp->error = (e = pkg_repo_error(w, &res, "pkg upgrade")) != NULL ? e :
-		    wtext(w, exec_error(w, &res, "pkg upgrade"));
+		 * FreeBSD's named, whatever pkg exited; a fetch that failed
+		 * with what pkg said of it. */
+		rsp->error = pkg_error(w, &res, "pkg upgrade");
 	} else if ((e = pkg_repo_error(w, &res, "pkg upgrade")) != NULL) {
 		rsp->error = e;
 	} else {
@@ -1107,7 +1262,7 @@ do_pkg_install(struct work *w, const struct arc_job_spec *sp,
 	}
 	if (pkg_run(w, sp->jail, sp->force, sp->has_pkg_ip ? sp->pkg_ip : 0,
 	    args, n, &res) != 0) {
-		*errp = wtext(w, exec_error(w, &res, "pkg install"));
+		*errp = pkg_error(w, &res, "pkg install");
 		return (-1);
 	}
 	if ((e = pkg_repo_error(w, &res, "pkg install")) != NULL) {

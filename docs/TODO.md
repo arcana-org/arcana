@@ -4,20 +4,35 @@
 
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
-  - Upgrading every jail of the fleet by the panel's jobs (2026-11-18):
-    the read of what is pending after a failed upgrade (`pkg version
-    -vRl`, ira/packages.c do_pkg_upgrade) asks the repository again, so
-    a jail that cannot reach it waits a second watchdog (1206 s, not
-    600): skip it after a failure, or pass -U.  The silence watchdog
-    (PKG_IDLE_SEC) kills pkg in the middle of an install when a package
-    script waits on an rc stop (crowdsec left half upgraded): warn, or
-    wait longer, once extraction has begun.  A running job's read over
-    RESTCONF shows its steps incomplete with no output so far.  pkg's
-    "An error occurred while fetching package" reaches the job with no
-    URL or reason.  The lanes (24 on one host, 12 on another) are
-    invisible beside "Upgrade the jails".  On pkgbase jails that button's
-    plain pkg upgrade moves the FreeBSD base too, which its confirm text
-    does not say.
+  - Upgrading every jail of the fleet by the panel's jobs (2026-11-18),
+    all done (agent_test:pkg_watch, packages; pwa_test's Packages):
+    - Done: the read of what is pending after an upgrade (ira/packages.c
+      do_pkg_upgrade) is `pkg version -U -vRl <`, from the catalogue pkg
+      has: the upgrade read the repository just now, or could not, and
+      a jail that cannot reach it waits no second watchdog.
+    - Done: the silence watchdog knows pkg's phase (exec_set_busy(),
+      pkg_watch()).  While pkg fetches, silence past --pkg-idle is a
+      stalled download and pkg is killed as before.  Once it has printed
+      "[n/m] Upgrading/Installing/.../Extracting", a silence past
+      --pkg-idle is a step of the job's trace ("pkg waits on a
+      package's script", with what pkg printed last), and pkg is killed
+      only once silent PKG_BUSY_TIMES (3) times as long, 30 minutes by
+      default, its error saying that the package may be half installed.
+      The hour every program has (EXEC_TIMEOUT_SEC) still holds.
+    - Done: a running job's read (arcana-jobs job/read, arcanactl job)
+      carries each running program's output so far, the last 16 KiB of
+      both outputs as they came (ira/live.c's tail, kept past the live
+      copy's bound), from the start of a line; the page's raw output says
+      "running" for it.
+    - Done: pkg's "An error occurred while fetching package" comes with
+      pkg's lines before it on standard error (the URL, libfetch's or
+      curl's reason), six at most (pkg_error()).
+    - Done: beside "Upgrade the jails", the host's lanes and how many of
+      its jobs run now; its confirm says both.
+    - Done: the host's packages read and refresh name its running jails
+      on pkgbase (arcana-packages pkgbase-jail, pkg -j info -q
+      FreeBSD-runtime each); the confirm says that their FreeBSD base
+      packages are upgraded too.
   - The agent's update restarts it by `service arcana_agent restart`;
     with its pidfile gone (/var/run cleaned under it) the restart
     cannot stop the running daemon, the update says done and the old

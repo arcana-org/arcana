@@ -21,6 +21,11 @@
  * program has exited and no one follows: the step's output is in its
  * trace from then on, and a follow of it is refused saying so.
  *
+ * A read of the job while the program runs (gula/trace.c's step_fill())
+ * carries the last LIVE_TAIL bytes of the copy as the step's output so
+ * far, kept apart from the copy's max: the job's view shows where it is
+ * without following it.
+ *
  * Each follower has a thread of its own, sending as there is room (as
  * a pcap-log file goes out, luxuria/idsfiles.c); the program's thread
  * only adds to the copy and wakes them.
@@ -43,6 +48,8 @@
 #define	LIVE_FOLLOWERS	16		/* streams at once, all steps' */
 #define	LIVE_CHUNK	(16 * 1024)	/* what a data message carries */
 #define	LIVE_ROOM	(LIVE_CHUNK + 4096)
+/* What a read of the running job carries of the step: its last bytes. */
+#define	LIVE_TAIL	(16 * 1024)
 
 struct live {
 	pthread_mutex_t	 lock;
@@ -55,6 +62,13 @@ struct live {
 	bool		 done;		/* the program has exited */
 	int		 nfollow;
 	atomic_int	 refs;
+	/*
+	 * The last LIVE_TAIL bytes, kept past max too: a ring, put bytes
+	 * written in all, for a read of the job while it runs
+	 * (live_tail()).
+	 */
+	char		 tail[LIVE_TAIL];
+	uint64_t	 put;
 };
 
 struct follow {
@@ -101,6 +115,55 @@ live_rele(struct live *l)
 	free(l);
 }
 
+/* len bytes at p added to l's ring of its last.  l's lock held. */
+static void
+tail_put(struct live *l, const char *p, size_t len)
+{
+	size_t	at, n;
+
+	if (len > LIVE_TAIL) {
+		l->put += len - LIVE_TAIL;
+		p += len - LIVE_TAIL;
+		len = LIVE_TAIL;
+	}
+	while (len > 0) {
+		at = (size_t)(l->put % LIVE_TAIL);
+		n = MIN(len, LIVE_TAIL - at);
+		memcpy(l->tail + at, p, n);
+		l->put += n;
+		p += n;
+		len -= n;
+	}
+}
+
+/*
+ * What the program has written so far, its last LIVE_TAIL bytes at
+ * most, from w's pool; *lenp 0 when nothing yet.  *cutp whether more
+ * came before them.
+ */
+const char *
+live_tail(struct work *w, struct live *l, size_t *lenp, bool *cutp)
+{
+	char	*buf;
+	size_t	 n, at;
+
+	pthread_mutex_lock(&l->lock);
+	n = (size_t)MIN(l->put, (uint64_t)LIVE_TAIL);
+	buf = wmalloc(w, n + 1);
+	at = (size_t)((l->put - n) % LIVE_TAIL);
+	if (at + n <= LIVE_TAIL)
+		memcpy(buf, l->tail + at, n);
+	else {
+		memcpy(buf, l->tail + at, LIVE_TAIL - at);
+		memcpy(buf + LIVE_TAIL - at, l->tail, n - (LIVE_TAIL - at));
+	}
+	buf[n] = '\0';
+	*cutp = l->put > n;
+	pthread_mutex_unlock(&l->lock);
+	*lenp = n;
+	return (buf);
+}
+
 /* The program wrote len bytes at p: kept, its followers woken. */
 void
 live_put(struct live *l, const char *p, size_t len)
@@ -110,6 +173,7 @@ live_put(struct live *l, const char *p, size_t len)
 	if (l == NULL || len == 0)
 		return;
 	pthread_mutex_lock(&l->lock);
+	tail_put(l, p, len);
 	if (l->len + len > l->max) {
 		len = l->max - l->len;
 		l->truncated = true;

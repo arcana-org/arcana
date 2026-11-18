@@ -42,6 +42,8 @@
 #define	EXEC_DRAIN_SEC	2
 #define	LINES_MAX	(1024 * 1024)	/* a line run_exec_lines() gives */
 
+#define	WINDOW_MAX	512		/* the last of a watched program's */
+
 struct capture {
 	char	*buf;
 	size_t	 len;
@@ -49,10 +51,40 @@ struct capture {
 	bool	 truncated;
 };
 
-static void	capture_read(int *, struct capture *);
+/*
+ * The last WINDOW_MAX bytes a watched program wrote, both outputs as
+ * they came, kept whatever the capture keeps: where its marks are
+ * looked for (exec_set_busy()), a mark split between two reads too,
+ * and the line it printed last.
+ */
+struct window {
+	char	 buf[WINDOW_MAX + 1];
+	size_t	 len;
+};
+
+static void	capture_read(int *, struct capture *, struct window *);
 
 static void
-capture_read(int *fd, struct capture *c)
+window_put(struct window *win, const char *p, size_t len)
+{
+
+	if (len >= WINDOW_MAX) {
+		memcpy(win->buf, p + len - WINDOW_MAX, WINDOW_MAX);
+		win->len = WINDOW_MAX;
+	} else {
+		if (win->len + len > WINDOW_MAX) {
+			memmove(win->buf, win->buf + win->len + len -
+			    WINDOW_MAX, WINDOW_MAX - len);
+			win->len = WINDOW_MAX - len;
+		}
+		memcpy(win->buf + win->len, p, len);
+		win->len += len;
+	}
+	win->buf[win->len] = '\0';
+}
+
+static void
+capture_read(int *fd, struct capture *c, struct window *win)
 {
 	char	buf[8192];
 	ssize_t	n;
@@ -63,6 +95,7 @@ capture_read(int *fd, struct capture *c)
 		*fd = -1;
 		return;
 	}
+	window_put(win, buf, (size_t)n);
 	if (c->len + (size_t)n > c->max) {
 		n = (ssize_t)(c->max - c->len);
 		c->truncated = true;
@@ -295,6 +328,63 @@ exec_set_watch(int idle)
 }
 
 /*
+ * A watched program that has printed one of marks (NULL-ended) has
+ * begun what silence is part of: pkg installing, whose packages'
+ * scripts stop and start services and may wait on them (an rc stop of
+ * a daemon that does not stop).  Silent past the watch's bound from
+ * then on, it is not stopped: a step of the trace, labelled what, says
+ * that it waits and what it printed last, and it is stopped once
+ * silent for secs, or by its job's cancel.  NULL: none.
+ */
+static _Thread_local const char *const	*exec_busy_marks;
+static _Thread_local int		 exec_busy;
+static _Thread_local const char		*exec_busy_what;
+
+void
+exec_set_busy(const char *const *marks, int secs, const char *what)
+{
+
+	exec_busy_marks = marks;
+	exec_busy = secs;
+	exec_busy_what = what;
+}
+
+/* "2 seconds", "10 minutes", as exec_error() says a silence. */
+static const char *
+secs_text(struct work *w, int secs)
+{
+
+	return (wfmt(w, "%d %s", secs >= 120 ? secs / 60 : secs, secs >= 120 ?
+	    "minutes" : "seconds"));
+}
+
+/* The last line in win that has something in it, made visible; "". */
+static const char *
+window_last(struct work *w, const struct window *win)
+{
+	const char	*p, *e;
+
+	e = win->buf + win->len;
+	while (e > win->buf && isspace((unsigned char)e[-1]))
+		e--;
+	for (p = e; p > win->buf && p[-1] != '\n' && p[-1] != '\r'; p--)
+		;
+	return (traced(w, wvis(w, wstrndup(w, p, (size_t)(e - p)))));
+}
+
+/* Has the program printed one of marks? */
+static bool
+window_marked(const struct window *win, const char *const *marks)
+{
+	size_t	i;
+
+	for (i = 0; marks != NULL && marks[i] != NULL; i++)
+		if (strstr(win->buf, marks[i]) != NULL)
+			return (true);
+	return (false);
+}
+
+/*
  * The job this thread is at, for the marks a watched program is given
  * in its environment: ARCANA_AGENT_JOB=<agent's pid>:<job>:<kind> and
  * ARCANA_AGENT_JOB_TITLE=<title>.  An agent started after this one went
@@ -385,8 +475,10 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	char				**targv;
 	size_t				 i;
 	time_t				 deadline, heard, drain;
-	int				 ne, limit, idle;
-	bool				 group, secret, watched;
+	int				 ne, limit, idle, busy;
+	bool				 group, secret, watched, marked, noted;
+	const char *const		*marks;
+	struct window			 win;
 
 	ne = 0;
 	env[ne++] = pathenv;
@@ -419,6 +511,13 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	watched = idle > 0;
 	if (limit > 0 && (idle == 0 || idle > limit))
 		idle = limit;
+	/* Its busy phase, a watched program's with no deadline of its own. */
+	marks = watched && limit == 0 && exec_busy > idle ? exec_busy_marks :
+	    NULL;
+	busy = exec_busy;
+	marked = false;
+	win.len = 0;
+	win.buf[0] = '\0';
 	in = exec_in;
 	inlen = exec_inlen;
 	exec_in = NULL;
@@ -545,6 +644,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	 * EXEC_DRAIN_SEC at most, within the deadline and the job's cancel.
 	 */
 	exited = false;
+	noted = false;
 	deadline = time(NULL) + (limit > 0 ? limit : EXEC_TIMEOUT_SEC);
 	heard = drain = time(NULL);
 	while (op[0] != -1 || ep[0] != -1) {
@@ -574,20 +674,24 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 		if (n > 0) {
 			/* Something from it: not silent. */
 			if ((op[0] != -1 && (pfd[0].revents & POLLIN)) ||
-			    (ep[0] != -1 && (pfd[1].revents & POLLIN)))
+			    (ep[0] != -1 && (pfd[1].revents & POLLIN))) {
 				heard = time(NULL);
+				noted = false;
+			}
 			if (op[0] != -1 &&
 			    (pfd[0].revents & (POLLIN | POLLHUP))) {
 				had = out.len;
-				capture_read(&op[0], &out);
+				capture_read(&op[0], &out, &win);
 				live_put(live, out.buf + had, out.len - had);
 			}
 			if (ep[0] != -1 &&
 			    (pfd[1].revents & (POLLIN | POLLHUP))) {
 				had = eout.len;
-				capture_read(&ep[0], &eout);
+				capture_read(&ep[0], &eout, &win);
 				live_put(live, eout.buf + had, eout.len - had);
 			}
+			if (!marked && marks != NULL)
+				marked = window_marked(&win, marks);
 		} else if (n == 0 && exited)
 			break;
 		if (exited) {
@@ -610,6 +714,31 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 			exec_kill(pid, group);
 			res->cancelled = true;
 			break;
+		}
+		/*
+		 * In its busy phase, silent past the watch: said once each
+		 * silence, in a step of its own; stopped past busy.
+		 */
+		if (group && marked && time(NULL) - heard > idle) {
+			if (time(NULL) - heard > busy) {
+				exec_kill(pid, group);
+				res->stalled = busy;
+				res->waited = window_last(w, &win);
+				break;
+			}
+			if (!noted) {
+				int	ns;
+
+				noted = true;
+				ns = step_begin(w, STEP_DAEMON, exec_busy_what !=
+				    NULL ? exec_busy_what : "the program waits",
+				    "nothing from it for %s; last it printed: "
+				    "\"%s\"; stopped once silent for %s, or by "
+				    "the job's cancel", secs_text(w, idle),
+				    window_last(w, &win), secs_text(w, busy));
+				step_end(w, ns, true, NULL);
+			}
+			continue;
 		}
 		if (group && time(NULL) - heard > idle) {
 			exec_kill(pid, group);

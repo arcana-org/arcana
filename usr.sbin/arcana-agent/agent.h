@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.302.0"
+#define	ARCANA_AGENT_VERSION	"0.303.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -101,6 +101,18 @@
  * not for ten.
  */
 #define	PKG_IDLE_SEC		600
+/*
+ * Once pkg has begun installing ("[1/2] Upgrading ...", "Extracting"),
+ * its silence is a package's script at work, often an rc stop that
+ * waits on its daemon: not a stalled download, and killing pkg then
+ * leaves that package half installed.  Said in the job's trace at the
+ * fetch bound (--pkg-idle), and pkg stopped only once silent this many
+ * times as long (30 minutes by default): a script's own work (a cache
+ * rebuilt, a database converted) takes minutes, a stop that has not
+ * returned in half an hour will not, and the lane is wanted back;
+ * within the hour any program has (EXEC_TIMEOUT_SEC).
+ */
+#define	PKG_BUSY_TIMES		3
 /* A terminal nobody typed in for this long is hung up. */
 #define	TERM_IDLE_SEC		1800
 #define	PATH_LOGIN_BIN		"/usr/bin/login"
@@ -346,6 +358,9 @@ struct execres {
 	bool		 cancelled;	/* killed: its job was cancelled */
 	const char	*note;		/* after a stall: what was found of
 					 * its cause, exec_error() says it */
+	const char	*waited;	/* stalled in its busy phase
+					 * (exec_set_busy()): what it
+					 * printed last */
 };
 
 int		 run_exec(struct work *, char *const [], struct execres *);
@@ -364,6 +379,7 @@ const char	*tmp_dir(void);
 void		 exec_set_secret(bool);
 void		 exec_set_hide(const char *);
 void		 exec_set_watch(int);
+void		 exec_set_busy(const char *const *, int, const char *);
 void		 exec_set_job(uint64_t, uint8_t, const char *);
 void		 exec_note_ancestors(void);
 void		 exec_set_limit(int);
@@ -1564,6 +1580,7 @@ void		 live_ref(struct live *);
 void		 live_rele(struct live *);
 void		 live_put(struct live *, const char *, size_t);
 void		 live_end(struct live *);
+const char	*live_tail(struct work *, struct live *, size_t *, bool *);
 int		 exec_follow_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 struct live	*jobs_live(uint64_t, int, const char **);
@@ -1899,6 +1916,13 @@ const char	*pkg_repo_check(struct work *, const char *, const char *);
 const char	*pkg_reach(struct work *, const char *, uint8_t, const char *);
 const char	*pkg_stall_note(struct work *, const char *, uint8_t,
 		    const char *);
+void		 pkg_watch(bool);
+void		 pkg_stalled(struct work *, struct execres *, const char *,
+		    uint8_t, const char *);
+const char	*pkg_error(struct work *, const struct execres *,
+		    const char *);
+void		 pkg_pkgbase_jails(struct work *, const char *const **,
+		    size_t *);
 int		 jobs_lanes(void);
 const char	*jobs_set_lanes(int);
 void		 jobs_conf_load(void);

@@ -240,9 +240,14 @@ raw(struct html *h, const struct op *o)
 		lines(h, jstr(s, "output"), "out", -1);
 		lines(h, jstr(s, "error_output"), "out err", -1);
 		fmt_dur(dur, sizeof(dur), jint(s, "duration_us", 0));
-		h_fmt(h, "<div class=\"exit%s\">exit %lld · ",
-		    jint(s, "exit", 0) != 0 ? " bad" : "",
-		    (long long)jint(s, "exit", 0));
+		/* Still running: no exit status yet, its output so far. */
+		if (jget(s, "exit") == NULL && jstr(s, "status") != NULL &&
+		    strcmp(jstr(s, "status"), "incomplete") == 0)
+			h_raw(h, "<div class=\"exit\">running · ");
+		else
+			h_fmt(h, "<div class=\"exit%s\">exit %lld · ",
+			    jint(s, "exit", 0) != 0 ? " bad" : "",
+			    (long long)jint(s, "exit", 0));
 		h_txt(h, dur);
 		h_raw(h, "</div>");
 	}

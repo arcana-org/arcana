@@ -93,6 +93,25 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### pkg jobs that know their phase; agent 0.303.0, console 0.452.0
+
+- pkg's silence watchdog knows pkg's phase.  While pkg fetches, silence
+  past --pkg-idle (600 s) still stops it; once it has begun installing,
+  the job's trace says pkg waits on a package's script (with what pkg
+  printed last), and pkg is stopped only after three times --pkg-idle
+  of silence (30 minutes).  After an upgrade, what is still pending is
+  read from pkg's catalogue (pkg version -U), without asking the
+  repository again (a jail that cannot reach it no longer waits a second
+  watchdog).  A failed fetch's error carries pkg's lines of it (URL and
+  reason).  A running job's read carries what its program has printed
+  so far (the last 16 KiB).
+- The host's packages read and refresh name its running jails on
+  pkgbase (arcana-packages pkgbase-jail, new SIDs).  Beside "Upgrade the
+  jails", the host's lanes and how many of its jobs run now; its confirm
+  says both, and names the jails on pkgbase whose FreeBSD base moves
+  with the upgrade.  The raw output says "running" for a program still
+  at work.  The pkgbase list needs the agent of the same change.
+
 ### Manual IPsec in the core, console 0.451.0
 
 - Manual IPsec (the ipsec-sa SAs and SPD policies by PF_KEY, setkey's

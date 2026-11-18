@@ -123,12 +123,11 @@ pkg(struct work *w, const struct arc_job_spec *sp, bool anyos,
 	for (i = 0; i < n; i++)
 		argv[k++] = (char *)(uintptr_t)args[i];
 	argv[k] = NULL;
-	exec_set_watch(opts.pkg_idle_s);
+	pkg_watch(true);
 	rc = run_exec(w, argv, res);
-	exec_set_watch(0);
-	if (res->stalled > 0)
-		res->note = pkg_stall_note(w, sp->jail, sp->has_pkg_ip ?
-		    sp->pkg_ip : 0, sp->pkg_repo);
+	pkg_watch(false);
+	pkg_stalled(w, res, sp->jail, sp->has_pkg_ip ? sp->pkg_ip : 0,
+	    sp->pkg_repo);
 	return (rc);
 }
 
@@ -142,15 +141,14 @@ pkg(struct work *w, const struct arc_job_spec *sp, bool anyos,
 	"(allow.chflags=0), which pkg needs for the base's files: allow " \
 	"allow.chflags on the running jail and run this again"
 
-/* What pkg said went wrong: its repository lines, or its last words. */
+/* What pkg said went wrong: its repository lines, its fetch's, or its
+ * last words. */
 static const char *
 pkg_failed(struct work *w, const struct execres *res, const char *prog)
 {
 	const char	*e;
 
-	if ((e = pkg_repo_error(w, res, prog)) != NULL)
-		return (e);
-	e = wtext(w, exec_error(w, res, prog));
+	e = pkg_error(w, res, prog);
 	if (strstr(e, "chflags") != NULL && strstr(e,
 	    "Operation not permitted") != NULL && w->jail != NULL)
 		return (wfmt(w, NEED_CHFLAGS ": %s", w->jail, e));

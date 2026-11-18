@@ -2699,6 +2699,10 @@ arcana_packages_packages_read_action(cbl_req *req,
 	    "a jail" : "packages installed", &root)) == NULL)
 		return (ENOMEM);
 	(void)do_packages(w, jail, false, true, 0, false, true, &r);
+	/* The host's: which of its jails a plain upgrade moves the base
+	 * of. */
+	if (r.ok && jail == NULL)
+		pkg_pkgbase_jails(w, &out->pkgbase_jail.v, &out->pkgbase_jail.n);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
@@ -2743,6 +2747,8 @@ arcana_packages_packages_refresh_action(cbl_req *req,
 		    in->no_repo_check, &r);
 		change_end();
 	}
+	if (r.ok && jail == NULL)
+		pkg_pkgbase_jails(w, &out->pkgbase_jail.v, &out->pkgbase_jail.n);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));

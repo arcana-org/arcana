@@ -2543,6 +2543,29 @@ jobs_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	free(c);
 }
 
+/*
+ * The host's lanes (jobs of pkg in jails at once) and how many of its
+ * jobs run now, from its record of jobs; false while it is not read.
+ */
+bool
+job_lanes(const struct server *s, int *lanes, int *running)
+{
+	const ucl_object_t	*j;
+	ucl_object_iter_t	 it;
+
+	*lanes = *running = 0;
+	if (s->jobs == NULL || jget(s->jobs, "lanes") == NULL)
+		return (false);
+	*lanes = (int)jint(s->jobs, "lanes", 0);
+	it = NULL;
+	while ((j = ucl_object_iterate(jget(s->jobs, "jobs"), &it, true)) !=
+	    NULL)
+		if (jstr(j, "state") != NULL && strcmp(jstr(j, "state"),
+		    "running") == 0)
+			(*running)++;
+	return (true);
+}
+
 /* The lanes saved, or not: said, and the record read again. */
 static void
 lanes_saved(struct ycommit *yc, int how)
@@ -2676,7 +2699,7 @@ osversion_ask(const char *err, bool dry_run, bool read)
 }
 
 static const char *const pkg_top_map[] = { "pkgbase", "pkgbase",
-    "upgraded", "upgraded", NULL };
+    "upgraded", "upgraded", "pkgbase-jail", "pkgbase_jails", NULL };
 static const char *const pkg_map[] = { "name", "name", "installed",
     "installed", "available", "available", "origin", "origin", "comment",
     "comment", "automatic", "automatic", "size", "size", NULL };
@@ -2756,6 +2779,14 @@ packages_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 			    jget(app.pkg.data, "repos") != NULL)
 				ucl_object_insert_key(nd, ucl_object_copy(jget(
 				    app.pkg.data, "repos")), "repos", 0, false);
+			/* The host's jails on pkgbase, which only its reads
+			 * say: kept past an upgrade's reply. */
+			if (jget(nd, "pkgbase_jails") == NULL && jget(o,
+			    "upgraded") != NULL && app.pkg.data != NULL &&
+			    jget(app.pkg.data, "pkgbase_jails") != NULL)
+				ucl_object_insert_key(nd, ucl_object_copy(jget(
+				    app.pkg.data, "pkgbase_jails")),
+				    "pkgbase_jails", 0, false);
 			if (app.pkg.data != NULL)
 				ucl_object_unref(app.pkg.data);
 			app.pkg.data = nd;

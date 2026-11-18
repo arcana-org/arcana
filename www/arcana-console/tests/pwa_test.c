@@ -1614,6 +1614,9 @@ part_hosts(void)
 	 * with IGNORE_OSVERSION.
 	 */
 	ATF_REQUIRE(system("touch newer-os && cp pending pending.keep") == 0);
+	/* gw on pkgbase: the host's read says so, for "Upgrade the jails"
+	 * to say that its base moves too. */
+	put("pkgbase.gw", "");
 	run("document.querySelector('button.tab[data-arg=packages]').click()");
 	/* At first the installed, from the host's own database: by hand
 	 * or automatic; the repository is asked under Upgrades. */
@@ -1664,12 +1667,26 @@ part_hosts(void)
 	    "pkg.log") == 0);
 	run("document.querySelector('.dock > header').click()");
 	/* Of every running jail at once (gw, and web started above):
-	 * asked first; cancelled here. */
+	 * the host's lanes and what runs now beside the button; asked
+	 * first, the lanes said and gw's base moving with it, as gw is on
+	 * pkgbase; cancelled here. */
+	wait_js("/^[0-9]+ lanes?, [0-9]+ jobs? running$/.test(document."
+	    "querySelector('.pkg-lanes')?.textContent)", 10);
+	ATF_CHECK(system("grep -q '^-j gw info -q FreeBSD-runtime$' pkg.log")
+	    == 0);
 	run("document.querySelector('button[data-act=pkg-upgrade-jails]')"
 	    ".click()");
 	wait_js("document.querySelector('form[data-form=confirm]') && "
 	    "/pkg upgrade -y in each of the [0-9]+ running jails/.test("
 	    "document.querySelector('.modal').textContent)", 5);
+	shot("6b-upgrade-jails");
+	ATF_CHECK(js_true("/runs [0-9]+ of these jobs at once \\(its lanes"
+	    "/.test(document.querySelector('.modal').textContent)"));
+	ATF_CHECK(js_true("/On pkgbase, ([a-z0-9_.-]+, )*gw(, [a-z0-9_.-]+)*: "
+	    "(its|their) FreeBSD base system packages \\(FreeBSD-\\*\\) are "
+	    "upgraded too/.test(document.querySelector('.modal').textContent)"));
+	ATF_CHECK(js_true("!/On pkgbase, [^:]*web/.test(document.querySelector("
+	    "'.modal').textContent)"));
 	run("document.querySelector('.modal button[data-act=close]').click()");
 	wait_js("!document.querySelector('form[data-form=confirm]')", 5);
 	/* Over IPv6 only: pkg -6, chosen in its box, kept in the browser. */

@@ -221,7 +221,10 @@ module arcana-jobs {
     leaf output {
       type binary;
       description
-        "A program run: what it wrote to its standard output.";
+        "A program run: what it wrote to its standard output.  A
+         job's program still running: the last of what it has
+         written so far, both outputs as they came, from the start
+         of a line.";
     }
     leaf error-output {
       type binary;

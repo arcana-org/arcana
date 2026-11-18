@@ -618,8 +618,11 @@ tick(void *arg)
 				refresh_jails(s, false);
 			if (sse_due(s, SD_STATS, now, REFRESH_MS, false))
 				refresh_stats(s);
-			if (app.node == NODE_HOST && app.tab == TAB_JOBS &&
-			    sse_due(s, SD_JOBS, now, REFRESH_MS, false))
+			/* The Packages tab says the host's lanes and what
+			 * runs, beside "Upgrade the jails". */
+			if (app.node == NODE_HOST && (app.tab == TAB_JOBS ||
+			    (app.tab == TAB_PACKAGES && app.pkg.jail[0] ==
+			    '\0')) && sse_due(s, SD_JOBS, now, REFRESH_MS, false))
 				refresh_jobs(s);
 		}
 		/*
@@ -1252,7 +1255,7 @@ void
 dispatch(const char *act, const char *arg, const char *value)
 {
 	struct server		*s;
-	char			 body[512];
+	char			 body[1024];
 	int			 i;
 	bool			 replug = false;
 
@@ -1404,7 +1407,8 @@ dispatch(const char *act, const char *arg, const char *value)
 		app.jail[0] = '\0';
 		if (app.tab == TAB_JAILS)
 			refresh_jails(s, true);
-		if (app.tab == TAB_JOBS)
+		if (app.tab == TAB_JOBS || (app.tab == TAB_PACKAGES &&
+		    s->jobs == NULL))
 			refresh_jobs(s);
 		if (app.tab == TAB_KERNEL)
 			refresh_kernel(s, true);
@@ -1494,6 +1498,46 @@ dispatch(const char *act, const char *arg, const char *value)
 		    "whose repositories cannot be read, fails alone; the others "
 		    "are upgraded all the same. The host's own packages are not "
 		    "touched.", n, s->name);
+		/* How many at once: the host's lanes, and what runs now. */
+		{
+			int	lanes, running;
+
+			if (job_lanes(s, &lanes, &running))
+				snprintf(body + strlen(body), sizeof(body) -
+				    strlen(body), " %s runs %d of these jobs at "
+				    "once (its lanes, set on the Jobs tab); %d "
+				    "job%s running there now.", s->name, lanes,
+				    running, running == 1 ? " is" : "s are");
+		}
+		/* Jails on pkgbase: the same upgrade moves their base. */
+		{
+			char	 names[512];
+			int	 nb;
+
+			names[0] = '\0';
+			nb = 0;
+			it = NULL;
+			while (strcmp(app.pkg.sid, s->id) == 0 &&
+			    (j = ucl_object_iterate(jget(app.pkg.data,
+			    "pkgbase_jails"), &it, true)) != NULL) {
+				if (ucl_object_tostring(j) == NULL)
+					continue;
+				snprintf(names + strlen(names), sizeof(names) -
+				    strlen(names), "%s%s", nb > 0 ? ", " : "",
+				    ucl_object_tostring(j));
+				nb++;
+			}
+			if (nb > 0)
+				snprintf(body + strlen(body), sizeof(body) -
+				    strlen(body), " On pkgbase, %s: %s FreeBSD "
+				    "base system packages (FreeBSD-*) are "
+				    "upgraded too, to what %s base repository "
+				    "has now, a new patch level or snapshot of "
+				    "the base; the jail%s may want a restart "
+				    "after it.", names, nb == 1 ? "its" :
+				    "their", nb == 1 ? "its" : "their",
+				    nb == 1 ? "" : "s");
+		}
 		confirm("Upgrade the jails' packages", body, "Upgrade", true, "",
 		    "do-pkg-upgrade-jails", "", "");
 		app.confirm.pkgnet = true;
