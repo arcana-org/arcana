@@ -3494,13 +3494,24 @@ auth_screen(struct html *h)
 		h_raw(h, "<div class=\"loader\"></div>");
 	} else if (app.screen == SCREEN_OFFLINE) {
 		h_raw(h, "<div class=\"offline\"><h2>");
-		h_raw(h, app.online ? "The console does not answer" :
-		    "Offline");
+		h_raw(h, app.online ? "Cannot reach the console" : "Offline");
 		h_raw(h, "</h2><p>The console app is on this device and "
 		    "works without a network, but jail data comes only from "
-		    "the console, live. It reconnects by itself.</p>"
-		    "<button class=\"ghost\" data-act=\"retry\">Try "
-		    "again</button></div>");
+		    "the console, live. It reconnects by itself.</p>");
+		/* When, counted down by the tick. */
+		if (app.online) {
+			double	left = app.status_retry - arc_now();
+
+			if (app.status_retry == 0 || left < 1000)
+				h_raw(h, "<p class=\"dim retrying\">Trying "
+				    "again…</p>");
+			else
+				h_fmt(h, "<p class=\"dim retrying\">Trying "
+				    "again in %d s.</p>", (int)(left / 1000 +
+				    0.5));
+		}
+		h_raw(h, "<button class=\"ghost\" data-act=\"retry\">Try "
+		    "again now</button></div>");
 	} else if (app.screen == SCREEN_ENROL && app.invite_token[0] != '\0') {
 		/* Invited (Settings, Users): the first key of a user's. */
 		h_raw(h, "<form data-form=\"enrol\" class=\"enrol\">"
@@ -3626,6 +3637,9 @@ auth_screen(struct html *h)
 		h_txt(h, app.auth_error);
 		h_raw(h, "</p>");
 	}
+	if (app.auth_again)
+		h_raw(h, "<p class=\"dim retrying\">Cannot reach the console: "
+		    "trying again…</p>");
 	h_raw(h, "</div></div>");
 }
 

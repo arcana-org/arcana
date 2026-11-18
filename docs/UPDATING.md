@@ -93,6 +93,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Sign-in retried when unanswered; console 0.455.0
+
+- A page that cannot reach the console as it opens says so ("Cannot
+  reach the console") and tries again by itself after 1, 2, 4, 8 s,
+  then every 15 s; a sign-in, enrolment or added key whose request got
+  no answer is sent again up to five times, the page saying it tries
+  again, before an error is shown.
+- Security, IDS/IPS: an instance's own rules, thresholds and Lua
+  scripts cannot be changed again while the last change is being
+  applied (their buttons wait), where such a change used to be dropped
+  with only a toast.
+
 ### Steering on the prober's worker; agent 0.306.0
 
 - When a probe target's state changes, the SD-WAN steering is made

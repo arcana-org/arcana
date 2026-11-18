@@ -8683,6 +8683,90 @@ ATF_TC_CLEANUP(pwa_tabs, tc)
 	browser_stop();
 }
 
+/*
+ * The browser's requests to what urls names (a JSON array of patterns,
+ * * any characters) failed, as a fetch whose connection went under it
+ * fails, the console never asked; "[]" none.
+ */
+static void
+block_urls(const char *urls)
+{
+	ucl_object_t	*v;
+	char		 body[512];
+
+	v = wd("POST", "/session/goog/cdp/execute",
+	    "{\"cmd\":\"Network.enable\",\"params\":{}}");
+	if (v != NULL)
+		ucl_object_unref(v);
+	snprintf(body, sizeof(body), "{\"cmd\":\"Network.setBlockedURLs\","
+	    "\"params\":{\"urls\":%s}}", urls);
+	if ((v = wd("POST", "/session/goog/cdp/execute", body)) != NULL)
+		ucl_object_unref(v);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_unreached);
+ATF_TC_HEAD(pwa_unreached, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The console not reached as the page opens, or as a key is enrolled: the page says it tries again, does, ever later, and goes on once it answers");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_unreached, tc)
+{
+	char	 web[MAXPATHLEN], script[512], token[128];
+	double	 sent;
+	FILE	*fp;
+
+	snprintf(web, sizeof(web), "%s", locate(tc, "../../arcana-ui/dist",
+	    "webroot", "/usr/local/www/arcana-console"));
+	if (access(web, R_OK) == -1)
+		atf_tc_skip("no built PWA at %s", web);
+	snprintf(script, sizeof(script), "cp -R '%s' www-copy", web);
+	ATF_REQUIRE(system(script) == 0);
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	snprintf(web, sizeof(web), "%s/www-copy", cwd);
+	start(tc, free_port(), web);
+	browser_start(tc);
+
+	/* Opened while the console does not answer: not blank, not an
+	 * error, but what it waits for, and asked again by itself. */
+	block_urls("[\"*/api/auth/*\"]");
+	go("/");
+	wait_js("document.querySelector('.auth .offline .retrying')", 20);
+	ATF_CHECK(!js_true("document.querySelector('.auth .err')"));
+	sent = js_num(HTTP_N("sent"));
+	wait_js("document.querySelector('.auth .offline .retrying')."
+	    "textContent.includes('in 2 s') || document.querySelector("
+	    "'.auth .offline .retrying').textContent.includes('in 4 s')", 20);
+	ATF_CHECK_MSG(js_num(HTTP_N("sent")) > sent, "not asked again (%g "
+	    "sent, %g before)", js_num(HTTP_N("sent")), sent);
+	/* The console answers: the page goes on, as if opened now. */
+	block_urls("[]");
+	wait_js("document.querySelector('form[data-form=enrol]')", 20);
+	ATF_CHECK(!js_true("document.querySelector('.auth .offline')"));
+
+	/* The key's enrolment begun while the console does not answer:
+	 * sent again, the page saying so, enrolled once it does. */
+	ATF_REQUIRE((fp = fopen("data/setup-token", "r")) != NULL);
+	ATF_REQUIRE(fgets(token, sizeof(token), fp) != NULL);
+	fclose(fp);
+	token[strcspn(token, "\n")] = '\0';
+	block_urls("[\"*/api/auth/register/begin\"]");
+	snprintf(script, sizeof(script), "const f = document.querySelector("
+	    "'form[data-form=enrol]'); f.token.value = '%s'; f.name.value = "
+	    "'virtual key'; f.requestSubmit();", token);
+	run(script);
+	wait_js("document.querySelector('.auth .retrying')", 20);
+	ATF_CHECK(!js_true("document.querySelector('.auth .err')"));
+	block_urls("[]");
+	wait_js("document.querySelector('.shell')", 30);
+}
+ATF_TC_CLEANUP(pwa_unreached, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_routes);
 ATF_TC_HEAD(pwa_routes, tc)
 {
@@ -15255,6 +15339,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_follow);
 	ATF_TP_ADD_TC(tp, pwa_terminal);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
+	ATF_TP_ADD_TC(tp, pwa_unreached);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);
 	ATF_TP_ADD_TC(tp, pwa_nacm);
 	ATF_TP_ADD_TC(tp, pwa_ra);

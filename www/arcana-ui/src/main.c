@@ -528,9 +528,15 @@ tick(void *arg)
 		app.health_retry = 0;
 		last_health = now;
 		check_health();
-		/* Offline at start: try to reach the console again. */
-		if (app.screen == SCREEN_OFFLINE && app.online)
+	}
+	/* Not reached at start: asked again when status_cb said, the
+	 * page counting down to it. */
+	if (app.screen == SCREEN_OFFLINE && app.status_retry != 0) {
+		changed = true;
+		if (app.online && now >= app.status_retry) {
+			app.status_retry = 0;
 			auth_status();
+		}
 	}
 	/* What the tick reads waits behind what the user asks (api.c). */
 	app.polling = true;
@@ -2297,6 +2303,7 @@ dispatch(const char *act, const char *arg, const char *value)
 	} else if (strcmp(act, "servers-again") == 0) {
 		refresh_servers();
 	} else if (strcmp(act, "retry") == 0) {
+		app.status_retry = 0;
 		auth_status();
 	} else if (strcmp(act, "login") == 0) {
 		login(false, NULL);

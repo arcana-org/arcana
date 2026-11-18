@@ -495,8 +495,9 @@ view_thresholds(struct html *h, const char *text)
 		h_txt(h, v[i].text + strlen(key) + strspn(v[i].text +
 		    strlen(key), " "));
 		h_fmt(h, "</td><td class=\"acts\"><button class=\"ghost small "
-		    "danger\" data-act=\"thr-del\" data-arg=\"%d\">Delete"
-		    "</button></td></tr>", i);
+		    "danger\" data-act=\"thr-del\" data-arg=\"%d\"%s>Delete"
+		    "</button></td></tr>", i, sec_ids_busy() ? " disabled" :
+		    "");
 	}
 	h_raw(h, "</tbody></table>");
 	lines_free(v, n);
@@ -528,8 +529,10 @@ view_lua(struct html *h, const ucl_object_t *f)
 		    "class=\"help\">not a rule's: it is run on what its init "
 		    "asks for</small></label><div class=\"actions\"><button "
 		    "type=\"button\" class=\"ghost\" data-act=\"lua-cancel\">"
-		    "Cancel</button><button type=\"submit\" class=\"primary\">"
-		    "Add</button></div></form>");
+		    "Cancel</button><button type=\"submit\" class=\"primary\"");
+		if (sec_ids_busy())
+			h_raw(h, " disabled");
+		h_raw(h, ">Add</button></div></form>");
 	}
 	if (jget(f, "lua") == NULL || ucl_object_type(jget(f, "lua")) !=
 	    UCL_OBJECT) {
@@ -558,7 +561,8 @@ view_lua(struct html *h, const ucl_object_t *f)
 		h_raw(h, "<button class=\"ghost small danger\" data-act=\""
 		    "lua-del\"");
 		h_attr(h, "data-arg", ucl_object_key(e));
-		h_raw(h, ">Delete</button></td></tr>");
+		h_raw(h, sec_ids_busy() ? " disabled>" : ">");
+		h_raw(h, "Delete</button></td></tr>");
 	}
 	h_raw(h, "</tbody></table>");
 }
@@ -635,7 +639,14 @@ view_idsown(struct html *h)
 		view_lua(h, f);
 		return;
 	}
-	h_raw(h, "<table class=\"net ownrules\">");
+	/*
+	 * While a change is applied another is refused (save(): one at a
+	 * time, each on the list as read after the last), and a read may
+	 * show the change before its answer comes: what changes the list
+	 * waits for it, as the forms' Save does.
+	 */
+	h_fmt(h, "<table class=\"net ownrules%s\">", sec_ids_busy() ?
+	    " applying" : "");
 	tbl_head(h, "ownrules", cols, 5, 1);
 	h_raw(h, "<tbody>");
 	for (i = 0; i < n; i++) {
@@ -670,10 +681,11 @@ view_idsown(struct html *h)
 		h_fmt(h, "</td><td class=\"acts\"><button class=\"ghost small\" "
 		    "data-act=\"own-edit\" data-arg=\"%d\">Change</button>"
 		    "<button class=\"ghost small\" data-act=\"own-toggle\" "
-		    "data-arg=\"%d\">%s</button><button class=\"ghost small "
-		    "danger\" data-act=\"own-del\" data-arg=\"%d\">Delete"
-		    "</button></td></tr>", i, i, v[i].on ? "Disable" : "Enable",
-		    i);
+		    "data-arg=\"%d\"%s>%s</button><button class=\"ghost small "
+		    "danger\" data-act=\"own-del\" data-arg=\"%d\"%s>Delete"
+		    "</button></td></tr>", i, i, sec_ids_busy() ? " disabled" :
+		    "", v[i].on ? "Disable" : "Enable", i, sec_ids_busy() ?
+		    " disabled" : "");
 	}
 	h_raw(h, "</tbody></table>");
 	lines_free(v, n);

@@ -13,11 +13,19 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <emscripten/eventloop.h>
+
 #include "app.h"
 
 #define	RESTART_WATCH_MS	45000	/* an agent to be back, updated */
 #define	RESTART_ASK_MS		3000
 #define	HEALTH_RETRY_MS		2000	/* a missed health check is asked again */
+#define	STATUS_RETRY_MS		1000	/* the console not reached at start:
+					 * asked again, twice as late each
+					 * time, HEALTH_MS at most */
+#define	AUTH_TRIES		5	/* a sign-in's request sent again */
+#define	AUTH_RETRY_MS		500	/* ... first after, twice as late each
+					 * time */
 
 struct ctx {
 	char	sid[9];
@@ -3491,14 +3499,30 @@ origin_check(const char *origin, const char *rp_id)
 static void
 status_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
+	double	wait;
+	int	i;
 
 	if (status == 0) {
-		/* The shell came from the cache; the console is away. */
+		/*
+		 * The shell came from the cache and the console is away, or
+		 * the console did not answer (busy, starting again): asked
+		 * again by itself (tick()), soon, then less often.
+		 */
 		app.api = LINK_DOWN;
-		if (app.screen != SCREEN_CONSOLE)
+		if (app.screen != SCREEN_CONSOLE) {
 			app.screen = SCREEN_OFFLINE;
+			wait = STATUS_RETRY_MS;
+			for (i = 0; i < app.status_tries && wait < HEALTH_MS;
+			    i++)
+				wait *= 2;
+			app.status_retry = arc_now() + (wait < HEALTH_MS ?
+			    wait : HEALTH_MS);
+			app.status_tries++;
+		}
 		return;
 	}
+	app.status_retry = 0;
+	app.status_tries = 0;
 	if (status != 200) {
 		if (app.screen == SCREEN_BOOT || app.screen == SCREEN_OFFLINE)
 			app.screen = SCREEN_LOGIN;
@@ -3540,6 +3564,73 @@ auth_status(void)
 	api("GET", "/api/auth/status", NULL, status_cb, NULL);
 }
 
+/*
+ * A sign-in's request (its begin, its finish, a token's or a password's)
+ * the browser had no answer to (fetch's TypeError, status 0) is sent
+ * again a few times, ever later, the page saying so meanwhile, before
+ * its caller is told: a busy moment of the console's, or a connection
+ * closed under the request, is no failed sign-in.  The bridge sends
+ * again only reads; these are not.  One that did arrive, its answer
+ * lost, is refused the second time with the console's reason (its
+ * challenge used, its setup token taken), shown as before.
+ */
+struct auth_req {
+	char	 method[8];
+	char	 url[64];
+	char	*body;
+	api_cb	*cb;
+	void	*arg;
+	int	 tries;
+};
+
+static api_cb	auth_req_cb;
+
+static void
+auth_send(void *arg)
+{
+	struct auth_req	*r = arg;
+
+	api(r->method, r->url, r->body, auth_req_cb, r);
+}
+
+static void
+auth_req_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	struct auth_req	*r = arg;
+
+	if (status == 0 && r->tries < AUTH_TRIES && app.online &&
+	    (err == NULL || strcmp(err, "cancelled") != 0)) {
+		app.auth_again = true;
+		emscripten_set_timeout(auth_send, AUTH_RETRY_MS *
+		    (double)(1 << r->tries), r);
+		r->tries++;
+		return;
+	}
+	app.auth_again = false;
+	r->cb(status, o, err, r->arg);
+	if (r->body != NULL) {
+		explicit_bzero(r->body, strlen(r->body));
+		free(r->body);
+	}
+	free(r);
+}
+
+static void
+auth_api(const char *method, const char *url, const char *body,
+    api_cb *cb, void *arg)
+{
+	struct auth_req	*r;
+
+	if ((r = calloc(1, sizeof(*r))) == NULL ||
+	    (body != NULL && (r->body = strdup(body)) == NULL))
+		abort();
+	snprintf(r->method, sizeof(r->method), "%s", method);
+	snprintf(r->url, sizeof(r->url), "%s", url);
+	r->cb = cb;
+	r->arg = arg;
+	auth_send(r);
+}
+
 static void
 auth_done_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
@@ -3575,7 +3666,7 @@ login_assert_cb(bool ok, const char *result, void *arg)
 		    "Security key: %s", result);
 		return;
 	}
-	api("POST", "/api/auth/login/finish", result, auth_done_cb, NULL);
+	auth_api("POST", "/api/auth/login/finish", result, auth_done_cb, NULL);
 }
 
 static void
@@ -3613,7 +3704,7 @@ login_token(const char *token)
 	if (asprintf(&body, "{\"token\":%s}", q) == -1)
 		abort();
 	free(q);
-	api("POST", "/api/auth/login/token", body, auth_done_cb, NULL);
+	auth_api("POST", "/api/auth/login/token", body, auth_done_cb, NULL);
 	explicit_bzero(body, strlen(body));
 	free(body);
 }
@@ -3644,7 +3735,7 @@ login_password(const char *user, const char *password)
 	explicit_bzero(qp, strlen(qp));
 	free(qu);
 	free(qp);
-	api("POST", "/api/auth/login/password", body, auth_done_cb, NULL);
+	auth_api("POST", "/api/auth/login/password", body, auth_done_cb, NULL);
 	explicit_bzero(body, strlen(body));
 	free(body);
 }
@@ -3677,7 +3768,7 @@ login(bool passkey, const char *user)
 	} else if ((body = strdup("{}")) == NULL)
 		abort();
 	free(kept);
-	api("POST", "/api/auth/login/begin", body, login_begin_cb, NULL);
+	auth_api("POST", "/api/auth/login/begin", body, login_begin_cb, NULL);
 	free(body);
 }
 
@@ -3708,7 +3799,7 @@ create_cb(bool ok, const char *result, void *arg)
 	    true);
 	body = emit(o);
 	ucl_object_unref(o);
-	api("POST", "/api/auth/register/finish", body, c->user ?
+	auth_api("POST", "/api/auth/register/finish", body, c->user ?
 	    key_added_cb : auth_done_cb, NULL);
 	free(body);
 	free(c);
@@ -3771,7 +3862,8 @@ enrol(const char *token, const char *name)
 	if (asprintf(&body, "{\"%s\":%s}", strncmp(token, "inv_", 4) == 0 ?
 	    "invite" : "setup_token", qt) == -1)
 		abort();
-	api("POST", "/api/auth/register/begin", body, register_begin_cb, c);
+	auth_api("POST", "/api/auth/register/begin", body, register_begin_cb,
+	    c);
 	free(qt);
 	free(body);
 }
@@ -3797,7 +3889,7 @@ setup_password(const char *token, const char *user, const char *password)
 	free(qt);
 	free(qu);
 	free(qp);
-	api("POST", "/api/auth/setup/password", body, auth_done_cb, NULL);
+	auth_api("POST", "/api/auth/setup/password", body, auth_done_cb, NULL);
 	explicit_bzero(body, strlen(body));
 	free(body);
 }
@@ -3828,7 +3920,8 @@ add_key(const char *name)
 	c->user = true;
 	snprintf(c->name, sizeof(c->name), "%s", *name != '\0' ? name :
 	    "Spare key");
-	api("POST", "/api/auth/register/begin", "{}", register_begin_cb, c);
+	auth_api("POST", "/api/auth/register/begin", "{}", register_begin_cb,
+	    c);
 }
 
 /*

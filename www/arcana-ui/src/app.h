@@ -590,6 +590,9 @@ struct app {
 	char		 setup_node[64];	/* a cluster's: whose token; "" */
 	char		 version[32];	/* the console's, from /api/health */
 	double		 health_retry;	/* ms: ask for its health again then; 0 no */
+	double		 status_retry;	/* ms: not reached at start, asked again
+					 * then; 0 no */
+	int		 status_tries;	/* ... in vain, since it answered */
 	char		 agent_build[65]; /* of the arcana-agent it sends */
 	bool		 no_cluster;	/* built without its cluster */
 	char		 agent_version[32]; /* and its version */
@@ -604,6 +607,8 @@ struct app {
 	char		 origin_error[400];	/* opened at the wrong address */
 	char		 console_origin[256];	/* web.conf's origin, as told */
 	bool		 auth_busy;
+	bool		 auth_again;	/* a sign-in's request unanswered, sent
+					 * again in a moment */
 	bool		 by_token;	/* signed in with an API token, by LDAP, or
 					 * by a password the console limits */
 	bool		 by_ldap;	/* ... by a directory's user */
