@@ -93,6 +93,13 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### No pools without ZFS in the kernel; agent 0.317.0
+
+- A host whose kernel has no ZFS (zfs.ko not loaded, a UFS root) reads
+  its pools, datasets and snapshots as none, where the storage read
+  failed and with it every edit of the running datastore ("reading it
+  failed: Input/output error").
+
 ### Updates taken and builds sent compressed alone; agent 0.316.0, console 0.462.0
 
 - The agent takes arcana-agent's update only compressed (program-size

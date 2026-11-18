@@ -3579,7 +3579,12 @@ devd_watch_body()
 	md=$(mdconfig -a -t swap -s 128m) || atf_skip "no memory disk"
 	echo "$md" > md
 	atf_check zpool create -O mountpoint=none arcw_hw "$md"
-	sleep 1.5
+	# ZFS's event goes through its sysevent thread, devd and the
+	# agent's tick: a slow machine takes longer than a second.
+	for i in $(seq 1 20); do
+		grep -q '"kind":"zfs"' follow.out && break
+		sleep 0.5
+	done
 	atf_check zpool export arcw_hw
 	atf_check mdconfig -d -u "$md"
 	rm md
@@ -4126,8 +4131,10 @@ EOF
 	    sed -E 's/.* ms \(([^)]*)\); the reflector.s timestamps (.*)/\1|\2/' \
 	    std.clean
 	# 50 ms more forward on the one, next to nothing backward; nothing
-	# either way on the other.
-	atf_check -o inline:'ok\n' awk -v lo=45 -v hi=80 "$STD_AWK" std.slow
+	# either way on the other.  dummynet holds a packet whole ticks: at
+	# kern.hz=100 (a VM's default) 50 ms is 40 to 50.
+	atf_check -o inline:'ok\n' awk -v lo=$((45 - 1000 / $(sysctl -n kern.hz))) \
+	    -v hi=80 "$STD_AWK" std.slow
 	atf_check -o inline:'ok\n' awk -v lo=0 -v hi=10 "$STD_AWK" std.clean
 	# The reflector's error a second: half the round trip, flagged.  Its
 	# restart gap makes the agent ping until STAMP answers again (tried

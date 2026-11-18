@@ -630,6 +630,25 @@ pool_status(struct work *w, ucl_object_t *pools)
 }
 
 /*
+ * Without ZFS in the kernel, {key: []}: zpool(8) and zfs(8) would load
+ * it, or fail where they cannot (a jail), and a host on UFS alone has
+ * no pools rather than a read that fails.
+ */
+static bool
+no_zfs(struct work *w, const char *key, struct storage_rsp *rsp)
+{
+	ucl_object_t	*top;
+
+	if (modfind("zfs") != -1)
+		return (false);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(top, ucl_object_typed_new(UCL_ARRAY), key, 0,
+	    false);
+	(void)emit(w, top, rsp);
+	return (true);
+}
+
+/*
  * {"pools": [{"name", "size", "alloc", "free", "frag", "cap", "dedup",
  * "health", and what pool_status() adds}]}, from zpool list -j.
  */
@@ -642,6 +661,8 @@ pools(struct work *w, struct storage_rsp *rsp)
 	ucl_object_t		*top, *arr, *o, *parsed;
 	char			*argv[7];
 
+	if (no_zfs(w, "pools", rsp))
+		return (0);
 	argv[0] = (char *)(uintptr_t)opts.zpool_bin;
 	argv[1] = (char *)(uintptr_t)"list";
 	argv[2] = (char *)(uintptr_t)"-j";
@@ -753,6 +774,8 @@ datasets(struct work *w, bool snaps, const char *filter,
 		    "_ . : / -";
 		return (0);
 	}
+	if (no_zfs(w, snaps ? "snapshots" : "datasets", rsp))
+		return (0);
 	ncols = snaps ? (int)nitems(scols) : (int)nitems(dcols);
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)opts.zfs_bin;
