@@ -18951,6 +18951,162 @@ sadb_news_cleanup()
 	stop_pfkey
 }
 
+atf_test_case ikeless_lists cleanup
+ikeless_lists_head()
+{
+	atf_set "descr" "RFC 9061's IKE-less lists (PLAN-SDN-YANG 6.2.4)" \
+	    "against the stand-in PF_KEY: Appendix B's example (keys of real" \
+	    "lengths) put in, SAs before policies, each SA read back, the" \
+	    "policies at the controller's priorities; running and the" \
+	    "kernel's lists read, ipsec.conf's and the interface's policies" \
+	    "among them by the kernel's names, no key; the refusals, nothing" \
+	    "changed; an edit changing what differs alone (SPDUPDATE in" \
+	    "place); the agent's packets lifetime told soft by the name, then" \
+	    "hard and the SA taken out; the policies put back at the start" \
+	    "and the SAs gone with the kernel's state out of running; all" \
+	    "taken out, ipsec.conf's left"
+	atf_set "timeout" "180"
+}
+ikeless_lists_body()
+{
+	local i
+
+	write_rc
+	start_pfkey seed
+	start_daemon
+	EK=00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff
+	AK=01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67
+	H1=2001:db8:123::100
+	H2=2001:db8:123::200
+	# Appendix B, h1's: its keys 8 bytes long, which no AES nor SHA-1
+	# takes, given here at their lengths.
+	cat > b.json <<EOF
+{"spd":{"spd-entry":[
+{"name":"in/trans/$H2/$H1","direction":"inbound","reqid":"1","ipsec-policy-config":{"traffic-selector":{"local-prefix":"$H2/128","remote-prefix":"$H1/128","inner-protocol":"any"},"processing-info":{"action":"protect","ipsec-sa-cfg":{"ext-seq-num":true,"seq-overflow":false,"mode":"transport","protocol-parameters":"esp","esp-algorithms":{"integrity":[2],"encryption":[{"id":1,"algorithm-type":12,"key-length":128},{"id":2,"algorithm-type":3}]}}}}},
+{"name":"out/trans/$H1/$H2","direction":"outbound","reqid":"1","ipsec-policy-config":{"traffic-selector":{"local-prefix":"$H1/128","remote-prefix":"$H2/128","inner-protocol":"any"},"processing-info":{"action":"protect","ipsec-sa-cfg":{"ext-seq-num":true,"seq-overflow":false,"mode":"transport","protocol-parameters":"esp","esp-algorithms":{"integrity":[2],"encryption":[{"id":1,"algorithm-type":12,"key-length":128},{"id":2,"algorithm-type":3}]}}}}}]},
+"sad":{"sad-entry":[
+{"name":"out/trans/$H1/$H2","reqid":"1","ipsec-sa-config":{"spi":34501,"ext-seq-num":true,"seq-overflow":false,"anti-replay-window-size":64,"traffic-selector":{"local-prefix":"$H1/128","remote-prefix":"$H2/128","inner-protocol":"any"},"protocol-parameters":"esp","mode":"transport","esp-sa":{"encryption":{"encryption-algorithm":12,"key":"$EK","iv":"01:23:45:67:89:AB:CE:DF"},"integrity":{"integrity-algorithm":2,"key":"$AK"}}}},
+{"name":"in/trans/$H2/$H1","reqid":"1","ipsec-sa-config":{"spi":34502,"ext-seq-num":true,"seq-overflow":false,"anti-replay-window-size":64,"traffic-selector":{"local-prefix":"$H2/128","remote-prefix":"$H1/128","inner-protocol":"any"},"protocol-parameters":"esp","mode":"transport","esp-sa":{"encryption":{"encryption-algorithm":12,"key":"$EK","iv":"01:23:45:67:89:AB:CE:DF"},"integrity":{"integrity-algorithm":2,"key":"$AK"}},"sa-lifetime-hard":{"bytes":"2000000","packets":2000,"time":60,"idle":120},"sa-lifetime-soft":{"bytes":"1000000","packets":1000,"time":30,"idle":60,"action":"replace"}}}]}}
+EOF
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @b.json
+	# Each SA from its local end to its remote one, ESN on its window
+	# of 8 bytes, the counter not to wrap (no CYCSEQ), read back; the
+	# in SA's lifetimes the kernel's but packets.
+	atf_check -o match:"^add $H1 $H2 esp 0x86c5 -m transport -u 1 -r 8 -esn -flags 0x[0-9a-f]+ -E aes-cbc 0x00112233445566778899aabbccddeeff -A hmac-sha1 0x0123456789abcdef0123456789abcdef01234567 ;\$" \
+	    -o match:"^add $H2 $H1 esp 0x86c6 -m transport -u 1 -r 8 -esn -flags 0x[0-9a-f]+ -lh 60 2000000 2000 -ls 30 1000000 1000 -E aes-cbc " \
+	    -o match:"^get $H1 $H2 esp 0x86c5 ;\$" -o match:"^get $H2 $H1 esp 0x86c6 ;\$" \
+	    -o match:"^spdadd $H2/128\[any\] $H1/128\[any\] any -P in prio 0x7fa20000 ipsec esp/transport//unique:1 ;\$" \
+	    -o match:"^spdadd $H1/128\[any\] $H2/128\[any\] any -P out prio 0x7fa20001 ipsec esp/transport//unique:1 ;\$" \
+	    -o not-match:'^(malformed|unexpected)' cat pfkey.log
+	# SAs first, then their policies.
+	atf_check -o inline:'add\nadd\nspdadd\nspdadd\n' sh -c \
+	    "grep -E '^(add|spdadd) ' pfkey.log | cut -d' ' -f1"
+	atf_check -o match:"\"name\":\"in/trans/$H2/$H1\"" -o match:'"spi":34501' \
+	    "$JGC" -c "$SOCK" get -d running ipsec-ikeless
+	# The kernel's lists: the controller's by their names, with their
+	# state; ipsec.conf's and ipsec0's own by the kernel's; no key.
+	atf_check -o save:op.json "$JGC" -c "$SOCK" get ipsec-ikeless
+	atf_check -o match:"\"name\":\"out/trans/$H1/$H2\"" \
+	    -o match:"\"name\":\"in/trans/$H2/$H1\"" \
+	    -o match:'"name":"spd/1","reqid":"100"' \
+	    -o match:'"local-prefix":"10.77.0.0/24"' -o match:'"name":"spd/2"' \
+	    -o match:'"ipsec-sa-state":\{' -o match:'"replay-window":\{"w":64\}' \
+	    -o not-match:'"key"' -o not-match:'"iv"' cat op.json
+
+	# The refusals: nothing put in, running as it was.
+	: > pfkey.log
+	sed -e 's|"key":"[^"]*","iv"|"key":"01:23:45:67:89:AB:CE:DF","iv"|' b.json > bk.json
+	atf_check -s exit:1 -e match:'an encryption key of 8 bytes' -o ignore \
+	    "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @bk.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	sed -e 's|"anti-replay-window-size":64,|&"encapsulation-type":{"espencap":"espintcp"},|' b.json > bt.json
+	atf_check -s exit:1 -e match:'espintcp: FreeBSD has no ESP in TCP' -o ignore \
+	    "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @bt.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	sed -e 's|"ext-seq-num":true,"seq-overflow":false,"anti-replay-window-size":64|"ext-seq-num":true,"anti-replay-window-size":0|' b.json > bw.json
+	atf_check -s exit:1 -e match:'ESN needs an anti-replay window' -o ignore \
+	    "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @bw.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	# ipsec.conf's selector and direction: in-use, its policy left.
+	sed -e "s|\"local-prefix\":\"$H1/128\",\"remote-prefix\":\"$H2/128\",\"inner-protocol\":\"any\"},\"processing-info\"|\"local-prefix\":\"10.77.0.0/24\",\"remote-prefix\":\"10.78.0.0/24\",\"inner-protocol\":\"any\"},\"processing-info\"|" b.json > bc.json
+	atf_check -s exit:1 -e match:'policy of its selector and direction already, spd/1, not the controller' -o ignore \
+	    "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @bc.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -o not-match:'^(add|delete|spdadd|spdupdate|spddelete2) ' cat pfkey.log
+	atf_check -o match:'"spi":34502' "$JGC" -c "$SOCK" get -d running ipsec-ikeless
+
+	# What differs alone: the out policy's reqid changed in place; the
+	# in SA's keys changed, out and in again; the rest untouched.
+	: > pfkey.log
+	sed -e 's|"direction":"outbound","reqid":"1"|"direction":"outbound","reqid":"2"|' \
+	    -e "s|\"spi\":34502,\\(.*\\)\"key\":\"$EK\"|\"spi\":34502,\\1\"key\":\"ff:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff\"|" \
+	    b.json > b2.json
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @b2.json
+	atf_check -o match:"^spdupdate $H1/128\[any\] $H2/128\[any\] any -P out prio 0x7fa20001 ipsec esp/transport//unique:2 ;\$" \
+	    -o match:"^delete $H2 $H1 esp 0x86c6 ;\$" -o match:"^add $H2 $H1 esp 0x86c6 " \
+	    -o not-match:"esp 0x86c5" -o not-match:'^spdadd' -o not-match:'^spddelete2' cat pfkey.log
+
+	# The agent's lifetimes, read with the counters every 10 s: past
+	# 1000 packets told soft by the name, past 2000 taken out and told
+	# hard.
+	"$JGC" -c "$SOCK" notifications > notif.out 2>&1 &
+	echo $! > notif.pid
+	sleep 1
+	: > pfkey.log
+	echo '86c6 1500 100' > pfkey.log.count
+	for i in $(seq 1 75); do
+		grep -q 'soft-lifetime-expire":true' notif.out && break
+		sleep 0.2
+	done
+	echo '86c6 2500 200' > pfkey.log.count
+	for i in $(seq 1 75); do
+		grep -q 'soft-lifetime-expire":false' notif.out && break
+		sleep 0.2
+	done
+	kill "$(cat notif.pid)"
+	atf_check -o match:"\"ietf-i2nsf-ikeless:sadb-expire\":\\{\"ipsec-sa-name\":\"in/trans/$H2/$H1\",\"lifetime-current\":\\{[^}]*\"packets\":1500[^}]*\\},\"soft-lifetime-expire\":true\\}" \
+	    -o match:"\"ietf-i2nsf-ikeless:sadb-expire\":\\{\"ipsec-sa-name\":\"in/trans/$H2/$H1\",\"lifetime-current\":\\{[^}]*\"packets\":2500[^}]*\\},\"soft-lifetime-expire\":false\\}" \
+	    cat notif.out
+	atf_check -o inline:'1\n' sh -c "grep -c 'soft-lifetime-expire\":true' notif.out"
+	# Taken out on the watcher's own socket, which the stand-in does
+	# not log: gone from the kernel's list.
+	atf_check -o not-match:'"spi":34502' -o match:'"spi":34501' \
+	    "$JGC" -c "$SOCK" get ipsec-ikeless
+
+	# The start after the kernel lost its state: the policies put back,
+	# the SAs gone out of running, ipsec.conf's still there.
+	stop_daemon
+	stop_pfkey
+	rm -f pfkey.sock
+	start_pfkey seed
+	: > pfkey.log
+	start_daemon
+	atf_check -o match:"^spdadd $H2/128\[any\] $H1/128\[any\] any -P in prio 0x7fa20000 " \
+	    -o match:"^spdadd $H1/128\[any\] $H2/128\[any\] any -P out prio 0x7fa20001 " \
+	    -o not-match:'^add ' cat pfkey.log
+	atf_check -o match:'SAs gone with the kernel.s state taken out of running' cat daemon.out
+	atf_check -o not-match:'"sad-entry":\[\{' -o match:"\"name\":\"out/trans/$H1/$H2\"" \
+	    "$JGC" -c "$SOCK" get -d running ipsec-ikeless
+
+	# All taken out: the controller's policies alone.
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless
+	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
+	atf_check -o not-match:'spddelete2 [12] ' cat pfkey.log
+	atf_check -o match:'"name":"spd/1"' -o not-match:'trans/' \
+	    "$JGC" -c "$SOCK" get ipsec-ikeless
+}
+ikeless_lists_cleanup()
+{
+	[ -f notif.pid ] && kill "$(cat notif.pid)" 2>/dev/null
+	stop_daemon
+	stop_pfkey
+}
+
 atf_test_case rtadvd cleanup
 rtadvd_head()
 {
@@ -21902,6 +22058,7 @@ atf_init_test_cases()
 	atf_add_test_case ipsec_sa
 	atf_add_test_case ipsec_sp
 	atf_add_test_case sadb_news
+	atf_add_test_case ikeless_lists
 	atf_add_test_case interfaces
 	atf_add_test_case network_more
 	atf_add_test_case sdwan_forms

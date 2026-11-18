@@ -1113,6 +1113,7 @@ main(int argc, char *argv[])
 	sslproxy_watch_start();
 	services_collect_start();
 	sa_faults_start();
+	ikeless_start();
 	sadb_watch_start();
 	nacm_check(ctx);
 	logmsg(LOG_INFO, "version %s ready", ARCANA_AGENT_VERSION);

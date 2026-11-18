@@ -21,7 +21,8 @@
  * The SPD: SADB_X_SPDADD with the policy as libipsec's
  * ipsec_set_policy(3) lays it out (struct sadb_x_policy, then each
  * request and its two addresses) and the selector as setkey(8)'s
- * spdadd sends it; SADB_X_SPDDUMP; SADB_X_SPDDELETE2, by the id a dump
+ * spdadd sends it, or SADB_X_SPDUPDATE in place of one of the same
+ * selector; SADB_X_SPDDUMP; SADB_X_SPDDELETE2, by the id a dump
  * read, never SADB_X_SPDDELETE, by the selector, which takes whichever
  * policy has it (key_spddelete()).  A policy of an ipsec(4) interface
  * is scoped to it (IPSEC_POLICYSCOPE_IFNET, its index in the priority
@@ -203,6 +204,8 @@ pk_name(uint8_t type)
 		return ("SADB_DUMP");
 	case SADB_X_SPDADD:
 		return ("SADB_X_SPDADD");
+	case SADB_X_SPDUPDATE:
+		return ("SADB_X_SPDUPDATE");
 	case SADB_X_SPDDELETE2:
 		return ("SADB_X_SPDDELETE2");
 	case SADB_X_SPDDUMP:
@@ -287,8 +290,22 @@ pk_call(struct work *w, int fd, struct pkmsg *m,
 	return (0);
 }
 
+static void
+pk_lifetime(struct pkmsg *m, uint16_t type, const struct pfkey_lt *lt)
+{
+	struct sadb_lifetime	*l;
+
+	if ((l = pk_ext(m, type, sizeof(*l), NULL, 0)) == NULL)
+		return;
+	l->sadb_lifetime_allocations = lt->packets;
+	l->sadb_lifetime_bytes = lt->bytes;
+	l->sadb_lifetime_addtime = lt->time;
+	l->sadb_lifetime_usetime = lt->use;
+}
+
 /* An SA put in by SADB_ADD: ESP on sa's reqid and mode, its window and
- * flags, NAT-T's ESP in UDP when it has ports. */
+ * flags, NAT-T's ESP in UDP when it has ports, its lifetimes when it
+ * has any (the kernel takes both or neither: key_setsaval()). */
 int
 pfkey_add(struct work *w, int fd, const struct pfkey_sa *sa,
     const char **errp)
@@ -337,6 +354,10 @@ pfkey_add(struct work *w, int fd, const struct pfkey_sa *sa,
 		    0)) != NULL)
 			np->sadb_x_nat_t_port_port = htons(sa->dport);
 	}
+	if ((sa->lifetimes & (PFKEY_LT_SOFT | PFKEY_LT_HARD)) != 0) {
+		pk_lifetime(&m, SADB_EXT_LIFETIME_HARD, &sa->hard);
+		pk_lifetime(&m, SADB_EXT_LIFETIME_SOFT, &sa->soft);
+	}
 	pk_addr(&m, SADB_EXT_ADDRESS_SRC, (const struct sockaddr *)&sa->src);
 	pk_addr(&m, SADB_EXT_ADDRESS_DST, (const struct sockaddr *)&sa->dst);
 	rc = pk_call(w, fd, &m, NULL, NULL, errp);
@@ -360,6 +381,16 @@ pfkey_delete(struct work *w, int fd, const struct sockaddr *src,
 	pk_addr(&m, SADB_EXT_ADDRESS_SRC, src);
 	pk_addr(&m, SADB_EXT_ADDRESS_DST, dst);
 	return (pk_call(w, fd, &m, NULL, NULL, errp));
+}
+
+static void
+pk_lt(const struct sadb_lifetime *l, struct pfkey_lt *lt)
+{
+
+	lt->packets = l->sadb_lifetime_allocations;
+	lt->bytes = l->sadb_lifetime_bytes;
+	lt->time = l->sadb_lifetime_addtime;
+	lt->use = l->sadb_lifetime_usetime;
 }
 
 /* A reply's SA as struct pfkey_sa has it, without its keys. */
@@ -418,10 +449,15 @@ pk_parse(const struct sadb_msg *r, size_t len, struct pfkey_sa *sa)
 			sa->used = lt->sadb_lifetime_usetime;
 			break;
 		case SADB_EXT_LIFETIME_SOFT:
-			sa->lifetimes |= PFKEY_LT_SOFT;
-			break;
 		case SADB_EXT_LIFETIME_HARD:
-			sa->lifetimes |= PFKEY_LT_HARD;
+			if (n < sizeof(*lt))
+				break;
+			lt = (const struct sadb_lifetime *)(const void *)e;
+			sa->lifetimes |= e->sadb_ext_type ==
+			    SADB_EXT_LIFETIME_SOFT ? PFKEY_LT_SOFT :
+			    PFKEY_LT_HARD;
+			pk_lt(lt, e->sadb_ext_type == SADB_EXT_LIFETIME_SOFT ?
+			    &sa->soft : &sa->hard);
 			break;
 		case SADB_EXT_ADDRESS_SRC:
 		case SADB_EXT_ADDRESS_DST:
@@ -645,10 +681,14 @@ pk_spone(const struct sadb_msg *r, size_t len, void *arg)
 /*
  * A policy put in (SADB_X_SPDADD): the selector, the direction, the
  * priority, and for an ipsec one its one request, the tunnel's ends
- * after it in tunnel mode; sp->id the kernel's, from its reply.
+ * after it in tunnel mode; sp->id the kernel's, from its reply.  With
+ * SADB_X_SPDUPDATE, the policy of the selector and direction there
+ * replaced by it at once (key_spdadd()), whosever it is: the caller
+ * has made sure it is its own.
  */
-int
-pfkey_spdadd(struct work *w, int fd, struct pfkey_sp *sp, const char **errp)
+static int
+pk_spdput(struct work *w, int fd, uint8_t type, struct pfkey_sp *sp,
+    const char **errp)
 {
 	struct pkmsg			 m;
 	struct sadb_x_policy		*xp;
@@ -658,7 +698,7 @@ pfkey_spdadd(struct work *w, int fd, struct pfkey_sp *sp, const char **errp)
 					     __aligned(8);
 	size_t				 rlen;
 
-	pk_init(&m, SADB_X_SPDADD);
+	pk_init(&m, type);
 	((struct sadb_msg *)(void *)m.buf)->sadb_msg_satype =
 	    SADB_SATYPE_UNSPEC;
 	rlen = 0;
@@ -690,6 +730,21 @@ pfkey_spdadd(struct work *w, int fd, struct pfkey_sp *sp, const char **errp)
 	pk_spaddr(&m, SADB_EXT_ADDRESS_DST, (const struct sockaddr *)&sp->dst,
 	    sp->dplen, sp->proto);
 	return (pk_call(w, fd, &m, pk_spone, sp, errp));
+}
+
+int
+pfkey_spdadd(struct work *w, int fd, struct pfkey_sp *sp, const char **errp)
+{
+
+	return (pk_spdput(w, fd, SADB_X_SPDADD, sp, errp));
+}
+
+int
+pfkey_spdupdate(struct work *w, int fd, struct pfkey_sp *sp,
+    const char **errp)
+{
+
+	return (pk_spdput(w, fd, SADB_X_SPDUPDATE, sp, errp));
 }
 
 /* The policy of id taken out (SADB_X_SPDDELETE2). */

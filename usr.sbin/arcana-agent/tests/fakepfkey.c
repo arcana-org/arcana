@@ -11,7 +11,9 @@
  * SADB_DELETE, SADB_GET and SADB_DUMP as the kernel does (RFC 2367,
  * sys/netipsec/key.c), keeps the policies added and answers
  * SADB_X_SPDADD (EEXIST for a selector and direction there already),
- * SADB_X_SPDDELETE2 (by id) and SADB_X_SPDDUMP, and writes each message
+ * SADB_X_SPDUPDATE (in place of the policy of the selector and
+ * direction, a new id), SADB_X_SPDDELETE2 (by id) and SADB_X_SPDDUMP,
+ * and writes each message
  * it is sent to the log as setkey(8)'s line of it, read from the
  * message's own bytes.  While the file refuse names is there, it
  * refuses SADB_ADD (EINVAL).  With seed, two policies not Arcana's are
@@ -27,6 +29,10 @@
  * (id 1) between 10.202.0.1 and 10.202.0.2, and SADB_EXPIRE soft, then
  * hard, of an SA of SPI 0x1001 between them, which is there from then
  * on, its sequence counter at 0xfffff000 and no ESN.
+ *
+ * Each time the file log.count is there, it is read and taken away: its
+ * lines "SPI packets bytes" (the SPI in hex) set what the SA of the SPI
+ * has carried, its current lifetime as a dump tells it.
  *
  * usage: fakepfkey socket log refuse [seed | news]
  */
@@ -88,6 +94,7 @@ struct parsed {
 	const struct sadb_x_nat_t_type	*ntype;
 	const struct sadb_x_nat_t_port	*sport, *dport;
 	const struct sadb_x_policy	*xpl;
+	const struct sadb_lifetime	*soft, *hard, *cur;
 	bool				 bad;
 };
 
@@ -145,6 +152,15 @@ parse(const unsigned char *buf, size_t len, struct parsed *p)
 			break;
 		case SADB_X_EXT_POLICY:
 			p->xpl = (const void *)e;
+			break;
+		case SADB_EXT_LIFETIME_SOFT:
+			p->soft = (const void *)e;
+			break;
+		case SADB_EXT_LIFETIME_HARD:
+			p->hard = (const void *)e;
+			break;
+		case SADB_EXT_LIFETIME_CURRENT:
+			p->cur = (const void *)e;
 			break;
 		default:
 			p->bad = true;
@@ -298,11 +314,13 @@ log_msg(const struct sadb_msg *m, const struct parsed *p)
 	if ((fp = fopen(logpath, "a")) == NULL)
 		err(1, "%s", logpath);
 	if (m->sadb_msg_type == SADB_X_SPDADD || m->sadb_msg_type ==
-	    SADB_X_SPDDELETE2 || m->sadb_msg_type == SADB_X_SPDDUMP) {
+	    SADB_X_SPDUPDATE || m->sadb_msg_type == SADB_X_SPDDELETE2 ||
+	    m->sadb_msg_type == SADB_X_SPDDUMP) {
 		if (p->bad || m->sadb_msg_version != PF_KEY_V2 ||
 		    m->sadb_msg_satype != SADB_SATYPE_UNSPEC || (m->sadb_msg_type
-		    != SADB_X_SPDDUMP && p->xpl == NULL) || (m->sadb_msg_type ==
-		    SADB_X_SPDADD && (p->src == NULL || p->dst == NULL ||
+		    != SADB_X_SPDDUMP && p->xpl == NULL) || ((m->sadb_msg_type ==
+		    SADB_X_SPDADD || m->sadb_msg_type == SADB_X_SPDUPDATE) &&
+		    (p->src == NULL || p->dst == NULL ||
 		    p->src->sadb_address_proto != p->dst->sadb_address_proto)))
 			fprintf(fp, "malformed type %d ;\n", m->sadb_msg_type);
 		else if (m->sadb_msg_type == SADB_X_SPDDUMP)
@@ -310,7 +328,9 @@ log_msg(const struct sadb_msg *m, const struct parsed *p)
 		else if (m->sadb_msg_type == SADB_X_SPDDELETE2)
 			fprintf(fp, "spddelete2 %u ;\n", p->xpl->sadb_x_policy_id);
 		else {
-			fprintf(fp, "spdadd %s %s ", sel_str(p->src, s, sizeof(s)),
+			fprintf(fp, "%s %s %s ", m->sadb_msg_type ==
+			    SADB_X_SPDUPDATE ? "spdupdate" : "spdadd",
+			    sel_str(p->src, s, sizeof(s)),
 			    sel_str(p->dst, d, sizeof(d)));
 			if (p->src->sadb_address_proto == IPSEC_ULPROTO_ANY)
 				fprintf(fp, "any ");
@@ -352,6 +372,17 @@ log_msg(const struct sadb_msg *m, const struct parsed *p)
 			    sizeof(s)), ntohs(p->sport->sadb_x_nat_t_port_port),
 			    addr_str(p->oar, d, sizeof(d)),
 			    ntohs(p->dport->sadb_x_nat_t_port_port));
+		/* setkey's -lh and -ls: seconds, bytes, then packets. */
+		if (p->hard != NULL)
+			fprintf(fp, " -lh %ju %ju %u", (uintmax_t)
+			    p->hard->sadb_lifetime_addtime, (uintmax_t)
+			    p->hard->sadb_lifetime_bytes,
+			    p->hard->sadb_lifetime_allocations);
+		if (p->soft != NULL)
+			fprintf(fp, " -ls %ju %ju %u", (uintmax_t)
+			    p->soft->sadb_lifetime_addtime, (uintmax_t)
+			    p->soft->sadb_lifetime_bytes,
+			    p->soft->sadb_lifetime_allocations);
 		fprintf(fp, " -E %s ", ealg(p->sa->sadb_sa_encrypt));
 		key_hex(fp, p->ekey);
 		if (p->akey != NULL) {
@@ -468,16 +499,23 @@ handle_spd(int fd, const struct sadb_msg *q, const unsigned char *buf,
 	}
 	switch (q->sadb_msg_type) {
 	case SADB_X_SPDADD:
+	case SADB_X_SPDUPDATE:
 		if (p->src == NULL || p->dst == NULL) {
 			reply(fd, q, NULL, 0, EINVAL, q->sadb_msg_seq);
 			return;
 		}
 		for (i = 0; i < nsps; i++) {
 			parse(sps[i].msg, sps[i].len, &k);
-			if (same_policy(&k, p)) {
+			if (!same_policy(&k, p) || k.xpl->sadb_x_policy_scope !=
+			    IPSEC_POLICYSCOPE_GLOBAL)
+				continue;
+			if (q->sadb_msg_type == SADB_X_SPDADD) {
 				reply(fd, q, NULL, 0, EEXIST, q->sadb_msg_seq);
 				return;
 			}
+			/* key_spdadd(): the one there unlinked. */
+			sps[i] = sps[--nsps];
+			break;
 		}
 		if ((e = policy_keep(buf, len, IPSEC_POLICYSCOPE_GLOBAL,
 		    p->xpl->sadb_x_policy_priority)) == NULL) {
@@ -589,7 +627,8 @@ handle(int fd, const unsigned char *buf, size_t len, bool *reg)
 	if (!*reg)
 		log_msg(q, &p);
 	if (q->sadb_msg_type == SADB_X_SPDADD || q->sadb_msg_type ==
-	    SADB_X_SPDDELETE2 || q->sadb_msg_type == SADB_X_SPDDUMP) {
+	    SADB_X_SPDUPDATE || q->sadb_msg_type == SADB_X_SPDDELETE2 ||
+	    q->sadb_msg_type == SADB_X_SPDDUMP) {
 		handle_spd(fd, q, buf, len, &p);
 		return;
 	}
@@ -733,6 +772,51 @@ news_sa(unsigned char *buf, uint8_t type, uint16_t lt)
 	return (len);
 }
 
+/* log.count there: what SAs have carried, their current lifetimes. */
+static void
+count(void)
+{
+	char			 path[PATH_MAX], line[128];
+	struct parsed		 p;
+	struct sadb_lifetime	*l;
+	struct sadb_msg		*m;
+	unsigned		 spi, pk;
+	unsigned long long	 by;
+	FILE			*fp;
+
+	snprintf(path, sizeof(path), "%s.count", logpath);
+	if ((fp = fopen(path, "r")) == NULL)
+		return;
+	(void)unlink(path);
+	while (fgets(line, sizeof(line), fp) != NULL) {
+		if (sscanf(line, "%x %u %llu", &spi, &pk, &by) != 3)
+			continue;
+		for (size_t i = 0; i < nsas; i++) {
+			if (ntohl(sas[i].spi) != spi)
+				continue;
+			parse(sas[i].msg, sas[i].len, &p);
+			if ((l = (struct sadb_lifetime *)(uintptr_t)p.cur) ==
+			    NULL) {
+				if (sas[i].len + sizeof(*l) > sizeof(sas[i].msg))
+					continue;
+				l = (struct sadb_lifetime *)(void *)(sas[i].msg +
+				    sas[i].len);
+				memset(l, 0, sizeof(*l));
+				l->sadb_lifetime_len = PFKEY_UNIT64(sizeof(*l));
+				l->sadb_lifetime_exttype =
+				    SADB_EXT_LIFETIME_CURRENT;
+				l->sadb_lifetime_addtime = (uint64_t)time(NULL);
+				sas[i].len += sizeof(*l);
+				m = (struct sadb_msg *)(void *)sas[i].msg;
+				m->sadb_msg_len = PFKEY_UNIT64(sas[i].len);
+			}
+			l->sadb_lifetime_allocations = pk;
+			l->sadb_lifetime_bytes = by;
+		}
+	}
+	fclose(fp);
+}
+
 /* log.news there: the kernel's news to the registered sockets. */
 static void
 news(struct pollfd *pfd)
@@ -821,13 +905,14 @@ main(int argc, char **argv)
 		pfd[i].events = POLLIN;
 	}
 	for (;;) {
-		if (poll(pfd, 1 + NCLIENTS, newsy ? 100 : -1) == -1) {
+		if (poll(pfd, 1 + NCLIENTS, 100) == -1) {
 			if (errno == EINTR)
 				continue;
 			err(1, "poll");
 		}
 		if (newsy)
 			news(pfd);
+		count();
 		if (pfd[0].revents & POLLIN) {
 			if ((k = accept(ls, NULL, NULL)) != -1) {
 				for (i = 1; i <= NCLIENTS && pfd[i].fd != -1; i++)

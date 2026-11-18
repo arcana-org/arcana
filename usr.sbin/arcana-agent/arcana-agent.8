@@ -507,15 +507,62 @@ an SA's soft or hard lifetime reached
 every ten seconds the SAs' sequence counters are read and one without
 ESN an eighth from its end is told once
 .Pq Li sadb-seq-overflow .
-An SA is named
+An SA or a policy of the model's lists is named as the controller
+named it; the rest, setkey's, an IKE daemon's, by the kernel's own:
+an SA
 .Li esp/ Ns Ar destination Ns Li /0x Ns Ar SPI ,
 a policy
-.Li spd/ Ns Ar id ,
-the kernel's own; the host's network only, not a vnet jail's.
-The model's SAD and SPD lists are not served yet, nor
+.Li spd/ Ns Ar id ;
+the host's network only, not a vnet jail's.
+There is no
 .Li sadb-bad-spi ,
 which PF_KEY has no message for
 .Pq Li arcana-ikeless-deviations .
+.Pp
+The model's SAD and SPD lists
+.Pq Li ipsec-ikeless
+are the kernel's.
+Running holds the controller's entries, kept in
+.Pa ikeless.cbor
+beside the agent's files (mode 0600: the keys are in it), each put in
+by PF_KEY as it is configured: an SA by
+.Dv SADB_ADD ,
+read back by
+.Dv SADB_GET ,
+a policy by
+.Dv SADB_X_SPDADD ,
+or
+.Dv SADB_X_SPDUPDATE
+in place of one of the controller's of the same selector.
+An edit changes what differs alone, policies out, SAs out, SAs in,
+policies in; a step refused undoes the steps before it.
+The operational datastore has every ESP SA and every policy of the
+host's network, the controller's by their names, the rest by the
+kernel's and never changed: an entry that would take one's SPI and
+destination, or its selector and direction, is refused
+.Pq Li in-use .
+An SA is from its local end to its remote one, and a selector's local
+prefix is its packets' source, as RFC 9061's Appendix B has them; the
+controller's policies are global, of the priorities from 0x7fa20000 in
+the list's order.
+The SAs' soft and hard lifetimes are the kernel's
+.Dv SADB_EXT_LIFETIME_SOFT
+and
+.Dv SADB_EXT_LIFETIME_HARD
+but packets and idle, which the agent reads with the counters: soft
+told as
+.Li sadb-expire ,
+hard the SA taken out and told.
+What the kernel's IPsec does not do is refused
+.Pq Li operation-not-supported :
+ESP in TCP, NAT-T's original addresses, a DF bit per SA, DSCP
+mappings, PFP, port ranges, algorithms other than AES-CBC and
+AES-GCM-16 with HMAC-SHA1 and HMAC-SHA2.
+.Va net.key.preferred_oldsa
+is set to 0 once an SA is put in.
+At the start the controller's policies are put back where the kernel
+has not got them; its SAs the kernel has lost leave running, for the
+controller to send new ones (RFC 9061 section 4.2).
 .Pp
 Every request has a trace: the library calls, system calls, files and
 programs it used, with the output of every program, told to the peer

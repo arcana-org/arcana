@@ -850,6 +850,9 @@ sa_between_one(const struct pfkey_sa *sa, void *arg)
 	struct sa_between	*sb = arg;
 	bool			 fwd;
 
+	/* RFC 9061's lists' own (ikeless.c) are the controller's. */
+	if (ikeless_sa_name(&sa->dst, sa->spi, NULL, 0))
+		return;
 	if ((fwd = sa_same_addr(&sa->src, &sb->a) && sa_same_addr(&sa->dst,
 	    &sb->b)) || (sa_same_addr(&sa->src, &sb->b) &&
 	    sa_same_addr(&sa->dst, &sb->a))) {
@@ -862,8 +865,8 @@ sa_between_one(const struct pfkey_sa *sa, void *arg)
 
 /*
  * Every ESP SA between a and b, either way, taken out: those the
- * kernel has (SADB_DUMP), each by its SPI.  -1 when they could not be
- * read.
+ * kernel has (SADB_DUMP), each by its SPI, but the IKE-less lists'
+ * (ikeless.c).  -1 when they could not be read.
  */
 static int
 sa_clear(struct work *w, int *fdp, const char *a, const char *b)

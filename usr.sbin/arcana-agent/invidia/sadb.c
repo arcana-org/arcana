@@ -25,12 +25,17 @@
  * sadb-seq-overflow.  The counter is the low 32 bits alone (key.c's
  * key_setsadbxsa2()), so an SA with ESN is never told.
  *
+ * The same reads give the IKE-less lists' SAs (ikeless.c) the
+ * lifetimes the kernel does not enforce, packets and idle.
+ *
  * Names: RFC 9061 names an SA and a policy by the controller's names,
- * the IKE-less lists' (6.2.4); until those, the kernel's own: an SA
- * "esp/<destination>/0x<SPI>", unique as the kernel's key is, a policy
- * "spd/<its id>".  The host's network only: a vnet jail's PF_KEY is
- * its own and is not watched.  Where PF_KEY cannot be opened (no
- * ipsec.ko) it is tried again every SADB_RETRY seconds, said once.
+ * the IKE-less lists' (6.2.4, ikeless.c); the rest, setkey's, an IKE
+ * daemon's, by the kernel's own: an SA "esp/<destination>/0x<SPI>",
+ * unique as the kernel's key is, a policy "spd/<its id>", as the lists'
+ * operational datastore names them.  The host's network only: a vnet
+ * jail's PF_KEY is its own and is not watched.  Where PF_KEY cannot be
+ * opened (no ipsec.ko) it is tried again every SADB_RETRY seconds, said
+ * once.
  */
 
 #include <sys/param.h>
@@ -94,12 +99,15 @@ addr_port(const struct sockaddr_storage *ss)
 	return (0);
 }
 
-/* An SA's name, the kernel's key: esp/<destination>/0x<SPI>. */
+/* An SA's name: the controller's, else the kernel's key,
+ * esp/<destination>/0x<SPI>. */
 static const char *
 sa_name(struct work *w, const struct pfkey_sa *sa)
 {
-	char	a[INET6_ADDRSTRLEN];
+	char	a[INET6_ADDRSTRLEN], n[256];
 
+	if (ikeless_sa_name(&sa->dst, sa->spi, n, sizeof(n)))
+		return (wstrdup(w, n));
 	addr_text(&sa->dst, a, sizeof(a));
 	return (wfmt(w, "esp/%s/0x%08x", a, sa->spi));
 }
@@ -139,8 +147,10 @@ prefix_of(struct work *w, const struct sockaddr_storage *ss, uint8_t plen,
 
 /*
  * An SADB_ACQUIRE: its policy by its id (SADB_X_SPDDUMP, on this
- * socket), the selector the policy's, local its source for an outbound
- * one; where the policy is gone, the SA's ends as the kernel gave them.
+ * socket), named as the controller named it or spd/<id>, the selector
+ * the policy's, local its source as the IKE-less lists have it
+ * (ikeless.c); where the policy is gone, the SA's ends as the kernel
+ * gave them.
  */
 static void
 acquired(struct work *w, int fd, const struct sadb_msg *r, size_t len)
@@ -152,7 +162,7 @@ acquired(struct work *w, int fd, const struct sadb_msg *r, size_t len)
 	struct find_sp	 f;
 	const struct sockaddr_storage *l, *rm;
 	const char	*e;
-	uint8_t		 lplen, rplen;
+	char		 name[256];
 
 	memset(&f, 0, sizeof(f));
 	pfkey_sp_of(r, len, &f.sp);
@@ -162,21 +172,14 @@ acquired(struct work *w, int fd, const struct sadb_msg *r, size_t len)
 	/* Else the SA's ends alone, as the kernel sent them (FULLMASK). */
 	memset(&n, 0, sizeof(n));
 	memset(&ts, 0, sizeof(ts));
-	if (f.sp.dir == IPSEC_DIR_INBOUND) {
-		l = &f.sp.dst;
-		lplen = f.sp.dplen;
-		rm = &f.sp.src;
-		rplen = f.sp.splen;
-	} else {
-		l = &f.sp.src;
-		lplen = f.sp.splen;
-		rm = &f.sp.dst;
-		rplen = f.sp.dplen;
-	}
-	n.ipsec_policy_name = wfmt(w, "spd/%u", f.sp.id);
+	l = &f.sp.src;
+	rm = &f.sp.dst;
+	n.ipsec_policy_name = f.found && ikeless_sp_name(&f.sp, name,
+	    sizeof(name)) ? wstrdup(w, name) : wfmt(w, "spd/%u", f.sp.id);
 	ts.has_local_prefix = ts.has_remote_prefix = true;
-	prefix_of(w, l, lplen, &ts.local_prefix.which, &ts.local_prefix.v.m0);
-	prefix_of(w, rm, rplen, &ts.remote_prefix.which,
+	prefix_of(w, l, f.sp.splen, &ts.local_prefix.which,
+	    &ts.local_prefix.v.m0);
+	prefix_of(w, rm, f.sp.dplen, &ts.remote_prefix.which,
 	    &ts.remote_prefix.v.m0);
 	ts.has_inner_protocol = true;
 	if (f.sp.proto == IPSEC_ULPROTO_ANY) {
@@ -293,16 +296,28 @@ struct seen {
 	struct work	*w;
 	struct told	 now[SEQ_TOLD];
 	size_t		 n;
+	struct pfkey_sa	*all;		/* every SA read, for the lifetimes */
+	size_t		 nall, cap;
 };
 
 /* An SA past SEQ_NEAR without ESN, told once; those told kept while
- * they are there. */
+ * they are there.  Each kept for the IKE-less lists' lifetimes, looked
+ * at once the dump is read (a request of theirs between its replies
+ * would be read as one). */
 static void
 counted(const struct pfkey_sa *sa, void *arg)
 {
 	struct ietf_i2nsf_ikeless_sadb_seq_overflow	 n;
 	struct seen	*s = arg;
+	struct pfkey_sa	*v;
 
+	if (s->nall == s->cap && (v = reallocarray(s->all, s->cap * 2 + 16,
+	    sizeof(*v))) != NULL) {
+		s->all = v;
+		s->cap = s->cap * 2 + 16;
+	}
+	if (s->nall < s->cap)
+		s->all[s->nall++] = *sa;
 	if ((sa->flags & SADB_X_SAFLAGS_ESN) != 0 || sa->seq < SEQ_NEAR)
 		return;
 	if (!told_of(sa)) {
@@ -329,7 +344,10 @@ counters(struct work *w, int fd)
 	if (pfkey_dump(w, fd, counted, s, &e) == 0) {
 		memcpy(told, s->now, s->n * sizeof(s->now[0]));
 		ntold = s->n;
+		for (size_t i = 0; i < s->nall; i++)
+			ikeless_lifetimes(w, fd, &s->all[i]);
 	}
+	free(s->all);
 	free(s);
 }
 

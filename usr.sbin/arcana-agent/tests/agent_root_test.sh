@@ -2419,6 +2419,148 @@ ipsec_sp_vnet_cleanup()
 	true
 }
 
+atf_test_case ikeless_vnet cleanup
+ikeless_vnet_head()
+{
+	atf_set "descr" "RFC 9061's IKE-less lists for real (PLAN-SDN-YANG" \
+	    "6.2.4): an agent in each of two vnet jails on an epair, Appendix" \
+	    "B's host-to-host example (keys of real lengths) set on both ends" \
+	    "through the model; setkey -D and -DP in the jails showing the" \
+	    "SAs with the in SA's lifetimes and the policies at the" \
+	    "controller's priorities beside ipsec.conf's; a ping ESP in" \
+	    "transport mode, the counters moved, the lists read back by name" \
+	    "with ipsec.conf's by the kernel's; ipsec.conf's selector refused" \
+	    "and left; all taken out, ipsec.conf's policy left, the ping plain"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+ikeless_vnet_body()
+{
+	local d="$(pwd)" e j i me peer mine theirs spi_out spi_in
+
+	programs
+	kldstat -q -m ipsec || atf_skip "ipsec(4) is not loaded"
+	for j in arcw_ika arcw_ikb; do
+		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
+	done
+	atf_check -o ignore jail -c name=arcw_ika vnet persist path=/
+	atf_check -o ignore jail -c name=arcw_ikb vnet persist path=/
+	e=$(epair_create) || atf_fail "no epair"
+	e=${e%a}
+	echo "$e" > epair
+	atf_check ifconfig ${e}a vnet arcw_ika
+	atf_check ifconfig ${e}b vnet arcw_ikb
+	atf_check jexec arcw_ika ifconfig ${e}a inet6 2001:db8:123::100/64 no_dad up
+	atf_check jexec arcw_ikb ifconfig ${e}b inet6 2001:db8:123::200/64 no_dad up
+	atf_check jexec arcw_ika ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check jexec arcw_ikb ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check -o ignore jexec arcw_ika ping -6 -c 1 -t 2 2001:db8:123::200
+	# ipsec.conf's own policy on one end, as setkey(8) puts it in.
+	printf 'spdadd 2001:db8:123::100/128 2001:db8:123::9/128 any -P out none;\n' > admin.conf
+	atf_check jexec arcw_ika setkey -f "$d/admin.conf"
+	for j in a b; do
+		mkdir -p $j/etc/jail.conf.d
+		: > $j/etc/jail.conf
+		jexec arcw_ik$j "$JGD" -F -l "unix:$d/$j/s.sock" \
+		    -f "$d/$j/etc/jail.conf" -D "$d/$j/etc/jail.conf.d" \
+		    -1 "$d/$j/history.conf" --nacm "$d/$j/nacm.cbor" \
+		    > $j/daemon.out 2>&1 &
+		echo $! > $j/daemon.pid
+		for i in $(seq 1 100); do
+			grep -q 'ready' $j/daemon.out 2>/dev/null && break
+			sleep 0.05
+		done
+		grep -q 'ready' $j/daemon.out ||
+		    atf_fail "the agent in arcw_ik$j did not start: $(cat $j/daemon.out)"
+	done
+	# Appendix B for each host: its out SA and policy from itself to the
+	# peer, its in ones from the peer, the local prefix the source.
+	EK=00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff
+	AK=01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67
+	for j in a b; do
+		if [ $j = a ]; then
+			me=2001:db8:123::100 peer=2001:db8:123::200
+			spi_out=34501 spi_in=34502
+		else
+			me=2001:db8:123::200 peer=2001:db8:123::100
+			spi_out=34502 spi_in=34501
+		fi
+		cat > $j.json <<EOF
+{"spd":{"spd-entry":[
+{"name":"in/trans/$peer/$me","direction":"inbound","reqid":"1","ipsec-policy-config":{"traffic-selector":{"local-prefix":"$peer/128","remote-prefix":"$me/128","inner-protocol":"any"},"processing-info":{"action":"protect","ipsec-sa-cfg":{"ext-seq-num":true,"seq-overflow":false,"mode":"transport","protocol-parameters":"esp","esp-algorithms":{"integrity":[2],"encryption":[{"id":1,"algorithm-type":12,"key-length":128}]}}}}},
+{"name":"out/trans/$me/$peer","direction":"outbound","reqid":"1","ipsec-policy-config":{"traffic-selector":{"local-prefix":"$me/128","remote-prefix":"$peer/128","inner-protocol":"any"},"processing-info":{"action":"protect","ipsec-sa-cfg":{"ext-seq-num":true,"seq-overflow":false,"mode":"transport","protocol-parameters":"esp","esp-algorithms":{"integrity":[2],"encryption":[{"id":1,"algorithm-type":12,"key-length":128}]}}}}}]},
+"sad":{"sad-entry":[
+{"name":"out/trans/$me/$peer","reqid":"1","ipsec-sa-config":{"spi":$spi_out,"ext-seq-num":true,"seq-overflow":false,"anti-replay-window-size":64,"traffic-selector":{"local-prefix":"$me/128","remote-prefix":"$peer/128","inner-protocol":"any"},"protocol-parameters":"esp","mode":"transport","esp-sa":{"encryption":{"encryption-algorithm":12,"key":"$EK"},"integrity":{"integrity-algorithm":2,"key":"$AK"}}}},
+{"name":"in/trans/$peer/$me","reqid":"1","ipsec-sa-config":{"spi":$spi_in,"ext-seq-num":true,"seq-overflow":false,"anti-replay-window-size":64,"traffic-selector":{"local-prefix":"$peer/128","remote-prefix":"$me/128","inner-protocol":"any"},"protocol-parameters":"esp","mode":"transport","esp-sa":{"encryption":{"encryption-algorithm":12,"key":"$EK"},"integrity":{"integrity-algorithm":2,"key":"$AK"}},"sa-lifetime-hard":{"bytes":"2000000","packets":2000,"time":600,"idle":1200},"sa-lifetime-soft":{"bytes":"1000000","packets":1000,"time":300,"idle":600,"action":"replace"}}}]}}
+EOF
+		atf_check -o match:'committed and confirmed' "$JGC" -c \
+		    "unix:$d/$j/s.sock" set /ietf-i2nsf-ikeless:ipsec-ikeless @$j.json
+	done
+	atf_check -o save:sad jexec arcw_ika setkey -D
+	atf_check -o match:'esp mode=transport spi=34501\(0x000086c5\) reqid=1\(0x00000001\)' \
+	    -o match:'esp mode=transport spi=34502\(0x000086c6\) reqid=1\(0x00000001\)' \
+	    -o match:'state=mature' -o match:'hard: 600\(s\)' -o match:'soft: 300\(s\)' \
+	    cat sad
+	atf_check -o save:spd jexec arcw_ika setkey -DP
+	# setkey(8) prints no policy's priority (libipsec's dump has none):
+	# the controller's are told by it below, read back by their names.
+	atf_check -o match:'esp/transport//unique:1' \
+	    -o match:'^2001:db8:123::100\[any\] 2001:db8:123::9\[any\] any$' cat spd
+	# ESP in transport mode between the two: the ping through, the SAs'
+	# counters moved on both ends.
+	atf_check -o match:' 0.0% packet loss' \
+	    jexec arcw_ika ping -6 -c 3 -i 0.2 -t 5 2001:db8:123::200
+	atf_check -o match:'allocated: [1-9]' jexec arcw_ika setkey -D
+	atf_check -o match:'allocated: [1-9]' jexec arcw_ikb setkey -D
+	# The lists read back: the controller's by name with their state,
+	# ipsec.conf's by the kernel's; no key.
+	atf_check -o save:op.json "$JGC" -c "unix:$d/a/s.sock" get ipsec-ikeless
+	atf_check -o match:'"name":"out/trans/2001:db8:123::100/2001:db8:123::200"' \
+	    -o match:'"name":"in/trans/2001:db8:123::200/2001:db8:123::100"' \
+	    -o match:'"name":"spd/[0-9]+","reqid":"0"' \
+	    -o match:'"packets":[1-9]' -o not-match:'"key"' cat op.json
+	# ipsec.conf's selector and direction: refused, its policy left.
+	sed -e 's|"local-prefix":"2001:db8:123::100/128","remote-prefix":"2001:db8:123::200/128","inner-protocol":"any"},"processing-info"|"local-prefix":"2001:db8:123::100/128","remote-prefix":"2001:db8:123::9/128","inner-protocol":"any"},"processing-info"|' \
+	    a.json > ac.json
+	atf_check -s exit:1 -e match:"not the controller's" -o ignore \
+	    "$JGC" -c "unix:$d/a/s.sock" set /ietf-i2nsf-ikeless:ipsec-ikeless @ac.json
+	atf_check -o ignore "$JGC" -c "unix:$d/a/s.sock" action discard-changes
+	atf_check -o match:'^2001:db8:123::100\[any\] 2001:db8:123::9\[any\] any$' \
+	    -o match:'out none' jexec arcw_ika setkey -DP
+	# All taken out on both ends: ipsec.conf's left, the ping plain.
+	for j in a b; do
+		atf_check -o match:'committed and confirmed' "$JGC" -c \
+		    "unix:$d/$j/s.sock" set -x /ietf-i2nsf-ikeless:ipsec-ikeless
+	done
+	atf_check -o match:'No SAD entries' -e ignore jexec arcw_ika setkey -D
+	atf_check -o save:spd jexec arcw_ika setkey -DP
+	atf_check -o inline:'1\n' sh -c "grep -c 'scope=global' spd"
+	atf_check -o match:'2001:db8:123::9\[any\]' cat spd
+	atf_check -o match:' 0.0% packet loss' \
+	    jexec arcw_ika ping -6 -c 2 -i 0.2 -t 5 2001:db8:123::200
+	atf_check -o not-match:'allocated' jexec arcw_ikb setkey -D
+}
+ikeless_vnet_cleanup()
+{
+	local e j
+
+	for j in a b; do
+		[ -f $j/daemon.pid ] && kill "$(cat $j/daemon.pid)" 2>/dev/null
+	done
+	sleep 0.5
+	# Every interface out of the jails before they go: a vnet torn down
+	# with an interface in it can panic.
+	if [ -f epair ]; then
+		e=$(cat epair)
+		ifconfig ${e}a -vnet arcw_ika 2>/dev/null
+		ifconfig ${e}b -vnet arcw_ikb 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
+	jail -r arcw_ika 2>/dev/null
+	jail -r arcw_ikb 2>/dev/null
+	true
+}
+
 atf_test_case sadb_vnet cleanup
 sadb_vnet_head()
 {
@@ -6604,6 +6746,7 @@ atf_init_test_cases()
 	atf_add_test_case ipsec_sa_vnet
 	atf_add_test_case ipsec_sp_vnet
 	atf_add_test_case sadb_vnet
+	atf_add_test_case ikeless_vnet
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback
 	atf_add_test_case sdwan_record

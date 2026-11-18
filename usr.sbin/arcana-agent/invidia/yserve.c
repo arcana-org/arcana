@@ -1088,6 +1088,40 @@ ietf_access_control_list_acls_edit(cbl_req *req,
 	return (error);
 }
 
+/*
+ * RFC 9061's IKE-less lists (ikeless.c): running's the controller's
+ * entries as kept; the operational datastore's every SA and policy of
+ * the kernel's, the controller's by their names.
+ */
+int
+ietf_i2nsf_ikeless_ipsec_ikeless_get(cbl_req *req,
+    struct ietf_i2nsf_ikeless *data, cbl_yarena *a)
+{
+
+	return (ikeless_get(cbl_req_ydatastore(req) == CBL_YDS_OPERATIONAL, a,
+	    data));
+}
+
+/* What differs put in or taken out by PF_KEY, then kept; refused,
+ * nothing changed, the extended ack naming the node at fault and the
+ * error-tag of the errno: operation-not-supported what FreeBSD's IPsec
+ * does not do, invalid-value what does not hold together, in-use an
+ * entry of the kernel's not the controller's in the way. */
+int
+ietf_i2nsf_ikeless_ipsec_ikeless_edit(cbl_req *req,
+    const struct ietf_i2nsf_ikeless *before,
+    const struct ietf_i2nsf_ikeless *after)
+{
+	char		err[512];
+	uint64_t	sid;
+	int		error;
+
+	(void)before;
+	if ((error = ikeless_edit(after, err, sizeof(err), &sid)) != 0)
+		(void)cbl_req_set_yerr(req, err, sid);
+	return (error);
+}
+
 /* RFC 8348's hardware: the chassis, CPUs and disks (superbia/yhw.c). */
 int
 ietf_hardware_hardware_get(cbl_req *req, struct ietf_hardware *data,

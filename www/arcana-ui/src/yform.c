@@ -495,6 +495,43 @@ err_set(const char *path, const char *msg)
 		    0, true);
 }
 
+/*
+ * The errors said below path taken back: a container not presence of
+ * which nothing is given is left out whole, its mandatory leaves not
+ * wanted (its when may be false, which the form does not read: RFC
+ * 9061's tunnel in transport mode); the host checks the rest.
+ */
+static void
+err_drop_below(const char *path)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+	char			 pre[YF_PATH + 2], **gone;
+	size_t			 n = 0, cap, len;
+
+	if (yf.errs == NULL)
+		return;
+	snprintf(pre, sizeof(pre), "%s/", path);
+	len = strlen(pre);
+	cap = ucl_object_type(yf.errs) == UCL_OBJECT ? yf.errs->len : 0;
+	if (cap == 0 || (gone = calloc(cap, sizeof(*gone))) == NULL)
+		return;
+	while ((e = ucl_object_iterate(yf.errs, &it, true)) != NULL && n < cap)
+		if (strncmp(ucl_object_key(e), pre, len) == 0)
+			gone[n++] = strdup(ucl_object_key(e));
+	for (size_t i = 0; i < n; i++) {
+		if (gone[i] != NULL)
+			ucl_object_delete_key(yf.errs, gone[i]);
+		free(gone[i]);
+	}
+	free(gone);
+	/* None left: none at all, the form sent. */
+	if (yf.errs->len == 0) {
+		ucl_object_unref(yf.errs);
+		yf.errs = NULL;
+	}
+}
+
 static void
 form_drop(void)
 {
@@ -1243,6 +1280,10 @@ build_leaf(ucl_object_t *out, const ucl_object_t *n, const char *mem,
 		}
 		return;
 	}
+	/* Ticked as its default true, and so it was: not said either. */
+	if (base != NULL && strcmp(base, "boolean") == 0 && s != NULL &&
+	    strcmp(s, "true") == 0 && is(n, "default", "true") && !was_set(ip))
+		return;
 	if (s == NULL || s[0] == '\0') {
 		if (key || flag(n, "mandatory"))
 			err_set(ip, key ? "the entry's key: mandatory" :
@@ -1303,8 +1344,10 @@ build_into(ucl_object_t *out, const ucl_object_t *kids, const char *inst,
 			if (sub || flag(n, "presence")) {
 				ucl_object_insert_key(out, o, mem, 0, true);
 				*any = true;
-			} else
+			} else {
 				ucl_object_unref(o);
+				err_drop_below(ip);
+			}
 		} else if (strcmp(k, "list") == 0) {
 			arr = ucl_object_typed_new(UCL_ARRAY);
 			for (unsigned i = 0; i < count(at(yf.val, ip, false));

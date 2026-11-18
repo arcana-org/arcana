@@ -10479,6 +10479,95 @@ ATF_TC_CLEANUP(pwa_ipsec_sa, tc)
 }
 
 /*
+ * RFC 9061's IKE-less lists in the base system's IPsec (PLAN-SDN-YANG
+ * 6.2.4): the kernel's SAD and SPD as the host tells them; an SA made by
+ * the form its model makes (an sad-entry, transport mode between two
+ * addresses, AES-CBC with HMAC-SHA1), committed, and PF_KEY sent its
+ * SADB_ADD; listed by its name with Remove (Edit off: a name with a /
+ * cannot be named in a request's path); removed by a YANG Patch,
+ * committed, and PF_KEY sent its SADB_DELETE.
+ */
+static void
+part_ipsec_ikeless(void)
+{
+
+	host_tabs();
+	click_when("nav.tabs:not(.sub) button.tab[data-arg=network]", 10);
+	click_when("nav.hsects button.tab[data-arg='network/base']", 10);
+	click_when("nav.sub button[data-arg='network/base/ipsec']", 10);
+	wait_js("document.querySelector('.pane.ipsec-ikeless') && !document."
+	    "querySelector('.pane.ipsec-ikeless .loader')", 30);
+	ATF_CHECK(js_true("document.querySelector('.pane.ipsec-ikeless')."
+	    "textContent.includes('RFC 9061')"));
+	click_when(".pane.ipsec-ikeless button[data-act=ikl-new][data-arg$="
+	    "\\'sad/sad-entry\\']", 10);
+	wait_js("document.querySelector('form[data-form=ymf] input[name=name]') "
+	    "&& document.querySelector('form[data-form=ymf] [name=\\'"
+	    "ipsec-sa-config/spi\\']')", 30);
+	run("const f = document.querySelector('form[data-form=ymf]'); "
+	    "const q = n => f.querySelector('[name=\"' + n + '\"]'); "
+	    "q('name').value = 'out/trans/a-b'; q('reqid').value = '1'; "
+	    "q('ipsec-sa-config/spi').value = '34501'; "
+	    "q('ipsec-sa-config/traffic-selector/local-prefix').value = "
+	    "'192.0.2.1/32'; "
+	    "q('ipsec-sa-config/traffic-selector/remote-prefix').value = "
+	    "'192.0.2.2/32'; "
+	    "q('ipsec-sa-config/esp-sa/encryption/encryption-algorithm').value "
+	    "= '12'; "
+	    "q('ipsec-sa-config/esp-sa/encryption/key').value = "
+	    "'00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff'; "
+	    "q('ipsec-sa-config/esp-sa/integrity/integrity-algorithm').value "
+	    "= '2'; "
+	    "q('ipsec-sa-config/esp-sa/integrity/key').value = "
+	    "'01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67';");
+	shot("4i-ikeless-sa");
+	run("document.querySelector('form[data-form=ymf]').requestSubmit();");
+	wait_js("[...document.querySelectorAll('.toast')].some(t => t."
+	    "textContent.includes('Created and committed'))", 60);
+	ATF_CHECK_MSG(host_has("grep -q '^add 192.0.2.1 192.0.2.2 esp 0x86c5 "
+	    "-m transport -u 1 ' setkey.conf && grep -q '^get 192.0.2.1 "
+	    "192.0.2.2 esp 0x86c5 ;' setkey.conf"), "the SA is not put in");
+	/* Listed by its name, the controller's: Remove, and Edit, which a
+	 * name with a / in it (RFC 9061's kind) cannot be read for by a
+	 * path, there but off. */
+	wait_js("document.querySelector('.pane.ipsec-ikeless button[data-act="
+	    "ikl-del][data-arg=\\'sad-entry|out/trans/a-b\\']')", 30);
+	ATF_CHECK(js_true("[...document.querySelectorAll('.pane.ipsec-ikeless "
+	    "table.ikl-sad tr')].some(r => r.textContent.includes("
+	    "'out/trans/a-b') && r.querySelector('button[disabled]') && r."
+	    "textContent.includes('192.0.2.1/32'))"));
+	shot("4i-ikeless-lists");
+	run("document.querySelector('.pane.ipsec-ikeless button[data-act="
+	    "ikl-del][data-arg=\\'sad-entry|out/trans/a-b\\']').click()");
+	wait_js("document.querySelector('.pane.ipsec-ikeless') && document."
+	    "querySelector('.pane.ipsec-ikeless').textContent.includes('Saved:"
+	    " the kernel has it')", 60);
+	ATF_CHECK_MSG(host_has("grep -q '^delete 192.0.2.1 192.0.2.2 esp "
+	    "0x86c5 ;' setkey.conf"), "the SA is not taken out");
+	wait_js("!document.querySelector('.pane.ipsec-ikeless button[data-act="
+	    "ikl-del][data-arg=\\'sad-entry|out/trans/a-b\\']')", 30);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_ipsec_ikeless);
+ATF_TC_HEAD(pwa_ipsec_ikeless, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "RFC 9061's IKE-less lists in the base system's IPsec: an SA made by its model's form, committed, found in what PF_KEY was sent, listed by its name, removed and taken out");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_ipsec_ikeless, tc)
+{
+
+	prologue(tc, 1);
+	part_ipsec_ikeless();
+}
+ATF_TC_CLEANUP(pwa_ipsec_ikeless, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A job's program followed from its step in the trace: Follow output
  * while it runs, what it wrote so far at once, the rest as it comes,
  * the end said; Stop lets it go.
@@ -15760,6 +15849,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_if_forms);
 	ATF_TP_ADD_TC(tp, pwa_address_job);
 	ATF_TP_ADD_TC(tp, pwa_ipsec_sa);
+	ATF_TP_ADD_TC(tp, pwa_ipsec_ikeless);
 	ATF_TP_ADD_TC(tp, pwa_console_forms);
 	ATF_TP_ADD_TC(tp, pwa_macdo_paths);
 	ATF_TP_ADD_TC(tp, pwa_pkg_selected);

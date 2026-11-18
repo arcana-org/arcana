@@ -93,6 +93,27 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### RFC 9061's IKE-less lists by PF_KEY (6.2.4); agent 0.320.0, console 0.465.0
+
+- ietf-i2nsf-ikeless's ipsec-ikeless is served: running holds the
+  controller's SAs and policies, kept in ikeless.cbor beside the agent's
+  files (0600, the keys in it), each put in by PF_KEY as it is
+  configured, an edit changing what differs alone and undone whole when
+  a step is refused; the operational datastore lists every ESP SA and
+  policy of the host's network, the controller's by their names, the
+  rest (setkey's, an IKE daemon's, an interface's, the ipsec-sa job's)
+  read only as esp/<destination>/0x<SPI> and spd/<id>.
+- The notifications name the controller's entries by their names, and
+  sadb-acquire's local prefix is the policy's source.
+  arcana-ikeless-deviations is revision 2026-11-19: the lists are no
+  longer deviated away, the per-SA replay statistics FreeBSD lacks are.
+  net.key.preferred_oldsa is set to 0 when an SA is put in.  At the
+  start the controller's policies are put back; its SAs the kernel lost
+  leave running.
+- Network > Base system > IPsec shows both lists, Arcana's entries with
+  Edit and Remove, + SA and + policy by the model's form.  The ipsec-sa
+  job is unchanged; its clear leaves the lists' SAs.
+
 ### SSL inspection, phase 2; agent 0.319.0, console 0.464.0
 
 - An SD-WAN MBSF bound to zones is SSLproxy's: a zone whose only Squid

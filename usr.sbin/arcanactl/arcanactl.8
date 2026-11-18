@@ -171,6 +171,8 @@ interfaces the termination points
 RFC 8519's access control lists with RFC 9899's defined sets,
 compiled to the host's ipfw
 .Pq Cm acls ,
+RFC 9061's IKE-less SAD and SPD, the kernel's by PF_KEY
+.Pq Cm ipsec-ikeless ,
 and Arcana's own modules, each read as the operation that reads the
 same:
 .Cm jails , services , packages , jobs , storage , sysctl , kernel ,

@@ -962,6 +962,7 @@ void		 view_ipsecbase(struct html *, struct server *);
 bool		 ipsecbase_action(const char *, const char *, const char *);
 bool		 ipsecbase_form(const char *, const ucl_object_t *);
 bool		 ipsecbase_modal(struct html *);
+void		 ipsecbase_tick(double);
 void		 vpn_age(char *, size_t, int64_t);
 void		 qr_svg(struct html *, const char *, const char *);
 /* jailmk.c: jails made from the page, their defaults and templates. */

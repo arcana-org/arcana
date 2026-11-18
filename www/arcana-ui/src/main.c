@@ -557,6 +557,7 @@ tick(void *arg)
 			transport_tick(now);
 			sysctl_tick(now);
 			macdo_tick(now);
+			ipsecbase_tick(now);
 			nacm_tick(now);
 			ra_tick(now);
 			yform_tick(now);

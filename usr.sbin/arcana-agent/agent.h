@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.319.0"
+#define	ARCANA_AGENT_VERSION	"0.320.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1387,7 +1387,14 @@ void		 suricata_profiling(struct work *, const char *,
 int		 do_rtadvd(struct work *, const char *, const char *const *,
 		    size_t, bool, bool, const char **);
 /* invidia/pfkey.c: PF_KEYv2 in the agent's own process.  An SA as it is
- * put in or read back: the keys raw, put in only, never read back. */
+ * put in or read back: the keys raw, put in only, never read back.  A
+ * lifetime (RFC 2367's soft or hard; 0 none): seconds since added,
+ * bytes, packets (allocations, which the kernel counts by packet and
+ * does not enforce) and seconds since first used. */
+struct pfkey_lt {
+	uint64_t		 time, bytes, use;
+	uint32_t		 packets;
+};
 struct pfkey_sa {
 	struct sockaddr_storage	 src, dst;
 	const unsigned char	*ekey, *akey;
@@ -1397,6 +1404,7 @@ struct pfkey_sa {
 	uint32_t		 packets;
 	uint32_t		 seq;		/* the sequence counter's low 32 */
 	uint8_t			 lifetimes;	/* PFKEY_LT_*: those it has */
+	struct pfkey_lt		 soft, hard;	/* both put in, if either is */
 	uint32_t		 spi, reqid;
 	uint32_t		 replay;	/* the window, bytes */
 	uint32_t		 flags;		/* SADB_X_EXT_*, SADB_X_SAFLAGS_* */
@@ -1442,6 +1450,8 @@ struct pfkey_sp {
 };
 int		 pfkey_spdadd(struct work *, int, struct pfkey_sp *,
 		    const char **);
+int		 pfkey_spdupdate(struct work *, int, struct pfkey_sp *,
+		    const char **);
 int		 pfkey_spddelete(struct work *, int, uint32_t, const char **);
 int		 pfkey_spddump(struct work *, int,
 		    void (*)(const struct pfkey_sp *, void *), void *,
@@ -1450,6 +1460,15 @@ void		 pfkey_sp_of(const struct sadb_msg *, size_t, struct pfkey_sp *);
 const char	*pfkey_spd_text(struct work *);
 /* invidia/sadb.c: the kernel's SAD news as RFC 9061's notifications. */
 void		 sadb_watch_start(void);
+/* invidia/ikeless.c: RFC 9061's IKE-less SAD and SPD lists.  The names
+ * the controller gave its own SAs and policies (false: not its own);
+ * the lifetimes of its SAs the kernel does not enforce, read with the
+ * counters. */
+void		 ikeless_start(void);
+bool		 ikeless_sa_name(const struct sockaddr_storage *, uint32_t,
+		    char *, size_t);
+bool		 ikeless_sp_name(const struct pfkey_sp *, char *, size_t);
+void		 ikeless_lifetimes(struct work *, int, const struct pfkey_sa *);
 /* invidia/sa.c: manually keyed SAs, by PF_KEY. */
 const char	*sa_check(const struct arc_job_spec *);
 int		 do_sa_job(struct work *, const struct arc_job_spec *,

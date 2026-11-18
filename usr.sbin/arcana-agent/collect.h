@@ -82,6 +82,15 @@ int	acl_get(bool operational, cbl_yarena *a,
 int	acl_edit(const struct ietf_access_control_list *after, char *err,
 	    size_t errlen, uint64_t *sid);
 
+/* RFC 9061's IKE-less lists by PF_KEY (invidia/ikeless.c): running's
+ * the controller's entries, kept; the operational datastore's every SA
+ * and policy of the kernel's; an edit what differs put in or taken out,
+ * then kept, or refused with nothing changed, as acl_edit(). */
+int	ikeless_get(bool operational, cbl_yarena *a,
+	    struct ietf_i2nsf_ikeless *data);
+int	ikeless_edit(const struct ietf_i2nsf_ikeless *after, char *err,
+	    size_t errlen, uint64_t *sid);
+
 /*
  * Arcana's rc.conf variables in a file of its own, named in
  * rc_conf_files (invidia/rcarcana.c).  rca_open(): it, and the user's

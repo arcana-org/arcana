@@ -192,8 +192,8 @@ on the wire.
 | 94 600 | 200 | `ietf-acl-enh@2025-12-22`, RFC 9899 (no IETF range): the defined sets compiled to ipfw with RFC 8519's ACLs (PLAN-SDN-YANG 6.1.5) | `share/yang/ietf-acl-enh@2025-12-22.sid` (133 used) |
 | 94 800 | 100 | `arcana-acl-deviations`, RFC 9899's ipv4-fragment must as its Section 3.5 means it | `share/yang/arcana-acl-deviations@2026-11-18.sid` (1 used) |
 | 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed; service-state, a service started or stopped | `share/yang/arcana-events@2026-10-15.sid` (22 used) |
-| 95 200 | 200 | `ietf-i2nsf-ikeless@2021-07-14`, RFC 9061 (no IETF range): its notifications, the kernel's PF_KEY news (PLAN-SDN-YANG 6.2.3); `ietf-i2nsf-ikec`'s groupings numbered in it, that module having no items but its name | `share/yang/ietf-i2nsf-ikeless@2021-07-14.sid` (138 used) |
-| 95 400 | 100 | `arcana-ikeless-deviations`, RFC 9061's IKE-less lists not served yet, no sadb-bad-spi | `share/yang/arcana-ikeless-deviations@2026-11-18.sid` (1 used) |
+| 95 200 | 200 | `ietf-i2nsf-ikeless@2021-07-14`, RFC 9061 (no IETF range): its notifications, the kernel's PF_KEY news (PLAN-SDN-YANG 6.2.3), and its SAD and SPD lists (6.2.4); `ietf-i2nsf-ikec`'s groupings numbered in it, that module having no items but its name | `share/yang/ietf-i2nsf-ikeless@2021-07-14.sid` (138 used) |
+| 95 400 | 100 | `arcana-ikeless-deviations`, the replay statistics FreeBSD does not keep per SA, no sadb-bad-spi (the lists served since 6.2.4) | `share/yang/arcana-ikeless-deviations@2026-11-19.sid` (1 used) |
 | 95 600 | 300 | `arcana-sdwan`, its fourth range: the rest of the BIRD, dnsmasq, unbound and Squid instances' forms (spec) | `share/yang/arcana-sdwan@2026-10-15.sid` (243 used) |
 | 96 500 | 100 | `arcana-sslproxy`, SSL inspection by SSLproxy: its read, the edge's CA key's request and certificate | `share/yang/arcana-sslproxy@2026-11-18.sid` (48 used) |
 | 96 800 | 100 | `arcana-acl`, the ACLs' named counters: RFC 9899's counter-action read back (PLAN-SDN-YANG 6.1.7) | `share/yang/arcana-acl@2026-11-19.sid` (7 used) |

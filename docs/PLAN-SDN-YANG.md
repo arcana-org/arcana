@@ -4473,6 +4473,102 @@ whose first part is served.
   near 2^32.
 - 6.2.4 A: `ietf-i2nsf-ikeless` lists over the above; the refusals;
   `net.key.preferred_oldsa=0`; check: RFC 9061 Appendix B's example.
+  Design (decided here): the lists are a configuration of their own
+  beside the `ipsec-sa` job, not its verbs renamed: running holds the
+  controller's entries (invidia/ikeless.c, `ikeless.cbor` beside the
+  agent's files, 0600, the keys in it), each put in by PF_KEY as it is
+  configured; the job keeps the ipsec(4) interfaces' SAs and policies
+  (uswe, derived keys, the console's rotation) until 6.2.5 makes uswe's
+  keys `esp-sa/key` entries, and its clear leaves the lists' SAs.  The
+  operational datastore is the kernel's: every ESP SA (SADB_DUMP) and
+  every policy (SADB_X_SPDDUMP) of the host's network, the controller's
+  by their names with their state (age, bytes, packets, the window, the
+  counter), the rest (setkey's and so ipsec.conf's, an IKE daemon's, an
+  interface's own, the job's) read only by the kernel's names,
+  `esp/<destination>/0x<SPI>` and `spd/<id>`, never in running, so no
+  edit touches them; an entry that would take one's SPI and destination,
+  or one's selector and direction, is refused in-use before anything
+  is done.  The notifications name the controller's entries by their
+  names.  Whose a policy is, from the kernel alone: its priority, from
+  0x7fa20000 in the list's order (ordered-by user, the first wins),
+  after setkey's 0 and before the job's PFKEY_SP_MARK; an SA's, its SPI
+  and destination in running.  An edit changes what differs alone:
+  policies out (SADB_X_SPDDELETE2), SAs out, new SAs in (SADB_ADD, read
+  back by SADB_GET: SPI, mature, reqid, mode, window, ESN, algorithms,
+  NAT-T, lifetimes), their policies in (SADB_X_SPDADD, or
+  SADB_X_SPDUPDATE in place of the controller's of the same selector,
+  so its traffic is never plain meanwhile), then the SPD read back; a
+  step refused undoes those before it, last first.  The mapping: an SA
+  is from its local end to its remote one (the tunnel's, or in transport
+  mode the selector's two single-address prefixes), and a selector's
+  local prefix is its packets' source whichever the direction, as
+  Appendix B writes its inbound entries (sadb-acquire's selector now so
+  too); protect one ESP request at level unique on the reqid (require
+  for reqid 0), bypass IPSEC_POLICY_NONE, discard IPSEC_POLICY_DISCARD;
+  ext-seq-num SADB_X_SAFLAGS_ESN, seq-overflow SADB_X_EXT_CYCSEQ, the
+  window in packets by eights; ENCR_AES_CBC and ENCR_AES_GCM_16 (its
+  salt the key's last four bytes or the iv), AUTH_HMAC_SHA1_96 and
+  HMAC-SHA2-256/384/512; espinudp NAT-T.  Lifetimes on the controller's
+  SAs: sa-lifetime-soft/hard's time and bytes are SADB_EXT_LIFETIME_SOFT
+  and _HARD's addtime and bytes; packets (allocations, which key.c
+  counts and does not enforce) and idle (key.c has the first use alone)
+  are the agent's, read with sadb.c's counters every 10 s: soft told once
+  as sadb-expire, hard the SA taken out and told.  The policy's
+  ipsec-sa-cfg (algorithms, ESN, tfc) is kept, the kernel's SPD having no
+  room for it.  Refused, operation-not-supported: espintcp, NAT-T's
+  original addresses, df-bit but clear (net.inet.ipsec.dfbit is for all
+  SAs), DSCP mappings and filtering, pfp-flag, a port range neither one
+  port nor all, other algorithms; invalid-value: a reqid over 16383, an
+  SPI under 256, mixed families, a transport SA's prefix wider than one
+  address, ESN without a window, seq-overflow with AEAD, keys of the
+  wrong length, AES-CBC without integrity, a name of the kernel's form,
+  two entries of one SA or one selector and direction.
+  `net.key.preferred_oldsa` is set to 0 when an edit puts an SA in
+  (Appendix D.2's rekey order).  State loss (RFC 9061 4.2): at the start
+  the controller's policies are put back where the kernel has not got
+  them; its SAs it has not got (a reboot, a hard lifetime) leave running,
+  their sequence numbers not to start again under the old keys, for the
+  controller to send new ones.  `arcana-ikeless-deviations` (2026-11-19)
+  no longer takes the container away; it takes the replay statistics
+  FreeBSD does not keep per SA (t, b, packet-dropped, failed), and
+  sadb-bad-spi.  No new SIDs: `ietf-i2nsf-ikeless`'s 138 cover the lists.
+  The page: Network > Base system > IPsec shows the two lists from the
+  operational datastore, the controller's with Remove (a YANG Patch, the
+  target encoded) and Edit by the model's form (yform.c), the rest
+  marked the kernel's; + SA and + policy open the form.
+  Done.  Checked: agent_test:ikeless_lists against tests/fakepfkey.c
+  (now with lifetimes, SADB_X_SPDUPDATE and log.count for an SA's
+  counters): Appendix B's example (its 8-byte keys given at the lengths
+  AES-128 and HMAC-SHA1 take) put in, both SAs before both policies, each
+  read back, the in SA's -lh 60 2000000 2000 -ls 30 1000000 1000, the
+  policies at 0x7fa20000 and 0x7fa20001 unique:1; running and the
+  kernel's lists read, ipsec.conf's and ipsec0's own policies by the
+  kernel's names, no key, the SAs' state; the 8-byte key, espintcp, ESN
+  without a window and ipsec.conf's selector refused, nothing sent;
+  the out policy's reqid changed (SADB_X_SPDUPDATE alone) and the in SA's
+  key (out and in again), the rest untouched; past 1000 packets
+  sadb-expire soft by the SA's name, once, past 2000 hard and the SA
+  gone; restarted on a kernel without the state: both policies put
+  back, the SAs out of running; all taken out, ipsec.conf's left.
+  ipsec_sa, safe_ipsec_sa, ipsec_sp, sadb_news, sysfiles,
+  acl_rfc8519 still passing.  pwa_test:pwa_ipsec_ikeless (an SA made by
+  the model's form, committed, its SADB_ADD and GET in what PF_KEY was
+  sent, listed by its name, removed and its SADB_DELETE sent);
+  pwa_ipsec_sa, pwa_yform_jail and pwa_yform_sdwan still passing (the
+  form now leaves out a container not presence of which nothing is
+  given, its mandatory leaves not wanted: a `when` it cannot read, RFC
+  9061's tunnel in transport mode; and a box ticked at its default true,
+  untouched, not said).  Written, not run here (root, vnet jails):
+  agent_root_test:ikeless_vnet (Appendix B on two vnet jails over an
+  epair, IPv6, transport mode: setkey -D and -DP showing the SAs with
+  the lifetimes and the policies at the controller's priorities beside
+  ipsec.conf's; a ping through ESP, the counters moved; the lists read
+  back; ipsec.conf's selector refused and left; all taken out, the ping
+  plain).  Not checked: tunnel mode, AES-GCM and NAT-T through the lists
+  for real; the idle lifetime (the stand-in's counters alone, packets);
+  editing an entry whose name has a / or a comma from the page (the
+  console cannot name such a key in a request's own path: Remove works
+  by a YANG Patch, Edit is off for it).
 - 6.2.5 A, C: uswe's keys as `esp-sa/key` from the agent's own
   derivation; Appendix D.2's rekey order; check: the rekey test.
 - 6.3.1 A: VICI for `list-sas`, `stats` and events in place of
