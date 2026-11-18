@@ -39,6 +39,7 @@
 #include "app.h"
 
 #define	TOPO_POLL_MS	5000
+#define	HELD_MS		3000	/* a hand still this long holds nothing */
 #define	MAX_NODES	(MAX_SERVERS + 32)
 #define	TOPO_IFS	64
 #define	TOPO_HIST	48
@@ -255,6 +256,10 @@ static struct {
 	char	gldrag[80];
 	char	glbend[160];
 	double	zoom0, panx0, pany0;
+	/* The drawing held by the hand (panned), and when the hand last
+	 * moved what it holds (topo_held()). */
+	bool	panning;
+	double	held_at;
 	/* Draw mode: a line dropped is a ghost with its plan, of the kind
 	 * chosen (JOIN_*); the keyboard's line: from where, and the
 	 * target it is on (a node), or -1. */
@@ -2253,6 +2258,20 @@ wg_poll(int i)
 		return;
 	t->wg_loading = true;
 	node_kind(i, "wireguard", wg_cb, strdup(tn[i].key));
+}
+
+/*
+ * Whether the hand holds what the map moves by itself, without its
+ * HTML: a host or a line the canvas draws, or the whole drawing.  A
+ * hand that has not moved for a while holds nothing: a letting go the
+ * page never heard of does not stop it drawing.
+ */
+bool
+topo_held(void)
+{
+
+	return ((tp.gldrag[0] != '\0' || tp.glbend[0] != '\0' ||
+	    tp.panning) && arc_now() - tp.held_at < HELD_MS);
 }
 
 /* From the tick: the map watches every host, a host's tab its own. */
@@ -8660,6 +8679,7 @@ topo_action(const char *act, const char *arg, const char *value)
 		}
 		tp.touched = true;
 		tp.custom = true;
+		tp.held_at = arc_now();
 	} else if (strcmp(act, "topo-node-end") == 0) {
 		tp.gldrag[0] = '\0';
 		glmap_scene_clear();
@@ -8687,6 +8707,8 @@ topo_action(const char *act, const char *arg, const char *value)
 	    "topo-pan-move") == 0) {
 		if (drag_values(value, &x, &y, &cx, &cy, &k, NULL, 0) < 5)
 			return (true);
+		tp.panning = true;
+		tp.held_at = arc_now();
 		if (act[9] == 'm') {
 			tp.panx -= (cx - tp.lastcx) * k;
 			tp.pany -= (cy - tp.lastcy) * k;
@@ -8700,9 +8722,11 @@ topo_action(const char *act, const char *arg, const char *value)
 		tp.lastcx = cx;
 		tp.lastcy = cy;
 	} else if (strcmp(act, "topo-pan-end") == 0) {
-		;		/* drawn again, in the view it was panned to */
+		/* Drawn again, in the view it was panned to. */
+		tp.panning = false;
 	} else if (strcmp(act, "topo-pan-click") == 0 || strcmp(act,
 	    "topo-unselect") == 0) {
+		tp.panning = false;
 		tp.sel[0] = tp.sel_link[0] = tp.sel_if[0] = '\0';
 	} else if (strcmp(act, "topo-link-start") == 0) {
 		;
@@ -8809,6 +8833,7 @@ topo_action(const char *act, const char *arg, const char *value)
 			drag_scene();
 			app.no_draw = act[10] != 's';
 		}
+		tp.held_at = arc_now();
 	} else if (strcmp(act, "topo-bend-end") == 0) {
 		tp.glbend[0] = '\0';
 		glmap_scene_clear();

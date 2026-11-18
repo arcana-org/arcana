@@ -31,6 +31,8 @@ struct app app = {
 };
 
 static double	last_health, last_tick_render, last_update;
+static bool	in_action;	/* arc_on_action() is running */
+static bool	draw_owed;	/* a draw waited for the hand to let go */
 static char	loc_shown[600];	/* the page's address names this */
 static char	loc_wanted[600];	/* to go to once the hosts are known */
 
@@ -60,6 +62,17 @@ render(void)
 	char			 title[128];
 	int			 r;
 
+	/*
+	 * While the hand moves what the map draws by itself (a host, a
+	 * line, the whole drawing), a draw from anywhere else (an answer,
+	 * an event, the tick) waits until it lets go: it would draw the
+	 * map anew under the hand, at a large map a frame of its own.
+	 */
+	if (!in_action && topo_held()) {
+		draw_owed = true;
+		return;
+	}
+	draw_owed = false;
 	if (app.screen != SCREEN_CONSOLE) {
 		h_reset(&h);
 		view(&h);
@@ -620,7 +633,7 @@ tick(void *arg)
 				refresh_jails(&app.servers[i], false);
 	}
 	app.polling = false;
-	if (changed || now - last_tick_render >= AGE_STEP_MS) {
+	if (changed || draw_owed || now - last_tick_render >= AGE_STEP_MS) {
 		last_tick_render = now;
 		render();
 	}
@@ -2297,6 +2310,7 @@ arc_on_action(char *act, char *arg, char *value)
 	if (app.acct_open && strcmp(act, "acct-toggle") != 0 && strcmp(act,
 	    "resize") != 0 && strcmp(act, "notify") != 0)
 		app.acct_open = false;
+	in_action = true;
 	dispatch(act, arg, value);
 	free(act);
 	free(arg);
@@ -2306,6 +2320,7 @@ arc_on_action(char *act, char *arg, char *value)
 	if (!app.no_draw)
 		render();
 	app.no_draw = false;
+	in_action = false;
 }
 
 /* A part of something that comes in parts, or word that none will. */

@@ -915,6 +915,7 @@ void		 view_netgraph(struct html *, struct server *,
 void		 view_lookup(struct html *, const struct server *);
 void		 topo_open(void);
 void		 topo_tick(double);
+bool		 topo_held(void);
 void		 topo_poll(struct server *);
 void		 topo_spark(struct html *, const struct server *, const char *);
 void		 topo_lookup(struct server *, const char *, int);

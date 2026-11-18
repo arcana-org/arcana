@@ -11511,8 +11511,10 @@ part_map_fleet(void)
 	    "window.arcGl.backend === 'webgl2' : window.arcGl.gpu === 2 ? "
 	    "window.arcGl.backend === 'webgpu' : window.arcGl.backend === "
 	    "'webgl2'"));
-	ATF_CHECK(js_true("!window.arcGl.ok || (window.hostWires > 0 && "
-	    "window.hostMuts <= 100)"));
+	ATF_CHECK_MSG(js_true("!window.arcGl.ok || (window.hostWires > 0 && "
+	    "window.hostMuts <= 100)"), "the host dragged: canvas-lines=%d "
+	    "svg-changes=%d", (int)js_num("window.hostWires || 0"),
+	    (int)js_num("window.hostMuts || 0"));
 	/* The hand let go: the SVG's lines are drawn again, none hidden. */
 	wait_js("!document.querySelector('svg.topo .tlink.moving') && "
 	    "window.arcGl.wires === 0", 5);
@@ -11553,8 +11555,10 @@ part_mapgpu(void)
 	shot("8-network-webgpu");
 	if (js_true("window.glLosts === 0")) {
 		ATF_CHECK(be);
-		ATF_CHECK(js_true("window.hostWires > 0 && window.hostMuts <= "
-		    "100"));
+		ATF_CHECK_MSG(js_true("window.hostWires > 0 && window.hostMuts "
+		    "<= 100"), "the host dragged: canvas-lines=%d "
+		    "svg-changes=%d", (int)js_num("window.hostWires || 0"),
+		    (int)js_num("window.hostMuts || 0"));
 		return;
 	}
 	/*
