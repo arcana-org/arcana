@@ -178,8 +178,10 @@ wait_js(const char *expr, int seconds)
 	/* With what the page last said, which is most often why. */
 	v = js("return ([...document.querySelectorAll('.toast, .err, .notice')].map("
 	    "t => t.textContent.slice(0, 120)).join(' | ').slice(-700) + ' / "
-	    "the textarea: ' + JSON.stringify((document.querySelector('.modal "
-	    "textarea') || {}).value || ''));");
+	    "the box: ' + ((document.querySelector('.modal h2') || {}).textContent "
+	    "|| 'none open') + ' / loaders: ' + document.querySelectorAll("
+	    "'.loader').length + ' / the textarea: ' + JSON.stringify(("
+	    "document.querySelector('.modal textarea') || {}).value || ''));");
 	atf_tc_fail("timed out waiting for %s; the page says: %s", expr,
 	    v != NULL && ucl_object_tostring(v) != NULL ?
 	    ucl_object_tostring(v) : "nothing");

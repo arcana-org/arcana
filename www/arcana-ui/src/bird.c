@@ -1750,13 +1750,16 @@ view_bird(struct html *h, struct server *s, const ucl_object_t *data)
 		    "ghost small\" data-act=\"bird-sess-drop\">Not now</button>"
 		    "</div>");
 	}
-	h_raw(h, "<section class=\"pane bird\"><h4><span>BIRD</span><span "
+	/* The file not read yet: its box would have nothing to show. */
+	h_fmt(h, "<section class=\"pane bird\"><h4><span>BIRD</span><span "
 	    "class=\"pane-actions\"><button class=\"ghost small\" data-act=\""
-	    "bird-file\" title=\"The configuration, whole\">Configuration"
-	    "</button><button class=\"ghost small\" data-act=\"bird-verb\" "
-	    "data-arg=\"configure\" data-value=\"\" title=\"Read its "
-	    "configuration again\">Reconfigure</button></span></h4>"
-	    "<p class=\"mono\">");
+	    "bird-file\" title=\"%s\"%s>Configuration</button><button "
+	    "class=\"ghost small\" data-act=\"bird-verb\" data-arg=\""
+	    "configure\" data-value=\"\" title=\"Read its configuration "
+	    "again\">Reconfigure</button></span></h4><p class=\"mono\">",
+	    bd.text != NULL ? "The configuration, whole" : bd.loading ?
+	    "The configuration, being read" : "The configuration, not read",
+	    bd.text != NULL ? "" : " disabled");
 	it = NULL;
 	while ((l = ucl_object_iterate(jget(data, "status"), &it, true)) !=
 	    NULL) {

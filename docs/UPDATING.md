@@ -93,6 +93,12 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### BIRD's Configuration button, console 0.447.1
+
+- The BIRD tab's Configuration button stays disabled until the host's
+  configuration has been read (its title says so); before, a click
+  while it was still loading did nothing.
+
 ### SEN of the daemons' blocks, SAN on every path; agent 0.296.0, console 0.447.0
 
 - **SEN for blocks by unbound, Squid and c-icap** (MEF 138, SASE-6):
