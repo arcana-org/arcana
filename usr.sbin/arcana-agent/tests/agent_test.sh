@@ -15750,7 +15750,7 @@ atf_test_case agent_update_gzip cleanup
 agent_update_gzip_head()
 {
 	atf_set "descr" "A program sent compressed is inflated, bounded, " \
-	    "and checked as it runs"
+	    "and checked as it runs; one as it is is refused"
 }
 agent_update_gzip_body()
 {
@@ -15788,6 +15788,10 @@ agent_update_gzip_body()
 	atf_check -s exit:1 -o match:'ends short' \
 	    "$(atf_get_srcdir)/zupdate" "$SOCK" short.gz \
 	    "$(stat -f %z "$JGD")" "$(sha256 -q "$JGD")"
+	# As it is, without program-size: refused, nothing put in place.
+	atf_check -s exit:1 -o match:'program-size' \
+	    "$(atf_get_srcdir)/zupdate" "$SOCK" bogus 0 "$sha"
+	atf_check -o inline:'old\n' cat installed-agent
 	# Its SHA-256 is the program's, inflated.
 	gzip -9 < "$JGD" > agent.gz
 	atf_check -s exit:1 -o match:'does not match its SHA-256' \
@@ -15823,11 +15827,6 @@ agent_update_old_body()
 	atf_check -o inline:'old\n' cat installed-agent
 	atf_check -s exit:1 -e match:'too old for a build by the console' \
 	    "$JGC" -c "$SOCK" agent-build https://example.org/arcana.git main
-	# What it would not decode, it refuses.
-	gzip -9 < "$JGD" > agent.gz
-	atf_check -s exit:1 -o match:'program-size' \
-	    "$(atf_get_srcdir)/zupdate" "$SOCK" agent.gz \
-	    "$(stat -f %z "$JGD")" "$(sha256 -q "$JGD")"
 }
 agent_update_old_cleanup()
 {

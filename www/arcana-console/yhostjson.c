@@ -1167,9 +1167,6 @@ yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 	in.ref = ref != NULL && ref[0] != '\0' ? ref : NULL;
 	in.host_keys = host_keys;
 	in.ssh_key = ssh_key;
-	/* Sent back compressed, as an update carries it. */
-	in.has_compress = true;
-	in.compress = true;
 	if ((a = cbl_yarena_new()) == NULL)
 		return (ENOMEM);
 	memset(&out, 0, sizeof(out));

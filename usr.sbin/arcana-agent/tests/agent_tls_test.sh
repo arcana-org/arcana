@@ -672,13 +672,17 @@ signed_update_body()
 	DAEMON_ARGS="-U $(pwd)/installed"
 	start_daemon
 	URI="tcp://127.0.0.1:$PORT"
-	prog=$(b64encode -r older - < older | tr -d '\n')
+	# Compressed, as every update is: gzip(1)'s, and the size it inflates
+	# to.
+	gzip -c older > older.gz
+	prog=$(b64encode -r older.gz - | tr -d '\n')
+	size=$(stat -f %z older)
 	sha=$(sha256 -q older)
 	# The update sent, with the signature of the last statement made.
 	cat > up <<EOS
 #!/bin/sh
 exec "$JGC" -c "$URI" -A ca.pem -C client.pem -K client.key action \
-    agent update "binary=$prog" "sha256=$sha" \
+    agent update "binary=$prog" "program-size=$size" "sha256=$sha" \
     "signature=\$(cat sig.b64)" version=0.1.0 "\$@"
 EOS
 	chmod +x up

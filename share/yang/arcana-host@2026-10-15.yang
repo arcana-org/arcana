@@ -289,8 +289,8 @@ module arcana-host {
         type string;
         description
           "What this agent takes that one before it did not:
-           gzip-update, arcana-agent's update with program-size and
-           its build with compress, the program compressed.  An agent
+           gzip-update, arcana-agent's update and build with the
+           program compressed (program-size).  An agent
            without the leaf takes none.";
       }
       leaf safe-wait {

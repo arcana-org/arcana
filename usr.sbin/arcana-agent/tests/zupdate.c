@@ -6,7 +6,7 @@
 
 /*
  * zupdate: arcana-agent's update action with the bytes of a file as
- * they are, said to inflate to size bytes (0: sent as it is) and to
+ * they are, said to inflate to size bytes (0: no program-size) and to
  * have the SHA-256 given, for agent_test.sh: what a sender that lies
  * about them sends, which arcanactl never does.  The agent's error, or
  * "ok"; exit 1 when it refused.

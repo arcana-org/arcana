@@ -5273,7 +5273,7 @@ ATF_TC_BODY(jails, tc)
 
 CONSOLE_TC(agent_update, "The console sends its arcana-agent to a host, "
     "which puts it in place and restarts on request; compressed to an agent "
-    "that takes it so, as it is to one before")
+    "that takes it so, nothing to one before")
 ATF_TC_BODY(agent_update, tc)
 {
 	struct authn	a;

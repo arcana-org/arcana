@@ -1348,6 +1348,7 @@
       {
         "namespace": "data",
         "identifier": "/arcana-agent:agent/build/input/compress",
+        "status": "obsolete",
         "sid": "83100"
       },
       {

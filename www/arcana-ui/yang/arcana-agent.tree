@@ -119,7 +119,7 @@ module: arcana-agent
      |  |  +---w sha256          string
      |  |  +---w restart?        boolean
      |  |  +---w signature?      binary
-     |  |  +---w program-size?   uint32
+     |  |  +---w program-size    uint32
      |  |  +---w version?        string
      |  |  +---w downgrade?      boolean
      |  +--ro output
@@ -131,7 +131,6 @@ module: arcana-agent
      |  |  +---w ref?         string
      |  |  +---w host-keys?   string
      |  |  +---w ssh-key?     string
-     |  |  +---w compress?    boolean
      |  +--ro output
      |     +--ro binary?         binary
      |     +--ro sha256?         string

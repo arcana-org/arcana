@@ -565,12 +565,11 @@ module arcana-agent {
             range "1..33554432";
           }
           units "bytes";
+          mandatory true;
           description
             "binary is the program compressed with gzip (RFC 1952),
              which inflates to this many bytes; sha256 and signature
-             are the program's, inflated.  Sent to an agent whose
-             host's agent feature has gzip-update; one before takes
-             the program as it is.";
+             are the program's, inflated.";
         }
         leaf version {
           type string {
@@ -616,19 +615,12 @@ module arcana-agent {
          give the program back; nothing installed.";
       input {
         uses repository;
-        leaf compress {
-          type boolean;
-          default "false";
-          description
-            "Send the program back compressed with gzip, with
-             program-size.";
-        }
       }
       output {
         leaf binary {
           type binary;
           description
-            "The program built.";
+            "The program built, compressed with gzip.";
         }
         leaf sha256 {
           type string;
@@ -650,8 +642,7 @@ module arcana-agent {
           type uint32;
           units "bytes";
           description
-            "With compress: binary is the program compressed with
-             gzip, which inflates to this many bytes; sha256 is the
+            "What binary inflates to, in bytes; sha256 is the
              program's.";
         }
       }

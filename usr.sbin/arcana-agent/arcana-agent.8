@@ -853,8 +853,10 @@ action compressed
 .Pq Ic program-size ,
 and its
 .Ic build Ns 's
-sent back so
-.Pq Ic compress .
+sent back so.
+The daemon takes and sends the program compressed either way: a
+client that sees the feature missing sends no update and asks for no
+build.
 .It Fl -subscriptions Ar file
 Where the configured subscriptions are kept (RFC 8639 section 2.5):
 ietf-subscribed-notifications' subscriptions container, as YANG-CBOR,
@@ -1904,9 +1906,9 @@ git shows the server a key of this host's, made on first use as
 .Pa id_ed25519
 there, or the one the client names.
 The program is sent back with its SHA-256 and the version it reports,
-compressed with gzip when the client asks
-.Pq the SHA-256 is still the program's ;
-nothing is installed.
+compressed with gzip, with the size it inflates to
+.Pq Ic program-size ;
+the SHA-256 is still the program's, and nothing is installed.
 One build runs at a time.
 .Pp
 With
@@ -1926,18 +1928,19 @@ action: the console does, and
 .Xr arcanactl 8
 with
 .Cm agent-update .
-A frame of 8 MiB carries the program as it is, with the rest of the
-request; the console and arcanactl send an update only to an agent
-that has
-.Li gzip-update
-in arcana-host's agent features, compressed with gzip
+The program comes compressed with gzip
 .Pq Xr zlib 3 ,
 with the size it inflates to
 .Pq Ic program-size ,
-and the daemon inflates it first: to no more than that size, nor than
+in a frame of 8 MiB with the rest of the request; one without
+.Ic program-size
+is refused.
+The daemon inflates it first: to no more than that size, nor than
 32 MiB, stopping a byte past it.
-An agent before has no features there and is sent the program as it
-is.
+The console and arcanactl send an update only to an agent that has
+.Li gzip-update
+in arcana-host's agent features; an agent before has no features
+there and is updated by hand.
 The program, inflated, is checked against its signature by the
 console's CA key (asked of every client but the local socket's) and
 the SHA-256 sent with it, written beside

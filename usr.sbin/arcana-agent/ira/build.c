@@ -12,7 +12,7 @@
  * with make(1); as root, git, make and ssh-keygen run as
  * the build user, _arcanabuild (--build-user), so what a repository's
  * makefiles do is done without privilege.  Nothing is installed: the
- * program goes back in the reply, compressed when asked (zprog.c).
+ * program goes back in the reply, compressed (zprog.c).
  *
  * What the build user makes is the build user's, and what it built is
  * signed by the console and run as root on every host: so it is a user
@@ -988,8 +988,7 @@ cloned:
 
 static int
 agent_build(struct work *w, const char *source, const char *ref,
-    const char *accepted, const char *sshkey, bool compress,
-    struct build_rsp *rsp)
+    const char *accepted, const char *sshkey, struct build_rsp *rsp)
 {
 	struct fetched	 f;
 	struct execres	 res;
@@ -1110,8 +1109,8 @@ agent_build(struct work *w, const char *source, const char *ref,
 	bin = NULL;
 	off = 0;
 	if (rel != NULL && (dfd = build_dirfd(build_uid(unpriv))) != -1) {
-		bin = read_beneath(w, dfd, rel, build_uid(unpriv), compress ?
-		    ZPROG_MAX_PROGRAM : ZPROG_MAX_BINARY, &off);
+		bin = read_beneath(w, dfd, rel, build_uid(unpriv),
+		    ZPROG_MAX_PROGRAM, &off);
 		close(dfd);
 	} else if (rel == NULL)
 		errno = EXDEV;
@@ -1144,30 +1143,24 @@ agent_build(struct work *w, const char *source, const char *ref,
 	rsp->agent_version = wstrndup(w, res.out + strlen(VERSION_PREFIX),
 	    (nl != NULL ? (size_t)(nl - res.out) : res.outlen) -
 	    strlen(VERSION_PREFIX));
-	rsp->binary.p = bin;
-	rsp->binary.len = off;
-	if (compress) {
-		s = step_begin(w, STEP_LIB, "deflate(3)", "%zu bytes "
-		    "to gzip", off);
-		if (zprog_deflate(bin, off, &z, &zlen) != 0) {
-			step_end(w, s, false, "failed");
-			rsp->error = "the program cannot be compressed";
-			return (0);
-		}
-		wadopt(w, z);
-		if (zlen > ZPROG_MAX_BINARY) {
-			step_end(w, s, false, "%zu bytes, past what an update "
-			    "carries", zlen);
-			rsp->error = "the program does not compress into what "
-			    "an update carries";
-			return (0);
-		}
-		step_end(w, s, true, "%zu bytes", zlen);
-		rsp->binary.p = z;
-		rsp->binary.len = zlen;
-		rsp->has_program_size = true;
-		rsp->program_size = (uint32_t)off;
+	s = step_begin(w, STEP_LIB, "deflate(3)", "%zu bytes to gzip", off);
+	if (zprog_deflate(bin, off, &z, &zlen) != 0) {
+		step_end(w, s, false, "failed");
+		rsp->error = "the program cannot be compressed";
+		return (0);
 	}
+	wadopt(w, z);
+	if (zlen > ZPROG_MAX_BINARY) {
+		step_end(w, s, false, "%zu bytes, past what an update carries",
+		    zlen);
+		rsp->error = "the program does not compress into what an "
+		    "update carries";
+		return (0);
+	}
+	step_end(w, s, true, "%zu bytes", zlen);
+	rsp->binary.p = z;
+	rsp->binary.len = zlen;
+	rsp->program_size = (uint32_t)off;
 	rsp->sha256 = sha;
 	rsp->commit = f.commit;
 	rsp->ok = true;
@@ -1557,13 +1550,12 @@ source_log(struct work *w, const char *source, const char *ref,
 /* The builds, with the build directory as the home of what they run. */
 int
 do_agent_build(struct work *w, const char *source, const char *ref,
-    const char *accepted, const char *sshkey, bool compress,
-    struct build_rsp *rsp)
+    const char *accepted, const char *sshkey, struct build_rsp *rsp)
 {
 	int	rc;
 
 	exec_set_home(w, opts.build_dir);
-	rc = agent_build(w, source, ref, accepted, sshkey, compress, rsp);
+	rc = agent_build(w, source, ref, accepted, sshkey, rsp);
 	exec_set_home(w, NULL);
 	return (rc);
 }

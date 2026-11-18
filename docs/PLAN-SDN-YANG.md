@@ -1192,8 +1192,8 @@ whose first part is served.
   the switch (3.8): hello is a read of arcana-host's `host`, its
   agent's `feature` (gzip-update) and `safe-wait` added; agent-update,
   agent-build, console-update and source-head are arcana-agent's
-  actions, update with `program-size`, build with `compress` and
-  `program-size`, console-update with `commit`, and a fetch the server
+  actions, update with `program-size`, build with `program-size`
+  (its `compress` retired 2026-11-19: always compressed), console-update with `commit`, and a fetch the server
   refused (host keys to confirm, the deploy key to give) answered with
   them and `refused` beside, where an action's error would lose them;
   the step operation and the steps group are arcana-jobs' `steps`
@@ -1207,7 +1207,10 @@ whose first part is served.
   it is, through that action, within its 8 MiB frame
   (`ZPROG_MAX_BINARY`, 8 MiB less 64 KiB; an agent of 6.1 MB, 5.5 MB
   stripped); the agent it becomes says gzip-update and takes the next
-  compressed.  Third SID ranges 83 000 (arcana-host), 83 100
+  compressed.  The bridge is gone (agent 0.312.0, console 0.460.0): an
+  agent without gzip-update is sent nothing and updated by hand, and the
+  agent takes no update without `program-size` (mandatory since
+  2026-11-19).  Third SID ranges 83 000 (arcana-host), 83 100
   (arcana-agent), second 83 200 (arcana-jobs).  Check: the console's
   `agent_update_bridge` (with `ARCANA_OLD_AGENT`, a 0.236.0 build:
   over a unix socket and over TCP with mutual TLS), `agent_update`,

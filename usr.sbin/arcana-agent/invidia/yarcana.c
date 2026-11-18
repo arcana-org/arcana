@@ -480,17 +480,13 @@ arcana_agent_agent_build_action(cbl_req *req, const struct cbl_bytes *target,
 	(void)target;
 	if (in->source == NULL)
 		return (said(req, "a repository is needed"));
-	/* As an agent before gzip-update, which has no compress. */
-	if (in->has_compress && in->compress && !has_feature(ZPROG_FEATURE))
-		return (said(req, "unknown leaf compress"));
 	if ((w = ywork_told(req, a, "agent build", &root)) == NULL)
 		return (ENOMEM);
 	memset(&r, 0, sizeof(r));
 	/* One build at a time: they share the directory. */
 	pthread_mutex_lock(&build_lock);
 	(void)do_agent_build(w, in->source, in->ref != NULL && in->ref[0] !=
-	    '\0' ? in->ref : NULL, in->host_keys, in->ssh_key,
-	    in->has_compress && in->compress, &r);
+	    '\0' ? in->ref : NULL, in->host_keys, in->ssh_key, &r);
 	pthread_mutex_unlock(&build_lock);
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok && (r.host_keys != NULL || r.deploy_key != NULL)) {
@@ -503,7 +499,7 @@ arcana_agent_agent_build_action(cbl_req *req, const struct cbl_bytes *target,
 	out->sha256 = r.sha256;
 	out->version = r.agent_version;
 	out->commit = r.commit;
-	out->has_program_size = r.has_program_size;
+	out->has_program_size = true;
 	out->program_size = r.program_size;
 	return (0);
 }
@@ -910,11 +906,11 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
 	if (in->binary.len == 0 || in->sha256 == NULL ||
 	    strlen(in->sha256) != 64)
 		return (said(req, "a program and its SHA-256 are needed"));
-	/* As an agent before gzip-update, which has no program-size. */
-	if (in->has_program_size && !has_feature(ZPROG_FEATURE))
-		return (said(req, "unknown leaf program-size"));
-	if (in->has_program_size && (in->program_size == 0 ||
-	    in->program_size > ZPROG_MAX_PROGRAM))
+	/* Compressed, always: program-size is what it inflates to. */
+	if (!in->has_program_size)
+		return (said(req, "program-size is needed: the program is "
+		    "sent compressed"));
+	if (in->program_size == 0 || in->program_size > ZPROG_MAX_PROGRAM)
 		return (said(req, "the program would inflate past what this "
 		    "host takes"));
 	restart = in->has_restart && in->restart;
@@ -939,7 +935,7 @@ arcana_agent_agent_update_action(cbl_req *req, const struct cbl_bytes *target,
 	u.downgrade = in->has_downgrade && in->downgrade;
 	if (change_note("agent update"))
 		(void)do_agent_update(w, in->binary.p, in->binary.len,
-		    in->has_program_size ? in->program_size : 0, &u, &r);
+		    in->program_size, &u, &r);
 	else
 		r.error = "not done: arcana-agent is stopping";
 	change_end();

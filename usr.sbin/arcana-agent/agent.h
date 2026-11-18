@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.315.0"
+#define	ARCANA_AGENT_VERSION	"0.316.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -2053,7 +2053,6 @@ struct build_rsp {
 	bool		 ok;
 	const char	*error;
 	struct cbl_bytes binary;
-	bool		 has_program_size;
 	uint32_t	 program_size;
 	const char	*sha256;
 	const char	*agent_version;
@@ -2076,8 +2075,7 @@ struct agent_update {
 	bool		 downgrade;
 };
 int		 do_agent_build(struct work *, const char *, const char *,
-		    const char *, const char *, bool,
-		    struct build_rsp *);
+		    const char *, const char *, struct build_rsp *);
 int		 do_source_head(struct work *, const char *, const char *,
 		    const char *, const char *, struct build_rsp *);
 /*

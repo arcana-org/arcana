@@ -9,9 +9,9 @@
  * installed one, checked against the SHA-256 that came with it, and run
  * with -V: a program for another machine or system does not run, and
  * never takes the place of one that does.  The one installed stays as
- * <path>.old.  A program sent compressed is inflated first, to no more
- * than max-program bytes: what is checked, signed and installed is the
- * program, as it runs.
+ * <path>.old.  The program is sent compressed and inflated first, to
+ * no more than max-program bytes: what is checked, signed and installed
+ * is the program, as it runs.
  *
  * What the console's CA key signs is the update's statement (update_
  * statement(), zprog.h): the host it is for, the version and the
@@ -282,10 +282,7 @@ agent_install(struct work *w, const uint8_t *data, size_t len,
 	return (0);
 }
 
-/*
- * The program of len bytes at data, or, with size, compressed and to
- * inflate to size bytes.
- */
+/* The program, len bytes at data compressed, to inflate to size bytes. */
 int
 do_agent_update(struct work *w, const uint8_t *data, size_t len,
     size_t size, const struct agent_update *u, struct build_rsp *rsp)
@@ -294,8 +291,6 @@ do_agent_update(struct work *w, const uint8_t *data, size_t len,
 	uint8_t		*prog;
 	int		 rc, s;
 
-	if (size == 0)
-		return (agent_install(w, data, len, u, rsp));
 	rsp->has_ok = true;
 	rsp->ok = false;
 	s = step_begin(w, STEP_LIB, "inflate(3)", "%zu bytes of "

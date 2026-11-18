@@ -93,6 +93,14 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Updates taken and builds sent compressed alone; agent 0.316.0, console 0.462.0
+
+- The agent takes arcana-agent's update only compressed (program-size
+  is mandatory) and always sends its build back compressed;
+  arcana-agent's build input has no compress leaf any more (SID 83100
+  obsolete).  No client sends otherwise since agent 0.312.0 and
+  console 0.460.0.
+
 ### Service starts and stops told at once; agent 0.315.0, console 0.461.0
 
 - A service started or stopped by hand (or by anything else) is noticed
