@@ -263,8 +263,7 @@ host_tab(const char *name)
 		{ "sysctl", "system" }, { "kernel", "system" },
 		{ "processes", "system" }, { "ssh", "security" },
 		{ "certificates", "security" }, { "bird", "network" },
-		{ "ipsec", "network" }, { "strongswan", "network" },
-		{ "relay", "network" },
+		{ "strongswan", "network" }, { "relay", "network" },
 		{ "alerts", "monitoring" }, { "utilization", "monitoring" },
 		{ "tunnels", "monitoring" }, { "mail", "services" },
 	};
@@ -10382,11 +10381,12 @@ part_suricata_forms(void)
 
 /*
  * Manually keyed SAs of an ipsec(4) interface by the form of the base
- * system's IPsec section, on a host without strongSwan: the section is
- * there all the same, not a plugin, while strongSwan's says it is not
- * installed.  Set from keys given, not in safe mode (keys set by hand
- * cannot be put back): PF_KEY was sent both SAs with their SPIs and
- * reqid; then a selector's two policies on them.
+ * system's IPsec, on a host without strongSwan: a part of the Network
+ * tab's base system, in its row, not a section of its own, there all
+ * the same while strongSwan's section says it is not installed; its
+ * address leads back to it.  Set from keys given, not in safe mode
+ * (keys set by hand cannot be put back): PF_KEY was sent both SAs with
+ * their SPIs and reqid; then a selector's two policies on them.
  */
 static void
 part_ipsec_sa(void)
@@ -10398,11 +10398,16 @@ part_ipsec_sa(void)
 	click_when("nav.tabs:not(.sub) button.tab[data-arg=network]", 10);
 	wait_js("document.querySelector('button.tab.plugin.missing[data-arg="
 	    "\"network/strongswan\"]')", 20);
-	ATF_CHECK(js_true("!document.querySelector('nav.hsects button.tab"
-	    "[data-arg=\"network/ipsec\"]').classList.contains('plugin')"));
-	host_tab("ipsec");
+	ATF_CHECK(js_true("![...document.querySelectorAll('nav.hsects "
+	    "button.tab')].some(b => b.dataset.arg.endsWith('ipsec'))"));
+	click_when("nav.hsects button.tab[data-arg='network/base']", 10);
+	click_when("nav.sub button[data-arg='network/base/ipsec']", 10);
 	wait_js("document.querySelector('.pane.ipsec-base button[data-act="
-	    "ipsec-sa-add]')", 20);
+	    "ipsec-sa-add]') && location.hash.endsWith('/network/base/ipsec')"
+	    " && document.querySelector('nav.hsects button.tab.on[data-arg="
+	    "\"network/base\"]') && document.querySelector('nav.sub button.on"
+	    "[data-arg=\"network/base/ipsec\"]') && document.querySelector("
+	    "'nav.tabs:not(.sub) button.tab.on[data-arg=network]')", 20);
 	ATF_CHECK(js_true("!document.querySelector('.plugin-missing') && "
 	    "document.querySelector('.pane.ipsec-base').textContent.includes("
 	    "'PF_KEY') && document.querySelector('.pane.ipsec-base')."
@@ -10441,6 +10446,16 @@ part_ipsec_sa(void)
 	    "10.2.0.0/24\\[any\\] 10.1.0.0/24\\[any\\] any ' setkey.conf"),
 	    "the policies are not in");
 	dock_closed();
+	/* The row's other views from it, and back by its address. */
+	run("document.querySelector('nav.sub button[data-act=net-kind]"
+	    "[data-arg=routes]').click()");
+	wait_js("!document.querySelector('.pane.ipsec-base') && location."
+	    "hash.endsWith('/network/base') && document.querySelector("
+	    "'nav.sub button.on[data-act=net-kind][data-arg=routes]')", 10);
+	run("location.hash = location.hash + '/ipsec'");
+	wait_js("document.querySelector('.pane.ipsec-base') && document."
+	    "querySelector('nav.sub button.on[data-arg=\"network/base/ipsec"
+	    "\"]')", 10);
 	ATF_REQUIRE(rename("fake-swanctl.off", "fake-swanctl") == 0);
 }
 
@@ -10448,7 +10463,7 @@ ATF_TC_WITH_CLEANUP(pwa_ipsec_sa);
 ATF_TC_HEAD(pwa_ipsec_sa, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs and policies set by the base system's IPsec section on a host without strongSwan, found in what PF_KEY was sent");
+	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs and policies set by the base system's IPsec, a part of Network's Base system, on a host without strongSwan, found in what PF_KEY was sent");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_ipsec_sa, tc)

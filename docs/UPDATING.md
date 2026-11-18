@@ -93,6 +93,15 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### IPsec a part of Network's Base system; console 0.458.0
+
+- The base system's IPsec (manual SAs and policies by PF_KEY, setkey's
+  ipsec.conf) is no longer a section of the Network tab of its own: it
+  is a part of Base system, the IPsec button in its row after
+  WireGuard, at #/hosts/<id>/network/base/ipsec.
+  #/hosts/<id>/network/ipsec now opens Base system.  strongSwan stays
+  its own section.
+
 ### SD-WAN instances' forms in the module; agent 0.310.0, console 0.457.0
 
 - arcana-sdwan's BIRD, dnsmasq, unbound and Squid instances have their

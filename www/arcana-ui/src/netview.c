@@ -762,8 +762,12 @@ plugin_missing(struct html *h, const struct server *s)
 	h_raw(h, "</div>");
 }
 
+/*
+ * The base system's row: its views of the host's network, and its
+ * IPsec, a tab of its own (ipsecbase.c) shown as one of them.
+ */
 void
-view_network(struct html *h, struct server *s)
+net_base_nav(struct html *h)
 {
 	static const struct {
 		const char	*arg, *title;
@@ -778,6 +782,41 @@ view_network(struct html *h, struct server *s)
 		{ "multicast", "Multicast" }, { "kept-routes", "Kept routes" },
 		{ "monitors", "Tunnel quality" },
 	};
+	int	i, k;
+	bool	nh, rt;
+
+	/* The kind shown, or none for the IPsec tab. */
+	k = app.tab == TAB_NETWORK ? (int)app.net.kind : -1;
+	/* The nexthop groups are of the Nexthops, not a tab of their own. */
+	nh = k == NET_NEXTHOPS || k == NET_NHGROUPS;
+	/* What rc.conf keeps is of the Routes, not a tab of its own. */
+	rt = k == NET_ROUTES || k == NET_KEPT;
+	h_raw(h, "<nav class=\"sub\">");
+	/* Routes to WireGuard, the base system's. */
+	for (i = 0; i <= NET_WIREGUARD; i++)
+		h_fmt(h, "<button class=\"ghost small%s\" data-act=\"net-kind\" "
+		    "data-arg=\"%s\">%s</button>", k == i || (i ==
+		    NET_NEXTHOPS && nh) || (i == NET_ROUTES && rt) ? " on" : "",
+		    kinds[i].arg, kinds[i].title);
+	/* The kernel's IPsec without IKE, after the other tunnels. */
+	h_fmt(h, "<button class=\"ghost small%s\" data-act=\"tab\" "
+	    "data-arg=\"network/base/ipsec\" title=\"The kernel's IPsec "
+	    "without IKE: SAs and policies by PF_KEY for ipsec(4) interfaces, "
+	    "setkey(8)'s ipsec.conf\">IPsec</button>", app.tab == TAB_IPSEC ?
+	    " on" : "");
+	/* What is of the base system too, and came later. */
+	for (i = 8; i < (int)(sizeof(kinds) / sizeof(kinds[0])); i++)
+		if (i != NET_NHGROUPS && i != NET_KEPT && i != NET_MONITORS &&
+		    !NET_PLUGIN(i))
+			h_fmt(h, "<button class=\"ghost small%s\" data-act=\""
+			    "net-kind\" data-arg=\"%s\">%s</button>", k == i ?
+			    " on" : "", kinds[i].arg, kinds[i].title);
+	h_raw(h, "</nav>");
+}
+
+void
+view_network(struct html *h, struct server *s)
+{
 	const ucl_object_t	*fam, *arr;
 	ucl_object_iter_t	 it;
 	char			 age[32];
@@ -797,27 +836,12 @@ view_network(struct html *h, struct server *s)
 	alone = plug || app.net.kind == NET_MONITORS;
 	h_raw(h, "<div class=\"toolbar\">");
 	net_jail_pick(h, s);
-	h_raw(h, "<nav class=\"sub\">");
-	/* The nexthop groups are of the Nexthops, not a tab of their own. */
+	if (alone)
+		h_raw(h, "<nav class=\"sub\"></nav>");
+	else
+		net_base_nav(h);
 	nh = app.net.kind == NET_NEXTHOPS || app.net.kind == NET_NHGROUPS;
-	/* What rc.conf keeps is of the Routes, not a tab of its own. */
 	rt = app.net.kind == NET_ROUTES || app.net.kind == NET_KEPT;
-	/* Routes to WireGuard, the base system's. */
-	for (i = 0; i <= NET_WIREGUARD && !alone; i++)
-		h_fmt(h, "<button class=\"ghost small%s\" data-act=\"net-kind\" "
-		    "data-arg=\"%s\">%s</button>", (int)app.net.kind == i ||
-		    (i == NET_NEXTHOPS && nh) || (i == NET_ROUTES && rt) ?
-		    " on" : "", kinds[i].arg, kinds[i].title);
-	/* What is of the base system too, and came later. */
-	for (i = 8; i < (int)(sizeof(kinds) / sizeof(kinds[0])) && !alone;
-	    i++)
-		if (i != NET_NHGROUPS && i != NET_KEPT && i != NET_MONITORS &&
-		    !NET_PLUGIN(i))
-			h_fmt(h, "<button class=\"ghost small%s\" data-act=\""
-			    "net-kind\" data-arg=\"%s\">%s</button>",
-			    (int)app.net.kind == i ? " on" : "", kinds[i].arg,
-			    kinds[i].title);
-	h_raw(h, "</nav>");
 	if (nh)
 		h_fmt(h, "<nav class=\"sub\" title=\"A nexthop is where a "
 		    "route sends; a group is what a route of several next "

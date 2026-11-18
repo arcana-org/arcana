@@ -1112,6 +1112,10 @@ stage(struct html *h)
 		return;
 	}
 	if (app.tab == TAB_IPSEC) {
+		/* A part of the Network tab's base system: its row above. */
+		h_raw(h, "<div class=\"toolbar\">");
+		net_base_nav(h);
+		h_raw(h, "</div>");
 		view_ipsecbase(h, s);
 		h_raw(h, "</main>");
 		return;

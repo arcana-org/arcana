@@ -7,14 +7,17 @@
 /*
  * The sections of a host's tabs that hold several: Services (the base
  * system's, OpenSMTPD's mail), Network (the base
- * system's, BIRD, IPsec, the FEC relay), Monitoring (utilization,
+ * system's, BIRD, strongSwan, the FEC relay), Monitoring (utilization,
  * alerts, the tunnels measured), System (with sysctl, the kernel, the
  * processes) and Security (with SSH and the certificates).  Each is a
  * tab of before (enum tab, and for the Network tab's plugins and
  * tunnels its kind), read and drawn as it was; a row under the tabs
  * goes between them.  The address is #/hosts/<id>/<tab>/<section>; a
  * tab of before's name leads to its section, and a tab alone to its
- * first, as the tabs themselves are not kept for each host.
+ * first, as the tabs themselves are not kept for each host.  A section
+ * named <section>/<part> is a part of the one before it: not a button
+ * of the row, but that section's, lit while it is shown (the base
+ * system's IPsec, #/hosts/<id>/network/base/ipsec).
  */
 
 #include <stdio.h>
@@ -34,12 +37,11 @@ static const struct hsect {
 	    NULL, NULL },
 	{ "services", "mail", "Mail", "mail", TAB_MAIL, -1, "smtpd", NULL },
 	{ "network", "base", "Base system", "network", TAB_NETWORK, -1, NULL,
-	    "Routes, interfaces, sockets: the base system's" },
+	    "Routes, interfaces, sockets, IPsec: the base system's" },
+	{ "network", "base/ipsec", "IPsec", "ipsec", TAB_IPSEC, -1, NULL,
+	    NULL },
 	{ "network", "bird", "BIRD", "bird", TAB_NETWORK, NET_BIRD, "bird",
 	    NULL },
-	{ "network", "ipsec", "IPsec", "ipsec", TAB_IPSEC, -1, NULL,
-	    "The kernel's IPsec without IKE: SAs and policies by PF_KEY for "
-	    "ipsec(4) interfaces, setkey(8)'s ipsec.conf: the base system's" },
 	{ "network", "strongswan", "strongSwan", "strongswan", TAB_NETWORK,
 	    NET_IPSEC, "strongswan", NULL },
 	{ "network", "relay", "FEC relay", "relay", TAB_RELAY, -1,
@@ -164,8 +166,9 @@ void
 hosttab_nav(struct html *h, struct server *s)
 {
 	const char	*at;
-	size_t		 i, f;
+	size_t		 i, f, l;
 	int		 c;
+	bool		 on;
 
 	if ((c = cur()) < 0)
 		return;
@@ -173,6 +176,12 @@ hosttab_nav(struct html *h, struct server *s)
 	h_raw(h, "<nav class=\"tabs sub hsects\" aria-label=\"Sections\">");
 	for (i = f; i < nitems(hs) && strcmp(hs[i].group, hs[f].group) == 0;
 	    i++) {
+		/* A part of a section is that section's, lit for it. */
+		if (strchr(hs[i].sect, '/') != NULL)
+			continue;
+		l = strlen(hs[i].sect);
+		on = (int)i == c || (strncmp(hs[c].sect, hs[i].sect, l) == 0 &&
+		    hs[c].sect[l] == '/');
 		at = NULL;
 		if (hs[i].plugin != NULL)
 			at = hs[i].kind >= 0 ? plugin_where(s,
@@ -181,7 +190,7 @@ hosttab_nav(struct html *h, struct server *s)
 		h_fmt(h, "<button class=\"tab%s%s%s\" data-act=\"tab\" "
 		    "data-arg=\"%s/%s\"", hs[i].plugin != NULL ? " plugin" : "",
 		    hs[i].plugin != NULL && s->list != NULL && at == NULL ?
-		    " missing" : "", (int)i == c ? " on" : "", hs[i].group,
+		    " missing" : "", on ? " on" : "", hs[i].group,
 		    hs[i].sect);
 		if (hs[i].plugin != NULL && at == NULL && s->list != NULL)
 			h_raw(h, " title=\"A plugin, not installed here: open it "

@@ -112,7 +112,7 @@ render(void)
 /*
  * The page's address names what it shows: #/ the fleet, #/network,
  * #/usage, #/workflows, #/sdwan, #/settings/<tab>, a host as
- * #/hosts/<id>, #/hosts/<id>/<tab> or #/hosts/<id>/<tab>/<section>
+ * #/hosts/<id>, #/hosts/<id>/<tab> or #/hosts/<id>/<tab>/<section>[/<part>]
  * (hosttab.c), and a jail as #/hosts/<id>/jails/<name>.  A link, a
  * reload, the browser's back and forward, and the Android app land
  * where it says; a tab of before, where it is now.
@@ -130,7 +130,7 @@ static const char *const tabnames[] = {
 	[TAB_LOG] = "log", [TAB_JOBS] = "jobs",
 	[TAB_MONITORING] = "monitoring", [TAB_ALERTS] = "monitoring/alerts",
 	[TAB_MODELS] = "models", [TAB_TERMINAL] = "terminal",
-	[TAB_IPSEC] = "ipsec",
+	[TAB_IPSEC] = "network/base/ipsec",
 };
 
 /* A jail's name in the address: what is not a letter, a digit or ._- in
@@ -276,7 +276,7 @@ loc_show(void)
 static void
 loc_go(const char *r)
 {
-	char	 buf[sizeof(loc_wanted)], *f[4], *q, *query;
+	char	 buf[sizeof(loc_wanted)], *f[5], *q, *query;
 	char	 id[sizeof(app.servers[0].id)], arg[sizeof(app.jail)];
 	const char *p;
 	int	 i, np;
@@ -295,7 +295,7 @@ loc_go(const char *r)
 	buf[strcspn(buf, "?")] = '\0';
 	for (q = buf; *q == '#' || *q == '/'; q++)
 		;
-	for (np = 0; np < 4 && *q != '\0'; ) {
+	for (np = 0; np < 5 && *q != '\0'; ) {
 		f[np++] = q;
 		q += strcspn(q, "/");
 		if (*q == '/')
@@ -361,12 +361,13 @@ loc_go(const char *r)
 			loc_dec(arg, sizeof(arg), f[3]);
 			dispatch("open-jail", arg, id);
 		} else {
-			/* A tab and its section: "system/kernel". */
+			/* A tab and its section: "system/kernel", and a
+			 * section's part: "network/base/ipsec". */
 			char	tab[sizeof(arg)];
 
 			loc_dec(arg, sizeof(arg), np > 2 ? f[2] : "summary");
-			if (np > 3) {
-				loc_dec(tab, sizeof(tab), f[3]);
+			for (i = 3; i < np; i++) {
+				loc_dec(tab, sizeof(tab), f[i]);
 				strlcat(arg, "/", sizeof(arg));
 				strlcat(arg, tab, sizeof(arg));
 			}
@@ -1686,6 +1687,8 @@ dispatch(const char *act, const char *arg, const char *value)
 		app.net.paused = !app.net.paused;
 	} else if (strcmp(act, "net-kind") == 0 && s != NULL) {
 		app.net.sort = -1;
+		/* From the base system's IPsec, its row's other views. */
+		app.tab = TAB_NETWORK;
 		app.net.kind = strcmp(arg, "nexthops") == 0 ? NET_NEXTHOPS :
 		    strcmp(arg, "connections") == 0 ? NET_CONNECTIONS :
 		    strcmp(arg, "sockets") == 0 ? NET_SOCKETS :

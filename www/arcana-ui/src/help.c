@@ -72,6 +72,7 @@ tab_help(void)
 	case TAB_NETWORK:
 		return (net_help());
 	case TAB_IPSEC:
+		/* The base system's, a part of Network's. */
 		return ("sections/network.html#ipsec");
 	case TAB_FIREWALL:
 		return ("sections/firewall.html");

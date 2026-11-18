@@ -893,6 +893,7 @@ void		 view_trace(struct html *, const struct op *);
 void		 view_services(struct html *, struct server *);
 void		 view_service_drawer(struct html *, struct server *);
 void		 view_network(struct html *, struct server *);
+void		 net_base_nav(struct html *);
 void		 view_gauges(struct html *, struct server *);
 void		 view_packages(struct html *, struct server *);
 void		 view_fleet(struct html *);
