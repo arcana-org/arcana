@@ -3982,8 +3982,12 @@ part_relay(void)
 	click_when("button[data-act=rl-compare]", 20);
 	wait_js("document.querySelector('form[data-form=rl-compare] input"
 	    "[name=raw]')?.value === '192.0.2.1'", 10);
-	run("const f = document.querySelector('form[data-form=rl-compare]'); "
-	    "f.tunnel.value = '10.9.9.2'; f.requestSubmit();");
+	/* The relay's read, taken again every few seconds, can catch the
+	 * relay restarting for the ratios above and leave the section out
+	 * for one draw: filled and sent once the form is there. */
+	wait_js("(() => { const f = document.querySelector('form[data-form="
+	    "rl-compare]'); if (!f) return false; f.tunnel.value = "
+	    "'10.9.9.2'; f.requestSubmit(); return true; })()", 20);
 	queued_run();
 	queued_run();
 	for (i = 0; i < 300 && system("grep -q '\"fec-raw\"' monitors.json && "
@@ -4362,7 +4366,8 @@ part_hosttabs(void)
 	    "'section.usampling form[data-form=usage-set] input[name=hold]')",
 	    20);
 	ATF_CHECK(js_true("document.querySelectorAll('nav.tabs:not(.sub) "
-	    "button.tab').length === 12 && !document.querySelector('nav.tabs:"
+	    "button.tab').length === 13 && document.querySelector('nav.tabs:"
+	    "not(.sub) button.tab[data-arg=terminal]') && !document.querySelector('nav.tabs:"
 	    "not(.sub) button.tab[data-arg=kernel]') && !document."
 	    "querySelector('nav.tabs:not(.sub) button.tab[data-arg=mail]')"));
 	shot("8h-monitoring");
