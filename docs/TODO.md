@@ -4,6 +4,20 @@
 
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
+  - Upgrading every jail of the fleet by the panel's jobs (2026-11-18):
+    the read of what is pending after a failed upgrade (`pkg version
+    -vRl`, ira/packages.c do_pkg_upgrade) asks the repository again, so
+    a jail that cannot reach it waits a second watchdog (1206 s, not
+    600): skip it after a failure, or pass -U.  The silence watchdog
+    (PKG_IDLE_SEC) kills pkg in the middle of an install when a package
+    script waits on an rc stop (crowdsec left half upgraded): warn, or
+    wait longer, once extraction has begun.  A running job's read over
+    RESTCONF shows its steps incomplete with no output so far.  pkg's
+    "An error occurred while fetching package" reaches the job with no
+    URL or reason.  The lanes (24 on one host, 12 on another) are
+    invisible beside "Upgrade the jails".  On pkgbase jails that button's
+    plain pkg upgrade moves the FreeBSD base too, which its confirm text
+    does not say.
   - The agent's update restarts it by `service arcana_agent restart`;
     with its pidfile gone (/var/run cleaned under it) the restart
     cannot stop the running daemon, the update says done and the old
