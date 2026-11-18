@@ -12,7 +12,9 @@
  * local-unbound-checkconf, squid -k parse, bird -p); c-icap has none,
  * and says what it refuses as it starts.  The console sends what
  * the admin chose, the SD-WAN objects' fields as the edge has them
- * (its interfaces, its addresses, the named lists' entries); the text
+ * (its interfaces, its addresses, the named lists' entries), each form
+ * as arcana-sdwan says it (its bird-form, dhcp-form, dns-form and
+ * proxy-form; ysd.c gives the names it has a - in with a _); the text
  * is made here, with the agent's own paths in it, so that what the
  * daemon's checker takes is what runs.  Every string that reaches a
  * file is checked first: no control character, quote or backslash,
@@ -1672,7 +1674,7 @@ list_of(struct work *w, const ucl_object_t *in, const char *k,
 
 /*
  * The Security section's URL filter, from its form: an explicit proxy
- * the clients are told of, on each address of "listen", its "port"
+ * the clients are told of, on each "address" of "listen", its "port"
  * (3128 unless said) with ssl-bump, so that a TLS name is looked at
  * (mode sni) or TLS opened (inspect); "allow" the networks that may use
  * it; "deny" the domains denied with the names beneath them, a file of
@@ -1703,7 +1705,7 @@ squid_security(struct work *w, const ucl_object_t *in, const char *name,
 	}
 	if (ucl_object_type(ucl_object_lookup(in, "listen")) != UCL_ARRAY ||
 	    ucl_array_size(ucl_object_lookup(in, "listen")) == 0) {
-		*errp = "listen: a list of addresses, one at least";
+		*errp = "listen: a list of addresses (address), one at least";
 		return (NULL);
 	}
 	malware = sflag(in, "malware");
@@ -1724,15 +1726,14 @@ squid_security(struct work *w, const ucl_object_t *in, const char *name,
 	it = NULL;
 	while ((e = ucl_object_iterate(ucl_object_lookup(in, "listen"), &it,
 	    true)) != NULL) {
-		if (ucl_object_type(e) != UCL_STRING || !addr_ok(
-		    ucl_object_tostring(e))) {
+		if (!addr_ok(sstr(e, "address"))) {
 			*errp = wfmt(w, "listen: %.64s is not an address",
-			    ucl_object_tostring_forced(e));
+			    sval(e, "address"));
 			goto bad;
 		}
-		fprintf(b.fp, strchr(ucl_object_tostring(e), ':') != NULL ?
-		    "http_port [%s]:%jd" : "http_port %s:%jd",
-		    ucl_object_tostring(e), (intmax_t)port);
+		fprintf(b.fp, strchr(sstr(e, "address"), ':') != NULL ?
+		    "http_port [%s]:%jd" : "http_port %s:%jd", sstr(e,
+		    "address"), (intmax_t)port);
 		fprintf(b.fp, " ssl-bump tls-cert=%s generate-host-certificates=on "
 		    "dynamic_cert_mem_cache_size=4MB\n", p->ca);
 	}
@@ -2253,6 +2254,34 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 
 /* The default AS of a service, Arcana's (a private one). */
 #define	DEFAULT_AS	64512
+/* BGP's AS numbers, 4 bytes (RFC 6793); a community's halves. */
+#define	AS_MAX		INT64_C(4294967295)
+#define	HALF_MAX	65535
+
+/* A community, "AS:value" (arcana-sdwan's community), its halves into
+ * h; false where it is not one. */
+static bool
+community_of(const ucl_object_t *c, intmax_t h[2])
+{
+	const char	*s;
+	char		*end;
+	long		 v;
+	int		 i;
+
+	if (ucl_object_type(c) != UCL_STRING)
+		return (false);
+	s = ucl_object_tostring(c);
+	for (i = 0; i < 2; i++) {
+		if (!isdigit((unsigned char)*s))
+			return (false);
+		v = strtol(s, &end, 10);
+		if (v > HALF_MAX || *end != (i == 0 ? ':' : '\0') || end - s > 5)
+			return (false);
+		h[i] = v;
+		s = end + 1;
+	}
+	return (true);
+}
 
 static int
 family(const char *s)
@@ -2342,6 +2371,7 @@ bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
 	const ucl_object_t	*rs, *r, *m, *cm;
 	ucl_object_iter_t	 nit, cit;
 	const char		*fam, *pfx, *src, *exp;
+	intmax_t		 h[2];
 	int64_t			 dist, ras;
 	int			 n, k, vi;
 	bool			 ibgp, mh;
@@ -2364,10 +2394,9 @@ bird_routing(struct work *w, FILE *b, const ucl_object_t *u,
 			cit = NULL;
 			while ((cm = ucl_object_iterate(ucl_object_lookup(r,
 			    "communities"), &cit, true)) != NULL)
-				exp = wfmt(w, "%s\t\t\tbgp_community.add((%jd, "
-				    "%jd));\n", exp, (intmax_t)ucl_object_toint(
-				    nth(cm, 0)), (intmax_t)ucl_object_toint(nth(cm,
-				    1)));
+				if (community_of(cm, h))
+					exp = wfmt(w, "%s\t\t\tbgp_community.add(("
+					    "%jd, %jd));\n", exp, h[0], h[1]);
 			exp = wfmt(w, "%s\t\t\taccept;\n\t\t}", exp);
 		}
 		nit = NULL;
@@ -2458,6 +2487,7 @@ bird_sets(FILE *b, const ucl_object_t *sets, bool loop)
 	const ucl_object_t	*set, *m;
 	ucl_object_iter_t	 it, mit;
 	const char		*gw;
+	intmax_t		 h[2];
 	int			 fam, n;
 
 	for (fam = 4; fam <= 6; fam += 2) {
@@ -2492,9 +2522,9 @@ bird_sets(FILE *b, const ucl_object_t *sets, bool loop)
 				mit = NULL;
 				while ((m = ucl_object_iterate(ucl_object_lookup(set,
 				    "communities"), &mit, true)) != NULL)
-					fprintf(b, "%s(%jd, %jd)", n++ > 0 ? ", " : "",
-					    (intmax_t)ucl_object_toint(nth(m, 0)),
-					    (intmax_t)ucl_object_toint(nth(m, 1)));
+					if (community_of(m, h))
+						fprintf(b, "%s(%jd, %jd)", n++ > 0 ?
+						    ", " : "", h[0], h[1]);
 				fprintf(b, "]");
 			}
 			fprintf(b, " then { gw = %s; accept; }\n", gw);
@@ -2591,33 +2621,18 @@ bird_loop(struct work *w, FILE *b, const ucl_object_t *lp, int64_t as)
 	}
 }
 
-/* BGP's AS numbers, 4 bytes (RFC 6793); a community's halves. */
-#define	AS_MAX		INT64_C(4294967295)
-#define	HALF_MAX	65535
-
-/* A community, [a, b] of halves. */
-static bool
-community_ok(const ucl_object_t *c)
-{
-
-	return (ucl_object_type(c) == UCL_ARRAY && ucl_array_size(c) == 2 &&
-	    ucl_object_type(nth(c, 0)) == UCL_INT && ucl_object_type(nth(c,
-	    1)) == UCL_INT && ucl_object_toint(nth(c, 0)) >= 0 &&
-	    ucl_object_toint(nth(c, 0)) <= HALF_MAX && ucl_object_toint(nth(c,
-	    1)) >= 0 && ucl_object_toint(nth(c, 1)) <= HALF_MAX);
-}
-
 /* Each of o's list k a community. */
 static bool
 communities_ok(const ucl_object_t *o, const char *k)
 {
 	const ucl_object_t	*e;
 	ucl_object_iter_t	 it;
+	intmax_t		 h[2];
 
 	it = NULL;
 	while ((e = ucl_object_iterate(ucl_object_lookup(o, k), &it, true)) !=
 	    NULL)
-		if (!community_ok(e))
+		if (!community_of(e, h))
 			return (false);
 	return (true);
 }
@@ -2660,7 +2675,7 @@ routing_wrong(const ucl_object_t *u)
 		if (!num_ok(r, "hold_time", 0, 65535))
 			return ("a hold time is from 0 to 65535");
 		if (!communities_ok(r, "communities"))
-			return ("a community is two numbers to 65535");
+			return ("a community is AS:value, each to 65535");
 	}
 	for (k = 0; (r = entry_at(ucl_object_lookup(u, "ospf"), k)) != NULL;
 	    k++)
@@ -2714,7 +2729,7 @@ bird_wrong(const ucl_object_t *spec)
 		if (!addr_ok(sstr(e, "gateway")))
 			return ("a set's gateway is an address");
 		if (!communities_ok(e, "communities"))
-			return ("a set's community is two numbers to 65535");
+			return ("a set's community is AS:value, each to 65535");
 		fit = NULL;
 		while ((f = ucl_object_iterate(ucl_object_lookup(e, "as_path"),
 		    &fit, true)) != NULL)

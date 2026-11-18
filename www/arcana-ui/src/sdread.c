@@ -335,19 +335,42 @@ ids_json(const ucl_object_t *d)
 }
 
 /* The Security section's forms of instances list: each sec- one's
- * spec, parsed. */
+ * spec, parsed (the IDS', JSON text); a URL filter's as the module says
+ * it (proxy_form()), each address it listens on a word again, with its
+ * name and whether it is stopped. */
 static ucl_object_t *
 security_specs(const ucl_object_t *list)
 {
-	const ucl_object_t	*v;
-	ucl_object_iter_t	 it = NULL;
-	ucl_object_t		*arr, *s;
+	const ucl_object_t	*v, *e;
+	ucl_object_iter_t	 it = NULL, eit;
+	ucl_object_t		*arr, *s, *l;
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
-	while ((v = ucl_object_iterate(list, &it, true)) != NULL)
-		if (is_sec(jstr(v, "name")) && jstr(v, "spec") != NULL &&
-		    (s = json_parse(jstr(v, "spec"))) != NULL)
-			ucl_array_append(arr, s);
+	while ((v = ucl_object_iterate(list, &it, true)) != NULL) {
+		if (!is_sec(jstr(v, "name")))
+			continue;
+		if (jstr(v, "spec") != NULL) {
+			if ((s = json_parse(jstr(v, "spec"))) != NULL)
+				ucl_array_append(arr, s);
+			continue;
+		}
+		if (ucl_object_type(jget(v, "spec")) != UCL_OBJECT)
+			continue;
+		s = ucl_object_copy(jget(v, "spec"));
+		l = ucl_object_typed_new(UCL_ARRAY);
+		eit = NULL;
+		while ((e = ucl_object_iterate(jget(s, "listen"), &eit, true)) !=
+		    NULL)
+			if (jstr(e, "address") != NULL)
+				ucl_array_append(l, ucl_object_fromstring(jstr(e,
+				    "address")));
+		put(s, "listen", l);
+		(void)ucl_object_delete_key(s, "flavor");
+		put_str(s, "name", jstr(v, "name"));
+		if (jbool(v, "stopped"))
+			put(s, "stopped", ucl_object_frombool(true));
+		ucl_array_append(arr, s);
+	}
 	return (arr);
 }
 
@@ -436,6 +459,38 @@ bmp_json(const ucl_object_t *b)
 }
 
 /*
+ * What an instance that runs was made of, into o: its form as the
+ * module says it (spec, of sd's list key, a jail's for one of a jail)
+ * and the text the agent rendered of it (conf), for its view.
+ */
+static void
+inst_form(ucl_object_t *o, const ucl_object_t *sd, const char *key,
+    const ucl_object_t *v)
+{
+	const ucl_object_t	*list, *e;
+	ucl_object_iter_t	 it = NULL;
+
+	list = jget(sd, key);
+	if (jstr(v, "jail") != NULL && jstr(v, "jail")[0] != '\0') {
+		list = NULL;
+		while ((e = ucl_object_iterate(jget(sd, "jail"), &it, true)) !=
+		    NULL)
+			if (jstr(e, "name") != NULL && strcmp(jstr(e, "name"),
+			    jstr(v, "jail")) == 0)
+				list = jget(e, key);
+		it = NULL;
+	}
+	while ((e = ucl_object_iterate(list, &it, true)) != NULL) {
+		if (jstr(e, "name") == NULL || jstr(v, "name") == NULL ||
+		    strcmp(jstr(e, "name"), jstr(v, "name")) != 0)
+			continue;
+		cp(o, "spec", e, "spec");
+		cp(o, "conf", e, "conf");
+		return;
+	}
+}
+
+/*
  * The SD-WAN read as the pages have it: sd arcana-sdwan's sdwan (its
  * state, its instances), pr running's probes, rd the probes' read.
  */
@@ -501,6 +556,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		put(o, "bfd", ps);
 		if (jget(v, "bmp") != NULL)
 			put(o, "bmp", bmp_json(jget(v, "bmp")));
+		inst_form(o, sd, "bird-instance", v);
 		ucl_array_append(arr, o);
 	}
 	put(top, "bird", arr);
@@ -523,6 +579,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 			ucl_array_append(ps, c);
 		}
 		put(o, "leases", ps);
+		inst_form(o, sd, "dhcp-instance", v);
 		ucl_array_append(arr, o);
 	}
 	put(top, "dhcp", arr);
@@ -534,6 +591,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		put(o, "fib", ucl_object_fromint(jint(v, "fib", 0)));
 		put(o, "running", ucl_object_frombool(jbool(v, "running")));
 		cp(o, "tls_cert", v, "tls-cert");
+		inst_form(o, sd, "dns-instance", v);
 		ucl_array_append(arr, o);
 	}
 	put(top, "dns", arr);
@@ -550,6 +608,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		cp(o, "ca", v, "ca");
 		put_str(o, "group", is_sec(jstr(v, "name")) ? "security" :
 		    "sdwan");
+		inst_form(o, sd, "proxy-instance", v);
 		ucl_array_append(arr, o);
 	}
 	put(top, "proxy", arr);
@@ -1163,6 +1222,66 @@ num_ok(const ucl_object_t *in, const char *k, int64_t lo, int64_t hi,
 	return (*v >= lo && *v <= hi);
 }
 
+/* A list of words each once, as a leaf-list holds them. */
+static ucl_object_t *
+words_once(const ucl_object_t *v)
+{
+	const ucl_object_t	*e, *w;
+	ucl_object_iter_t	 it = NULL, wit;
+	ucl_object_t		*arr;
+	bool			 seen;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL) {
+		if (ucl_object_type(e) != UCL_STRING)
+			continue;
+		seen = false;
+		wit = NULL;
+		while (!seen && (w = ucl_object_iterate(arr, &wit, true)) != NULL)
+			seen = strcmp(ucl_object_tostring(w),
+			    ucl_object_tostring(e)) == 0;
+		if (!seen)
+			ucl_array_append(arr, ucl_object_copy(e));
+	}
+	return (arr);
+}
+
+/*
+ * The URL filter's form as arcana-sdwan's proxy-form says it, the spec
+ * the agent renders Squid's file of: its mode, table and port, each
+ * address it listens on an entry, the networks allowed, the domains
+ * denied, whether it scans for malware.
+ */
+static ucl_object_t *
+proxy_form(const ucl_object_t *in, const char *mode, int64_t fib,
+    int64_t port)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*f, *l, *a, *w;
+
+	f = ucl_object_typed_new(UCL_OBJECT);
+	put_str(f, "flavor", "security");
+	put_str(f, "mode", mode);
+	put(f, "fib", ucl_object_fromint(fib));
+	put(f, "port", ucl_object_fromint(port));
+	l = ucl_object_typed_new(UCL_ARRAY);
+	w = words_once(jget(in, "listen"));
+	while ((e = ucl_object_iterate(w, &it, true)) != NULL) {
+		a = ucl_object_typed_new(UCL_OBJECT);
+		put(a, "address", ucl_object_copy(e));
+		ucl_array_append(l, a);
+	}
+	ucl_object_unref(w);
+	put(f, "listen", l);
+	put(f, "allow", words_once(jget(in, "allow")));
+	if (ucl_array_size(jget(in, "deny")) > 0)
+		put(f, "deny", words_once(jget(in, "deny")));
+	if (jbool(in, "malware"))
+		put(f, "malware", ucl_object_frombool(true));
+	return (f);
+}
+
 /* The form's own JSON text: what the agent renders the daemon's of. */
 static void
 put_spec(ucl_object_t *m, const ucl_object_t *in)
@@ -1233,7 +1352,7 @@ proxy_one(const ucl_object_t *in, const char *host, char *err,
 	put_str(o, "host", host);
 	if (jbool(in, "stopped"))
 		put(o, "stopped", ucl_object_frombool(true));
-	put_spec(o, in);
+	put(o, "spec", proxy_form(in, mode, fib, port));
 	return (o);
 }
 

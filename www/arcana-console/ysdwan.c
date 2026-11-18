@@ -113,7 +113,7 @@ copy(ucl_object_t *m, const char *key, const ucl_object_t *o,
 		put(m, key, ucl_object_copy(v));
 }
 
-/* A form: a JSON object made its text; text as it is. */
+/* The IDS' form: a JSON object made its text; text as it is. */
 static void
 spec_put(ucl_object_t *m, const ucl_object_t *o)
 {
@@ -129,6 +129,224 @@ spec_put(ucl_object_t *m, const ucl_object_t *o)
 		put_str(m, "spec", (const char *)t);
 		free(t);
 	}
+}
+
+/*
+ * A form (spec) as arcana-sdwan's container of its kind says it, from
+ * what the console made of the document: each member named as a node of
+ * n (a _ where the node has a -), its value of the node's kind (a
+ * number, a flag, a text); a list's entries, one object alone an entry,
+ * those without their keys or twice left out, a list keyed by its index
+ * alone numbering its entries; a leaf-list's values each once, a pair
+ * [as, value] (a community as the document writes it) made as:value;
+ * a presence container said true there; what the module has not left
+ * out (the document's own words, as a PDNS entry's encryption).
+ */
+#define	FORM_DEPTH	16
+
+static void	put_list(ucl_object_t *, const char *, ucl_object_t *);
+
+static const ucl_object_t *
+form_member(const ucl_object_t *o, const char *name)
+{
+	const ucl_object_t	*v;
+	char			 alt[64], *c;
+
+	if ((v = ucl_object_lookup(o, name)) != NULL || strchr(name, '-') ==
+	    NULL)
+		return (v);
+	snprintf(alt, sizeof(alt), "%s", name);
+	for (c = alt; *c != '\0'; c++)
+		if (*c == '-')
+			*c = '_';
+	return (ucl_object_lookup(o, alt));
+}
+
+/* A scalar as leaf n's kind has it in RFC 7951's JSON; NULL: none. */
+static ucl_object_t *
+form_scalar(const struct cbl_ynode *n, const ucl_object_t *v)
+{
+	char	 buf[48];
+	int	 k = n->type->kind;
+
+	if (ucl_object_type(v) == UCL_ARRAY && ucl_array_size(v) == 2 &&
+	    ucl_object_type(ucl_array_find_index(v, 0)) == UCL_INT &&
+	    ucl_object_type(ucl_array_find_index(v, 1)) == UCL_INT) {
+		snprintf(buf, sizeof(buf), "%jd:%jd", (intmax_t)
+		    ucl_object_toint(ucl_array_find_index(v, 0)), (intmax_t)
+		    ucl_object_toint(ucl_array_find_index(v, 1)));
+		return (ucl_object_fromstring(buf));
+	}
+	if (ucl_object_type(v) == UCL_OBJECT || ucl_object_type(v) ==
+	    UCL_ARRAY || ucl_object_type(v) == UCL_NULL)
+		return (NULL);
+	if (k == CBL_YT_BOOLEAN)
+		return (ucl_object_type(v) == UCL_BOOLEAN ? ucl_object_copy(v) :
+		    NULL);
+	if ((k == CBL_YT_INT8 || k == CBL_YT_INT16 || k == CBL_YT_INT32 ||
+	    k == CBL_YT_UINT8 || k == CBL_YT_UINT16 || k == CBL_YT_UINT32) &&
+	    ucl_object_type(v) == UCL_INT)
+		return (ucl_object_copy(v));
+	return (ucl_object_fromstring(ucl_object_tostring_forced(v)));
+}
+
+static ucl_object_t	*form_object(const struct cbl_ynode *,
+			    const ucl_object_t *, int);
+
+/* A list's entries: each with its keys, once; one object alone an
+ * entry, a word alone the entry of a list keyed by one leaf. */
+static ucl_object_t *
+form_list(const struct cbl_ynode *n, const ucl_object_t *v, int depth)
+{
+	const struct cbl_ynode	*kn;
+	const ucl_object_t	*e, *kv;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*arr, *seen, *o, *all, *w;
+	char			 key[512];
+	int			 i;
+	bool			 index, ok;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	if (n->nkeys == 0)
+		return (arr);
+	all = ucl_object_typed_new(UCL_ARRAY);
+	if (ucl_object_type(v) == UCL_OBJECT)
+		ucl_array_append(all, ucl_object_copy(v));
+	it = NULL;
+	while (ucl_object_type(v) == UCL_ARRAY && (e = ucl_object_iterate(v,
+	    &it, true)) != NULL) {
+		if (ucl_object_type(e) == UCL_OBJECT)
+			ucl_array_append(all, ucl_object_copy(e));
+		else if (n->nkeys == 1 && ucl_object_type(e) != UCL_ARRAY &&
+		    ucl_object_type(e) != UCL_NULL) {
+			w = ucl_object_typed_new(UCL_OBJECT);
+			put(w, n->child[n->keys[0]]->name, ucl_object_copy(e));
+			ucl_array_append(all, w);
+		}
+	}
+	seen = ucl_object_typed_new(UCL_OBJECT);
+	index = n->nkeys == 1 && strcmp(n->child[n->keys[0]]->name, "index") ==
+	    0;
+	i = 0;
+	it = NULL;
+	while ((e = ucl_object_iterate(all, &it, true)) != NULL) {
+		if ((o = form_object(n, e, depth + 1)) == NULL)
+			continue;
+		if (index && ucl_object_lookup(o, "index") == NULL)
+			put(o, "index", ucl_object_fromint(i));
+		i++;
+		key[0] = '\0';
+		ok = true;
+		for (uint16_t k = 0; ok && k < n->nkeys; k++) {
+			kn = n->child[n->keys[k]];
+			if ((kv = ucl_object_lookup(o, kn->name)) == NULL)
+				ok = false;
+			else
+				snprintf(key + strlen(key), sizeof(key) -
+				    strlen(key), "%s\x1f",
+				    ucl_object_tostring_forced(kv));
+		}
+		if (!ok || ucl_object_lookup(seen, key) != NULL) {
+			ucl_object_unref(o);
+			continue;
+		}
+		ucl_object_insert_key(seen, ucl_object_frombool(true), key, 0,
+		    true);
+		ucl_array_append(arr, o);
+	}
+	ucl_object_unref(seen);
+	ucl_object_unref(all);
+	return (arr);
+}
+
+/* Container or list entry n's members of o; NULL past the depth. */
+static ucl_object_t *
+form_object(const struct cbl_ynode *n, const ucl_object_t *o, int depth)
+{
+	const struct cbl_ynode	*c;
+	const ucl_object_t	*v, *e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*m, *x, *arr, *seen;
+
+	if (depth > FORM_DEPTH)
+		return (NULL);
+	m = ucl_object_typed_new(UCL_OBJECT);
+	for (uint32_t i = 0; i < n->nchild; i++) {
+		c = n->child[i];
+		if ((c->flags & CBL_YNF_CONFIG) == 0 || (v = form_member(o,
+		    c->name)) == NULL)
+			continue;
+		switch (c->kind) {
+		case CBL_YN_LEAF:
+			if ((x = form_scalar(c, v)) != NULL)
+				put(m, c->name, x);
+			break;
+		case CBL_YN_LEAFLIST:
+			arr = ucl_object_typed_new(UCL_ARRAY);
+			seen = ucl_object_typed_new(UCL_OBJECT);
+			it = NULL;
+			while (ucl_object_type(v) == UCL_ARRAY && (e =
+			    ucl_object_iterate(v, &it, true)) != NULL) {
+				if ((x = form_scalar(c, e)) == NULL)
+					continue;
+				if (ucl_object_lookup(seen,
+				    ucl_object_tostring_forced(x)) != NULL) {
+					ucl_object_unref(x);
+					continue;
+				}
+				ucl_object_insert_key(seen, ucl_object_frombool(
+				    true), ucl_object_tostring_forced(x), 0, true);
+				ucl_array_append(arr, x);
+			}
+			ucl_object_unref(seen);
+			put_list(m, c->name, arr);
+			break;
+		case CBL_YN_CONTAINER:
+			if (ucl_object_type(v) == UCL_BOOLEAN &&
+			    ucl_object_toboolean(v) && (c->flags &
+			    CBL_YNF_PRESENCE) != 0)
+				put(m, c->name, ucl_object_typed_new(UCL_OBJECT));
+			else if (ucl_object_type(v) == UCL_OBJECT && (x =
+			    form_object(c, v, depth + 1)) != NULL) {
+				if (x->len > 0 || (c->flags & CBL_YNF_PRESENCE) != 0)
+					put(m, c->name, x);
+				else
+					ucl_object_unref(x);
+			}
+			break;
+		case CBL_YN_LIST:
+			put_list(m, c->name, form_list(c, v, depth));
+			break;
+		default:
+			break;
+		}
+	}
+	return (m);
+}
+
+/* in's form, of instances of kind (the list key names), into m. */
+static void
+form_put(ucl_object_t *m, const char *key, const ucl_object_t *in)
+{
+	const struct cbl_ynode	*n;
+	const ucl_object_t	*v;
+	ucl_object_t		*f;
+
+	if ((v = ucl_object_lookup(in, "spec")) == NULL || (n = yq_child(
+	    yq_child(yq_top("arcana-sdwan", "sdwan"), key), "spec")) == NULL)
+		return;
+	if (ucl_object_type(v) == UCL_STRING) {
+		/* Text: as an object, where it is one. */
+		if ((v = parse(ucl_object_tostring(v))) == NULL)
+			return;
+		f = form_object(n, v, 0);
+		ucl_object_unref((ucl_object_t *)(uintptr_t)v);
+	} else if (ucl_object_type(v) == UCL_OBJECT)
+		f = form_object(n, v, 0);
+	else
+		return;
+	if (f != NULL)
+		put(m, "spec", f);
 }
 
 /* An object of names to texts as a list of name and text. */
@@ -439,7 +657,9 @@ instance_of(const char *kind, const ucl_object_t *in)
 	}
 	copy(m, "fib", in, "fib");
 	copy(m, "host", in, "host");
-	spec_put(m, in);
+	form_put(m, strcmp(kind, "bird") == 0 ? "bird-instance" : strcmp(kind,
+	    "dhcp") == 0 ? "dhcp-instance" : strcmp(kind, "dns") == 0 ?
+	    "dns-instance" : "proxy-instance", in);
 	if (strcmp(kind, "proxy") == 0) {
 		copy(m, "mode", in, "mode");
 		put_list(m, "named-list", named(ucl_object_lookup(in, "lists")));
@@ -1489,7 +1709,8 @@ ids_json(const struct arcana_sdwan_sdwan_state_ids *d)
 	return (o);
 }
 
-/* A form of the Security section's, a sec- instance's spec, into arr. */
+/* A form of the Security section's, a sec- IDS instance's spec, into
+ * arr. */
 static void
 security_spec(ucl_object_t *arr, const char *name, const char *spec)
 {
@@ -1497,6 +1718,46 @@ security_spec(ucl_object_t *arr, const char *name, const char *spec)
 
 	if (is_sec(name) && (s = reparse(spec)) != NULL)
 		ucl_array_append(arr, s);
+}
+
+/* The Security section's URL filter as its page has the form, a sec-
+ * proxy instance's: its spec, each address it listens on a word, its
+ * name and whether it is stopped. */
+static void
+security_proxy(ucl_object_t *arr,
+    const struct arcana_sdwan_sdwan_proxy_instance *p)
+{
+	struct cbl_ybuf		 b = { NULL, 0, 0 };
+	const struct cbl_ynode	*n;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*s, *l;
+	char			*text;
+
+	if (!is_sec(p->name) || p->spec == NULL || (n = yq_child(yq_child(
+	    yq_top("arcana-sdwan", "sdwan"), "proxy-instance"), "spec")) ==
+	    NULL || cbl_yjson(n, p->spec, &b) != 0 || asprintf(&text, "%.*s",
+	    (int)b.len, (const char *)b.p) == -1) {
+		cbl_ybuf_free(&b);
+		return;
+	}
+	cbl_ybuf_free(&b);
+	s = parse(text);
+	free(text);
+	if (s == NULL)
+		return;
+	l = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(s, "listen"), &it,
+	    true)) != NULL)
+		if (str(e, "address") != NULL)
+			ucl_array_append(l, ucl_object_fromstring(str(e,
+			    "address")));
+	put(s, "listen", l);
+	put_str(s, "name", p->name);
+	if (p->has_stopped && p->stopped)
+		put(s, "stopped", ucl_object_frombool(true));
+	ucl_array_append(arr, s);
 }
 
 static void
@@ -1655,8 +1916,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 	/* The Security section's forms, from the configuration. */
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; sd != NULL && i < sd->proxy_instance.n; i++)
-		security_spec(arr, sd->proxy_instance.v[i].name,
-		    sd->proxy_instance.v[i].spec);
+		security_proxy(arr, &sd->proxy_instance.v[i]);
 	put(top, "security_proxy", arr);
 	clamav_json(top, st->clamav);
 	arr = ucl_object_typed_new(UCL_ARRAY);

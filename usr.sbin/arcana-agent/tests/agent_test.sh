@@ -2387,28 +2387,50 @@ EOT
 	atf_check -o match:'^edge gateway set=30 rules=1 tables=1 steered=yes sw1_p1/10.3.0.0/24:1$' \
 	    -o match:'^edge down steered=no error=jail down is not running$' \
 	    -o match:'the same back' "$y" state je.json
-	# The instances: the form, JSON text in the module, an object again
-	# for the setter.
+	# The instances: each form as arcana-sdwan says it (spec, a
+	# container of its kind's), what is not of the model left out, an
+	# object again for the setter, with its words spelled as sdconf.c
+	# reads them (router_id, hold_time, as_path, end_point, ...).
 	cat > inst.json <<'EOT'
-{"jail":"gateway","instances":[{"name":"svc1","fib":1,"host":"edge-a","spec":{"router_id":"10.0.0.1","bfd":true}}]}
+{"jail":"gateway","instances":[{"name":"svc1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"10.0.0.1","bfd":{"interfaces":["gre100"],"interval":200,"multiplier":3},"sets":{"only":true,"sets":[{"name":"country","via":"a-inet","gateway":"192.0.2.254","as_path":[64600],"communities":["64600:100"]}]},"unis":[{"id":"uni-hq","end_point":"hq","interface":"lo0","bgp":[{"index":0,"as":65010,"neighbors":["10.1.0.2"],"hold_time":90,"communities":["64600:100"]}]}],"what":"not of the model"}}]}
 EOT
 	cat > want <<'EOT'
-instance svc1 fib=1 host=edge-a spec={"router_id":"10.0.0.1","bfd":true}
-set {"jail":"gateway","instances":[{"name":"svc1","fib":1,"host":"edge-a","spec":{"router_id":"10.0.0.1","bfd":true}}]}
-yang-cbor 58 bytes, the same back
+instance svc1 fib=1 host=edge-a spec={"as":64600,"bfd":{"interfaces":["gre100"],"interval":200,"multiplier":3},"fib":1,"router-id":"10.0.0.1","service":"acme","sets":{"only":true,"sets":[{"as-path":[64600],"communities":["64600:100"],"gateway":"192.0.2.254","name":"country","via":"a-inet"}]},"table":1,"unis":[{"bgp":[{"as":65010,"communities":["64600:100"],"hold-time":90,"index":0,"neighbors":["10.1.0.2"]}],"end-point":"hq","id":"uni-hq","interface":"lo0"}]}
+set {"jail":"gateway","instances":[{"name":"svc1","fib":1,"host":"edge-a","spec":{"as":64600,"bfd":{"interfaces":["gre100"],"interval":200,"multiplier":3},"fib":1,"router_id":"10.0.0.1","service":"acme","sets":{"only":true,"sets":[{"as_path":[64600],"communities":["64600:100"],"gateway":"192.0.2.254","name":"country","via":"a-inet"}]},"table":1,"unis":[{"bgp":[{"as":65010,"communities":["64600:100"],"hold_time":90,"index":0,"neighbors":["10.1.0.2"]}],"end_point":"hq","id":"uni-hq","interface":"lo0"}]}}]}
+yang-cbor 195 bytes, the same back
 EOT
 	atf_check -o file:want "$y" bird inst.json gateway
+	# dnsmasq's: a UNI's family; unbound's: a UNI's two addresses, a
+	# zone's DNF with the named lists' and its PDNS.
+	cat > dhcp.json <<'EOT'
+{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"unis":[{"id":"u1","interface":"lo0","ipv4":{"mode":"dhcp","prefix":"10.10.0.0/24","provider":["10.10.0.1"],"reserved":["10.10.0.0/28"],"dns":["10.10.0.1"],"lease":"2h"}}]}}]}
+EOT
+	cat > want <<'EOT'
+instance sw1 fib=1 host=a spec={"fib":1,"service":"acme","unis":[{"id":"u1","interface":"lo0","ipv4":{"dns":["10.10.0.1"],"lease":"2h","mode":"dhcp","prefix":"10.10.0.0/24","provider":["10.10.0.1"],"reserved":["10.10.0.0/28"]}}]}
+set {"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"fib":1,"service":"acme","unis":[{"id":"u1","interface":"lo0","ipv4":{"dns":["10.10.0.1"],"lease":"2h","mode":"dhcp","prefix":"10.10.0.0/24","provider":["10.10.0.1"],"reserved":["10.10.0.0/28"]}}]}}]}
+yang-cbor 107 bytes, the same back
+EOT
+	atf_check -o file:want "$y" dhcp dhcp.json
+	cat > dns.json <<'EOT'
+{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"dot":true,"upstream":["192.0.2.53#dns.example"],"upstream_tls":true,"unis":[{"id":"uni-hq","address":"10.1.0.1","prefix":"10.1.0.0/24"},{"id":"uni-hq","address":"fd00:1::1","prefix":"fd00:1::/64"}],"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":{"id":"g-dnf","no-match":"allow","block":["bad.example"],"listed":{"block":["worse.example"]}},"pdns":{"no-match":"allow","block":[{"type":"A","value":"192.0.2.66/32"}],"notify":["block"]}}]}}]}
+EOT
+	cat > want <<'EOT'
+instance sw1 fib=1 host=edge-a spec={"dot":true,"fib":1,"service":"acme","unis":[{"address":"10.1.0.1","id":"uni-hq","prefix":"10.1.0.0/24"},{"address":"fd00:1::1","id":"uni-hq","prefix":"fd00:1::/64"}],"upstream":["192.0.2.53#dns.example"],"upstream-tls":true,"zones":[{"dnf":{"block":["bad.example"],"id":"g-dnf","listed":{"block":["worse.example"]},"no-match":"allow"},"name":"z0","pdns":{"block":[{"type":"A","value":"192.0.2.66/32"}],"no-match":"allow","notify":["block"]},"prefixes":["10.1.0.0/24"]}]}
+set {"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"dot":true,"fib":1,"service":"acme","unis":[{"address":"10.1.0.1","id":"uni-hq","prefix":"10.1.0.0/24"},{"address":"fd00:1::1","id":"uni-hq","prefix":"fd00:1::/64"}],"upstream":["192.0.2.53#dns.example"],"upstream_tls":true,"zones":[{"dnf":{"block":["bad.example"],"id":"g-dnf","listed":{"block":["worse.example"]},"no-match":"allow"},"name":"z0","pdns":{"block":[{"type":"A","value":"192.0.2.66/32"}],"no-match":"allow","notify":["block"]},"prefixes":["10.1.0.0/24"]}]}}]}
+yang-cbor 231 bytes, the same back
+EOT
+	atf_check -o file:want "$y" dns dns.json
 	# The proxies and the IDS: SD-WAN's and the Security section's
 	# (sec-) in one list, each group's set apart.
 	cat > proxy.json <<'EOT'
-{"instances":[{"name":"svc1","fib":1,"mode":"inspect","host":"edge-a","spec":{"flavor":"sdwan","zones":[]},"lists":{"zone-block":"bad.example\n"}},{"name":"sec-web","fib":0,"mode":"sni","stopped":true,"spec":{"listen":["10.1.0.1"]}}]}
+{"instances":[{"name":"svc1","fib":1,"mode":"inspect","host":"edge-a","spec":{"flavor":"sdwan","service":"acme","fib":1,"listen":[{"end_point":"hq","address":"10.1.0.1"}],"icap":true,"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":["host.*.tld"],"dnf_id":"g-dnf","urlf":{"no-match":"block","block":["bad.example/path*"]},"mbsf":{"no-match":"block","block":["tls1.0"],"pass-through":["bank.example"],"invalid-server-certificate":"block","unencrypted":"allow"}}]},"lists":{"z0-block":"bad.example\n"}},{"name":"sec-web","fib":0,"mode":"sni","stopped":true,"spec":{"mode":"sni","listen":[{"address":"10.1.0.1"}],"allow":["10.1.0.0/24"],"deny":[".bad.example"]}}]}
 EOT
 	cat > want <<'EOT'
-proxy svc1 fib=1 mode=inspect host=edge-a spec={"flavor":"sdwan","zones":[]} list zone-block=12
-proxy sec-web fib=0 mode=sni host=- spec={"listen":["10.1.0.1"]} stopped=yes
-set {"instances":[{"name":"svc1","fib":1,"mode":"inspect","host":"edge-a","lists":{"zone-block":"bad.example\n"},"spec":{"flavor":"sdwan","zones":[]}}]}
-set {"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","lists":{},"stopped":true,"spec":{"listen":["10.1.0.1"]}}]}
-yang-cbor 125 bytes, the same back
+proxy svc1 fib=1 mode=inspect host=edge-a spec={"fib":1,"flavor":"sdwan","icap":true,"listen":[{"address":"10.1.0.1","end-point":"hq"}],"service":"acme","zones":[{"dnf":["host.*.tld"],"dnf-id":"g-dnf","mbsf":{"block":["tls1.0"],"invalid-server-certificate":"block","no-match":"block","pass-through":["bank.example"],"unencrypted":"allow"},"name":"z0","prefixes":["10.1.0.0/24"],"urlf":{"block":["bad.example/path*"],"no-match":"block"}}]} list z0-block=12
+proxy sec-web fib=0 mode=sni host=- spec={"allow":["10.1.0.0/24"],"deny":[".bad.example"],"listen":[{"address":"10.1.0.1"}],"mode":"sni"} stopped=yes
+set {"instances":[{"name":"svc1","fib":1,"mode":"inspect","host":"edge-a","lists":{"z0-block":"bad.example\n"},"spec":{"fib":1,"flavor":"sdwan","icap":true,"listen":[{"address":"10.1.0.1","end_point":"hq"}],"service":"acme","zones":[{"dnf":["host.*.tld"],"dnf_id":"g-dnf","mbsf":{"block":["tls1.0"],"invalid-server-certificate":"block","no-match":"block","pass-through":["bank.example"],"unencrypted":"allow"},"name":"z0","prefixes":["10.1.0.0/24"],"urlf":{"block":["bad.example/path*"],"no-match":"block"}}]}}]}
+set {"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","lists":{},"stopped":true,"spec":{"allow":["10.1.0.0/24"],"deny":[".bad.example"],"listen":[{"address":"10.1.0.1"}],"mode":"sni"}}]}
+yang-cbor 262 bytes, the same back
 EOT
 	atf_check -o file:want "$y" proxy proxy.json
 	cat > ids.json <<'EOT'
@@ -12287,24 +12309,24 @@ sdwan_bird_body()
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1"}},{"name":"sw1","fib":2,"spec":{"router_id":"1.1.1.1"}}]}'
 	# What the form is not: refused before any file is written; what
 	# bird -p refuses is not run.
-	atf_check -s exit:1 -e match:'sw1: the form.s router_id' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'router-id: "x" does not match pattern' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"x"}}]}'
-	atf_check -s exit:1 -e match:'sw1: the form.s service: a word' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s service: a word)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"a\";\nprotocol x","router_id":"1.1.1.1"}}]}'
 	atf_check -s exit:1 -e match:'does not take it' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"BROKEN","router_id":"1.1.1.1"}}]}'
 	# What BIRD takes bare, each by its type: a neighbour that would
 	# close its protocol and open one exporting into the host's table,
 	# a peer's address, an AS out of range, an interface's name.
-	atf_check -s exit:1 -e match:'sw1: the form.s a BGP neighbor is an address' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s a BGP neighbor is an address)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","unis":[{"id":"u1","end_point":"e1","interface":"vtnet1","bgp":{"as":65001,"neighbors":["192.0.2.1 as 1; } protocol static evil { ipv4; route 0.0.0.0/0 blackhole; } protocol bgp x { neighbor 192.0.2.1"]}}]}}]}'
-	atf_check -s exit:1 -e match:'sw1: the form.s a peer.s local and neighbor are addresses' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s a peer.s local and neighbor are addresses)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","peers":[{"tunnel":"t","to":"b","local":"10.0.0.1","neighbor":"10.0.0.2; }"}]}}]}'
-	atf_check -s exit:1 -e match:'sw1: the form.s as is a number' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s as is a number)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","as":4294967296}}]}'
-	atf_check -s exit:1 -e match:'sw1: the form.s interface is an interface.s name' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s interface is an interface.s name)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","unis":[{"id":"u1","interface":"a b"}]}}]}'
-	atf_check -s exit:1 -e match:'sw1: the form.s an origin.s route is a prefix' -o ignore "$JGC" -c "$SOCK" sdwan bird \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|sw1: the form.s an origin.s route is a prefix)' -o ignore "$JGC" -c "$SOCK" sdwan bird \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"router_id":"1.1.1.1","loopback":true,"loop":{"origins":[{"id":"o","ipv4":[{"prefix":"10.0.0.0/8 via 1.1.1.1; }"}]}]}}}]}'
 	# The host in the first comment line: a word, or - (a line's end
 	# there would begin a statement).
@@ -12521,7 +12543,7 @@ s.sendall(last[20:])
 time.sleep(30)
 EOS
 	# Refused: a count out of range, a FIB the instance does not run in.
-	atf_check -s exit:1 -e match:'sw1: the form.s route_monitoring is an object, its kept a number from 1 to 1024' -o ignore \
+	atf_check -s exit:1 -e match:'kept: 0 out of range' -o ignore \
 	    "$JGC" -c "$SOCK" sdwan bird '{"instances":[{"name":"sw1","fib":0,"spec":{"router_id":"100.64.0.0","route_monitoring":{"kept":0}}}]}'
 	atf_check -s exit:1 -e match:'sw1: route monitoring needs the form.s table to be the instance.s fib, 0' -o ignore \
 	    "$JGC" -c "$SOCK" sdwan bird '{"instances":[{"name":"sw1","fib":0,"spec":{"router_id":"100.64.0.0","fib":2,"table":2,"route_monitoring":{}}}]}'
@@ -12591,9 +12613,9 @@ sdwan_dhcp_dns_body()
 	# em0,em1 or em*), addresses, a lease.
 	atf_check -s exit:1 -e match:"UNI u: its interface is an interface's name" -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1,em0","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24"}}]}}]}'
-	atf_check -s exit:1 -e match:'UNI u: its provider and DNS servers are addresses' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	atf_check -s exit:1 -e match:"dns: '10.1.0.1,10.9.9.9' is not a value of it" -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","dns":["10.1.0.1,10.9.9.9"]}}]}}]}'
-	atf_check -s exit:1 -e match:'UNI u: a lease is a number' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|UNI u: a lease is a number)' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","lease":"12h,x"}}]}}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","provider":["10.1.0.1"]}}]}}]}'
@@ -12618,7 +12640,7 @@ sdwan_dhcp_dns_body()
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","zones":[{"name":"z 0"}]}}]}'
 	# unbound's lexer takes a keyword anywhere: a UNI's address and
 	# prefix by their types, no remote-control of its own.
-	atf_check -s exit:1 -e match:'UNI u: its address is an address' -o ignore "$JGC" -c "$SOCK" sdwan dns \
+	atf_check -s exit:1 -e match:'(is not a value of it|does not match pattern|out of range|UNI u: its address is an address)' -o ignore "$JGC" -c "$SOCK" sdwan dns \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"u","address":"10.1.0.1 remote-control: control-enable: yes","prefix":"10.1.0.0/24"}]}}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns \
 	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","address":"10.1.0.1","prefix":"10.1.0.0/24"}],"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":{"no-match":"allow","block":["ads.example"]}}]}}]}'
@@ -12833,7 +12855,7 @@ sdwan_proxy_body()
 	# apart, neither list stopping the other's; rendered from its form
 	# (the page's), the domains it denies a file named in it; its
 	# forms told back.
-	web='{"name":"sec-web","listen":["10.1.0.1"],"allow":["10.1.0.0/24"],"deny":[".bad.example"]}'
+	web='{"name":"sec-web","listen":[{"address":"10.1.0.1"}],"allow":["10.1.0.0/24"],"deny":[".bad.example"]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
 	    '{"instances":[{"name":"sw1","fib":1,"mode":"sni","host":"edge-a","spec":'"$sni"'}]}'
 	atf_check -s exit:1 -e match:'named sec-' -o ignore "$JGC" -c "$SOCK" sdwan proxy \
@@ -12841,7 +12863,7 @@ sdwan_proxy_body()
 	atf_check -s exit:1 -e match:'named sec-' -o ignore "$JGC" -c "$SOCK" sdwan proxy \
 	    '{"instances":[{"name":"sec-web","fib":0,"mode":"sni","spec":'"$web"'}]}'
 	atf_check -s exit:1 -e match:'sec-web: allow \(the networks that may use it\): 10.1.0.0/x is not one' -o ignore "$JGC" -c "$SOCK" sdwan proxy \
-	    '{"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","spec":{"name":"sec-web","listen":["10.1.0.1"],"allow":["10.1.0.0/x"]}}]}'
+	    '{"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","spec":{"name":"sec-web","listen":[{"address":"10.1.0.1"}],"allow":["10.1.0.0/x"]}}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
 	    '{"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","host":"edge-a","spec":'"$web"'}]}'
 	atf_check -o match:'^acl denied_site ssl::server_name ".*sdwan-proxy-sec-web.deny"$' \
@@ -12849,10 +12871,10 @@ sdwan_proxy_body()
 	    cat "$(dirname "$f")/sdwan-proxy-sec-web.conf"
 	atf_check -o inline:'.bad.example\n' cat "$(dirname "$f")/sdwan-proxy-sec-web.deny"
 	atf_check -o match:'"name":"sw1",[^]]*"group":"sdwan"' -o match:'"name":"sec-web",[^]]*"group":"security"' \
-	    -o match:'"security_proxy":\[\{"name":"sec-web","listen":\["10.1.0.1"\],"allow":\["10.1.0.0/24"\],"deny":\[".bad.example"\]\}\]' "$JGC" -c "$SOCK" sdwan
+	    -o match:'"security_proxy":\[\{"allow":\["10.1.0.0/24"\],"deny":\[".bad.example"\],"listen":\["10.1.0.1"\],"name":"sec-web"\}\]' "$JGC" -c "$SOCK" sdwan
 	# Stopped by the admin: it and its c-icap stopped, its files kept,
 	# kept stopped for the next start; started again, both run.
-	webm='{"name":"sec-web","listen":["10.1.0.1"],"allow":["10.1.0.0/24"],"deny":[".bad.example"],"malware":true}'
+	webm='{"name":"sec-web","listen":[{"address":"10.1.0.1"}],"allow":["10.1.0.0/24"],"deny":[".bad.example"],"malware":true}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
 	    '{"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","host":"edge-a","spec":'"$webm"'}]}'
 	qpid=$(cat "$(dirname "$f")/sdwan-proxy-sec-web.pid")
@@ -13497,6 +13519,16 @@ EOS
 	# A form that would end a line early is refused.
 	atf_check -s exit:1 -e match:'a word of printable characters' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
 	    '{"instances":[{"name":"sw1","fib":1,"spec":{"service":"acme","unis":[{"id":"x","interface":"lo0\nenable-tftp"}]}}]}'
+	# Read back as arcana-sdwan has it: the form as its nodes say it
+	# (spec), the text the agent rendered of it as state (conf), not
+	# in running's configuration.
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" get sdwan
+	atf_check -o match:'"spec":\{"fib":1,"service":"acme","unis":\[\{"id":"uni-hq","interface":"lo0","ipv4":\{"dns":\["10.1.0.1"\],"lease":"1h","mode":"dhcp","prefix":"10.1.0.0/24","provider":\["10.1.0.1"\],"reserved":\["10.1.0.0/26","10.1.0.200/30"\]\}\}\]\}' \
+	    -o match:'"conf":"# Written by arcana-agent for the Arcana console: SD-WAN service acme at a, in routing table 1\.\\u000a' \
+	    -o match:'dhcp-range=set:lo0,10.1.0.64,10.1.0.199,255.255.255.0,1h' \
+	    cat sd.json
+	atf_check -o not-match:'"conf":' -o match:'"service":"acme"' \
+	    "$JGC" -c "$SOCK" get -d running sdwan
 
 	# unbound: hq's provider address, a view of the zone's own by its
 	# prefixes, the Block's names nxdomain, the Allow's transparent,
@@ -13630,7 +13662,7 @@ EOS
 	# control tunnel alone (a the reflector), and BGP with the
 	# subscriber at hq's UNI as its entry says.
 	cat > bird.json <<'EOS'
-{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","gif102","gre104"],"bfd":{"interfaces":["gre100","gif102","gre104"],"interval":200,"multiplier":3,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet/ctvc","to":"b","local":"100.64.0.4","neighbor":"100.64.0.5","role":"client","cluster_id":"192.0.2.1"}],"unis":[{"id":"uni-hq","end_point":"hq","interface":"lo0","bgp":{"family":"ipv4","as":65010,"neighbors":["10.1.0.2"],"password":"s3cret","hold_time":90,"distance":150,"communities":[[64600,100]]}}]}},{"name":"ucs3","fib":3,"host":"a","spec":{"flavor":"ucs","end_point":"a-inet","table":3,"router_id":"192.0.2.1","interface":"vtnet0","as":64512,"bgp":{"family":"ipv4","as":65000,"neighbors":["192.0.2.254"],"password":"up"}}}]}
+{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","gif102","gre104"],"bfd":{"interfaces":["gre100","gif102","gre104"],"interval":200,"multiplier":3,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet/ctvc","to":"b","local":"100.64.0.4","neighbor":"100.64.0.5","role":"client","cluster_id":"192.0.2.1"}],"unis":[{"id":"uni-hq","end_point":"hq","interface":"lo0","bgp":{"family":"ipv4","as":65010,"neighbors":["10.1.0.2"],"password":"s3cret","hold_time":90,"distance":150,"communities":["64600:100"]}}]}},{"name":"ucs3","fib":3,"host":"a","spec":{"flavor":"ucs","end_point":"a-inet","table":3,"router_id":"192.0.2.1","interface":"vtnet0","as":64512,"bgp":{"family":"ipv4","as":65000,"neighbors":["192.0.2.254"],"password":"up"}}}]}
 EOS
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird "$(cat bird.json)"
 	c=$(kept sdwan-bird-sw1.conf)
@@ -13643,8 +13675,8 @@ EOS
 	    atf_fail "the kernel's table is not learned and kept"
 	has_text "$c" "$(printf 'protocol direct {\n\tipv4;\n\tipv6;\n\tinterface "lo0", "gre100", "gif102", "gre104";\n}')" ||
 	    atf_fail "the connected routes are not the UNI's and the tunnels'"
-	has_text "$c" "$(printf 'filter to_edges {\n\tif source = RTS_INHERIT then reject;\n\tif net ~ [ 100.64.0.0/24+, 100.64.0.0/24+ ] then reject;\n\taccept;\n}')" ||
-	    atf_fail "the reserved prefixes go to the edges"
+	has_text "$c" "$(printf 'filter to_edges {\n\tif source = RTS_INHERIT then reject;\n\tif net ~ [ 100.64.0.0/24+ ] then reject;\n\taccept;\n}')" ||
+	    atf_fail "the reserved prefixes, each once, go to the edges"
 	has_text "$c" "$(printf '# acme/a-inet-b-inet/ctvc, to b, a client of this reflector\nprotocol bgp edge0 from edge {\n\tlocal 100.64.0.4 as 64600;\n\tneighbor 100.64.0.5 as 64600;\n\trr client;\n\trr cluster id 192.0.2.1;\n}')" ||
 	    atf_fail "a does not reflect to b by the control tunnel"
 	has_text "$c" "$(printf 'protocol bfd {\n\tinterface "gre100", "gif102", "gre104" {\n\t\tinterval 200 ms;\n\t\tmultiplier 3;\n\t};\n}')" ||
@@ -13698,7 +13730,7 @@ EOS
 	# Destination sets by BGP attribute: the filters to the kernel, the
 	# gateway rewritten, the rest of BGP kept out.
 	cat > bird.json <<'EOS'
-{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","geneve102"],"sets":{"only":true,"sets":[{"name":"country","via":"a-inet","gateway":"192.0.2.254","as_path":[64600,64601],"communities":[[64600,100]]}]},"bfd":{"interfaces":["gre100","geneve102"],"interval":200,"multiplier":3,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet","to":"b","local":"100.64.0.0","neighbor":"100.64.0.1"},{"tunnel":"acme/a-mpls-b-mpls","to":"b","local":"100.64.0.2","neighbor":"100.64.0.3"}],"unis":[]}}]}
+{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","geneve102"],"sets":{"only":true,"sets":[{"name":"country","via":"a-inet","gateway":"192.0.2.254","as_path":[64600,64601],"communities":["64600:100"]}]},"bfd":{"interfaces":["gre100","geneve102"],"interval":200,"multiplier":3,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet","to":"b","local":"100.64.0.0","neighbor":"100.64.0.1"},{"tunnel":"acme/a-mpls-b-mpls","to":"b","local":"100.64.0.2","neighbor":"100.64.0.3"}],"unis":[]}}]}
 EOS
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird "$(cat bird.json)"
 	c=$(kept sdwan-bird-sw1.conf)
@@ -13710,7 +13742,7 @@ EOS
 	# Routing neighbours at a UNI: several BGP entries, one multihop
 	# from a source of the edge's, BFD on both; OSPF of each family.
 	cat > bird.json <<'EOS'
-{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","geneve102"],"bfd":{"interfaces":["gre100","geneve102","lo0"],"interval":200,"multiplier":3,"multihop":true,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet","to":"b","local":"100.64.0.0","neighbor":"100.64.0.1"}],"unis":[{"id":"uni-hq","end_point":"hq","interface":"lo0","bgp":[{"family":"ipv4","as":65010,"neighbors":["10.1.0.2"],"password":"s3cret","hold_time":90,"distance":150,"communities":[[64600,100]],"bfd":true},{"family":"ipv4","as":64600,"neighbors":["10.1.0.3"],"source":"10.1.0.1","multihop":true,"bfd":true}]},{"id":"uni-br","end_point":"branch","interface":"vlan104","ospf":[{"family":"ipv6","area":0,"cost":50,"bfd":true},{"family":"ipv4","area":1}]}]}}]}
+{"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"service":"acme","fib":1,"table":1,"as":64600,"router_id":"100.64.0.0","direct":["lo0","gre100","geneve102"],"bfd":{"interfaces":["gre100","geneve102","lo0"],"interval":200,"multiplier":3,"multihop":true,"sessions":true},"reject":["100.64.0.0/24","100.64.0.0/24"],"md5":"edges-secret","peers":[{"tunnel":"acme/a-inet-b-inet","to":"b","local":"100.64.0.0","neighbor":"100.64.0.1"}],"unis":[{"id":"uni-hq","end_point":"hq","interface":"lo0","bgp":[{"family":"ipv4","as":65010,"neighbors":["10.1.0.2"],"password":"s3cret","hold_time":90,"distance":150,"communities":["64600:100"],"bfd":true},{"family":"ipv4","as":64600,"neighbors":["10.1.0.3"],"source":"10.1.0.1","multihop":true,"bfd":true}]},{"id":"uni-br","end_point":"branch","interface":"vlan104","ospf":[{"family":"ipv6","area":0,"cost":50,"bfd":true},{"family":"ipv4","area":1}]}]}}]}
 EOS
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird "$(cat bird.json)"
 	c=$(kept sdwan-bird-sw1.conf)

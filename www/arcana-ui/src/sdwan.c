@@ -4361,6 +4361,85 @@ view_altmark(struct html *h)
 	ucl_object_unref(all);
 }
 
+/*
+ * A form's fields as arcana-sdwan says them (RFC 7951's JSON of its
+ * spec): each leaf its value, a leaf-list its values, a container and
+ * each entry of a list its own fields below.
+ */
+static void
+form_fields(struct html *h, const ucl_object_t *o, int depth)
+{
+	const ucl_object_t	*e, *x;
+	ucl_object_iter_t	 it = NULL, xit;
+	bool			 objs;
+	int			 n;
+
+	h_raw(h, "<dl class=\"kv sd-form\">");
+	while ((e = ucl_object_iterate(o, &it, true)) != NULL) {
+		h_raw(h, "<dt>");
+		h_txt(h, ucl_object_key(e));
+		h_raw(h, "</dt><dd>");
+		switch (ucl_object_type(e)) {
+		case UCL_OBJECT:
+			if (depth < 8)
+				form_fields(h, e, depth + 1);
+			break;
+		case UCL_ARRAY:
+			objs = false;
+			xit = NULL;
+			while ((x = ucl_object_iterate(e, &xit, true)) != NULL)
+				if (ucl_object_type(x) == UCL_OBJECT)
+					objs = true;
+			n = 0;
+			xit = NULL;
+			while ((x = ucl_object_iterate(e, &xit, true)) != NULL) {
+				if (objs && depth < 8)
+					form_fields(h, x, depth + 1);
+				else if (!objs) {
+					h_raw(h, n++ > 0 ? ", " : "");
+					h_txt(h, ucl_object_tostring_forced(x));
+				}
+			}
+			break;
+		default:
+			h_raw(h, "<span class=\"mono\">");
+			h_txt(h, ucl_object_tostring_forced(e));
+			h_raw(h, "</span>");
+			break;
+		}
+		h_raw(h, "</dd>");
+	}
+	h_raw(h, "</dl>");
+}
+
+/*
+ * An instance's form (spec, as arcana-sdwan says it) and the file the
+ * agent rendered of it (conf), a row of cols below its own, folded.
+ */
+static void
+inst_details(struct html *h, const ucl_object_t *e, int cols)
+{
+
+	if (jget(e, "spec") == NULL && jstr(e, "conf") == NULL)
+		return;
+	h_fmt(h, "<tr class=\"sd-inst\"><td></td><td colspan=\"%d\"><details "
+	    "class=\"sd-more\"><summary>Its form and the file rendered of "
+	    "it</summary>", cols - 1);
+	if (ucl_object_type(jget(e, "spec")) == UCL_OBJECT) {
+		h_raw(h, "<h4>Form <small class=\"dim\">arcana-sdwan's spec"
+		    "</small></h4>");
+		form_fields(h, jget(e, "spec"), 0);
+	}
+	if (jstr(e, "conf") != NULL) {
+		h_raw(h, "<h4>Rendered <small class=\"dim\">by the agent, "
+		    "checked by the daemon before it runs</small></h4><pre "
+		    "class=\"sd-conf\">");
+		h_txt(h, jstr(e, "conf"));
+		h_raw(h, "</pre>");
+	}
+	h_raw(h, "</details></td></tr>");
+}
+
 static void
 view_paths(struct html *h)
 {
@@ -4750,6 +4829,7 @@ view_paths(struct html *h)
 					h_txt(h, age);
 				h_raw(h, "</td></tr>");
 			}
+			inst_details(h, di, 7);
 		}
 	}
 	if (n == 0)
@@ -4812,6 +4892,7 @@ view_paths(struct html *h)
 				if (pr == NULL)
 					break;
 			}
+			inst_details(h, e, 5);
 		}
 	}
 	if (n == 0)
@@ -5879,6 +5960,7 @@ view_security(struct html *h)
 			else
 				h_raw(h, "<span class=\"dim\">—</span>");
 			h_raw(h, "</td></tr>");
+			inst_details(h, di, 4);
 		}
 	}
 	if (n == 0)
@@ -5922,6 +6004,7 @@ view_security(struct html *h)
 			else
 				h_raw(h, "<span class=\"dim\">—</span>");
 			h_raw(h, "</td></tr>");
+			inst_details(h, pi, 5);
 		}
 	}
 	if (n == 0)

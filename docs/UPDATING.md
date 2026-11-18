@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN instances' forms in the module; agent 0.310.0, console 0.457.0
+
+- arcana-sdwan's BIRD, dnsmasq, unbound and Squid instances have their
+  form (spec) as the module says it: a container of bird-form,
+  dhcp-form, dns-form or proxy-form (SIDs 93 227 to 93 299 and 95 600
+  to 95 842), no longer JSON text; the text the agent rendered stays
+  the conf state leaf, shown under each instance on the SD-WAN page.
+- Update the agent and the console together.  The agent's kept forms
+  now write a BGP community as "AS:value" (was [AS, value]) and a
+  Security URL filter's listen as entries of an address (was words):
+  after updating, apply SD-WAN again (fresh) on each edge and save each
+  Security URL filter again; until then such an instance kept the old
+  way is refused when the agent starts.
+
 ### Out of memory fails one request; agent 0.309.0
 
 - A request or a job that runs out of memory fails alone, "out of

@@ -3264,7 +3264,7 @@ sd_edge_conf(struct work *w, const char *jail, cbl_yarena *a,
 		free(json);
 	}
 	if (error == 0 && (json = sd_kept(w, "sdwan-bird", jail)) != NULL) {
-		if ((error = ysd_instances_from_json(json, YSD_PLAIN, a,
+		if ((error = ysd_instances_from_json(json, YSD_BIRD, a,
 		    &e->bird_instance.n, &v)) == 0)
 			e->bird_instance.v = v;
 		free(json);
@@ -3337,12 +3337,12 @@ sd_conf(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	o->steer = host.steer;
 	o->bird_instance.n = host.bird_instance.n;
 	o->bird_instance.v = host.bird_instance.v;
-	if ((error = sd_instances(w, YSD_PLAIN, dhcp, a,
+	if ((error = sd_instances(w, YSD_DHCP, dhcp, a,
 	    sizeof(struct arcana_sdwan_sdwan_dhcp_instance), &o->dhcp_instance.n,
 	    &v)) != 0)
 		return (error);
 	o->dhcp_instance.v = v;
-	if ((error = sd_instances(w, YSD_PLAIN, dns, a,
+	if ((error = sd_instances(w, YSD_DNS, dns, a,
 	    sizeof(struct arcana_sdwan_sdwan_dns_instance), &o->dns_instance.n,
 	    &v)) != 0)
 		return (error);
@@ -3543,9 +3543,9 @@ sd_plan_edge(struct sd_plan *p, const char *jail,
 		return (false);
 	e = NULL;
 	if ((b->bird_instance.n > 0 || f->bird_instance.n > 0) && !sd_plan(p,
-	    SD_BIRD, jail, ysd_instances_json(YSD_PLAIN, jail, -1,
+	    SD_BIRD, jail, ysd_instances_json(YSD_BIRD, jail, -1,
 	    b->bird_instance.n, b->bird_instance.v, &e), ysd_instances_json(
-	    YSD_PLAIN, jail, -1, f->bird_instance.n, f->bird_instance.v, &e)))
+	    YSD_BIRD, jail, -1, f->bird_instance.n, f->bird_instance.v, &e)))
 		return (false);
 	return (true);
 }
@@ -3630,9 +3630,9 @@ arcana_sdwan_sdwan_edit(cbl_req *req, const struct arcana_sdwan *before,
 		sd_edge(NULL, jail, &now);
 		rc = sd_plan_edge(p, jail, &was, &now) ? 0 : -1;
 	}
-	if (rc == 0 && (!sd_plan_kind(p, SD_DHCP, YSD_PLAIN, -1,
+	if (rc == 0 && (!sd_plan_kind(p, SD_DHCP, YSD_DHCP, -1,
 	    b->dhcp_instance.n, b->dhcp_instance.v, f->dhcp_instance.n,
-	    f->dhcp_instance.v) || !sd_plan_kind(p, SD_DNS, YSD_PLAIN, -1,
+	    f->dhcp_instance.v) || !sd_plan_kind(p, SD_DNS, YSD_DNS, -1,
 	    b->dns_instance.n, b->dns_instance.v, f->dns_instance.n,
 	    f->dns_instance.v)))
 		rc = -1;
@@ -3754,15 +3754,15 @@ arcana_sdwan_sdwan_apply_action(cbl_req *req, const struct cbl_bytes *target,
 		json = ysd_steer_json(jail, e.steer);
 		break;
 	case SD_BIRD:
-		json = ysd_instances_json(YSD_PLAIN, jail, -1,
+		json = ysd_instances_json(YSD_BIRD, jail, -1,
 		    e.bird_instance.n, e.bird_instance.v, &why);
 		break;
 	case SD_DHCP:
-		json = ysd_instances_json(YSD_PLAIN, NULL, -1,
+		json = ysd_instances_json(YSD_DHCP, NULL, -1,
 		    conf.dhcp_instance.n, conf.dhcp_instance.v, &why);
 		break;
 	case SD_DNS:
-		json = ysd_instances_json(YSD_PLAIN, NULL, -1,
+		json = ysd_instances_json(YSD_DNS, NULL, -1,
 		    conf.dns_instance.n, conf.dns_instance.v, &why);
 		break;
 	case SD_PROXY:

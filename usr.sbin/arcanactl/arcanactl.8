@@ -2811,8 +2811,9 @@ and
 reads each entry's candidates, the one chosen and why.
 .It Cm sdwan bird Ar json
 The BIRD instances of the services at this edge: each a name, the fib
-it runs in, the host's name and its form (spec, JSON text in the
-module), which the agent renders into BIRD's configuration; parsed
+it runs in, the host's name and its form (spec, a container of
+arcana-sdwan's bird-form; what it has not is left out), which the agent
+renders into BIRD's configuration; parsed
 first, started or told to read it again, those not named stopped.
 With jail, a jail's edge's.
 .It Cm sdwan dhcp Ar json

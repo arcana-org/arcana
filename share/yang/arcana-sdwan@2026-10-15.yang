@@ -40,7 +40,9 @@ module arcana-sdwan {
      CA of its own where TLS is opened) and Suricata (the ids
      criterion) instances of the services, one each in its FIB
      (setfib), and the Security section's Squid and Suricata (named
-     sec-), as the console writes them; the rules, steering and BIRD of
+     sec-), as the console writes them, each from its form as this
+     module says it (Suricata's still JSON text), the text the agent
+     rendered of it its state; the rules, steering and BIRD of
      each edge that is a vnet jail under jail; and as state what each
      is doing, the security policies' record (ipfw's logdst rtsock),
      the IPsec keys of the tunnels (sdwan-key-*.pem) and the faults of
@@ -339,9 +341,1013 @@ module arcana-sdwan {
     }
   }
 
+  typedef allow-block {
+    type enumeration {
+      enum allow {
+        description
+          "Let through.";
+      }
+      enum block {
+        description
+          "Stopped.";
+      }
+    }
+    description
+      "An action of a function policy (MEF 138 §6.1.3).";
+  }
+
+  typedef sfp-list {
+    type enumeration {
+      enum block {
+        description
+          "Its Block list.";
+      }
+      enum quarantine {
+        description
+          "Its Quarantine list.";
+      }
+      enum allow {
+        description
+          "Its Allow list.";
+      }
+    }
+    description
+      "A list of a function policy's (MEF 138 §6.1.6).";
+  }
+
+  typedef community {
+    type string {
+      pattern '[0-9]{1,5}:[0-9]{1,5}';
+    }
+    description
+      "A BGP community (RFC 1997): its two halves, each 0 to 65535,
+       as AS:value.";
+  }
+
+  typedef family {
+    type enumeration {
+      enum ipv4 {
+        description
+          "IPv4 alone.";
+      }
+      enum ipv6 {
+        description
+          "IPv6 alone.";
+      }
+      enum both {
+        description
+          "Both.";
+      }
+    }
+    description
+      "The families a session or an area is for (MEF 70.2 §11.6,
+       R139).";
+  }
+
+  grouping sfp-lists {
+    description
+      "The lists of a function policy whose entries are words: its
+       own, then the named lists' as the console resolved them.";
+    leaf-list block {
+      type string;
+      description
+        "Block.";
+    }
+    leaf-list quarantine {
+      type string;
+      description
+        "Quarantine, blocked too (MEF 138 §6.1.3).";
+    }
+    leaf-list allow {
+      type string;
+      description
+        "Allow.";
+    }
+  }
+
+  grouping sfp-common {
+    description
+      "What every function policy has (MEF 138 §6.1).";
+    leaf no-match {
+      type allow-block;
+      description
+        "What is on no list (R68-R70).";
+    }
+    leaf-list notify {
+      type sfp-list;
+      description
+        "The lists whose matches are told (R20); none said, Block and
+         Quarantine (R21).";
+    }
+    leaf id {
+      type string;
+      description
+        "The policy's ID, which what the daemon blocked is named by.";
+    }
+  }
+
+  grouping sfp-form {
+    description
+      "A function policy whose entries are words: a DNF's domains, a
+       URLF's URLs, an MD+R's hashes.";
+    uses sfp-common;
+    uses sfp-lists;
+    container listed {
+      description
+        "The named lists' entries, by list.";
+      uses sfp-lists;
+    }
+  }
+
+  grouping pdns-entries {
+    description
+      "The entries of a PDNS list: a type and a value each (MEF 138
+       Table 8).";
+    leaf type {
+      type enumeration {
+        enum A {
+          description
+            "An IPv4 address in an answer.";
+        }
+        enum AAAA {
+          description
+            "An IPv6 address in an answer.";
+        }
+        enum CNAME {
+          description
+            "The name an alias leads to.";
+        }
+        enum NS {
+          description
+            "A name server's name or address.";
+        }
+      }
+      description
+        "What of an answer it is matched against (R104).";
+    }
+    leaf value {
+      type string;
+      description
+        "A prefix, any, or a name.";
+    }
+  }
+
+  grouping pdns-form {
+    description
+      "A PDNS function policy (MEF 138 §6.1.11).";
+    uses sfp-common;
+    list block {
+      key "type value";
+      description
+        "Block.";
+      uses pdns-entries;
+    }
+    list quarantine {
+      key "type value";
+      description
+        "Quarantine.";
+      uses pdns-entries;
+    }
+    list allow {
+      key "type value";
+      description
+        "Allow.";
+      uses pdns-entries;
+    }
+    container listed {
+      description
+        "The named lists' prefixes, by list.";
+      uses sfp-lists;
+    }
+  }
+
+  grouping mbsf-form {
+    description
+      "An MBSF function policy (MEF 138 Table 9).";
+    leaf no-match {
+      type allow-block;
+      description
+        "What a version on no list has.";
+    }
+    leaf-list block {
+      type string;
+      description
+        "The protocol versions blocked: ssl3, tls1.0 to tls1.3.";
+    }
+    leaf-list allow {
+      type string;
+      description
+        "The protocol versions let through.";
+    }
+    leaf-list pass-through {
+      type string;
+      description
+        "The hosts never opened.";
+    }
+    leaf invalid-server-certificate {
+      type allow-block;
+      description
+        "A server's certificate not trusted.";
+    }
+    leaf unencrypted {
+      type allow-block;
+      description
+        "Cleartext HTTP.";
+    }
+    leaf id {
+      type string;
+      description
+        "The policy's ID.";
+    }
+  }
+
+  grouping routing-form {
+    description
+      "BGP and OSPF with a neighbour at an interface, as a UNI's or a
+       UCS End Point's routing has them (MEF 70.2 §11.6.2, §11.6.3;
+       Mplify 119 §12.2.3.5): an entry each, or several (an area per
+       family, BGP neighbours of their own AS).";
+    list bgp {
+      key "index";
+      description
+        "The BGP sessions.";
+      leaf index {
+        type uint8;
+        description
+          "The entry's place.";
+      }
+      leaf family {
+        type family;
+        description
+          "Its families.";
+      }
+      leaf as {
+        type uint32 {
+          range "1..max";
+        }
+        description
+          "The neighbours' AS; the instance's own makes it iBGP, next
+           hop self.";
+      }
+      leaf-list neighbors {
+        type inet:ip-address-no-zone;
+        description
+          "The neighbours' addresses.";
+      }
+      leaf source {
+        type inet:ip-address-no-zone;
+        description
+          "This edge's address the sessions are from (a loopback's):
+           multihop.";
+      }
+      leaf multihop {
+        type boolean;
+        description
+          "Not across the interface alone.";
+      }
+      leaf bfd {
+        type boolean;
+        description
+          "Watched by BFD.";
+      }
+      leaf distance {
+        type uint8 {
+          range "1..255";
+        }
+        description
+          "Its routes' distance, the lower the better (R140-R142).";
+      }
+      leaf hold-time {
+        type uint16;
+        units "seconds";
+        description
+          "The hold time.";
+      }
+      leaf password {
+        type string;
+        description
+          "TCP MD5's.";
+      }
+      leaf-list communities {
+        type community;
+        description
+          "The communities agreed, added to what goes to the
+           neighbours.";
+      }
+    }
+    list ospf {
+      key "index";
+      description
+        "The OSPF areas.";
+      leaf index {
+        type uint8;
+        description
+          "The entry's place.";
+      }
+      leaf family {
+        type family;
+        description
+          "Its families: OSPFv2, OSPFv3 or both.";
+      }
+      leaf area {
+        type uint32;
+        description
+          "The area, 0 the backbone.";
+      }
+      leaf cost {
+        type uint16 {
+          range "1..max";
+        }
+        description
+          "The interface's cost.";
+      }
+      leaf hello {
+        type uint16 {
+          range "1..max";
+        }
+        units "seconds";
+        description
+          "The hello interval.";
+      }
+      leaf dead {
+        type uint16 {
+          range "1..max";
+        }
+        units "seconds";
+        description
+          "The dead interval.";
+      }
+      leaf bfd {
+        type boolean;
+        description
+          "Watched by BFD.";
+      }
+      leaf distance {
+        type uint8 {
+          range "1..255";
+        }
+        description
+          "Its routes' distance.";
+      }
+      leaf password {
+        type string;
+        description
+          "Cryptographic authentication's.";
+      }
+    }
+  }
+
+  grouping bird-form {
+    description
+      "The form BIRD's file of an instance is rendered from (luxuria
+       sdconf.c): an SD-WAN service's at this edge, or a UCS End
+       Point's (flavor ucs).";
+    leaf flavor {
+      type enumeration {
+        enum sdwan {
+          description
+            "An SD-WAN service's.";
+        }
+        enum ucs {
+          description
+            "A UCS End Point's, routing with the underlay.";
+        }
+      }
+      description
+        "Whose; none an SD-WAN service's.";
+    }
+    leaf service {
+      type string;
+      description
+        "The service.";
+    }
+    leaf end-point {
+      type string;
+      description
+        "The UCS End Point.";
+    }
+    leaf fib {
+      type uint32;
+      description
+        "The service's FIB, for the file's comment.";
+    }
+    leaf table {
+      type uint32;
+      description
+        "The kernel table BIRD learns and writes.";
+    }
+    leaf as {
+      type uint32 {
+        range "1..max";
+      }
+      description
+        "Its AS.";
+    }
+    leaf router-id {
+      type inet:ipv4-address-no-zone;
+      description
+        "Its router id.";
+    }
+    leaf interface {
+      type string;
+      description
+        "The UCS End Point's interface.";
+    }
+    uses routing-form;
+    leaf-list direct {
+      type string;
+      description
+        "The interfaces whose connected routes it takes.";
+    }
+    leaf loopback {
+      type boolean;
+      description
+        "The iBGP between the edges' loopbacks (loop).";
+    }
+    container route-monitoring {
+      presence
+        "Its BGP updates to the agent by BMP (RFC 7854).";
+      description
+        "BMP to the agent's station of its table.";
+      leaf kept {
+        type uint16 {
+          range "1..1024";
+        }
+        description
+          "The updates the agent keeps.";
+      }
+    }
+    container bfd {
+      presence
+        "BFD on the tunnels.";
+      description
+        "BFD on the tunnel interfaces here and the UNIs whose
+         neighbours it watches (R58, R59, R159).";
+      leaf-list interfaces {
+        type string;
+        description
+          "The interfaces.";
+      }
+      leaf interval {
+        type uint16 {
+          range "1..60000";
+        }
+        units "milliseconds";
+        description
+          "The interval.";
+      }
+      leaf multiplier {
+        type uint8 {
+          range "1..max";
+        }
+        description
+          "The multiplier.";
+      }
+      leaf multihop {
+        type boolean;
+        description
+          "Multihop sessions watched too.";
+      }
+      leaf sessions {
+        type boolean;
+        description
+          "The iBGP sessions go down with it.";
+      }
+    }
+    leaf-list reject {
+      type string;
+      description
+        "The prefixes not sent to the other edges.";
+    }
+    leaf md5 {
+      type string;
+      description
+        "TCP MD5 on the iBGP sessions (Mplify 119 R11, R12).";
+    }
+    container sets {
+      presence
+        "The breakout chosen by BGP attribute.";
+      description
+        "The destination sets by BGP attribute, each by the uplink
+         named for it.";
+      leaf only {
+        type boolean;
+        description
+          "No other BGP route reaches the kernel.";
+      }
+      list sets {
+        key "name";
+        description
+          "The sets.";
+        leaf name {
+          type string;
+          description
+            "The set.";
+        }
+        leaf via {
+          type string;
+          description
+            "The UCS End Point named for it.";
+        }
+        leaf gateway {
+          type inet:ip-address-no-zone;
+          description
+            "Its gateway.";
+        }
+        leaf-list as-path {
+          type uint32;
+          description
+            "The AS numbers a route's path is matched against.";
+        }
+        leaf-list communities {
+          type community;
+          description
+            "The communities it is matched against.";
+        }
+      }
+    }
+    container loop {
+      presence
+        "The iBGP between loopbacks.";
+      description
+        "iBGP between the edges' loopbacks.";
+      leaf local4 {
+        type inet:ipv4-address-no-zone;
+        description
+          "This edge's IPv4 loopback.";
+      }
+      leaf local6 {
+        type inet:ipv6-address-no-zone;
+        description
+          "This edge's IPv6 loopback.";
+      }
+      leaf transit {
+        type boolean;
+        description
+          "This edge reflects.";
+      }
+      list edges {
+        key "name";
+        description
+          "The other edges.";
+        leaf name {
+          type string;
+          description
+            "The edge.";
+        }
+        leaf ipv4 {
+          type inet:ipv4-address-no-zone;
+          description
+            "Its IPv4 loopback.";
+        }
+        leaf ipv6 {
+          type inet:ipv6-address-no-zone;
+          description
+            "Its IPv6 loopback.";
+        }
+        leaf-list paths4 {
+          type inet:ip-address-no-zone;
+          description
+            "The tunnels' far inner IPv4 addresses.";
+        }
+        leaf-list backup4 {
+          type inet:ip-address-no-zone;
+          description
+            "The backup tunnels'.";
+        }
+        leaf-list paths6 {
+          type inet:ip-address-no-zone;
+          description
+            "The tunnels' far inner IPv6 addresses.";
+        }
+        leaf-list backup6 {
+          type inet:ip-address-no-zone;
+          description
+            "The backup tunnels'.";
+        }
+      }
+      list origins {
+        key "id";
+        description
+          "This edge's own prefixes, by end point.";
+        leaf id {
+          type string;
+          description
+            "The end point.";
+        }
+        leaf interface {
+          type string;
+          description
+            "Its interface.";
+        }
+        list ipv4 {
+          key "prefix";
+          description
+            "Its IPv4 routes.";
+          leaf prefix {
+            type string;
+            description
+              "The prefix.";
+          }
+          leaf next-hop {
+            type inet:ip-address-no-zone;
+            description
+              "Its next hop; none, the interface.";
+          }
+        }
+        list ipv6 {
+          key "prefix";
+          description
+            "Its IPv6 routes.";
+          leaf prefix {
+            type string;
+            description
+              "The prefix.";
+          }
+          leaf next-hop {
+            type inet:ip-address-no-zone;
+            description
+              "Its next hop; none, the interface.";
+          }
+        }
+      }
+    }
+    list peers {
+      key "tunnel";
+      description
+        "The iBGP peers, each by a tunnel.";
+      leaf tunnel {
+        type string;
+        description
+          "The tunnel.";
+      }
+      leaf to {
+        type string;
+        description
+          "The edge at its far end.";
+      }
+      leaf local {
+        type inet:ip-address-no-zone;
+        description
+          "This end's inner address.";
+      }
+      leaf neighbor {
+        type inet:ip-address-no-zone;
+        description
+          "The far end's.";
+      }
+      leaf role {
+        type enumeration {
+          enum client {
+            description
+              "A client of this edge's reflection (RFC 4456).";
+          }
+          enum control {
+            description
+              "The control plane, which reflects.";
+          }
+        }
+        description
+          "Where a control plane reflects (Mplify 119 §8.3).";
+      }
+      leaf cluster-id {
+        type string;
+        description
+          "The reflection's cluster id: an IPv4 address or a number.";
+      }
+    }
+    list unis {
+      key "id";
+      description
+        "The UNIs here that route.";
+      leaf id {
+        type string;
+        description
+          "The UNI.";
+      }
+      leaf end-point {
+        type string;
+        description
+          "Its end point.";
+      }
+      leaf interface {
+        type string;
+        description
+          "Its interface.";
+      }
+      uses routing-form;
+    }
+  }
+
+  grouping dhcp-family {
+    description
+      "A UNI's family as dnsmasq serves it (MEF 70.2 §11.4, §11.5).";
+    leaf mode {
+      type string;
+      description
+        "How the hosts are addressed: dhcp is served.";
+    }
+    leaf prefix {
+      type string;
+      description
+        "The UNI's subnet.";
+    }
+    leaf-list provider {
+      type inet:ip-address-no-zone;
+      description
+        "The provider's addresses, the first the hosts' router.";
+    }
+    leaf-list reserved {
+      type string;
+      description
+        "The prefixes not given out.";
+    }
+    leaf lease {
+      type string;
+      description
+        "The lease time: a number of s, m, h, d or w, or infinite.";
+    }
+    leaf-list dns {
+      type inet:ip-address-no-zone;
+      description
+        "The DNS servers told.";
+    }
+  }
+
+  grouping dhcp-form {
+    description
+      "The form dnsmasq's file of an instance is rendered from: a
+       service at this edge.";
+    leaf service {
+      type string;
+      description
+        "The service.";
+    }
+    leaf fib {
+      type uint32;
+      description
+        "Its FIB, for the file's comment.";
+    }
+    list unis {
+      key "id";
+      description
+        "Its UNIs here addressed by DHCP.";
+      leaf id {
+        type string;
+        description
+          "The UNI.";
+      }
+      leaf interface {
+        type string;
+        description
+          "Its interface.";
+      }
+      container ipv4 {
+        description
+          "IPv4, where served.";
+        uses dhcp-family;
+      }
+      container ipv6 {
+        description
+          "IPv6, where served.";
+        uses dhcp-family;
+      }
+    }
+  }
+
+  grouping dns-form {
+    description
+      "The form unbound's file of an instance is rendered from: a
+       service at this edge, its zones' DNF and PDNS (MEF 138).";
+    leaf service {
+      type string;
+      description
+        "The service.";
+    }
+    leaf fib {
+      type uint32;
+      description
+        "Its FIB, for the file's comment.";
+    }
+    leaf dot {
+      type boolean;
+      description
+        "DNS over TLS to the clients too, port 853 (D22).";
+    }
+    leaf-list upstream {
+      type string;
+      description
+        "The servers it asks instead of resolving: address[@port]
+         [#name] (D21).";
+    }
+    leaf upstream-tls {
+      type boolean;
+      description
+        "Asked over TLS.";
+    }
+    list unis {
+      key "id address";
+      description
+        "Where it listens: a UNI's provider address of each family.";
+      leaf id {
+        type string;
+        description
+          "The UNI.";
+      }
+      leaf address {
+        type inet:ip-address-no-zone;
+        description
+          "The address it listens on.";
+      }
+      leaf prefix {
+        type string;
+        description
+          "The subnet it answers.";
+      }
+    }
+    list zones {
+      key "name";
+      description
+        "The zones with a DNF or a PDNS, each a view of its own.";
+      leaf name {
+        type string;
+        description
+          "The zone.";
+      }
+      leaf-list prefixes {
+        type string;
+        description
+          "Its prefixes here.";
+      }
+      container dnf {
+        presence
+          "A DNF.";
+        description
+          "Its DNS filtering (MEF 138 §6.1.10).";
+        uses sfp-form;
+      }
+      container pdns {
+        presence
+          "A PDNS.";
+        description
+          "Its protective DNS.";
+        uses pdns-form;
+      }
+    }
+  }
+
+  grouping proxy-form {
+    description
+      "The form Squid's file of an instance is rendered from: an SD-WAN
+       service's at this edge (flavor sdwan: MEF 138's URLF, MBSF and
+       MD+R by zone), or the Security section's URL filter.";
+    leaf flavor {
+      type enumeration {
+        enum sdwan {
+          description
+            "An SD-WAN service's.";
+        }
+        enum security {
+          description
+            "The Security section's.";
+        }
+      }
+      description
+        "Whose; none the Security section's.";
+    }
+    leaf service {
+      type string;
+      description
+        "The service.";
+    }
+    leaf fib {
+      type uint32;
+      description
+        "Its FIB.";
+    }
+    list listen {
+      key "address";
+      description
+        "Where it is reached: an SD-WAN service's at each end point's
+         own IPv4 address, the Security section's on each address
+         told.";
+      leaf address {
+        type inet:ip-address-no-zone;
+        description
+          "The address.";
+      }
+      leaf end-point {
+        type string;
+        description
+          "The end point, an SD-WAN service's.";
+      }
+    }
+    leaf resolver {
+      type boolean;
+      description
+        "The service's resolver is here: names resolved by it.";
+    }
+    leaf icap {
+      type boolean;
+      description
+        "A zone's MD+R scans: c-icap and ClamAV beside it.";
+    }
+    list zones {
+      key "name";
+      description
+        "The zones with a URLF, MBSF, MD+R or a DNF's names with a *
+         inside, Default last.";
+      leaf name {
+        type string;
+        description
+          "The zone.";
+      }
+      leaf default {
+        type boolean;
+        description
+          "Default: everything.";
+      }
+      leaf-list prefixes {
+        type string;
+        description
+          "Its prefixes here.";
+      }
+      leaf-list dnf {
+        type string;
+        description
+          "The DNF's names with a * inside (R71).";
+      }
+      leaf dnf-id {
+        type string;
+        description
+          "That DNF's ID.";
+      }
+      container urlf {
+        presence
+          "A URLF.";
+        description
+          "Its URL filtering.";
+        uses sfp-form;
+      }
+      container mbsf {
+        presence
+          "An MBSF.";
+        description
+          "Its middlebox security.";
+        uses mbsf-form;
+      }
+      container mdr {
+        presence
+          "An MD+R.";
+        description
+          "Its malware detection and removal, the hashes ClamAV's
+           signatures.";
+        uses sfp-form;
+      }
+    }
+    leaf mode {
+      type enumeration {
+        enum sni {
+          description
+            "The TLS names looked at.";
+        }
+        enum inspect {
+          description
+            "TLS opened.";
+        }
+      }
+      description
+        "The Security section's: how TLS is treated.";
+    }
+    leaf port {
+      type inet:port-number;
+      description
+        "The Security section's: the port the clients are told of,
+         3128 unless said.";
+    }
+    leaf-list allow {
+      type string;
+      description
+        "The Security section's: the networks that may use it.";
+    }
+    leaf-list deny {
+      type string;
+      description
+        "The Security section's: the domains denied, with the names
+         beneath them.";
+    }
+    leaf malware {
+      type boolean;
+      description
+        "The Security section's: what it fetches scanned by c-icap.";
+    }
+  }
+
   grouping instance {
     description
-      "A service's instance of a program, in its FIB.";
+      "A service's instance of a program, in its FIB: the form the
+       agent renders the program's configuration from is its list's
+       spec, and the text it rendered its conf.";
     leaf name {
       type string;
       description
@@ -363,14 +1369,6 @@ module arcana-sdwan {
       type string;
       description
         "The host's name, for the files' comments.";
-    }
-    leaf spec {
-      type string;
-      description
-        "The form the agent renders the program's configuration from:
-         a JSON object (RFC 8259), the console's SD-WAN document's or
-         the Security section's, until the module says the forms
-         (PLAN-SDN-YANG 4.5.5).";
     }
   }
 
@@ -731,6 +1729,11 @@ module arcana-sdwan {
          read it again, one not yet started; those not named any more
          stopped.";
       uses instance;
+      container spec {
+        description
+          "The form BIRD's file is rendered from.";
+        uses bird-form;
+      }
     }
   }
 
@@ -785,6 +1788,11 @@ module arcana-sdwan {
         "The dnsmasq instances: each checked by dnsmasq --test before
          it is the instance's, one running started again on it.";
       uses instance;
+      container spec {
+        description
+          "The form dnsmasq's file is rendered from.";
+        uses dhcp-form;
+      }
     }
     list dns-instance {
       key "name";
@@ -792,6 +1800,11 @@ module arcana-sdwan {
         "The unbound instances: each checked by
          local-unbound-checkconf, one running started again on it.";
       uses instance;
+      container spec {
+        description
+          "The form unbound's file is rendered from.";
+        uses dns-form;
+      }
     }
     list proxy-instance {
       key "name";
@@ -800,6 +1813,11 @@ module arcana-sdwan {
          (sec-): each checked by squid -k parse, one running told to
          reconfigure.";
       uses instance;
+      container spec {
+        description
+          "The form Squid's file is rendered from.";
+        uses proxy-form;
+      }
       leaf mode {
         type enumeration {
           enum sni {

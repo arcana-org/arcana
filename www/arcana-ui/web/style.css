@@ -4927,6 +4927,12 @@ table.net tr.empty-row button { margin-left: .4rem; }
 /* What is rarely set, folded under a form's other fields. */
 details.sd-more { margin: .7rem 0 0; border-top: 1px solid var(--line); padding-top: .5rem; }
 details.sd-more > summary { cursor: pointer; color: var(--fg-2); font-size: .8rem; margin-bottom: .4rem; }
+/* An SD-WAN instance's form, as the module says it, and its file. */
+tr.sd-inst details.sd-more { margin: 0; border-top: 0; padding-top: 0; }
+tr.sd-inst h4 { margin: .5rem 0 .3rem; font-size: .8rem; }
+dl.sd-form { grid-template-columns: max-content minmax(0, 1fr); }
+dl.sd-form dl.sd-form { border-left: 1px solid var(--line); padding-left: .5rem; margin: .1rem 0; }
+pre.sd-conf { margin: 0; padding: .5rem .7rem; max-height: 24rem; overflow: auto; background: #020509; border: 1px solid var(--line); font-size: .72rem; white-space: pre; }
 .sd-effects ul { margin: .5rem 0 .3rem 1.1rem; padding: 0; line-height: 1.5; }
 .sd-effects p { margin: .3rem 0 0; color: var(--dim); }
 .sd-doc textarea { width: 100%; min-height: 24rem; font-size: .8rem; tab-size: 4; }

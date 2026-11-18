@@ -195,7 +195,90 @@ named_of(cbl_yarena *a, const ucl_object_t *o, size_t *np,
 	return (0);
 }
 
-/* A form of o's as JSON text, the arena's. */
+/*
+ * The form an instance's file is rendered from (spec), of a kind: its
+ * container in the module, the struct of it; the IDS', JSON text.  The
+ * module's names have a - where the setters' have a _ (sdconf.c): those
+ * below.
+ */
+static const char *const form_words[] = { "end-point", "router-id",
+    "hold-time", "route-monitoring", "as-path", "next-hop", "cluster-id",
+    "dnf-id", "upstream-tls" };
+
+static const struct cbl_ynode *
+form_node(int kind)
+{
+	static const char *const lists[] = { "bird-instance",
+	    "proxy-instance", NULL, "dhcp-instance", "dns-instance" };
+
+	if (kind < 0 || kind >= (int)nitems(lists) || lists[kind] == NULL)
+		return (NULL);
+	return (yj_node(&ymodel_schema, "arcana-sdwan", "sdwan", lists[kind],
+	    "spec", NULL));
+}
+
+/* An instance's form of a kind, o's, as its struct. */
+static const void *
+form_of(cbl_yarena *a, const ucl_object_t *o, int kind)
+{
+
+	return (yj_tree(form_node(kind), ucl_object_lookup(o, "spec"), a));
+}
+
+/* A form's JSON as the setters take it: a member named as form_words
+ * has its _ back. */
+static ucl_object_t *
+form_spelled(const ucl_object_t *o)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*r;
+	const char		*k;
+	char			 key[64], *c;
+	size_t			 i;
+
+	switch (ucl_object_type(o)) {
+	case UCL_OBJECT:
+		r = ucl_object_typed_new(UCL_OBJECT);
+		it = NULL;
+		while ((e = ucl_object_iterate(o, &it, true)) != NULL) {
+			k = ucl_object_key(e);
+			for (i = 0; i < nitems(form_words) && strcmp(form_words[i],
+			    k) != 0; i++)
+				;
+			snprintf(key, sizeof(key), "%s", k);
+			for (c = key; i < nitems(form_words) && *c != '\0'; c++)
+				if (*c == '-')
+					*c = '_';
+			ucl_object_insert_key(r, form_spelled(e), key, 0, true);
+		}
+		return (r);
+	case UCL_ARRAY:
+		r = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((e = ucl_object_iterate(o, &it, true)) != NULL)
+			ucl_array_append(r, form_spelled(e));
+		return (r);
+	default:
+		return (ucl_object_copy(o));
+	}
+}
+
+/* A form's struct, of a kind, as the JSON object its setter takes; NULL
+ * where it has none. */
+static ucl_object_t *
+form_json(int kind, const void *p)
+{
+	ucl_object_t	*o, *r;
+
+	if ((o = yj_untree(form_node(kind), p)) == NULL)
+		return (NULL);
+	r = form_spelled(o);
+	ucl_object_unref(o);
+	return (r);
+}
+
+/* The IDS' form of o's as JSON text, the arena's. */
 static const char *
 spec_of(cbl_yarena *a, const ucl_object_t *o, const char *key)
 {
@@ -507,10 +590,11 @@ ysd_steer_from_json(const char *json, cbl_yarena *a,
 
 /*
  * The instances of one kind, as the setters keep them: name, fib, host
- * and spec, the form, as JSON text; the proxy's mode, lists and
- * stopped beside; the ids' interfaces, conf, rules, divert, capture,
- * offload, lua, plugins, stopped and thresholds.  BIRD's, dnsmasq's
- * and unbound's entries have one layout.
+ * and spec, the form, as the module says it (the IDS', JSON text); the
+ * proxy's mode, lists and stopped beside; the ids' interfaces, conf,
+ * rules, divert, capture, offload, lua, plugins, stopped and
+ * thresholds.  BIRD's, dnsmasq's and unbound's entries have one layout,
+ * each its own form.
  */
 int
 ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
@@ -538,7 +622,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 				continue;
 			YJ_NUM(e, "fib", &v[n], fib);
 			v[n].host = yj_str(a, e, "host");
-			v[n].spec = spec_of(a, e, "spec");
+			v[n].spec = form_of(a, e, kind);
 			if ((m = yj_str(a, e, "mode")) != NULL) {
 				v[n].has_mode = true;
 				v[n].mode = strcmp(m, "inspect") == 0 ?
@@ -600,7 +684,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 				continue;
 			YJ_NUM(e, "fib", &v[n], fib);
 			v[n].host = yj_str(a, e, "host");
-			v[n].spec = spec_of(a, e, "spec");
+			v[n].spec = form_of(a, e, kind);
 			n++;
 		}
 		*vp = v;
@@ -838,7 +922,7 @@ ysd_steer_json(const char *jail, const struct arcana_sdwan_steer_config *s)
 	return (emit(top));
 }
 
-/* A form's JSON text as an object; NULL where it is none. */
+/* The IDS' form's JSON text as an object; NULL where it is none. */
 static ucl_object_t *
 spec_object(const char *spec)
 {
@@ -875,9 +959,10 @@ is_sec(const char *name)
 
 /*
  * The instances of one kind, of an edge (jail; NULL the host's), as its
- * setter takes them; for the proxies and the IDS those of one group
- * (group 1 the Security section's, sec-; 0 SD-WAN's), group -1 for the
- * others.  NULL and why when a form is no JSON object.
+ * setter takes them, each form a JSON object; for the proxies and the
+ * IDS those of one group (group 1 the Security section's, sec-; 0
+ * SD-WAN's), group -1 for the others.  NULL and why when an IDS' form
+ * is no JSON object.
  */
 char *
 ysd_instances_json(int kind, const char *jail, int group, size_t n,
@@ -891,12 +976,13 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	put(top, "instances", arr);
 	for (size_t i = 0; i < n; i++) {
-		const char	*name, *spec;
+		const char	*name, *spec = NULL;
+		const void	*form = NULL;
 
 		if (kind == YSD_PROXY) {
 			name = ((const struct arcana_sdwan_sdwan_proxy_instance *)
 			    vp)[i].name;
-			spec = ((const struct arcana_sdwan_sdwan_proxy_instance *)
+			form = ((const struct arcana_sdwan_sdwan_proxy_instance *)
 			    vp)[i].spec;
 		} else if (kind == YSD_IDS) {
 			name = ((const struct arcana_sdwan_sdwan_ids_instance *)
@@ -904,14 +990,15 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 			spec = ((const struct arcana_sdwan_sdwan_ids_instance *)
 			    vp)[i].spec;
 		} else {
+			/* dnsmasq's and unbound's have BIRD's layout. */
 			name = ((const struct arcana_sdwan_bird_instance *)
 			    vp)[i].name;
-			spec = ((const struct arcana_sdwan_bird_instance *)
+			form = ((const struct arcana_sdwan_bird_instance *)
 			    vp)[i].spec;
 		}
 		if (group >= 0 && is_sec(name) != (group == 1))
 			continue;
-		sp = NULL;
+		sp = form != NULL ? form_json(kind, form) : NULL;
 		if (spec != NULL && (sp = spec_object(spec)) == NULL) {
 			*errp = "an instance's spec is no JSON object";
 			ucl_object_unref(top);

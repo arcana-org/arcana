@@ -675,13 +675,16 @@ int	ystamp_sessions_from_json(const char *json, cbl_yarena *a,
  * the JSON they take, malloc'd: an edge's (jail NULL or "" the host's)
  * rules (none: emptied, in set), steer, or instances of a kind, for
  * the proxies and the IDS those of a group (1 the Security section's,
- * sec-; 0 SD-WAN's; -1 all), NULL and *errp for a spec that is no JSON
- * object; the sdwan read as state.  The plain instances (bird, dhcp,
- * dns) have one layout.
+ * sec-; 0 SD-WAN's; -1 all), NULL and *errp for an IDS spec that is no
+ * JSON object; the sdwan read as state.  The plain instances (bird,
+ * dhcp, dns) have one layout, each its own form (spec) as the module
+ * says it.
  */
-#define	YSD_PLAIN	0
+#define	YSD_BIRD	0
 #define	YSD_PROXY	1
 #define	YSD_IDS		2
+#define	YSD_DHCP	3
+#define	YSD_DNS		4
 int	ysd_rules_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_sdwan_rules_config *out);
 int	ysd_steer_from_json(const char *json, cbl_yarena *a,

@@ -24,12 +24,31 @@
  */
 
 #include "ycommon.h"
+#include "yjson.h"
 
 static const char *const tstates[] = { "unknown", "up", "down", "ended",
     "error" };
 static const char *const cstates[] = { "up", "down", "unknown",
     "not-probed" };
 static const char *const kinds[] = { "auto", "stamp", "icmp" };
+
+/* An instance's form as the module has it, RFC 7951's JSON; "-" for
+ * none. */
+static const char *
+form(const char *list, const void *p)
+{
+	static char	*text;
+	ucl_object_t	*o;
+
+	free(text);
+	text = NULL;
+	if ((o = yj_untree(yj_node(&ymodel_schema, "arcana-sdwan", "sdwan",
+	    list, "spec", NULL), p)) == NULL)
+		return ("-");
+	text = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(o);
+	return (text != NULL ? text : "-");
+}
 
 int
 main(int argc, char **argv)
@@ -458,22 +477,37 @@ main(int argc, char **argv)
 	} else if (strcmp(argv[1], "bird") == 0 || strcmp(argv[1], "dhcp") == 0
 	    || strcmp(argv[1], "dns") == 0) {
 		struct arcana_sdwan_sdwan w = { 0 }, back;
-		const char *e = NULL;
+		const struct arcana_sdwan_bird_instance *b;
+		const char *e = NULL, *list;
 		const void *v;
 		char *js;
 		size_t n;
+		int kind;
 
-		if ((error = ysd_instances_from_json(slurp(argv[2]), YSD_PLAIN, a,
+		kind = argv[1][1] == 'i' ? YSD_BIRD : argv[1][1] == 'h' ?
+		    YSD_DHCP : YSD_DNS;
+		list = kind == YSD_BIRD ? "bird-instance" : kind == YSD_DHCP ?
+		    "dhcp-instance" : "dns-instance";
+		if ((error = ysd_instances_from_json(slurp(argv[2]), kind, a,
 		    &n, &v)) != 0)
 			errc(1, error, "ysd_instances_from_json");
-		w.bird_instance.n = n;
-		w.bird_instance.v = v;
+		/* Each in its own list: dnsmasq's and unbound's have BIRD's
+		 * layout, not its form. */
+		if (kind == YSD_BIRD) {
+			w.bird_instance.n = n;
+			w.bird_instance.v = v;
+		} else if (kind == YSD_DHCP) {
+			w.dhcp_instance.n = n;
+			w.dhcp_instance.v = v;
+		} else {
+			w.dns_instance.n = n;
+			w.dns_instance.v = v;
+		}
+		b = v;
 		for (size_t i = 0; i < n; i++)
-			printf("instance %s fib=%u host=%s spec=%s\n",
-			    w.bird_instance.v[i].name, w.bird_instance.v[i].fib,
-			    str(w.bird_instance.v[i].host), str(
-			    w.bird_instance.v[i].spec));
-		if ((js = ysd_instances_json(YSD_PLAIN, jail, -1, n, v, &e)) ==
+			printf("instance %s fib=%u host=%s spec=%s\n", b[i].name,
+			    b[i].fib, str(b[i].host), form(list, b[i].spec));
+		if ((js = ysd_instances_json(kind, jail, -1, n, v, &e)) ==
 		    NULL)
 			printf("refused: %s\n", e);
 		else
@@ -499,7 +533,8 @@ main(int argc, char **argv)
 
 			printf("proxy %s fib=%u mode=%s host=%s spec=%s", p->name,
 			    p->fib, p->has_mode ? (p->mode == 1 ? "inspect" :
-			    "sni") : "-", str(p->host), str(p->spec));
+			    "sni") : "-", str(p->host), form("proxy-instance",
+			    p->spec));
 			for (size_t k = 0; k < p->named_list.n; k++)
 				printf(" list %s=%zu", p->named_list.v[k].name,
 				    strlen(p->named_list.v[k].text));

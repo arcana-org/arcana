@@ -7245,6 +7245,13 @@ part_flows_sdwan(void)
 	    "root')", 30);
 	ATF_CHECK(js_true("[...document.querySelectorAll('section.sdwan h3')]"
 	    ".some(h => h.textContent.startsWith('Steering'))"));
+	/* hq's dnsmasq instance: its form as arcana-sdwan says it, the
+	 * file the agent rendered of it, folded below its row. */
+	wait_js("(d => d && d.querySelector('dl.sd-form dt') && [...d."
+	    "querySelectorAll('dl.sd-form dt')].some(t => t.textContent === "
+	    "'unis') && d.querySelector('pre.sd-conf').textContent.includes("
+	    "'dhcp-range=set:'))(document.querySelector('table.sd-dhcp "
+	    "tr.sd-inst details'))", 30);
 	/* The monitor of each tunnel: nothing to draw without root, and
 	 * a span to choose. */
 	ATF_CHECK(js_true("document.querySelectorAll('.sd-path .sd-mon').length"
@@ -15077,6 +15084,93 @@ ATF_TC_CLEANUP(pwa_yform_jail, tc)
 }
 
 /*
+ * An SD-WAN instance's form from its model: from System's Models,
+ * arcana-sdwan's dnsmasq instance made new, its form (spec) the fields
+ * dhcp-form says, the rendered text (conf, state) none of them; filled
+ * (a UNI addressed by DHCP), committed, and the host's dnsmasq file
+ * rendered by the agent from it; its entry read back into the form,
+ * the lease changed and saved, the file rendered again.
+ */
+static void
+part_yform_sdwan(void)
+{
+
+	click_when("button.tab[data-arg=system]", 10);
+	click_when("button[data-act=tab][data-arg=\\'system/models\\']", 10);
+	click_when("button[data-act=yf-mod][data-arg=arcana-sdwan]", 30);
+	click_when("button[data-act=yf-new][data-arg=\\'arcana-sdwan|"
+	    "/arcana-sdwan:sdwan/dhcp-instance\\']", 30);
+	wait_js("document.querySelector('form[data-form=ymf] input[name=name]') "
+	    "&& document.querySelector('form[data-form=ymf] "
+	    "[name=\\'spec/service\\']')", 30);
+	/* The text rendered is state: not a field. */
+	ATF_CHECK(js_true("!document.querySelector('form[data-form=ymf] "
+	    "[name=conf]')"));
+	click_when("form[data-form=ymf] button[data-act=yf-add][data-arg="
+	    "\\'spec/unis\\']", 10);
+	wait_js("document.querySelector('form[data-form=ymf] "
+	    "[name=\\'spec/unis/0/ipv4/prefix\\']')", 10);
+	run("const f = document.querySelector('form[data-form=ymf]'); "
+	    "const q = n => f.querySelector('[name=\"' + n + '\"]'); "
+	    "q('name').value = 'yfdhcp'; q('fib').value = '0'; "
+	    "q('host').value = 'edge-a'; "
+	    "q('spec/service').value = 'acme'; q('spec/fib').value = '0'; "
+	    "q('spec/unis/0/id').value = 'uni-hq'; "
+	    "q('spec/unis/0/interface').value = 'lo0'; "
+	    "q('spec/unis/0/ipv4/mode').value = 'dhcp'; "
+	    "q('spec/unis/0/ipv4/prefix').value = '10.77.0.0/24'; "
+	    "q('spec/unis/0/ipv4/provider').value = '10.77.0.1'; "
+	    "q('spec/unis/0/ipv4/lease').value = '2h';");
+	shot("4h-yform-sdwan");
+	run("document.querySelector('form[data-form=ymf]').requestSubmit();");
+	wait_js("[...document.querySelectorAll('.toast')].some(t => t."
+	    "textContent.includes('Created and committed'))", 60);
+	host_tool("grep -qx 'interface=lo0' sdwan-dhcp-yfdhcp.conf && grep -qx "
+	    "'dhcp-range=set:lo0,10.77.0.2,10.77.0.254,255.255.255.0,2h' "
+	    "sdwan-dhcp-yfdhcp.conf && grep -qx 'dhcp-option=tag:lo0,option:"
+	    "router,10.77.0.1' sdwan-dhcp-yfdhcp.conf && grep -q 'SD-WAN "
+	    "service acme at edge-a' sdwan-dhcp-yfdhcp.conf",
+	    "dnsmasq's file is not rendered from the instance's form");
+
+	/* Its entry, read into the same form; the lease changed. */
+	click_when("button[data-act=yf-edit][data-arg=\\'arcana-sdwan|"
+	    "/arcana-sdwan:sdwan/dhcp-instance|yfdhcp\\']", 30);
+	wait_js("(f => f && f.querySelector('[name=name]').value === 'yfdhcp' "
+	    "&& f.querySelector('[name=\\'spec/unis/0/ipv4/prefix\\']').value "
+	    "=== '10.77.0.0/24')(document.querySelector('form[data-form=ymf]'))",
+	    30);
+	ATF_CHECK(js_true("!document.querySelector('form[data-form=ymf] "
+	    "[name=conf]')"));
+	run("const f = document.querySelector('form[data-form=ymf]'); "
+	    "f.querySelector('[name=\\'spec/unis/0/ipv4/lease\\']').value = "
+	    "'4h'; f.requestSubmit();");
+	wait_js("[...document.querySelectorAll('.toast')].some(t => t."
+	    "textContent.includes('Saved and committed'))", 60);
+	host_tool("grep -qx 'dhcp-range=set:lo0,10.77.0.2,10.77.0.254,"
+	    "255.255.255.0,4h' sdwan-dhcp-yfdhcp.conf", "dnsmasq's file is not "
+	    "rendered again from the form changed");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_yform_sdwan);
+ATF_TC_HEAD(pwa_yform_sdwan, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "An SD-WAN dnsmasq instance made from arcana-sdwan's form (spec as the module says it), committed and its file rendered by the agent; edited and rendered again");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_yform_sdwan, tc)
+{
+
+	prologue(tc, 1);
+	part_yform_sdwan();
+}
+ATF_TC_CLEANUP(pwa_yform_sdwan, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A jail started and stopped from its card: jail(8) run, and the host's
  * jails (./jails, which the agent's libjail reads) say it runs, then
  * not; no stand-in of the page's reads.
@@ -15368,6 +15462,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_forms_jails);
 	ATF_TP_ADD_TC(tp, pwa_forms_lanes);
 	ATF_TP_ADD_TC(tp, pwa_yform_jail);
+	ATF_TP_ADD_TC(tp, pwa_yform_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_jail_runs);
 	ATF_TP_ADD_TC(tp, pwa_jail_base);
 	ATF_TP_ADD_TC(tp, pwa_jail_pkg_chflags);

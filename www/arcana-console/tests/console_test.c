@@ -18363,6 +18363,24 @@ ATF_TC_BODY(sdwan_apply, tc)
 	    strcmp(jstr(&r, "arcana-sdwan:state.rules.set"), "30") == 0, "%s",
 	    r.body);
 	resp_free(&r);
+	/* Each instance's form as arcana-sdwan says it (spec), the text
+	 * the agent rendered of it its state (conf). */
+	snprintf(body, sizeof(body), FLEET "%s/arcana-sdwan:sdwan/"
+	    "dhcp-instance=sw1", sa);
+	rc_get(body, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"spec\":{") != NULL && strstr(r.body,
+	    "\"unis\":[{") != NULL && strstr(r.body, "\"mode\":\"dhcp\"") !=
+	    NULL && strstr(r.body, "dhcp-range=set:") != NULL, "%s", r.body);
+	resp_free(&r);
+	snprintf(body, sizeof(body), FLEET "%s/arcana-sdwan:sdwan/"
+	    "bird-instance=sw1", sa);
+	rc_get(body, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"router-id\":\"") != NULL && strstr(
+	    r.body, "\"bfd\":{") != NULL && strstr(r.body, "router id ") !=
+	    NULL, "%s", r.body);
+	resp_free(&r);
 	ATF_CHECK(system("grep -q '^setfib -F 1 ./fake-local-unbound -c .*sdwan-dns-"
 	    "sw1.conf' setfib.log && grep -q '^checkconf .*sdwan-dns-sw1.conf' "
 	    "unbound.log") == 0);
@@ -19591,6 +19609,42 @@ r4_sec_one(const ucl_object_t *in, bool ids, const char *host)
 	if (ucl_object_toboolean(ucl_object_lookup(in, "stopped")))
 		ucl_object_insert_key(o, ucl_object_frombool(true), "stopped", 0,
 		    false);
+	if (!ids) {
+		/* The URL filter's form as arcana-sdwan's proxy-form says
+		 * it (sdread.c's proxy_form()). */
+		l = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(l, ucl_object_fromstring("security"),
+		    "flavor", 0, false);
+		ucl_object_insert_key(l, ucl_object_copy(ucl_object_lookup(o,
+		    "mode")), "mode", 0, false);
+		ucl_object_insert_key(l, ucl_object_copy(ucl_object_lookup(o,
+		    "fib")), "fib", 0, false);
+		v = ucl_object_lookup(in, "port");
+		ucl_object_insert_key(l, ucl_object_fromint(v != NULL ?
+		    ucl_object_toint(v) : 3128), "port", 0, false);
+		ifs = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(in, "listen"),
+		    &it, true)) != NULL) {
+			lua = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(lua, ucl_object_copy(e), "address",
+			    0, false);
+			ucl_array_append(ifs, lua);
+		}
+		ucl_object_insert_key(l, ifs, "listen", 0, false);
+		if ((v = ucl_object_lookup(in, "allow")) != NULL)
+			ucl_object_insert_key(l, ucl_object_copy(v), "allow", 0,
+			    false);
+		if ((v = ucl_object_lookup(in, "deny")) != NULL &&
+		    ucl_array_size(v) > 0)
+			ucl_object_insert_key(l, ucl_object_copy(v), "deny", 0,
+			    false);
+		if (ucl_object_toboolean(ucl_object_lookup(in, "malware")))
+			ucl_object_insert_key(l, ucl_object_frombool(true),
+			    "malware", 0, false);
+		ucl_object_insert_key(o, l, "spec", 0, false);
+		return (o);
+	}
 	spec = (char *)ucl_object_emit(in, UCL_EMIT_JSON_COMPACT);
 	ucl_object_insert_key(o, ucl_object_fromstring(spec), "spec", 0,
 	    false);
