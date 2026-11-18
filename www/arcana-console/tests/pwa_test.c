@@ -86,6 +86,7 @@ static bool	host_has(const char *);
 static void	queued_run(void);
 static void	moves_measure(void);
 static void	ptr_define(void);
+static void	deploy_wait(const char *, int);
 
 static void
 shot(const char *name)
@@ -7072,10 +7073,8 @@ part_flows_sdwan(void)
 	 */
 	run("document.querySelector('button[data-act=sd-tab][data-arg=edges]')"
 	    ".click()");
-	wait_js("document.querySelectorAll('table.sd-plan tbody tr').length > 8 "
-	    "&& document.querySelector('button[data-act=sd-apply-ask]') && "
-	    "!document.querySelector('button[data-act=sd-apply-ask]').disabled",
-	    20);
+	deploy_wait("document.querySelectorAll('table.sd-plan tbody tr').length "
+	    "> 8", 20);
 	ATF_CHECK(js_true("[...document.querySelectorAll('section.sdwan h3')]"
 	    ".find(h => h.textContent.startsWith('Tunnels')).closest('.sd-block')"
 	    ".querySelectorAll('tbody tr').length === 2"));
@@ -11196,6 +11195,40 @@ busy_secs(int secs)
 	    4.0))));
 }
 
+/*
+ * SD-WAN's Deploy enabled, and what expr says too (NULL: nothing more);
+ * not in time, why: the button's word and title (no plan, an apply
+ * running, packages missing, nothing to do), or no button while the
+ * plan is not read, and the page's notices.
+ */
+static void
+deploy_wait(const char *expr, int seconds)
+{
+	char	all[1024], why[1024];
+	int	i;
+
+	snprintf(all, sizeof(all), "%s%sdocument.querySelector('button["
+	    "data-act=sd-apply-ask]') && !document.querySelector('button["
+	    "data-act=sd-apply-ask]').disabled", expr != NULL ? expr : "",
+	    expr != NULL ? " && " : "");
+	seconds = busy_secs(seconds);
+	for (i = 0; i < seconds * 10; i++) {
+		if (js_true(all))
+			return;
+		usleep(100000);
+	}
+	shot("failed");
+	js_str(why, sizeof(why), "(b => b ? b.textContent + (b.disabled ? "
+	    "' (disabled: ' + b.title + ')' : '') : 'no Deploy button, ' + (l "
+	    "=> l ? 'a loader: ' + (l.title || 'untitled') : 'no loader')("
+	    "document.querySelector('.loader')))(document."
+	    "querySelector('button[data-act=sd-apply-ask]')) + ' / ' + [..."
+	    "document.querySelectorAll("
+	    "'section.sdwan .notice')].map(n => n.textContent.slice(0, 160))"
+	    ".join(' | ')");
+	atf_tc_fail("timed out waiting for %s; Deploy: %s", all, why);
+}
+
 /* What a script says, as text. */
 static void
 js_str(char *out, size_t len, const char *expr)
@@ -13777,6 +13810,17 @@ part_sdwan_bmp(void)
 	click_when("button[data-act=sd-swvc-edit]", 20);
 	wait_js("document.querySelector('form[data-form=sd-swvc] input[name="
 	    "rm_on]')", 5);
+	/*
+	 * The document read again after the keep answered late, as on a
+	 * busy machine: after the plan the Edges tab asks meanwhile, which
+	 * is then of the document before; the page asks again, and no
+	 * loader stays where Deploy would be.
+	 */
+	run("window.fetch0 = window.fetch; window.docLate = 0; window.fetch = "
+	    "function (u, o) { const p = window.fetch0.apply(this, arguments); "
+	    "return String(u).endsWith('sdwan/document') && (!o || !o.method || "
+	    "o.method === 'GET') ? p.then(r => new Promise(ok => setTimeout(() "
+	    "=> { ok(r); window.docLate++; }, 3000))) : p; };");
 	run("const f = document.querySelector('form[data-form=sd-swvc]'); "
 	    "f.rm_on.checked = true; f.rm_kept.value = '4'; f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-swvc]')", 20);
@@ -13788,11 +13832,12 @@ part_sdwan_bmp(void)
 	ATF_REQUIRE_MSG(ok == 0, "route monitoring is not kept");
 	/* Applied: the station, BIRD's file naming it. */
 	click_when("button[data-act=sd-tab][data-arg=edges]", 10);
+	wait_js("window.docLate > 0", 15);
+	usleep(500000);
+	run("window.fetch = window.fetch0;");
 	/* The plan, made and its edits' warnings read from the hosts: as
 	 * long as the machine takes. */
-	wait_js("document.querySelector('button[data-act=sd-apply-ask]') && "
-	    "!document.querySelector('button[data-act=sd-apply-ask]').disabled",
-	    60);
+	deploy_wait(NULL, 60);
 	run("document.querySelector('button[data-act=sd-apply-ask]').click()");
 	wait_js("document.querySelector('form[data-form=confirm]')", 5);
 	run("document.querySelector('form[data-form=confirm]').requestSubmit();");

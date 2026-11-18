@@ -53,7 +53,7 @@ static ucl_object_t *communities_of(const char *);
 static const ucl_object_t *edge_unlinked(void);
 static void	 plan_load(void);
 static void	 paths_load(void);
-static void	 plan_load(void);
+static void	 plan_get(void);
 static void	 send(const char *, bool);
 static void	 applied_cb(int, const ucl_object_t *, const char *, void *);
 static const char *ms(double, char *, size_t);
@@ -82,6 +82,8 @@ static struct {
 	ucl_object_t	*plan;		/* sdwan/plan */
 	ucl_object_t	*applied;	/* sdwan/apply-state */
 	char		 plan_error[600];
+	unsigned int	 plan_gen;	/* of the document kept: a plan
+					 * asked before is of the one before */
 	char		 need_title[128];	/* an install's, for its task */
 	double		 plan_at, apply_at;
 	bool		 applying;
@@ -527,7 +529,10 @@ static void
 plan_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 
-	(void)arg;
+	/* Asked before the document was kept anew: of the one before,
+	 * and the one asked since answers for it. */
+	if ((unsigned int)(uintptr_t)arg != sd.plan_gen)
+		return;
 	if (status != 200) {
 		snprintf(sd.plan_error, sizeof(sd.plan_error), "%s", jstr(o,
 		    "error.message") != NULL ? jstr(o, "error.message") : err !=
@@ -568,8 +573,17 @@ applied_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		    "apply.state") : "", "done") != 0, "SD-WAN apply %s",
 		    jstr(o, "apply.state") != NULL ? jstr(o, "apply.state") :
 		    "ended");
-		rc_get(RC_C "sdwan/plan", NULL, plan_cb, NULL);
+		plan_get();
 	}
+}
+
+/* The plan, of the document kept now. */
+static void
+plan_get(void)
+{
+
+	rc_get(RC_C "sdwan/plan", NULL, plan_cb, (void *)(uintptr_t)
+	    sd.plan_gen);
 }
 
 static void
@@ -577,7 +591,7 @@ plan_load(void)
 {
 
 	sd.plan_at = sd.apply_at = arc_now();
-	rc_get(RC_C "sdwan/plan", NULL, plan_cb, NULL);
+	plan_get();
 	rc_get(RC_C "sdwan/apply-state", NULL, applied_cb, NULL);
 }
 
@@ -1056,7 +1070,7 @@ paths_load(void)
 
 	sd.paths_at = arc_now();
 	if (sd.plan == NULL) {
-		rc_get(RC_C "sdwan/plan", NULL, plan_cb, NULL);
+		plan_get();
 		return;
 	}
 	asked = ucl_object_typed_new(UCL_OBJECT);
@@ -2805,31 +2819,47 @@ view_edges(struct html *h)
 	const ucl_object_t	*c;
 	ucl_object_iter_t	 it, jit;
 	const ucl_object_t	*j;
-	const char		*last;
+	const char		*last, *why, *word;
 	int			 todo;
 
 	if (sd.plan == NULL && sd.plan_error[0] == '\0') {
-		h_raw(h, "<div class=\"loader\"></div>");
+		h_raw(h, "<div class=\"loader\" title=\"The plan being made\">"
+		    "</div>");
 		return;
 	}
 	todo = sd.plan != NULL ? count_change("make") + count_change(
 	    "remake") + count_change("unmake") : 0;
+	/* Deploy refused: why, on the button and in its title. */
+	word = "";
+	why = "Make on the edges what the services say, in Mplify 119's "
+	    "order: FIBs, IPsec, tunnels, their far ends, routes, and the "
+	    "UNIs last";
+	if (sd.plan == NULL) {
+		word = ": no plan";
+		why = "No plan to deploy: the console could not make it (below)";
+	} else if (sd.applying) {
+		word = ": an apply runs";
+		why = "An apply runs: Deploy again once it ends";
+	} else if (needs_missing() > 0) {
+		word = ": install what is missing first";
+		why = "Packages the services need are missing on edges: "
+		    "installed first (Before using SD-WAN, above)";
+	} else if (todo == 0) {
+		word = ": nothing to do";
+		why = "The edges have what the services say: nothing to make, "
+		    "make again or take away";
+	}
 	view_guide(h, false);
 	view_needs(h, true);
 	h_fmt(h, "<div class=\"toolbar\"><button class=\"primary small\" "
-	    "data-act=\"sd-apply-ask\"%s title=\"Make on the edges what the "
-	    "services say, in Mplify 119's order: FIBs, IPsec, tunnels, their "
-	    "far ends, routes, and the UNIs last\">Deploy%s</button><button "
+	    "data-act=\"sd-apply-ask\"%s title=\"%s\">Deploy%s</button><button "
 	    "class=\"ghost small\" data-act=\"sd-apply-fresh\"%s title=\""
 	    "Everything the console made taken away and made again\">Make "
 	    "all again</button><button class=\"ghost small\" data-act=\""
 	    "sd-show-kept\" title=\"The changes alone, or everything the edges "
 	    "are to have\">%s</button><span class=\"age\">",
-	    todo == 0 || sd.applying || needs_missing() > 0 ? " disabled" :
-	    "", needs_missing() > 0 ? ": install what is missing first" :
-	    todo > 0 ? "" : ": nothing to do", sd.applying ? " disabled" : "",
-	    sd.show_kept
-	    ? "Changes only" : "Show all");
+	    word[0] != '\0' ? " disabled" : "", why, word, sd.applying ?
+	    " disabled" : "", sd.show_kept ? "Changes only" : "Show all");
 	if (sd.plan != NULL)
 		h_fmt(h, "%d to make, %d to make again, %d to take away, %d as "
 		    "they are", count_change("make"), count_change("remake"),
@@ -10305,10 +10335,19 @@ sent_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	    (long long)jint(o, "version", 0));
 	toast(false, "SD-WAN kept");
 	doc_cb(status, o, err, NULL);
-	/* The plan was of the document before: made again when wanted. */
+	/*
+	 * The plan was of the document before, and so is one asked before
+	 * now (a tab opened while this was kept): neither is shown, the
+	 * plan made again for a tab that shows it.
+	 */
 	if (sd.plan != NULL)
 		ucl_object_unref(sd.plan);
 	sd.plan = NULL;
+	sd.plan_error[0] = '\0';
+	sd.plan_gen++;
+	if (app.node == NODE_SDWAN && (sd.tab == SD_EDGES || sd.tab ==
+	    SD_OVERVIEW || sd.tab == SD_PATHS || sd.tab == SD_SECURITY))
+		plan_load();
 }
 
 /* The box's text sent, with the version it was made from. */

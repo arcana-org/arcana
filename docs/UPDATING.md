@@ -93,6 +93,14 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN's plan after a keep, console 0.448.3
+
+- SD-WAN: the Edges tab no longer shows a loader for good when the plan
+  answered before the document's reread after a form's keep; a plan
+  asked before a keep is dropped and asked again.  Deploy, when
+  refused, says why on the button and in its title (no plan, an apply
+  runs, packages missing, nothing to do).
+
 ### RFC 9899's defined sets, agent 0.299.0, console 0.448.2
 
 - RFC 9899's defined sets (ietf-acl-enh; PLAN-SDN-YANG 6.1.5) are
