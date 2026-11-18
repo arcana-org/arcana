@@ -563,8 +563,11 @@ tick(void *arg)
 			secpage_tick(now);
 			builder_tick(now);
 			live_tick(now);
-			sse_tick(now);
 		}
+		/* Offline too: the streams are closed then, and opened
+		 * again (what came meanwhile read) when the network is
+		 * back. */
+		sse_tick(now);
 		app.quiet = false;
 	}
 	if (app.screen == SCREEN_CONSOLE && app.online &&

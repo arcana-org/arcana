@@ -11489,7 +11489,10 @@ part_map_fleet(void)
 	 * is a page busy with nothing else (docs/notes/webgl-map.md).  The
 	 * stub above takes it offline once every host has answered: a
 	 * script sent from here waits behind each draw already queued, a
-	 * backlog of minutes by the time the links are all there.
+	 * backlog of minutes by the time the links are all there.  Offline
+	 * the fleet's stream is closed too: lab's events (its processes',
+	 * every few seconds) would each draw the map again in the middle
+	 * of the drag, which a busy machine makes last half a minute.
 	 */
 	run("window.dispatchEvent(new Event('offline'));");
 	usleep(3000000);
