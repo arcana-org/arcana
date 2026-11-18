@@ -492,7 +492,6 @@ Written and tested with stand-ins only:
 - A change made in safe mode that fails half way (the MTU set, the
   description refused) reports the failure and leaves what was done.
 
-- There is no web terminal in the console.
 - Luxuria in the agent is the plugins, BIRD among them (WireGuard's
   `wg` is the base system's and Invidia's); what reaches outside (the
   release check, notifications) is the console's.  A plugin is still

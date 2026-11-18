@@ -152,9 +152,12 @@ _arc_yparts=	h,schema
 SRCS+=		ymodel.h ymodel_schema.c
 CLEANFILES+=	ymodel.h ymodel_schema.c
 ymodel_schema.c: ymodel.h
+# The submodules the modules include (arcana-jobs-kinds, generated from
+# jobs.yaml), which no list names.
+_arc_ysubs!=	cd ${ARC_YANG_DIR} && grep -l '^submodule ' *.yang || true
 ymodel.h: ${ARC_YMODS:@m@${ARC_YANG_DIR}/${m}.yang ${ARC_YANG_DIR}/${m}.sid@} \
     ${ARC_YIMPORTS:@m@${ARC_YANG_DIR}/${m}.sid@} ${CBLINK_GEN} \
-    ${.PARSEDIR}/arcana.yang.mk
+    ${_arc_ysubs:@m@${ARC_YANG_DIR}/${m}@} ${.PARSEDIR}/arcana.yang.mk
 	cd ${ARC_YANG_DIR} && ${CBLINK_GEN} -m ${_arc_yparts} -b ymodel \
 	    -o ${.OBJDIR} ${_arc_yfeats:@f@'${f}'@} \
 	    ${ARC_YMODS:@m@-s ${m}.sid@} ${ARC_YIMPORTS:@m@-s ${m}.sid@} \

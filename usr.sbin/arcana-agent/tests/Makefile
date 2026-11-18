@@ -223,3 +223,10 @@ beforeinstall: .PHONY
 	${INSTALL} -d -o ${BINOWN} -g ${BINGRP} -m 0755 ${DESTDIR}${TESTSDIR}
 
 .include <bsd.test.mk>
+
+# The agent's own sources, built here for several programs, keep no
+# .depend of their own: each made again when agent.h changes, or one
+# reads struct opts as it was laid out before.
+.for _p in ${PROGS}
+${SRCS.${_p}:M*.c:R:S/$/.pieo/}: ${.CURDIR}/../agent.h
+.endfor
