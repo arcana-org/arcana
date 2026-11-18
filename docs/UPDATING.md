@@ -93,6 +93,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Streams closed offline, console 0.445.1
+
+- The page closes its fleet event stream and subscriptions while the
+  browser is offline, and opens them again (reading what came in
+  meanwhile) when it is back: before, they stayed open, and each event
+  redrew the map under a drag on a large fleet.  And while the hand
+  drags a host, bends a line or pans the map, the page draws nothing
+  else until it lets go (or holds still 3 s): a tick, a late answer or
+  an event no longer rebuilds the map under it, which on a large fleet
+  also stalled the drag.  Found by the flaky pwa_test:pwa_map_fleet,
+  which now runs in a few minutes and says what it saw when it fails.
+
 ### The archive, ACLs, rtadvd; agent 0.294.0, console 0.445.0
 
 - **The archive** (PLAN-SDN-YANG 5.6.3): the agent keeps the long run
