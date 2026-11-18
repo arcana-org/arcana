@@ -2,6 +2,25 @@
 
 ## To do
 
+- Found running Arcana on its own hosts (2026-11-18), each worked
+  around by ssh:
+  - The agent's update restarts it by `service arcana_agent restart`;
+    with its pidfile gone (/var/run cleaned under it) the restart
+    cannot stop the running daemon, the update says done and the old
+    program keeps running.  The agent should see that its pidfile is
+    missing or not its own pid (a fault, and write it back), and restart
+    itself without rc's pidfile when rc cannot.
+  - A service whose pidfile names a dead pid while its daemon runs is
+    "not running" to rc and to Arcana's services view; a restart from
+    the panel then starts a second copy.  The view could compare the
+    pidfile with the processes it already reads and say so.
+  - Nothing in Arcana shows /dev's mounts (stray devfs mounts over the
+    host's /dev hid devctl, mdctl and vmmctl) nor that devd is down.
+  - A job's child left running by an agent that restarted (pkg -j ...
+    update, hours on a stalled fetch) is tracked by nobody: the new
+    agent's job list is empty and the stall watchdog died with the old
+    one.  At start the agent could find its predecessor's children and
+    stop or adopt them.
 - ipfw's table swap (IP_FW_TABLE_XSWAP) of two `number valtype dscp`
   tables corrupts their values, and a flush of them then panics
   (`Refcount is 0 on kidx`, unref_table_value): a kernel fix, the
