@@ -76,6 +76,27 @@
  * IP pass's decides); the band is one for every attachment, so the
  * counters are the aggregate RFC 8519 asks for.  They count from the
  * last edit: each loads the rules anew.
+ *
+ * RFC 9899's defined sets (ietf-acl-enh, 6.1.5), compiled into the ACEs
+ * that name them: an IPv4 or IPv6 prefix set is an addr table,
+ * "src-ip table(T)" or "dst-ip table(T)"; a port set the ranges its
+ * entries cover, a port list where ipfw's 30 hold them, a number table
+ * ("lookup dst-port T") where not; a protocol set an or-block of
+ * protocols ("{ proto 6 or proto 17 }"); an ICMP type set a list
+ * (icmptypes, icmp6types); an alias its parts, the destination its
+ * prefixes' addr table, its ports and its protocols as the sets', an
+ * ACE naming several a rule each at its number.  Every option is
+ * and-ed with the RFC 8519 matches beside it.  The tables are the
+ * ACLs', named "acl-G-K.I": G the generation, K the kind (4 and 6 a
+ * prefix set's, a an alias's prefixes, p a port set's ports, q an
+ * alias's), I the set's place in its list.  An edit fills the tables of
+ * the generation not in use, shadows nothing references yet, before
+ * the rules that name them go into set 28; the set swap makes rules and
+ * tables live at once, and the old generation's tables are destroyed
+ * once set 28 has let go of them.  No table is ever swapped (ipfw's
+ * table swap corrupts tables with values, docs/TODO.md) nor changed
+ * while a rule uses it.  The operational datastore's prefix sets are
+ * what the live tables hold.
  */
 
 #include <sys/param.h>
@@ -87,6 +108,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -116,6 +138,10 @@
 #define	ACL_ALIGN	10
 #define	ACL_COMMENT	80	/* ipfw's longest */
 #define	ACL_PREFIX	"acl:"
+#define	ACL_TABLE	"acl-"		/* the ACLs' tables, acl-G-K.I */
+#define	ACL_PORTLIST	30		/* ipfw's longest port list, in ranges */
+#define	ACL_TABLE_PORTS	8192		/* the most ports a port table holds */
+#define	ACL_PORTS	65536
 
 typedef struct ietf_access_control_list_acls yacls;
 typedef struct ietf_access_control_list_acls_acl yacl;
@@ -123,17 +149,32 @@ typedef struct ietf_access_control_list_acls_acl_aces_ace yace;
 typedef struct ietf_access_control_list_acls_acl_aces_ace_matches ymatch;
 typedef struct ietf_access_control_list_acls_attachment_points_interface
     yattach;
+typedef struct ietf_access_control_list_acls_acl_enh_defined_sets ysets;
+typedef struct ietf_access_control_list_acls_acl_enh_defined_sets_port_sets_port_set
+    yportset;
+typedef struct ietf_access_control_list_acls_acl_enh_defined_sets_aliases_alias
+    yalias;
 
 static pthread_mutex_t	acl_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* A rule of the kernel's: its number, set, counters and comment ("" none);
- * count whether its action is count (a layer-2 pass's tagging). */
+ * count whether its action is count (a layer-2 pass's tagging), gen the
+ * generation of the ACLs' tables it names (-1 none). */
 struct krule {
 	long		 num;
 	int		 set;
+	int		 gen;
 	bool		 count;
 	uintmax_t	 pkts, bytes;
 	const char	*comment;
+};
+
+/* A table of the ACLs' as the kernel has it: its name and entries, each
+ * the key as ipfw lists it. */
+struct ktable {
+	const char	*name;
+	size_t		 n;
+	const char	**entry;
 };
 
 /* Why an edit is refused: the message, the node at fault, the errno. */
@@ -410,6 +451,539 @@ mac_word(char *b, size_t len, const char *addr, const char *mask)
 	return (0);
 }
 
+/* ---- The defined sets (RFC 9899) --------------------------------------- */
+
+/* A defined set's place in its list by name, every set's struct starting
+ * with its name; -1: none. */
+static int
+set_index(const void *v, size_t n, size_t size, const char *name)
+{
+
+	for (size_t i = 0; i < n; i++)
+		if (strcmp(*(const char *const *)(const void *)
+		    ((const char *)v + i * size), name) == 0)
+			return ((int)i);
+	return (-1);
+}
+
+#define	SET_INDEX(c, l, name)						\
+	((c) == NULL ? -1 : set_index((c)->l.v, (c)->l.n,		\
+	    sizeof(*(c)->l.v), (name)))
+
+/* A table of the ACLs': generation gen, kind ('4', '6' a prefix set's,
+ * 'a' an alias's prefixes, 'p' a port set's ports, 'q' an alias's), the
+ * set's place i in its list. */
+static void
+table_name(char *b, size_t len, int gen, char kind, size_t i)
+{
+
+	snprintf(b, len, ACL_TABLE "%d-%c.%zu", gen, kind, i);
+}
+
+/* Ports from lo to hi into a bitmap of the 65536. */
+static void
+ports_add(uint8_t *map, unsigned lo, unsigned hi)
+{
+
+	for (unsigned p = lo; p <= hi && p < ACL_PORTS; p++)
+		setbit(map, p);
+}
+
+/*
+ * A bitmap's ports as ipfw's ranges, "a-b,c", the first ACL_PORTLIST
+ * into b; how many ranges into *nr, how many ports into *np.
+ */
+static void
+ports_ranges(const uint8_t *map, char *b, size_t len, size_t *nr, size_t *np)
+{
+	size_t	off;
+	unsigned lo;
+
+	*nr = *np = 0;
+	b[0] = '\0';
+	off = 0;
+	for (unsigned p = 0; p < ACL_PORTS; p++) {
+		if (isclr(map, p))
+			continue;
+		for (lo = p; p + 1 < ACL_PORTS && isset(map, p + 1); p++)
+			;
+		*np += p - lo + 1;
+		if (++*nr <= ACL_PORTLIST && off < len) {
+			if (lo == p)
+				off += (size_t)snprintf(b + off, len - off, "%s%u",
+				    off > 0 ? "," : "", lo);
+			else
+				off += (size_t)snprintf(b + off, len - off,
+				    "%s%u-%u", off > 0 ? "," : "", lo, p);
+		}
+	}
+}
+
+/*
+ * A port set's ports into map: each entry a range or a port with its
+ * operator (lte, gte, eq, neq).  -1 and why where a range is upside
+ * down.
+ */
+static int
+portset_fill(const yportset *s, uint8_t *map, struct aclerr *ae)
+{
+	const struct ietf_access_control_list_acls_acl_enh_defined_sets_port_sets_port_set_port_port_range_or_operator
+	    *r;
+
+	for (size_t j = 0; j < s->port.n; j++) {
+		if ((r = s->port.v[j].port_range_or_operator) == NULL)
+			continue;
+		if (r->has_lower_port) {
+			if (r->upper_port < r->lower_port)
+				return (fault(ae, EINVAL, "defined-sets/port-sets/"
+				    "port-set/port/port-range-or-operator/"
+				    "lower-port", "port set %s, port %s: "
+				    "lower-port %u is above upper-port %u",
+				    s->name, s->port.v[j].id, r->lower_port,
+				    r->upper_port));
+			ports_add(map, r->lower_port, r->upper_port);
+			continue;
+		}
+		if (!r->has_port)
+			continue;
+		switch (r->has_operator ? (int)r->operator : 2) {
+		case 0:
+			ports_add(map, 0, r->port);
+			break;
+		case 1:
+			ports_add(map, r->port, ACL_PORTS - 1);
+			break;
+		case 3:
+			if (r->port > 0)
+				ports_add(map, 0, r->port - 1u);
+			ports_add(map, r->port + 1u, ACL_PORTS - 1);
+			break;
+		default:
+			ports_add(map, r->port, r->port);
+			break;
+		}
+	}
+	return (0);
+}
+
+/* An alias's ports into map, each range's upper port its lower where it
+ * has none. */
+static void
+alias_ports(const yalias *al, uint8_t *map)
+{
+
+	for (size_t j = 0; j < al->port_range.n; j++)
+		ports_add(map, al->port_range.v[j].lower_port,
+		    al->port_range.v[j].has_upper_port ?
+		    al->port_range.v[j].upper_port :
+		    al->port_range.v[j].lower_port);
+}
+
+/* An ICMP type of a set's, the number or the IANA module's name (its
+ * enum's value is the type's). */
+#define	ICMP_TYPE(t)							\
+	((t).which == 0 ? (unsigned)(t).v.m0 : (unsigned)(t).v.m1)
+
+/*
+ * The tables of the defined sets, generation gen, as ipfw's commands
+ * into fp: each prefix set's (an addr table, empty where the set is) and
+ * each alias's prefixes'; the ports of a port set or an alias where
+ * ipfw's port list would not hold them (a number table).  -1 and why
+ * where one cannot be.
+ */
+static int
+tables_compile(const ysets *ds, int gen, FILE *fp, struct aclerr *ae)
+{
+	const struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv4_prefix_sets_prefix_set
+	    *s4;
+	const struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv6_prefix_sets_prefix_set
+	    *s6;
+	const yalias	*al;
+	const char	*pfx;
+	uint8_t		*map;
+	char		 t[64], list[16];
+	size_t		 i, j, nr, np;
+	int		 rc;
+
+	if (ds == NULL)
+		return (0);
+	for (i = 0; ds->ipv4_prefix_sets != NULL &&
+	    i < ds->ipv4_prefix_sets->prefix_set.n; i++) {
+		s4 = &ds->ipv4_prefix_sets->prefix_set.v[i];
+		table_name(t, sizeof(t), gen, '4', i);
+		fprintf(fp, "table %s create type addr\n", t);
+		for (j = 0; j < s4->prefix.n; j++) {
+			if (!prefix_ok(s4->prefix.v[j]))
+				return (fault(ae, EINVAL, "defined-sets/"
+				    "ipv4-prefix-sets/prefix-set/prefix",
+				    "ipv4 prefix set %s: %s is no prefix ipfw "
+				    "reads", s4->name, s4->prefix.v[j]));
+			fprintf(fp, "table %s add %s\n", t, s4->prefix.v[j]);
+		}
+	}
+	for (i = 0; ds->ipv6_prefix_sets != NULL &&
+	    i < ds->ipv6_prefix_sets->prefix_set.n; i++) {
+		s6 = &ds->ipv6_prefix_sets->prefix_set.v[i];
+		table_name(t, sizeof(t), gen, '6', i);
+		fprintf(fp, "table %s create type addr\n", t);
+		for (j = 0; j < s6->prefix.n; j++) {
+			if (!prefix_ok(s6->prefix.v[j]))
+				return (fault(ae, EINVAL, "defined-sets/"
+				    "ipv6-prefix-sets/prefix-set/prefix",
+				    "ipv6 prefix set %s: %s is no prefix ipfw "
+				    "reads", s6->name, s6->prefix.v[j]));
+			fprintf(fp, "table %s add %s\n", t, s6->prefix.v[j]);
+		}
+	}
+	for (i = 0; ds->aliases != NULL && i < ds->aliases->alias.n; i++) {
+		al = &ds->aliases->alias.v[i];
+		if (al->prefix.n == 0)
+			continue;
+		table_name(t, sizeof(t), gen, 'a', i);
+		fprintf(fp, "table %s create type addr\n", t);
+		for (j = 0; j < al->prefix.n; j++) {
+			pfx = al->prefix.v[j].which == 0 ? al->prefix.v[j].v.m0 :
+			    al->prefix.v[j].v.m1;
+			if (!prefix_ok(pfx))
+				return (fault(ae, EINVAL, "defined-sets/aliases/"
+				    "alias/prefix", "alias %s: %s is no prefix "
+				    "ipfw reads", al->name, pfx));
+			fprintf(fp, "table %s add %s\n", t, pfx);
+		}
+	}
+	if ((map = malloc(ACL_PORTS / NBBY)) == NULL)
+		return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
+	rc = 0;
+	for (i = 0; rc == 0 && ds->port_sets != NULL &&
+	    i < ds->port_sets->port_set.n; i++) {
+		memset(map, 0, ACL_PORTS / NBBY);
+		if ((rc = portset_fill(&ds->port_sets->port_set.v[i], map,
+		    ae)) != 0)
+			break;
+		ports_ranges(map, list, sizeof(list), &nr, &np);
+		if (nr <= ACL_PORTLIST)
+			continue;
+		if (np > ACL_TABLE_PORTS) {
+			rc = fault(ae, ENOBUFS, "defined-sets/port-sets/port-set",
+			    "port set %s: %zu ranges and %zu ports, more than "
+			    "ipfw's port list (%d ranges) and this agent's port "
+			    "table (%d ports) hold",
+			    ds->port_sets->port_set.v[i].name, nr, np,
+			    ACL_PORTLIST, ACL_TABLE_PORTS);
+			break;
+		}
+		table_name(t, sizeof(t), gen, 'p', i);
+		fprintf(fp, "table %s create type number\n", t);
+		for (unsigned p = 0; p < ACL_PORTS; p++)
+			if (isset(map, p))
+				fprintf(fp, "table %s add %u\n", t, p);
+	}
+	for (i = 0; rc == 0 && ds->aliases != NULL &&
+	    i < ds->aliases->alias.n; i++) {
+		memset(map, 0, ACL_PORTS / NBBY);
+		alias_ports(&ds->aliases->alias.v[i], map);
+		ports_ranges(map, list, sizeof(list), &nr, &np);
+		if (nr <= ACL_PORTLIST)
+			continue;
+		if (np > ACL_TABLE_PORTS) {
+			rc = fault(ae, ENOBUFS, "defined-sets/aliases/alias/"
+			    "port-range", "alias %s: %zu ranges and %zu ports, "
+			    "more than ipfw's port list (%d ranges) and this "
+			    "agent's port table (%d ports) hold",
+			    ds->aliases->alias.v[i].name, nr, np, ACL_PORTLIST,
+			    ACL_TABLE_PORTS);
+			break;
+		}
+		table_name(t, sizeof(t), gen, 'q', i);
+		fprintf(fp, "table %s create type number\n", t);
+		for (unsigned p = 0; p < ACL_PORTS; p++)
+			if (isset(map, p))
+				fprintf(fp, "table %s add %u\n", t, p);
+	}
+	free(map);
+	return (rc);
+}
+
+/*
+ * A prefix set an ACE names (name; NULL none), of family fam, as ipfw's
+ * option opt (src-ip, dst-ip) on its table, appended to b.
+ */
+static int
+prefixlist_words(char *b, size_t len, const char *opt, const ysets *ds,
+    int gen, int fam, const char *name, const char *acl, const char *ace,
+    const char *node, struct aclerr *ae)
+{
+	char	t[64];
+	int	i;
+
+	if (name == NULL)
+		return (0);
+	i = fam == 4 ? SET_INDEX(ds != NULL ? ds->ipv4_prefix_sets : NULL,
+	    prefix_set, name) : SET_INDEX(ds != NULL ? ds->ipv6_prefix_sets :
+	    NULL, prefix_set, name);
+	if (i == -1)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: no ipv%d prefix "
+		    "set %s", acl, ace, fam, name));
+	table_name(t, sizeof(t), gen, fam == 4 ? '4' : '6', (size_t)i);
+	words_add(b, len, " %s table(%s)", opt, t);
+	return (0);
+}
+
+/*
+ * A port set an ACE names, as ipfw's option opt (src-port, dst-port)
+ * appended to b: its ranges, or its table where a port list would not
+ * hold them.  node is the reference's path below acls.
+ */
+static int
+portset_words(char *b, size_t len, const char *opt, const ysets *ds, int gen,
+    const char *name, const char *acl, const char *ace, const char *node,
+    struct aclerr *ae)
+{
+	uint8_t	*map;
+	char	 list[512], t[64];
+	size_t	 nr, np;
+	int	 i;
+
+	if ((i = SET_INDEX(ds != NULL ? ds->port_sets : NULL, port_set,
+	    name)) == -1)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: no port set %s",
+		    acl, ace, name));
+	if ((map = calloc(1, ACL_PORTS / NBBY)) == NULL)
+		return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
+	if (portset_fill(&ds->port_sets->port_set.v[i], map, ae) != 0) {
+		free(map);
+		return (-1);
+	}
+	ports_ranges(map, list, sizeof(list), &nr, &np);
+	free(map);
+	if (nr == 0)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: port set %s "
+		    "holds no port: the ACE would match nothing", acl, ace,
+		    name));
+	if (nr <= ACL_PORTLIST)
+		words_add(b, len, " %s %s", opt, list);
+	else {
+		table_name(t, sizeof(t), gen, 'p', (size_t)i);
+		words_add(b, len, " lookup %s %s", opt, t);
+	}
+	return (0);
+}
+
+/* Protocols as ipfw's option appended to b: one "proto N", several an
+ * or-block of them.  -1 where one is 0, which ipfw reads as any. */
+static int
+proto_block(char *b, size_t len, const int *v, size_t n)
+{
+
+	for (size_t j = 0; j < n; j++)
+		if (v[j] == 0)
+			return (-1);
+	words_add(b, len, n > 1 ? " {" : "");
+	for (size_t j = 0; j < n; j++)
+		words_add(b, len, "%s proto %d", j > 0 ? " or" : "", v[j]);
+	words_add(b, len, n > 1 ? " }" : "");
+	return (0);
+}
+
+/* A protocol set an ACE names, appended to b (proto_block()); a name as
+ * /etc/protocols has it. */
+static int
+protoset_words(char *b, size_t len, const ysets *ds, const char *name,
+    const char *acl, const char *ace, const char *node, struct aclerr *ae)
+{
+	const struct ietf_access_control_list_acls_acl_enh_defined_sets_protocol_sets_protocol_set
+	    *s;
+	struct protoent	 pe, *res;
+	char		 buf[1024];
+	int		*v, i, rc;
+
+	if ((i = SET_INDEX(ds != NULL ? ds->protocol_sets : NULL,
+	    protocol_set, name)) == -1)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: no protocol "
+		    "set %s", acl, ace, name));
+	s = &ds->protocol_sets->protocol_set.v[i];
+	if (s->protocol.n == 0)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: protocol set "
+		    "%s holds no protocol: the ACE would match nothing", acl,
+		    ace, name));
+	if ((v = calloc(s->protocol.n, sizeof(*v))) == NULL)
+		return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
+	rc = 0;
+	for (size_t j = 0; rc == 0 && j < s->protocol.n; j++) {
+		if (s->protocol.v[j].which == 0) {
+			v[j] = s->protocol.v[j].v.m0;
+			continue;
+		}
+		if (getprotobyname_r(s->protocol.v[j].v.m1, &pe, buf,
+		    sizeof(buf), &res) != 0 || res == NULL)
+			rc = fault(ae, EINVAL, "defined-sets/protocol-sets/"
+			    "protocol-set/protocol", "protocol set %s: %s is "
+			    "no protocol /etc/protocols names", name,
+			    s->protocol.v[j].v.m1);
+		else
+			v[j] = pe.p_proto;
+	}
+	if (rc == 0 && proto_block(b, len, v, s->protocol.n) != 0)
+		rc = fault(ae, EOPNOTSUPP, "defined-sets/protocol-sets/"
+		    "protocol-set/protocol", "protocol set %s: protocol 0 is "
+		    "not compiled into ipfw by this agent: ipfw reads proto 0 "
+		    "as any protocol", name);
+	free(v);
+	return (rc);
+}
+
+/*
+ * An ICMP type set an ACE names (an ICMPv6 one where v6), its types as
+ * icmptypes' or icmp6types' list appended to b; a type with its code or
+ * the rest of its header refused (ipfw reads the type alone).
+ */
+static int
+icmpset_words(char *b, size_t len, bool v6, const ysets *ds, const char *name,
+    const char *acl, const char *ace, const char *node, struct aclerr *ae)
+{
+	char	 list[2048];	/* 256 types at most, the list's keys */
+	size_t	 n, off;
+	int	 i;
+
+	list[0] = '\0';
+	off = 0;
+	if (!v6) {
+		const struct ietf_access_control_list_acls_acl_enh_defined_sets_icmpv4_type_sets_set
+		    *s;
+
+		if ((i = SET_INDEX(ds != NULL ? ds->icmpv4_type_sets : NULL,
+		    set, name)) == -1)
+			return (fault(ae, EINVAL, node, "acl %s, ace %s: no "
+			    "icmpv4 type set %s", acl, ace, name));
+		s = &ds->icmpv4_type_sets->set.v[i];
+		n = s->icmpv4_type.n;
+		for (size_t j = 0; j < n; j++) {
+			const struct ietf_access_control_list_acls_acl_enh_defined_sets_icmpv4_type_sets_set_icmpv4_type
+			    *ty = &s->icmpv4_type.v[j];
+
+			if (ty->has_code || ty->rest_of_header.len > 0)
+				return (fault(ae, EOPNOTSUPP, ty->has_code ?
+				    "defined-sets/icmpv4-type-sets/set/"
+				    "icmpv4-type/code" : "defined-sets/"
+				    "icmpv4-type-sets/set/icmpv4-type/"
+				    "rest-of-header", "icmpv4 type set %s: a "
+				    "type's %s is not compiled into ipfw by "
+				    "this agent: icmptypes reads the type alone",
+				    name, ty->has_code ? "code" :
+				    "rest-of-header"));
+			off += (size_t)snprintf(list + off, sizeof(list) - off,
+			    "%s%u", j > 0 ? "," : "", ICMP_TYPE(ty->type));
+		}
+	} else {
+		const struct ietf_access_control_list_acls_acl_enh_defined_sets_icmpv6_type_sets_set
+		    *s;
+
+		if ((i = SET_INDEX(ds != NULL ? ds->icmpv6_type_sets : NULL,
+		    set, name)) == -1)
+			return (fault(ae, EINVAL, node, "acl %s, ace %s: no "
+			    "icmpv6 type set %s", acl, ace, name));
+		s = &ds->icmpv6_type_sets->set.v[i];
+		n = s->icmpv6_type.n;
+		for (size_t j = 0; j < n; j++) {
+			const struct ietf_access_control_list_acls_acl_enh_defined_sets_icmpv6_type_sets_set_icmpv6_type
+			    *ty = &s->icmpv6_type.v[j];
+
+			if (ty->has_code || ty->rest_of_header.len > 0)
+				return (fault(ae, EOPNOTSUPP, ty->has_code ?
+				    "defined-sets/icmpv6-type-sets/set/"
+				    "icmpv6-type/code" : "defined-sets/"
+				    "icmpv6-type-sets/set/icmpv6-type/"
+				    "rest-of-header", "icmpv6 type set %s: a "
+				    "type's %s is not compiled into ipfw by "
+				    "this agent: icmp6types reads the type alone",
+				    name, ty->has_code ? "code" :
+				    "rest-of-header"));
+			off += (size_t)snprintf(list + off, sizeof(list) - off,
+			    "%s%u", j > 0 ? "," : "", ICMP_TYPE(ty->type));
+		}
+	}
+	if (n == 0)
+		return (fault(ae, EINVAL, node, "acl %s, ace %s: icmpv%d type "
+		    "set %s holds no type: the ACE would match nothing", acl,
+		    ace, v6 ? 6 : 4, name));
+	words_add(b, len, " %s %s", v6 ? "icmp6types" : "icmptypes", list);
+	return (0);
+}
+
+/*
+ * An alias an ACE names, decomposed into b: the destination in its
+ * prefixes' table (the alias names its target), its protocols as a
+ * protocol set's, its ports as a port set's (the destination's).  Its
+ * VLANs, FQDNs and URIs refused.
+ */
+static int
+alias_words(char *b, size_t len, const ysets *ds, int gen, const char *name,
+    const char *acl, const char *ace, struct aclerr *ae)
+{
+	const yalias	*al;
+	uint8_t		*map;
+	char		 list[512], t[64];
+	size_t		 nr, np;
+	int		*v, i, rc;
+
+	if ((i = SET_INDEX(ds != NULL ? ds->aliases : NULL, alias,
+	    name)) == -1)
+		return (fault(ae, EINVAL, "acl/aces/ace/matches/alias-name",
+		    "acl %s, ace %s: no alias %s", acl, ace, name));
+	al = &ds->aliases->alias.v[i];
+	if (al->vlan.n > 0)
+		return (fault(ae, EOPNOTSUPP, "defined-sets/aliases/alias/vlan",
+		    "alias %s: vlan is not compiled into ipfw by this agent: "
+		    "the ACLs decide on the IP pass, where a frame's 802.1Q tag "
+		    "is gone", name));
+	if (al->fqdn.n > 0)
+		return (fault(ae, EOPNOTSUPP, "defined-sets/aliases/alias/fqdn",
+		    "alias %s: fqdn is not compiled into ipfw by this agent: "
+		    "ipfw matches addresses, never the names they came from",
+		    name));
+	if (al->uri.n > 0)
+		return (fault(ae, EOPNOTSUPP, "defined-sets/aliases/alias/uri",
+		    "alias %s: uri is not compiled into ipfw by this agent: "
+		    "ipfw reads no application layer", name));
+	if (al->prefix.n == 0 && al->protocol.n == 0 && al->port_range.n == 0)
+		return (fault(ae, EINVAL, "acl/aces/ace/matches/alias-name",
+		    "acl %s, ace %s: alias %s names no prefix, protocol or "
+		    "port to match", acl, ace, name));
+	if (al->prefix.n > 0) {
+		table_name(t, sizeof(t), gen, 'a', (size_t)i);
+		words_add(b, len, " dst-ip table(%s)", t);
+	}
+	if (al->protocol.n > 0) {
+		if ((v = calloc(al->protocol.n, sizeof(*v))) == NULL)
+			return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
+		for (size_t j = 0; j < al->protocol.n; j++)
+			v[j] = al->protocol.v[j];
+		rc = proto_block(b, len, v, al->protocol.n);
+		free(v);
+		if (rc != 0)
+			return (fault(ae, EOPNOTSUPP, "defined-sets/aliases/"
+			    "alias/protocol", "alias %s: protocol 0 is not "
+			    "compiled into ipfw by this agent: ipfw reads proto "
+			    "0 as any protocol", name));
+	}
+	if (al->port_range.n > 0) {
+		if ((map = calloc(1, ACL_PORTS / NBBY)) == NULL)
+			return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
+		alias_ports(al, map);
+		ports_ranges(map, list, sizeof(list), &nr, &np);
+		free(map);
+		if (nr <= ACL_PORTLIST)
+			words_add(b, len, " dst-port %s", list);
+		else {
+			table_name(t, sizeof(t), gen, 'q', (size_t)i);
+			words_add(b, len, " lookup dst-port %s", t);
+		}
+	}
+	return (0);
+}
+
+/* ---- The ACEs -------------------------------------------------------- */
+
 /*
  * What ipfw cannot say, refused (6.1.3): the node at fault by its path
  * below the ACE's matches or actions, what of it, and why ipfw cannot;
@@ -432,33 +1006,47 @@ mac_word(char *b, size_t len, const char *addr, const char *mask)
 /*
  * An ACE as ipfw's rules at number num, into fp.  fam is the ACL's
  * family (4, 6; 0 either), att how the ACL is attached (ATT_IN,
- * ATT_OUT), l2 whether it has an Ethernet match.  An ACL with one
+ * ATT_OUT), l2 whether it has an Ethernet match, ds the defined sets
+ * and gen their tables' generation.  An ACL with one
  * decides on the IP pass alone ("not layer2"): an Ethernet match is a
  * rule of the layer-2 pass that tags the frame with the ACE's number,
  * which the ACE's rule looks for on the IP pass ("tagged"); a frame
  * comes up from ether_demux() with its tags, so this holds on the way
  * in alone.  One rule, or two where a reject of either family needs
- * each its own unreachable, and the tagging one before.
+ * each its own unreachable, and the tagging one before; an ACE naming
+ * aliases has those for each alias, every one at its number.
  */
 static int
 ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
-    const yace *e, const char *cm, struct aclerr *ae)
+    const yace *e, const char *cm, const ysets *ds, int gen,
+    struct aclerr *ae)
 {
 	const ymatch	*m = e->matches;
 	struct pmatch	 sp, dp;
-	char		 more[512], ethw[160], frag[32], tcpf[48], l2w[32];
-	char		 dmac[40], smac[40], proto[16], act[48];
+	char		 more[4096], aw[2048], ethw[160], frag[32], tcpf[48];
+	char		 l2w[32], dmac[40], smac[40], proto[16], act[48];
 	const char	*src, *dst, *log;
 	uint64_t	 fwd;
 	unsigned	 et;
+	size_t		 na;
 	int		 p, fams[2], nf;
 
 	src = dst = "any";
-	more[0] = ethw[0] = frag[0] = tcpf[0] = l2w[0] = '\0';
+	more[0] = aw[0] = ethw[0] = frag[0] = tcpf[0] = l2w[0] = '\0';
 	p = -1;
 	if (e->actions == NULL || !e->actions->has_forwarding)
 		INVALID("actions/forwarding", "acl %s, ace %s: no forwarding "
 		    "action", acl, e->name);
+	/* RFC 9899's actions are 6.1.7's: refused until then. */
+	REFUSE(e->actions->acl_enh_log_action != NULL,
+	    "actions/ietf-acl-enh:log-action", "log-action", "not yet "
+	    "(logging, RFC 8519's, is log-syslog)");
+	REFUSE(e->actions->acl_enh_counter_action != NULL,
+	    "actions/ietf-acl-enh:counter-action", "counter-action", "not yet "
+	    "(the ACE's statistics are its rule's counters)");
+	REFUSE(e->actions->has_acl_enh_rate_limit,
+	    "actions/ietf-acl-enh:rate-limit", "rate-limit", "not yet (a "
+	    "dummynet pipe)");
 	/* Logging: to syslogd(8), the rule's own destination. */
 	log = "";
 	if (e->actions->has_logging && e->actions->logging ==
@@ -542,12 +1130,32 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv4->has_identification)
 				words_add(more, sizeof(more), " ipid %u",
 				    m->ipv4->identification);
+			REFUSE(m->ipv4->acl_enh_ipv4_fragment != NULL,
+			    "matches/ipv4/ietf-acl-enh:ipv4-fragment",
+			    "ipv4-fragment", "not yet (frag and its offset)");
 			if (m->ipv4->has_protocol)
 				p = m->ipv4->protocol;
 			if (m->ipv4->source_ipv4_network != NULL)
 				src = m->ipv4->source_ipv4_network;
 			if (m->ipv4->destination_ipv4_network != NULL)
 				dst = m->ipv4->destination_ipv4_network;
+			/* RFC 9899's sets: the prefix lists' tables, the
+			 * protocol set's or-block. */
+			if (prefixlist_words(more, sizeof(more), "src-ip", ds,
+			    gen, 4, m->ipv4->acl_enh_source_ipv4_prefix_list,
+			    acl, e->name, "acl/aces/ace/matches/ipv4/"
+			    "source-ipv4-prefix-list", ae) != 0 ||
+			    prefixlist_words(more, sizeof(more), "dst-ip", ds,
+			    gen, 4,
+			    m->ipv4->acl_enh_destination_ipv4_prefix_list,
+			    acl, e->name, "acl/aces/ace/matches/ipv4/"
+			    "destination-ipv4-prefix-list", ae) != 0)
+				return (-1);
+			if (m->ipv4->acl_enh_protocol_set != NULL &&
+			    protoset_words(more, sizeof(more), ds,
+			    m->ipv4->acl_enh_protocol_set, acl, e->name,
+			    "acl/aces/ace/matches/ipv4/protocol-set", ae) != 0)
+				return (-1);
 		}
 		if (m->ipv6 != NULL) {
 			if (fam == 4)
@@ -575,12 +1183,33 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv6->has_flow_label)
 				words_add(more, sizeof(more), " flow-id %u",
 				    m->ipv6->flow_label);
+			REFUSE(m->ipv6->acl_enh_ipv6_fragment != NULL,
+			    "matches/ipv6/ietf-acl-enh:ipv6-fragment",
+			    "ipv6-fragment", "not yet (ext6 frag)");
+			REFUSE(m->ipv6->has_acl_enh_extension_header,
+			    "matches/ipv6/ietf-acl-enh:extension-header",
+			    "extension-header", "not yet (ext6)");
 			if (m->ipv6->has_protocol)
 				p = m->ipv6->protocol;
 			if (m->ipv6->source_ipv6_network != NULL)
 				src = m->ipv6->source_ipv6_network;
 			if (m->ipv6->destination_ipv6_network != NULL)
 				dst = m->ipv6->destination_ipv6_network;
+			if (prefixlist_words(more, sizeof(more), "src-ip", ds,
+			    gen, 6, m->ipv6->acl_enh_source_ipv6_prefix_list,
+			    acl, e->name, "acl/aces/ace/matches/ipv6/"
+			    "source-ipv6-prefix-list", ae) != 0 ||
+			    prefixlist_words(more, sizeof(more), "dst-ip", ds,
+			    gen, 6,
+			    m->ipv6->acl_enh_destination_ipv6_prefix_list,
+			    acl, e->name, "acl/aces/ace/matches/ipv6/"
+			    "destination-ipv6-prefix-list", ae) != 0)
+				return (-1);
+			if (m->ipv6->acl_enh_protocol_set != NULL &&
+			    protoset_words(more, sizeof(more), ds,
+			    m->ipv6->acl_enh_protocol_set, acl, e->name,
+			    "acl/aces/ace/matches/ipv6/protocol-set", ae) != 0)
+				return (-1);
 		}
 		if (strcmp(src, "any") != 0 && !prefix_ok(src))
 			return (fault(ae, EINVAL, fam == 4 ?
@@ -611,6 +1240,9 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			REFUSE(m->tcp->options.len > 0, "matches/tcp/options",
 			    "tcp options", "tcpoptions tells which options are "
 			    "there, never their bytes");
+			REFUSE(m->tcp->acl_enh_flags_bitmask != NULL,
+			    "matches/tcp/ietf-acl-enh:flags-bitmask",
+			    "flags-bitmask", "not yet (tcpflags)");
 			PMATCH(m->tcp->source_port, sp);
 			PMATCH(m->tcp->destination_port, dp);
 			if (p != -1 && p != 6)
@@ -623,6 +1255,17 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			    "dst-port", &dp, acl, e->name,
 			    "acl/aces/ace/matches/tcp/destination-port",
 			    ae) != 0)
+				return (-1);
+			if ((m->tcp->acl_enh_source_tcp_port_set != NULL &&
+			    portset_words(more, sizeof(more), "src-port", ds,
+			    gen, m->tcp->acl_enh_source_tcp_port_set, acl,
+			    e->name, "acl/aces/ace/matches/tcp/"
+			    "source-tcp-port-set", ae) != 0) ||
+			    (m->tcp->acl_enh_destination_tcp_port_set != NULL &&
+			    portset_words(more, sizeof(more), "dst-port", ds,
+			    gen, m->tcp->acl_enh_destination_tcp_port_set, acl,
+			    e->name, "acl/aces/ace/matches/tcp/"
+			    "destination-tcp-port-set", ae) != 0))
 				return (-1);
 			if (m->tcp->has_sequence_number)
 				words_add(more, sizeof(more), " tcpseq %u",
@@ -669,6 +1312,17 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			    "acl/aces/ace/matches/udp/destination-port",
 			    ae) != 0)
 				return (-1);
+			if ((m->udp->acl_enh_source_udp_port_set != NULL &&
+			    portset_words(more, sizeof(more), "src-port", ds,
+			    gen, m->udp->acl_enh_source_udp_port_set, acl,
+			    e->name, "acl/aces/ace/matches/udp/"
+			    "source-udp-port-set", ae) != 0) ||
+			    (m->udp->acl_enh_destination_udp_port_set != NULL &&
+			    portset_words(more, sizeof(more), "dst-port", ds,
+			    gen, m->udp->acl_enh_destination_udp_port_set, acl,
+			    e->name, "acl/aces/ace/matches/udp/"
+			    "destination-udp-port-set", ae) != 0))
+				return (-1);
 		}
 		if (m->icmp != NULL) {
 			REFUSE(m->icmp->has_code, "matches/icmp/code",
@@ -678,10 +1332,26 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			    "matches/icmp/rest-of-header",
 			    "icmp rest-of-header", "ipfw reads nothing of ICMP "
 			    "past its type");
+			/* A type set names its family. */
+			if (m->icmp->acl_enh_icmpv4_set != NULL &&
+			    m->icmp->acl_enh_icmpv6_set != NULL)
+				INVALID("matches/icmp/ietf-acl-enh:icmpv6-set",
+				    "acl %s, ace %s: an icmpv4 and an icmpv6 type "
+				    "set at once", acl, e->name);
+			if ((m->icmp->acl_enh_icmpv4_set != NULL && fam == 6) ||
+			    (m->icmp->acl_enh_icmpv6_set != NULL && fam == 4))
+				INVALID("matches/icmp", "acl %s, ace %s: an "
+				    "icmpv%d type set in an IPv%d ACE", acl,
+				    e->name, fam == 6 ? 4 : 6, fam);
+			if (m->icmp->acl_enh_icmpv4_set != NULL)
+				fam = 4;
+			else if (m->icmp->acl_enh_icmpv6_set != NULL)
+				fam = 6;
 			if (fam == 0)
 				INVALID("matches/icmp", "acl %s, ace %s: an ICMP "
 				    "match needs its family: an ipv4 or ipv6 "
-				    "match, or the ACL's type", acl, e->name);
+				    "match, the ACL's type or a type set", acl,
+				    e->name);
 			if (p != -1 && p != (fam == 4 ? 1 : 58))
 				INVALID("matches/icmp", "acl %s, ace %s: an ICMP "
 				    "match with protocol %d", acl, e->name, p);
@@ -690,6 +1360,16 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				words_add(more, sizeof(more), " %s %u",
 				    fam == 4 ? "icmptypes" : "icmp6types",
 				    m->icmp->type);
+			if (m->icmp->acl_enh_icmpv4_set != NULL ||
+			    m->icmp->acl_enh_icmpv6_set != NULL) {
+				if (icmpset_words(more, sizeof(more), fam == 6,
+				    ds, fam == 6 ? m->icmp->acl_enh_icmpv6_set :
+				    m->icmp->acl_enh_icmpv4_set, acl, e->name,
+				    fam == 6 ? "acl/aces/ace/matches/icmp/"
+				    "icmpv6-set" : "acl/aces/ace/matches/icmp/"
+				    "icmpv4-set", ae) != 0)
+					return (-1);
+			}
 		}
 		if (m->ingress_interface != NULL) {
 			if (!ifname_ok(m->ingress_interface))
@@ -756,23 +1436,36 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 		fams[nf++] = 6;
 	} else
 		fams[nf++] = fam;
-	for (int i = 0; i < nf; i++) {
-		if (fwd == acl_ident("accept"))
-			snprintf(act, sizeof(act), "allow%s", log);
-		else if (fwd == acl_ident("drop"))
-			snprintf(act, sizeof(act), "deny%s", log);
-		else if (fwd == acl_ident("reject"))
-			snprintf(act, sizeof(act), "%s%s", fams[i] == 6 ?
-			    "unreach6 admin-prohib" : "unreach filter-prohib",
-			    log);
-		else
-			return (fault(ae, EOPNOTSUPP,
-			    "acl/aces/ace/actions/forwarding", "acl %s, ace %s: "
-			    "a forwarding action this agent does not know",
-			    acl, e->name));
-		fprintf(fp, "add %d set %d %s %s from %s to %s%s%s%s // %s\n",
-		    num, ACL_STAGE, act, proto, src, dst, more, l2w,
-		    fams[i] == 4 ? " ip4" : fams[i] == 6 ? " ip6" : "", cm);
+	if (fwd == acl_ident("accept"))
+		snprintf(act, sizeof(act), "allow%s", log);
+	else if (fwd == acl_ident("drop"))
+		snprintf(act, sizeof(act), "deny%s", log);
+	else if (fwd != acl_ident("reject"))
+		return (fault(ae, EOPNOTSUPP, "acl/aces/ace/actions/forwarding",
+		    "acl %s, ace %s: a forwarding action this agent does not "
+		    "know", acl, e->name));
+	/* The aliases, any one matching: a rule each. */
+	na = m != NULL ? m->acl_enh_alias_name.n : 0;
+	for (size_t j = 0; j < (na > 0 ? na : 1); j++) {
+		aw[0] = '\0';
+		if (na > 0 && alias_words(aw, sizeof(aw), ds, gen,
+		    m->acl_enh_alias_name.v[j], acl, e->name, ae) != 0)
+			return (-1);
+		if (strlen(more) + 1 >= sizeof(more) ||
+		    strlen(aw) + 1 >= sizeof(aw))
+			return (fault(ae, ENOBUFS, "acl/aces/ace", "acl %s, ace "
+			    "%s: more matches than one ipfw rule of this agent's "
+			    "holds", acl, e->name));
+		for (int i = 0; i < nf; i++) {
+			if (fwd == acl_ident("reject"))
+				snprintf(act, sizeof(act), "%s%s", fams[i] == 6 ?
+				    "unreach6 admin-prohib" :
+				    "unreach filter-prohib", log);
+			fprintf(fp, "add %d set %d %s %s from %s to %s%s%s%s%s "
+			    "// %s\n", num, ACL_STAGE, act, proto, src, dst,
+			    more, aw, l2w, fams[i] == 4 ? " ip4" : fams[i] == 6 ?
+			    " ip6" : "", cm);
+		}
 	}
 	return (0);
 }
@@ -828,11 +1521,12 @@ attached(const yacls *c, int *att, struct aclerr *ae)
 
 /*
  * The ACLs as ipfw's commands for the staging set, a line each, into
- * fp; how many rules into *nrules, the first ACL with an Ethernet match
- * into *l2 (NULL none).  -1 and why when one cannot be.
+ * fp, the defined sets' tables of generation gen first; how many rules
+ * into *nrules, the first ACL with an Ethernet match into *l2 (NULL
+ * none).  -1 and why when one cannot be.
  */
 static int
-acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
+acl_compile(const yacls *c, int gen, FILE *fp, int *nrules, const char **l2,
     struct aclerr *ae)
 {
 	const yacl	*l;
@@ -850,7 +1544,8 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 	if ((band = calloc(2 * (c->acl.n + 1), sizeof(*band))) == NULL)
 		return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
 	att = band + c->acl.n + 1;
-	if (bands_of(c, band, ae) != 0 || attached(c, att, ae) != 0)
+	if (bands_of(c, band, ae) != 0 || attached(c, att, ae) != 0 ||
+	    tables_compile(c->acl_enh_defined_sets, gen, fp, ae) != 0)
 		goto bad;
 	comment_of(cm, sizeof(cm), "guard", NULL, NULL);
 	fprintf(fp, "add %d set %d skipto %d ip from any to any // %s\n",
@@ -894,7 +1589,8 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 			comment_of(cm, sizeof(cm), tag, l->name,
 			    l->aces->ace.v[j].name);
 			if (ace_compile(fp, l->name, fam, att[i], eth,
-			    band[i] + (int)j, &l->aces->ace.v[j], cm, ae) != 0)
+			    band[i] + (int)j, &l->aces->ace.v[j], cm,
+			    c->acl_enh_defined_sets, gen, ae) != 0)
 				goto bad;
 			(*nrules)++;
 		}
@@ -975,9 +1671,10 @@ bad:
 /* ---- The kernel ------------------------------------------------------ */
 
 /*
- * The kernel's rules, ipfw -a -S list's: each number, counters, set and
- * comment (a disabled set's, "# DISABLED", left out).  -1 where ipfw
- * cannot be read (not loaded, or not there).
+ * The kernel's rules, ipfw -a -S list's: each number, counters, set,
+ * comment (a disabled set's, "# DISABLED", left out) and the generation
+ * of the ACLs' tables it names.  -1 where ipfw cannot be read (not
+ * loaded, or not there).
  */
 static int
 kernel_rules(struct work *w, struct krule **out, size_t *np)
@@ -1024,6 +1721,10 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 		v[n].count = strncmp(line + off, "count ", 6) == 0;
 		c = strstr(line + off, "// ");
 		v[n].comment = c != NULL ? c + 3 : "";
+		if (c != NULL)
+			line[c - line] = '\0';
+		v[n].gen = strstr(line + off, ACL_TABLE "0-") != NULL ? 0 :
+		    strstr(line + off, ACL_TABLE "1-") != NULL ? 1 : -1;
 		n++;
 	}
 	*out = v;
@@ -1052,8 +1753,100 @@ kernel_free(const struct krule *k, size_t n, struct aclerr *ae)
 			    "a number the ACLs keep (%d, %d to %d): renumber it "
 			    "first", k[i].num, k[i].set, ACL_ENTRY, ACL_GUARD,
 			    ACL_PAST - 1));
+		if (k[i].gen != -1)
+			return (fault(ae, EBUSY, NULL, "rule %ld of set %d names "
+			    "a table the ACLs keep (" ACL_TABLE "0-*, " ACL_TABLE
+			    "1-*): give it a table of its own first", k[i].num,
+			    k[i].set));
 	}
 	return (0);
+}
+
+/*
+ * The ACLs' tables the kernel has (ipfw table all list: a "--- table(T),
+ * set(N) ---" line, then an entry a line, its key first), into *out.
+ * -1 where ipfw cannot be read.
+ */
+static int
+kernel_tables(struct work *w, struct ktable **out, size_t *np)
+{
+	struct execres	 res;
+	struct ktable	*v, *cur;
+	const char	*p, *nl;
+	char		*argv[5], *line, *e;
+	size_t		 n, cap;
+
+	*out = NULL;
+	*np = 0;
+	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
+	argv[1] = (char *)(uintptr_t)"table";
+	argv[2] = (char *)(uintptr_t)"all";
+	argv[3] = (char *)(uintptr_t)"list";
+	argv[4] = NULL;
+	if (run_exec_max(w, argv, &res, ARC_MAX_JSON) != 0)
+		return (-1);
+	n = cap = 0;
+	v = cur = NULL;
+	for (p = res.out != NULL ? res.out : ""; *p != '\0';
+	    p = *nl != '\0' ? nl + 1 : nl) {
+		nl = p + strcspn(p, "\n");
+		line = wstrndup(w, p, (size_t)(nl - p));
+		if (strncmp(line, "--- table(", 10) == 0) {
+			cur = NULL;
+			if ((e = strchr(line + 10, ')')) == NULL)
+				continue;
+			*e = '\0';
+			if (strncmp(line + 10, ACL_TABLE "0-", 6) != 0 &&
+			    strncmp(line + 10, ACL_TABLE "1-", 6) != 0)
+				continue;
+			if (n == cap) {
+				struct ktable	*nv;
+
+				cap = cap == 0 ? 16 : cap * 2;
+				nv = wcalloc(w, cap, sizeof(*v));
+				if (n > 0)
+					memcpy(nv, v, n * sizeof(*v));
+				v = nv;
+			}
+			cur = &v[n++];
+			cur->name = line + 10;
+			cur->n = 0;
+			cur->entry = NULL;
+			continue;
+		}
+		if (cur == NULL || *line == '\0')
+			continue;
+		line[strcspn(line, " ")] = '\0';
+		if ((cur->n & 63) == 0) {
+			const char	**ne;
+
+			ne = wcalloc(w, cur->n + 64, sizeof(*ne));
+			if (cur->n > 0)
+				memcpy(ne, cur->entry, cur->n * sizeof(*ne));
+			cur->entry = ne;
+		}
+		cur->entry[cur->n++] = line;
+	}
+	*out = v;
+	*np = n;
+	return (0);
+}
+
+/*
+ * The generation of the ACLs' tables in use: the one set 29's rules
+ * name, else the one whose tables alone are there; -1 neither.
+ */
+static int
+live_gen(const struct krule *k, size_t nk, const struct ktable *t, size_t nt)
+{
+	bool	have[2] = { false, false };
+
+	for (size_t i = 0; i < nk; i++)
+		if (k[i].set == ACL_SET && k[i].gen != -1)
+			return (k[i].gen);
+	for (size_t i = 0; i < nt; i++)
+		have[t[i].name[strlen(ACL_TABLE)] == '1'] = true;
+	return (have[0] == have[1] ? -1 : have[1] ? 1 : 0);
 }
 
 static int
@@ -1082,10 +1875,25 @@ ipfw_quiet(struct work *w, const char *const *words, char *err,
 	ipfw_quiet((w), (const char *const []){ __VA_ARGS__, NULL }, (err), \
 	    (errlen))
 
-/* Whether frames reach ipfw on the layer-2 pass: net.link.ether.ipfw,
- * the admin's to set (sysctl(8) where a stand-in is given). */
+/* The ACLs' tables of generation gen (-1 both) destroyed, as the kernel
+ * has them now; none of them may be named by a rule then. */
+static void
+tables_drop(struct work *w, int gen)
+{
+	struct ktable	*t;
+	size_t		 nt;
+
+	if (kernel_tables(w, &t, &nt) != 0)
+		return;
+	for (size_t i = 0; i < nt; i++)
+		if (gen == -1 || t[i].name[strlen(ACL_TABLE)] == '0' + gen)
+			(void)IPFW(w, NULL, 0, "table", t[i].name, "destroy");
+}
+
+/* Whether an integer sysctl of the admin's is set (sysctl(8) where a
+ * stand-in is given); 0 where it cannot be read. */
 static bool
-ether_ipfw(struct work *w)
+fw_sysctl(struct work *w, const char *name)
 {
 	struct execres	 res;
 	char		*argv[4];
@@ -1094,21 +1902,30 @@ ether_ipfw(struct work *w)
 
 	if (strcmp(opts.sysctl_bin, "/sbin/sysctl") == 0) {
 		len = sizeof(v);
-		return (sysctlbyname("net.link.ether.ipfw", &v, &len, NULL,
-		    0) == 0 && v != 0);
+		return (sysctlbyname(name, &v, &len, NULL, 0) == 0 && v != 0);
 	}
 	argv[0] = (char *)(uintptr_t)opts.sysctl_bin;
 	argv[1] = (char *)(uintptr_t)"-n";
-	argv[2] = (char *)(uintptr_t)"net.link.ether.ipfw";
+	argv[2] = (char *)(uintptr_t)name;
 	argv[3] = NULL;
 	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
 		return (false);
 	return (strtol(wstrndup(w, res.out, res.outlen), NULL, 10) != 0);
 }
 
+/* Whether frames reach ipfw on the layer-2 pass: net.link.ether.ipfw,
+ * the admin's to set. */
+static bool
+ether_ipfw(struct work *w)
+{
+
+	return (fw_sysctl(w, "net.link.ether.ipfw"));
+}
+
 /*
  * The ACLs c made what the kernel has, all at once (above); none, set
- * 29 deleted.  -1 and why into ae, the kernel as it was.
+ * 29 deleted and the ACLs' tables destroyed.  -1 and why into ae, the
+ * kernel as it was.
  */
 static int
 acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
@@ -1116,19 +1933,27 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	char		*err = ae->msg;
 	size_t		 errlen = sizeof(ae->msg);
 	struct krule	*k;
+	struct ktable	*t;
 	const char	*l2;
 	char		 path[MAXPATHLEN], *buf;
-	size_t		 nk, blen;
+	size_t		 nk, nt, blen;
 	FILE		*fp;
-	int		 nrules, fd, rc;
-	bool		 ours;
+	int		 nrules, fd, rc, gen;
+	bool		 ours, readable;
 
+	/* The tables' generation: the one not in use. */
+	readable = kernel_rules(w, &k, &nk) == 0;
+	if (!readable || kernel_tables(w, &t, &nt) != 0) {
+		t = NULL;
+		nt = 0;
+	}
+	gen = readable && live_gen(k, nk, t, nt) == 0 ? 1 : 0;
 	buf = NULL;
 	blen = 0;
 	if ((fp = open_memstream(&buf, &blen)) == NULL)
 		return (fault(ae, errno, NULL, "open_memstream: %s",
 		    strerror(errno)));
-	rc = acl_compile(c, fp, &nrules, &l2, ae);
+	rc = acl_compile(c, gen, fp, &nrules, &l2, ae);
 	if (fclose(fp) != 0 && rc == 0)
 		rc = fault(ae, errno, NULL, "the rules: %s", strerror(errno));
 	if (rc != 0) {
@@ -1141,7 +1966,7 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 		    "Ethernet match needs the frames on ipfw's layer-2 pass, "
 		    "net.link.ether.ipfw=1, which is the admin's to set (this "
 		    "agent does not)", l2));
-	if (kernel_rules(w, &k, &nk) != 0) {
+	if (!readable) {
 		if (nrules == 0)
 			return (0);
 		return (fault(ae, EIO, NULL, "ipfw cannot be read (ipfw(4) not "
@@ -1149,6 +1974,15 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	}
 	if (kernel_free(k, nk, ae) != 0)
 		return (-1);
+	/* With tables in sets, set 28's rules would look theirs up in set
+	 * 28: the admin's choice, refused. */
+	if (nrules > 0 && (strncmp(buf, "table ", 6) == 0 ||
+	    strstr(buf, "\ntable ") != NULL) &&
+	    fw_sysctl(w, "net.inet.ip.fw.tables_sets"))
+		return (fault(ae, EOPNOTSUPP, "defined-sets", "the defined sets "
+		    "are not compiled into ipfw by this agent with "
+		    "net.inet.ip.fw.tables_sets=1: the ACLs' tables are "
+		    "global, the default"));
 	/* What fails from here is ipfw's, or the file's. */
 	ae->error = EIO;
 	ae->sid = 0;
@@ -1160,6 +1994,8 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 		    "29") != 0 || IPFW(w, err, errlen, "-f", "delete", "set",
 		    "28") != 0))
 			return (-1);
+		if (nt > 0)
+			tables_drop(w, -1);
 		return (0);
 	}
 	sdwan_conf_path(ACL_LOAD, path, sizeof(path));
@@ -1172,22 +2008,28 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 		return (-1);
 	}
 	close(fd);
-	/* The staging set emptied and disabled, the rules into it, then
-	 * swapped in: set 28 holds the old ones, disabled, and goes. */
+	/* The staging set emptied and disabled, what is left of the new
+	 * generation's tables destroyed; the tables filled and the rules
+	 * loaded into set 28, then swapped in: set 28 holds the old ones,
+	 * disabled, and goes, and so do the old generation's tables. */
 	(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
+	tables_drop(w, gen);
 	rc = -1;
 	if (IPFW(w, err, errlen, "set", "disable", "28") != 0)
 		goto out;
 	if (IPFW(w, err, errlen, path) != 0) {
 		(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
+		tables_drop(w, gen);
 		goto out;
 	}
 	if (IPFW(w, err, errlen, "set", "swap", "28", "29") != 0) {
 		(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
+		tables_drop(w, gen);
 		goto out;
 	}
 	(void)IPFW(w, NULL, 0, "set", "enable", "29");
 	(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
+	tables_drop(w, 1 - gen);
 	rc = 0;
 out:
 	(void)unlink(path);
@@ -1319,10 +2161,132 @@ ace_stats(const struct krule *k, size_t nk, const char *tag, const char *acl,
 	return (0);
 }
 
+/* s copied into a's. */
+static const char *
+arena_str(cbl_yarena *a, const char *s)
+{
+	char	*p;
+	size_t	 n = strlen(s) + 1;
+
+	if ((p = cbl_yarena_alloc(a, n)) != NULL)
+		memcpy(p, s, n);
+	return (p);
+}
+
+/* A table's entries as a's prefixes, into *v and *n; ENOMEM. */
+static int
+table_prefixes(const struct ktable *t, cbl_yarena *a, const char *const **v,
+    size_t *n)
+{
+	const char	**p;
+
+	*v = NULL;
+	*n = 0;
+	if (t->n == 0)
+		return (0);
+	if ((p = cbl_yarena_alloc(a, t->n * sizeof(*p))) == NULL)
+		return (ENOMEM);
+	for (size_t i = 0; i < t->n; i++)
+		if ((p[i] = arena_str(a, t->entry[i])) == NULL)
+			return (ENOMEM);
+	*v = p;
+	*n = t->n;
+	return (0);
+}
+
+/* The kernel's table of that name; NULL: none. */
+static const struct ktable *
+table_find(const struct ktable *t, size_t nt, const char *name)
+{
+
+	for (size_t i = 0; i < nt; i++)
+		if (strcmp(t[i].name, name) == 0)
+			return (&t[i]);
+	return (NULL);
+}
+
+/*
+ * The defined sets as the kernel has them, into *out: each prefix set
+ * whose table of generation gen is there, its prefixes the table's; the
+ * other sets running's, compiled into the rules that name them.
+ */
+static int
+sets_installed(const ysets *ds, const struct ktable *t, size_t nt, int gen,
+    cbl_yarena *a, const ysets **out)
+{
+	struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv4_prefix_sets
+	    *p4;
+	struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv4_prefix_sets_prefix_set
+	    *v4;
+	struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv6_prefix_sets
+	    *p6;
+	struct ietf_access_control_list_acls_acl_enh_defined_sets_ipv6_prefix_sets_prefix_set
+	    *v6;
+	const struct ktable *kt;
+	ysets		*r;
+	char		 name[64];
+	size_t		 n;
+	int		 error;
+
+	*out = NULL;
+	if ((r = cbl_yarena_alloc(a, sizeof(*r))) == NULL)
+		return (ENOMEM);
+	*r = *ds;
+	r->ipv4_prefix_sets = NULL;
+	r->ipv6_prefix_sets = NULL;
+	if (ds->ipv4_prefix_sets != NULL && gen != -1) {
+		n = ds->ipv4_prefix_sets->prefix_set.n;
+		if ((p4 = cbl_yarena_alloc(a, sizeof(*p4))) == NULL ||
+		    (v4 = cbl_yarena_alloc(a, (n + 1) * sizeof(*v4))) == NULL)
+			return (ENOMEM);
+		memset(p4, 0, sizeof(*p4));
+		for (size_t i = 0; i < n; i++) {
+			table_name(name, sizeof(name), gen, '4', i);
+			if ((kt = table_find(t, nt, name)) == NULL)
+				continue;
+			v4[p4->prefix_set.n] =
+			    ds->ipv4_prefix_sets->prefix_set.v[i];
+			if ((error = table_prefixes(kt, a,
+			    &v4[p4->prefix_set.n].prefix.v,
+			    &v4[p4->prefix_set.n].prefix.n)) != 0)
+				return (error);
+			p4->prefix_set.n++;
+		}
+		p4->prefix_set.v = v4;
+		if (p4->prefix_set.n > 0)
+			r->ipv4_prefix_sets = p4;
+	}
+	if (ds->ipv6_prefix_sets != NULL && gen != -1) {
+		n = ds->ipv6_prefix_sets->prefix_set.n;
+		if ((p6 = cbl_yarena_alloc(a, sizeof(*p6))) == NULL ||
+		    (v6 = cbl_yarena_alloc(a, (n + 1) * sizeof(*v6))) == NULL)
+			return (ENOMEM);
+		memset(p6, 0, sizeof(*p6));
+		for (size_t i = 0; i < n; i++) {
+			table_name(name, sizeof(name), gen, '6', i);
+			if ((kt = table_find(t, nt, name)) == NULL)
+				continue;
+			v6[p6->prefix_set.n] =
+			    ds->ipv6_prefix_sets->prefix_set.v[i];
+			if ((error = table_prefixes(kt, a,
+			    &v6[p6->prefix_set.n].prefix.v,
+			    &v6[p6->prefix_set.n].prefix.n)) != 0)
+				return (error);
+			p6->prefix_set.n++;
+		}
+		p6->prefix_set.v = v6;
+		if (p6->prefix_set.n > 0)
+			r->ipv6_prefix_sets = p6;
+	}
+	*out = r;
+	return (0);
+}
+
 /*
  * Running's acls as the kernel has them, into out: each ACL whose band
  * is whole (every ACE's rule and the return, by the name map), its ACEs
- * with their statistics, each attachment whose call is there; nothing
+ * with their statistics, each attachment whose call is there, the
+ * defined sets where the ACLs are installed (sets_installed()); nothing
  * where ipfw cannot be read.
  */
 static int
@@ -1345,17 +2309,22 @@ acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
 	    *outv;
 	struct ietf_access_control_list_acls_acl_aces	*as;
 	struct krule	*k;
+	struct ktable	*t;
 	yacls		*r;
 	yacl		*v;
 	yace		*ev;
 	char		 tag[32];
-	size_t		 nk, i, j, n, m, nin, nout;
+	size_t		 nk, nt, i, j, n, m, nin, nout;
 	bool		*whole, have;
 	int		 error;
 
 	*out = NULL;
 	if (kernel_rules(w, &k, &nk) != 0)
 		return (0);
+	if (kernel_tables(w, &t, &nt) != 0) {
+		t = NULL;
+		nt = 0;
+	}
 	if ((r = cbl_yarena_alloc(a, sizeof(*r))) == NULL ||
 	    (v = cbl_yarena_alloc(a, (c->acl.n + 1) * sizeof(*v))) == NULL ||
 	    (whole = cbl_yarena_alloc(a, (c->acl.n + 1) * sizeof(*whole))) ==
@@ -1465,7 +2434,13 @@ acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
 			r->attachment_points = aps;
 		}
 	}
-	if (r->acl.n > 0 || r->attachment_points != NULL)
+	if (c->acl_enh_defined_sets != NULL &&
+	    has_rule(k, nk, "guard", NULL, NULL) &&
+	    (error = sets_installed(c->acl_enh_defined_sets, t, nt,
+	    live_gen(k, nk, t, nt), a, &r->acl_enh_defined_sets)) != 0)
+		return (error);
+	if (r->acl.n > 0 || r->attachment_points != NULL ||
+	    r->acl_enh_defined_sets != NULL)
 		*out = r;
 	return (0);
 }

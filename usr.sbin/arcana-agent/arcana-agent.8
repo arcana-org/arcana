@@ -395,7 +395,35 @@ and the ACE's rule looks for the tag
 it is refused attached on an egress, and unless
 .Va net.link.ether.ipfw
 is 1, which the agent never sets.
-The operational datastore has the ACLs the kernel has whole.
+RFC 9899's defined sets
+.Pq Li ietf-acl-enh
+are compiled into the ACEs that name them: a prefix set an
+.Ic addr
+table
+.Pq Ic src-ip table(T) , dst-ip table(T) ,
+a port set a port list, or a
+.Ic number
+table
+.Pq Ic lookup dst-port T
+past 30 ranges, a protocol set an or-block of
+.Ic proto ,
+an ICMP type set
+.Ic icmptypes
+or
+.Ic icmp6types ,
+an alias its destination prefixes' table, its protocols and its ports.
+The tables are named
+.Li acl-0-*
+and
+.Li acl-1-* ,
+the ACLs' as sets 28 and 29 are: an edit fills the generation not in
+use before its rules are loaded into set 28, the swap makes both live,
+and the old generation is destroyed after it; no table is ever swapped.
+A rule of the admin's naming one refuses a change, as does
+.Va net.inet.ip.fw.tables_sets
+1.
+The operational datastore has the ACLs the kernel has whole, and the
+prefix sets as their tables hold them.
 .Pp
 Every request has a trace: the library calls, system calls, files and
 programs it used, with the output of every program, told to the peer

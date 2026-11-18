@@ -56,6 +56,7 @@ origin.
 | `ieee802-ethernet-phy-type@2025-09-10.yang` | module | IEEE Std 802.3 (YangModels/yang, standard/ieee/published/802.3) |
 | `ieee802-types@2023-10-22.yang` | module | IEEE Std 802 (YangModels/yang, standard/ieee/published/802) |
 | `ietf-access-control-list@2019-03-04.yang` | module | RFC 8519 (YangModels/yang standard/ietf/RFC, the same bytes); the ACLs compiled to ipfw, served by the agent (invidia/acl.c) |
+| `ietf-acl-enh@2025-12-22.yang` | module | RFC 9899 (YangModels/yang standard/ietf/RFC, the same bytes); its defined sets compiled to ipfw tables, lists and or-blocks, served by the agent with RFC 8519's (invidia/acl.c) |
 | `ietf-alarms-x733@2019-09-11.yang` | module | RFC 8632 |
 | `ietf-alarms@2019-09-11.yang` | module | RFC 8632 |
 | `ietf-babel@2024-10-10.yang` | module | RFC 9647 |
@@ -154,6 +155,7 @@ tree beside the operation's CBOR schema.
 | File | | What |
 |---|---|---|
 | `arcana-interfaces@2026-10-14.yang` | module | augments `ietf-interfaces`: driver name, groups, tunnel FIB, capabilities, media; a vlan(4)'s priority, a lagg(4)'s protocol, hash and ports' priorities and flags, a bridge(4) member's own flags; an epair(4) end's other in a vnet. What a standard has is the standard's: the MTU `ietf-ip`'s ipv4 mtu (and `ietf-if-extensions`' max-frame-size), the Ethernet addresses `ietf-if-ethernet-like`'s, the FIB RFC 8529's bind-ni-name, an epair's other end `ietf-if-extensions`' peer-interface, a vlan's tag `ietf-if-vlan-encapsulation`'s outer-tag and its parent `ietf-if-extensions`' parent-interface, an Ethernet's auto-negotiation, duplex and PMD IEEE 802.3's `ieee802-ethernet-interface`, a lagg IEEE 802.1AX's `ieee802-dot1ax-linkagg` (a key group and system each, LACP's state), a bridge IEEE 802.1Q's `ieee802-dot1q-bridge` and its members' RSTP `ieee802-dot1q-rstp-bridge`'s |
+| `arcana-acl-deviations@2026-11-18.yang` | module | deviates RFC 9899's `ietf-acl-enh`: its ipv4-fragment's must refuses RFC 8519's IPv4 flags wherever an ACE has an ipv4 match (the container's operator has a default, so it is in the accessible tree); it refuses them with a fragment type, as RFC 9899's Section 3.5 means |
 | `arcana-ieee802-deviations@2026-10-14.yang` | module | deviates IEEE 802.1AX's `ieee802-dot1ax-linkagg`: FreeBSD's LACP keeps no administrative key (each port's is derived from its speed), so a key group's actor-admin-key is not mandatory |
 | `arcana-ip-deviations@2026-10-14.yang` | module | deviates `ietf-ip`: forwarding, DAD's probes and temporary addresses are the host's sysctls, IPv4 cannot be turned off on one interface, one MTU for both families, ipv4's (the link's), so ipv6's is config false |
 | `arcana-jails@2026-10-14.yang` | module | FreeBSD's jails (jail(8), jail(2)): those jail.conf(5) defines, as jail(8) -e resolves them, and those running, as jail_get(2) gives them; start, stop, restart, kill as actions; a vnet jail's logical network element (RFC 8530); the list and action operations of arcana.yaml as YANG |
@@ -209,7 +211,7 @@ The `.sid` files of the IETF and IANA modules the agent fills
 publishes no file, so they are numbered here (SIDS.md). So are those
 of the ones with no IETF range (`ietf-routing`, its address families,
 `ietf-network-instance`, `ietf-logical-network-element`, `ietf-network`,
-`ietf-network-topology`, `ietf-sap-ntw`, `ietf-access-control-list`, `ietf-te-types`,
+`ietf-network-topology`, `ietf-sap-ntw`, `ietf-access-control-list`, `ietf-acl-enh`, `ietf-te-types`,
 `ietf-te-topology`, `ietf-vn`), from Arcana's block. A module's file numbers every item of it, whatever
 another module deviates:
 `arcana-network-instance` takes `vsi-root` away, its number stays.

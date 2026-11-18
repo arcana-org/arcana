@@ -2787,8 +2787,11 @@ alarm_shelving_cleanup()
 # would, each rule's counters those of its number in fw.counters
 # ("number packets bytes"; 0 0 where none), a file's "add N set S ..."
 # lines go in, set swap and delete set act on it, set enable and
-# disable change nothing it lists.  Every command logged in ipfw.log, a
-# file's lines after it.
+# disable change nothing it lists.  Its tables are the files of
+# fw.tables, a key a line: table T create, add, destroy (refused while
+# a rule names T, as the kernel's), table all list as ipfw prints them;
+# a file's table lines too, in their order.  Every command logged in
+# ipfw.log, a file's lines after it.
 acl_fake_ipfw()
 {
 	local d="$(pwd)"
@@ -2796,9 +2799,31 @@ acl_fake_ipfw()
 	cat > fake-ipfw <<EOS
 #!/bin/sh
 st=$d/fw.state
+tb=$d/fw.tables
+tbl()
+{
+	case "\$2" in
+	create)	[ -e "\$tb/\$1" ] && return 1
+		: > "\$tb/\$1" ;;
+	add)	[ -e "\$tb/\$1" ] || return 1
+		echo "\$3" >> "\$tb/\$1" ;;
+	destroy) grep -q "table(\$1)\|lookup [a-z-]* \$1 " "\$st" && return 1
+		rm "\$tb/\$1" ;;
+	*)	return 1 ;;
+	esac
+}
 echo "ipfw \$*" >> $d/ipfw.log
 [ "\$1" = -q ] && shift
 case "\$1 \$2 \$3" in
+"table all list")
+	for t in \$(ls "\$tb"); do
+		echo "--- table(\$t), set(0) ---"
+		sed -e 's/\$/ 0/' "\$tb/\$t"
+	done
+	exit 0 ;;
+"table "*)
+	tbl "\$2" "\$3" "\$4"
+	exit \$? ;;
 "-a -S list")
 	sort -n "\$st" | awk 'FILENAME != "-" { c[\$1] = \$2 " " \$3; next } { n = \$1; s = \$2; \$1 = ""; \$2 = ""; sub(/^ +/, ""); printf "%05d %s set %d %s\n", n, ((n in c) ? c[n] : "0 0"), s, \$0 }' $d/fw.counters -
 	exit 0 ;;
@@ -2814,6 +2839,9 @@ case "\$1 \$2 \$3" in
 esac
 if [ -f "\$1" ]; then
 	cat "\$1" >> $d/ipfw.log
+	grep '^table ' "\$1" | while read -r w t c k; do
+		tbl "\$t" "\$c" "\$k" || exit 1
+	done || exit 1
 	awk '\$1 == "add" && \$3 == "set" { n = \$2; s = \$4; \$1 = \$2 = \$3 = \$4 = ""; sub(/^ +/, ""); print n, s, \$0 }' "\$1" >> "\$st"
 	exit 0
 fi
@@ -2823,6 +2851,7 @@ EOS
 	# The admin's rules: set 0's, and the default.
 	printf '100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' > fw.state
 	: > fw.counters
+	mkdir -p fw.tables
 }
 
 atf_test_case acl_rfc8519 cleanup
@@ -3424,6 +3453,136 @@ EOF
 	    /ietf-access-control-list:acls
 }
 acl_actions_cleanup()
+{
+	stop_daemon
+}
+
+# RFC 9899's defined sets, refused (PLAN-SDN-YANG 6.1.5): $1 the whole
+# ACLs' JSON, $2 why, nothing loaded, the tables and running as they
+# were.
+acl_sets_refused()
+{
+	ls fw.tables > tables.before
+	acl_field_refused - "$1" "$2"
+	atf_check -o file:tables.before ls fw.tables
+}
+
+atf_test_case acl_defined_sets cleanup
+acl_defined_sets_head()
+{
+	atf_set "descr" "RFC 9899's defined sets compiled to ipfw (PLAN-SDN-YANG" \
+	    "6.1.5), the stand-in ipfw keeping tables too: Appendix A.1's" \
+	    "two ACLs as one ACE with an IPv6 prefix set, its addr table" \
+	    "filled before the rule naming it is loaded; port sets as a" \
+	    "list and, past 30 ranges, a number table; a protocol set as" \
+	    "an or-block; an ICMP type set as icmptypes; two aliases a" \
+	    "rule each at the ACE's number; each edit's tables a" \
+	    "generation of their own, the old one destroyed after the" \
+	    "swap; the prefix sets read back from the tables; refused," \
+	    "nothing loaded: a type's code, an FQDN, a port set too big," \
+	    "protocol 0, RFC 9899's matches and actions not compiled yet;" \
+	    "taken out, every table destroyed"
+	atf_set "timeout" "120"
+}
+acl_defined_sets_body()
+{
+	local many i
+
+	acl_fake_ipfw
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw" start_daemon
+	# Appendix A.1: the same ACE for two destinations, one ACE with a
+	# prefix set.
+	cat > a1.json <<'EOF'
+{"acl":[{"name":"prefix-set","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"my-test-ace","matches":{"ipv6":{"ietf-acl-enh:destination-ipv6-prefix-list":"first-and-second","source-ipv6-network":"2001:db8:1234::/96","protocol":17,"flow-label":10000},"udp":{"source-port":{"operator":"lte","port":80},"destination-port":{"operator":"neq","port":1010}}},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}}],"ietf-acl-enh:defined-sets":{"ipv6-prefix-sets":{"prefix-set":[{"name":"first-and-second","prefix":["2001:db8:6401:1::/64","2001:db8:6401:c::/64"]}]}}}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @a1.json
+	# The table filled first, the rule naming it after, then swapped.
+	atf_check -o inline:'table acl-0-6.0 create type addr\ntable acl-0-6.0 add 2001:db8:6401:1::/64\ntable acl-0-6.0 add 2001:db8:6401:c::/64\nadd 60000 set 28 skipto 65000 ip from any to any // acl:guard\nadd 61000 set 28 allow udp from 2001:db8:1234::/96 to any flow-id 10000 dst-ip table(acl-0-6.0) src-port 0-80 not dst-port 1010 ip6 // acl:0.1 prefix-set/my-test-ace\n' \
+	    sh -c "sed -n '/^table /p; /^add 6000/p; /^add 61000 /p' ipfw.log"
+	atf_check -o match:'^ipfw -q set swap 28 29$' cat ipfw.log
+	atf_check -o inline:'acl-0-6.0\n' ls fw.tables
+	atf_check -o save:g1.json "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"ietf-acl-enh:defined-sets":\{"ipv6-prefix-sets":\{"prefix-set":\[\{"name":"first-and-second","prefix":\["2001:db8:6401:1::/64","2001:db8:6401:c::/64"\]\}\]\}\}' \
+	    -o match:'"ietf-acl-enh:destination-ipv6-prefix-list":"first-and-second"' \
+	    cat g1.json
+	# Read back from the table: what the kernel holds.
+	sed -e '/6401:c::/d' fw.tables/acl-0-6.0 > t && mv t fw.tables/acl-0-6.0
+	atf_check -o match:'"prefix":\["2001:db8:6401:1::/64"\]' \
+	    "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"prefix":\["2001:db8:6401:1::/64","2001:db8:6401:c::/64"\]' \
+	    "$JGC" -c "$SOCK" get -d running acls
+
+	# Port sets (31 single ports past ipfw's list of 30), a protocol
+	# set by number and name, an ICMP type set by number and name, two
+	# aliases; the tables the other generation's.
+	many=$(for i in $(seq 0 30); do
+		[ $i -gt 0 ] && printf ,
+		printf '{"id":"p%d","port-range-or-operator":{"port":%d}}' $i $((1000 + 2 * i))
+	done)
+	cat > s.json <<EOF
+{"acl":[{"name":"sets","type":"ietf-access-control-list:mixed-eth-ipv4-ipv6-acl-type","aces":{"ace":[{"name":"web","matches":{"tcp":{"ietf-acl-enh:source-tcp-port-set":"many","ietf-acl-enh:destination-tcp-port-set":"web"}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"proto","matches":{"ipv4":{"ietf-acl-enh:protocol-set":"tu"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"echo","matches":{"icmp":{"ietf-acl-enh:icmpv4-set":"echo"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"alias","matches":{"ietf-acl-enh:alias-name":["https","dns"]},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"v6","matches":{"ipv6":{"ietf-acl-enh:destination-ipv6-prefix-list":"first-and-second"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"ipv4-prefix-sets":{"prefix-set":[{"name":"empty"}]},"ipv6-prefix-sets":{"prefix-set":[{"name":"first-and-second","prefix":["2001:db8:6401:1::/64","2001:db8:6401:c::/64"]}]},"port-sets":{"port-set":[{"name":"web","port":[{"id":"a","port-range-or-operator":{"operator":"eq","port":80}},{"id":"b","port-range-or-operator":{"lower-port":443,"upper-port":445}},{"id":"c","port-range-or-operator":{"operator":"lte","port":1}}]},{"name":"many","port":[$many]}]},"protocol-sets":{"protocol-set":[{"name":"tu","protocol":[6,"udp"]}]},"icmpv4-type-sets":{"set":[{"name":"echo","icmpv4-type":[{"type":8},{"type":"EchoReply"}]}]},"aliases":{"alias":[{"name":"https","prefix":["2001:db8:6401::1/128","2001:db8:6401::2/128","192.0.2.10/32"],"protocol":[6],"port-range":[{"lower-port":443}]},{"name":"dns","protocol":[17],"port-range":[{"lower-port":53}]}]}}}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @s.json
+	for i in 'add 61000 set 28 allow tcp from any to any lookup src-port acl-1-p.1 dst-port 0-1,80,443-445 // acl:0.1 sets/web' \
+	    'add 61001 set 28 deny ip from any to any { proto 6 or proto 17 } ip4 // acl:0.2 sets/proto' \
+	    'add 61002 set 28 deny icmp from any to any icmptypes 8,0 ip4 // acl:0.3 sets/echo' \
+	    'add 61003 set 28 allow ip from any to any dst-ip table(acl-1-a.0) proto 6 dst-port 443 // acl:0.4 sets/alias' \
+	    'add 61003 set 28 allow ip from any to any proto 17 dst-port 53 // acl:0.4 sets/alias' \
+	    'add 61004 set 28 deny ip from any to any dst-ip table(acl-1-6.0) ip6 // acl:0.5 sets/v6' \
+	    'table acl-1-4.0 create type addr' 'table acl-1-p.1 create type number' \
+	    'table acl-1-p.1 add 1000' 'table acl-1-p.1 add 1060' \
+	    'table acl-1-a.0 add 192.0.2.10/32' 'table acl-1-a.0 add 2001:db8:6401::2/128'; do
+		atf_check -o ignore grep -Fx "$i" ipfw.log
+	done
+	atf_check -o inline:'31\n' sh -c 'grep -c "^table acl-1-p.1 add " ipfw.log'
+	atf_check -o not-match:'acl-1-p\.0' -o not-match:'acl-1-q' cat ipfw.log
+	# The old generation destroyed once set 28 let go of it.
+	atf_check -o match:'^ipfw -q table acl-0-6.0 destroy$' cat ipfw.log
+	atf_check -o inline:'acl-1-4.0\nacl-1-6.0\nacl-1-a.0\nacl-1-p.1\n' ls fw.tables
+	atf_check -o save:g2.json "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"name":"empty"' -o match:'"name":"first-and-second"' \
+	    -o match:'"name":"many"' -o match:'"name":"tu"' \
+	    -o match:'"name":"https"' -o match:'"name":"dns"' \
+	    -o match:'"ietf-acl-enh:alias-name":\["https","dns"\]' cat g2.json
+	# A prefix set whose table is gone is not the kernel's.
+	rm fw.tables/acl-1-4.0
+	atf_check -o not-match:'"name":"empty"' -o match:'"name":"first-and-second"' \
+	    "$JGC" -c "$SOCK" get acls
+	: > fw.tables/acl-1-4.0
+
+	# Refused, nothing loaded: what ipfw cannot say of a set, and RFC
+	# 9899's matches and actions this agent does not compile yet.
+	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"icmp":{"ietf-acl-enh:icmpv4-set":"e"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"icmpv4-type-sets":{"set":[{"name":"e","icmpv4-type":[{"type":3,"code":4}]}]}}}' \
+	    'icmpv4 type set e: a type.s code is not compiled into ipfw by this agent: icmptypes reads the type alone.*icmpv4-type/code'
+	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"ietf-acl-enh:alias-name":["n"]},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"aliases":{"alias":[{"name":"n","fqdn":["www.example.com"]}]}}}' \
+	    'alias n: fqdn is not compiled into ipfw by this agent: ipfw matches addresses'
+	many=$(for i in $(seq 0 30); do
+		[ $i -gt 0 ] && printf ,
+		printf '{"id":"r%d","port-range-or-operator":{"lower-port":%d,"upper-port":%d}}' $i $((2000 * i + 1)) $((2000 * i + 1000))
+	done)
+	acl_sets_refused "{\"acl\":[{\"name\":\"f\",\"aces\":{\"ace\":[{\"name\":\"r\",\"matches\":{\"udp\":{\"ietf-acl-enh:destination-udp-port-set\":\"big\"}},\"actions\":{\"forwarding\":\"ietf-access-control-list:drop\"}}]}}],\"ietf-acl-enh:defined-sets\":{\"port-sets\":{\"port-set\":[{\"name\":\"big\",\"port\":[$many]}]}}}" \
+	    'port set big: 31 ranges and 31000 ports, more than ipfw.s port list \(30 ranges\) and this agent.s port table \(8192 ports\) hold'
+	acl_sets_refused '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv6":{"ietf-acl-enh:protocol-set":"z"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"protocol-sets":{"protocol-set":[{"name":"z","protocol":[0]}]}}}' \
+	    'protocol set z: protocol 0 is not compiled into ipfw by this agent: ipfw reads proto 0 as any protocol'
+	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":4095}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}' \
+	    'acl f, ace r: flags-bitmask is not compiled into ipfw by this agent.*flags-bitmask'
+	acl_sets_refused '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv4":{"ietf-acl-enh:ipv4-fragment":{"operator":"match","type":"isf"}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}' \
+	    'acl f, ace r: ipv4-fragment is not compiled into ipfw by this agent'
+	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"destination-port":{"operator":"eq","port":22}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}]}' \
+	    'acl f, ace r: rate-limit is not compiled into ipfw by this agent'
+
+	# Taken out: set 29 deleted, every table of the ACLs' destroyed.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    cat fw.state
+	atf_check -o inline:'' ls fw.tables
+}
+acl_defined_sets_cleanup()
 {
 	stop_daemon
 }
@@ -19630,6 +19789,7 @@ atf_init_test_cases()
 	atf_add_test_case acl_match_fields
 	atf_add_test_case acl_refusals
 	atf_add_test_case acl_actions
+	atf_add_test_case acl_defined_sets
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key

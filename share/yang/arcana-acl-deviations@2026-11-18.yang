@@ -1,0 +1,54 @@
+module arcana-acl-deviations {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-acl-deviations";
+  prefix arcacld;
+
+  import ietf-access-control-list {
+    prefix acl;
+    reference
+      "RFC 8519: YANG Data Model for Network Access Control Lists
+                 (ACLs)";
+  }
+  import ietf-acl-enh {
+    prefix acl-enh;
+    reference
+      "RFC 9899: Extensions to the YANG Data Model for Access
+                 Control Lists (ACLs)";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "Where Arcana's ACLs differ from RFC 9899's model.
+
+     RFC 9899's ipv4-fragment is a non-presence container whose
+     operator has a default: wherever an ACE has an ipv4 match, the
+     container is in the accessible tree (RFC 7950, Section 6.4.1),
+     and its must, not(../acl:flags), refuses RFC 8519's IPv4 flags
+     though no fragment type is given.  What RFC 9899 means (Section
+     3.5: a client sets flags or ipv4-fragment, not both) is the must
+     with the type in it.";
+
+  revision 2026-11-18 {
+    description
+      "Initial revision.";
+  }
+
+  deviation "/acl:acls/acl:acl/acl:aces/acl:ace/acl:matches/acl:l3/"
+          + "acl:ipv4/acl:ipv4/acl-enh:ipv4-fragment" {
+    description
+      "Flags and a fragment type, not flags alone, refused.";
+    deviate delete {
+      must "not(../acl:flags)";
+    }
+    deviate add {
+      must "not(../acl:flags) or not(acl-enh:type)" {
+        error-message
+          "Either flags or fragment should be provided, but not
+           both.";
+      }
+    }
+  }
+}

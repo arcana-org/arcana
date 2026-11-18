@@ -1669,13 +1669,20 @@ acl_vnet_head()
 	    "echoes lets its ping through, and drops it once the address" \
 	    "is another.  6.1.4: three echoes counted by an ACE's rule," \
 	    "its statistics those counters, its log-syslog in the message" \
-	    "buffer with net.inet.ip.fw.verbose 0"
+	    "buffer with net.inet.ip.fw.verbose 0.  6.1.5: RFC 9899's" \
+	    "defined sets loaded by ipfw, the prefix sets, a port set past" \
+	    "30 ports and an alias's prefixes as tables, filled; a ping" \
+	    "to an address of an IPv4 prefix set dropped, one to another" \
+	    "not, ::1's echo by an IPv6 prefix set and an ICMPv6 type set;" \
+	    "the prefix sets read back from the tables; another edit's" \
+	    "tables a generation of their own, the old one destroyed;" \
+	    "taken out, no table left"
 	atf_set "require.user" "root"
 	atf_set "timeout" "180"
 }
 acl_vnet_body()
 {
-	local d="$(pwd)" e i peer logged n
+	local d="$(pwd)" e i peer logged n many
 
 	programs
 	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
@@ -1823,6 +1830,67 @@ EOF
 	    atf_fail "not logged three times: $(dmesg -a | grep 'ipfw: 61000' | tail -5)"
 	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
 	    /ietf-access-control-list:acls
+	# 6.1.5: RFC 9899's defined sets.  A second address on lo0, an
+	# IPv4 prefix set holding it and not 127.0.0.1; ::1 in an IPv6 one.
+	atf_check jexec arcw_acl ifconfig lo0 inet 127.0.0.2/32 alias
+	jexec arcw_acl ifconfig lo0 inet6 ::1/128 >/dev/null 2>&1 || true
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.2
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -6 -c 1 -t 2 ::1
+	many=$(for i in $(seq 0 30); do
+		[ $i -gt 0 ] && printf ,
+		printf '{"id":"p%d","port-range-or-operator":{"port":%d}}' $i $((1000 + 2 * i))
+	done)
+	cat > sets.json <<EOS
+{"acl":[{"name":"sets","type":"ietf-access-control-list:mixed-eth-ipv4-ipv6-acl-type","aces":{"ace":[{"name":"to-set","matches":{"ipv4":{"protocol":1,"ietf-acl-enh:destination-ipv4-prefix-list":"two"},"icmp":{"ietf-acl-enh:icmpv4-set":"echo"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"to-set6","matches":{"ipv6":{"ietf-acl-enh:destination-ipv6-prefix-list":"one6"},"icmp":{"ietf-acl-enh:icmpv6-set":"echo6"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"ports","matches":{"tcp":{"ietf-acl-enh:destination-tcp-port-set":"many"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"protos","matches":{"ipv4":{"ietf-acl-enh:protocol-set":"tu"}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"alias","matches":{"ietf-acl-enh:alias-name":["https"]},"actions":{"forwarding":"ietf-access-control-list:accept"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"sets"}]}}}]},"ietf-acl-enh:defined-sets":{"ipv4-prefix-sets":{"prefix-set":[{"name":"two","prefix":["127.0.0.2/32","192.0.2.0/24"]}]},"ipv6-prefix-sets":{"prefix-set":[{"name":"one6","prefix":["::1/128"]}]},"port-sets":{"port-set":[{"name":"many","port":[$many]}]},"protocol-sets":{"protocol-set":[{"name":"tu","protocol":["tcp",17]}]},"icmpv4-type-sets":{"set":[{"name":"echo","icmpv4-type":[{"type":"Echo"}]}]},"icmpv6-type-sets":{"set":[{"name":"echo6","icmpv6-type":[{"type":"EchoRequest"},{"type":129}]}]},"aliases":{"alias":[{"name":"https","prefix":["2001:db8:6401::1/128","192.0.2.10/32"],"protocol":[6],"port-range":[{"lower-port":443}]}]}}}
+EOS
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @sets.json
+	atf_check -o save:list jexec arcw_acl ipfw -S list
+	atf_check -o match:'^61000 set 29 deny .*table\(acl-0-4\.0\).*icmptypes 8.*// acl:0.1 sets/to-set$' \
+	    -o match:'^61001 set 29 deny .*table\(acl-0-6\.0\).*icmp6types 128,129.*// acl:0.2 sets/to-set6$' \
+	    -o match:'^61002 set 29 deny .*lookup dst-port acl-0-p\.0.*// acl:0.3 sets/ports$' \
+	    -o match:'^61003 set 29 allow .* or .*// acl:0.4 sets/protos$' \
+	    -o match:'^61004 set 29 allow .*table\(acl-0-a\.0\).*443.*// acl:0.5 sets/alias$' \
+	    -o not-match:' set 28 ' cat list
+	atf_check -o save:tables jexec arcw_acl ipfw table all list
+	atf_check -o match:'^--- table\(acl-0-4\.0\), set\(0\) ---$' \
+	    -o match:'^127\.0\.0\.2/32 ' -o match:'^192\.0\.2\.0/24 ' \
+	    -o match:'^::1/128 ' -o match:'^192\.0\.2\.10/32 ' \
+	    -o match:'^2001:db8:6401::1/128 ' -o match:'^1060 ' \
+	    -o not-match:'acl-1-' cat tables
+	atf_check -o inline:'31\n' sh -c "sed -n '/acl-0-p.0/,/^---/p' tables | grep -c '^[0-9]* '"
+	# Packets matched by the sets: 127.0.0.2's echo dropped, 127.0.0.1's
+	# not; ::1's by the IPv6 prefix set and the ICMPv6 type set.
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.2
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.1
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -6 -c 1 -t 2 ::1
+	atf_check -o match:'^61000 +1 ' jexec arcw_acl ipfw -a list 61000
+	atf_check -o save:g.json "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"name":"two","prefix":\["127\.0\.0\.2/32","192\.0\.2\.0/24"\]' \
+	    -o match:'"name":"one6","prefix":\["::1/128"\]' \
+	    -o match:'"name":"https"' cat g.json
+	# Another edit: the other generation's tables, the old ones gone;
+	# 127.0.0.2 out of the set, its echo through.
+	sed -e 's|"127.0.0.2/32","192.0.2.0/24"|"127.0.0.3/32"|' sets.json > sets2.json
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @sets2.json
+	atf_check -o save:tables jexec arcw_acl ipfw table all list
+	atf_check -o match:'^--- table\(acl-1-4\.0\), set\(0\) ---$' \
+	    -o match:'^127\.0\.0\.3/32 ' -o not-match:'acl-0-' \
+	    -o not-match:'127\.0\.0\.2' cat tables
+	atf_check -o match:'table\(acl-1-4\.0\)' -o not-match:'acl-0-' \
+	    jexec arcw_acl ipfw -S list
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 127.0.0.2
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o not-match:' set 29 ' jexec arcw_acl ipfw -S list
+	atf_check -o not-match:'acl-' jexec arcw_acl ipfw table all list
 }
 acl_vnet_cleanup()
 {

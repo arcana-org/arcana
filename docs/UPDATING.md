@@ -93,6 +93,22 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### RFC 9899's defined sets, agent 0.299.0, console 0.448.2
+
+- RFC 9899's defined sets (ietf-acl-enh; PLAN-SDN-YANG 6.1.5) are
+  served with the ACLs and compiled to ipfw: prefix sets (and aliases'
+  prefixes) as tables named acl-0-*/acl-1-*, which the ACLs own like
+  sets 28 and 29 (an admin's rule naming one refuses an ACL edit, as
+  does net.inet.ip.fw.tables_sets=1); port sets as lists or number
+  tables, protocol sets as or-blocks, ICMP type sets as lists, aliases
+  decomposed.  An edit fills the other generation's tables and swaps
+  sets 28 and 29; no table is ever swapped.  RFC 9899's fragment,
+  extension-header, flags-bitmask, log-action, counter-action and
+  rate-limit are refused until compiled.  The new module
+  arcana-acl-deviations lets RFC 8519's IPv4 flags stand alone again
+  (RFC 9899's ipv4-fragment must refused them).  SIDs 94 600 to 94 899.
+  Update the agents together with the console.
+
 ### IPsec SAs by PF_KEY, agent 0.298.0
 
 - Manually keyed IPsec SAs (`ipsec-sa` set, derive, commit, clear;

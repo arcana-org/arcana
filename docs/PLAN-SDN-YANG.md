@@ -4078,6 +4078,89 @@ whose first part is served.
   swap, port sets as lists or number tables, protocol sets as
   or-blocks, ICMP sets as lists, aliases decomposed; check: Appendix
   B's examples.
+  Design (decided here): `ietf-acl-enh` (RFC 9899, YangModels' bytes)
+  served with RFC 8519's module, feature match-on-alias advertised, SIDs
+  94 600 (200).  The sets and the leaves that name them (6.1.6's "set
+  references", done here: a set nothing names compiles to nothing that
+  matches) are compiled into the ACE's rule, each an option and-ed with
+  the RFC 8519 matches beside it: a prefix set an addr table, `src-ip
+  table(T)` or `dst-ip table(T)` (both families, dst-ip's measured on
+  ::1); a port set the ranges its entries cover (eq, lte, gte, neq and
+  ranges unioned, an entry with no operator eq), a port list where
+  ipfw's 30 ranges hold them, else a number table, `lookup src-port T`
+  or `dst-port T`, of at most 8192 ports (resource-denied past that); a
+  protocol set `proto N`, several an or-block `{ proto 6 or proto 17 }`,
+  a name by /etc/protocols; an ICMP type set `icmptypes`/`icmp6types`
+  lists, the type by number or by the IANA module's name, the set naming
+  the ACE's family where nothing else does; an alias its parts (RFC 9899
+  names its target: the destination), its prefixes an addr table
+  (`dst-ip table(T)`), its protocols and ports as the sets', an ACE
+  naming several aliases a rule each at its number (any one matching;
+  the statistics summed as a reject's two families' are).  The shadow
+  swap is the set swap, never ipfw's table swap: the tables are the
+  ACLs', named `acl-G-K.I` (G the generation 0 or 1, K the kind: 4 and 6
+  a prefix set's, a an alias's prefixes, p a port set's ports, q an
+  alias's, I the set's place), every prefix set's and alias's whatever
+  names it, a port set's only past 30 ranges.  An edit fills the
+  generation not in use (the one set 29's rules name, else the one whose
+  tables alone are there) after destroying what is left of it, loads
+  them in the same file before the rules of set 28 that name them, swaps
+  28 and 29, deletes 28 and only then destroys the old generation's
+  tables; a failure deletes 28 and the new generation.  No table is ever
+  swapped (IP_FW_TABLE_XSWAP corrupts value tables, docs/TODO.md; the
+  addr and number tables here have no valtype but the default, and
+  swapping them was not tried on a production kernel) nor changed while
+  a rule names it.  Refused, nothing loaded: a rule of the admin's
+  naming an `acl-0-`/`acl-1-` table (in-use), net.inet.ip.fw.tables_sets
+  1 with tables to make (set 28's rules would look in set 28), a
+  reference to no set and a port, protocol or ICMP set holding nothing
+  (invalid-value: the ACE would match nothing), protocol 0 (ipfw reads
+  `proto 0` as any), an ICMP set's type with its code or rest of header,
+  an alias's vlan, fqdn or uri (operation-not-supported), and, till
+  6.1.6 and 6.1.7, ipv4-fragment, ipv6-fragment, extension-header,
+  flags-bitmask, log-action, counter-action and rate-limit, each by
+  name.  The operational datastore's prefix sets are what their live
+  tables hold (a set whose table is gone left out), the other sets
+  running's, read back with the rules that name them.  RFC 9899's
+  ipv4-fragment is a non-presence container whose operator has a
+  default, so wherever an ACE has an ipv4 match it is in the accessible
+  tree (RFC 7950 6.4.1) and its must, `not(../acl:flags)`, refused RFC
+  8519's IPv4 flags alone (cblink and yanglint agree):
+  `arcana-acl-deviations` (SIDs 94 800, 100) replaces it with
+  `not(../acl:flags) or not(acl-enh:type)`, Section 3.5's meaning, and
+  lint.sh checks both ways.  `net.inet.ip.fw.tables_max` (128 by
+  default, an edit needing each table twice for a moment) is 6.1.9's to
+  raise.
+  Done.  Checked: agent_test:acl_defined_sets (the stand-in ipfw,
+  keeping tables as files now: Appendix B has no defined set, so
+  Appendix A.1's two ACLs, the same ACE for two destinations, as one ACE
+  with an IPv6 prefix set: the table created and filled before the guard
+  and the rule naming it, `dst-ip table(acl-0-6.0)`, then swapped in;
+  the set read back from the table, an entry taken out of the table out
+  of the operational datastore and still in running; a port set of eq, a
+  range and lte as `dst-port 0-1,80,443-445`, one of 31 ports as a
+  number table of 31, a protocol set by number and name as `{ proto 6 or
+  proto 17 }`, an ICMPv4 set by number and name as `icmptypes 8,0`, two
+  aliases two rules at the ACE's number (an addr table, `proto 6
+  dst-port 443`; `proto 17 dst-port 53`), all in generation 1 with
+  generation 0's table destroyed after the swap, an empty prefix set an
+  empty table, a set whose table is gone not read back; refused, nothing
+  loaded and the tables as they were: an ICMP set's code, an alias's
+  FQDN, a port set of 31 ranges and 31000 ports, protocol 0,
+  flags-bitmask, ipv4-fragment, rate-limit; taken out, every table
+  destroyed), agent_root_test:acl_vnet (ipfw for real in a vnet jail of
+  its own: an IPv4 prefix set, an IPv6 one, a port set of 31 ports, a
+  protocol set, ICMPv4 and ICMPv6 type sets and an alias loaded by the
+  kernel, the tables listed with their entries; a ping to 127.0.0.2, in
+  the IPv4 set, dropped and counted by its ACE, one to 127.0.0.1 not,
+  ::1's echo dropped by the IPv6 set and the ICMPv6 set; the prefix sets
+  read back from the tables; another edit in generation 1, generation 0
+  gone and 127.0.0.2's echo through; taken out, no table left),
+  acl_rfc8519, acl_match_fields, acl_refusals and acl_actions still
+  passing.  Not checked: a port table, an alias's table or a protocol
+  or-block matching a real packet (loaded by the kernel and listed, no
+  packet sent), tables_max reached, a set with thousands of prefixes
+  (one `table add` a line), the console or page reading the sets.
 - 6.1.6 A: RFC 9899 matches: fragments v4 and v6 isf, extension
   headers, flags-bitmask, set references; check: Appendix B.1, B.2,
   B.6.

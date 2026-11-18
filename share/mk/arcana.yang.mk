@@ -61,7 +61,8 @@ ARC_YMODS=	ietf-interfaces@2018-02-20 arcana-interfaces@2026-10-14 \
 		arcana-stamp@2026-11-10 \
 		ietf-vpn-common@2022-02-11 ietf-network@2018-02-26 \
 		ietf-network-topology@2018-02-26 ietf-sap-ntw@2023-06-20 \
-		ietf-access-control-list@2019-03-04
+		ietf-access-control-list@2019-03-04 ietf-acl-enh@2025-12-22 \
+		arcana-acl-deviations@2026-11-18
 # Modules only imported whose identities are used: their .sid files
 # alone (a VLAN tag's types, the PHY types, the port algorithms; the
 # routing protocols', whose identities name a route's origin).
@@ -102,7 +103,8 @@ ARC_YFEATS=	-F ietf-interfaces:if-mib,arbitrary-names -F arcana-interfaces: \
 		-F ietf-origin: -F ietf-defaults: -F ietf-yang-schema-mount: \
 		-F ietf-subscribed-notif-receivers: -F ietf-https-notif-transport: \
 		-F arcana-notif: -F arcana-ra: \
-		-F ietf-access-control-list:match-on-ipv4,match-on-ipv6,match-on-tcp,match-on-udp,match-on-icmp,match-on-eth,eth,ipv4,ipv6,mixed-eth-ipv4,mixed-eth-ipv6,mixed-eth-ipv4-ipv6,interface-attachment,acl-aggregate-stats
+		-F ietf-access-control-list:match-on-ipv4,match-on-ipv6,match-on-tcp,match-on-udp,match-on-icmp,match-on-eth,eth,ipv4,ipv6,mixed-eth-ipv4,mixed-eth-ipv6,mixed-eth-ipv4-ipv6,interface-attachment,acl-aggregate-stats \
+		-F ietf-acl-enh:match-on-alias
 
 # The SAP network (RFC 9408): each agent's node, the console's network of
 # them.  ietf-vpn-common is the agent's for its identities, of which a

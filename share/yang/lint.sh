@@ -39,6 +39,24 @@ if yanglint -i -p . -p ../../cblink/share/yang -t config ietf-interfaces@2018-02
 	echo "lint.sh: arcana-ip-deviations does not hold" >&2
 	exit 1
 fi
+# arcana-acl-deviations': RFC 8519's IPv4 flags alone are no fragment
+# match (RFC 9899's must refuses them), flags with a fragment type are.
+acl="ietf-access-control-list@2019-03-04.yang ietf-acl-enh@2025-12-22.yang"
+echo '{"ietf-access-control-list:acls":{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv4":{"flags":"fragment"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}}' > "$d/acl.json"
+if yanglint -i -p . -p ../../cblink/share/yang -F 'ietf-access-control-list:*' -t config $acl \
+    "$d/acl.json" >/dev/null 2>&1; then
+	echo "lint.sh: ietf-acl-enh takes IPv4 flags alone (drop arcana-acl-deviations?)" >&2
+	exit 1
+fi
+yanglint -i -p . -p ../../cblink/share/yang -F 'ietf-access-control-list:*' -t config $acl \
+    arcana-acl-deviations@2026-11-18.yang "$d/acl.json" >/dev/null ||
+    { echo "lint.sh: arcana-acl-deviations does not hold" >&2; exit 1; }
+sed -e 's/"flags":"fragment"/&,"ietf-acl-enh:ipv4-fragment":{"type":"isf"}/' "$d/acl.json" > "$d/acl2.json"
+if yanglint -i -p . -p ../../cblink/share/yang -F 'ietf-access-control-list:*' -t config $acl \
+    arcana-acl-deviations@2026-11-18.yang "$d/acl2.json" >/dev/null 2>&1; then
+	echo "lint.sh: arcana-acl-deviations takes flags with a fragment type" >&2
+	exit 1
+fi
 # arcana-network-instance's: a FIB cannot be disabled; an instance has no
 # VSI root.  libyang keeps no empty mount point without schema-mount data,
 # so each instance is refused for its root too: what is checked is the

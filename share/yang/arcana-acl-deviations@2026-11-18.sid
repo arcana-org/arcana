@@ -1,0 +1,30 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-acl-deviations",
+    "module-revision": "2026-11-18",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 94 800, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-access-control-list",
+        "module-revision": "2019-03-04"
+      },
+      {
+        "module-name": "ietf-acl-enh",
+        "module-revision": "2025-12-22"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "94800",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-acl-deviations",
+        "sid": "94800"
+      }
+    ]
+  }
+}
