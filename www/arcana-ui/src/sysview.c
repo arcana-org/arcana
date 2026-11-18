@@ -834,7 +834,7 @@ view_hardening(struct html *h, struct server *s)
 	h_raw(h, "</tbody></table>");
 }
 
-/* setkey(8): IPsec's own, beside strongSwan's. */
+/* setkey(8): the base system's IPsec section's (ipsecbase.c). */
 void
 view_setkey(struct html *h, struct server *s)
 {

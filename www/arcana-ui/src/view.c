@@ -1011,8 +1011,8 @@ stage(struct html *h)
 			{ "jails", "Jails", TAB_JAILS, -1, -1, -1, -1 },
 			{ "services", "Services", TAB_SERVICES, TAB_MAIL, -1,
 			    -1, -1 },
-			{ "network", "Network", TAB_NETWORK, TAB_RELAY, -1, -1,
-			    -1 },
+			{ "network", "Network", TAB_NETWORK, TAB_RELAY,
+			    TAB_IPSEC, -1, -1 },
 			{ "firewall", "Firewall", TAB_FIREWALL, -1, -1, -1, -1 },
 			{ "packages", "Packages", TAB_PACKAGES, -1, -1, -1, -1 },
 			{ "storage", "Storage", TAB_STORAGE, -1, -1, -1, -1 },
@@ -1108,6 +1108,11 @@ stage(struct html *h)
 	}
 	if (app.tab == TAB_RELAY) {
 		view_relay(h, s);
+		h_raw(h, "</main>");
+		return;
+	}
+	if (app.tab == TAB_IPSEC) {
+		view_ipsecbase(h, s);
 		h_raw(h, "</main>");
 		return;
 	}
@@ -2786,8 +2791,11 @@ modal(struct html *h)
 		break;
 	case MODAL_IPSEC_CONN:
 	case MODAL_IPSEC_CHILD:
-	case MODAL_IPSEC_SA:
 		if (!ipsec_modal(h))
+			return;
+		break;
+	case MODAL_IPSEC_SA:
+		if (!ipsecbase_modal(h))
 			return;
 		break;
 	case MODAL_SD_UCS:

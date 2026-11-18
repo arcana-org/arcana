@@ -71,6 +71,8 @@ tab_help(void)
 		return ("sections/host.html#services");
 	case TAB_NETWORK:
 		return (net_help());
+	case TAB_IPSEC:
+		return ("sections/network.html#ipsec");
 	case TAB_FIREWALL:
 		return ("sections/firewall.html");
 	case TAB_PACKAGES:

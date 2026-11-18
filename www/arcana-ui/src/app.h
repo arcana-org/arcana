@@ -275,6 +275,7 @@ enum tab {
 	TAB_ALERTS,		/* what the alerts leave out */
 	TAB_MODELS,		/* its YANG modules, their forms (yform.c) */
 	TAB_TERMINAL,		/* login(1) on the host or a jail (term.c) */
+	TAB_IPSEC,		/* IPsec without IKE, the base system's */
 };
 
 /* The packages tab: pending upgrades of the host or of one jail. */
@@ -949,6 +950,11 @@ void		 view_ipsec(struct html *, struct server *,
 bool		 ipsec_action(const char *, const char *, const char *);
 bool		 ipsec_form(const char *, const ucl_object_t *);
 bool		 ipsec_modal(struct html *);
+/* ipsecbase.c: a host's IPsec without IKE: PF_KEY, ipsec(4), setkey(8). */
+void		 view_ipsecbase(struct html *, struct server *);
+bool		 ipsecbase_action(const char *, const char *, const char *);
+bool		 ipsecbase_form(const char *, const ucl_object_t *);
+bool		 ipsecbase_modal(struct html *);
 void		 vpn_age(char *, size_t, int64_t);
 void		 qr_svg(struct html *, const char *, const char *);
 /* jailmk.c: jails made from the page, their defaults and templates. */

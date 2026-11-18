@@ -919,9 +919,6 @@ view_network(struct html *h, struct server *s)
 	if (plug && s->list != NULL && !has_plugin(s, kind_plugin(
 	    app.net.kind))) {
 		plugin_missing(h, s);
-		/* setkey(8) is the base system's, strongSwan or none. */
-		if (app.net.kind == NET_IPSEC)
-			view_setkey(h, s);
 		return;
 	}
 	if (!mine) {
@@ -1015,7 +1012,6 @@ view_network(struct html *h, struct server *s)
 		return;
 	case NET_IPSEC:
 		view_ipsec(h, s, jget(app.net.data, "data"));
-		view_setkey(h, s);
 		return;
 	case NET_BRIDGES:
 		view_bridges(h, s, jget(app.net.data, "data.bridges"));

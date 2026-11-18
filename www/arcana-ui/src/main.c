@@ -130,6 +130,7 @@ static const char *const tabnames[] = {
 	[TAB_LOG] = "log", [TAB_JOBS] = "jobs",
 	[TAB_MONITORING] = "monitoring", [TAB_ALERTS] = "monitoring/alerts",
 	[TAB_MODELS] = "models", [TAB_TERMINAL] = "terminal",
+	[TAB_IPSEC] = "ipsec",
 };
 
 /* A jail's name in the address: what is not a letter, a digit or ._- in
@@ -796,7 +797,8 @@ submit(const char *form, const ucl_object_t *f)
 	if (topo_form(form, f) || tq_form(form, f) || bird_form(form, f) || vpn_form(form, f) ||
 	    jailmk_form(form, f) || neigh_form(form, f) || carp_form(form, f) ||
 	    ca_form(form, f) || certs_form(form, f) || ssh_form(form, f) || span_form(form, f) ||
-	    ipsec_form(form, f) || workflows_form(form, f) || sdwan_form(form, f) ||
+	    ipsecbase_form(form, f) || ipsec_form(form, f) ||
+	    workflows_form(form, f) || sdwan_form(form, f) ||
 	    trouble_form(form, f) || secpage_form(form, f) ||
 	    naspage_form(form, f) || sysview_form(form, f) || mail_form(form, f) || relay_form(form, f) || monitor_form(form, f) ||
 	    builder_form(form, f) ||
@@ -1265,6 +1267,7 @@ dispatch(const char *act, const char *arg, const char *value)
 	    carp_action(act, arg, value) || ca_action(act, arg, value) ||
 	    certs_action(act, arg, value) || ssh_action(act, arg, value) ||
 	    span_action(act, arg, value) ||
+	    ipsecbase_action(act, arg, value) ||
 	    ipsec_action(act, arg, value) || workflows_action(act, arg, value) ||
 	    sdwan_action(act, arg, value) || trouble_action(act, arg, value) ||
 	    sysview_action(act, arg, value) || mail_action(act, arg, value) || relay_action(act, arg, value) ||
@@ -1325,7 +1328,8 @@ dispatch(const char *act, const char *arg, const char *value)
 				refresh_firewall(s, false);
 			if (app.tab == TAB_STORAGE)
 				refresh_storage(s, false);
-			if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY)
+			if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY ||
+			    app.tab == TAB_IPSEC)
 				refresh_system(s, false);
 			if (app.tab == TAB_MONITORING)
 				usage_host_open(s);
@@ -1352,11 +1356,11 @@ dispatch(const char *act, const char *arg, const char *value)
 		    app.net.kind != NET_MONITORS)
 			net_base = app.net.kind;
 		if (strcmp(arg, "wireguard") == 0 || strcmp(arg, "bird") == 0 ||
-		    strcmp(arg, "ipsec") == 0 || strcmp(arg, "monitors") == 0 ||
-		    (strcmp(arg, "network") == 0 && (NET_PLUGIN(app.net.kind) ||
-		    app.net.kind == NET_MONITORS))) {
+		    strcmp(arg, "strongswan") == 0 || strcmp(arg, "monitors") ==
+		    0 || (strcmp(arg, "network") == 0 && (NET_PLUGIN(
+		    app.net.kind) || app.net.kind == NET_MONITORS))) {
 			app.net.kind = arg[0] == 'w' ? NET_WIREGUARD : arg[0] ==
-			    'b' ? NET_BIRD : arg[0] == 'i' ? NET_IPSEC : arg[0] ==
+			    'b' ? NET_BIRD : arg[0] == 's' ? NET_IPSEC : arg[0] ==
 			    'm' ? NET_MONITORS : (enum netkind)net_base;
 			/* Opened where the plugin is, when not here. */
 			if (kind_plugin(app.net.kind) != NULL && s->list !=
@@ -1374,8 +1378,9 @@ dispatch(const char *act, const char *arg, const char *value)
 		}
 		app.tab = strcmp(arg, "services") == 0 ? TAB_SERVICES :
 		    strcmp(arg, "network") == 0 || strcmp(arg, "wireguard") ==
-		    0 || strcmp(arg, "bird") == 0 || strcmp(arg, "ipsec") == 0 ||
-		    strcmp(arg, "monitors") == 0 ? TAB_NETWORK :
+		    0 || strcmp(arg, "bird") == 0 || strcmp(arg, "strongswan") ==
+		    0 || strcmp(arg, "monitors") == 0 ? TAB_NETWORK :
+		    strcmp(arg, "ipsec") == 0 ? TAB_IPSEC :
 		    strcmp(arg, "monitoring") == 0 ? TAB_MONITORING :
 		    strcmp(arg, "alerts") == 0 ? TAB_ALERTS :
 		    strcmp(arg, "packages") == 0 ? TAB_PACKAGES :
@@ -1420,7 +1425,8 @@ dispatch(const char *act, const char *arg, const char *value)
 			refresh_firewall(s, true);
 		if (app.tab == TAB_STORAGE)
 			refresh_storage(s, true);
-		if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY)
+		if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY ||
+		    app.tab == TAB_IPSEC)
 			refresh_system(s, true);
 		if (app.tab == TAB_MONITORING)
 			usage_host_open(s);
@@ -1968,7 +1974,8 @@ dispatch(const char *act, const char *arg, const char *value)
 			refresh_firewall(s, true);
 		} else if (app.tab == TAB_STORAGE) {
 			refresh_storage(s, true);
-		} else if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY) {
+		} else if (app.tab == TAB_SYSTEM || app.tab == TAB_SECURITY ||
+		    app.tab == TAB_IPSEC) {
 			refresh_system(s, true);
 		} else if (app.tab == TAB_MAIL) {
 			mail_refresh();

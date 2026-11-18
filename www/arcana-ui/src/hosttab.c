@@ -37,8 +37,11 @@ static const struct hsect {
 	    "Routes, interfaces, sockets: the base system's" },
 	{ "network", "bird", "BIRD", "bird", TAB_NETWORK, NET_BIRD, "bird",
 	    NULL },
-	{ "network", "ipsec", "IPsec", "ipsec", TAB_NETWORK, NET_IPSEC,
-	    "strongswan", NULL },
+	{ "network", "ipsec", "IPsec", "ipsec", TAB_IPSEC, -1, NULL,
+	    "The kernel's IPsec without IKE: SAs and policies by PF_KEY for "
+	    "ipsec(4) interfaces, setkey(8)'s ipsec.conf: the base system's" },
+	{ "network", "strongswan", "strongSwan", "strongswan", TAB_NETWORK,
+	    NET_IPSEC, "strongswan", NULL },
 	{ "network", "relay", "FEC relay", "relay", TAB_RELAY, -1,
 	    "speederv2", NULL },
 	{ "monitoring", "utilization", "Utilization", "monitoring",

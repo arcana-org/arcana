@@ -263,7 +263,8 @@ host_tab(const char *name)
 		{ "sysctl", "system" }, { "kernel", "system" },
 		{ "processes", "system" }, { "ssh", "security" },
 		{ "certificates", "security" }, { "bird", "network" },
-		{ "ipsec", "network" }, { "relay", "network" },
+		{ "ipsec", "network" }, { "strongswan", "network" },
+		{ "relay", "network" },
 		{ "alerts", "monitoring" }, { "utilization", "monitoring" },
 		{ "tunnels", "monitoring" }, { "mail", "services" },
 	};
@@ -2972,8 +2973,8 @@ part_plugins_wg(void)
 	ATF_REQUIRE(rename("fake-swanctl", "fake-swanctl.off") == 0);
 	run("document.querySelector('button[data-act=refresh]').click()");
 	wait_js("document.querySelector('button.tab.plugin.missing[data-arg="
-	    "\"network/ipsec\"]')", 20);
-	host_tab("ipsec");
+	    "\"network/strongswan\"]')", 20);
+	host_tab("strongswan");
 	wait_js("document.querySelector('.plugin-missing button[data-act="
 	    "plugin-install][data-arg=strongswan]')", 10);
 	ATF_CHECK(js_true("document.querySelector('.plugin-missing')."
@@ -3150,7 +3151,7 @@ part_plugins_ipsec(void)
 	int	i;
 
 	host_tabs();
-	host_tab("ipsec");
+	host_tab("strongswan");
 	wait_js("document.querySelector('.pane.ipsec button[data-act="
 	    "ipsec-init]')", 20);
 	ATF_CHECK(js_true("document.querySelector('.pane.ipsec').textContent."
@@ -10160,20 +10161,34 @@ part_suricata_forms(void)
 }
 
 /*
- * Manually keyed SAs of an ipsec(4) interface by the IPsec tab's form:
- * set from keys given, not in safe mode (keys set by hand cannot be
- * put back); PF_KEY was sent both SAs with their SPIs and reqid.
+ * Manually keyed SAs of an ipsec(4) interface by the form of the base
+ * system's IPsec section, on a host without strongSwan: the section is
+ * there all the same, not a plugin, while strongSwan's says it is not
+ * installed.  Set from keys given, not in safe mode (keys set by hand
+ * cannot be put back): PF_KEY was sent both SAs with their SPIs and
+ * reqid; then a selector's two policies on them.
  */
 static void
 part_ipsec_sa(void)
 {
 
 	host_tabs();
+	ATF_REQUIRE(rename("fake-swanctl", "fake-swanctl.off") == 0);
+	run("document.querySelector('button[data-act=refresh]').click()");
+	click_when("nav.tabs:not(.sub) button.tab[data-arg=network]", 10);
+	wait_js("document.querySelector('button.tab.plugin.missing[data-arg="
+	    "\"network/strongswan\"]')", 20);
+	ATF_CHECK(js_true("!document.querySelector('nav.hsects button.tab"
+	    "[data-arg=\"network/ipsec\"]').classList.contains('plugin')"));
 	host_tab("ipsec");
-	wait_js("document.querySelector('.pane.ipsec button[data-act="
+	wait_js("document.querySelector('.pane.ipsec-base button[data-act="
 	    "ipsec-sa-add]')", 20);
-	run("document.querySelector('.pane.ipsec button[data-act=ipsec-sa-add]')"
-	    ".click()");
+	ATF_CHECK(js_true("!document.querySelector('.plugin-missing') && "
+	    "document.querySelector('.pane.ipsec-base').textContent.includes("
+	    "'PF_KEY') && document.querySelector('.pane.ipsec-base')."
+	    "textContent.includes('rc.d/ipsec')"));
+	run("document.querySelector('.pane.ipsec-base button[data-act="
+	    "ipsec-sa-add]').click()");
 	wait_js("document.querySelector('form[data-form=ipsec-sa]')", 5);
 	run("const f = document.querySelector('form[data-form=ipsec-sa]'); "
 	    "f.verb.value = 'set'; f.interface.value = 'ipsec0'; "
@@ -10192,13 +10207,28 @@ part_ipsec_sa(void)
 	    "192.0.2.2 esp 0x1002 -m tunnel -u 100 ' setkey.conf"),
 	    "the SAs are not set");
 	dock_closed();
+	run("document.querySelector('.pane.ipsec-base button[data-act="
+	    "ipsec-sa-add]').click()");
+	wait_js("document.querySelector('form[data-form=ipsec-sa]')", 5);
+	run("const f = document.querySelector('form[data-form=ipsec-sa]'); "
+	    "f.verb.value = 'policy'; f.interface.value = 'ipsec0'; "
+	    "f.reqid.value = '100'; f.local.value = '192.0.2.1'; "
+	    "f.remote.value = '192.0.2.2'; f.words.value = 'src 10.1.0.0/24 "
+	    "dst 10.2.0.0/24'; f.safe.checked = false; f.requestSubmit();");
+	queued_run();
+	ATF_CHECK_MSG(host_has("grep -q '^spdadd 10.1.0.0/24\\[any\\] "
+	    "10.2.0.0/24\\[any\\] any ' setkey.conf && grep -q '^spdadd "
+	    "10.2.0.0/24\\[any\\] 10.1.0.0/24\\[any\\] any ' setkey.conf"),
+	    "the policies are not in");
+	dock_closed();
+	ATF_REQUIRE(rename("fake-swanctl.off", "fake-swanctl") == 0);
 }
 
 ATF_TC_WITH_CLEANUP(pwa_ipsec_sa);
 ATF_TC_HEAD(pwa_ipsec_sa, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs set by the IPsec tab's form, found in what PF_KEY was sent");
+	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs and policies set by the base system's IPsec section on a host without strongSwan, found in what PF_KEY was sent");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_ipsec_sa, tc)
@@ -11896,7 +11926,7 @@ ATF_TC_WITH_CLEANUP(pwa_plugins_ipsec);
 ATF_TC_HEAD(pwa_plugins_ipsec, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "IPsec: the host's key, a connection, its certificates and a child");
+	atf_tc_set_md_var(tc, "descr", "strongSwan: the host's key, a connection, its certificates and a child");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_plugins_ipsec, tc)

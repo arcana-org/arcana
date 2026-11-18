@@ -93,6 +93,17 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Manual IPsec in the core, console 0.451.0
+
+- Manual IPsec (the ipsec-sa SAs and SPD policies by PF_KEY, setkey's
+  ipsec.conf and the kernel's SPD) is a core section of the host's
+  Network tab, IPsec (#/hosts/<id>/network/ipsec), shown whether or not
+  strongSwan is installed: it is the base system's (pfkey(4), ipsec(4),
+  rc.d/ipsec), not strongSwan's.  Its form gains the policy and
+  unpolicy verbs.  The strongSwan plugin's section is now strongSwan
+  (network/strongswan) and has IKE alone (swanctl, VICI); a link to
+  network/ipsec now opens the base system's section.
+
 ### pkg asks its repository first; agent 0.302.0, console 0.450.0
 
 - Before pkg update, upgrade, install, or a jail's base by pkg, the
