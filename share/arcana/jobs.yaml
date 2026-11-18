@@ -333,11 +333,11 @@ kinds:
     uses: remove persist
     destroys: remove
   - kind: ipsec-sa
-    title: Manually keyed IPsec security associations
+    title: Manually keyed IPsec security associations and policies
     needs: verb interface
     uses: reqid tunnel_local tunnel_remote args safe
-    values: verb=key|set|derive|commit|clear
-    destroys: verb=clear
+    values: verb=key|set|derive|commit|clear|policy|unpolicy
+    destroys: verb=clear|unpolicy
   - kind: zfs
     title: zfs
     needs: verb args

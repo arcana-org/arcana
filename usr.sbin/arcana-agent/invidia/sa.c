@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <net/if.h>
 #include <net/pfkeyv2.h>
 #include <netinet/in.h>
 #include <netipsec/ipsec.h>
@@ -315,7 +316,7 @@ sa_state_load(struct work *w, const char *ifname)
 	struct ucl_parser	*p;
 	ucl_object_t		*o;
 	FILE			*fp;
-	char			 path[MAXPATHLEN], buf[600];
+	char			 path[MAXPATHLEN], buf[8192];
 	size_t			 n;
 
 	sdwan_conf_path(wfmt(w, STATE_FILE, ifname), path, sizeof(path));
@@ -334,6 +335,15 @@ sa_state_load(struct work *w, const char *ifname)
 
 static const char	*sstr(const ucl_object_t *, const char *);
 static ucl_object_t	*derive_words(const struct sa_words *);
+
+/* A policy's selector: from src to dst (out; in, the other way). */
+struct sp_sel {
+	struct sockaddr_storage	 src, dst;
+	uint8_t			 splen, dplen, proto;
+	uint16_t		 sport, dport;
+	bool			 given;
+};
+static const char	*sp_words(const char *const *, size_t, struct sp_sel *);
 
 static int
 sa_state_save(struct work *w, const char *ifname, const ucl_object_t *o,
@@ -658,8 +668,11 @@ sa_check(const struct arc_job_spec *sp)
 
 	if (sp->verb == NULL || (strcmp(sp->verb, "set") != 0 && strcmp(
 	    sp->verb, "clear") != 0 && strcmp(sp->verb, "key") != 0 && strcmp(
-	    sp->verb, "derive") != 0 && strcmp(sp->verb, "commit") != 0))
-		return ("ipsec-sa: say key, set, derive, commit or clear");
+	    sp->verb, "derive") != 0 && strcmp(sp->verb, "commit") != 0 &&
+	    strcmp(sp->verb, "policy") != 0 && strcmp(sp->verb, "unpolicy") !=
+	    0))
+		return ("ipsec-sa: say key, set, derive, commit, clear, policy or "
+		    "unpolicy");
 	/* A pair for a plain tunnel's end too: its STAMP key's. */
 	if (sp->verb != NULL && strcmp(sp->verb, "key") == 0 && (unit_of(
 	    sp->interface, "gre") || unit_of(sp->interface, "gif") ||
@@ -683,6 +696,18 @@ sa_check(const struct arc_job_spec *sp)
 		    "addresses, of one family");
 	if (strcmp(sp->verb, "clear") == 0 || strcmp(sp->verb, "commit") == 0)
 		return (NULL);
+	if (strcmp(sp->verb, "policy") == 0 || strcmp(sp->verb, "unpolicy") ==
+	    0) {
+		struct sp_sel	sel;
+		const char	*e;
+
+		if ((e = sp_words(sp->names.v, sp->names.n, &sel)) != NULL)
+			return (e);
+		if (!sel.given && sp->verb[0] == 'p')
+			return ("ipsec-sa policy: src and dst, the selector's "
+			    "prefixes");
+		return (NULL);
+	}
 	return (sa_parse(sp, &w, strcmp(sp->verb, "derive") == 0));
 }
 
@@ -932,6 +957,625 @@ sa_put(struct work *w, int *fdp, const struct sa_words *sw, uint32_t reqid,
 	return (0);
 }
 
+/* ---- Policies ------------------------------------------------------- */
+
+/*
+ * The SPD by PF_KEY (pfkey.c).  An ipsec(4) interface has policies of
+ * its own, scoped to it (IPSEC_POLICYSCOPE_IFNET), on its reqid: its
+ * SAs serve them and no others, so the SAs set for it go on that reqid
+ * (the mapping, read from them).  Arcana's own policies send traffic of
+ * a selector more through an interface's SAs, both ways (policy): global,
+ * ESP in tunnel mode between the tunnel's ends, of the priority
+ * PFKEY_SP_MARK, after setkey's and ipsec.conf's (0); out at level
+ * unique on the reqid, so it leaves by those SAs or not at all; in at
+ * level use: the kernel hands ESP of an interface's reqid to the
+ * interface (if_ipsec's ipsec_if_input()) and a unique in policy then
+ * refuses what came through (ipsecstat's in_polvio; measured), as it
+ * would the interface's own traffic.  A policy is Arcana's, of this
+ * interface, by all of that, so ipsec.conf's, an IKE daemon's and the
+ * interfaces' own are never taken out.  The selectors put in are kept
+ * with the SPIs (STATE_FILE), so that a safe job can put them back.
+ */
+#define	SP_MAX		16	/* selectors an interface takes */
+
+/* A prefix (an address alone: all of it) as a sockaddr, port 0. */
+static bool
+sp_prefix(const char *s, struct sockaddr_storage *ss, uint8_t *plen)
+{
+	char		 buf[INET6_ADDRSTRLEN + 5], *slash;
+	const char	*e;
+	long long	 n;
+
+	if (s == NULL || strlcpy(buf, s, sizeof(buf)) >= sizeof(buf))
+		return (false);
+	if ((slash = strchr(buf, '/')) != NULL)
+		*slash++ = '\0';
+	if (!addr_ok(buf, &(int){ 0 }))
+		return (false);
+	sa_sockaddr(buf, ss);
+	*plen = ss->ss_family == AF_INET6 ? 128 : 32;
+	if (slash != NULL) {
+		n = strtonum(slash, 0, *plen, &e);
+		if (e != NULL)
+			return (false);
+		*plen = (uint8_t)n;
+	}
+	return (true);
+}
+
+static void
+sp_port(struct sockaddr_storage *ss, uint16_t port)
+{
+
+	if (ss->ss_family == AF_INET)
+		((struct sockaddr_in *)ss)->sin_port = htons(port);
+	else if (ss->ss_family == AF_INET6)
+		((struct sockaddr_in6 *)ss)->sin6_port = htons(port);
+}
+
+/*
+ * A selector from its words: "src prefix dst prefix [proto p] [sport n]
+ * [dport n]", proto a number or any, tcp, udp, sctp, icmp, ipv6-icmp,
+ * a port single (RFC 9061's, no ranges) and only with tcp, udp or sctp.
+ * Without any, none given (unpolicy's: all).  NULL or what is wrong.
+ */
+static const char *
+sp_words(const char *const *v, size_t nv, struct sp_sel *sel)
+{
+	static const struct { const char *name; uint8_t n; } protos[] = {
+		{ "any", IPSEC_ULPROTO_ANY }, { "tcp", IPPROTO_TCP },
+		{ "udp", IPPROTO_UDP }, { "sctp", IPPROTO_SCTP },
+		{ "icmp", IPPROTO_ICMP }, { "ipv6-icmp", IPPROTO_ICMPV6 },
+	};
+	const char	*src, *dst, *e;
+	long long	 sport, dport, n;
+	size_t		 i, j;
+
+	memset(sel, 0, sizeof(*sel));
+	sel->proto = IPSEC_ULPROTO_ANY;
+	src = dst = NULL;
+	sport = dport = 0;
+	for (i = 0; i < nv; i += 2) {
+		if (i + 1 >= nv)
+			return ("a word's value is missing");
+		if (strcmp(v[i], "src") == 0)
+			src = v[i + 1];
+		else if (strcmp(v[i], "dst") == 0)
+			dst = v[i + 1];
+		else if (strcmp(v[i], "proto") == 0) {
+			for (j = 0; j < nitems(protos); j++)
+				if (strcmp(v[i + 1], protos[j].name) == 0)
+					break;
+			if (j < nitems(protos))
+				sel->proto = protos[j].n;
+			else {
+				n = strtonum(v[i + 1], 0, 255, &e);
+				if (e != NULL)
+					return ("proto is a number, 0 to 255, or "
+					    "any, tcp, udp, sctp, icmp, "
+					    "ipv6-icmp");
+				sel->proto = (uint8_t)n;
+			}
+		} else if (strcmp(v[i], "sport") == 0 || strcmp(v[i],
+		    "dport") == 0) {
+			n = strtonum(v[i + 1], 1, 65535, &e);
+			if (e != NULL)
+				return ("a port is one, 1 to 65535: no ranges");
+			if (v[i][0] == 's')
+				sport = n;
+			else
+				dport = n;
+		} else
+			return ("a policy's words are src, dst, proto, sport and "
+			    "dport");
+	}
+	if (src == NULL && dst == NULL && nv == 0)
+		return (NULL);
+	if (!sp_prefix(src, &sel->src, &sel->splen) || !sp_prefix(dst,
+	    &sel->dst, &sel->dplen))
+		return ("src and dst are the selector's prefixes, 10.1.0.0/24 "
+		    "or an address");
+	if (sel->src.ss_family != sel->dst.ss_family)
+		return ("src and dst are of one family");
+	if ((sport != 0 || dport != 0) && sel->proto != IPPROTO_TCP &&
+	    sel->proto != IPPROTO_UDP && sel->proto != IPPROTO_SCTP)
+		return ("ports are tcp's, udp's or sctp's: say proto");
+	sel->sport = (uint16_t)sport;
+	sel->dport = (uint16_t)dport;
+	sp_port(&sel->src, sel->sport);
+	sp_port(&sel->dst, sel->dport);
+	sel->given = true;
+	return (NULL);
+}
+
+static bool
+sp_port_same(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+	const void	*va = a, *vb = b;
+
+	if (a->ss_family == AF_INET)
+		return (((const struct sockaddr_in *)va)->sin_port ==
+		    ((const struct sockaddr_in *)vb)->sin_port);
+	return (((const struct sockaddr_in6 *)va)->sin6_port ==
+	    ((const struct sockaddr_in6 *)vb)->sin6_port);
+}
+
+/* Whether a policy the kernel has is sel's, in its direction. */
+static bool
+sp_is_sel(const struct pfkey_sp *k, const struct sp_sel *sel)
+{
+	const struct sockaddr_storage	*s, *d;
+	uint8_t				 sl, dl;
+
+	if (k->dir == IPSEC_DIR_OUTBOUND) {
+		s = &sel->src;
+		d = &sel->dst;
+		sl = sel->splen;
+		dl = sel->dplen;
+	} else {
+		s = &sel->dst;
+		d = &sel->src;
+		sl = sel->dplen;
+		dl = sel->splen;
+	}
+	return (k->proto == sel->proto && k->splen == sl && k->dplen == dl &&
+	    sa_same_addr(&k->src, s) && sa_same_addr(&k->dst, d) &&
+	    sp_port_same(&k->src, s) && sp_port_same(&k->dst, d));
+}
+
+/* Whether a policy is Arcana's, of the interface of reqid between l and
+ * r: everything Arcana puts in, and nothing else does. */
+static bool
+sp_is_ours(const struct pfkey_sp *k, uint32_t reqid,
+    const struct sockaddr_storage *l, const struct sockaddr_storage *r)
+{
+
+	return (k->scope != IPSEC_POLICYSCOPE_IFNET && k->priority ==
+	    PFKEY_SP_MARK && k->type == IPSEC_POLICY_IPSEC && k->nreq == 1 &&
+	    k->rproto == IPPROTO_ESP && k->mode == IPSEC_MODE_TUNNEL &&
+	    ((k->dir == IPSEC_DIR_OUTBOUND && k->level == IPSEC_LEVEL_UNIQUE &&
+	    k->reqid == reqid && sa_same_addr(&k->tsrc, l) &&
+	    sa_same_addr(&k->tdst, r)) || (k->dir == IPSEC_DIR_INBOUND &&
+	    k->level == IPSEC_LEVEL_USE && sa_same_addr(&k->tsrc, r) &&
+	    sa_same_addr(&k->tdst, l))));
+}
+
+/* What a dump found: the interface's own policies' reqid, and
+ * Arcana's policies of it (its reqid, between its ends). */
+struct sp_found {
+	struct sockaddr_storage	 l, r;
+	uint32_t		 reqid;
+	unsigned int		 ifindex;
+	uint32_t		 ifreqid;
+	bool			 ifseen;
+	struct pfkey_sp		 v[2 * SP_MAX + 8];
+	size_t			 n;
+};
+
+static void
+sp_found_one(const struct pfkey_sp *k, void *arg)
+{
+	struct sp_found	*f = arg;
+
+	if (k->scope == IPSEC_POLICYSCOPE_IFNET) {
+		if (f->ifindex != 0 && k->priority == f->ifindex &&
+		    k->type == IPSEC_POLICY_IPSEC && k->nreq > 0 &&
+		    !f->ifseen) {
+			f->ifseen = true;
+			f->ifreqid = k->reqid;
+		}
+		return;
+	}
+	if (sp_is_ours(k, f->reqid, &f->l, &f->r) && f->n < nitems(f->v))
+		f->v[f->n++] = *k;
+}
+
+/* The SPD read: what the interface's own policies and Arcana's are.
+ * -1 when it could not be. */
+static int
+sp_read(struct work *w, int *fdp, const struct arc_job_spec *sp,
+    struct sp_found *f, const char **errp)
+{
+	const char	*ifname = sp->interface;
+	int		 step;
+
+	memset(f, 0, sizeof(*f));
+	sa_sockaddr(sp->tunnel_local, &f->l);
+	sa_sockaddr(sp->tunnel_remote, &f->r);
+	f->reqid = sp->reqid;
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_X_SPDDUMP", "the SPD: "
+	    "%s's own policies and Arcana's on its SAs", ifname);
+	if (work_dry(w, step))
+		return (0);
+	f->ifindex = if_nametoindex(ifname);
+	if (sa_fd(w, fdp, errp) == -1 || pfkey_spddump(w, *fdp, sp_found_one,
+	    f, errp) == -1) {
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	step_end(w, step, true, "%s: %s; %zu of Arcana's", ifname, f->ifseen ?
+	    wfmt(w, "its own policies on reqid %u", f->ifreqid) : f->ifindex ==
+	    0 ? "not here" : "no policies of its own (no tunnel yet)", f->n);
+	return (0);
+}
+
+/*
+ * The ipsec(4) reqid mapping: the interface's own policies take the SAs
+ * of their reqid alone, so SAs or policies on another one would serve
+ * nothing of it.  An interface not here, or without a tunnel yet, has
+ * none to tell: the reqid as given.
+ */
+static int
+sp_reqid_check(struct work *w, const struct arc_job_spec *sp,
+    const struct sp_found *f, const char **errp)
+{
+
+	if (f->ifseen && f->ifreqid != sp->reqid) {
+		*errp = wfmt(w, "%s's own policies take reqid %u, not %u: its "
+		    "SAs go on that one (ifconfig %s reqid)", sp->interface,
+		    f->ifreqid, sp->reqid, sp->interface);
+		return (-1);
+	}
+	return (0);
+}
+
+/* A selector as a step says it. */
+static const char *
+sp_text(struct work *w, const struct sp_sel *sel)
+{
+	char	 a[INET6_ADDRSTRLEN], b[INET6_ADDRSTRLEN];
+	const void *va = &sel->src, *vb = &sel->dst;
+
+	if (sel->src.ss_family == AF_INET) {
+		inet_ntop(AF_INET, &((const struct sockaddr_in *)va)->sin_addr,
+		    a, sizeof(a));
+		inet_ntop(AF_INET, &((const struct sockaddr_in *)vb)->sin_addr,
+		    b, sizeof(b));
+	} else {
+		inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)va)->
+		    sin6_addr, a, sizeof(a));
+		inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)vb)->
+		    sin6_addr, b, sizeof(b));
+	}
+	return (wfmt(w, "%s/%u%s to %s/%u%s, %s", a, sel->splen,
+	    sel->sport != 0 ? wfmt(w, " port %u", sel->sport) : "", b,
+	    sel->dplen, sel->dport != 0 ? wfmt(w, " port %u", sel->dport) : "",
+	    sel->proto == IPSEC_ULPROTO_ANY ? "any protocol" : wfmt(w,
+	    "protocol %u", sel->proto)));
+}
+
+/* Arcana's policy of id taken out; one gone already is none to take
+ * out. */
+static int
+sp_del(struct work *w, int *fdp, const struct pfkey_sp *k, const char **errp)
+{
+	const char	*e;
+	int		 step;
+
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_X_SPDDELETE2", "spid "
+	    "%u (%s)", k->id, k->dir == IPSEC_DIR_OUTBOUND ? "out" : "in");
+	if (work_dry(w, step))
+		return (0);
+	e = NULL;
+	if (sa_fd(w, fdp, &e) == -1 || pfkey_spddelete(w, *fdp, k->id, &e) ==
+	    -1) {
+		if (errno == EINVAL || errno == ENOENT || errno == ESRCH) {
+			step_end(w, step, true, "spid %u: none there", k->id);
+			return (0);
+		}
+		*errp = wfmt(w, "spid %u: %s", k->id, e);
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	step_end(w, step, true, NULL);
+	return (0);
+}
+
+/* Arcana's policies of the interface taken out: those of sel, or every
+ * one when sel is NULL; how many in *n. */
+static int
+sp_drop(struct work *w, int *fdp, const struct arc_job_spec *sp,
+    const struct sp_found *f, const struct sp_sel *sel, size_t *n,
+    const char **errp)
+{
+	struct sockaddr_storage	l, r;
+	size_t			i;
+
+	sa_sockaddr(sp->tunnel_local, &l);
+	sa_sockaddr(sp->tunnel_remote, &r);
+	*n = 0;
+	for (i = 0; i < f->n; i++) {
+		if (!sp_is_ours(&f->v[i], sp->reqid, &l, &r) || (sel != NULL &&
+		    !sp_is_sel(&f->v[i], sel)))
+			continue;
+		if (sp_del(w, fdp, &f->v[i], errp) != 0)
+			return (-1);
+		(*n)++;
+	}
+	return (0);
+}
+
+/* One policy put in, sel's in dir, on the interface's SAs; its id. */
+static int
+sp_put1(struct work *w, int *fdp, const struct arc_job_spec *sp,
+    const struct sp_sel *sel, uint8_t dir, uint32_t *id, const char **errp)
+{
+	struct pfkey_sp	 k;
+	const char	*l, *r, *what;
+	int		 step;
+
+	l = dir == IPSEC_DIR_OUTBOUND ? sp->tunnel_local : sp->tunnel_remote;
+	r = dir == IPSEC_DIR_OUTBOUND ? sp->tunnel_remote : sp->tunnel_local;
+	memset(&k, 0, sizeof(k));
+	k.src = dir == IPSEC_DIR_OUTBOUND ? sel->src : sel->dst;
+	k.dst = dir == IPSEC_DIR_OUTBOUND ? sel->dst : sel->src;
+	k.splen = dir == IPSEC_DIR_OUTBOUND ? sel->splen : sel->dplen;
+	k.dplen = dir == IPSEC_DIR_OUTBOUND ? sel->dplen : sel->splen;
+	k.proto = sel->proto;
+	k.dir = dir;
+	k.type = IPSEC_POLICY_IPSEC;
+	k.priority = PFKEY_SP_MARK;
+	k.rproto = IPPROTO_ESP;
+	k.mode = IPSEC_MODE_TUNNEL;
+	/* use, reqid 0, as ipsec_set_policy() has a level but unique. */
+	k.level = dir == IPSEC_DIR_OUTBOUND ? IPSEC_LEVEL_UNIQUE :
+	    IPSEC_LEVEL_USE;
+	k.reqid = dir == IPSEC_DIR_OUTBOUND ? (uint16_t)sp->reqid : 0;
+	sa_sockaddr(l, &k.tsrc);
+	sa_sockaddr(r, &k.tdst);
+	what = wfmt(w, "%s %s, ESP in tunnel mode %s to %s, %s", dir ==
+	    IPSEC_DIR_OUTBOUND ? "out" : "in", dir == IPSEC_DIR_OUTBOUND ?
+	    sp_text(w, sel) : wfmt(w, "the other way of %s", sp_text(w, sel)),
+	    l, r, dir == IPSEC_DIR_OUTBOUND ? wfmt(w, "unique:%u", sp->reqid) :
+	    "use");
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_X_SPDADD", "%s", what);
+	*id = 0;
+	if (work_dry(w, step))
+		return (0);
+	if (sa_fd(w, fdp, errp) == -1 || pfkey_spdadd(w, *fdp, &k, errp) ==
+	    -1) {
+		if (errno == EEXIST)
+			*errp = wfmt(w, "%s: a policy of that selector and "
+			    "direction is there already, not Arcana's (ipsec.conf, "
+			    "an IKE daemon): left as it is", sp_text(w, sel));
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	*id = k.id;
+	step_end(w, step, true, "%s: spid %u", what, k.id);
+	return (0);
+}
+
+/* The selectors kept: the state's "policies", each its words. */
+static ucl_object_t *
+sp_kept(const struct sp_sel *sel)
+{
+	ucl_object_t	*o;
+	char		 a[INET6_ADDRSTRLEN], b[INET6_ADDRSTRLEN];
+	const void	*va = &sel->src, *vb = &sel->dst;
+	char		 buf[INET6_ADDRSTRLEN + 5];
+
+	if (sel->src.ss_family == AF_INET) {
+		inet_ntop(AF_INET, &((const struct sockaddr_in *)va)->sin_addr,
+		    a, sizeof(a));
+		inet_ntop(AF_INET, &((const struct sockaddr_in *)vb)->sin_addr,
+		    b, sizeof(b));
+	} else {
+		inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)va)->
+		    sin6_addr, a, sizeof(a));
+		inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)vb)->
+		    sin6_addr, b, sizeof(b));
+	}
+	o = ucl_object_typed_new(UCL_OBJECT);
+	snprintf(buf, sizeof(buf), "%s/%u", a, sel->splen);
+	ucl_object_insert_key(o, ucl_object_fromstring(buf), "src", 0, true);
+	snprintf(buf, sizeof(buf), "%s/%u", b, sel->dplen);
+	ucl_object_insert_key(o, ucl_object_fromstring(buf), "dst", 0, true);
+	ucl_object_insert_key(o, ucl_object_fromint(sel->proto), "proto", 0,
+	    false);
+	if (sel->sport != 0)
+		ucl_object_insert_key(o, ucl_object_fromint(sel->sport), "sport",
+		    0, false);
+	if (sel->dport != 0)
+		ucl_object_insert_key(o, ucl_object_fromint(sel->dport), "dport",
+		    0, false);
+	return (o);
+}
+
+/* A kept selector read again; false when it is not whole. */
+static bool
+sp_unkept(struct work *w, const ucl_object_t *o, struct sp_sel *sel)
+{
+	const char	*v[10];
+	size_t		 n;
+
+	n = 0;
+	v[n++] = "src";
+	v[n++] = sstr(o, "src");
+	v[n++] = "dst";
+	v[n++] = sstr(o, "dst");
+	v[n++] = "proto";
+	v[n++] = wfmt(w, "%u", u32(o, "proto"));
+	if (u32(o, "sport") != 0) {
+		v[n++] = "sport";
+		v[n++] = wfmt(w, "%u", u32(o, "sport"));
+	}
+	if (u32(o, "dport") != 0) {
+		v[n++] = "dport";
+		v[n++] = wfmt(w, "%u", u32(o, "dport"));
+	}
+	return (v[1] != NULL && v[3] != NULL && sp_words(v, n, sel) == NULL &&
+	    sel->given);
+}
+
+/* The kept selectors without sel's (or without any, sel NULL). */
+static void
+sp_forget(struct work *w, ucl_object_t *stt, const struct sp_sel *sel)
+{
+	const ucl_object_t	*o;
+	ucl_object_t		*arr;
+	ucl_object_iter_t	 it;
+	struct sp_sel		 k;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while (sel != NULL && (o = ucl_object_iterate(ucl_object_lookup(stt,
+	    "policies"), &it, true)) != NULL)
+		if (!sp_unkept(w, o, &k) || k.proto != sel->proto || k.splen !=
+		    sel->splen || k.dplen != sel->dplen || !sa_same_addr(&k.src,
+		    &sel->src) || !sa_same_addr(&k.dst, &sel->dst) || k.sport !=
+		    sel->sport || k.dport != sel->dport)
+			ucl_array_append(arr, ucl_object_copy(o));
+	if (ucl_array_size(arr) == 0) {
+		ucl_object_unref(arr);
+		(void)ucl_object_delete_key(stt, "policies");
+	} else
+		ucl_object_replace_key(stt, arr, "policies", 0, false);
+}
+
+/*
+ * A selector's two policies put in, out and in, its old ones (Arcana's)
+ * taken out first so a job can run again; read back by a dump, each by
+ * its id: global, the priority, the selector, ESP in tunnel mode
+ * between the ends, out unique on the reqid, in use.  An in refused
+ * takes the out with it: never half a pair.
+ */
+static int
+sp_put(struct work *w, int *fdp, const struct arc_job_spec *sp,
+    const struct sp_sel *sel, const char **errp)
+{
+	struct sockaddr_storage	 l, r;
+	struct sp_found		 f;
+	struct pfkey_sp		 gone;
+	uint32_t		 out, in;
+	const char		*bad;
+	size_t			 i, n;
+	int			 step, seen;
+
+	if (sp_read(w, fdp, sp, &f, errp) != 0 ||
+	    sp_reqid_check(w, sp, &f, errp) != 0 ||
+	    sp_drop(w, fdp, sp, &f, sel, &n, errp) != 0)
+		return (-1);
+	if (sp_put1(w, fdp, sp, sel, IPSEC_DIR_OUTBOUND, &out, errp) != 0)
+		return (-1);
+	if (sp_put1(w, fdp, sp, sel, IPSEC_DIR_INBOUND, &in, errp) != 0) {
+		memset(&gone, 0, sizeof(gone));
+		gone.id = out;
+		gone.dir = IPSEC_DIR_OUTBOUND;
+		(void)sp_del(w, fdp, &gone, &bad);
+		return (-1);
+	}
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_X_SPDDUMP", "spid %u "
+	    "and %u read back", out, in);
+	if (work_dry(w, step))
+		return (0);
+	f.ifindex = 0;
+	f.ifseen = false;
+	f.n = 0;
+	if (pfkey_spddump(w, *fdp, sp_found_one, &f, errp) == -1) {
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	sa_sockaddr(sp->tunnel_local, &l);
+	sa_sockaddr(sp->tunnel_remote, &r);
+	seen = 0;
+	bad = NULL;
+	for (i = 0; i < f.n; i++) {
+		if (f.v[i].id != out && f.v[i].id != in)
+			continue;
+		seen++;
+		if (f.v[i].dir != (f.v[i].id == out ? IPSEC_DIR_OUTBOUND :
+		    IPSEC_DIR_INBOUND))
+			bad = "another direction";
+		else if (!sp_is_sel(&f.v[i], sel))
+			bad = "another selector";
+		else if (!sp_is_ours(&f.v[i], sp->reqid, &l, &r))
+			bad = "another request";
+	}
+	if (seen != 2 || bad != NULL) {
+		*errp = wfmt(w, "%s: the kernel has its policies %s", sp_text(w,
+		    sel), bad != NULL ? wfmt(w, "with %s", bad) : "not");
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	step_end(w, step, true, "spid %u out, %u in: global, priority %#x, "
+	    "ESP in tunnel mode %s to %s, out unique:%u, in use", out, in,
+	    PFKEY_SP_MARK, sp->tunnel_local, sp->tunnel_remote, sp->reqid);
+	return (0);
+}
+
+/* policy, unpolicy: a selector's policies put in or taken out, the
+ * selectors kept with the SPIs. */
+static int
+sp_job(struct work *w, const struct arc_job_spec *sp, int *fdp,
+    ucl_object_t *stt, const char **errp)
+{
+	struct sp_sel	 sel;
+	struct sp_found	 f;
+	size_t		 n;
+	int		 step;
+
+	(void)sp_words(sp->names.v, sp->names.n, &sel);
+	if (strcmp(sp->verb, "policy") == 0) {
+		sp_forget(w, stt, &sel);
+		if (ucl_array_size(ucl_object_lookup(stt, "policies")) >=
+		    SP_MAX) {
+			*errp = wfmt(w, "%s takes %d selectors at most",
+			    sp->interface, SP_MAX);
+			return (-1);
+		}
+		if (sp_put(w, fdp, sp, &sel, errp) != 0)
+			return (-1);
+		if (ucl_object_lookup(stt, "policies") == NULL)
+			ucl_object_insert_key(stt, ucl_object_typed_new(
+			    UCL_ARRAY), "policies", 0, false);
+		ucl_array_append((ucl_object_t *)(uintptr_t)ucl_object_lookup(
+		    stt, "policies"), sp_kept(&sel));
+		return (sa_state_save(w, sp->interface, stt, errp));
+	}
+	if (sp_read(w, fdp, sp, &f, errp) != 0)
+		return (-1);
+	step = step_begin(w, STEP_DAEMON, "arcana-agent", "%s: %s", sp->interface,
+	    sel.given ? wfmt(w, "the policies of %s", sp_text(w, &sel)) :
+	    "Arcana's policies on its SAs");
+	if (sp_drop(w, fdp, sp, &f, sel.given ? &sel : NULL, &n, errp) != 0) {
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	step_end(w, step, true, "%zu taken out", n);
+	sp_forget(w, stt, sel.given ? &sel : NULL);
+	return (sa_state_save(w, sp->interface, stt, errp));
+}
+
+/* After a safe job's files are back: Arcana's policies of the interface
+ * as the state kept them. */
+static int
+sp_resync(struct work *w, const struct arc_job_spec *sp, const char **errp)
+{
+	const ucl_object_t	*o;
+	ucl_object_t		*stt;
+	ucl_object_iter_t	 it;
+	struct sp_found		 f;
+	struct sp_sel		 sel;
+	size_t			 n;
+	int			 fd, rc;
+
+	fd = -1;
+	rc = sp_read(w, &fd, sp, &f, errp) != 0 || sp_drop(w, &fd,
+	    sp, &f, NULL, &n, errp) != 0 ? -1 : 0;
+	stt = rc == 0 ? sa_state_load(w, sp->interface) : NULL;
+	it = NULL;
+	while (rc == 0 && stt != NULL && (o = ucl_object_iterate(
+	    ucl_object_lookup(stt, "policies"), &it, true)) != NULL)
+		if (sp_unkept(w, o, &sel))
+			rc = sp_put(w, &fd, sp, &sel, errp);
+	if (stt != NULL)
+		ucl_object_unref(stt);
+	if (fd != -1)
+		close(fd);
+	return (rc);
+}
+
 /*
  * The SAs set, derived, turned or cleared.  set and derive put both
  * directions in (the old ones kept here taken out first, so a step
@@ -987,8 +1631,21 @@ sa_job1(struct work *w, const struct arc_job_spec *sp, int *fdp,
 	rotate = derive && sw.next;
 	in = sw.install != 2;
 	out = sw.install != 1;
+	if (strcmp(sp->verb, "policy") == 0 || strcmp(sp->verb, "unpolicy") ==
+	    0) {
+		rc = sp_job(w, sp, fdp, stt, errp);
+		ucl_object_unref(stt);
+		return (rc);
+	}
 	if (clear) {
+		struct sp_found	f;
+		size_t		n;
+
+		/* The SAs, then Arcana's policies on them: what was sent
+		 * through them dropped meanwhile, never sent plain. */
 		(void)sa_clear(w, fdp, l, r);
+		if (sp_read(w, fdp, sp, &f, &e) == 0)
+			(void)sp_drop(w, fdp, sp, &f, NULL, &n, &e);
 		(void)unlink(key_path(w, sp->interface, true));
 		(void)sa_state_save(w, sp->interface, NULL, errp);
 		ucl_object_unref(stt);
@@ -1043,6 +1700,16 @@ sa_job1(struct work *w, const struct arc_job_spec *sp, int *fdp,
 			step_end(w, step, false, "%s", *errp);
 		ucl_object_unref(stt);
 		return (rc);
+	}
+	/* The interface's own policies' reqid, before anything changes. */
+	{
+		struct sp_found	f;
+
+		if (sp_read(w, fdp, sp, &f, errp) != 0 || sp_reqid_check(w, sp,
+		    &f, errp) != 0) {
+			ucl_object_unref(stt);
+			return (-1);
+		}
 	}
 	if (derive) {
 		/* 256-bit AES, or GCM with its nonce; the HMAC of its size. */
@@ -1269,7 +1936,8 @@ sa_undo_check(struct work *w, const struct arc_job_spec *sp)
 	const char	*e;
 
 	if (sp->verb == NULL || sp->interface == NULL || strcmp(sp->verb,
-	    "key") == 0)
+	    "key") == 0 || strcmp(sp->verb, "policy") == 0 || strcmp(sp->verb,
+	    "unpolicy") == 0)
 		return (NULL);
 	if ((stt = sa_state_load(w, sp->interface)) == NULL)
 		return (NULL);
@@ -1299,6 +1967,17 @@ sa_undo(struct work *w, const struct arc_job_spec *sp, const char **errp)
 
 	if (strcmp(sp->verb, "key") == 0)
 		return (0);
+	/* A selector's policies: only they, as kept. */
+	if (strcmp(sp->verb, "policy") == 0 || strcmp(sp->verb, "unpolicy") ==
+	    0) {
+		step = step_begin(w, STEP_DAEMON, "arcana-agent", "%s: Arcana's "
+		    "policies on its SAs as they were", sp->interface);
+		if ((rc = sp_resync(w, sp, errp)) != 0)
+			step_end(w, step, false, "%s", *errp);
+		else
+			step_end(w, step, true, NULL);
+		return (rc);
+	}
 	step = step_begin(w, STEP_DAEMON, "arcana-agent", "%s: its "
 	    "SAs as they were", sp->interface);
 	fd = -1;
@@ -1323,6 +2002,9 @@ sa_undo(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		}
 		ucl_object_unref(stt);
 	}
+	/* A clear took Arcana's policies on them too. */
+	if (rc == 0 && strcmp(sp->verb, "clear") == 0)
+		rc = sp_resync(w, sp, errp);
 	if (rc != 0)
 		step_end(w, step, false, "%s", *errp);
 	else

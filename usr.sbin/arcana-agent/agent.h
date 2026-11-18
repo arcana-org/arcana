@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.300.0"
+#define	ARCANA_AGENT_VERSION	"0.301.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1334,6 +1334,31 @@ int		 pfkey_get(struct work *, int, const struct sockaddr *,
 int		 pfkey_dump(struct work *, int,
 		    void (*)(const struct pfkey_sa *, void *), void *,
 		    const char **);
+/* A policy as it is put in or read back: its first request (Arcana's
+ * have one), and how many there are.  Arcana's own are global, of the
+ * priority PFKEY_SP_MARK: after setkey's (0) and ipsec.conf's, an
+ * ipsec(4) interface's being scoped to it, told apart by it alone. */
+#define	PFKEY_SP_MARK	0x7fa2c000u
+struct pfkey_sp {
+	struct sockaddr_storage	 src, dst;	/* the selector, ports in */
+	struct sockaddr_storage	 tsrc, tdst;	/* tunnel mode's ends */
+	uint32_t		 id;		/* the kernel's */
+	uint32_t		 priority;	/* ifnet scope: the ifindex */
+	uint16_t		 type;		/* IPSEC_POLICY_* */
+	uint16_t		 reqid;
+	uint8_t			 splen, dplen;
+	uint8_t			 proto;		/* IPSEC_ULPROTO_ANY: any */
+	uint8_t			 dir, scope;	/* IPSEC_DIR_*, _POLICYSCOPE_* */
+	uint8_t			 rproto, mode, level;
+	int			 nreq;
+};
+int		 pfkey_spdadd(struct work *, int, struct pfkey_sp *,
+		    const char **);
+int		 pfkey_spddelete(struct work *, int, uint32_t, const char **);
+int		 pfkey_spddump(struct work *, int,
+		    void (*)(const struct pfkey_sp *, void *), void *,
+		    const char **);
+const char	*pfkey_spd_text(struct work *);
 /* invidia/sa.c: manually keyed SAs, by PF_KEY. */
 const char	*sa_check(const struct arc_job_spec *);
 int		 do_sa_job(struct work *, const struct arc_job_spec *,

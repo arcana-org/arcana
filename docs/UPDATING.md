@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### IPsec policies by PF_KEY; agent 0.301.0, console 0.449.1
+
+- **Policies** (PLAN-SDN-YANG 6.2.2): `ipsec-sa policy` sends a
+  selector's traffic through an ipsec(4) interface's manual SAs as well,
+  both ways (out at level unique on its reqid, in at level use), and
+  `ipsec-sa unpolicy` takes them out; `clear` takes Arcana's policies
+  after the SAs.  They are global PF_KEY policies of a priority of
+  Arcana's own (0x7fa2c000), after ipsec.conf's; ipsec.conf's, an IKE
+  daemon's and the interfaces' own are never touched (a selector of
+  theirs fails the job), and policies are deleted by the id a dump
+  read, never by selector.
+- `ipsec-sa set` and `derive` now fail, before anything changes, when
+  the reqid given is not the one the interface's own policies have.
+- The ipsec.conf read shows the kernel's SPD read by PF_KEY, each policy
+  told whose it is; the agent no longer runs setkey(8) at all
+  (ipsec.conf itself is still rc.d/ipsec's).
+
 ### A host's terminal, agent 0.300.0, console 0.449.0
 
 - A host's **Terminal** tab runs that host's own login(1) on a

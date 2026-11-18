@@ -9,11 +9,17 @@
  * agent_test.sh's SA cases, which arcana-agent --pfkey speaks to on a
  * unix socket.  It keeps the SAs added and answers SADB_ADD,
  * SADB_DELETE, SADB_GET and SADB_DUMP as the kernel does (RFC 2367,
- * sys/netipsec/key.c), and writes each message it is sent to the log
- * as setkey(8)'s line of it, read from the message's own bytes.  While
- * the file refuse names is there, it refuses SADB_ADD (EINVAL).
+ * sys/netipsec/key.c), keeps the policies added and answers
+ * SADB_X_SPDADD (EEXIST for a selector and direction there already),
+ * SADB_X_SPDDELETE2 (by id) and SADB_X_SPDDUMP, and writes each message
+ * it is sent to the log as setkey(8)'s line of it, read from the
+ * message's own bytes.  While the file refuse names is there, it
+ * refuses SADB_ADD (EINVAL).  With seed, two policies not Arcana's are
+ * there from the start: ipsec.conf's (priority 0) on the request
+ * Arcana's would have for ipsec0 of reqid 100 from 10.202.0.1 to
+ * 10.202.0.2, and an ipsec(4) interface's own (ifnet scope, index 1).
  *
- * usage: fakepfkey socket log refuse
+ * usage: fakepfkey socket log refuse [seed]
  */
 
 #include <sys/param.h>
@@ -22,6 +28,7 @@
 
 #include <net/pfkeyv2.h>
 #include <netinet/in.h>
+#include <netipsec/ipsec.h>
 
 #include <arpa/inet.h>
 
@@ -36,6 +43,7 @@
 
 #define	NCLIENTS	16
 #define	NSAS		64
+#define	NSPS		64
 
 struct entry {
 	struct sockaddr_storage	 src, dst;
@@ -46,6 +54,17 @@ struct entry {
 
 static struct entry	 sas[NSAS];
 static size_t		 nsas;
+
+/* A policy: its message as it was added, the kernel's id in it. */
+struct policy {
+	uint32_t		 id;
+	unsigned char		 msg[1024] __aligned(8);
+	size_t			 len;
+};
+
+static struct policy	 sps[NSPS];
+static size_t		 nsps;
+static uint32_t		 spid = 1;
 static const char	*logpath, *refuse;
 
 /* What a message says, as found in its extensions. */
@@ -57,6 +76,7 @@ struct parsed {
 	const struct sadb_key		*ekey, *akey;
 	const struct sadb_x_nat_t_type	*ntype;
 	const struct sadb_x_nat_t_port	*sport, *dport;
+	const struct sadb_x_policy	*xpl;
 	bool				 bad;
 };
 
@@ -111,6 +131,9 @@ parse(const unsigned char *buf, size_t len, struct parsed *p)
 			break;
 		case SADB_X_EXT_NAT_T_DPORT:
 			p->dport = (const void *)e;
+			break;
+		case SADB_X_EXT_POLICY:
+			p->xpl = (const void *)e;
 			break;
 		default:
 			p->bad = true;
@@ -176,16 +199,118 @@ key_hex(FILE *fp, const struct sadb_key *k)
 		fprintf(fp, "%02x", b[i]);
 }
 
+/* A selector's end as setkey(8) writes it: address/prefix[port]. */
+static const char *
+sel_str(const struct sadb_address *a, char *buf, size_t len)
+{
+	const struct sockaddr	*sa = addr_of(a);
+	const void		*v = sa;
+	char			 s[INET6_ADDRSTRLEN];
+	unsigned		 port;
+
+	addr_str(a, s, sizeof(s));
+	port = ntohs(sa->sa_family == AF_INET6 ? ((const struct sockaddr_in6 *)
+	    v)->sin6_port : ((const struct sockaddr_in *)v)->sin_port);
+	if (port == 0)
+		snprintf(buf, len, "%s/%u[any]", s, a->sadb_address_prefixlen);
+	else
+		snprintf(buf, len, "%s/%u[%u]", s, a->sadb_address_prefixlen,
+		    port);
+	return (buf);
+}
+
+/* A policy's -P as setkey(8) has it, the priority told. */
+static void
+policy_str(FILE *fp, const struct sadb_x_policy *x)
+{
+	const struct sadb_x_ipsecrequest	*r;
+	const struct sockaddr			*a, *b;
+	const void				*va, *vb;
+	char					 s[INET6_ADDRSTRLEN];
+	char					 d[INET6_ADDRSTRLEN];
+	size_t					 off, n;
+
+	fprintf(fp, "-P %s prio %#x %s", x->sadb_x_policy_dir ==
+	    IPSEC_DIR_INBOUND ? "in" : x->sadb_x_policy_dir ==
+	    IPSEC_DIR_OUTBOUND ? "out" : "?", x->sadb_x_policy_priority,
+	    x->sadb_x_policy_type == IPSEC_POLICY_IPSEC ? "ipsec" :
+	    x->sadb_x_policy_type == IPSEC_POLICY_NONE ? "none" :
+	    x->sadb_x_policy_type == IPSEC_POLICY_DISCARD ? "discard" : "?");
+	n = PFKEY_UNUNIT64(x->sadb_x_policy_len);
+	for (off = sizeof(*x); off + sizeof(*r) <= n; off +=
+	    r->sadb_x_ipsecrequest_len) {
+		r = (const void *)((const char *)x + off);
+		if (r->sadb_x_ipsecrequest_len < sizeof(*r) || off +
+		    r->sadb_x_ipsecrequest_len > n) {
+			fprintf(fp, " malformed-request");
+			return;
+		}
+		s[0] = d[0] = '\0';
+		if (r->sadb_x_ipsecrequest_len > sizeof(*r)) {
+			a = (const void *)(r + 1);
+			b = (const void *)((const char *)a + a->sa_len);
+			va = a;
+			vb = b;
+			if (a->sa_family == AF_INET) {
+				inet_ntop(AF_INET, &((const struct sockaddr_in *)
+				    va)->sin_addr, s, sizeof(s));
+				inet_ntop(AF_INET, &((const struct sockaddr_in *)
+				    vb)->sin_addr, d, sizeof(d));
+			} else {
+				inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)
+				    va)->sin6_addr, s, sizeof(s));
+				inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)
+				    vb)->sin6_addr, d, sizeof(d));
+			}
+		}
+		fprintf(fp, " %s/%s/%s%s%s/%s", r->sadb_x_ipsecrequest_proto ==
+		    IPPROTO_ESP ? "esp" : "?", r->sadb_x_ipsecrequest_mode ==
+		    IPSEC_MODE_TUNNEL ? "tunnel" : r->sadb_x_ipsecrequest_mode ==
+		    IPSEC_MODE_TRANSPORT ? "transport" : "any", s, s[0] != '\0' ?
+		    "-" : "", d, r->sadb_x_ipsecrequest_level ==
+		    IPSEC_LEVEL_UNIQUE ? "unique" : r->sadb_x_ipsecrequest_level ==
+		    IPSEC_LEVEL_REQUIRE ? "require" : r->sadb_x_ipsecrequest_level
+		    == IPSEC_LEVEL_USE ? "use" : "?");
+		if (r->sadb_x_ipsecrequest_reqid != 0)
+			fprintf(fp, ":%u", r->sadb_x_ipsecrequest_reqid);
+	}
+}
+
 /* The message as setkey(8)'s line of it. */
 static void
 log_msg(const struct sadb_msg *m, const struct parsed *p)
 {
 	FILE	*fp;
-	char	 s[INET6_ADDRSTRLEN], d[INET6_ADDRSTRLEN];
+	char	 s[INET6_ADDRSTRLEN + 12], d[INET6_ADDRSTRLEN + 12];
 	int	 mode;
 
 	if ((fp = fopen(logpath, "a")) == NULL)
 		err(1, "%s", logpath);
+	if (m->sadb_msg_type == SADB_X_SPDADD || m->sadb_msg_type ==
+	    SADB_X_SPDDELETE2 || m->sadb_msg_type == SADB_X_SPDDUMP) {
+		if (p->bad || m->sadb_msg_version != PF_KEY_V2 ||
+		    m->sadb_msg_satype != SADB_SATYPE_UNSPEC || (m->sadb_msg_type
+		    != SADB_X_SPDDUMP && p->xpl == NULL) || (m->sadb_msg_type ==
+		    SADB_X_SPDADD && (p->src == NULL || p->dst == NULL ||
+		    p->src->sadb_address_proto != p->dst->sadb_address_proto)))
+			fprintf(fp, "malformed type %d ;\n", m->sadb_msg_type);
+		else if (m->sadb_msg_type == SADB_X_SPDDUMP)
+			fprintf(fp, "spddump ;\n");
+		else if (m->sadb_msg_type == SADB_X_SPDDELETE2)
+			fprintf(fp, "spddelete2 %u ;\n", p->xpl->sadb_x_policy_id);
+		else {
+			fprintf(fp, "spdadd %s %s ", sel_str(p->src, s, sizeof(s)),
+			    sel_str(p->dst, d, sizeof(d)));
+			if (p->src->sadb_address_proto == IPSEC_ULPROTO_ANY)
+				fprintf(fp, "any ");
+			else
+				fprintf(fp, "%u ", p->src->sadb_address_proto);
+			policy_str(fp, p->xpl);
+			fprintf(fp, " ;\n");
+		}
+		fclose(fp);
+		return;
+	}
 	if (p->bad || m->sadb_msg_version != PF_KEY_V2 ||
 	    (m->sadb_msg_type != SADB_DUMP && (p->src == NULL || p->dst ==
 	    NULL)))
@@ -277,6 +402,162 @@ drop(struct entry *e)
 	*e = sas[--nsas];
 }
 
+/* Whether two policies are of one selector and direction, as
+ * key_getsp() compares them. */
+static bool
+same_policy(const struct parsed *a, const struct parsed *b)
+{
+
+	return (a->xpl->sadb_x_policy_dir == b->xpl->sadb_x_policy_dir &&
+	    a->src->sadb_address_proto == b->src->sadb_address_proto &&
+	    a->src->sadb_address_prefixlen == b->src->sadb_address_prefixlen &&
+	    a->dst->sadb_address_prefixlen == b->dst->sadb_address_prefixlen &&
+	    addr_of(a->src)->sa_len == addr_of(b->src)->sa_len && memcmp(
+	    addr_of(a->src), addr_of(b->src), addr_of(a->src)->sa_len) == 0 &&
+	    addr_of(a->dst)->sa_len == addr_of(b->dst)->sa_len && memcmp(
+	    addr_of(a->dst), addr_of(b->dst), addr_of(a->dst)->sa_len) == 0);
+}
+
+/* A policy kept, its id and scope as the kernel gives them; NULL when
+ * there is no room. */
+static struct policy *
+policy_keep(const unsigned char *buf, size_t len, uint8_t scope,
+    uint32_t priority)
+{
+	struct policy		*e;
+	struct parsed		 p;
+	struct sadb_x_policy	*x;
+
+	if (nsps == NSPS || len > sizeof(sps[0].msg))
+		return (NULL);
+	e = &sps[nsps++];
+	memcpy(e->msg, buf, len);
+	e->len = len;
+	e->id = spid++;
+	parse(e->msg, e->len, &p);
+	x = (struct sadb_x_policy *)(uintptr_t)p.xpl;
+	x->sadb_x_policy_id = e->id;
+	x->sadb_x_policy_scope = scope;
+	x->sadb_x_policy_priority = priority;
+	return (e);
+}
+
+static void
+handle_spd(int fd, const struct sadb_msg *q, const unsigned char *buf,
+    size_t len, const struct parsed *p)
+{
+	struct parsed	 k;
+	struct policy	*e;
+	size_t		 i;
+
+	if (p->bad || q->sadb_msg_satype != SADB_SATYPE_UNSPEC ||
+	    (q->sadb_msg_type != SADB_X_SPDDUMP && p->xpl == NULL)) {
+		reply(fd, q, NULL, 0, EINVAL, q->sadb_msg_seq);
+		return;
+	}
+	switch (q->sadb_msg_type) {
+	case SADB_X_SPDADD:
+		if (p->src == NULL || p->dst == NULL) {
+			reply(fd, q, NULL, 0, EINVAL, q->sadb_msg_seq);
+			return;
+		}
+		for (i = 0; i < nsps; i++) {
+			parse(sps[i].msg, sps[i].len, &k);
+			if (same_policy(&k, p)) {
+				reply(fd, q, NULL, 0, EEXIST, q->sadb_msg_seq);
+				return;
+			}
+		}
+		if ((e = policy_keep(buf, len, IPSEC_POLICYSCOPE_GLOBAL,
+		    p->xpl->sadb_x_policy_priority)) == NULL) {
+			reply(fd, q, NULL, 0, ENOBUFS, q->sadb_msg_seq);
+			return;
+		}
+		reply(fd, q, e->msg, e->len, 0, q->sadb_msg_seq);
+		return;
+	case SADB_X_SPDDELETE2:
+		for (i = 0; i < nsps; i++)
+			if (sps[i].id == p->xpl->sadb_x_policy_id) {
+				sps[i] = sps[--nsps];
+				reply(fd, q, NULL, 0, 0, q->sadb_msg_seq);
+				return;
+			}
+		reply(fd, q, NULL, 0, EINVAL, q->sadb_msg_seq);
+		return;
+	case SADB_X_SPDDUMP:
+		if (nsps == 0) {
+			reply(fd, q, NULL, 0, ENOENT, q->sadb_msg_seq);
+			return;
+		}
+		for (i = 0; i < nsps; i++)
+			reply(fd, q, sps[i].msg, sps[i].len, 0,
+			    (uint32_t)(nsps - 1 - i));
+		return;
+	}
+}
+
+/* seed's policies: an SPDADD of each, as setkey(8) would send it. */
+static void
+seed(void)
+{
+	unsigned char			 buf[256] __aligned(8);
+	struct sadb_msg			*m;
+	struct sadb_x_policy		*x;
+	struct sadb_x_ipsecrequest	*r;
+	struct sadb_address		*a;
+	struct sockaddr_in		*sin;
+	size_t				 len;
+	int				 k;
+
+	for (k = 0; k < 2; k++) {
+		memset(buf, 0, sizeof(buf));
+		m = (struct sadb_msg *)(void *)buf;
+		m->sadb_msg_version = PF_KEY_V2;
+		m->sadb_msg_type = SADB_X_SPDADD;
+		len = sizeof(*m);
+		x = (struct sadb_x_policy *)(void *)(buf + len);
+		x->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
+		x->sadb_x_policy_type = IPSEC_POLICY_IPSEC;
+		x->sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
+		r = (struct sadb_x_ipsecrequest *)(x + 1);
+		r->sadb_x_ipsecrequest_len = sizeof(*r) + 2 * sizeof(*sin);
+		r->sadb_x_ipsecrequest_proto = IPPROTO_ESP;
+		r->sadb_x_ipsecrequest_mode = IPSEC_MODE_TUNNEL;
+		r->sadb_x_ipsecrequest_level = IPSEC_LEVEL_UNIQUE;
+		r->sadb_x_ipsecrequest_reqid = 100;
+		sin = (struct sockaddr_in *)(void *)(r + 1);
+		sin[0].sin_len = sin[1].sin_len = sizeof(*sin);
+		sin[0].sin_family = sin[1].sin_family = AF_INET;
+		inet_pton(AF_INET, "10.202.0.1", &sin[0].sin_addr);
+		inet_pton(AF_INET, "10.202.0.2", &sin[1].sin_addr);
+		x->sadb_x_policy_len = PFKEY_UNIT64(sizeof(*x) +
+		    r->sadb_x_ipsecrequest_len);
+		len += PFKEY_UNUNIT64(x->sadb_x_policy_len);
+		for (int i = 0; i < 2; i++) {
+			a = (struct sadb_address *)(void *)(buf + len);
+			a->sadb_address_len = PFKEY_UNIT64(sizeof(*a) +
+			    sizeof(*sin));
+			a->sadb_address_exttype = i == 0 ? SADB_EXT_ADDRESS_SRC :
+			    SADB_EXT_ADDRESS_DST;
+			a->sadb_address_proto = IPSEC_ULPROTO_ANY;
+			sin = (struct sockaddr_in *)(void *)(a + 1);
+			sin->sin_len = sizeof(*sin);
+			sin->sin_family = AF_INET;
+			if (k == 0) {
+				/* ipsec.conf's: 10.77.0.0/24 to 10.78.0.0/24. */
+				a->sadb_address_prefixlen = 24;
+				inet_pton(AF_INET, i == 0 ? "10.77.0.0" :
+				    "10.78.0.0", &sin->sin_addr);
+			} else
+				a->sadb_address_prefixlen = 0;
+			len += PFKEY_UNUNIT64(a->sadb_address_len);
+		}
+		m->sadb_msg_len = PFKEY_UNIT64(len);
+		(void)policy_keep(buf, len, k == 0 ? IPSEC_POLICYSCOPE_GLOBAL :
+		    IPSEC_POLICYSCOPE_IFNET, k == 0 ? 0 : 1);
+	}
+}
+
 static void
 handle(int fd, const unsigned char *buf, size_t len)
 {
@@ -290,6 +571,11 @@ handle(int fd, const unsigned char *buf, size_t len)
 		return;
 	parse(buf, len, &p);
 	log_msg(q, &p);
+	if (q->sadb_msg_type == SADB_X_SPDADD || q->sadb_msg_type ==
+	    SADB_X_SPDDELETE2 || q->sadb_msg_type == SADB_X_SPDDUMP) {
+		handle_spd(fd, q, buf, len, &p);
+		return;
+	}
 	if (p.bad || (q->sadb_msg_type != SADB_DUMP && (p.src == NULL ||
 	    p.dst == NULL))) {
 		reply(fd, q, NULL, 0, EINVAL, q->sadb_msg_seq);
@@ -366,10 +652,12 @@ main(int argc, char **argv)
 	ssize_t			 n;
 	int			 ls, i, k;
 
-	if (argc != 4)
-		errx(2, "usage: fakepfkey socket log refuse");
+	if (argc != 4 && (argc != 5 || strcmp(argv[4], "seed") != 0))
+		errx(2, "usage: fakepfkey socket log refuse [seed]");
 	logpath = argv[2];
 	refuse = argv[3];
+	if (argc == 5)
+		seed();
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	strlcpy(sun.sun_path, argv[1], sizeof(sun.sun_path));

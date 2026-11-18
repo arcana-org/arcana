@@ -4238,6 +4238,78 @@ whose first part is served.
   for real.
 - 6.2.2 A: SPD by SADB_X_SPDADD/SPDDELETE/SPDDUMP and the ipsec(4)
   reqid mapping; check: a policy both ways.
+  Design (decided here): the SPD by PF_KEY in invidia/pfkey.c beside
+  6.2.1's SAs: SADB_X_SPDADD with the policy laid out as libipsec's
+  ipsec_set_policy(3) lays it out (struct sadb_x_policy, each request
+  with its length in bytes and, in tunnel mode, its two addresses) and
+  the selector as setkey(8)'s spdadd sends it (an address extension
+  each, prefix and upper-layer protocol, the port in the sockaddr,
+  SADB_SATYPE_UNSPEC); SADB_X_SPDDUMP; SADB_X_SPDDELETE2 by the id a
+  dump read, not SADB_X_SPDDELETE, whose key_getsp() takes whichever
+  policy has the selector.  Whose a policy is, from the kernel alone:
+  an ipsec(4) interface's are scoped to it (IPSEC_POLICYSCOPE_IFNET,
+  its index in the priority field); Arcana's are global, of the
+  priority 0x7fa2c000 (PFKEY_SP_MARK; setkey's and so ipsec.conf's are
+  0 and come first, the admin's winning where selectors overlap), ESP
+  in tunnel mode between the tunnel's ends, one request: out at level
+  unique on the interface's reqid, in at level use (reqid 0, as
+  ipsec_set_policy() has every level but unique).  Measured in two
+  vnet jails, setkey alone: the kernel hands ESP of an ipsec(4)
+  interface's reqid to the interface (if_ipsec's ipsec_if_input()),
+  and a unique in policy then refuses the decapsulated packet
+  (`inbound packets violated process security policy`), while use, or
+  SAs of a reqid of their own, pass; an interface's own traffic is
+  checked inbound no more than that.  The rest (ipsec.conf's, an IKE
+  daemon's) are never taken out, there is no SPDFLUSH.  The mapping:
+  set and derive read the interface's own policies first and fail,
+  before anything is put in, when the reqid given is not theirs (its
+  SAs would serve nothing of it); an interface not in this network or
+  without a tunnel has none to tell and the reqid is taken as given.
+  `ipsec-sa policy` sends a selector's traffic more through the
+  interface's SAs, both ways (out from src to dst, in the other way;
+  `src`, `dst` prefixes, `proto`, single `sport`/`dport` as RFC 9061
+  has them), its old pair taken out first so a job runs again, each
+  read back by a dump by its id (direction, selector, request,
+  priority) or the job fails; a selector and direction there already,
+  not Arcana's, is the kernel's EEXIST: the job fails and leaves it;
+  an in refused takes its out with it.  `ipsec-sa unpolicy` takes a
+  selector's pair out, or every one of Arcana's on the interface's
+  SAs; `clear` takes them after the SAs (traffic dropped meanwhile,
+  never sent plain).  The selectors are kept with the SPIs (16 an
+  interface), so a safe job puts them back (`policy`, `unpolicy` and
+  `clear` undone).  The last setkey(8) of the agent's own goes: the
+  ipsec.conf read's `shows` is the SPD by SADB_X_SPDDUMP, written as
+  setkey -DP writes it with each policy's scope, priority and Arcana's
+  told; ipsec.conf itself is still the base system's rc.d/ipsec's
+  (setkey -f), which the agent only restarts.  6.2.4's ikeless lists
+  will take these functions for policies not on an interface.
+  Done.  Checked: agent_test:ipsec_sp against tests/fakepfkey.c, now
+  keeping policies (SPDADD with EEXIST for a selector and direction
+  there, SPDDELETE2 by id, SPDDUMP, each logged as setkey's spdadd
+  line with the priority, and `seed`: ipsec.conf's policy on the very
+  request an Arcana policy of ipsec0 would have, and an interface's
+  own): the refusals of the words, a pair both ways and one with
+  tcp/443 (the in's ports the other way), run again (its two ids
+  deleted, two added), ipsec.conf's selector refused and its policy
+  untouched, the SPD read through ipsec.conf with Arcana's told, the
+  selectors kept, unpolicy of one selector, a safe policy not
+  confirmed put back as kept, a clear of SAs and policies never
+  deleting ipsec.conf's or the interface's; agent_test:sysfiles (the
+  SPD as ipsec.conf's shows); agent_test:ipsec_sa and safe_ipsec_sa
+  as before.  agent_root_test:ipsec_sp_vnet: an agent in each of two
+  vnet jails, ipsec(4) interfaces of reqid 100 on an epair, an
+  ipsec.conf policy put in by setkey -f; SAs on reqid 101 refused by
+  the mapping and none put in; on 100 set; an address of each end on
+  lo0 routed over the epair, not the tunnel; a policy both ways on
+  each end, read back; setkey -DP in the jail showing Arcana's two
+  global ones, the interface's two ifnet ones and ipsec.conf's; a
+  ping between the two addresses through, the SAs' counters moved on
+  both ends (ESP by the policies alone); the agent's SPD read telling
+  each; ipsec.conf's selector refused and left; unpolicy on both ends
+  leaving the interface's and ipsec.conf's, the ping through plainly;
+  put in again and cleared: no SAs, the same three left.  Not checked:
+  IPv6 selectors and outer addresses for real, a policy through a job
+  scoped to a jail (none is yet), ports for real (the stand-in only).
 - 6.2.3 A: SADB_REGISTER; `sadb-acquire` and `sadb-expire`
   notifications; `sadb-seq-overflow` synthesised; check: a soft
   expiry seen.

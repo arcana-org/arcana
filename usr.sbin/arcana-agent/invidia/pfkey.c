@@ -17,6 +17,15 @@
  * updates a larval SA (SADB_GETSPI's, an IKE daemon's) and, of a
  * mature one, only its lifetimes and NAT-T addresses (key_update()), so
  * manual keys change by a new SA, its own SPI.
+ *
+ * The SPD: SADB_X_SPDADD with the policy as libipsec's
+ * ipsec_set_policy(3) lays it out (struct sadb_x_policy, then each
+ * request and its two addresses) and the selector as setkey(8)'s
+ * spdadd sends it; SADB_X_SPDDUMP; SADB_X_SPDDELETE2, by the id a dump
+ * read, never SADB_X_SPDDELETE, by the selector, which takes whichever
+ * policy has it (key_spddelete()).  A policy of an ipsec(4) interface
+ * is scoped to it (IPSEC_POLICYSCOPE_IFNET, its index in the priority
+ * field); the rest are global, sorted by priority, setkey's 0 first.
  */
 
 #include <sys/param.h>
@@ -24,10 +33,13 @@
 #include <sys/time.h>
 #include <sys/un.h>
 
+#include <net/if.h>
 #include <net/pfkeyv2.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
 #include <netipsec/ipsec.h>
+
+#include <arpa/inet.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -170,6 +182,12 @@ pk_name(uint8_t type)
 		return ("SADB_GET");
 	case SADB_DUMP:
 		return ("SADB_DUMP");
+	case SADB_X_SPDADD:
+		return ("SADB_X_SPDADD");
+	case SADB_X_SPDDELETE2:
+		return ("SADB_X_SPDDELETE2");
+	case SADB_X_SPDDUMP:
+		return ("SADB_X_SPDDUMP");
 	}
 	return ("PF_KEY");
 }
@@ -202,7 +220,8 @@ pk_call(struct work *w, int fd, struct pkmsg *m,
 		    strerror(errno));
 		return (-1);
 	}
-	dump = q->sadb_msg_type == SADB_DUMP;
+	dump = q->sadb_msg_type == SADB_DUMP || q->sadb_msg_type ==
+	    SADB_X_SPDDUMP;
 	for (;;) {
 		if ((n = recv(fd, rbuf, sizeof(rbuf), 0)) == -1) {
 			if (errno == EINTR)
@@ -454,4 +473,346 @@ pfkey_dump(struct work *w, int fd, void (*fn)(const struct pfkey_sa *,
 	if (pk_call(w, fd, &m, pk_each, &e, errp) == -1)
 		return (errno == ENOENT ? 0 : -1);
 	return (0);
+}
+
+/* ---- The SPD ---------------------------------------------------------- */
+
+/* A selector's address: its prefix and upper-layer protocol, the port
+ * in the sockaddr (setkey's spdadd). */
+static void
+pk_spaddr(struct pkmsg *m, uint16_t type, const struct sockaddr *sa,
+    uint8_t plen, uint8_t proto)
+{
+	struct sadb_address	*a;
+
+	if ((a = pk_ext(m, type, sizeof(*a), sa, sa->sa_len)) == NULL)
+		return;
+	a->sadb_address_proto = proto;
+	a->sadb_address_prefixlen = plen;
+}
+
+/* A reply's policy as struct pfkey_sp has it: its first request, and
+ * how many there are. */
+static void
+pk_spparse(const struct sadb_msg *r, size_t len, struct pfkey_sp *sp)
+{
+	const struct sadb_ext		*e;
+	const struct sadb_address	*a;
+	const struct sadb_x_policy	*xp;
+	const struct sadb_x_ipsecrequest *xr;
+	const struct sockaddr		*so, *so2;
+	size_t				 off, n, roff, rn;
+
+	memset(sp, 0, sizeof(*sp));
+	for (off = sizeof(*r); off + sizeof(*e) <= len; off += n) {
+		e = (const struct sadb_ext *)(const void *)((const char *)r +
+		    off);
+		n = PFKEY_UNUNIT64(e->sadb_ext_len);
+		if (n < sizeof(*e) || off + n > len)
+			break;
+		switch (e->sadb_ext_type) {
+		case SADB_EXT_ADDRESS_SRC:
+		case SADB_EXT_ADDRESS_DST:
+			a = (const struct sadb_address *)(const void *)e;
+			so = (const struct sockaddr *)(a + 1);
+			if (n < sizeof(*a) + sizeof(*so) || so->sa_len >
+			    sizeof(struct sockaddr_storage) || sizeof(*a) +
+			    so->sa_len > n)
+				break;
+			sp->proto = a->sadb_address_proto;
+			if (e->sadb_ext_type == SADB_EXT_ADDRESS_SRC) {
+				memcpy(&sp->src, so, so->sa_len);
+				sp->splen = a->sadb_address_prefixlen;
+			} else {
+				memcpy(&sp->dst, so, so->sa_len);
+				sp->dplen = a->sadb_address_prefixlen;
+			}
+			break;
+		case SADB_X_EXT_POLICY:
+			if (n < sizeof(*xp))
+				break;
+			xp = (const struct sadb_x_policy *)(const void *)e;
+			sp->type = xp->sadb_x_policy_type;
+			sp->dir = xp->sadb_x_policy_dir;
+			sp->scope = xp->sadb_x_policy_scope;
+			sp->id = xp->sadb_x_policy_id;
+			sp->priority = xp->sadb_x_policy_priority;
+			for (roff = sizeof(*xp); roff + sizeof(*xr) <= n;
+			    roff += rn) {
+				xr = (const struct sadb_x_ipsecrequest *)(const
+				    void *)((const char *)e + roff);
+				rn = xr->sadb_x_ipsecrequest_len;
+				if (rn < sizeof(*xr) || roff + rn > n)
+					break;
+				if (sp->nreq++ > 0)
+					continue;
+				sp->rproto = (uint8_t)xr->sadb_x_ipsecrequest_proto;
+				sp->mode = xr->sadb_x_ipsecrequest_mode;
+				sp->level = xr->sadb_x_ipsecrequest_level;
+				sp->reqid = xr->sadb_x_ipsecrequest_reqid;
+				if (rn < sizeof(*xr) + 2 * sizeof(*so))
+					continue;
+				so = (const struct sockaddr *)(xr + 1);
+				so2 = (const struct sockaddr *)(const void *)
+				    ((const char *)so + so->sa_len);
+				if (so->sa_len < sizeof(*so) || so->sa_len >
+				    sizeof(struct sockaddr_storage) ||
+				    sizeof(*xr) + so->sa_len + sizeof(*so2) > rn ||
+				    so2->sa_len > sizeof(struct sockaddr_storage) ||
+				    sizeof(*xr) + so->sa_len + so2->sa_len > rn)
+					continue;
+				memcpy(&sp->tsrc, so, so->sa_len);
+				memcpy(&sp->tdst, so2, so2->sa_len);
+			}
+			break;
+		}
+	}
+}
+
+static void
+pk_spone(const struct sadb_msg *r, size_t len, void *arg)
+{
+	struct pfkey_sp	*sp = arg;
+	struct pfkey_sp	 got;
+
+	/* The reply to SPDADD: the id, all the rest as asked. */
+	pk_spparse(r, len, &got);
+	sp->id = got.id;
+}
+
+/*
+ * A policy put in (SADB_X_SPDADD): the selector, the direction, the
+ * priority, and for an ipsec one its one request, the tunnel's ends
+ * after it in tunnel mode; sp->id the kernel's, from its reply.
+ */
+int
+pfkey_spdadd(struct work *w, int fd, struct pfkey_sp *sp, const char **errp)
+{
+	struct pkmsg			 m;
+	struct sadb_x_policy		*xp;
+	struct sadb_x_ipsecrequest	*xr;
+	unsigned char			 req[sizeof(*xr) + 2 *
+					     sizeof(struct sockaddr_storage)]
+					     __aligned(8);
+	size_t				 rlen;
+
+	pk_init(&m, SADB_X_SPDADD);
+	((struct sadb_msg *)(void *)m.buf)->sadb_msg_satype =
+	    SADB_SATYPE_UNSPEC;
+	rlen = 0;
+	if (sp->type == IPSEC_POLICY_IPSEC) {
+		memset(req, 0, sizeof(req));
+		xr = (struct sadb_x_ipsecrequest *)(void *)req;
+		rlen = sizeof(*xr);
+		if (sp->mode == IPSEC_MODE_TUNNEL) {
+			memcpy(req + rlen, &sp->tsrc, sp->tsrc.ss_len);
+			rlen += sp->tsrc.ss_len;
+			memcpy(req + rlen, &sp->tdst, sp->tdst.ss_len);
+			rlen += sp->tdst.ss_len;
+		}
+		/* In bytes, as ipsec_set_policy() has it. */
+		xr->sadb_x_ipsecrequest_len = (uint16_t)rlen;
+		xr->sadb_x_ipsecrequest_proto = sp->rproto;
+		xr->sadb_x_ipsecrequest_mode = sp->mode;
+		xr->sadb_x_ipsecrequest_level = sp->level;
+		xr->sadb_x_ipsecrequest_reqid = sp->reqid;
+	}
+	if ((xp = pk_ext(&m, SADB_X_EXT_POLICY, sizeof(*xp), req, rlen)) !=
+	    NULL) {
+		xp->sadb_x_policy_type = sp->type;
+		xp->sadb_x_policy_dir = sp->dir;
+		xp->sadb_x_policy_priority = sp->priority;
+	}
+	pk_spaddr(&m, SADB_EXT_ADDRESS_SRC, (const struct sockaddr *)&sp->src,
+	    sp->splen, sp->proto);
+	pk_spaddr(&m, SADB_EXT_ADDRESS_DST, (const struct sockaddr *)&sp->dst,
+	    sp->dplen, sp->proto);
+	return (pk_call(w, fd, &m, pk_spone, sp, errp));
+}
+
+/* The policy of id taken out (SADB_X_SPDDELETE2). */
+int
+pfkey_spddelete(struct work *w, int fd, uint32_t id, const char **errp)
+{
+	struct pkmsg		 m;
+	struct sadb_x_policy	*xp;
+
+	pk_init(&m, SADB_X_SPDDELETE2);
+	((struct sadb_msg *)(void *)m.buf)->sadb_msg_satype =
+	    SADB_SATYPE_UNSPEC;
+	if ((xp = pk_ext(&m, SADB_X_EXT_POLICY, sizeof(*xp), NULL, 0)) != NULL)
+		xp->sadb_x_policy_id = id;
+	return (pk_call(w, fd, &m, NULL, NULL, errp));
+}
+
+struct pk_speach {
+	void	(*fn)(const struct pfkey_sp *, void *);
+	void	*arg;
+};
+
+static void
+pk_speach(const struct sadb_msg *r, size_t len, void *arg)
+{
+	struct pk_speach	*e = arg;
+	struct pfkey_sp		 sp;
+
+	pk_spparse(r, len, &sp);
+	e->fn(&sp, e->arg);
+}
+
+/* Every policy of the network, each given to fn (SADB_X_SPDDUMP), the
+ * interfaces' too; none is no error. */
+int
+pfkey_spddump(struct work *w, int fd, void (*fn)(const struct pfkey_sp *,
+    void *), void *arg, const char **errp)
+{
+	struct pkmsg		m;
+	struct pk_speach	e;
+
+	pk_init(&m, SADB_X_SPDDUMP);
+	((struct sadb_msg *)(void *)m.buf)->sadb_msg_satype =
+	    SADB_SATYPE_UNSPEC;
+	e.fn = fn;
+	e.arg = arg;
+	if (pk_call(w, fd, &m, pk_speach, &e, errp) == -1)
+		return (errno == ENOENT ? 0 : -1);
+	return (0);
+}
+
+/* A selector's end as setkey -DP writes it: address/prefix[port]. */
+static const char *
+pk_sel(struct work *w, const struct sockaddr_storage *ss, uint8_t plen)
+{
+	char		 a[INET6_ADDRSTRLEN];
+	const void	*v = ss;
+	uint16_t	 port;
+
+	a[0] = '\0';
+	port = 0;
+	if (ss->ss_family == AF_INET) {
+		inet_ntop(AF_INET, &((const struct sockaddr_in *)v)->sin_addr,
+		    a, sizeof(a));
+		port = ntohs(((const struct sockaddr_in *)v)->sin_port);
+	} else if (ss->ss_family == AF_INET6) {
+		inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)v)->
+		    sin6_addr, a, sizeof(a));
+		port = ntohs(((const struct sockaddr_in6 *)v)->sin6_port);
+	}
+	return (port == 0 ? wfmt(w, "%s/%u[any]", a, plen) : wfmt(w,
+	    "%s/%u[%u]", a, plen, port));
+}
+
+/* An upper-layer protocol as setkey -DP names it. */
+static const char *
+pk_proto(struct work *w, uint8_t proto)
+{
+
+	switch (proto) {
+	case IPSEC_ULPROTO_ANY:
+		return ("any");
+	case IPPROTO_TCP:
+		return ("tcp");
+	case IPPROTO_UDP:
+		return ("udp");
+	case IPPROTO_ICMP:
+		return ("icmp");
+	case IPPROTO_ICMPV6:
+		return ("ipv6-icmp");
+	case IPPROTO_SCTP:
+		return ("sctp");
+	case IPPROTO_GRE:
+		return ("gre");
+	}
+	return (wfmt(w, "%u", proto));
+}
+
+struct pk_text {
+	struct work	*w;
+	char		*text;
+	size_t		 n;
+};
+
+static void
+pk_text_one(const struct pfkey_sp *sp, void *arg)
+{
+	static const char *const dirs[] = { "any", "in", "out", "fwd" };
+	static const char *const types[] = { "discard", "none", "ipsec",
+	    "entrust", "bypass" };
+	static const char *const modes[] = { "any", "transport", "tunnel" };
+	static const char *const levels[] = { "default", "use", "require",
+	    "unique" };
+	struct pk_text	*t = arg;
+	struct work	*w = t->w;
+	char		 ifn[IF_NAMESIZE], a[INET6_ADDRSTRLEN], b[INET6_ADDRSTRLEN];
+	const void	*va = &sp->tsrc, *vb = &sp->tdst;
+	const char	*req, *scope;
+
+	req = "";
+	if (sp->type == IPSEC_POLICY_IPSEC && sp->nreq > 0) {
+		a[0] = b[0] = '\0';
+		if (sp->tsrc.ss_family == AF_INET) {
+			inet_ntop(AF_INET, &((const struct sockaddr_in *)va)->
+			    sin_addr, a, sizeof(a));
+			inet_ntop(AF_INET, &((const struct sockaddr_in *)vb)->
+			    sin_addr, b, sizeof(b));
+		} else if (sp->tsrc.ss_family == AF_INET6) {
+			inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)va)->
+			    sin6_addr, a, sizeof(a));
+			inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)vb)->
+			    sin6_addr, b, sizeof(b));
+		}
+		req = wfmt(w, "\t%s/%s/%s%s%s/%s", sp->rproto == IPPROTO_ESP ?
+		    "esp" : sp->rproto == IPPROTO_AH ? "ah" : sp->rproto ==
+		    IPPROTO_IPCOMP ? "ipcomp" : "?", sp->mode < nitems(modes) ?
+		    modes[sp->mode] : "?", a, a[0] != '\0' ? "-" : "", b,
+		    sp->level < nitems(levels) ? levels[sp->level] : "?");
+		if (sp->reqid != 0)
+			req = wfmt(w, "%s%c%u", req, sp->reqid >
+			    IPSEC_MANUAL_REQID_MAX ? '#' : ':', sp->reqid);
+		req = wfmt(w, "%s\n", req);
+		if (sp->nreq > 1)
+			req = wfmt(w, "%s\t(%d requests more)\n", req,
+			    sp->nreq - 1);
+	}
+	if (sp->scope == IPSEC_POLICYSCOPE_IFNET)
+		scope = wfmt(w, "ifnet ifname=%s", if_indextoname(sp->priority,
+		    ifn) != NULL ? ifn : "?");
+	else
+		scope = wfmt(w, "%s priority=%u%s", sp->scope ==
+		    IPSEC_POLICYSCOPE_PCB ? "pcb" : "global", sp->priority,
+		    sp->priority == PFKEY_SP_MARK && sp->type == IPSEC_POLICY_IPSEC ?
+		    " (Arcana's)" : "");
+	t->text = wfmt(w, "%s%s %s %s\n\t%s %s\n%s\tspid=%u scope=%s\n",
+	    t->text, pk_sel(w, &sp->src, sp->splen), pk_sel(w, &sp->dst,
+	    sp->dplen), pk_proto(w, sp->proto), sp->dir < nitems(dirs) ?
+	    dirs[sp->dir] : "?", sp->type < nitems(types) ? types[sp->type] :
+	    "?", req, sp->id, scope);
+	t->n++;
+}
+
+/*
+ * The SPD as setkey -DP shows it, read by SADB_X_SPDDUMP: each policy,
+ * whose it is (an ipsec(4) interface's, Arcana's by its priority mark,
+ * or the rest: ipsec.conf's, an IKE daemon's); NULL when it cannot be
+ * read.
+ */
+const char *
+pfkey_spd_text(struct work *w)
+{
+	struct pk_text	 t;
+	const char	*e;
+	int		 fd;
+
+	e = NULL;
+	if ((fd = pfkey_open(w, &e)) == -1)
+		return (NULL);
+	memset(&t, 0, sizeof(t));
+	t.w = w;
+	t.text = wstrdup(w, "");
+	if (pfkey_spddump(w, fd, pk_text_one, &t, &e) == -1) {
+		close(fd);
+		return (NULL);
+	}
+	close(fd);
+	return (t.n == 0 ? "No SPD entries.\n" : t.text);
 }

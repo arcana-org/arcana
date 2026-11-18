@@ -849,7 +849,9 @@ view_setkey(struct html *h, struct server *s)
 	    "you; this is for those it does not.</p>");
 	file_editor(h, o, "ipsec.conf", "ipsec.conf", "setkey's commands: "
 	    "spdadd, add (manual keys), flush, spdflush; root's alone, its "
-	    "keys in it. Its policies now (setkey -DP) below", 10);
+	    "keys in it. The kernel's policies now below, read by PF_KEY, "
+	    "each told whose it is: an ipsec(4) interface's, Arcana's, or "
+	    "this file's and an IKE daemon's", 10);
 }
 
 /* ---- Forms and actions ------------------------------------------------ */

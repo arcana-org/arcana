@@ -901,7 +901,7 @@ submodule arcana-jobs-kinds {
           presence
             "This kind of job.";
           description
-            "Manually keyed IPsec security associations (destroys: verb=clear)";
+            "Manually keyed IPsec security associations and policies (destroys: verb=clear|unpolicy)";
           leaf verb {
             type enumeration {
               enum key;
@@ -909,6 +909,8 @@ submodule arcana-jobs-kinds {
               enum derive;
               enum commit;
               enum clear;
+              enum policy;
+              enum unpolicy;
             }
             mandatory true;
             description

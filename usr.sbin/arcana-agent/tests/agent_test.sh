@@ -340,13 +340,14 @@ EOS
 # The stand-in for the kernel's PF_KEY (fakepfkey.c) on ./pfkey.sock,
 # which --pfkey has the agent speak to: each message it is sent written
 # to pfkey.log as setkey(8)'s line of it; while pfkey.refuse is there,
-# SADB_ADD refused.
+# SADB_ADD refused.  start_pfkey seed: two policies not Arcana's there
+# from the start (ipsec.conf's, an ipsec(4) interface's).
 start_pfkey()
 {
 	local i
 
 	"$(atf_get_srcdir)/fakepfkey" "$(pwd)/pfkey.sock" "$(pwd)/pfkey.log" \
-	    "$(pwd)/pfkey.refuse" > pfkey.out 2>&1 &
+	    "$(pwd)/pfkey.refuse" $1 > pfkey.out 2>&1 &
 	echo $! > pfkey.pid
 	for i in $(seq 1 100); do
 		[ -S pfkey.sock ] && return
@@ -13494,7 +13495,6 @@ sysfiles_body()
 {
 	mkdir -p tools root/etc/defaults root/etc/security
 	printf '#!/bin/sh\necho "0 devfsrules_hide_all"\n' > tools/devfs
-	printf '#!/bin/sh\necho "10.0.0.1 10.0.0.2 any"\necho "\tout ipsec esp/transport//require"\n' > tools/setkey
 	printf '#!/bin/sh\necho "jail:www:memoryuse:deny=1g"\n' > tools/rctl
 	cat > tools/geom <<EOS
 #!/bin/sh
@@ -13510,6 +13510,7 @@ EOS
 	chmod +x tools/*
 	printf '# defaults\ndaily_clean_tmps_enable="NO"\t\t# Delete stuff daily\ndaily_status_disks_enable="YES"\nsecurity_status_chksetuid_enable="YES"\n' > root/etc/defaults/periodic.conf
 	DAEMON_ARGS="-2 $(pwd)/tools --root $(pwd)/root"
+	start_pfkey seed
 	start_daemon
 	for d in syslogd devfs devd auditd ipsec rctl ntpd linux; do
 		printf '#!/bin/sh\n' > rc.d/$d
@@ -13519,7 +13520,7 @@ EOS
 	echo 'sshd_svcj_options="net_basic"' >> rc.conf
 	# Read whole: its files (none there yet), and the host beside.
 	atf_check -o match:'"files":\{"devfs.rules":\{"path":"/etc/devfs.rules","service":"devfs","enabled":false,"running":false,"shows":"0 devfsrules_hide_all\\n"\}' \
-	    -o match:'"ipsec.conf":\{"path":"/etc/ipsec.conf","service":"ipsec",[^}]*"shows":"10.0.0.1 10.0.0.2 any\\n' \
+	    -o match:'"ipsec.conf":\{"path":"/etc/ipsec.conf","service":"ipsec",[^}]*"shows":"10.77.0.0/24\[any\] 10.78.0.0/24\[any\] any\\n\\tout ipsec\\n\\tesp/tunnel/10.202.0.1-10.202.0.2/unique:100\\n\\tspid=1 scope=global priority=0\\n' \
 	    -o match:'"rctl.conf":\{[^}]*"shows":"jail:www:memoryuse:deny=1g\\n"' \
 	    -o match:'"securelevel":\{"now":-?[0-9]+' -o match:'"mac":\{"mac_bsdextended":(true|false),' \
 	    -o match:'"geom":"Geom   Class   Provider\\nada0   DISK    ada0\\n"' -o match:'"geli":"Geom name: ada1p1.eli\\n"' \
@@ -13625,6 +13626,7 @@ MASQUERADE arcana@example.org
 sysfiles_cleanup()
 {
 	stop_daemon
+	stop_pfkey
 }
 
 atf_test_case agent_build cleanup
@@ -17030,6 +17032,96 @@ ipsec_sa_cleanup()
 	stop_pfkey
 }
 
+atf_test_case ipsec_sp cleanup
+ipsec_sp_head()
+{
+	atf_set "descr" "Arcana's policies on an ipsec(4) interface's SAs by PF_KEY (SPDADD both ways, read back by SPDDUMP, SPDDELETE2 by id); a selector of ipsec.conf's refused and left; the interface's own and ipsec.conf's never taken out; the SPD read; a clear and a safe job's undo"
+}
+ipsec_sp_body()
+{
+	write_rc
+	start_pfkey seed
+	start_daemon
+	K=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+	OUT='-P out prio 0x7fa2c000 ipsec esp/tunnel/10.202.0.1-10.202.0.2/unique:100'
+	IN='-P in prio 0x7fa2c000 ipsec esp/tunnel/10.202.0.2-10.202.0.1/use'
+	atf_check -s exit:1 -e match:'src and dst, the selector' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2
+	atf_check -s exit:1 -e match:"the selector's prefixes" -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/33 dst 10.2.0.0/24
+	atf_check -s exit:1 -e match:'say proto' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24 dport 443
+	atf_check -s exit:1 -e match:'no ranges' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24 proto tcp dport 1-2
+	atf_check -s exit:1 -e match:'of one family' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst fd00::/64
+	# A policy both ways: out from src to dst, in the other way, ESP in
+	# tunnel mode between the ends, out unique on the reqid, in use,
+	# Arcana's priority; each read back by a dump.
+	atf_check -o save:sp.out "$JGC" -t -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24
+	atf_check -o match:'ipsec sa policy ipsec0 reqid 100' \
+	    -o match:'PF_KEY SADB_X_SPDADD: out 10.1.0.0/24 to 10.2.0.0/24, any protocol, ESP in tunnel mode 10.202.0.1 to 10.202.0.2, unique:100: spid 3' \
+	    -o match:'PF_KEY SADB_X_SPDADD: in the other way of 10.1.0.0/24 to 10.2.0.0/24, any protocol, ESP in tunnel mode 10.202.0.2 to 10.202.0.1, use: spid 4' \
+	    -o match:'spid 3 out, 4 in: global, priority 0x7fa2c000' cat sp.out
+	atf_check -o match:"^spdadd 10.1.0.0/24\[any\] 10.2.0.0/24\[any\] any $OUT ;\$" \
+	    -o match:"^spdadd 10.2.0.0/24\[any\] 10.1.0.0/24\[any\] any $IN ;\$" \
+	    -o match:'^spddump ;$' -o not-match:'^(malformed|unexpected)' cat pfkey.log
+	# A port and a protocol: the in policy's ports the other way.
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.9 proto tcp dport 443
+	atf_check -o match:"^spdadd 10.1.0.0/24\[any\] 10.2.0.9/32\[443\] 6 $OUT ;\$" \
+	    -o match:"^spdadd 10.2.0.9/32\[443\] 10.1.0.0/24\[any\] 6 $IN ;\$" cat pfkey.log
+	# Run again: its two taken out by id first, then put in anew.
+	rm -f pfkey.log
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24
+	atf_check -o match:'^spddelete2 3 ;$' -o match:'^spddelete2 4 ;$' cat pfkey.log
+	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
+	atf_check -o inline:'2\n' sh -c "grep -c '^spdadd ' pfkey.log"
+	# ipsec.conf's selector: refused by the kernel (EEXIST), the job
+	# fails, that policy left.
+	rm -f pfkey.log
+	atf_check -s exit:1 -o match:"not Arcana's \\(ipsec.conf, an IKE daemon\\): left as it is" -e ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.77.0.0/24 dst 10.78.0.0/24
+	atf_check -o not-match:'^spddelete2 ' cat pfkey.log
+	# The SPD read with ipsec.conf: each policy, whose it is.
+	atf_check -o match:'"shows":"10.77.0.0/24\[any\] 10.78.0.0/24\[any\] any\\n\\tout ipsec\\n[^"]*spid=1 scope=global priority=0\\n' \
+	    -o match:'spid=2 scope=ifnet ifname=' \
+	    -o match:'10.1.0.0/24\[any\] 10.2.0.9/32\[443\] tcp\\n\\tout ipsec\\n\\tesp/tunnel/10.202.0.1-10.202.0.2/unique:100\\n\\tspid=5 scope=global priority=2141372416 \(Arcana.s\)' \
+	    "$JGC" -c "$SOCK" system ipsec.conf
+	# Kept with the SPIs, for a safe job to put back.
+	atf_check -o match:'"policies":\[\{"src":"10.1.0.0/24","dst":"10.2.0.9/32","proto":6,"dport":443\},\{"src":"10.1.0.0/24","dst":"10.2.0.0/24","proto":255\}\]' cat sdwan-sa-ipsec0.json
+	# unpolicy of a selector: its two alone.
+	rm -f pfkey.log
+	atf_check -o match:'2 taken out' "$JGC" -t -c "$SOCK" ipsec-sa unpolicy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.9 proto tcp dport 443
+	atf_check -o match:'^spddelete2 5 ;$' -o match:'^spddelete2 6 ;$' cat pfkey.log
+	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
+	# Not confirmed in safe mode: the policies as they were.
+	wait_jobs() {
+		for i in $(seq 1 200); do
+			"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
+			    break
+			sleep 0.1
+		done
+	}
+	rm -f pfkey.log
+	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.3.0.0/24 dst 10.4.0.0/24
+	wait_jobs
+	atf_check -o match:"^spdadd 10.3.0.0/24\[any\] 10.4.0.0/24\[any\] any $OUT ;\$" cat pfkey.log
+	atf_check -o match:'"policies":\[\{"src":"10.1.0.0/24","dst":"10.2.0.0/24","proto":255\}\]' cat sdwan-sa-ipsec0.json
+	atf_check -o match:'10.1.0.0/24\[any\] 10.2.0.0/24\[any\] any' -o not-match:'10.3.0.0/24' "$JGC" -c "$SOCK" system ipsec.conf
+	# SAs on the interface and its policy; cleared: the SAs, then
+	# Arcana's policies on them, never ipsec.conf's (1) or the
+	# interface's own (2).
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-gcm-16 key-in ${K}00112233 key-out ${K}00112233
+	rm -f pfkey.log
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa clear ipsec0 100 10.202.0.1 10.202.0.2
+	atf_check -o match:'^delete 10.202.0.1 10.202.0.2 esp 0x1002 ;$' cat pfkey.log
+	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
+	atf_check -o not-match:'^spddelete2 [12] ;$' cat pfkey.log
+	atf_check -o match:'spid=1 scope=global priority=0' -o match:'spid=2 scope=ifnet' -o not-match:"Arcana's" "$JGC" -c "$SOCK" system ipsec.conf
+	test ! -e sdwan-sa-ipsec0.json || atf_fail "the state kept"
+	# unpolicy with nothing there: none taken out, no error.
+	atf_check -o match:'0 taken out' "$JGC" -t -c "$SOCK" ipsec-sa unpolicy ipsec0 100 10.202.0.1 10.202.0.2
+}
+ipsec_sp_cleanup()
+{
+	stop_daemon
+	stop_pfkey
+}
+
 atf_test_case rtadvd cleanup
 rtadvd_head()
 {
@@ -19974,6 +20066,7 @@ atf_init_test_cases()
 	atf_add_test_case ntp
 	atf_add_test_case rtadvd
 	atf_add_test_case ipsec_sa
+	atf_add_test_case ipsec_sp
 	atf_add_test_case interfaces
 	atf_add_test_case network_more
 	atf_add_test_case sdwan_forms

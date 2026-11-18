@@ -249,6 +249,8 @@ usage(void)
 	    "        [auth alg] [epoch n] [encap] [esn] [lifetime s] [next]\n"
 	    "        [install both | in | out]\n"
 	    "    ipsec-sa commit | clear interface reqid local remote\n"
+	    "    ipsec-sa policy | unpolicy interface reqid local remote\n"
+	    "        [src prefix dst prefix [proto p] [sport n] [dport n]]\n"
 	    "    ipsec unconn | up | down name\n"
 	    "    bird enable | disable | restart | reload protocol\n"
 	    "    bird configure\n"
@@ -5084,8 +5086,9 @@ cmd_ntp(cbl_conn *conn, int argc, char **argv)
 }
 
 /*
- * ipsec-sa set|clear interface reqid local remote [words]: manually
- * keyed SAs of an ipsec(4) interface; the words as the job takes them.
+ * ipsec-sa set|clear|policy|... interface reqid local remote [words]:
+ * manually keyed SAs of an ipsec(4) interface and Arcana's policies on
+ * them; the words as the job takes them.
  */
 static int
 cmd_ipsec_sa(cbl_conn *conn, int argc, char **argv)

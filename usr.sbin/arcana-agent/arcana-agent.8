@@ -882,8 +882,11 @@ beside
 .It Fl -pfkey Ar socket
 A unix socket
 .Pq Dv SOCK_SEQPACKET
-that answers the PF_KEY messages of the manually keyed SAs
-.Pq Ql ipsec-sa
+that answers the PF_KEY messages of the manually keyed SAs and their
+policies
+.Pq Ql ipsec-sa ,
+and the SPD's read of
+.Pa ipsec.conf ,
 in place of the kernel's PF_KEY socket
 .Pq Xr ipsec 4 :
 a test's stand-in.

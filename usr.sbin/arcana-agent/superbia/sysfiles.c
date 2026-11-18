@@ -14,7 +14,9 @@
  * loader.conf.d file for the boot's tunables (loader.conf(5) itself,
  * entry loader.conf, with the system's config files, cfgfiles.c; a
  * read of the other's name finds none).  Read with what shows
- * each at work (the system operation), with the host's NTP peers,
+ * each at work (the system operation; ipsec.conf's, the SPD read by
+ * PF_KEY in the agent's own process, invidia/pfkey.c, whose each policy
+ * it is told), with the host's NTP peers,
  * Linux compatibility, securelevel, MAC modules, GEOM's tree, GELI's
  * providers, periodic's variables and service jails.
  */
@@ -50,27 +52,31 @@ static const struct sysfile {
 	const char	*shows;		/* a tool and its words, or NULL */
 	int		 inmode;	/* 0 always; 1 Arcana's files, 2 the
 					 * system's (config-files) */
+	const char	*(*showfn)(struct work *);	/* or the agent's own */
 } files[] = {
 	{ "devfs.rules", "/etc/devfs.rules", 0644, "devfs",
-	    ARC_SERVICE_ACTION_RESTART, "devfs rule showsets", 0 },
+	    ARC_SERVICE_ACTION_RESTART, "devfs rule showsets", 0, NULL },
 	{ "devd", "/usr/local/etc/devd/arcana.conf", 0644, "devd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0 },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
 	{ "syslog.conf", "/etc/syslog.conf", 0644, "syslogd",
-	    ARC_SERVICE_ACTION_RELOAD, NULL, 0 },
-	{ "newsyslog.conf", "/etc/newsyslog.conf", 0644, NULL, 0, NULL, 0 },
-	{ "periodic.conf", "/etc/periodic.conf", 0644, NULL, 0, NULL, 0 },
+	    ARC_SERVICE_ACTION_RELOAD, NULL, 0, NULL },
+	{ "newsyslog.conf", "/etc/newsyslog.conf", 0644, NULL, 0, NULL, 0,
+	    NULL },
+	{ "periodic.conf", "/etc/periodic.conf", 0644, NULL, 0, NULL, 0,
+	    NULL },
 	{ "audit_control", "/etc/security/audit_control", 0600, "auditd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0 },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
 	{ "audit_user", "/etc/security/audit_user", 0600, "auditd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0 },
-	{ "krb5.conf", "/etc/krb5.conf", 0644, NULL, 0, NULL, 0 },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
+	{ "krb5.conf", "/etc/krb5.conf", 0644, NULL, 0, NULL, 0, NULL },
 	{ "ipsec.conf", "/etc/ipsec.conf", 0600, "ipsec",
-	    ARC_SERVICE_ACTION_RESTART, "setkey -DP", 0 },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, pfkey_spd_text },
 	{ "rctl.conf", "/etc/rctl.conf", 0644, "rctl",
-	    ARC_SERVICE_ACTION_RESTART, "rctl", 0 },
+	    ARC_SERVICE_ACTION_RESTART, "rctl", 0, NULL },
 	{ "loader.conf.d", "/boot/loader.conf.d/arcana.conf", 0644, NULL, 0,
-	    NULL, 1 },
-	{ "loader.conf", "/boot/loader.conf", 0644, NULL, 0, NULL, 2 },
+	    NULL, 1, NULL },
+	{ "loader.conf", "/boot/loader.conf", 0644, NULL, 0, NULL, 2,
+	    NULL },
 };
 
 /* Whether the entry is the host's, by its config-files. */
@@ -202,6 +208,8 @@ file_json(struct work *w, const struct sysfile *f)
 		    "running", 0, false);
 	}
 	if (f->shows != NULL && (v = shows(w, f->shows)) != NULL)
+		put_s(o, "shows", v);
+	else if (f->showfn != NULL && (v = f->showfn(w)) != NULL)
 		put_s(o, "shows", v);
 	return (o);
 }
