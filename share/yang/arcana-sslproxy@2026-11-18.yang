@@ -21,9 +21,12 @@ module arcana-sslproxy {
      the form itself, the edge's CA (its key made on the host and
      never read out, its certificate an intermediate of the tenant
      fleet's root, which the console keeps), and the ipfw(8) fwd
-     rules that send the clients' traffic to it, set 27 at rule 7.
-     Changes are jobs of kind sslproxy; the CA's key and certificate
-     are this module's actions.";
+     rules that send the clients' traffic to it, set 27 at rule 7;
+     where an SD-WAN service's MBSF (MEF 138's middlebox, a function
+     policy bound to zones) is what it serves, the service, the policy
+     and the zones the console compiled the form from.  Changes are
+     jobs of kind sslproxy; the CA's key and certificate are this
+     module's actions.";
 
   revision 2026-11-18 {
     description
@@ -104,6 +107,51 @@ module arcana-sslproxy {
           type string;
           description
             "The configuration's text.";
+        }
+        container bound {
+          presence
+            "The form is an SD-WAN service's MBSF, compiled by the
+             console.";
+          description
+            "The MEF 138 function policy the form serves: TLS opened for
+             the zones it is bound to, SSLproxy run in the service's
+             routing table (setfib).";
+          leaf service {
+            type string;
+            description
+              "The SD-WAN service.";
+          }
+          leaf policy {
+            type string;
+            description
+              "Its MBSF's ID.";
+          }
+          leaf fib {
+            type uint32;
+            description
+              "The service's routing table at this edge.";
+          }
+          list zone {
+            key "name";
+            description
+              "The zones bound to it, each a fwd rule's clients and
+               interfaces.";
+            leaf name {
+              type string;
+              description
+                "The zone.";
+            }
+            leaf-list clients {
+              type string;
+              description
+                "Its prefixes at this edge.";
+            }
+            leaf-list interfaces {
+              type string;
+              description
+                "The service's UNIs here, where its clients come in.";
+            }
+          }
         }
         container ca {
           description

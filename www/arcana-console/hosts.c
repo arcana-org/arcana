@@ -230,6 +230,8 @@ struct call {
 						 * inspection-ca: a new key */
 	char			 tenant[65];	/* inspection-ca: the host's
 						 * fleet, "" the whole one's */
+	bool			 if_missing;	/* inspection-ca: only where
+						 * the host has none */
 	bool			 installed;	/* packages: those installed */
 	uint8_t			 pkg_ip;	/* packages: pkg -4, -6, or 0 */
 	char			 pkg_repo[65];	/* pkg-upgrade: pkg -r, or "" */
@@ -3297,6 +3299,21 @@ connected:
 
 			csr = root = NULL;
 			e = NULL;
+			/* The SD-WAN's apply: one the host has is kept. */
+			if (c->if_missing && yr_sslproxy(conn, &e, ywhy,
+			    sizeof(ywhy)) == 0 && e != NULL) {
+				const ucl_object_t *ca;
+
+				ca = ucl_object_lookup(e, "ca");
+				ok = ucl_flag(ca, "key") && ucl_object_lookup(ca,
+				    "certificate") != NULL;
+				ucl_object_unref(e);
+				e = NULL;
+				if (ok) {
+					ysteps_end(conn, &ys, &steps, &nsteps);
+					break;
+				}
+			}
 			ok = yr_sslproxy_csr(conn, c->renew, &csr, ywhy,
 			    sizeof(ywhy)) == 0;
 			if (ok && (pem = pki_inspect_issue(c->tenant, csr,
@@ -5007,6 +5024,27 @@ self_call(struct call *c, const char *uri, const char *peer,
 	call_release(c);
 	free(c);
 	return (json);
+}
+
+/*
+ * SSL inspection's CA on server sid where it has none (the SD-WAN's
+ * apply, before an MBSF's form: the agent takes no form without it), as
+ * inspection-ca makes it: its intermediate from its tenant fleet's root.
+ */
+char *
+hosts_inspect_ca(const char *sid, const char *uri, const char *peer,
+    const char *name, int *status)
+{
+	const struct server	*s;
+	struct call		*c;
+
+	c = xcalloc(1, sizeof(*c));
+	c->op = OP_INSPECT_CA;
+	c->if_missing = true;
+	snprintf(c->sid, sizeof(c->sid), "%s", sid);
+	if ((s = server_find(sid)) != NULL && s->tenant != NULL)
+		snprintf(c->tenant, sizeof(c->tenant), "%s", s->tenant);
+	return (self_call(c, uri, peer, name, "inspection-ca", status));
 }
 
 /*

@@ -197,6 +197,7 @@ on the wire.
 | 95 600 | 300 | `arcana-sdwan`, its fourth range: the rest of the BIRD, dnsmasq, unbound and Squid instances' forms (spec) | `share/yang/arcana-sdwan@2026-10-15.sid` (243 used) |
 | 96 500 | 100 | `arcana-sslproxy`, SSL inspection by SSLproxy: its read, the edge's CA key's request and certificate | `share/yang/arcana-sslproxy@2026-11-18.sid` (48 used) |
 | 96 800 | 100 | `arcana-acl`, the ACLs' named counters: RFC 9899's counter-action read back (PLAN-SDN-YANG 6.1.7) | `share/yang/arcana-acl@2026-11-19.sid` (7 used) |
+| 96 900 | 100 | `arcana-sslproxy`, its second range (listed first in its file, so that new items go there): the read's binding, an SD-WAN service's MBSF and its zones | `share/yang/arcana-sslproxy@2026-11-18.sid` (8 used) |
 | 95 900 | 20 | `arcana-jobs`, its third range: the sslproxy kind of job | `share/yang/arcana-jobs@2026-10-14.sid` (10 used) |
 | 95 920 | 20 | `arcana-console`, its fourth range: a host's inspection-ca | `share/yang/arcana-console@2026-11-05.sid` (5 used) |
 | 95 940 | 10 | `arcana-host`, its next range: the sslproxy plugin's identity | `share/yang/arcana-host@2026-10-15.sid` (1 used) |

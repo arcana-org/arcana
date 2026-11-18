@@ -715,9 +715,14 @@ pki_sign_host(const char *csrpem, const char *host, char *err, size_t errlen)
  * datadir/inspection/<tenant>/, its key never sent; each edge's
  * intermediate signed from a request whose key the edge made and
  * keeps, a CA of path length 0 for its SSLproxy to forge with.  An
- * edge lost gives away its own intermediate alone.
+ * edge lost gives away its own intermediate alone.  The roots are kept
+ * where the cluster's documents are (INSPECT_DOC, store_save(), 0600,
+ * as the credentials are): every node of a cluster signs with the same
+ * root, which the clients trust once; its first making held by a lock
+ * of the cluster's, so two nodes never make two.
  */
-#define	INSPECT_DIR		"inspection"
+#define	INSPECT_DOC		"inspection-roots.json"
+#define	INSPECT_LOCK		"inspection-roots"
 #define	INSPECT_ROOT_DAYS	3650
 #define	INSPECT_EDGE_DAYS	825
 
@@ -792,37 +797,91 @@ inspect_cert(EVP_PKEY *key, const char *cn, X509 *issuer, EVP_PKEY *ikey,
 	return (x);
 }
 
+/* A certificate or a key of PEM text; NULL when it is neither. */
+static X509 *
+pem_x509(const char *pem)
+{
+	BIO	*b;
+	X509	*x;
+
+	if (pem == NULL || (b = BIO_new_mem_buf(pem, -1)) == NULL)
+		return (NULL);
+	x = PEM_read_bio_X509(b, NULL, NULL, NULL);
+	BIO_free(b);
+	return (x);
+}
+
+static EVP_PKEY *
+pem_key(const char *pem)
+{
+	BIO		*b;
+	EVP_PKEY	*k;
+
+	if (pem == NULL || (b = BIO_new_mem_buf(pem, -1)) == NULL)
+		return (NULL);
+	k = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
+	BIO_free(b);
+	return (k);
+}
+
+/* A key as PEM, to free (explicit_bzero first); NULL without memory. */
+static char *
+key_pem(EVP_PKEY *k)
+{
+	BIO	*b;
+	char	*s, *out;
+	long	 len;
+
+	if ((b = BIO_new(BIO_s_mem())) == NULL)
+		return (NULL);
+	out = NULL;
+	if (PEM_write_bio_PrivateKey(b, k, NULL, NULL, 0, NULL, NULL) == 1 &&
+	    (len = BIO_get_mem_data(b, &s)) > 0 && (out = malloc((size_t)len +
+	    1)) != NULL) {
+		memcpy(out, s, (size_t)len);
+		out[len] = '\0';
+	}
+	BIO_free(b);
+	return (out);
+}
+
+/* The tenant's root and key as the document has them; false if none. */
+static bool
+inspect_kept(const char *name, X509 **xp, EVP_PKEY **kp)
+{
+	const ucl_object_t	*r;
+	ucl_object_t		*doc;
+
+	*xp = NULL;
+	*kp = NULL;
+	if ((doc = store_load(INSPECT_DOC)) == NULL)
+		return (false);
+	r = ucl_object_lookup(ucl_object_lookup(doc, "roots"), name);
+	*xp = pem_x509(ucl_str(r, "certificate"));
+	*kp = *xp != NULL ? pem_key(ucl_str(r, "key")) : NULL;
+	ucl_object_unref(doc);
+	if (*kp == NULL) {
+		X509_free(*xp);
+		*xp = NULL;
+		return (false);
+	}
+	return (true);
+}
+
 /* The tenant's root and its key, made when there is none; under
- * inspect_lock.  0, or -1 with why. */
+ * inspect_lock and the cluster's lock.  0, or -1 with why. */
 static int
 inspect_root(const char *tenant, X509 **xp, EVP_PKEY **kp, char *err,
     size_t errlen)
 {
-	X509		*v[1];
-	char		 dir[MAXPATHLEN], cpath[MAXPATHLEN], kpath[MAXPATHLEN];
-	char		 cn[128];
+	ucl_object_t	*doc, *roots, *r;
+	const char	*name;
+	char		 cn[128], *cpem, *kpem;
+	int		 rc;
 
-	*xp = NULL;
-	*kp = NULL;
-	snprintf(dir, sizeof(dir), "%s/" INSPECT_DIR, cfg.datadir);
-	(void)mkdir(dir, 0700);
-	snprintf(dir, sizeof(dir), "%s/" INSPECT_DIR "/%s", cfg.datadir,
-	    tenant[0] != '\0' ? tenant : "_fleet");
-	snprintf(cpath, sizeof(cpath), "%s/root.pem", dir);
-	snprintf(kpath, sizeof(kpath), "%s/root.key", dir);
-	if (certs_read(cpath, v, 1) == 1) {
-		if ((*kp = read_key(kpath)) == NULL) {
-			X509_free(v[0]);
-			snprintf(err, errlen, "%s cannot be read", kpath);
-			return (-1);
-		}
-		*xp = v[0];
+	name = tenant[0] != '\0' ? tenant : "_fleet";
+	if (inspect_kept(name, xp, kp))
 		return (0);
-	}
-	if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
-		snprintf(err, errlen, "%s: %s", dir, strerror(errno));
-		return (-1);
-	}
 	snprintf(cn, sizeof(cn), "Arcana SSL inspection root for %s",
 	    tenant[0] != '\0' ? tenant : "the fleet");
 	if ((*kp = key_new()) == NULL || (*xp = inspect_cert(*kp, cn, NULL,
@@ -830,12 +889,35 @@ inspect_root(const char *tenant, X509 **xp, EVP_PKEY **kp, char *err,
 		snprintf(err, errlen, "cannot make the root: %s", ssl_err());
 		goto fail;
 	}
-	/* The key first: a root without its key is never left. */
-	if (write_pem(kpath, NULL, *kp, 0600) != 0 || write_pem(cpath, *xp,
-	    NULL, 0644) != 0) {
-		snprintf(err, errlen, "cannot write the root in %s", dir);
-		(void)unlink(cpath);
-		(void)unlink(kpath);
+	cpem = certs_pem(xp, 1);
+	kpem = key_pem(*kp);
+	if (cpem == NULL || kpem == NULL) {
+		free(cpem);
+		free(kpem);
+		snprintf(err, errlen, "out of memory");
+		goto fail;
+	}
+	if ((doc = store_load(INSPECT_DOC)) == NULL)
+		doc = ucl_object_typed_new(UCL_OBJECT);
+	if ((roots = (ucl_object_t *)(uintptr_t)ucl_object_lookup(doc,
+	    "roots")) == NULL || ucl_object_type(roots) != UCL_OBJECT) {
+		roots = ucl_object_typed_new(UCL_OBJECT);
+		(void)ucl_object_delete_key(doc, "roots");
+		ucl_object_insert_key(doc, roots, "roots", 0, false);
+	}
+	r = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(r, ucl_object_fromstring(cpem), "certificate", 0,
+	    false);
+	ucl_object_insert_key(r, ucl_object_fromstring(kpem), "key", 0, false);
+	(void)ucl_object_delete_key(roots, name);
+	ucl_object_insert_key(roots, r, name, 0, true);
+	rc = store_save(INSPECT_DOC, doc);
+	explicit_bzero(kpem, strlen(kpem));
+	free(kpem);
+	free(cpem);
+	ucl_object_unref(doc);
+	if (rc != 0) {
+		snprintf(err, errlen, "cannot keep the root (%s)", INSPECT_DOC);
 		goto fail;
 	}
 	log_msg(LOG_NOTICE, "SSL inspection: a root made for %s",
@@ -863,6 +945,7 @@ pki_inspect_issue(const char *tenant, const char *csrpem, const char *host,
 	EVP_PKEY	*rkey, *key;
 	BIO		*b;
 	char		 cn[128], *s;
+	int		 rc;
 
 	*rootp = NULL;
 	if (tenant == NULL)
@@ -889,12 +972,14 @@ pki_inspect_issue(const char *tenant, const char *csrpem, const char *host,
 	s = NULL;
 	cert = NULL;
 	pthread_mutex_lock(&inspect_lock);
-	if (inspect_root(tenant, &root, &rkey, err, errlen) != 0) {
-		pthread_mutex_unlock(&inspect_lock);
+	(void)cluster_lock(INSPECT_LOCK);
+	rc = inspect_root(tenant, &root, &rkey, err, errlen);
+	cluster_unlock(INSPECT_LOCK);
+	pthread_mutex_unlock(&inspect_lock);
+	if (rc != 0) {
 		EVP_PKEY_free(key);
 		return (NULL);
 	}
-	pthread_mutex_unlock(&inspect_lock);
 	snprintf(cn, sizeof(cn), "Arcana SSL inspection on %.64s", host != NULL ?
 	    host : "an edge");
 	if ((cert = inspect_cert(key, cn, root, rkey, INSPECT_EDGE_DAYS)) ==

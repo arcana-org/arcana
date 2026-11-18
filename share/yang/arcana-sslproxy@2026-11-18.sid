@@ -2,7 +2,8 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sslproxy",
     "module-revision": "2026-11-18",
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 96 500, 100.",
+    "sid-file-version": 1,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 96 900, 100, listed first so that new items go there; 96 500, 100.",
     "dependency-revision": [
       {
         "module-name": "ietf-netconf-acm",
@@ -10,6 +11,10 @@
       }
     ],
     "assignment-range": [
+      {
+        "entry-point": "96900",
+        "size": "100"
+      },
       {
         "entry-point": "96500",
         "size": "100"
@@ -255,6 +260,46 @@
         "namespace": "data",
         "identifier": "/arcana-sslproxy:sslproxy/read/output/version",
         "sid": "96547"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound",
+        "sid": "96900"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/fib",
+        "sid": "96901"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/policy",
+        "sid": "96902"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/service",
+        "sid": "96903"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/zone",
+        "sid": "96904"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/zone/clients",
+        "sid": "96905"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/zone/interfaces",
+        "sid": "96906"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/zone/name",
+        "sid": "96907"
       }
     ]
   }

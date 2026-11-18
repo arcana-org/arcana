@@ -12927,15 +12927,20 @@ part_sslinspect(void)
 	/* The CA first: the key made on the host, signed by the root. */
 	click_when("button[data-act=ssl-issue]", 10);
 	for (i = 0; i < 300 && (access("ssl.d/ca.crt", F_OK) != 0 ||
-	    access("data/inspection/_fleet/root.pem", F_OK) != 0); i++)
+	    access("data/inspection-roots.json", F_OK) != 0); i++)
 		usleep(100000);
 	ATF_CHECK_MSG(i < 300, "the edge's CA is not issued");
 	ATF_CHECK(access("ssl.d/ca.key", F_OK) == 0 &&
 	    access("ssl.d/ca.key.next", F_OK) != 0);
-	ATF_CHECK(system("cmp -s ssl.d/chain.crt "
-	    "data/inspection/_fleet/root.pem") == 0);
-	ATF_CHECK(system("openssl verify -CAfile data/inspection/_fleet/root.pem "
-	    "ssl.d/ca.crt > /dev/null 2>&1") == 0);
+	/* The root is the cluster's document's (the fleet's), its key
+	 * beside it, readable by the console alone. */
+	ATF_CHECK(system("grep -qF \"$(sed -n 2p ssl.d/chain.crt)\" "
+	    "data/inspection-roots.json && grep -q '\"_fleet\"' "
+	    "data/inspection-roots.json && grep -q 'PRIVATE KEY' "
+	    "data/inspection-roots.json && ls -l data/inspection-roots.json | "
+	    "grep -q '^-rw-------'") == 0);
+	ATF_CHECK(system("openssl verify -CAfile ssl.d/chain.crt ssl.d/ca.crt "
+	    "> /dev/null 2>&1") == 0);
 	wait_js("document.querySelector('.ssl-ca').textContent.includes("
 	    "'Arcana SSL inspection on') && document.querySelector("
 	    "'a.ssl-root[download]')", 20);
@@ -14567,6 +14572,130 @@ part_sdwan_bmp(void)
 	    "window.bmpRows(0).length === 4", 20);
 }
 
+/*
+ * SSL inspection as MEF 138's MBSF bound to a zone (ssl-inspection.md,
+ * phase 2): the example kept, an MBSF made by the function policy's
+ * form and bound by the security policy's form to guard, which the
+ * staff zone's standard policy names; deployed: the edge's CA issued
+ * from the fleet's root, SSLproxy's form compiled for the zone (its
+ * prefixes, the UNIs' interface), sslproxy.conf and the fwd rules on
+ * the host, SSLproxy in the service's table, enabled; the tab shows
+ * the binding in place of the form.
+ */
+static void
+part_sdwan_inspect(void)
+{
+	char	doc[2048];
+	int	i;
+
+	run("document.querySelector('li[data-act=select-sdwan]').click()");
+	click_when("button[data-act=sd-tab][data-arg=document]", 20);
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')", 10);
+	run("document.querySelector('button[data-act=sd-example]').click()");
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')"
+	    ".value.includes('\"office\"')", 10);
+	run("const t = document.querySelector('form[data-form=sd-doc] "
+	    "textarea'); t.value = t.value.replaceAll('\"vtnet2\"', '\"lo0\"')"
+	    ".replace('\"geneve\"', '\"gif\"').replace(', \"fd00:64::/64\"', "
+	    "'');");
+	run("document.querySelector('form[data-form=sd-doc] button[value="
+	    "keep]').click()");
+	wait_js("/version [0-9]+/.test((document.querySelector('section."
+	    "sdwan .notice') || {}).textContent)", 20);
+	/* The MBSF, by its form. */
+	click_when("button[data-act=sd-tab][data-arg=security]", 10);
+	click_when("button[data-act=sd-sfp-add]", 20);
+	wait_js("document.querySelector('form[data-form=sd-sfp] "
+	    "select[name=function]')", 5);
+	run("const f = document.querySelector('form[data-form=sd-sfp]'); "
+	    "f.id.value = 'guard-mbsf'; f.function.value = 'mbsf'; "
+	    "f.function.dispatchEvent(new Event('input', { bubbles: true })); "
+	    "f.block.value = 'tls1.0\\ntls1.1'; f.nomatch.value = 'allow'; "
+	    "f.plain.value = 'block'; f.pass.value = 'bank.example'; "
+	    "f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=sd-sfp]')", 20);
+	/* Bound: guard names it, the staff zone's standard policy guard. */
+	click_when("button[data-act=sd-secpol-edit]", 20);
+	wait_js("document.querySelector('form[data-form=sd-secpol] "
+	    "input[name^=fp][value=guard-mbsf]')", 5);
+	run("const f = document.querySelector('form[data-form=sd-secpol]'); "
+	    "f.querySelector('input[name^=fp][value=guard-mbsf]').checked = "
+	    "true; f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=sd-secpol]')", 20);
+	sd_doc_read();
+	js_str(doc, sizeof(doc), "JSON.stringify(window.sdDoc).slice(0, 2000)");
+	ATF_REQUIRE_MSG(js_true("JSON.stringify(window.sdDoc).includes("
+	    "'guard-mbsf')"), "the MBSF is not kept: %s", doc);
+	/* Deployed. */
+	click_when("button[data-act=sd-tab][data-arg=edges]", 10);
+	deploy_wait(NULL, 60);
+	run("document.querySelector('button[data-act=sd-apply-ask]').click()");
+	wait_js("document.querySelector('form[data-form=confirm]')", 5);
+	run("document.querySelector('form[data-form=confirm]').requestSubmit();");
+	wait_js("(document.querySelector('.sd-applied h3') || {}).textContent"
+	    "?.startsWith('Last apply') && document.querySelector("
+	    "'button[data-act=sd-apply-ask]').disabled", 90);
+	js_str(doc, sizeof(doc), "document.querySelector('.sd-applied')"
+	    ".textContent.slice(0, 2000)");
+	ATF_REQUIRE_MSG(js_true("document.querySelector('.sd-applied h3')"
+	    ".textContent.startsWith('Last apply: done')"), "%s", doc);
+	/* The host: its CA from the fleet's root, the form compiled. */
+	ATF_CHECK(access("ssl.d/ca.crt", F_OK) == 0 &&
+	    access("data/inspection-roots.json", F_OK) == 0);
+	ATF_CHECK_MSG(system("grep -q \"^# SD-WAN service office's MBSF "
+	    "guard-mbsf (MEF 138), in routing table 1\\.$\" sslproxy.conf && "
+	    "grep -q '^MinSSLProto tls12$' sslproxy.conf && grep -q "
+	    "'^VerifyPeer yes$' sslproxy.conf && grep -q '^Pass to sni "
+	    "bank.example$' sslproxy.conf") == 0, "sslproxy.conf is not the "
+	    "MBSF's");
+	ATF_CHECK_MSG(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8443 tcp from "
+	    "0.0.0.0/0 to not me 443 in recv lo0 ip4 // sslproxy:https$' "
+	    "ssl.d/fwd.rules && grep -q '^add 7 set 26 reset log logdst rtsock "
+	    "logamount 1000 tcp from 0.0.0.0/0 to not me 80 in recv lo0 ip4 // "
+	    "security office guard-mbsf unencrypted sslproxy:http$' "
+	    "ssl.d/fwd.rules") == 0, "the fwd rules are not the staff zone's");
+	ATF_CHECK(system("grep -q '^arcana_sslproxy_fib=\"1\"$' rc.conf && "
+	    "grep -q '^arcana_sslproxy_enable=\"YES\"$' rc.conf") == 0);
+	for (i = 0; i < 300 && system("grep -q 'ipfw -q set swap 26 27' "
+	    "ipfw.log") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the fwd rules are not loaded");
+	/* The tab: the binding, not the form. */
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("document.querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = [...s.options].find(o => o.textContent === 'lab').value; "
+	    "s.dispatchEvent(new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=tls]", 10);
+	wait_js("document.querySelector('.ssl-bound') && document.querySelector("
+	    "'.ssl-bound').textContent.includes('guard-mbsf') && document."
+	    "querySelector('.ssl-zones').textContent.includes('staff') && "
+	    "!document.querySelector('form[data-form=ssl-conf]')", 30);
+	ATF_CHECK(js_true("document.querySelector('a.help').getAttribute('href')"
+	    ".endsWith('sections/security.html#ssl-inspection')"));
+	shot("9x-security-tls-bound");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_sdwan_inspect);
+ATF_TC_HEAD(pwa_sdwan_inspect, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "SD-WAN's MBSF bound to a zone by the function and security policies' forms, deployed: the edge's CA, SSLproxy's form for the zone, sslproxy.conf and the fwd rules on the host, the binding on the SSL inspection tab");
+	atf_tc_set_md_var(tc, "timeout", "300");
+}
+ATF_TC_BODY(pwa_sdwan_inspect, tc)
+{
+
+	need_fibs(2);
+	prologue(tc, 2);
+	part_sdwan_inspect();
+}
+ATF_TC_CLEANUP(pwa_sdwan_inspect, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_sdwan_bmp);
 ATF_TC_HEAD(pwa_sdwan_bmp, tc)
 {
@@ -15577,6 +15706,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_route_early);
 	ATF_TP_ADD_TC(tp, pwa_flows_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_sdwan_bmp);
+	ATF_TP_ADD_TC(tp, pwa_sdwan_inspect);
 	ATF_TP_ADD_TC(tp, pwa_archive);
 	ATF_TP_ADD_TC(tp, pwa_archive_form);
 	ATF_TP_ADD_TC(tp, pwa_firewall_host);

@@ -67,21 +67,95 @@ button is the admin's to press.
   another key refused); pwa_test `pwa_security_tls` (the form sent, the
   host's file and ipfw's rules checked).
 
-Left by phase 1: a jail's own SSLproxy (a vnet jail's network), the
-console cluster's other nodes holding the roots (they are the node's
-that made them), rotation of a root (an edge's intermediate is renewed
-by Renew), a root's revocation list.
+Left by phase 1: a jail's own SSLproxy (a vnet jail's network),
+rotation of a root (an edge's intermediate is renewed by Renew), a
+root's revocation list. Since phase 2, the roots are the cluster's
+(below), and an ipfw restart no longer leaves SSLproxy without its
+rules.
 
-## Phase 2: MEF 138 function policies (planned)
+## Phase 2: MEF 138 function policies (the binding built)
 
-TLS inspection as a security function of the SD-WAN's services: a
-function policy (MEF 138) of the kind that inspects, bound to a
-service's zone as the URL filter's are, compiled by the console into
-the edge's form (its clients the zone's prefixes, its interfaces the
-UNIs) instead of one typed on the tab. SD-WAN's url-filter criterion
-then moves from Squid's `https_port … intercept ssl-bump` to SSLproxy,
-the `fwd` rule in the service's FIB (setfib(2)) as Squid's intercept is
-today; SENs for what SSLproxy blocked or could not split.
+TLS inspection is MEF 138's middlebox, the MBSF, a function policy of
+an SD-WAN service bound to its zones as the other functions are (its
+security policies by af-security-ingress, the end points' policy
+maps; one MBSF a zone).
+
+- **Which zones SSLproxy opens**: a zone with an MBSF and nothing that
+  needs the requests: no URLF, no MD+R, no DNF name with a `*` inside.
+  Those stay on Squid's `ssl-bump` (the MBSF opening TLS there) until
+  the URL filter moves (below); Squid no longer takes a zone whose
+  only function is its MBSF.
+- **Compiled by the console** (sdwan_edge.c, `inspect_build()`) into
+  the edge's form: `bound` (the service, the MBSF's ID, the service's
+  table), `zones` (each zone's clients, its prefixes at the edge; its
+  interfaces, the service's UNIs at the edge; for Default, `except`,
+  the other zones' prefixes, skipped first by a `skipto 8`), `mbsf`
+  (the policy as the module says it). One SSLproxy an edge: a second
+  service, or a second MBSF, with such a zone at one edge fails the
+  plan, said; a vnet jail's edge has none and fails it too.
+- **The apply**: the edge's CA first where it has none
+  (`inspection-ca`, the console's own ask, its intermediate from the
+  tenant fleet's root), then the form (job `sslproxy conf`), then
+  `enable` (started once, not again where it runs); the object taken
+  away, `disable`. The tab shows the binding in place of the form.
+- **On the edge** (luxuria/sslproxy.c): the zones' fwd rules in set 27
+  at rule 7, as phase 1's; the MBSF as SSLproxy has it: its
+  pass-through hosts as `Pass to sni` rules (a `*.` host's names
+  beneath as a substring: SSLproxy has no suffix match, so a name that
+  merely contains it passes too), the oldest version let through as
+  `MinSSLProto` (above every one blocked, and those on no list where
+  its No-match blocks), `VerifyPeer no` where a server's certificate
+  not trusted is allowed, and cleartext HTTP blocked by an ipfw `reset`
+  (`reset6`) rule of set 27 that logs (`log logdst rtsock`). SSLproxy
+  runs in the service's table: `arcana_sslproxy_fib`, rc.subr(8)'s
+  `${name}_fib`.
+- **SENs**: the reset's comment is the one the console's record makes
+  a Security Event Notification of (`security <service> <policy>
+  unencrypted sslproxy:http`, ipfw's 80 characters allowing; longer
+  IDs leave the rule unlogged by SEN, the tag alone): type OTHER,
+  "unencrypted HTTP, blocked", the function Middlebox. What SSLproxy
+  itself refuses (a version, a certificate) is in its connect log,
+  read in phase 4.
+- **The rules' tag**: a rule of SSL inspection's is one whose comment
+  has `sslproxy:` in it (the SEN's comment starts with `security`);
+  the rc script checks the same, and refuses, as the agent does, a
+  rule of another set at 7.
+- **ipfw restarted**: the agent looks at set 27 every
+  `--sslproxy-watch` seconds (30) and loads the rules again where the
+  service is enabled and runs, its rules file is not empty and set 27
+  holds none of them.
+- **The roots in a cluster**: kept in the replicated document
+  `inspection-roots.json` (0600, as the credentials are), not in a
+  node's own directory: every node signs with the same root, its first
+  making under a cluster lock. A root made before (the node's
+  `inspection/` directory) is not read.
+
+## The URL filter's move (planned)
+
+What moves SD-WAN's URLF (and MD+R) off Squid's `ssl-bump`, so that
+every zone's TLS is SSLproxy's:
+
+1. SSLproxy 0.10 speaks ICAP (`Icap`, per proxyspec and per filter
+   rule): requests (REQMOD) of what it opened to the c-icap Arcana
+   already runs beside Squid for MD+R, its responses (RESPMOD) to
+   ClamAV's `virus_scan` as today.
+2. The URL filter as a c-icap service: `url_check` (c-icap-modules) by
+   the zone's lists, its hosts and paths most specific first as
+   sdconf.c orders them for Squid, a 403 of its own a block; the named
+   lists its files. Its log lines to sdblock.c as Squid's are today
+   (the SENs unchanged: the service, the policy, the list).
+3. The zone's clients told to c-icap: SSLproxy's `IcapSanitizeRequestLine`
+   off and `X-Client-IP` (ICAP's client header), matched to the zone by
+   prefix as sdblock.c does.
+4. The `fwd` rule then in the service's SD-WAN rules (set 9 to 99),
+   where Squid's 3129 is today, after the IPS divert, so that the
+   IPPF's and IPS's rules come first; set 27 kept for the tab's form.
+5. One SSLproxy a service (profiles of the rc script,
+   `arcana_sslproxy_profiles`, each its FIB), lifting phase 2's one
+   service an edge.
+6. Squid's `https_port … ssl-bump` and its CA (`sdwan-sw<fib>-ca`)
+   removed; Squid keeps cleartext HTTP alone, or goes when url_check
+   takes HTTP too (SSLproxy's `http` proxyspec).
 
 ## Phase 3: what is not opened (planned)
 

@@ -1435,6 +1435,14 @@ sec_host_id(void)
 	return (sec.sid);
 }
 
+/* Whether the SSL inspection tab is shown, for the book's part. */
+bool
+sec_tab_tls(void)
+{
+
+	return (sec.tab == SEC_TLS);
+}
+
 const ucl_object_t *
 sec_state(void)
 {

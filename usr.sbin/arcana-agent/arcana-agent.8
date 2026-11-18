@@ -72,6 +72,7 @@
 .Op Fl -bird-watch Ar seconds
 .Op Fl -routes-cache Ar seconds
 .Op Fl -smtpd-watch Ar seconds
+.Op Fl -sslproxy-watch Ar seconds
 .Op Fl -stamp-port Ar port
 .Op Fl -bmp-port Ar port
 .Op Fl -archive Ar directory
@@ -953,6 +954,13 @@ fault when it is enabled and not running, or when more are queued than
 the limit the tab set
 .Pq Pa watch.json No beside its tables .
 Default 60; 0 looks never.
+.It Fl -sslproxy-watch Ar seconds
+How often ipfw set 27 is looked at while SSL inspection's
+.Xr sslproxy 1
+is enabled and runs: a restart of
+.Xr ipfw 8
+empties it, and its fwd rules are then loaded again.
+Default 30; 0 looks never.
 .It Fl -routes-cache Ar seconds
 How long the routes of a FIB, as the probes' state counts them for each
 edge (host or vnet jail), are told again before its tables are dumped anew

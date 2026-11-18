@@ -448,7 +448,7 @@ start_daemon()
 	    -6 "$(pwd)/rtadvd.conf" -7 "$(pwd)/fake-dnsmasq" -8 "$(pwd)/fake-rtsol" \
 	    --pfkey "$(pwd)/pfkey.sock" -0 "$(pwd)/fake-local-unbound" \
 	    --rtadvctl "$(pwd)/fake-rtadvctl" \
-	    --bird-watch 0 $DAEMON_ARGS \
+	    --bird-watch 0 --sslproxy-watch 0 $DAEMON_ARGS \
 	    > daemon.out 2>&1 &
 	echo $! > daemon.pid
 	# Ready a minute at most: the whole suite at once can make it slow,
@@ -14871,10 +14871,130 @@ sslproxy_cleanup()
 	stop_daemon
 }
 
+atf_test_case sslproxy_bound cleanup
+sslproxy_bound_head()
+{
+	atf_set "descr" "SSL inspection bound to an SD-WAN service's MBSF (MEF 138), the form the console compiles: the zones' fwd rules by their clients and interfaces, Default's other zones skipped first, cleartext HTTP reset and logged with the SEN's comment; the MBSF's pass-through, oldest version and certificates in sslproxy.conf; SSLproxy in the service's table (arcana_sslproxy_fib); the binding read back; what is wrong refused; set 27 emptied under a running SSLproxy (ipfw restarted) loaded again by the watch, and not while an admin's rule is in the way"
+	atf_set "timeout" "120"
+}
+sslproxy_bound_body()
+{
+	local d="$(pwd)" i
+
+	mkdir -p tools ssl/arcana
+	cat > tools/sslproxy <<EOF
+#!/bin/sh
+case "\$1" in
+-V)	echo 'SSLproxy 0.10.0 (built 2026-11-16)' >&2 ;;
+esac
+exit 0
+EOF
+	chmod +x tools/sslproxy
+	# The edge's CA, as inspection-ca leaves it (the form is refused
+	# without one); its contents are not this case's.
+	touch ssl/arcana/ca.crt ssl/arcana/ca.key
+	acl_fake_ipfw
+	DAEMON_ARGS="-h $d/fake-ipfw -2 $d/tools --sslproxy-conf $d/sslproxy.conf --sslproxy-dir $d/ssl/arcana --sslproxy-watch 1"
+	start_daemon
+	printf '#!/bin/sh\n' > rc.d/arcana_sslproxy
+	chmod +x rc.d/arcana_sslproxy
+
+	cat > bound.json <<'EOF'
+{"bound":{"service":"office","policy":"mb-1","fib":3},
+ "listeners":[{"proto":"https","port":443,"listen":8443}],"ipv6":true,
+ "zones":[{"name":"staff","clients":["10.1.0.0/24","2001:db8:1::/64"],"interfaces":["em1","em2"]},
+  {"name":"Default","clients":["0.0.0.0/0","::/0"],"except":["10.1.0.0/24","10.2.0.0/24","2001:db8:1::/64"],"interfaces":["em1"]}],
+ "mbsf":{"no-match":"allow","block":["ssl3","tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],
+  "pass-through":["bank.example","*.health.example"],"invalid-server-certificate":"allow",
+  "unencrypted":"block","id":"mb-1"}}
+EOF
+	# What is wrong with a bound form, refused before it runs.
+	printf '{"bound":{"service":"office","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"clients":"10.1.0.0/24","zones":[{"name":"z","clients":["10.1.0.0/24"],"interfaces":["em1"]}],"mbsf":{}}' > bad1.json
+	atf_check -s exit:1 -o ignore -e match:"clients and interfaces are its zones'" \
+	    "$JGC" -c "$SOCK" sslproxy conf bad1.json
+	printf '{"bound":{"service":"office","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"zones":[{"name":"z","interfaces":["em1"]}],"mbsf":{}}' > bad2.json
+	atf_check -s exit:1 -o ignore -e match:'zone z: clients: its prefixes here, one at least' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad2.json
+	printf '{"bound":{"service":"office","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"zones":[{"name":"z","clients":["10.1.0.0/24"],"interfaces":["em1"]}],"mbsf":{"no-match":"block"}}' > bad3.json
+	atf_check -s exit:1 -o ignore -e match:'every TLS version is blocked' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad3.json
+	printf '{"bound":{"service":"office; reboot","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"zones":[{"name":"z","clients":["10.1.0.0/24"],"interfaces":["em1"]}],"mbsf":{}}' > bad4.json
+	atf_check -s exit:1 -o ignore -e match:'bound: the service' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad4.json
+	printf '{"listeners":[{"proto":"https","listen":8443}],"interfaces":["em1"],"mbsf":{}}' > bad5.json
+	atf_check -s exit:1 -o ignore -e match:"zones and mbsf are a bound form's" \
+	    "$JGC" -c "$SOCK" sslproxy conf bad5.json
+	atf_check test ! -e sslproxy.conf
+
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf bound.json
+	atf_check -o match:"^# SD-WAN service office's MBSF mb-1 \(MEF 138\), in routing table 3\.\$" \
+	    -o match:'^VerifyPeer no$' -o match:'^MinSSLProto tls12$' \
+	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to sni \.health\.example\*$' \
+	    -o match:'^ProxySpec https 127.0.0.1 8443 ipfw$' cat sslproxy.conf
+	atf_check \
+	    -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 10.1.0.0/24 to not me 443 in recv em1 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 10.1.0.0/24 to not me 443 in recv em2 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 fwd ::1,8443 tcp from 2001:db8:1::/64 to not me6 443 in recv em2 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 reset log logdst rtsock logamount 1000 tcp from 10.1.0.0/24 to not me 80 in recv em1 // security office mb-1 unencrypted sslproxy:http$' \
+	    -o match:'^add 7 set 26 reset6 log logdst rtsock logamount 1000 tcp from 2001:db8:1::/64 to not me6 80 in recv em1 // security office mb-1 unencrypted sslproxy:http$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 10.1.0.0/24,10.2.0.0/24 to not me in recv em1 // sslproxy:except$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 2001:db8:1::/64 to not me6 in recv em1 // sslproxy:except$' \
+	    -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 0.0.0.0/0 to not me 443 in recv em1 ip4 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 fwd ::1,8443 tcp from ::/0 to not me6 443 in recv em1 ip6 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 reset log logdst rtsock logamount 1000 tcp from 0.0.0.0/0 to not me 80 in recv em1 ip4 // security office mb-1 unencrypted sslproxy:http$' \
+	    cat ssl/arcana/fwd.rules
+	atf_check -o inline:'14\n' sh -c 'wc -l < ssl/arcana/fwd.rules | tr -d " "'
+	# Default's other zones skipped before its own rules, each family.
+	atf_check -o match:'from 0\.0\.0\.0/0 to not me 443' \
+	    sh -c "grep -A1 'skipto 8 tcp from 10.1.0.0/24' ssl/arcana/fwd.rules | tail -1"
+	atf_check -o match:'from ::/0 to not me6 443' \
+	    sh -c "grep -A1 'skipto 8 tcp from 2001:db8:1::/64' ssl/arcana/fwd.rules | tail -1"
+	# In the service's table: rc.subr's setfib.
+	atf_check -o match:'^arcana_sslproxy_fib="3"$' cat rc.conf
+	atf_check -o match:'"bound":\{"service":"office","policy":"mb-1","fib":3,"zone":\[\{"name":"staff","clients":\["10.1.0.0/24","2001:db8:1::/64"\],"interfaces":\["em1","em2"\]\}' \
+	    "$JGC" -c "$SOCK" sslproxy
+
+	# Enabled: started and loaded once.
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy enable
+	atf_check -o inline:'14\n' sh -c 'grep -c "^7 27 " fw.state'
+	# The record's comments are SSL inspection's too: not an admin's.
+	atf_check -o not-match:'rules_error' "$JGC" -c "$SOCK" sslproxy
+	# ipfw restarted: set 27 emptied under a running SSLproxy, loaded
+	# again by the watch.
+	sed -i '' '/^7 27 /d' fw.state
+	for i in $(jot 50); do
+		[ "$(grep -c '^7 27 ' fw.state)" = 14 ] && break
+		sleep 0.2
+	done
+	atf_check -o inline:'14\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o match:'sslproxy: ipfw set 27 held none of its fwd rules' cat daemon.out
+	# Not while an admin's rule is at 7 of another set: the admin's left.
+	sed -i '' '/^7 27 /d' fw.state
+	echo '7 0 count ip from any to any' >> fw.state
+	sleep 2.5
+	atf_check -o inline:'0\n' sh -c 'grep -c "^7 27 " fw.state || true'
+	atf_check -o match:'^7 0 count ip from any to any$' cat fw.state
+	sed -i '' '/^7 0 /d' fw.state
+	# Stopped: not loaded again.
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy stop
+	sleep 2.5
+	atf_check -o inline:'0\n' sh -c 'grep -c "^7 27 " fw.state || true'
+
+	# The tab's form again: no table of a service's.
+	printf '{"listeners":[{"proto":"https","listen":8443}],"interfaces":["em1"]}' > hand.json
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf hand.json
+	atf_check -o not-match:'arcana_sslproxy_fib' cat rc.conf
+	atf_check -o not-match:'"bound"' "$JGC" -c "$SOCK" sslproxy
+}
+sslproxy_bound_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sslproxy_rc cleanup
 sslproxy_rc_head()
 {
-	atf_set "descr" "Arcana's rc script for SSLproxy under the real rc.subr(8), a stand-in sslproxy and ipfw: the configuration checked before a start, the fwd rules loaded into set 27 at the start and taken away at the stop; rules of another's in set 27 left alone and nothing loaded"
+	atf_set "descr" "Arcana's rc script for SSLproxy under the real rc.subr(8), a stand-in sslproxy and ipfw: the configuration checked before a start, the fwd rules loaded into set 27 at the start and taken away at the stop; rules of another's in set 27 left alone and nothing loaded; another set's rule at 7 refusing the load as the agent does; the SEN's comment of a reset rule SSL inspection's own"
 }
 sslproxy_rc_body()
 {
@@ -14924,6 +15044,23 @@ EOF
 	atf_check -o not-match:'sslproxy:' cat fw.state
 	atf_check -o match:'Stopping' -e match:'left alone' /bin/sh "$script" stop
 	atf_check -o match:'^500 27 allow' cat fw.state
+	sed -i '' '/^500 27 /d' fw.state
+	# Another set's rule at 7, the number SSL inspection keeps: said,
+	# nothing loaded, the admin's rule as it was.
+	echo '7 0 count ip from any to any' >> fw.state
+	atf_check -o match:'Starting' -e match:'rule 7, which SSL inspection keeps' \
+	    /bin/sh "$script" start
+	atf_check -o not-match:'sslproxy:' cat fw.state
+	atf_check -o match:'^7 0 count ip from any to any$' cat fw.state
+	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
+	sed -i '' '/^7 0 /d' fw.state
+	# A rule whose comment is a SEN's with the tag after it (a bound
+	# MBSF's reset of cleartext HTTP) is SSL inspection's: loaded.
+	printf 'add 7 set 26 reset log logdst rtsock logamount 1000 tcp from 10.1.0.0/24 to not me 80 in recv em1 // security office mb-1 unencrypted sslproxy:http\n' >> fwd.rules
+	atf_check -o match:'Starting' -e not-match:"not SSL inspection's" /bin/sh "$script" start
+	atf_check -o match:'^7 27 reset .* sslproxy:http$' cat fw.state
+	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
+	atf_check -o not-match:' 27 ' cat fw.state
 }
 sslproxy_rc_cleanup()
 {
@@ -21773,6 +21910,7 @@ atf_init_test_cases()
 	atf_add_test_case speeder
 	atf_add_test_case relay_rc
 	atf_add_test_case sslproxy
+	atf_add_test_case sslproxy_bound
 	atf_add_test_case sslproxy_rc
 	atf_add_test_case monitors
 	atf_add_test_case sysfiles

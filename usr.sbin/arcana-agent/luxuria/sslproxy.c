@@ -33,6 +33,25 @@
  * started, and taken away before it is stopped; the rc script does the
  * same at boot.
  *
+ * Bound (docs/notes/ssl-inspection.md, phase 2): the console compiles
+ * an SD-WAN service's MBSF (MEF 138's middlebox, a function policy bound
+ * to zones) into the form, "bound" naming the service, the policy and
+ * its routing table, "zones" each a zone's clients (its prefixes at this
+ * edge) and interfaces (the service's UNIs here), "except" the other
+ * zones' prefixes where the zone is Default (a skipto past the rest),
+ * "mbsf" the policy: its pass-through hosts as Pass rules (by SNI), the
+ * oldest TLS version let through (MinSSLProto), a server's certificate
+ * not trusted refused or not (VerifyPeer), and cleartext HTTP blocked by
+ * an ipfw reset rule that logs (logdst rtsock), its comment the one the
+ * console makes a Security Event Notification of (security <service>
+ * <policy> unencrypted).  SSLproxy is then run in the service's table
+ * (arcana_sslproxy_fib, rc.subr's setfib); the form is not the tab's.
+ *
+ * A restart of ipfw(8) empties set 27 under a running SSLproxy: the
+ * agent looks every --sslproxy-watch seconds and loads the rules again
+ * when the service is enabled and runs, its rules file is not empty and
+ * set 27 holds none of them.
+ *
  * The CA: the edge's key is made here (EC P-256, ca.key, 0600) and
  * never read out; a new one waits as ca.key.next while the one in use
  * serves.  The console signs its request with the tenant fleet's root
@@ -51,10 +70,12 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -69,6 +90,9 @@
 
 #include "agent.h"
 
+/* The rules changed by one at a time: a job, or the watch. */
+static pthread_mutex_t	fw_lock = PTHREAD_MUTEX_INITIALIZER;
+
 #define	SERVICE		"arcana_sslproxy"	/* Arcana's rc script */
 #define	MARK		"# Written by arcana-agent"
 #define	TAG		"sslproxy:"		/* the rules' comments */
@@ -82,6 +106,9 @@
 #define	IFACES_MAX	8
 #define	PEM_MAX		65536
 #define	SSH_LISTEN	8022
+#define	ZONES_MAX	16
+#define	PASSES_MAX	64
+#define	COMMENT_MAX	80		/* ipfw(8)'s, for a rule's comment */
 
 /* The protocols the form takes: SSLproxy's type, the usual port. */
 static const struct {
@@ -101,16 +128,43 @@ struct listener {
 	int		 listen;	/* SSLproxy's, on the loopback */
 };
 
+/* Clients of the rules: a family each. */
+struct clients {
+	const char	*v4[CLIENTS_MAX], *v6[CLIENTS_MAX];
+	size_t		 n4, n6;
+};
+
+/* A zone of the rules: the tab's form is one, unnamed. */
+struct zone {
+	const char	*name;
+	struct clients	 c;		/* none: any */
+	struct clients	 x;		/* skipped first: the other zones' */
+	const char	*ifs[IFACES_MAX];
+	size_t		 nifs;
+};
+
 /* The form, checked. */
 struct form {
 	struct listener	 l[LISTENERS_MAX + 1];	/* and SSH's */
 	size_t		 nl;
-	const char	*v4[CLIENTS_MAX], *v6[CLIENTS_MAX];
-	size_t		 n4, n6;
-	const char	*ifs[IFACES_MAX];
-	size_t		 nifs;
+	struct zone	 z[ZONES_MAX];
+	size_t		 nz;
 	bool		 ipv6, connect_log, content_log, ssh_log, passthrough;
+	/* Bound: an SD-WAN service's MBSF. */
+	bool		 bound;
+	const char	*service, *policy;
+	int		 fib;
+	const char	*pass[PASSES_MAX];	/* hosts never opened */
+	size_t		 npass;
+	int		 tlsmin;		/* tls_names' index, -1 none */
+	bool		 verify, plain_block;
 };
+
+/* SSLproxy's names of the versions, MEF 138's order (Table 9). */
+static const char *const tls_mef[] = { "ssl3", "tls1.0", "tls1.1",
+    "tls1.2", "tls1.3" };
+static const char *const tls_names[] = { "ssl3", "tls10", "tls11",
+    "tls12", "tls13" };
 
 static const char *
 bin(struct work *w)
@@ -260,14 +314,186 @@ words_of(struct work *w, const ucl_object_t *o, const char *key, size_t *np)
 	return (out);
 }
 
+/* An id of the console's, as a rule's comment takes it: letters,
+ * digits, ., _ and -, 64 at most. */
+static bool
+word_ok(const char *s)
+{
+	size_t	i, n;
+
+	n = strlen(s);
+	if (n == 0 || n > 64)
+		return (false);
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)s[i]) && strchr("._-", s[i]) == NULL)
+			return (false);
+	return (true);
+}
+
+/* A host's name, *. before it for the names beneath. */
+static bool
+host_ok(const char *s)
+{
+	size_t	i, n;
+
+	if (strncmp(s, "*.", 2) == 0)
+		s += 2;
+	n = strlen(s);
+	if (n == 0 || n > 253 || s[0] == '.' || s[0] == '-')
+		return (false);
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)s[i]) && s[i] != '.' && s[i] != '-')
+			return (false);
+	return (true);
+}
+
+/* The prefixes of o's key into c, by family; NULL, or what is wrong. */
+static const char *
+clients_of(struct work *w, const ucl_object_t *o, const char *key,
+    const struct form *f, struct clients *c, const char *what)
+{
+	const char	**v;
+	size_t		  i, n;
+
+	v = words_of(w, o, key, &n);
+	if (n > CLIENTS_MAX)
+		return (wfmt(w, "%s%s: 32 prefixes at most", what, key));
+	for (i = 0; i < n; i++)
+		switch (prefix_family(v[i])) {
+		case 4:
+			c->v4[c->n4++] = v[i];
+			break;
+		case 6:
+			if (!f->ipv6)
+				return (wfmt(w, "%s%s: an IPv6 prefix with ipv6 "
+				    "off", what, key));
+			c->v6[c->n6++] = v[i];
+			break;
+		default:
+			return (wfmt(w, "%s%s: %s is not an address or a "
+			    "prefix", what, key, wvis(w, v[i])));
+		}
+	return (NULL);
+}
+
+/*
+ * A zone of the rules, o its clients, except and interfaces (the tab's
+ * form has no except); a bound one has clients, its prefixes here.
+ */
+static const char *
+zone_of(struct work *w, const ucl_object_t *o, const struct form *f,
+    struct zone *z, const char *what, bool bound)
+{
+	const char	**v, *e;
+	size_t		  i, n;
+
+	if ((e = clients_of(w, o, "clients", f, &z->c, what)) != NULL)
+		return (e);
+	if (bound && z->c.n4 + z->c.n6 == 0)
+		return (wfmt(w, "%sclients: its prefixes here, one at least",
+		    what));
+	if (!bound && ucl_object_lookup(o, "except") != NULL)
+		return ("except is a bound form's zones'");
+	if ((e = clients_of(w, o, "except", f, &z->x, what)) != NULL)
+		return (e);
+	v = words_of(w, o, "interfaces", &n);
+	if (n == 0)
+		return (wfmt(w, "%sinterfaces: one at least, where the clients' "
+		    "traffic comes in (in recv)", what));
+	if (n > IFACES_MAX)
+		return (wfmt(w, "%sinterfaces: 8 at most", what));
+	for (i = 0; i < n; i++) {
+		if (!ifname_ok(v[i]))
+			return (wfmt(w, "%sinterfaces: %s is not an interface's "
+			    "name", what, wvis(w, v[i])));
+		z->ifs[z->nifs++] = v[i];
+	}
+	return (NULL);
+}
+
+/* A word of a list of an MBSF's, by MEF 138's names. */
+static bool
+listed(const ucl_object_t *m, const char *list, const char *word)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(m, list), &it, true))
+	    != NULL)
+		if (ucl_object_type(e) == UCL_STRING && strcmp(
+		    ucl_object_tostring(e), word) == 0)
+			return (true);
+	return (false);
+}
+
+/* allow or block, dflt when not said; -1 for another word. */
+static int
+allow_block(const ucl_object_t *m, const char *key, int dflt)
+{
+	const char	*v;
+
+	if ((v = ucl_object_tostring(ucl_object_lookup(m, key))) == NULL)
+		return (dflt);
+	return (strcmp(v, "allow") == 0 ? 1 : strcmp(v, "block") == 0 ? 0 :
+	    -1);
+}
+
+/*
+ * The MBSF of a bound form (MEF 138 Table 9): the oldest version let
+ * through, above every one blocked and those on no list where its
+ * No-match blocks; its pass-through hosts; a server's certificate not
+ * trusted, and cleartext HTTP, each allowed or blocked.
+ */
+static const char *
+mbsf_of(struct work *w, const ucl_object_t *m, struct form *f)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	int			 i, min, nm, isc, un;
+
+	if (m == NULL || ucl_object_type(m) != UCL_OBJECT)
+		return ("mbsf: the MBSF the zones are bound to, an object");
+	if ((nm = allow_block(m, "no-match", 1)) < 0 || (isc = allow_block(m,
+	    "invalid-server-certificate", 0)) < 0 || (un = allow_block(m,
+	    "unencrypted", 1)) < 0)
+		return ("mbsf: no-match, invalid-server-certificate and "
+		    "unencrypted are allow or block");
+	min = 0;
+	for (i = 0; i < (int)nitems(tls_mef); i++) {
+		if (listed(m, "block", tls_mef[i]))
+			min = i + 1;
+		else if (!listed(m, "allow", tls_mef[i]) && nm == 0 && i + 1 >
+		    min)
+			min = i + 1;
+	}
+	if (min == (int)nitems(tls_mef))
+		return ("mbsf: every TLS version is blocked");
+	f->tlsmin = min > 0 ? min : -1;
+	f->verify = isc == 0;
+	f->plain_block = un == 0;
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(m, "pass-through"),
+	    &it, true)) != NULL) {
+		if (f->npass == PASSES_MAX)
+			return ("mbsf: pass-through, 64 hosts at most");
+		if (ucl_object_type(e) != UCL_STRING || !host_ok(
+		    ucl_object_tostring(e)))
+			return (wfmt(w, "mbsf: pass-through: %s is not a host",
+			    wvis(w, ucl_object_tostring_forced(e))));
+		f->pass[f->npass++] = ucl_object_tostring(e);
+	}
+	return (NULL);
+}
+
 /* The form o into f; NULL, or what is wrong with it. */
 static const char *
 form_of(struct work *w, const ucl_object_t *o, struct form *f)
 {
-	const ucl_object_t	*ls, *e;
+	const ucl_object_t	*ls, *e, *b, *zs;
 	ucl_object_iter_t	 it;
-	const char		**v, *p;
-	size_t			 i, j, n;
+	const char		*p, *err;
+	size_t			 i, j;
 
 	memset(f, 0, sizeof(*f));
 	f->ipv6 = flag(o, "ipv6", true);
@@ -326,36 +552,42 @@ form_of(struct work *w, const ucl_object_t *o, struct form *f)
 				    "port %d", f->l[i].proto, f->l[j].proto,
 				    f->l[i].port));
 		}
-	v = words_of(w, o, "clients", &n);
-	if (n > CLIENTS_MAX)
-		return ("clients: 32 prefixes at most");
-	for (i = 0; i < n; i++)
-		switch (prefix_family(v[i])) {
-		case 4:
-			f->v4[f->n4++] = v[i];
-			break;
-		case 6:
-			if (!f->ipv6)
-				return ("clients: an IPv6 prefix with ipv6 off");
-			f->v6[f->n6++] = v[i];
-			break;
-		default:
-			return (wfmt(w, "clients: %s is not an address or a "
-			    "prefix", wvis(w, v[i])));
-		}
-	v = words_of(w, o, "interfaces", &n);
-	if (n == 0)
-		return ("interfaces: one at least, where the clients' traffic "
-		    "comes in (in recv)");
-	if (n > IFACES_MAX)
-		return ("interfaces: 8 at most");
-	for (i = 0; i < n; i++) {
-		if (!ifname_ok(v[i]))
-			return (wfmt(w, "interfaces: %s is not an interface's "
-			    "name", wvis(w, v[i])));
-		f->ifs[f->nifs++] = v[i];
+	if ((b = ucl_object_lookup(o, "bound")) == NULL) {
+		if (ucl_object_lookup(o, "zones") != NULL ||
+		    ucl_object_lookup(o, "mbsf") != NULL)
+			return ("zones and mbsf are a bound form's (an SD-WAN "
+			    "service's MBSF, from the console)");
+		f->nz = 1;
+		return (zone_of(w, o, f, &f->z[0], "", false));
 	}
-	return (NULL);
+	if (ucl_object_type(b) != UCL_OBJECT || (f->service = ucl_object_tostring(
+	    ucl_object_lookup(b, "service"))) == NULL || (f->policy =
+	    ucl_object_tostring(ucl_object_lookup(b, "policy"))) == NULL ||
+	    !word_ok(f->service) || !word_ok(f->policy) || (f->fib = num(b,
+	    "fib")) < 0)
+		return ("bound: the service, its MBSF's id (letters, digits, ., "
+		    "_ and -) and its routing table (fib)");
+	f->bound = true;
+	if (ucl_object_lookup(o, "clients") != NULL ||
+	    ucl_object_lookup(o, "interfaces") != NULL)
+		return ("a bound form's clients and interfaces are its zones'");
+	if ((zs = ucl_object_lookup(o, "zones")) == NULL || ucl_object_type(zs)
+	    != UCL_ARRAY || ucl_array_size(zs) == 0)
+		return ("zones: one at least, each {name, clients, interfaces}");
+	if (ucl_array_size(zs) > ZONES_MAX)
+		return ("zones: 16 at most");
+	it = NULL;
+	while ((e = ucl_object_iterate(zs, &it, true)) != NULL) {
+		if (ucl_object_type(e) != UCL_OBJECT || (p = ucl_object_tostring(
+		    ucl_object_lookup(e, "name"))) == NULL || !word_ok(p))
+			return ("zones: each {name, clients, interfaces}, its name "
+			    "letters, digits, ., _ and -");
+		if ((err = zone_of(w, e, f, &f->z[f->nz], wfmt(w, "zone %s: ",
+		    p), true)) != NULL)
+			return (err);
+		f->z[f->nz++].name = p;
+	}
+	return (mbsf_of(w, ucl_object_lookup(o, "mbsf"), f));
 }
 
 /* sslproxy.conf(5), from the form. */
@@ -378,7 +610,22 @@ conf_render(struct work *w, const struct form *f)
 	/* Split: opened, logged and encrypted again, given to no program. */
 	fprintf(fp, "Divert no\n");
 	fprintf(fp, "Passthrough %s\n", f->passthrough ? "yes" : "no");
-	fprintf(fp, "VerifyPeer yes\nAllowWrongHost no\n");
+	if (f->bound)
+		fprintf(fp, "# SD-WAN service %s's MBSF %s (MEF 138), in routing "
+		    "table %d.\n", f->service, f->policy, f->fib);
+	/* A server's certificate not trusted: refused unless the MBSF lets
+	 * it through. */
+	fprintf(fp, "VerifyPeer %s\nAllowWrongHost no\n", !f->bound ||
+	    f->verify ? "yes" : "no");
+	if (f->tlsmin > 0)
+		fprintf(fp, "MinSSLProto %s\n", tls_names[f->tlsmin]);
+	/* Never opened: by the TLS name, a *. one's names beneath it as a
+	 * substring (SSLproxy has no suffix match). */
+	for (i = 0; i < f->npass; i++)
+		if (strncmp(f->pass[i], "*.", 2) == 0)
+			fprintf(fp, "Pass to sni %s*\n", f->pass[i] + 1);
+		else
+			fprintf(fp, "Pass to sni %s\n", f->pass[i]);
 	fprintf(fp, "ConnIdleTimeout 120\nExpiredConnCheckPeriod 10\n");
 	if (f->connect_log)
 		fprintf(fp, "ConnectLog " LOG_DIR "/connect.log\n");
@@ -398,6 +645,19 @@ conf_render(struct work *w, const struct form *f)
 	return (wadopt(w, out));
 }
 
+/* Whether a list has a prefix of length 0, which ipfw writes "any":
+ * of either family, unless the rule says which. */
+static bool
+zero_len(const char *const *v, size_t n)
+{
+	size_t	i, l;
+
+	for (i = 0; i < n; i++)
+		if ((l = strlen(v[i])) > 2 && strcmp(v[i] + l - 2, "/0") == 0)
+			return (true);
+	return (false);
+}
+
 /* The clients of a family as ipfw takes them: "any", or a list. */
 static const char *
 sources(struct work *w, const char *const *v, size_t n)
@@ -413,40 +673,82 @@ sources(struct work *w, const char *const *v, size_t n)
 	return (s);
 }
 
-/* The fwd rules, an ipfw file of set 26, and how many. */
+/*
+ * The fwd rules, an ipfw file of set 26, and how many: a zone at a
+ * time, each family its clients have (none named: any, of both) and
+ * interface, the other zones' prefixes skipped first (a Default
+ * zone's), a protocol's rule each, then cleartext HTTP reset where a
+ * bound MBSF blocks it.  The reset logs, its comment the one the
+ * console makes a SEN of while ipfw's 80 characters hold it.
+ */
 static char *
 rules_render(struct work *w, const struct form *f, int *np)
 {
-	char		*out;
-	size_t		 len, i, k;
-	int		 fam, n;
-	bool		 any;
-	FILE		*fp;
+	const struct zone	*z;
+	const char		*src, *cm;
+	char			*out;
+	size_t			 len, i, k, zi, nx;
+	int			 fam, n;
+	bool			 any, famq;
+	FILE			*fp;
 
 	out = NULL;
 	n = 0;
 	if ((fp = open_memstream(&out, &len)) == NULL)
 		return (NULL);
-	for (i = 0; i < f->nl; i++)
+	cm = f->bound ? wfmt(w, "security %s %s unencrypted " TAG "http",
+	    f->service, f->policy) : NULL;
+	if (cm != NULL && strlen(cm) > COMMENT_MAX)
+		cm = TAG "http";
+	for (zi = 0; zi < f->nz; zi++) {
+		z = &f->z[zi];
 		for (fam = 4; fam <= 6; fam += 2) {
 			if (fam == 6 && !f->ipv6)
 				continue;
 			/* Clients of one family named: the other's none. */
-			any = f->n4 == 0 && f->n6 == 0;
-			if (!any && (fam == 4 ? f->n4 : f->n6) == 0)
+			any = z->c.n4 == 0 && z->c.n6 == 0;
+			if (!any && (fam == 4 ? z->c.n4 : z->c.n6) == 0)
 				continue;
-			for (k = 0; k < f->nifs; k++) {
-				fprintf(fp, "add %d set %d fwd %s,%d tcp from %s "
-				    "to not %s %d in recv %s%s // " TAG "%s\n",
-				    FW_RULE, FW_STAGE, fam == 4 ? "127.0.0.1" :
-				    "::1", f->l[i].listen, any ? "any" :
-				    sources(w, fam == 4 ? f->v4 : f->v6, fam == 4 ?
-				    f->n4 : f->n6), fam == 4 ? "me" : "me6",
-				    f->l[i].port, f->ifs[k], any ? (fam == 4 ?
-				    " ip4" : " ip6") : "", f->l[i].proto);
-				n++;
+			src = any ? "any" : sources(w, fam == 4 ? z->c.v4 :
+			    z->c.v6, fam == 4 ? z->c.n4 : z->c.n6);
+			/* The family said where the clients are any. */
+			famq = any || zero_len(fam == 4 ? z->c.v4 : z->c.v6,
+			    fam == 4 ? z->c.n4 : z->c.n6);
+			nx = fam == 4 ? z->x.n4 : z->x.n6;
+			for (k = 0; k < z->nifs; k++) {
+				if (nx > 0) {
+					fprintf(fp, "add %d set %d skipto %d tcp from "
+					    "%s to not %s in recv %s // " TAG
+					    "except\n", FW_RULE, FW_STAGE, FW_RULE +
+					    1, sources(w, fam == 4 ? z->x.v4 :
+					    z->x.v6, nx), fam == 4 ? "me" : "me6",
+					    z->ifs[k]);
+					n++;
+				}
+				for (i = 0; i < f->nl; i++) {
+					fprintf(fp, "add %d set %d fwd %s,%d tcp from "
+					    "%s to not %s %d in recv %s%s // " TAG
+					    "%s\n", FW_RULE, FW_STAGE, fam == 4 ?
+					    "127.0.0.1" : "::1", f->l[i].listen,
+					    src, fam == 4 ? "me" : "me6",
+					    f->l[i].port, z->ifs[k], famq ? (fam ==
+					    4 ? " ip4" : " ip6") : "",
+					    f->l[i].proto);
+					n++;
+				}
+				if (f->plain_block) {
+					fprintf(fp, "add %d set %d %s log logdst "
+					    "rtsock logamount 1000 tcp from %s to "
+					    "not %s 80 in recv %s%s // %s\n",
+					    FW_RULE, FW_STAGE, fam == 4 ? "reset" :
+					    "reset6", src, fam == 4 ? "me" : "me6",
+					    z->ifs[k], famq ? (fam == 4 ? " ip4" :
+					    " ip6") : "", cm);
+					n++;
+				}
 			}
 		}
+	}
 	if (fclose(fp) != 0) {
 		free(out);
 		return (NULL);
@@ -470,7 +772,7 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 {
 	struct execres	 res;
 	struct krule	*v;
-	const char	*p, *nl;
+	const char	*p, *nl, *c;
 	char		*argv[5], *line;
 	size_t		 n, cap;
 	uintmax_t	 pkts, bytes;
@@ -507,7 +809,9 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 		v[n].num = num;
 		v[n].set = set;
 		v[n].text = line + off;
-		v[n].ours = strstr(line + off, "// " TAG) != NULL;
+		/* Its comment has the tag: an SEN's starts otherwise. */
+		v[n].ours = (c = strstr(line + off, "// ")) != NULL &&
+		    strstr(c, TAG) != NULL;
 		n++;
 	}
 	*out = v;
@@ -689,26 +993,101 @@ yes(const char *v)
 	    "true") == 0 || strcasecmp(v, "on") == 0 || strcmp(v, "1") == 0));
 }
 
-/* Started (or started again), then its rules loaded. */
+/* Started (or started again, unless again is false and it runs),
+ * then its rules loaded. */
 static int
-start(struct work *w, const char **errp)
+start(struct work *w, bool again, const char **errp)
 {
+	int	rc;
 
-	if (svc(w, running(w) ? "restart" : "start", errp) != 0)
-		return (-1);
-	return (rules_load(w, errp));
+	pthread_mutex_lock(&fw_lock);
+	rc = 0;
+	if (!running(w))
+		rc = svc(w, "start", errp);
+	else if (again)
+		rc = svc(w, "restart", errp);
+	if (rc == 0)
+		rc = rules_load(w, errp);
+	pthread_mutex_unlock(&fw_lock);
+	return (rc);
 }
 
 /* Its rules taken away, then stopped. */
 static int
 stop(struct work *w, const char **errp)
 {
+	int	rc;
 
-	if (rules_unload(w, errp) != 0)
-		return (-1);
-	if (!running(w))
-		return (0);
-	return (svc(w, "stop", errp));
+	pthread_mutex_lock(&fw_lock);
+	if ((rc = rules_unload(w, errp)) == 0 && running(w))
+		rc = svc(w, "stop", errp);
+	pthread_mutex_unlock(&fw_lock);
+	return (rc);
+}
+
+/*
+ * The watch: set 27 emptied under a running SSLproxy (ipfw(8)
+ * restarted, or flushed) has its rules loaded again, where the service
+ * is enabled, the rules file is not empty and the sets are free.  Said
+ * once a change, not every turn.
+ */
+static void *
+watch(void *arg __unused)
+{
+	struct work	 w;
+	struct krule	*k;
+	struct stat	 sb;
+	const char	*e, *path;
+	size_t		 nk, i;
+	bool		 ours, any, warned;
+
+	warned = false;
+	for (;;) {
+		sleep((unsigned int)opts.sslproxy_watch_s);
+		work_init(&w);
+		w.nice = true;
+		path = dir_file(&w, "fwd.rules");
+		pthread_mutex_lock(&fw_lock);
+		if (stat(path, &sb) == 0 && sb.st_size > 0 && kernel_rules(&w,
+		    &k, &nk) == 0) {
+			ours = false;
+			for (i = 0; i < nk; i++)
+				if (k[i].set == FW_SET && k[i].ours)
+					ours = true;
+			if (!ours && kernel_free(&w, k, nk, &any) == NULL &&
+			    yes(rc_get(&w, SERVICE "_enable")) && running(&w)) {
+				if (rules_load(&w, &e) == 0) {
+					logmsg(LOG_NOTICE, "sslproxy: ipfw set %d "
+					    "held none of its fwd rules while "
+					    "SSLproxy runs (ipfw restarted?): "
+					    "loaded again", FW_SET);
+					warned = false;
+				} else if (!warned) {
+					logmsg(LOG_WARNING, "sslproxy: the fwd "
+					    "rules not loaded again: %s", e);
+					warned = true;
+				}
+			}
+		}
+		pthread_mutex_unlock(&fw_lock);
+		work_free(&w);
+	}
+	return (NULL);
+}
+
+void
+sslproxy_watch_start(void)
+{
+	pthread_t	tid;
+	int		error;
+
+	if (opts.sslproxy_watch_s <= 0)
+		return;
+	if ((error = pthread_create(&tid, NULL, watch, NULL)) != 0) {
+		logmsg(LOG_ERR, "sslproxy watch: %s", strerror(error));
+		return;
+	}
+	(void)pthread_detach(tid);
 }
 
 /* ---- The CA ------------------------------------------------------ */
@@ -1029,6 +1408,60 @@ ca_json(struct work *w, ucl_object_t *top)
 	ucl_object_insert_key(top, ca, "ca", 0, false);
 }
 
+/* The words of a list, as a list of the read's. */
+static ucl_object_t *
+words_json(struct work *w, const ucl_object_t *o, const char *key)
+{
+	ucl_object_t	*arr;
+	const char	**v;
+	size_t		  i, n;
+
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	v = words_of(w, o, key, &n);
+	for (i = 0; i < n; i++)
+		ucl_array_append(arr, ucl_object_fromstring(v[i]));
+	return (arr);
+}
+
+/* A bound form's service, MBSF, table and zones, as the read says. */
+static void
+bound_json(struct work *w, ucl_object_t *top, const char *text)
+{
+	const ucl_object_t	*b, *z;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*spec, *o, *zs, *zo;
+
+	if ((spec = spec_of(text)) == NULL)
+		return;
+	if ((b = ucl_object_lookup(spec, "bound")) != NULL && ucl_object_type(b)
+	    == UCL_OBJECT) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		put_str(o, "service", ucl_object_tostring(ucl_object_lookup(b,
+		    "service")));
+		put_str(o, "policy", ucl_object_tostring(ucl_object_lookup(b,
+		    "policy")));
+		if (num(b, "fib") >= 0)
+			ucl_object_insert_key(o, ucl_object_fromint(num(b, "fib")),
+			    "fib", 0, false);
+		zs = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((z = ucl_object_iterate(ucl_object_lookup(spec, "zones"),
+		    &it, true)) != NULL) {
+			zo = ucl_object_typed_new(UCL_OBJECT);
+			put_str(zo, "name", ucl_object_tostring(ucl_object_lookup(z,
+			    "name")));
+			ucl_object_insert_key(zo, words_json(w, z, "clients"),
+			    "clients", 0, false);
+			ucl_object_insert_key(zo, words_json(w, z, "interfaces"),
+			    "interfaces", 0, false);
+			ucl_array_append(zs, zo);
+		}
+		ucl_object_insert_key(o, zs, "zone", 0, false);
+		ucl_object_insert_key(top, o, "bound", 0, false);
+	}
+	ucl_object_unref(spec);
+}
+
 static void
 rules_json(struct work *w, ucl_object_t *top)
 {
@@ -1074,7 +1507,7 @@ do_sslproxy(struct work *w, struct json_rsp *rsp)
 {
 	ucl_object_t	*top;
 	struct stat	 sb;
-	const char	*conf, *log;
+	const char	*conf, *log, *spec;
 	char		*json;
 
 	rsp->has_ok = true;
@@ -1100,7 +1533,9 @@ do_sslproxy(struct work *w, struct json_rsp *rsp)
 		}
 	} else
 		put_bool(top, "ours", false);
-	put_str(top, "spec", scope_slurp(w, dir_file(w, "spec.json"), NULL));
+	put_str(top, "spec", (spec = scope_slurp(w, dir_file(w, "spec.json"),
+	    NULL)));
+	bound_json(w, top, spec);
 	ca_json(w, top);
 	rules_json(w, top);
 	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
@@ -1209,9 +1644,17 @@ conf_put(struct work *w, const char *conf, const char **errp)
 /* The rc script's variables where the agent's files are not its
  * defaults (a test's, or an agent told otherwise). */
 static int
-vars_set(struct work *w, const char **errp)
+vars_set(struct work *w, const struct form *f, const char **errp)
 {
 	const char	*fwd;
+
+	/* A bound form's service's table, rc.subr's setfib; else none. */
+	if (f->bound && f->fib > 0) {
+		if (rc_set(w, SERVICE "_fib", "=", wfmt(w, "%d", f->fib), errp)
+		    != 0)
+			return (-1);
+	} else if (rc_get(w, SERVICE "_fib") != NULL)
+		rc_unset(w, SERVICE "_fib");
 
 	fwd = dir_file(w, "fwd.rules");
 	if (strcmp(opts.sslproxy_conf, "/usr/local/etc/sslproxy.conf") != 0 &&
@@ -1273,10 +1716,10 @@ conf_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		    strlen(text), 0600, NULL);
 		free(text);
 	}
-	if (vars_set(w, errp) != 0)
+	if (vars_set(w, &f, errp) != 0)
 		goto out;
 	/* Taken where it runs: started again, the new rules in. */
-	rc = running(w) ? start(w, errp) : 0;
+	rc = running(w) ? start(w, true, errp) : 0;
 out:
 	ucl_object_unref(o);
 	return (rc);
@@ -1293,7 +1736,7 @@ do_sslproxy_job(struct work *w, const struct arc_job_spec *sp,
 		return (conf_job(w, sp, errp));
 	if (strcmp(sp->verb, "enable") == 0)
 		return (rc_set(w, SERVICE "_enable", "=", "YES", errp) != 0 ? -1 :
-		    start(w, errp));
+		    start(w, false, errp));
 	if (strcmp(sp->verb, "disable") == 0)
 		return (stop(w, errp) != 0 ? -1 : rc_set(w, SERVICE "_enable",
 		    "=", "NO", errp));
@@ -1305,5 +1748,5 @@ do_sslproxy_job(struct work *w, const struct arc_job_spec *sp,
 		    opts.sslproxy_conf);
 		return (-1);
 	}
-	return (start(w, errp));
+	return (start(w, true, errp));
 }

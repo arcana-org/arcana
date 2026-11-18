@@ -10,6 +10,14 @@ module: arcana-sslproxy
      |     +--ro ours?               boolean
      |     +--ro spec?               string
      |     +--ro conf?               string
+     |     +--ro bound!
+     |     |  +--ro service?   string
+     |     |  +--ro policy?    string
+     |     |  +--ro fib?       uint32
+     |     |  +--ro zone* [name]
+     |     |     +--ro name          string
+     |     |     +--ro clients*      string
+     |     |     +--ro interfaces*   string
      |     +--ro ca
      |     |  +--ro key?           boolean
      |     |  +--ro pending?       boolean

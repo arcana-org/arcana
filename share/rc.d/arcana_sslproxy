@@ -13,7 +13,10 @@
 # 7; started, they are loaded there, swapped into set 27 and set 26
 # emptied; stopped, set 27 is taken away.  A rule of set 26 or 27 that
 # is not SSL inspection's (its comment says "sslproxy:") leaves both
-# sets alone, said and nothing loaded or deleted.
+# sets alone, said and nothing loaded or deleted; a rule of another set
+# at rule 7 loads nothing either, as the agent refuses it.  When the
+# agent runs SSLproxy for an SD-WAN service, arcana_sslproxy_fib is
+# the service's routing table, which rc.subr(8) starts it in (setfib).
 #
 # Add these lines to /etc/rc.conf to enable it:
 #
@@ -27,6 +30,8 @@
 # arcana_sslproxy_logdir (str):	Where its logs go, made at start.
 #				Default: /var/log/sslproxy
 # arcana_sslproxy_ipfw (str):	ipfw(8).  Default: /sbin/ipfw
+# arcana_sslproxy_fib (int):	The routing table it runs in (rc.subr's
+#				${name}_fib).  Default: none, the first.
 #
 # The configuration is checked (sslproxy -Q) before each start, and by
 # "service arcana_sslproxy configtest".
@@ -70,11 +75,19 @@ arcana_sslproxy_precmd()
 	    "${arcana_sslproxy_logdir}/content"
 }
 
-# True when set 26 or 27 holds a rule that is not SSL inspection's.
+# True when set 26 or 27 holds a rule that is not SSL inspection's (a
+# comment with "sslproxy:" in it).
 arcana_sslproxy_fwd_theirs()
 {
 	${ipfw} -a -S list 2>/dev/null | awk '$4 == "set" && ($5 == 26 ||
-	    $5 == 27) && !/\/\/ sslproxy:/ { f = 1 } END { exit !f }'
+	    $5 == 27) && !/\/\/ .*sslproxy:/ { f = 1 } END { exit !f }'
+}
+
+# True when another set has a rule at 7, the number SSL inspection keeps.
+arcana_sslproxy_fwd_seven()
+{
+	${ipfw} -a -S list 2>/dev/null | awk '$4 == "set" && $5 != 26 &&
+	    $5 != 27 && $1 + 0 == 7 { f = 1 } END { exit !f }'
 }
 
 arcana_sslproxy_fwd_load()
@@ -82,6 +95,10 @@ arcana_sslproxy_fwd_load()
 	[ -s "${arcana_sslproxy_fwd}" ] || return 0
 	if arcana_sslproxy_fwd_theirs; then
 		warn "ipfw sets 26 and 27 hold rules that are not SSL inspection's: no fwd rule loaded"
+		return 0
+	fi
+	if arcana_sslproxy_fwd_seven; then
+		warn "ipfw rule 7, which SSL inspection keeps, is another set's: no fwd rule loaded"
 		return 0
 	fi
 	${ipfw} -q -f delete set 26

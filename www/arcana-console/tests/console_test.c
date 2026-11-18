@@ -14751,6 +14751,140 @@ ATF_TC_BODY(sdwan_sfp, tc)
 	resp_free(&r);
 }
 
+/* The text of the plan's job make.<n> of a key at its first edge. */
+static const char *
+plan_make_text(struct resp *r, const char *key, int n)
+{
+	char	path[96];
+	int	i;
+
+	for (i = 0; i < 200; i++) {
+		snprintf(path, sizeof(path), "changes.%d.key", i);
+		if (jstr(r, path) == NULL)
+			return (NULL);
+		if (strcmp(jstr(r, path), key) != 0)
+			continue;
+		snprintf(path, sizeof(path), "changes.%d.make.%d.text", i, n);
+		return (jstr(r, path));
+	}
+	return (NULL);
+}
+
+/*
+ * SSL inspection as MEF 138's MBSF bound to a zone (ssl-inspection.md,
+ * phase 2): a zone whose only function of Squid's is its MBSF is
+ * SSLproxy's, compiled into the edge's form (its clients the zone's
+ * prefixes here, its interfaces the service's UNIs here, the MBSF as
+ * the module says it, the service's table), the edge's CA first; Squid
+ * has none of it; a second MBSF bound at one edge fails the plan.
+ */
+CONSOLE_TC(sdwan_inspect, "SD-WAN's MBSF bound to a zone: SSLproxy's form "
+    "for the edge, not Squid's")
+ATF_TC_BODY(sdwan_inspect, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sb[16];
+	char		doc[12288], t1[12288];
+	const char	*c;
+	size_t		i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_ab(sa, sb, sizeof(sa));
+	snprintf(doc, sizeof(doc), "%s", sdwan_good);
+	static const char *const edits[][2] = {
+		{ "{\"id\":\"g-urlf\",\"function\":\"urlf\",",
+		    "{\"id\":\"g-mbsf\",\"function\":\"mbsf\",\"block\":[\"tls1.0\","
+		    "\"tls1.1\"],\"allow\":[\"tls1.2\",\"tls1.3\"],\"no-match\":"
+		    "\"block\",\"invalid-server-certificate\":\"block\","
+		    "\"unencrypted\":\"block\",\"pass-through\":[\"bank.example\"]},"
+		    "{\"id\":\"g-urlf\",\"function\":\"urlf\"," },
+		{ "\"g-urlf\",\"g-mdr\"]", "\"g-mbsf\"]" },
+		{ "\"id\":\"a-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\"",
+		    "\"id\":\"a-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\","
+		    "\"address\":\"192.0.2.1\",\"gateway\":\"192.0.2.254\"" },
+		{ "\"id\":\"a-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\"",
+		    "\"id\":\"a-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\","
+		    "\"address\":\"10.99.0.1\"" },
+		{ "\"id\":\"b-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\"",
+		    "\"id\":\"b-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\","
+		    "\"address\":\"192.0.2.2\"" },
+		{ "\"id\":\"b-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\"",
+		    "\"id\":\"b-mpls\",\"ucs\":\"mpls\",\"interface\":\"vtnet1\","
+		    "\"address\":\"10.99.0.2\"" },
+		{ "\"id\":\"uni-hq\",\"interface\":\"vtnet2\"",
+		    "\"id\":\"uni-hq\",\"interface\":\"lo0\"" },
+		{ "\"id\":\"uni-br\",\"interface\":\"vtnet2\"",
+		    "\"id\":\"uni-br\",\"interface\":\"lo0\"" },
+		{ "\"kind\":\"geneve\"", "\"kind\":\"gif\"" },
+	};
+	for (i = 0; i < nitems(edits); i++) {
+		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
+		    sizeof(t1)), "%s is not in the document", edits[i][0]);
+		snprintf(doc, sizeof(doc), "%s", t1);
+	}
+	while (swap_in(doc, "@A", sa, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	while (swap_in(doc, "@B", sb, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	r3_keep(doc);
+	r3_sdwan("plan", &r);
+	EXPECT(&r, 200);
+	/* Squid has no zone left: the office zone's MBSF is SSLproxy's. */
+	ATF_CHECK_MSG(plan_spec(&r, "proxy") == NULL, "%s", r.body);
+	/* The edge's CA first, then the form, then enabled. */
+	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"inspect\"") != NULL &&
+	    strstr(r.body, "{\"kind\":\"inspection-ca\"}") != NULL &&
+	    strstr(r.body, "{\"kind\":\"sslproxy\",\"verb\":\"enable\"}") !=
+	    NULL && strstr(r.body, "{\"kind\":\"sslproxy\",\"verb\":"
+	    "\"disable\"}") != NULL, "%s", r.body);
+	ATF_REQUIRE_MSG((c = plan_make_text(&r, "inspect", 1)) != NULL, "%s",
+	    r.body);
+	ATF_CHECK_MSG(strncmp(c, "{\"bound\":{\"service\":\"acme\",\"policy\":"
+	    "\"g-mbsf\",\"fib\":1},\"listeners\":[{\"proto\":\"https\",\"port\":"
+	    "443,\"listen\":8443}],\"ipv6\":true,\"connect_log\":true,"
+	    "\"zones\":[{\"name\":\"office\",\"clients\":[\"10.1.0.0/16\"",
+	    strlen("{\"bound\":{\"service\":\"acme\",\"policy\":\"g-mbsf\","
+	    "\"fib\":1},\"listeners\":[{\"proto\":\"https\",\"port\":443,"
+	    "\"listen\":8443}],\"ipv6\":true,\"connect_log\":true,\"zones\":[{"
+	    "\"name\":\"office\",\"clients\":[\"10.1.0.0/16\"")) == 0, "%s", c);
+	ATF_CHECK_MSG(strstr(c, "\"interfaces\":[\"lo0") != NULL && strstr(c,
+	    "\"mbsf\":{\"no-match\":\"block\",\"block\":[\"tls1.0\",\"tls1.1\"],"
+	    "\"allow\":[\"tls1.2\",\"tls1.3\"],\"pass-through\":["
+	    "\"bank.example\"],\"invalid-server-certificate\":\"block\","
+	    "\"unencrypted\":\"block\",\"id\":\"g-mbsf\"}") != NULL, "%s", c);
+	resp_free(&r);
+	/* A second MBSF bound to another zone at the same edges: one
+	 * SSLproxy an edge, refused. */
+	ATF_REQUIRE(swap_in(doc, "{\"id\":\"g-mbsf\",", "{\"id\":\"g-mbsf2\","
+	    "\"function\":\"mbsf\",\"no-match\":\"allow\","
+	    "\"invalid-server-certificate\":\"block\",\"unencrypted\":"
+	    "\"allow\"},{\"id\":\"g-mbsf\",", t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	ATF_REQUIRE(swap_in(doc, "\"security_policies\":[", "\"security_policies"
+	    "\":[{\"name\":\"guard2\",\"function-policies\":[\"g-mbsf2\"]},",
+	    t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	ATF_REQUIRE(swap_in(doc, "\"rest\",\"prefixes\":\"Default\"}",
+	    "\"rest\",\"prefixes\":\"Default\",\"policies\":[{\"app\":\"web\","
+	    "\"policy\":\"strict\"}]}", t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	ATF_REQUIRE(swap_in(doc, "\"policies\":[{\"name\":\"fast\",",
+	    "\"policies\":[{\"name\":\"strict\",\"direction\":\"ingress\","
+	    "\"criteria\":{\"af-security-ingress\":\"guard2\"}},{\"name\":"
+	    "\"fast\",", t1, sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	ATF_REQUIRE(swap_in(doc, "{\"version\":0,", "{\"version\":1,", t1,
+	    sizeof(t1)));
+	snprintf(doc, sizeof(doc), "%s", t1);
+	r3_keep(doc);
+	r3_sdwan("plan", &r);
+	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "binds MBSFs") !=
+	    NULL, "%s", r.body);
+	resp_free(&r);
+}
+
 /*
  * A USWE tunnel (Mplify 119 §10): the public underlay's tunnels made
  * ipsec(4) interfaces keyed by the agents: a pair each, the SAs derived
@@ -28334,6 +28468,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_lists);
 	ATF_TP_ADD_TC(tp, sdwan_notices);
 	ATF_TP_ADD_TC(tp, sdwan_sfp);
+	ATF_TP_ADD_TC(tp, sdwan_inspect);
 	ATF_TP_ADD_TC(tp, sdwan_jail);
 	ATF_TP_ADD_TC(tp, sdwan_lab);
 	ATF_TP_ADD_TC(tp, sdwan_l3nm_lab);

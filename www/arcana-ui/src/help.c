@@ -126,7 +126,8 @@ help_path(void)
 	case NODE_SDWAN:
 		return ("sdwan/index.html");
 	case NODE_SECURITY:
-		return ("sections/security.html");
+		return (sec_tab_tls() ? "sections/security.html#ssl-inspection" :
+		    "sections/security.html");
 	case NODE_STORAGE:
 		return ("sections/storage-services.html");
 	case NODE_BUILDER:

@@ -12,7 +12,11 @@
  * intermediate of the tenant fleet's root, its key made on the host and
  * never read out), the form the configuration was rendered from, the
  * rules loaded and the file.  The CA is issued by the console
- * (arcana-console's inspection-ca); the rest are sslproxy jobs.
+ * (arcana-console's inspection-ca); the rest are sslproxy jobs.  Where
+ * an SD-WAN service's MBSF is what SSLproxy serves (MEF 138's function
+ * policy bound to zones, the form the console's), the binding is shown
+ * in place of the form: the service, the policy, its table, each zone's
+ * clients and interfaces, changed in SD-WAN alone.
  */
 
 #include <stdbool.h>
@@ -51,7 +55,7 @@ si_conv(const ucl_object_t *o)
 {
 	static const char *const names[] = { "rule=rules", NULL };
 	static const char *const nums[] = { "not_after", "number", "set",
-	    "rules_expected", "connect_log_size", NULL };
+	    "rules_expected", "connect_log_size", "fib", NULL };
 	ucl_object_t	*f, *r;
 
 	f = jflat(o, names);
@@ -212,6 +216,54 @@ si_form(struct html *h, const ucl_object_t *o)
 		ucl_object_unref(spec);
 }
 
+/* The words of a list, joined. */
+static void
+joined_text(struct html *h, const ucl_object_t *arr)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	bool			 first;
+
+	first = true;
+	it = NULL;
+	while ((e = ucl_object_iterate(arr, &it, true)) != NULL) {
+		if (!first)
+			h_raw(h, ", ");
+		h_txt(h, ucl_object_tostring_forced(e));
+		first = false;
+	}
+}
+
+/* An SD-WAN service's MBSF the form was compiled from: its zones. */
+static void
+si_bound(struct html *h, const ucl_object_t *b)
+{
+	const ucl_object_t	*z;
+	ucl_object_iter_t	 it;
+
+	h_raw(h, "<div class=\"ssl-bound\"><p>Bound by SD-WAN: service <b>");
+	h_txt(h, jstr(b, "service") != NULL ? jstr(b, "service") : "");
+	h_raw(h, "</b>, its MBSF <b>");
+	h_txt(h, jstr(b, "policy") != NULL ? jstr(b, "policy") : "");
+	h_fmt(h, "</b> (MEF 138's middlebox), SSLproxy run in routing table "
+	    "%lld (<code>setfib</code>). Its zones' TLS is opened here; the "
+	    "function policy and its zones are changed in SD-WAN, Security."
+	    "</p><table class=\"ssl-zones\"><thead><tr><th>Zone</th><th>"
+	    "Clients</th><th>Interfaces (the UNIs)</th></tr></thead><tbody>",
+	    (long long)jint(b, "fib", 0));
+	it = NULL;
+	while ((z = ucl_object_iterate(jget(b, "zone"), &it, true)) != NULL) {
+		h_raw(h, "<tr><td>");
+		h_txt(h, jstr(z, "name") != NULL ? jstr(z, "name") : "");
+		h_raw(h, "</td><td>");
+		joined_text(h, jget(z, "clients"));
+		h_raw(h, "</td><td>");
+		joined_text(h, jget(z, "interfaces"));
+		h_raw(h, "</td></tr>");
+	}
+	h_raw(h, "</tbody></table></div>");
+}
+
 void
 view_sslinspect(struct html *h, struct server *s)
 {
@@ -296,9 +348,12 @@ view_sslinspect(struct html *h, struct server *s)
 	    " disabled" : "", jget(ca, "certificate") != NULL ?
 	    "Renew from the fleet's root" : "Issue from the fleet's root");
 
-	/* The form. */
+	/* The form, or the SD-WAN's binding the console compiled it from. */
 	h_raw(h, "<h3 class=\"secsub\">Configuration</h3>");
-	si_form(h, o);
+	if (jget(o, "bound") != NULL)
+		si_bound(h, jget(o, "bound"));
+	else
+		si_form(h, o);
 
 	/* The rules. */
 	h_raw(h, "<h3 class=\"secsub\">ipfw fwd rules</h3>");

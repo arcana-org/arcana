@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.318.0"
+#define	ARCANA_AGENT_VERSION	"0.319.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -217,6 +217,7 @@ struct opts {
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
 	int		 routes_cache_s;	/* --routes-cache: a FIB's count kept */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
+	int		 sslproxy_watch_s; /* --sslproxy-watch: set 27, how often */
 	const char	*rc_subr;	/* --rc-subr: rc.subr(8), a service's
 					 * pidfile and program asked of it */
 	const char	*dev_dir;	/* --dev: /dev, its devfs mounts */
@@ -1337,6 +1338,7 @@ size_t		 speeder_rates(struct speeder_rate *, size_t, unsigned int);
 
 /* luxuria/sslproxy.c: SSL inspection by SSLproxy, a plugin. */
 void		 do_sslproxy(struct work *, struct json_rsp *);
+void		 sslproxy_watch_start(void);
 const char	*sslproxy_check(const struct arc_job_spec *);
 char		*sslproxy_title(const struct arc_job_spec *);
 int		 do_sslproxy_job(struct work *, const struct arc_job_spec *,

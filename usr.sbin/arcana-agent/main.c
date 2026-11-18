@@ -113,6 +113,7 @@ struct opts opts = {
 	.bird_watch_s = 15,
 	.routes_cache_s = 30,
 	.smtpd_watch_s = 60,
+	.sslproxy_watch_s = 30,
 	.stamp_port = 862,
 	.bmp_port = 1790,
 	.stampd_keys = "/usr/local/etc/stampd.keys",
@@ -148,7 +149,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_POUDRIERE, OPT_POUDRIERE_ETC, OPT_IFMCSTAT, OPT_FRESHCLAM_CONF,
     OPT_SURICATA_RULES, OPT_EXPORTS, OPT_CTL_CONF, OPT_HAST_CONF,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
-    OPT_SPEEDER_LOG, OPT_SSLPROXY_CONF, OPT_SSLPROXY_DIR, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
+    OPT_SPEEDER_LOG, OPT_SSLPROXY_CONF, OPT_SSLPROXY_DIR, OPT_SSLPROXY_WATCH, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
@@ -236,6 +237,7 @@ static const struct option longopts[] = {
 	 * fwd rules. */
 	{ "sslproxy-conf", required_argument, NULL, OPT_SSLPROXY_CONF },
 	{ "sslproxy-dir", required_argument, NULL, OPT_SSLPROXY_DIR },
+	{ "sslproxy-watch", required_argument, NULL, OPT_SSLPROXY_WATCH },
 	{ NULL, 0, NULL, 0 },
 };
 
@@ -296,6 +298,7 @@ usage(void)
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--sslproxy-conf file] [--sslproxy-dir directory]\n"
+	    "                 [--sslproxy-watch seconds]\n"
 	    "                 [--terminal-login login] [--terminal-idle seconds]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
 	    "                 [--subscriptions file] [--features list]\n");
@@ -660,6 +663,12 @@ main(int argc, char *argv[])
 			break;
 		case OPT_SSLPROXY_DIR:
 			opts.sslproxy_dir = optarg;
+			break;
+		case OPT_SSLPROXY_WATCH:
+			opts.sslproxy_watch_s = (int)strtonum(optarg, 0, 3600,
+			    &errstr);
+			if (errstr != NULL)
+				errx(1, "--sslproxy-watch %s: %s", optarg, errstr);
 			break;
 		case OPT_JOBS_CONF:
 			opts.jobs_conf = optarg;
@@ -1101,6 +1110,7 @@ main(int argc, char *argv[])
 	host_watch_start();
 	bird_watch_start();
 	smtpd_watch_start();
+	sslproxy_watch_start();
 	services_collect_start();
 	sa_faults_start();
 	sadb_watch_start();

@@ -93,6 +93,27 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SSL inspection, phase 2; agent 0.319.0, console 0.464.0
+
+- An SD-WAN MBSF bound to zones is SSLproxy's: a zone whose only Squid
+  function is its MBSF (no URLF, no MD+R, no DNF name with a `*`
+  inside) has its TLS opened by SSLproxy (security/sslproxy, installed
+  by the admin) instead of Squid's ssl-bump.  The apply issues the
+  edge's CA from the tenant fleet's root where it has none, compiles
+  the edge's sslproxy form (the zones' prefixes and UNIs), enables
+  arcana_sslproxy and runs it in the service's FIB
+  (arcana_sslproxy_fib).  Zones with a URLF or MD+R stay on Squid.  One
+  service and one MBSF per edge; not a vnet-jail edge.  Install
+  sslproxy on those edges before deploying.
+- The inspection roots are the console's replicated document
+  inspection-roots.json; a root made before in <datadir>/inspection/ is
+  not read: press Renew on each edge's SSL inspection tab and have the
+  clients trust the new root.
+- New agent option --sslproxy-watch (default 30 s): set 27 is loaded
+  again after an ipfw restart while SSLproxy runs.  A rule of SSL
+  inspection's is any whose comment contains `sslproxy:`; the rc script
+  also refuses to load when another set has a rule at 7.
+
 ### Suricata's forms in the module; agent 0.318.0, console 0.463.0
 
 - arcana-sdwan's Suricata instances (ids-instance), SD-WAN's and the

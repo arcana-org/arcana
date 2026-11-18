@@ -2896,8 +2896,10 @@ zone_dnf_wild(const ucl_object_t *sw, const ucl_object_t *zone)
 	return (out);
 }
 
-/* Whether a zone's HTTP and TLS go to the service's Squid: its URLF,
- * MBSF or MD+R, or a * inside a name of its DNF's. */
+/* Whether a zone's HTTP and TLS go to the service's Squid: its URLF or
+ * MD+R, or a * inside a name of its DNF's, which need the requests (an
+ * MBSF beside them opens TLS there, Squid's ssl-bump).  An MBSF alone
+ * is SSLproxy's (zone_inspected()). */
 static bool
 zone_proxied(const ucl_object_t *sw, const ucl_object_t *zone)
 {
@@ -2905,12 +2907,25 @@ zone_proxied(const ucl_object_t *sw, const ucl_object_t *zone)
 	size_t		 i;
 
 	for (i = 0; fn_proxy[i] != NULL; i++)
-		if (zone_fn(sw, zone, fn_proxy[i]) != NULL)
+		if (strcmp(fn_proxy[i], "mbsf") != 0 && zone_fn(sw, zone,
+		    fn_proxy[i]) != NULL)
 			return (true);
 	if ((w = zone_dnf_wild(sw, zone)) == NULL)
 		return (false);
 	ucl_object_unref(w);
 	return (true);
+}
+
+/*
+ * Whether a zone's TLS is opened by SSLproxy (docs/notes/ssl-inspection.md,
+ * phase 2): an MBSF bound to it and nothing of Squid's, the function
+ * policy compiled into the edge's SSLproxy form (inspect_build()).
+ */
+static bool
+zone_inspected(const ucl_object_t *sw, const ucl_object_t *zone)
+{
+
+	return (zone_fn(sw, zone, "mbsf") != NULL && !zone_proxied(sw, zone));
 }
 
 /* Whether a zone of the service is. */
@@ -3235,12 +3250,12 @@ proxy_spec(struct plan *pl, const ucl_object_t *sw, const char *sid,
 			zi++;
 			if (zone_default(zone) != (pass == 1))
 				continue;
+			if (!zone_proxied(sw, zone))
+				continue;
 			uf = zone_fn(sw, zone, "urlf");
 			mb = zone_fn(sw, zone, "mbsf");
 			md = zone_fn(sw, zone, "mdr");
 			dw = zone_dnf_wild(sw, zone);
-			if (uf == NULL && mb == NULL && md == NULL && dw == NULL)
-				continue;
 			snprintf(zn, sizeof(zn), "z%d", zi);
 			z = ucl_object_typed_new(UCL_OBJECT);
 			put(z, "name", S(zn));
@@ -3313,8 +3328,8 @@ proxy_spec(struct plan *pl, const ucl_object_t *sw, const char *sid,
 static void
 proxy_build(struct plan *pl, const ucl_object_t *doc)
 {
-	const ucl_object_t	*sw, *edge, *ep;
-	ucl_object_iter_t	 it, eit, pit;
+	const ucl_object_t	*sw, *edge, *ep, *zone;
+	ucl_object_iter_t	 it, eit, pit, zit;
 	ucl_object_t		*o, *inst, *list, *lists;
 	char			 name[32];
 	const char		*sid;
@@ -3338,7 +3353,14 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
 					here = true;
 			if (!here)
 				continue;
-			inspect = svc_fn(sw, (const char *const[]){ "mbsf", NULL });
+			/* TLS opened where a zone Squid serves has an MBSF. */
+			inspect = false;
+			zit = NULL;
+			while ((zone = ucl_object_iterate(ucl_object_lookup(sw,
+			    "zones"), &zit, true)) != NULL)
+				if (zone_proxied(sw, zone) && zone_fn(sw, zone,
+				    "mbsf") != NULL)
+					inspect = true;
 			snprintf(name, sizeof(name), "sw%jd", (intmax_t)
 			    ucl_object_toint(ucl_object_lookup(sw, "fib")));
 			inst = ucl_object_typed_new(UCL_OBJECT);
@@ -3367,6 +3389,162 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
 		unmake(o, job("sdwan-proxy", "instances", ucl_object_typed_new(
 		    UCL_ARRAY), NULL));
 	}
+}
+
+/* Where SSLproxy listens for TLS on the loopback (the tab's too). */
+#define	INSPECT_LISTEN	8443
+
+/*
+ * Each edge's SSL inspection (docs/notes/ssl-inspection.md, phase 2):
+ * the zones whose MBSF SSLproxy serves (zone_inspected()), compiled
+ * into the edge's form (luxuria/sslproxy.c): "bound" the service, the
+ * policy and the service's table, SSLproxy run in it; each zone's
+ * clients its prefixes here and its interfaces the service's UNIs here,
+ * a Default zone's except the other zones' prefixes; "mbsf" the policy.
+ * One SSLproxy an edge, so one service and one MBSF an edge: another
+ * fails the plan, said.  A vnet jail's edge has none (SSL inspection is
+ * the host's).  The edge's CA first, from its tenant fleet's root where
+ * it has none (inspection-ca, the console's own); then the form, and
+ * enabled; taken away, disabled.  SSLproxy is a plugin the edge has
+ * installed, which the apply tells when it has not.
+ */
+static bool
+inspect_build(struct plan *pl, const ucl_object_t *doc)
+{
+	const ucl_object_t	*edge, *sw, *bsw, *zone, *z2, *f, *mb, *ep;
+	ucl_object_iter_t	 it, sit, zit, z2it, eit;
+	ucl_object_t		*spec, *zones, *z, *pfx, *ifs, *x, *ls, *l, *b;
+	ucl_object_t		*o;
+	char			 ifn[64], *json;
+	const char		*sid, *un;
+	int64_t			 fib;
+
+	it = NULL;
+	while ((edge = ucl_object_iterate(ucl_object_lookup(doc, "edges"), &it,
+	    true)) != NULL) {
+		sid = str(edge, "server");
+		bsw = mb = NULL;
+		zones = ucl_object_typed_new(UCL_ARRAY);
+		sit = NULL;
+		while ((sw = ucl_object_iterate(ucl_object_lookup(doc, "swvcs"),
+		    &sit, true)) != NULL) {
+			if (!edge_in(sw, sid))
+				continue;
+			zit = NULL;
+			while ((zone = ucl_object_iterate(ucl_object_lookup(sw,
+			    "zones"), &zit, true)) != NULL) {
+				if (!zone_inspected(sw, zone))
+					continue;
+				f = zone_fn(sw, zone, "mbsf");
+				if (bsw != NULL && bsw != sw) {
+					snprintf(pl->why, sizeof(pl->why), "edge %s: "
+					    "services %s and %s both have a zone's "
+					    "MBSF opened by SSLproxy, which is one an "
+					    "edge, in one service's table: give one "
+					    "of the zones a URL filter too (Squid "
+					    "opens it then)", server_name_of(sid),
+					    str(bsw, "id"), str(sw, "id"));
+					ucl_object_unref(zones);
+					return (false);
+				}
+				if (mb != NULL && strcmp(str(mb, "id"), str(f,
+				    "id")) != 0) {
+					snprintf(pl->why, sizeof(pl->why), "edge %s: "
+					    "service %s binds MBSFs %s and %s to its "
+					    "zones here, which one SSLproxy opens "
+					    "as one: bind one", server_name_of(sid),
+					    str(sw, "id"), str(mb, "id"), str(f,
+					    "id"));
+					ucl_object_unref(zones);
+					return (false);
+				}
+				bsw = sw;
+				mb = f;
+				pfx = ucl_object_typed_new(UCL_ARRAY);
+				zone_pfx(pl, sw, sid, zone, pfx);
+				ifs = ucl_object_typed_new(UCL_ARRAY);
+				eit = NULL;
+				while ((ep = ucl_object_iterate(ucl_object_lookup(sw,
+				    "end_points"), &eit, true)) != NULL)
+					if (strcmp(str(ep, "edge"), sid) == 0 &&
+					    ucl_object_lookup(ep, "uni") != NULL &&
+					    (un = uni_ifname(pl, sw, ep, ifn,
+					    sizeof(ifn))) != NULL && un[0] != '\0')
+						ucl_array_append(ifs, S(un));
+				if (ucl_array_size(pfx) == 0 || ucl_array_size(ifs) ==
+				    0) {
+					ucl_object_unref(pfx);
+					ucl_object_unref(ifs);
+					continue;
+				}
+				z = ucl_object_typed_new(UCL_OBJECT);
+				put(z, "name", S(str(zone, "name")));
+				put(z, "clients", pfx);
+				put(z, "interfaces", ifs);
+				/* Default: the other zones' prefixes are theirs. */
+				if (zone_default(zone)) {
+					x = ucl_object_typed_new(UCL_ARRAY);
+					z2it = NULL;
+					while ((z2 = ucl_object_iterate(
+					    ucl_object_lookup(sw, "zones"), &z2it,
+					    true)) != NULL)
+						if (!zone_default(z2))
+							zone_pfx(pl, sw, sid, z2, x);
+					if (ucl_array_size(x) > 0)
+						put(z, "except", x);
+					else
+						ucl_object_unref(x);
+				}
+				ucl_array_append(zones, z);
+			}
+		}
+		if (ucl_array_size(zones) == 0) {
+			ucl_object_unref(zones);
+			continue;
+		}
+		if (strchr(sid, '/') != NULL) {
+			snprintf(pl->why, sizeof(pl->why), "edge %s is a vnet "
+			    "jail: an MBSF is opened by the server's SSLproxy, "
+			    "and a jail has none yet (bind it at the server's "
+			    "edge)", server_name_of(sid));
+			ucl_object_unref(zones);
+			return (false);
+		}
+		fib = efib(pl, bsw, sid);
+		spec = ucl_object_typed_new(UCL_OBJECT);
+		b = ucl_object_typed_new(UCL_OBJECT);
+		put(b, "service", S(str(bsw, "id")));
+		put(b, "policy", S(str(mb, "id")));
+		put(b, "fib", I(fib));
+		put(spec, "bound", b);
+		ls = ucl_object_typed_new(UCL_ARRAY);
+		l = ucl_object_typed_new(UCL_OBJECT);
+		put(l, "proto", S("https"));
+		put(l, "port", I(443));
+		put(l, "listen", I(INSPECT_LISTEN));
+		ucl_array_append(ls, l);
+		put(spec, "listeners", ls);
+		put(spec, "ipv6", B(true));
+		put(spec, "connect_log", B(true));
+		put(spec, "zones", zones);
+		put(spec, "mbsf", sfp_spec(pl, mb, mbsf_keys, false, false));
+		json = emit(spec);
+		ucl_object_unref(spec);
+		o = object(pl, sid, "inspect", PH_BIRD, "SSL inspection (MEF "
+		    "138's MBSF %s of service %s): SSLproxy, a plugin, in table "
+		    "%jd, TLS of its zones here opened", str(mb, "id"), str(bsw,
+		    "id"), (intmax_t)fib);
+		if (o == NULL || json == NULL) {
+			free(json);
+			continue;
+		}
+		make(o, job("inspection-ca", NULL));
+		make(o, job("sslproxy", "verb", S("conf"), "text", S(json), NULL));
+		make(o, job("sslproxy", "verb", S("enable"), NULL));
+		unmake(o, job("sslproxy", "verb", S("disable"), NULL));
+		free(json);
+	}
+	return (true);
 }
 
 /* The divert port of a service's Suricata, where it prevents. */
@@ -8071,6 +8249,8 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 	bird_build(pl, doc);
 	dns_build(pl, doc);
 	proxy_build(pl, doc);
+	if (!inspect_build(pl, doc))
+		return (false);
 	ids_build(pl, doc);
 	dhcp_build(pl, doc);
 	return (true);
@@ -8719,6 +8899,22 @@ job_run(const char *sid, const ucl_object_t *j, char *why, size_t wlen)
 	/* A device edit, by RESTCONF (never a jail's). */
 	if (strcmp(str(j, "kind"), "edit") == 0)
 		return (edit_run(sid, uri, peer, name, j, why, wlen));
+	/* SSL inspection's CA, the console's own ask (inspect_build()). */
+	if (strcmp(str(j, "kind"), "inspection-ca") == 0) {
+		bool	ok;
+
+		json = hosts_inspect_ca(sid, uri, peer, name, &status);
+		ans = parse(json);
+		free(json);
+		ok = status == 200 && ans != NULL && str(ans, "error") == NULL;
+		if (!ok)
+			snprintf(why, wlen, "the edge's CA for SSL inspection: %s",
+			    ans != NULL && str(ans, "error") != NULL ? str(ans,
+			    "error") : "not issued");
+		if (ans != NULL)
+			ucl_object_unref(ans);
+		return (ok);
+	}
 	/* An edge that is a vnet jail: what its agent does, done there. */
 	if (jail[0] != '\0' && !jail_kind_ok(str(j, "kind"), why, wlen))
 		return (false);

@@ -7640,8 +7640,10 @@ sdwan_modal_service(struct html *h)
 			h_raw(h, "</option>");
 		}
 		h_raw(h, "</select><small>IPPF and DPF by ipfw on each flow; DNF "
-		    "and PDNS by unbound, URLF and the middlebox by Squid, "
-		    "malware by c-icap and ClamAV, for the clients of a zone. "
+		    "and PDNS by unbound, URLF by Squid, the middlebox by "
+		    "SSLproxy (by Squid in a zone with a URLF or malware "
+		    "scanning), malware by c-icap and ClamAV, for the clients of "
+		    "a zone. "
 		    "Data loss prevention has no engine on FreeBSD.</small>"
 		    "</label>");
 		for (k = 0; k < 3; k++) {

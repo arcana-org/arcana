@@ -7,7 +7,9 @@
  * MEF 138's notifications.  A Security Event Notification (SEN, §6.2)
  * is issued for each subset of a Service Flow a Security Function
  * blocks and tells (R24): what the edges' rules logged (the record,
- * sdwan-security), what their unbound, Squid and c-icap blocked
+ * sdwan-security: SD-WAN's, and SSL inspection's reset of cleartext
+ * HTTP where an MBSF SSLproxy serves blocks it, the list unencrypted),
+ * what their unbound, Squid and c-icap blocked
  * (sdwan-block: DNF, PDNS, URLF, MBSF, MD+R, from the daemons' logs)
  * and what their Suricata found (sdwan-ids, Arcana's own function), as
  * the console reads the edges' events for its alerts.  Each has what Table 3 asks: the issuer, a UTC timestamp, an
@@ -437,11 +439,13 @@ sen_event(const char *edge_id, const char *edge_name, const ucl_object_t *e)
 		put(o, "function", function_name(fn));
 		put(o, "policy", pol);
 		put(o, "service", svc);
-		type = strcmp(list, "no-match") == 0 ? "OTHER" : "IOC";
+		type = strcmp(list, "no-match") == 0 || strcmp(list,
+		    "unencrypted") == 0 ? "OTHER" : "IOC";
 		snprintf(ety, sizeof(ety), "%s", strcmp(list, "no-match") == 0 ?
 		    "no match, blocked by policy" : strcmp(list, "quarantine") ==
 		    0 ? "Quarantine List match" : strcmp(list, "allow") == 0 ?
-		    "Allow List match" : "Block List match");
+		    "Allow List match" : strcmp(list, "unencrypted") == 0 ?
+		    "unencrypted HTTP, blocked" : "Block List match");
 		action = strcmp(list, "quarantine") == 0 ? "Quarantined" :
 		    strcmp(list, "allow") == 0 ? "Allowed" : "Blocked";
 		source_of(str(d, "src"), src, sizeof(src));
