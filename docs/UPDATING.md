@@ -93,6 +93,16 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### arcana-enrol checks the CA first; agent 0.305.0, console 0.454.0
+
+- arcana-enrol first asks the console for its CA (`GET /api/enrol`, no
+  token) and stops, the token unsent and still good, unless each root
+  is one the token pins.  An `-f` given with a token must be one of the
+  token's fingerprints, or nothing is sent.  Update the console before
+  running the new arcana-enrol against it: an older console has no
+  `GET /api/enrol`, and the new arcana-enrol stops there (the token
+  stays unused).  Tokens already made keep working.
+
 ### The agent's own pidfile, stale pidfiles, /dev; agent 0.304.0, console 0.453.0
 
 - The agent keeps /var/run/arcana-agent.pid its own: written back if

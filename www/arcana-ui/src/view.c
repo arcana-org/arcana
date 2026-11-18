@@ -2723,9 +2723,12 @@ modal(struct html *h)
 			h_raw(h, "<p>Run as root on the host, within an hour:"
 			    "</p><pre class=\"diff\">");
 			h_txt(h, app.enrol_cmd);
-			h_raw(h, "</pre><p class=\"dim\">-s enables and starts "
-			    "arcana-agent there; leave it out to only write the "
-			    "certificate.</p>");
+			h_raw(h, "</pre><p class=\"dim\">The token carries the "
+			    "SHA-256 of the console's CA: arcana-enrol checks "
+			    "the console by it before it sends the token, and "
+			    "the host trusts that CA alone. -s enables and "
+			    "starts arcana-agent there; leave it out to only "
+			    "write the certificate.</p>");
 		}
 		break;
 	case MODAL_TUNNEL:

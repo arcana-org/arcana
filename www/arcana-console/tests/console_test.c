@@ -13193,6 +13193,13 @@ ATF_TC_BODY(enrol, tc)
 	http("POST", "/api/enrol", "{\"token\":\"nope\",\"csr\":\"\"}", &r);
 	EXPECT(&r, 403);
 	resp_free(&r);
+	/* The roots, asked for without a token: what arcana-enrol checks
+	 * by the token's pins before it sends the token. */
+	http("GET", "/api/enrol", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "ca") != NULL && strstr(jstr(&r, "ca"),
+	    "BEGIN CERTIFICATE") != NULL, "%s", r.body);
+	resp_free(&r);
 
 	/* The host joins, by the address the console listens on: localhost
 	 * may be ::1 first, and where that is dropped rather than refused,
@@ -13224,8 +13231,8 @@ ATF_TC_BODY(enrol, tc)
 	ATF_CHECK(!run_prog(argv));
 	ATF_CHECK(system("grep -q 'pins no CA' run.out") == 0);
 	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
-	/* A token pinning another CA: what the console sends refused, by
-	 * the token alone, nothing written. */
+	/* A token pinning another CA: the console's CA refused, by the
+	 * token alone, before the token is sent; nothing written. */
 	ATF_REQUIRE((fp = fopen("bad.tok", "r")) != NULL);
 	ATF_REQUIRE(fgets(bad, sizeof(bad), fp) != NULL);
 	fclose(fp);
@@ -13240,17 +13247,33 @@ ATF_TC_BODY(enrol, tc)
 	ATF_CHECK(!run_prog(argv));
 	ATF_CHECK(system("grep -q 'not the one the token or -f pins' run.out") ==
 	    0);
+	ATF_CHECK(system("grep -q 'the token was not sent' run.out") == 0);
 	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
 	ATF_CHECK(access("host/host.pem", F_OK) != 0);
-	/* That used the token: another, its own pin the one checked. */
-	rc_act(CC "enrolment/create-token", "\"name\":\"lab\",\"host\":"
-	    "\"127.0.0.1\"", &r);
-	EXPECT(&r, 200);
-	snprintf(tok, sizeof(tok), "%s", jstr(&r, "token"));
-	resp_free(&r);
+	/* An -f the token does not carry: refused before anything is
+	 * asked. */
 	i = 0;
 	argv[i++] = tool;
 	argv[i++] = (char *)(uintptr_t)"-i";
+	argv[i++] = (char *)(uintptr_t)"-f";
+	argv[i++] = (char *)(uintptr_t)"00000000000000000000000000000000"
+	    "00000000000000000000000000000000";
+	argv[i++] = (char *)(uintptr_t)"-d";
+	argv[i++] = (char *)(uintptr_t)"host";
+	argv[i++] = url;
+	argv[i++] = tok;
+	argv[i] = NULL;
+	ATF_CHECK(!run_prog(argv));
+	ATF_CHECK(system("grep -q 'not a fingerprint the token carries' "
+	    "run.out") == 0);
+	ATF_CHECK(access("host/ca.pem", F_OK) != 0);
+	/* None of that sent the token: it enrols, with an -f that agrees
+	 * with it. */
+	i = 0;
+	argv[i++] = tool;
+	argv[i++] = (char *)(uintptr_t)"-i";
+	argv[i++] = (char *)(uintptr_t)"-f";
+	argv[i++] = pin;
 	argv[i++] = (char *)(uintptr_t)"-d";
 	argv[i++] = (char *)(uintptr_t)"host";
 	argv[i++] = url;

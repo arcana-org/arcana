@@ -254,10 +254,6 @@
 - The routing socket record.c reads carries every routing message:
   FreeBSD has no ROUTE_MSGFILTER (OpenBSD's) to have the kernel send
   RTM_IPFWLOG alone; the others are read and passed over.
-- arcana-enrol's -f pins the CA by the command the console shows; the
-  token itself does not carry the fingerprint (it is 32 random bytes,
-  looked up as they are): a token that does would let a host enrolled
-  from the bare token check its CA too.
 - To decide (the user's): BIRD that stops answering while a safe
   change waits leaves the unconfirmed file in place, as bird.c says
   ("one that died is not undone after"), so BIRD's next start reads a

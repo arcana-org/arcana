@@ -439,7 +439,10 @@ a host (`arcana-console:enrolment/create-token`: name, host, port); it
 is `arce1_` and base64url of 32 random bytes and the SHA-256 of each
 root of the CA (the console keeps the random bytes' SHA-256 alone),
 single use, valid an hour: one pasted text lets the host in and pins
-the CA it will trust.  `arcana-enrol(8)` on the host makes
+the CA it will trust.  `arcana-enrol(8)` on the host first asks for the
+CA's roots without the token (`GET /api/enrol`) and goes no further
+unless each is one the token pins (an `-f` must be one of the token's
+too): a console other than the token's is never sent it.  Then it makes
 a key and a certificate request and sends them with the token (`POST
 /api/enrol`, no session).  The console signs a certificate for the
 token's host, whatever the request's subject says, with `serverAuth` and

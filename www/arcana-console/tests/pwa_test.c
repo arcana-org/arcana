@@ -10645,6 +10645,11 @@ part_console_forms(void)
 	wait_js("document.querySelector('form[data-form=enrol-host] pre') && "
 	    "document.querySelector('form[data-form=enrol-host] pre')"
 	    ".textContent.includes('arcana-enrol')", 10);
+	/* One token, the CA's fingerprint in it: no -f beside it. */
+	wait_js("/^arcana-enrol -s \\S+ arce1_[A-Za-z0-9_-]{86}$/.test("
+	    "document.querySelector('form[data-form=enrol-host] pre')"
+	    ".textContent) && document.querySelector('form[data-form="
+	    "enrol-host]').textContent.includes('SHA-256 of the console')", 5);
 	run("document.querySelector('.modal button[data-act=close]').click()");
 	wait_js("!document.querySelector('.modal')", 5);
 

@@ -11,9 +11,11 @@
  * them; with -s, enables and starts arcana-agent with them.  The CA that
  * comes back is the agent's trust anchor: each of its certificates must
  * be one whose SHA-256 the token carries (the console's "arce1_" token:
- * base64url of its secret and the roots' SHA-256s) or -f names; a token
- * that carries none, and no -f, enrols only with -i, and over plain
- * HTTP only with -i too.
+ * base64url of its secret and the roots' SHA-256s) or -f names, an -f
+ * one the token carries too.  The CA is asked for first, without the
+ * token, and checked so before the token is sent; and again in the
+ * answer that brings the certificate.  A token that carries none, and
+ * no -f, enrols only with -i, and over plain HTTP only with -i too.
  */
 
 #include <sys/param.h>
@@ -55,11 +57,14 @@ extern char	**environ;
 static void	 usage(void) __dead2;
 static const char *ssl_err(void);
 static char	*csr_pem(EVP_PKEY *, const char *);
-static char	*post(const char *, const char *, bool);
+static char	*request(const char *, const char *, const char *, bool);
 static bool	 pin_parse(const char *, unsigned char *);
 static void	 token_pins(const char *, unsigned char (*)[32], size_t *,
 		    size_t);
-static void	 pins_check(const char *, unsigned char (*)[32], size_t);
+static void	 pins_check(const char *, unsigned char (*)[32], size_t,
+		    const char *);
+static void	 ca_precheck(const char *, unsigned char (*)[32], size_t,
+		    bool);
 static void	 write_file(int, const char *, const char *, mode_t);
 static void	 write_key(int, const char *, EVP_PKEY *);
 static bool	 run(char *const []);
@@ -113,12 +118,15 @@ csr_pem(EVP_PKEY *key, const char *name)
 }
 
 /*
- * POST body as JSON to url; the reply's body, or an error exit.  Plain
- * HTTP only when insecure: what comes back is the agent's trust anchor.
+ * method to url, with body as JSON unless NULL; the reply's body,
+ * whatever its status, or an error exit.  Plain HTTP only when
+ * insecure: what comes back is the agent's trust anchor.
  */
 static char *
-post(const char *url, const char *body, bool insecure)
+request(const char *method, const char *url, const char *body,
+    bool insecure)
 {
+	static bool	 warned;
 	struct url	*u;
 	FILE		*fp;
 	char		*buf;
@@ -133,11 +141,13 @@ post(const char *url, const char *body, bool insecure)
 		    "trust would travel in the clear; -i to enrol over plain "
 		    "HTTP all the same (the CA is checked by the token's pins)",
 		    url);
-	if (strcmp(u->scheme, "http") == 0)
+	if (strcmp(u->scheme, "http") == 0 && !warned) {
 		warnx("%s: not HTTPS; the token and the certificate travel in "
 		    "the clear", url);
-	if ((fp = fetchReqHTTP(u, "POST", "", "application/json", body)) ==
-	    NULL)
+		warned = true;
+	}
+	if ((fp = fetchReqHTTP(u, method, "", body != NULL ?
+	    "application/json" : NULL, body)) == NULL)
 		errx(1, "%s: %s", url, fetchLastErrString);
 	if ((buf = malloc(MAX_REPLY)) == NULL)
 		err(1, "malloc");
@@ -221,10 +231,12 @@ token_pins(const char *token, unsigned char (*pins)[32], size_t *np,
 
 /*
  * Each certificate of the CA the console sent one of the pinned: one
- * that is not, or none at all, and nothing is written.
+ * that is not, or none at all, and an exit that says what was not done
+ * (undone).
  */
 static void
-pins_check(const char *ca, unsigned char (*pins)[32], size_t npins)
+pins_check(const char *ca, unsigned char (*pins)[32], size_t npins,
+    const char *undone)
 {
 	unsigned char	 md[EVP_MAX_MD_SIZE];
 	unsigned int	 mdlen;
@@ -245,12 +257,66 @@ pins_check(const char *ca, unsigned char (*pins)[32], size_t npins)
 			;
 		if (i == npins)
 			errx(1, "the CA the console sent is not the one the token "
-			    "or -f pins (its certificate %zu): nothing written",
-			    n + 1);
+			    "or -f pins (its certificate %zu): is the URL the "
+			    "console's that made the token? %s", n + 1, undone);
 	}
 	BIO_free(b);
 	if (n == 0)
-		errx(1, "the console sent no CA certificate: nothing written");
+		errx(1, "the console sent no CA certificate: %s", undone);
+}
+
+/*
+ * The console's CA, asked for at api without the token, checked by the
+ * pins before the token goes anywhere: a console that is not the one
+ * the token was made by is not given it.  Its answer is parsed in a
+ * child in capability mode, as the one that brings the certificate is.
+ */
+static void
+ca_precheck(const char *api, unsigned char (*pins)[32], size_t npins,
+    bool insecure)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*o;
+	const ucl_object_t	*v;
+	char			*reply;
+	pid_t			 pid;
+	int			 status;
+
+	if (npins == 0)
+		return;
+	reply = request("GET", api, NULL, insecure);
+	if ((pid = fork()) == -1)
+		err(1, "fork");
+	if (pid == 0) {
+		caph_cache_catpages();
+		if (caph_enter() == -1)
+			err(1, "cap_enter");
+		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+		    UCL_PARSER_DISABLE_MACRO | UCL_PARSER_NO_TIME);
+		o = NULL;
+		if (ucl_parser_add_string(p, reply, 0))
+			o = ucl_parser_get_object(p);
+		ucl_parser_free(p);
+		if (o == NULL)
+			errx(1, "the console did not answer with JSON: %.200s; "
+			    "the token was not sent", reply);
+		if ((v = ucl_object_lookup_path(o, "error.message")) != NULL)
+			errx(1, "the console refused: %s; the token was not "
+			    "sent", ucl_object_tostring(v));
+		if ((v = ucl_object_lookup(o, "ca")) == NULL ||
+		    ucl_object_type(v) != UCL_STRING)
+			errx(1, "the console's answer has no CA: %.200s; the "
+			    "token was not sent", reply);
+		pins_check(ucl_object_tostring(v), pins, npins,
+		    "the token was not sent");
+		_exit(0);
+	}
+	free(reply);
+	while (waitpid(pid, &status, 0) == -1)
+		if (errno != EINTR)
+			err(1, "waitpid");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		exit(1);
 }
 
 /*
@@ -376,7 +442,8 @@ main(int argc, char *argv[])
 	pid_t			 runner;
 	unsigned char		*json;
 	unsigned char		 pins[MAX_PINS][32];
-	size_t			 npins;
+	const char		*fargs[MAX_PINS];
+	size_t			 npins, nf, j;
 	long			 port;
 	bool			 start, insecure;
 	int			 ch;
@@ -399,6 +466,7 @@ main(int argc, char *argv[])
 		case 'f':
 			if (npins == MAX_PINS)
 				errx(1, "at most %d fingerprints", MAX_PINS);
+			fargs[npins] = optarg;
 			if (!pin_parse(optarg, pins[npins++]))
 				errx(1, "%s: not a SHA-256 fingerprint", optarg);
 			break;
@@ -427,7 +495,19 @@ main(int argc, char *argv[])
 		usage();
 	url = argv[0];
 	token = argv[1];
+	nf = npins;
 	token_pins(token, pins, &npins, MAX_PINS);
+	/* An -f the token says otherwise of: one of the two is not this
+	 * console's, and neither is trusted. */
+	for (i = 0; i < nf && npins > nf; i++) {
+		for (j = nf; j < npins && memcmp(pins[i], pins[j], 32) != 0;
+		    j++)
+			;
+		if (j == npins)
+			errx(1, "-f %s is not a fingerprint the token carries: "
+			    "is the token this console's? nothing sent",
+			    fargs[i]);
+	}
 	/* Nothing to check the CA by: the agent would trust whatever came. */
 	if (npins == 0 && !insecure)
 		errx(1, "the token pins no CA, and no -f does: -i to trust the "
@@ -443,6 +523,7 @@ main(int argc, char *argv[])
 	snprintf(capath, sizeof(capath), "%s/ca.pem", dir);
 	snprintf(certpath, sizeof(certpath), "%s/host.pem", dir);
 	snprintf(keypath, sizeof(keypath), "%s/host.key", dir);
+	ca_precheck(api, pins, npins, insecure);
 	if (mkdir(dir, 0755) == -1 && errno != EEXIST)
 		err(1, "mkdir %s", dir);
 	if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
@@ -495,7 +576,7 @@ main(int argc, char *argv[])
 	ucl_object_unref(body);
 	free(csr);
 
-	reply = post(api, (const char *)json, insecure);
+	reply = request("POST", api, (const char *)json, insecure);
 	free(json);
 	/*
 	 * Capability mode from here (capsicum(4)): the console has
@@ -524,7 +605,7 @@ main(int argc, char *argv[])
 	if (cert == NULL || ca == NULL)
 		errx(1, "the console's answer has no certificate: %.200s",
 		    reply);
-	pins_check(ca, pins, npins);
+	pins_check(ca, pins, npins, "nothing written");
 
 	write_key(dfd, "host.key", key);
 	write_file(dfd, "host.pem", cert, 0644);

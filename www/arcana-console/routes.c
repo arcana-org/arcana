@@ -162,7 +162,7 @@ const struct route routes[] = {
 	{ "/api/auth/logout", api_logout, NULL,
 	    HTTP_METHOD_POST },
 	{ "/api/enrol", api_enrol, NULL,
-	    HTTP_METHOD_POST },
+	    HTTP_METHOD_GET | HTTP_METHOD_POST },
 	{ "^/api/notif/[0-9a-f]{1,16}/capabilities$", api_notif_capabilities,
 	    NULL, HTTP_METHOD_GET },
 	{ "^/api/notif/[0-9a-f]{1,16}/relay-notification$", api_notif_relay,

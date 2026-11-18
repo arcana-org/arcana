@@ -15,7 +15,8 @@
  * the server list.  The token is "arce1_" and base64url of 32 random
  * bytes and the SHA-256 of each root the host is to trust (ETOKEN_PINS
  * at most): one pasted text both lets the host in and pins the CA it
- * gets back; the console keeps the random bytes' SHA-256 alone (a
+ * gets back, which arcana-enrol asks for first and checks before it
+ * sends the token (GET /api/enrol); the console keeps the random bytes' SHA-256 alone (a
  * cluster's log does, its write that spends one the first to win, the
  * token run out by the leader's clock: nodes.c).  All EC
  * P-256, signed with SHA-256.  The console's
@@ -938,6 +939,8 @@ enrol_enabled(void)
  * credential.
  * The certificate is for the host the token was made for, whatever the
  * request's subject says.  The host joins the server list.
+ * GET /api/enrol: {ca}, the roots alone, for arcana-enrol(8) to check
+ * by the token's pins before it sends the token.
  */
 int
 api_enrol(struct http_request *req)
@@ -967,6 +970,16 @@ api_enrol(struct http_request *req)
 	err = NULL;
 	if (cfg.tls_ca_key == NULL)
 		return (reply_error(req, 409, "no_ca", "enrolment is off"));
+	if (req->method == HTTP_METHOD_GET) {
+		if ((capem = anchors_pem(cfg.tls_ca)) == NULL)
+			return (reply_error(req, 500, "enrol",
+			    "no root in the CA file"));
+		o = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(o, ucl_object_fromstring(capem), "ca", 0,
+		    false);
+		free(capem);
+		return (reply_json(req, 200, o));
+	}
 	if ((body = read_json(req)) == NULL)
 		return (reply_error(req, 400, "bad_request",
 		    "expected a JSON object"));

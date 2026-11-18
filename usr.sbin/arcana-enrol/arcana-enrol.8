@@ -2,7 +2,7 @@
 .\"
 .\" Copyright (c) 2026 Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>
 .\"
-.Dd November 12, 2026
+.Dd November 18, 2026
 .Dt ARCANA-ENROL 8
 .Os
 .Sh NAME
@@ -30,9 +30,19 @@ with the one-time
 the console issued for this host, and writes what comes back:
 the token,
 .Dq arce1_
-and base64url, carries the console's secret and the SHA-256 of each
-certificate of the CA this host is to trust, and each certificate of
-the CA the console sends must be one of them:
+and base64url of the console's 32-byte secret followed by the SHA-256
+of each certificate of the CA this host is to trust, pins that CA.
+Before the token is sent,
+.Nm
+asks
+.Ar console-url
+for its CA without it, and goes no further unless each of its
+certificates is one the token pins: a console other than the one that
+made the token is not given it.
+Each certificate of the CA that comes back with this host's certificate
+must be one of them too, and then
+.Nm
+writes:
 .Pp
 .Bl -tag -width "host.key" -compact -offset indent
 .It Pa host.key
@@ -71,17 +81,22 @@ and
 Write the files there instead of
 .Pa /usr/local/etc/arcana .
 .It Fl f Ar sha256
-Another SHA-256 fingerprint of a CA to trust besides those the token
-carries, as
+A SHA-256 fingerprint of a CA to trust, as
 .Ql openssl x509 -noout -fingerprint -sha256
 of its
 .Pa ca.pem
-shows it, with colons or without); may be given more than once.
+shows it, with colons or without; may be given more than once.
+With a token that carries fingerprints, each
+.Fl f
+must be one of them, or
+.Nm
+stops before it sends anything: the fingerprint and the token say
+different consoles.
 Each certificate of the CA the console sends must be one the token or
 .Fl f
 names, or
 .Nm
-writes nothing: the CA is what
+sends no token and writes nothing: the CA is what
 .Xr arcana-agent 8
 is to trust.
 .It Fl i
@@ -148,6 +163,9 @@ The token works once and for an hour.
 .Xr arcana-console 8 ,
 .Xr arcanactl 8
 .Sh SECURITY
+The fingerprints the token carries are whole SHA-256s, the same that
+.Ql openssl x509 -fingerprint -sha256
+shows, so one can be told against the CA by eye.
 The console's own HTTPS certificate is checked by
 .Xr fetch 3
 against the system's trusted CAs.
@@ -158,6 +176,9 @@ or with
 set, whoever can read the connection can take the token and have the
 certificate issued to a key of their own; the CA this host trusts is
 the one the token pins all the same, unless it pins none.
+Asking for the CA before the token is sent keeps the token from a
+console that is not the token's, but not from one who relays the
+connection to the right console unseen: that is what HTTPS is for.
 .Pp
 Once the console has answered,
 .Nm
@@ -165,6 +186,8 @@ runs in capability mode
 .Pq Xr capsicum 4 :
 the answer is parsed and the files are written through the directory
 opened beforehand, and nothing else of the system is reachable.
+The answer to the first question, the CA alone, is parsed and checked
+by a child in capability mode too.
 .Xr sysrc 8
 and
 .Xr service 8
