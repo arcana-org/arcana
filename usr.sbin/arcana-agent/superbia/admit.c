@@ -274,6 +274,14 @@ terminal_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
 	return (stream_opened(req, msg, s, terminal_open));
 }
 
+static int
+terminal_as_sopen(cbl_req *req, const cbl_msg *msg, cbl_stream *s,
+    void *arg __unused)
+{
+
+	return (stream_opened(req, msg, s, terminal_as_open));
+}
+
 static const struct cbl_op stream_ops[] = {
 	{ .cmd = YS_ZFS_SEND, .flags = STREAM_OPF, .name = "zfs-send",
 	    .stream_open = zfs_send_sopen },
@@ -294,9 +302,17 @@ static const struct cbl_op stream_ops[] = {
 	{ .cmd = YS_TERMINAL, .flags = CBL_OPF_STREAM | CBL_OPF_AUTH |
 	    CBL_OPF_NACM, .name = "terminal",
 	    .stream_open = terminal_sopen },
+	/* A mapped login, login -f: no password, so nacm:default-deny-all,
+	 * run only by a rule that permits it (TERM-3's operator rule, the
+	 * admin group's permit-all), and then only as the host's own
+	 * --terminal-users allows (none: refused, EPERM).  Last: the tests'
+	 * --test-unregister terminal-as leaves it out, as an agent before
+	 * it. */
+	{ .cmd = YS_TERMINAL_AS, .flags = STREAM_OPF, .name = "terminal-as",
+	    .stream_open = terminal_as_sopen },
 };
 
-static const struct cbl_family_def stream_def = {
+static struct cbl_family_def stream_def = {
 	.abi = CBL_FAMILY_ABI,
 	.name = YS_FAMILY_NAME,
 	.version = 1,
@@ -309,5 +325,7 @@ stream_register(cbl_ctx *ctx)
 {
 	cbl_family	*fam;
 
+	if (opts.test_no_terminal_as)
+		stream_def.nops = nitems(stream_ops) - 1;
 	return (cbl_family_register(ctx, &stream_def, NULL, &fam));
 }

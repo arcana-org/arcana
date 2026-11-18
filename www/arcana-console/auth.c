@@ -1045,6 +1045,20 @@ session_by_token(struct http_request *req)
 	    s->ldap || (s->pw && !cfg.password_full)));
 }
 
+/*
+ * Whether the request's session was opened by a security key: no API
+ * token, no password (the console's or the directory's).  What opens a
+ * terminal asks it, and what changes mapped logins.
+ */
+bool
+session_by_key(struct http_request *req)
+{
+	struct session	*s;
+
+	return ((s = session_of(req)) != NULL && s->tok[0] == '\0' &&
+	    !s->ldap && !s->pw);
+}
+
 /* How the session was opened: by a key, a directory or a password. */
 enum by { BY_KEY, BY_LDAP, BY_PASSWORD };
 

@@ -39,7 +39,13 @@ module arcana-stream {
      its new size, the host's chunk with login the account that
      logged in as utmpx(5) has it; the stream's end hangs the session
      up (SIGHUP), and the session's end, its shell gone, ends the
-     stream.  Each opened by an
+     stream; terminal-as (7), the same with account= besides and from=
+     required, a mapped login: login -f -h <from> -- <account> for the
+     request's user (its cblink:user, the name NACM judged), as the
+     host's own terminal-users file allows (nacm:default-deny-all, as
+     the operation's flags mark it), the session established once
+     utmpx(5) says that account logged in, its opened's JSON naming
+     the account and the scope.  Each opened by an
      open structure, accepted by an opened, each data message a chunk.
      The zfs-send, zfs-receive, suricata-pcap-put and suricata-pcap-get
      operations of arcana.yaml, moved off the interim family (Y-3).";

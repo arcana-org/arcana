@@ -59,6 +59,9 @@ static const uint8_t		op_read[] = {
 	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_READ
 };
 static const struct op_rule	op_rules[] = OP_RULES;
+/* An operation's rule (TERM-3's terminal and terminal-as). */
+#define	RULE_TYPE_OPERATION	\
+	IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_PROTOCOL_OPERATION
 
 /*
  * The default rules, in a: group admin as the head says; group
@@ -94,9 +97,17 @@ nacm_default(cbl_yarena *a)
 		or[i].has_module_name = true;
 		or[i].module_name.which = 1;
 		or[i].module_name.v.m1 = op_rules[i].module;
-		or[i].rule_type =
-		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
-		or[i].path = op_rules[i].path;
+		if (op_rules[i].rpc != NULL) {
+			or[i].rule_type =
+			    RULE_TYPE_OPERATION;
+			or[i].has_rpc_name = true;
+			or[i].rpc_name.which = 1;
+			or[i].rpc_name.v.m1 = op_rules[i].rpc;
+		} else {
+			or[i].rule_type =
+			    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+			or[i].path = op_rules[i].path;
+		}
 		or[i].has_access_operations = true;
 		or[i].access_operations.which = 1;
 		or[i].access_operations.v.m1.p = op_rules[i].exec ? op_exec :

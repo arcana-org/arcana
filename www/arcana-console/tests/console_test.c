@@ -28289,6 +28289,481 @@ ATF_TC_BODY(terminal_socket, tc)
 	free(au);
 }
 
+
+/* The hosts' entity-tag as read now, into e. */
+static void
+hosts_tag(char *e, size_t len)
+{
+	struct resp	r;
+
+	http("GET", CC "hosts", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE_MSG(resp_header(&r, "etag", e, len) != NULL, "%s", r.head);
+	resp_free(&r);
+}
+
+/* A change of mapped logins, with If-Match the hosts' tag as read. */
+static void
+term_http(const char *method, const char *path, const char *body,
+    struct resp *r)
+{
+	char	e[64], hdr[100];
+
+	hosts_tag(e, sizeof(e));
+	snprintf(hdr, sizeof(hdr), "If-Match: %s\r\n", e);
+	http_with(method, path, hdr, body, r);
+}
+
+/* r3_host_set() with If-Match. */
+static void
+r3_host_set_t(const char *id, const char *members, struct resp *r)
+{
+	char	path[128], *body;
+
+	snprintf(path, sizeof(path), CC "hosts/host=%s", id);
+	ATF_REQUIRE(asprintf(&body, "{\"arcana-console:host\":[{\"id\":\"%s\""
+	    "%s%s}]}", id, members[0] != '\0' ? "," : "", members) != -1);
+	term_http("PATCH", path, body, r);
+	free(body);
+}
+
+/* The same, the first message asking for the password prompt. */
+static void
+tws_open_prompt(struct tws *w, const char *sid)
+{
+	char	ask[300];
+
+	memset(w, 0, sizeof(*w));
+	w->s = ws_open("/api/terminal");
+	snprintf(ask, sizeof(ask), "{\"server\":\"%s\",\"prompt\":true,"
+	    "\"rows\":30,\"cols\":100}", sid);
+	tws_send(w, 1, ask, strlen(ask));
+}
+
+/*
+ * Mapped logins: a console operator adding a host may not set them, a
+ * host operator may not map; the owner maps itself to alice (audited,
+ * with its author); its terminal is login -f of alice, confirmed by the
+ * host (a terminal-confirmed row), what is typed reaching the shell;
+ * the mapping changed under it hangs it up, and removed under another;
+ * a host refusal (an account whose shell is nologin) a terminal-refused
+ * with its reason; "prompt": true opens the prompt where it is allowed
+ * and not where it is never; the switch audited both ways; with never,
+ * one with no mapping refused; an agent without terminal-as said to be
+ * one, no prompt in its place.
+ */
+CONSOLE_TC(terminal_mapped, "Mapped logins: who maps, login -f confirmed, "
+    "the mapping changed or removed hangs up, the switch, an old agent")
+ATF_TC_BODY(terminal_mapped, tc)
+{
+	struct authn	 a, c, d;
+	struct resp	 r;
+	struct tws	 w;
+	char		 id[16], owner[sizeof(cookie)], path[128];
+	char		 wtok[96], body[1200], uri[900];
+	char		*au;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	put("passwd", "alice:$6$x:1001:1001::0:0:Alice:/home/alice:/bin/sh\n"
+	    "bob:$6$x:1002:1002::0:0:Bob:/:/usr/sbin/nologin\n"
+	    "quiet:$6$x:1003:1003::0:0:Quiet:/home/quiet:/bin/sh\n");
+	/* Mapped, but the host has no terminal-users: its reason, not an
+	 * old agent's. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/terminal-login=.,admin",
+	    id);
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":"
+	    "\".\",\"user\":\"admin\",\"account\":\"alice\"}]}", &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "mapped logins are off on this host",
+	    true), "%s", w.last);
+	ATF_CHECK(!has(w.last, "update it"));
+	close(w.s);
+	put("terminal-users", "host alice admin opal\nhost bob admin\n"
+	    "host quiet admin\n");
+	ATF_REQUIRE(chmod("terminal-users", 0600) == 0);
+	/* A session that writes nothing, its login told: opened and closed,
+	 * confirmed, never refused. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/terminal-login=.,admin",
+	    id);
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":"
+	    "\".\",\"user\":\"admin\",\"account\":\"quiet\"}]}", &r);
+	resp_free(&r);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "\"login\":\"quiet\"", true), "%s",
+	    w.last);
+	close(w.s);
+	au = term_audit("quiet requested, confirmed");
+	ATF_CHECK_MSG(au != NULL && has(au, "as quiet (requested") &&
+	    !has(au, ", as quiet:"), "%s", au != NULL ? au : "");
+	free(au);
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":"
+	    "\".\",\"user\":\"admin\",\"account\":\"alice\"}]}", &r);
+	resp_free(&r);
+	/* A write token may not change them, nor a change without
+	 * If-Match, nor one from a stale read. */
+	rc_act(CC "tokens/create", "\"name\":\"w\",\"kind\":\"write\"", &r);
+	EXPECT(&r, 200);
+	snprintf(wtok, sizeof(wtok), "%s", jstr(&r, "token"));
+	resp_free(&r);
+	snprintf(path, sizeof(path), CC "hosts/host=%s", id);
+	snprintf(body, sizeof(body), "{\"arcana-console:host\":[{\"id\":\"%s\","
+	    "\"terminal-prompt\":\"never\"}]}", id);
+	http_bearer("PATCH", path, wtok, body, &r);
+	ATF_CHECK_MSG(r.status == 403 && has(r.body, "security key"), "%d %s",
+	    r.status, r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	snprintf(uri, sizeof(uri), "%s", jstr(&r,
+	    "arcana-console:hosts.host.0.uri"));
+	resp_free(&r);
+	/* The entry whole, as a page that read it before the mapping
+	 * would put it: no If-Match, refused; a stale one, refused. */
+	snprintf(body, sizeof(body), "{\"arcana-console:host\":[{\"id\":\"%s\","
+	    "\"name\":\"lab\",\"uri\":\"%s\"}]}", id, uri);
+	http("PUT", path, body, &r);
+	ATF_CHECK_MSG(r.status == 428, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http_with("PUT", path, "If-Match: \"0-0\"\r\n", body, &r);
+	ATF_CHECK_MSG(r.status == 412, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"account\":\"alice\""), "%s", r.body);
+	resp_free(&r);
+
+	/* A console operator adds hosts, but sets no mapping on one. */
+	r1_role("cops", "operator", "operator");
+	cc_user(&d, "cora", "\"role\":[\"cops\"]", -8);
+	http("PATCH", CC "hosts", "{\"arcana-console:hosts\":{\"host\":[{"
+	    "\"id\":\"0badf00d\",\"name\":\"far\",\"uri\":\"tcp://127.0.0.1:9\","
+	    "\"terminal-login\":[{\"jail\":\".\",\"user\":\"cora\",\"account\":"
+	    "\"alice\"}]}]}}", &r);
+	ATF_CHECK_MSG(r.status == 403 && has(r.body, "admins' to set"),
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("PATCH", CC "hosts", "{\"arcana-console:hosts\":{\"host\":[{"
+	    "\"id\":\"0badf00d\",\"name\":\"far\",\"uri\":\"tcp://127.0.0.1:9\","
+	    "\"terminal-prompt\":\"never\"}]}}", &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	/* An operator of the host may not map anyone. */
+	r1_role("ops", "member", "operator");
+	cc_user(&c, "opal", "\"role\":[\"ops\"]", -8);
+	r3_host_set(id, "\"terminal-login\":[{\"jail\":\".\",\"user\":\"opal\","
+	    "\"account\":\"alice\"}]", &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	/* No account that is no name. */
+	r3_host_set_t(id, "\"terminal-login\":[{\"jail\":\".\",\"user\":\"admin\","
+	    "\"account\":\"-f\"}]", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* The owner, an admin of the host, maps itself, by the entry's own
+	 * path as the page writes it. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/terminal-login=.,admin",
+	    id);
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":\".\","
+	    "\"user\":\"admin\",\"account\":\"alice\"}]}", &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"account\":\"alice\"") && has(r.body,
+	    "\"author\":\"user admin\""), "%s", r.body);
+	resp_free(&r);
+	au = term_audit("terminal-mapping");
+	ATF_CHECK_MSG(au != NULL && has(au, "console user admin logged in as "
+	    "alice"), "%s", au != NULL ? au : "");
+	free(au);
+
+	/* Its terminal: login -f alice, confirmed. */
+	tws_open(&w, id, NULL);
+	ATF_REQUIRE_MSG(tws_until(&w, "\"account\":\"alice\"", true), "%s",
+	    w.last);
+	ATF_CHECK_MSG(tws_until(&w, "-- alice", false), "%s", w.out);
+	ATF_CHECK_MSG(has(w.out, "args: -f -h unix"), "%s", w.out);
+	ATF_CHECK_MSG(tws_until(&w, "\"login\":\"alice\"", true), "%s",
+	    w.last);
+	tws_type(&w, "echo he''llo\r");
+	ATF_CHECK_MSG(tws_until(&w, "hello", false), "%s", w.out);
+	au = term_audit("terminal-confirmed");
+	ATF_CHECK_MSG(au != NULL && has(au, "alice requested, alice logged "
+	    "in: confirmed"), "%s", au != NULL ? au : "");
+	free(au);
+	/* The mapping changed (another account): hung up. */
+	r3_host_set_t(id, "\"terminal-login\":[{\"jail\":\".\",\"user\":\"admin\","
+	    "\"account\":\"bob\"}]", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	ATF_CHECK_MSG(tws_until(&w, "the mapped login was removed or changed",
+	    true), "%s", w.last);
+	close(w.s);
+	au = term_audit("alice requested, confirmed");
+	ATF_CHECK(au != NULL);
+	free(au);
+
+	/* The host refuses bob: its reason in the trail. */
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "does not log in", true), "%s", w.last);
+	close(w.s);
+	au = term_audit("does not log in");
+	ATF_CHECK_MSG(au != NULL && has(au, "terminal-refused") && has(au,
+	    ", as bob"), "%s", au != NULL ? au : "");
+	free(au);
+
+	/* Back to alice; removed under the session: hung up. */
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":\".\","
+	    "\"user\":\"admin\",\"account\":\"alice\"}]}", &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	tws_open(&w, id, NULL);
+	ATF_REQUIRE_MSG(tws_until(&w, "\"login\":\"alice\"", true), "%s",
+	    w.last);
+	term_http("DELETE", path, NULL, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	ATF_CHECK_MSG(tws_until(&w, "the mapped login was removed or changed",
+	    true), "%s", w.last);
+	close(w.s);
+	au = term_audit("no longer logged in as alice");
+	ATF_CHECK(au != NULL);
+	free(au);
+
+	/* Mapped, the prompt asked for where it is allowed: the prompt. */
+	term_http("PUT", path, "{\"arcana-console:terminal-login\":[{\"jail\":\".\","
+	    "\"user\":\"admin\",\"account\":\"alice\"}]}", &r);
+	resp_free(&r);
+	tws_open_prompt(&w, id);
+	ATF_CHECK_MSG(tws_until(&w, "login: ", false), "%s", w.out);
+	ATF_CHECK_MSG(!has(w.last, "\"account\""), "%s", w.last);
+
+	/* No password prompt, by its own leaf: the prompt open under it
+	 * hung up; audited; the prompt asked for is the mapped login all
+	 * the same. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/terminal-prompt", id);
+	term_http("PUT", path, "{\"arcana-console:terminal-prompt\":"
+	    "\"never\"}", &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	ATF_CHECK_MSG(tws_until(&w, "the host's password prompt was turned "
+	    "off", true), "%s", w.last);
+	close(w.s);
+	au = term_audit("the password prompt turned off");
+	ATF_CHECK(au != NULL);
+	free(au);
+	tws_open_prompt(&w, id);
+	ATF_CHECK_MSG(tws_until(&w, "\"account\":\"alice\"", true), "%s",
+	    w.last);
+	close(w.s);
+	/* With no mapping: refused, and said. */
+	snprintf(path, sizeof(path), CC "hosts/host=%s/terminal-login=.,admin",
+	    id);
+	term_http("DELETE", path, NULL, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "allows no password prompt", true), "%s",
+	    w.last);
+	ATF_CHECK(!has(w.out, "login: "));
+	close(w.s);
+	r3_host_set_t(id, "\"terminal-prompt\":\"allowed\"", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	au = term_audit("the password prompt allowed again");
+	ATF_CHECK(au != NULL);
+	free(au);
+
+	/* An agent without terminal-as: said, never the prompt instead. */
+	r3_host_set_t(id, "\"terminal-login\":[{\"jail\":\".\",\"user\":\"admin\","
+	    "\"account\":\"alice\"}]", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	/* --terminal-users none: off, said so, not an old agent. */
+	agent_restart_with("--terminal-users", "none");
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "mapped logins are off on this host",
+	    true), "%s", w.last);
+	ATF_CHECK(!has(w.last, "update it"));
+	close(w.s);
+	/* An agent from before terminal-as (the tests' --test-unregister):
+	 * said, never the prompt instead. */
+	agent_restart_with("--test-unregister", "terminal-as");
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "this host's agent cannot do mapped logins",
+	    true), "%s", w.last);
+	ATF_CHECK_MSG(!has(w.out, "login: "), "%s", w.out);
+	close(w.s);
+}
+
+/*
+ * TERM-3, not widened: the operator rule-list's terminal and
+ * terminal-as are synchronized only to a host whose exec-default is
+ * permit; with deny, a sync leaves them out and the host's operator
+ * gets no terminal; permit again, they are back.
+ */
+CONSOLE_TC(terminal_nacm_deny, "With the hosts' default for actions deny, "
+    "the operators' rule-list has no terminal rules and an operator no "
+    "terminal; with permit, both")
+ATF_TC_BODY(terminal_nacm_deny, tc)
+{
+	struct authn	 a, b;
+	struct resp	 r;
+	struct tws	 w;
+	char		 id[16], owner[sizeof(cookie)], bob[sizeof(cookie)];
+	char		 sync[256], nacm[160];
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	snprintf(sync, sizeof(sync), CC "hosts/host=%s/nacm-sync", id);
+	snprintf(nacm, sizeof(nacm), FLEET "%s/ietf-netconf-acm:nacm", id);
+	r1_role("ops", "member", "operator");
+	cc_user(&b, "bob", "\"role\":[\"ops\"]", -8);
+	snprintf(bob, sizeof(bob), "%s", cookie);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
+	    "\"nacm-exec-default\":\"deny\"}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	rc_act(sync, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", nacm, NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"name\":\"system-read\"") && !has(r.body,
+	    "\"name\":\"terminal-as\"") && !has(r.body, "\"rpc-name\":"
+	    "\"terminal\""), "%s", r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", bob);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "access denied", true), "%s", w.last);
+	ATF_CHECK(!has(w.out, "login: "));
+	close(w.s);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	http("PATCH", CC "settings", "{\"arcana-console:settings\":{"
+	    "\"nacm-exec-default\":\"permit\"}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	rc_act(sync, NULL, &r);
+	resp_free(&r);
+	http("GET", nacm, NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"name\":\"terminal-as\""), "%s", r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", bob);
+	tws_open(&w, id, NULL);
+	ATF_CHECK_MSG(tws_until(&w, "login: ", false), "%s / %s", w.last,
+	    w.out);
+	close(w.s);
+}
+
+/*
+ * A host's entry changed by one YANG Patch each, as the page's forms
+ * send them: the alerts' mutes, two at once each way, all of it in one
+ * request; the rollback timer emptied on a host that has none, saved;
+ * a readdress by an admin of the host who is no owner that would take
+ * out the peer name refused whole, its address as it was.
+ */
+CONSOLE_TC(host_entry_patches, "The host forms' YANG Patches: mutes two "
+    "at once, an empty rollback timer, a readdress refused whole")
+ATF_TC_BODY(host_entry_patches, tc)
+{
+	struct authn	 a, b;
+	struct resp	 r;
+	char		 id[16], owner[sizeof(cookie)], path[128], uri[900];
+	char		 body[2000], nuri[1000];
+	const char	*p;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	cc_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(owner, sizeof(owner), "%s", cookie);
+	snprintf(path, sizeof(path), CC "hosts/host=%s", id);
+	/* Two ticked at once. */
+	http_with("PATCH", path, YANG_PATCH, "{\"ietf-yang-patch:yang-patch\":{"
+	    "\"patch-id\":\"mute\",\"edit\":[{\"edit-id\":\"u\",\"operation\":"
+	    "\"merge\",\"target\":\"/notify-mute=utilization\",\"value\":{"
+	    "\"arcana-console:notify-mute\":[\"utilization\"]}},{\"edit-id\":"
+	    "\"s\",\"operation\":\"merge\",\"target\":\"/notify-mute=sessions\","
+	    "\"value\":{\"arcana-console:notify-mute\":[\"sessions\"]}},{"
+	    "\"edit-id\":\"a\",\"operation\":\"remove\",\"target\":"
+	    "\"/notify-mute=all\"}]}}", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"notify-mute\":[\"utilization\","
+	    "\"sessions\"]"), "%s", r.body);
+	resp_free(&r);
+	/* One unticked, another ticked: in one request. */
+	http_with("PATCH", path, YANG_PATCH, "{\"ietf-yang-patch:yang-patch\":{"
+	    "\"patch-id\":\"mute\",\"edit\":[{\"edit-id\":\"u\",\"operation\":"
+	    "\"remove\",\"target\":\"/notify-mute=utilization\"},{\"edit-id\":"
+	    "\"s\",\"operation\":\"remove\",\"target\":\"/notify-mute=sessions\""
+	    "},{\"edit-id\":\"a\",\"operation\":\"merge\",\"target\":"
+	    "\"/notify-mute=all\",\"value\":{\"arcana-console:notify-mute\":["
+	    "\"all\"]}}]}}", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(has(r.body, "\"notify-mute\":[\"all\"]"), "%s", r.body);
+	resp_free(&r);
+	/* Two unticked at once: none. */
+	http_with("PATCH", path, YANG_PATCH, "{\"ietf-yang-patch:yang-patch\":{"
+	    "\"patch-id\":\"mute\",\"edit\":[{\"edit-id\":\"u\",\"operation\":"
+	    "\"remove\",\"target\":\"/notify-mute=utilization\"},{\"edit-id\":"
+	    "\"a\",\"operation\":\"remove\",\"target\":\"/notify-mute=all\"}]}}",
+	    &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_MSG(!has(r.body, "notify-mute"), "%s", r.body);
+	snprintf(uri, sizeof(uri), "%s", jstr(&r,
+	    "arcana-console:hosts.host.0.uri"));
+	resp_free(&r);
+	/* The rollback timer emptied where there is none: saved. */
+	http_with("PATCH", path, YANG_PATCH, "{\"ietf-yang-patch:yang-patch\":{"
+	    "\"patch-id\":\"safe-wait\",\"edit\":[{\"edit-id\":\"safe-wait\","
+	    "\"operation\":\"remove\",\"target\":\"/safe-wait\"}]}}", &r);
+	ATF_CHECK_MSG(r.status == 200 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	/* A peer name, the owner's to say; then an admin of the host who
+	 * is no owner readdresses it with none: refused whole. */
+	r3_host_set(id, "\"peer-name\":\"lab-peer\"", &r);
+	ATF_CHECK_MSG(r.status == 204, "%d %s", r.status, r.body);
+	resp_free(&r);
+	r1_role("hadm", "member", "admin");
+	cc_user(&b, "hana", "\"role\":[\"hadm\"]", -8);
+	p = strncmp(uri, "unix:", 5) == 0 ? uri + 5 : uri;
+	snprintf(nuri, sizeof(nuri), "unix:/%s", p);
+	snprintf(body, sizeof(body), "{\"ietf-yang-patch:yang-patch\":{"
+	    "\"patch-id\":\"readdress\",\"edit\":[{\"edit-id\":\"uri\","
+	    "\"operation\":\"merge\",\"target\":\"/uri\",\"value\":{"
+	    "\"arcana-console:uri\":\"%s\"}},{\"edit-id\":\"peer-name\","
+	    "\"operation\":\"remove\",\"target\":\"/peer-name\"}]}}", nuri);
+	http_with("PATCH", path, YANG_PATCH, body, &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cookie, sizeof(cookie), "%s", owner);
+	http("GET", CC "hosts", NULL, &r);
+	ATF_CHECK_STREQ(uri, jstr(&r, "arcana-console:hosts.host.0.uri"));
+	ATF_CHECK_STREQ("lab-peer", jstr(&r,
+	    "arcana-console:hosts.host.0.peer-name"));
+	resp_free(&r);
+}
+
+
 ATF_TP_ADD_TCS(tp)
 {
 	/* The longest first: kyua starts them in this order. */
@@ -28503,6 +28978,9 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, authz_no_user);
 	ATF_TP_ADD_TC(tp, authz_stream);
 	ATF_TP_ADD_TC(tp, terminal_socket);
+	ATF_TP_ADD_TC(tp, terminal_mapped);
+	ATF_TP_ADD_TC(tp, terminal_nacm_deny);
+	ATF_TP_ADD_TC(tp, host_entry_patches);
 	ATF_TP_ADD_TC(tp, authz_hosts);
 	ATF_TP_ADD_TC(tp, authz_sdwan);
 	ATF_TP_ADD_TC(tp, sessions_many);

@@ -234,6 +234,22 @@ user_id(const char *name)
 	return (ucl_str(u, "id"));
 }
 
+/* The name of the user whose id is id; NULL: none has it (removed). */
+const char *
+user_of_id(const char *id)
+{
+	const ucl_object_t	*u;
+	ucl_object_iter_t	 it = NULL;
+
+	if (id == NULL || id[0] == '\0')
+		return (NULL);
+	while ((u = ucl_object_iterate(list_of("users"), &it, true)) != NULL)
+		if (ucl_str(u, "id") != NULL && strcmp(ucl_str(u, "id"), id) ==
+		    0)
+			return (ucl_str(u, "name"));
+	return (NULL);
+}
+
 /* Is the user one the directory keeps (source ldap)? */
 bool
 user_ldap(const char *name)

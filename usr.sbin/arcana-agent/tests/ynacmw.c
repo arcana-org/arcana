@@ -61,6 +61,11 @@ check(void)
 	int bad = 0;
 
 	for (size_t i = 0; i < nitems(op_rules); i++) {
+		/* An operation's rule has no path. */
+		if (op_rules[i].path == NULL) {
+			printf("ok %s\n", op_rules[i].name);
+			continue;
+		}
 		if ((p = cbl_dnacm_path_new(&ymodel_schema, op_rules[i].path,
 		    why, sizeof(why))) == NULL) {
 			printf("bad %s: %s\n", op_rules[i].name, why);

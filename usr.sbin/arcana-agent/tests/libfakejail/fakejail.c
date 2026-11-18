@@ -56,6 +56,11 @@
  * file read anew at each question; IP_FW_TABLE_XSWAP writes "swap set
  * first second" and the wall clock's milliseconds at the end of
  * FAKEIPFW.log.  Any other IP_FW3 opcode is refused (EOPNOTSUPP).
+ *
+ * And, for the mapped logins' cases: getpwnam_r(3) and getpwent(3) of
+ * the accounts in FAKEPASSWD's file (master.passwd(5) lines) when it is
+ * there; getpeereid(3)'s uid FAKEPEERUID's; utmpx(5)'s active database
+ * (setutxdb, getutxent) FAKEUTX's file of "user line pid" lines.
  */
 
 #include <sys/param.h>
@@ -71,6 +76,8 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <paths.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -80,6 +87,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <utmpx.h>
 
 /* A line's fields: name, jid, vnet, path, osrelease, then key=value. */
 #define	FJ_POS		5
@@ -986,4 +994,225 @@ setsockopt(int s, int level, int name, const void *val, socklen_t len)
 	if ((realf = (setsockopt_fn *)real("setsockopt")) == NULL)
 		return (-1);
 	return (realf(s, level, name, val, len));
+}
+
+/* ---- Accounts, peers and utmpx, for the mapped logins' cases -------- */
+
+typedef int	getpwnam_r_fn(const char *, struct passwd *, char *, size_t,
+		    struct passwd **);
+typedef struct passwd *getpwent_fn(void);
+typedef void	pwent_fn(void);
+typedef int	getpeereid_fn(int, uid_t *, gid_t *);
+typedef int	setutxdb_fn(int, const char *);
+typedef struct utmpx *getutxent_fn(void);
+typedef void	endutxent_fn(void);
+
+/*
+ * A master.passwd(5) line of FAKEPASSWD's file into pw, its strings in
+ * buf: name:password:uid:gid:class:change:expire:gecos:home:shell.
+ */
+static bool
+pw_line(char *line, struct passwd *pw, char *buf, size_t len)
+{
+	char	*f[10], *p;
+	size_t	 used, k, n;
+	int	 i;
+
+	line[strcspn(line, "\n")] = '\0';
+	for (i = 0; i < 10 && (p = strsep(&line, ":")) != NULL; i++)
+		f[i] = p;
+	if (i != 10)
+		return (false);
+	memset(pw, 0, sizeof(*pw));
+	used = 0;
+	for (k = 0; k < 10; k++) {
+		n = strlen(f[k]) + 1;
+		if (used + n > len)
+			return (false);
+		memcpy(buf + used, f[k], n);
+		f[k] = buf + used;
+		used += n;
+	}
+	pw->pw_name = f[0];
+	pw->pw_passwd = f[1];
+	pw->pw_uid = (uid_t)strtoul(f[2], NULL, 10);
+	pw->pw_gid = (gid_t)strtoul(f[3], NULL, 10);
+	pw->pw_class = f[4];
+	pw->pw_change = (time_t)strtoll(f[5], NULL, 10);
+	pw->pw_expire = (time_t)strtoll(f[6], NULL, 10);
+	pw->pw_gecos = f[7];
+	pw->pw_dir = f[8];
+	pw->pw_shell = f[9];
+	return (true);
+}
+
+/*
+ * getpwnam_r(3): with FAKEPASSWD naming a file that is there, a name of
+ * the file's is its line's; any other the system's.  So a case's
+ * accounts (an expired one, one of uid 0, one whose shell is nologin)
+ * are stand-ins, and no account of the host is made or changed.
+ */
+int
+getpwnam_r(const char *name, struct passwd *pw, char *buf, size_t len,
+    struct passwd **res)
+{
+	getpwnam_r_fn	*realf;
+	const char	*file;
+	char		 line[1024];
+	FILE		*fp;
+
+	if ((file = getenv("FAKEPASSWD")) != NULL && (fp = fopen(file,
+	    "re")) != NULL) {
+		while (fgets(line, sizeof(line), fp) != NULL)
+			if (strncmp(line, name, strlen(name)) == 0 &&
+			    line[strlen(name)] == ':' && pw_line(line, pw,
+			    buf, len)) {
+				fclose(fp);
+				*res = pw;
+				return (0);
+			}
+		fclose(fp);
+	}
+	if ((realf = (getpwnam_r_fn *)real("getpwnam_r")) == NULL)
+		return (ENOSYS);
+	return (realf(name, pw, buf, len, res));
+}
+
+static FILE	*pw_fp;
+
+/* setpwent(3), getpwent(3), endpwent(3): FAKEPASSWD's file's lines
+ * alone when it is there, else the system's. */
+void
+setpwent(void)
+{
+	pwent_fn	*realf;
+	const char	*file;
+
+	if (pw_fp != NULL)
+		fclose(pw_fp);
+	pw_fp = NULL;
+	if ((file = getenv("FAKEPASSWD")) != NULL && (pw_fp = fopen(file,
+	    "re")) != NULL)
+		return;
+	if ((realf = (pwent_fn *)real("setpwent")) != NULL)
+		realf();
+}
+
+struct passwd *
+getpwent(void)
+{
+	static struct passwd	 pw;
+	static char		 buf[1024];
+	getpwent_fn		*realf;
+	char			 line[1024];
+
+	if (pw_fp != NULL) {
+		while (fgets(line, sizeof(line), pw_fp) != NULL)
+			if (pw_line(line, &pw, buf, sizeof(buf)))
+				return (&pw);
+		return (NULL);
+	}
+	if ((realf = (getpwent_fn *)real("getpwent")) == NULL)
+		return (NULL);
+	return (realf());
+}
+
+void
+endpwent(void)
+{
+	pwent_fn	*realf;
+
+	if (pw_fp != NULL) {
+		fclose(pw_fp);
+		pw_fp = NULL;
+		return;
+	}
+	if ((realf = (pwent_fn *)real("endpwent")) != NULL)
+		realf();
+}
+
+/* getpeereid(3): the uid FAKEPEERUID says, so that the agent's own user
+ * on its socket is another local account (PEER_LOCAL). */
+int
+getpeereid(int fd, uid_t *uid, gid_t *gid)
+{
+	getpeereid_fn	*realf;
+	const char	*v;
+	int		 rc;
+
+	if ((realf = (getpeereid_fn *)real("getpeereid")) == NULL)
+		return (-1);
+	rc = realf(fd, uid, gid);
+	if (rc == 0 && (v = getenv("FAKEPEERUID")) != NULL)
+		*uid = (uid_t)strtoul(v, NULL, 10);
+	return (rc);
+}
+
+/*
+ * utmpx(5)'s active database, when FAKEUTX names a file: its lines,
+ * "user line pid", each a USER_PROCESS, as a stand-in login writes
+ * them (login(1) itself writes the system's, as root alone may).
+ */
+static FILE	*utx_fp;
+
+int
+setutxdb(int type, const char *file)
+{
+	setutxdb_fn	*realf;
+	const char	*fake;
+
+	if (utx_fp != NULL)
+		fclose(utx_fp);
+	utx_fp = NULL;
+	if (type == UTXDB_ACTIVE && file == NULL && (fake =
+	    getenv("FAKEUTX")) != NULL) {
+		if ((utx_fp = fopen(fake, "re")) == NULL &&
+		    (utx_fp = fopen(_PATH_DEVNULL, "re")) == NULL)
+			return (-1);
+		return (0);
+	}
+	if ((realf = (setutxdb_fn *)real("setutxdb")) == NULL)
+		return (-1);
+	return (realf(type, file));
+}
+
+struct utmpx *
+getutxent(void)
+{
+	static struct utmpx	 u;
+	getutxent_fn		*realf;
+	char			 line[256], user[64], tty[64];
+	long			 pid;
+
+	if (utx_fp != NULL) {
+		while (fgets(line, sizeof(line), utx_fp) != NULL)
+			if (sscanf(line, "%63s %63s %ld", user, tty, &pid) ==
+			    3) {
+				memset(&u, 0, sizeof(u));
+				u.ut_type = USER_PROCESS;
+				u.ut_pid = (pid_t)pid;
+				(void)strlcpy(u.ut_user, user,
+				    sizeof(u.ut_user));
+				(void)strlcpy(u.ut_line, tty, sizeof(u.ut_line));
+				return (&u);
+			}
+		return (NULL);
+	}
+	if ((realf = (getutxent_fn *)real("getutxent")) == NULL)
+		return (NULL);
+	return (realf());
+}
+
+void
+endutxent(void)
+{
+	endutxent_fn	*realf;
+
+	if (utx_fp != NULL) {
+		fclose(utx_fp);
+		utx_fp = NULL;
+		return;
+	}
+	if ((realf = (endutxent_fn *)real("endutxent")) != NULL)
+		realf();
 }

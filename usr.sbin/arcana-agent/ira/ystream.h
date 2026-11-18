@@ -37,6 +37,7 @@
 #define	YS_PCAP_GET		4
 #define	YS_EXEC_FOLLOW		5
 #define	YS_TERMINAL		6
+#define	YS_TERMINAL_AS		7
 #define	YS_WINDOW		4194304		/* what is taken before credit */
 
 struct ys_cbs {

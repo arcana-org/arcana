@@ -63,6 +63,9 @@
 .Op Fl -pkg-idle Ar seconds
 .Op Fl -terminal-login Ar login
 .Op Fl -terminal-idle Ar seconds
+.Op Fl -terminal-users Ar file
+.Op Fl -terminal-getent Ar getent
+.Op Fl -terminal-nologin Ar file
 .Op Fl -repo-reach Ar seconds
 .Op Fl -jobs-conf Ar file
 .Op Fl -nacm Ar file
@@ -860,6 +863,50 @@ Default
 .It Fl -terminal-idle Ar seconds
 How long a terminal nobody types in is kept before it is hung up.
 Default 1800.
+.It Fl -terminal-users Ar file
+The host's own word on mapped logins (see
+.Sx MAPPED LOGINS ) :
+which console users may become which account, without its password.
+It is opened as
+.Xr sshd 8 Ns 's
+StrictModes would: every directory from
+.Pa /
+down root's and writable by no one else (an agent not running as root
+also takes a sticky directory of root's, such as
+.Pa /tmp ) ,
+none a symbolic link, the file itself no link, root's, mode 0600 or
+stricter, 64 kilobytes at most, no line of more than 64 words; otherwise
+it is refused whole.
+A carriage return before a line's end is dropped.
+Absent, mapped logins are off.
+.Cm none
+turns them off: arcana-stream's
+.Cm terminal-as
+is refused, saying so.
+Default
+.Pa /usr/local/etc/arcana/terminal-users .
+.It Fl -terminal-nologin Ar file
+What stands for
+.Pa /var/run/nologin ,
+the
+.Xr nologin 5
+file a mapped login looks for, where the account's login class names
+it or names none.
+Default
+.Pa /var/run/nologin .
+.It Fl -test-unregister Cm terminal-as
+For the tests alone: arcana-stream's
+.Cm terminal-as
+is not registered, as by an agent from before it, so that a console
+says such an agent cannot do mapped logins.
+.It Fl -terminal-getent Ar getent
+The path, in a jail, of the
+.Xr getent 1
+run there by
+.Xr jexec 8
+to prove a jail's account before a mapped login in it.
+Default
+.Pa /usr/bin/getent .
 .It Fl -repo-reach Ar seconds
 How long pkg's repository, asked first whether it answers from where
 pkg will run, has to answer before pkg is not started, 1 to 60.
@@ -1805,6 +1852,110 @@ and an
 event whose report says what failed and why, of the failure alone and
 not of the host's configuration, for you to file as a bug if you
 choose; Arcana files nothing.
+.Sh MAPPED LOGINS
+arcana-stream's
+.Cm terminal-as
+opens a terminal on which
+.Ql login -f -h Ar address Fl - Ar account
+runs, so that a console user the host's admins mapped to an account
+gets that account's login without typing its password.
+The console user is the request's own
+.Pq Xr cblink 3 Ns 's user, the name NACM judged :
+there is no ticket or signature beside it, for whoever holds the
+console holds every host anyway, by signed agent updates and the
+.Pa authorized_keys
+files it writes.
+The operation is
+.Ql nacm:default-deny-all :
+it runs only for a user a rule permits it to: the group admin, and the
+group operator by its rule-list's
+.Ql terminal-as
+rule, which the console synchronizes only to a host whose exec-default
+is permit; with deny, an admin adds one by hand, in a rule-list of its
+own.
+Only the console, the socket's group
+.Pq Fl g
+or root on the unix socket may ask; a request for no user, or for the
+console's own user but root's, is refused.
+.Pp
+The host decides by
+.Fl -terminal-users ,
+lines of
+.Bd -literal -offset indent
+scope account [+root] console-user ...
+.Ed
+.Pp
+with
+.Ar scope
+.Ql host
+or
+.Ql jail: Ns Ar name ,
+never one for the other, and
+.Ql #
+beginning a comment.
+An account of uid 0, root or any other name for it, is allowed only by a
+line that says
+.Ql +root .
+A word beginning with
+.Ql +
+is a flag, never a console user, and
+.Ql +root
+the only one; another refuses the file.
+No job, system file, bundle or YANG node writes the file.
+While a mapped session lasts its way is walked again every 2 seconds and
+its lines read again whenever it changed; a session it no longer allows
+is hung up.
+The account is
+.Ql [a-z_][a-z0-9_-]{0,31} .
+.Pp
+.Xr login 1
+with
+.Fl f
+asks no password and never calls
+.Xr pam_acct_mgmt 3 ;
+on the host the agent makes those checks before it forks, in the
+session's own thread after the stream is accepted: the account is
+there, not locked, not expired, its password not past its change time,
+its shell is not
+.Xr nologin 8 ,
+.Pa /var/run/nologin
+(the class's
+.Ql nologin )
+is not there unless the class has
+.Ql ignorenologin
+or the account is uid 0,
+and the class's times, hosts and ttys let it in.
+.Xr login.access 5
+and securetty are not consulted on this path: the file stands for them.
+The session counts as established only once
+.Xr utmpx 5
+says that account logged in on its terminal; until then what is typed
+waits, and another account, or none within 10 seconds, hangs it up.
+In a jail the jail's
+.Xr getent 1 ,
+by
+.Xr jexec 8 ,
+proves the account there first: not locked, of uid 0 only by
+.Ql +root ,
+a shell that logs in; what is typed waits until login wrote anything.
+That runs in the session's own thread after the stream is accepted, and
+a refusal closes the stream; the jail's utmpx is not read, so a jail's
+account is never said to be confirmed.
+.Pp
+Each open, refusal and end is logged to
+.Ql LOG_AUTH
+at
+.Ql notice :
+the console user, the account, the scope, the terminal and the address.
+Accounts whose password is empty, which login lets anyone in as, are
+one fault
+.Ql empty-password
+on
+.Ql accounts
+that says how many and never which; the names go to
+.Ql LOG_AUTH
+alone.
+They are looked for at the start and every ten minutes.
 .Sh ITS OWN SERVICE
 A stop or restart of
 .Nm arcana_agent
@@ -2053,6 +2204,8 @@ More flags, added to those the variables above give.
 .It Pa /var/run/arcana-agent.pid
 .It Pa /usr/local/etc/arcana/feeds/
 The threat feeds' tables, a file each.
+.It Pa /usr/local/etc/arcana/terminal-users
+Who may become which account by a mapped login.
 .El
 .Sh EXAMPLES
 Serve the console host over TLS and local tools over the default

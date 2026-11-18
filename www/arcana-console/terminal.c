@@ -40,6 +40,24 @@
  * bytes typed and written, how long, the account that logged in when
  * the host told it, why it ended).
  *
+ * Mapped logins: a host's admin maps a console user, by id, to an
+ * account of the host's or of one of its jails (servers.c, arcana-
+ * console's terminal-login; audited, and the page says it gives that
+ * account's full rights).  The user's terminal there is then the host's
+ * terminal-as, login -f of that account (the agent's ira/terminal.c),
+ * unless the first message says "prompt": true and the host allows the
+ * password prompt (terminal-prompt, never: no prompt at all).  The host
+ * decides by its own terminal-users which accounts may be had; the
+ * mapping only chooses.  A mapping removed or changed, or the prompt
+ * turned off under a plain one, hangs the terminal up within a second
+ * (tsock_ok()).  An agent without terminal-as is said to be one ("this
+ * host's agent cannot do mapped logins"), never given the prompt in its
+ * place.  The trail's rows carry the account asked for and whether the
+ * host confirmed it (utmpx; never in a jail); a refusal of the host's
+ * is a terminal-refused with its reason.  A host's peer name, where it
+ * is NULL, is its URI's host, which cblink checks the certificate for:
+ * no host is taken on its CA alone.
+ *
  * Each terminal is a task of its own, acting for its user, on the
  * connection the console shares with the host (hosts_shared()).  What
  * the host writes is taken from the stream's window, given back only
@@ -108,6 +126,9 @@ struct term {
 	char			 jail[256];
 	char			 from[TERM_FROM_MAX + 1];
 	char			 who[USER_NAME_LEN + 16];
+	char			 uid[USER_ID_LEN];	/* the user's id */
+	char			 account[33];	/* mapped: login -f's; "" */
+	bool			 seen;		/* the host wrote: opened */
 	int			 rows, cols;
 	time_t			 born;
 	pthread_mutex_t		 lock;
@@ -118,6 +139,7 @@ struct term {
 	STAILQ_HEAD(, tpart)	 parts;
 	char			 login[33];
 	bool			 login_new;
+	const char		*stopwhy;	/* why the console hung it up */
 	bool			 opened, closed, writable;
 	int			 code;
 	char			 why[200];
@@ -192,9 +214,18 @@ t_open(cbl_stream *s __unused, cbl_msg *accept, int error, void *arg)
 	} else {
 		t->closed = true;
 		t->code = error;
-		snprintf(t->why, sizeof(t->why), "the host refused: %s",
-		    accept != NULL && cbl_msg_err_str(accept) != NULL ?
-		    cbl_msg_err_str(accept) : strerror(error));
+		/* An agent from before terminal-as (cblink's unknown
+		 * command): said, never the prompt in its place. */
+		if (t->account[0] != '\0' && error == EOPNOTSUPP &&
+		    (accept == NULL || cbl_msg_err_str(accept) == NULL ||
+		    strstr(cbl_msg_err_str(accept), "unknown command") !=
+		    NULL))
+			snprintf(t->why, sizeof(t->why), "this host's agent "
+			    "cannot do mapped logins: update it");
+		else
+			snprintf(t->why, sizeof(t->why), "the host refused: %s",
+			    accept != NULL && cbl_msg_err_str(accept) != NULL ?
+			    cbl_msg_err_str(accept) : strerror(error));
 	}
 	pthread_cond_signal(&t->wake);
 	pthread_mutex_unlock(&t->lock);
@@ -281,9 +312,9 @@ static int
 t_stream(struct term *t, cbl_conn *conn, cbl_stream **sp)
 {
 	struct arcana_stream_open	 rq;
-	const char			*names[4];
+	const char			*names[5];
 	char				 jail[300], rows[16], cols[16];
-	char				 from[TERM_FROM_MAX + 8];
+	char				 from[TERM_FROM_MAX + 8], account[48];
 	size_t				 n;
 
 	n = 0;
@@ -299,10 +330,15 @@ t_stream(struct term *t, cbl_conn *conn, cbl_stream **sp)
 		snprintf(from, sizeof(from), "from=%s", t->from);
 		names[n++] = from;
 	}
+	if (t->account[0] != '\0') {
+		snprintf(account, sizeof(account), "account=%s", t->account);
+		names[n++] = account;
+	}
 	memset(&rq, 0, sizeof(rq));
 	rq.name.v = names;
 	rq.name.n = n;
-	return (ys_open(conn, YS_TERMINAL, &rq, TERM_WINDOW,
+	return (ys_open(conn, t->account[0] != '\0' ? YS_TERMINAL_AS :
+	    YS_TERMINAL, &rq, TERM_WINDOW,
 	    CBL_SF_MANUAL_CREDIT, &t_cbs, t, sp));
 }
 
@@ -313,6 +349,25 @@ t_where(const struct term *t, char *buf, size_t len)
 
 	snprintf(buf, len, "host %s (%s)%s%s", t->host, t->sid,
 	    t->jail[0] != '\0' ? ", jail " : "", t->jail);
+}
+
+/*
+ * A mapped login opened, in the trail: once the host wrote, or told
+ * the login (whichever first; its checks come after the stream's
+ * accept, so the accept alone is no opening).
+ */
+static void
+t_opened(struct term *t, const char *where)
+{
+
+	t->seen = true;
+	audit_add("terminal-opened", "Allow", "terminal", "login -f of a "
+	    "mapped account on a pseudo-terminal of the host's "
+	    "(arcana-stream's terminal-as)", where, t->who, "from %s, as %s "
+	    "(requested; %s)", t->from[0] != '\0' ? t->from : "an address not "
+	    "known", t->account, t->jail[0] != '\0' ? "a jail's account is "
+	    "proved by its getent, never confirmed by utmpx" : "the host "
+	    "confirms it by utmpx");
 }
 
 /* In a task thread: the terminal, both ways, until either end goes. */
@@ -340,9 +395,19 @@ term_run(struct task *task)
 		return (WEB_OK);
 	}
 	st = NULL;
-	if (t_stream(t, conn, &st) != 0) {
-		say_json(t, "error", "the host has no terminal to give: is "
-		    "its agent older than this console?");
+	if ((error = t_stream(t, conn, &st)) != 0) {
+		/* Only an agent without the command is said to be old. */
+		snprintf(t->why, sizeof(t->why), "%s", error == EOPNOTSUPP ||
+		    error == ENOENT ? t->account[0] != '\0' ? "this host's "
+		    "agent cannot do mapped logins: update it" : "the host has "
+		    "no terminal to give: is its agent older than this "
+		    "console?" : strerror(error));
+		say_json(t, "error", t->why);
+		audit_add("terminal-refused", "Block", "terminal",
+		    t->account[0] != '\0' ? "the host's terminal-as" : "the "
+		    "host's terminal", where, t->who, "from %s%s%s: %s",
+		    t->from[0] != '\0' ? t->from : "an address not known",
+		    t->account[0] != '\0' ? ", as " : "", t->account, t->why);
 		hosts_shared_done(conn, false);
 		return (WEB_OK);
 	}
@@ -357,6 +422,14 @@ term_run(struct task *task)
 		pthread_mutex_unlock(&t->lock);
 		say_json(t, "error", t->why[0] != '\0' ? t->why : "the page "
 		    "went first");
+		if (t->why[0] != '\0')
+			audit_add("terminal-refused", "Block", "terminal",
+			    t->account[0] != '\0' ? "the host's own "
+			    "terminal-users and account checks (terminal-as)" :
+			    "the host's terminal", where, t->who, "from %s%s%s: "
+			    "%s", t->from[0] != '\0' ? t->from : "an address "
+			    "not known", t->account[0] != '\0' ? ", as " : "",
+			    t->account, t->why);
 		goto done;
 	}
 	n = strlen(t->json != NULL ? t->json : "{}") + 16;
@@ -365,10 +438,14 @@ term_run(struct task *task)
 	pthread_mutex_unlock(&t->lock);
 	say(t, 'j', s, strlen(s));
 	free(s);
-	audit_add("terminal-opened", "Allow", "terminal", "login(1) on a "
-	    "pseudo-terminal of the host's (arcana-stream's terminal)", where,
-	    t->who, "from %s", t->from[0] != '\0' ? t->from : "an address not "
-	    "known");
+	/* A mapped login is opened once the host writes: its account's
+	 * checks come after the stream's accept, and a refusal closes it
+	 * before anything is written (terminal-refused, below). */
+	if (t->account[0] == '\0')
+		audit_add("terminal-opened", "Allow", "terminal", "login(1) on "
+		    "a pseudo-terminal of the host's (arcana-stream's "
+		    "terminal)", where, t->who, "from %s", t->from[0] != '\0' ?
+		    t->from : "an address not known");
 	log_msg(LOG_NOTICE, "terminal: %s opened %s", t->who, where);
 
 	chunk = xmalloc(TERM_SEND);
@@ -398,6 +475,8 @@ term_run(struct task *task)
 			pthread_mutex_unlock(&t->lock);
 			if (p->len > 0)
 				say(t, 'o', p->data, p->len);
+			if (t->account[0] != '\0' && !t->seen && p->len > 0)
+				t_opened(t, where);
 			owed += p->took;
 			free(p);
 			pthread_mutex_lock(&t->lock);
@@ -406,6 +485,20 @@ term_run(struct task *task)
 			t->login_new = false;
 			pthread_mutex_unlock(&t->lock);
 			say_json(t, "login", t->login);
+			/* A session that writes nothing (.hushlogin, an
+			 * empty prompt) is opened by its login all the same. */
+			if (t->account[0] != '\0' && !t->seen)
+				t_opened(t, where);
+			/* The host's word that the mapped account logged in. */
+			if (t->account[0] != '\0')
+				audit_add("terminal-confirmed", strcmp(t->login,
+				    t->account) == 0 ? "Allow" : "Block",
+				    "terminal", "the host's utmpx, as the agent "
+				    "read it (arcana-stream's terminal-as)", where,
+				    t->who, "%s requested, %s logged in: %s",
+				    t->account, t->login, strcmp(t->login,
+				    t->account) == 0 ? "confirmed" : "not "
+				    "confirmed");
 			pthread_mutex_lock(&t->lock);
 		}
 		/* What was typed, to the host, as it has room. */
@@ -465,13 +558,39 @@ done:
 			break;
 	}
 	if (t->why[0] == '\0' || stopped)
-		snprintf(t->why, sizeof(t->why), "%s", !atomic_load(&t->gone) ?
+		snprintf(t->why, sizeof(t->why), "%s", t->stopwhy != NULL ?
+		    t->stopwhy : !atomic_load(&t->gone) ?
 		    "the console ended it: the session ended or "
 		    "the role is gone" : "the page closed it");
 	pthread_mutex_unlock(&t->lock);
 	cbl_stream_rele(st);
 	hosts_shared_done(conn, true);
-	if (t->opened) {
+	if (t->opened && t->account[0] != '\0' && !t->seen &&
+	    t->login[0] == '\0') {
+		/* Closed before the host wrote: its checks refused it. */
+		say_json(t, "end", t->why);
+		audit_add("terminal-refused", "Block", "terminal", "the host's "
+		    "own terminal-users and account checks (terminal-as)",
+		    where, t->who, "from %s, as %s: %s", t->from[0] != '\0' ?
+		    t->from : "an address not known", t->account, t->why);
+		log_msg(LOG_NOTICE, "terminal: %s refused %s as %s: %s", t->who,
+		    where, t->account, t->why);
+	} else if (t->opened && t->account[0] != '\0') {
+		say_json(t, "end", t->why);
+		audit_add("terminal-closed", "Allow", "terminal", "login -f of "
+		    "a mapped account on a pseudo-terminal of the host's "
+		    "(arcana-stream's terminal-as)", where, t->who, "%ju bytes "
+		    "typed, %ju bytes written, %jd s; %s requested, %s%s%s; %s",
+		    (uintmax_t)t->nin, (uintmax_t)t->nout, (intmax_t)(time(NULL)
+		    - t->born), t->account, strcmp(t->login, t->account) == 0 ?
+		    "confirmed" : "not confirmed", t->login[0] != '\0' &&
+		    strcmp(t->login, t->account) != 0 ? ": the host told " : "",
+		    t->login[0] != '\0' && strcmp(t->login, t->account) != 0 ?
+		    t->login : "", t->why);
+		log_msg(LOG_NOTICE, "terminal: %s closed %s as %s: %ju bytes "
+		    "typed, %ju written; %s", t->who, where, t->account,
+		    (uintmax_t)t->nin, (uintmax_t)t->nout, t->why);
+	} else if (t->opened) {
 		say_json(t, "end", t->why);
 		audit_add("terminal-closed", "Allow", "terminal", "login(1) on "
 		    "a pseudo-terminal of the host's (arcana-stream's "
@@ -543,15 +662,38 @@ static bool
 tsock_ok(struct conn *c)
 {
 	struct tsock	*k;
+	struct term	*t;
+	const char	*why;
+	char		 acct[33];
 
+	why = NULL;
 	if ((k = c->hdlr_extra) != NULL && sbind_ok(&k->b) && (k->t == NULL ||
-	    principal_may(&k->b.who, k->t->sid, ROLE_OPERATOR)))
-		return (true);
+	    principal_may(&k->b.who, k->t->sid, ROLE_OPERATOR))) {
+		/* A mapped login's mapping still the same; a prompt's host
+		 * still allowing it. */
+		if ((t = k->t) == NULL)
+			return (true);
+		if (t->account[0] != '\0' && (!servers_term_account(t->sid,
+		    t->jail[0] != '\0' ? t->jail : NULL, t->uid, acct,
+		    sizeof(acct)) || strcmp(acct, t->account) != 0))
+			why = "the console ended it: the mapped login was "
+			    "removed or changed";
+		else if (t->account[0] == '\0' && servers_term_never(t->sid))
+			why = "the console ended it: the host's password prompt "
+			    "was turned off";
+		else
+			return (true);
+	}
 	if (k != NULL && k->t != NULL) {
 		atomic_store(&k->t->stop, true);
 		pthread_mutex_lock(&k->t->lock);
+		if (why != NULL)
+			k->t->stopwhy = why;
 		pthread_cond_signal(&k->t->wake);
 		pthread_mutex_unlock(&k->t->lock);
+		/* The page told why first: its task's end closes the socket. */
+		if (why != NULL)
+			return (false);
 	}
 	ws_close(c);
 	return (false);
@@ -658,9 +800,10 @@ term_ask(struct conn *c, struct tsock *k, const char *data, size_t len)
 	ucl_object_t		*o;
 	struct term		*t, *u;
 	const char		*sid, *jail, *q;
-	char			 who[USER_NAME_LEN + 16], where[400];
+	char			 who[USER_NAME_LEN + 16], where[400], acct[33];
 	int64_t			 rows, cols;
 	int			 n;
+	bool			 prompt, mapped;
 
 	k->asked = true;
 	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
@@ -673,6 +816,8 @@ term_ask(struct conn *c, struct tsock *k, const char *data, size_t len)
 	jail = o != NULL ? ucl_str(o, "jail") : NULL;
 	rows = o != NULL ? ucl_object_toint(ucl_object_lookup(o, "rows")) : 0;
 	cols = o != NULL ? ucl_object_toint(ucl_object_lookup(o, "cols")) : 0;
+	prompt = o != NULL && ucl_object_toboolean(ucl_object_lookup(o,
+	    "prompt"));
 	if (jail != NULL && jail[0] == '\0')
 		jail = NULL;
 	q = jail;
@@ -706,6 +851,21 @@ term_ask(struct conn *c, struct tsock *k, const char *data, size_t len)
 		    "host: a viewer gets none");
 		goto out;
 	}
+	/* Mapped: the account this user is logged in as there, by id, but
+	 * when the prompt is asked for and allowed. */
+	mapped = servers_term_account(sv->id, jail, k->b.who.uid, acct,
+	    sizeof(acct)) && !(prompt && !servers_term_never(sv->id));
+	if (!mapped && servers_term_never(sv->id)) {
+		snprintf(where, sizeof(where), "host %s (%s)%s%s", sv->name,
+		    sv->id, jail != NULL ? ", jail " : "", jail != NULL ? jail :
+		    "");
+		audit_add("terminal-refused", "Block", "terminal", "the host's "
+		    "terminal-prompt: never", where, who, "from %s: no mapped "
+		    "login there, and no password prompt", k->b.addr);
+		refuse(c, "this host allows no password prompt, and no mapped "
+		    "login of yours is there");
+		goto out;
+	}
 	n = 0;
 	LIST_FOREACH(u, &terms, list)
 		if (strcmp(u->task.who.name, k->b.who.name) == 0)
@@ -731,6 +891,9 @@ term_ask(struct conn *c, struct tsock *k, const char *data, size_t len)
 		strlcpy(t->jail, jail, sizeof(t->jail));
 	from_of(k->b.addr, t->from, sizeof(t->from));
 	strlcpy(t->who, who, sizeof(t->who));
+	strlcpy(t->uid, k->b.who.uid, sizeof(t->uid));
+	if (mapped)
+		strlcpy(t->account, acct, sizeof(t->account));
 	t->rows = (int)rows;
 	t->cols = (int)cols;
 	t->born = time(NULL);

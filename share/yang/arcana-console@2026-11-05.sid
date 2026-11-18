@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 13,
+    "sid-file-version": 14,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -29,6 +29,10 @@
       },
       {
         "entry-point": "95920",
+        "size": "20"
+      },
+      {
+        "entry-point": "96000",
         "size": "20"
       }
     ],
@@ -3377,6 +3381,41 @@
         "namespace": "data",
         "identifier": "/arcana-console:hosts/host/inspection-ca/output/result",
         "sid": "95924"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login",
+        "sid": "96000"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login/account",
+        "sid": "96001"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login/author",
+        "sid": "96002"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login/changed",
+        "sid": "96003"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login/jail",
+        "sid": "96004"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-login/user",
+        "sid": "96005"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/terminal-prompt",
+        "sid": "96006"
       }
     ]
   }

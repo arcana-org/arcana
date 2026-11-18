@@ -6186,6 +6186,23 @@ part_firewall_apply(void)
 	run("document.querySelector('.dock > header').click()");
 }
 
+/* The console keeps mutes a and b of the host, and not c. */
+static void
+mute_kept(const char *a, const char *b, const char *c)
+{
+	char	test[400];
+	int	i;
+
+	snprintf(test, sizeof(test), "grep -A4 notify_mute data/servers.json "
+	    "| grep -q '\"%s\"' && grep -A4 notify_mute data/servers.json | "
+	    "grep -q '\"%s\"' && ! grep -A4 notify_mute data/servers.json | "
+	    "grep -q '\"%s\"'", a, b, c);
+	for (i = 0; i < 50 && !host_has(test); i++)
+		usleep(100000);
+	ATF_CHECK_MSG(host_has(test), "mutes kept are not %s and %s alone", a,
+	    b);
+}
+
 /*
  * How the host is reached, on its summary: the agent's listener,
  * the console's own connection among those open now.  A local
@@ -6236,6 +6253,14 @@ part_firewall_host(void)
 	ATF_CHECK(js_true("document.querySelector('form[data-form=tr-safe]') "
 	    "!== null && document.body.textContent.includes('Rollback "
 	    "timer')"));
+	/* Emptied where there is none: saved, nothing to take out. */
+	run("var f = document.querySelector('form[data-form=tr-safe]'); "
+	    "f.querySelector('input[name=wait]').value = ''; "
+	    "f.requestSubmit();");
+	wait_js("document.body.textContent.includes('Rollback timer saved')",
+	    10);
+	ATF_CHECK(js_true("!document.body.textContent.includes('rollback "
+	    "timer was not saved')"));
 	run("var f = document.querySelector('form[data-form=tr-safe]'); "
 	    "f.querySelector('input[name=wait]').value = '30'; "
 	    "f.requestSubmit();");
@@ -6296,6 +6321,37 @@ part_firewall_host(void)
 	    "f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=tr-mute] "
 	    "input[name=utilization]:checked')", 10);
+	/* Two at once, each way, in one request: ticked, then one unticked
+	 * and another ticked, then two unticked; the console keeps each. */
+	run("var f = document.querySelector('form[data-form=tr-mute]'); "
+	    "f.querySelector('input[name=utilization]').checked = true; "
+	    "f.querySelector('input[name=sessions]').checked = true; "
+	    "f.requestSubmit();");
+	wait_js("document.querySelector('form[data-form=tr-mute] "
+	    "input[name=utilization]:checked') && document.querySelector("
+	    "'form[data-form=tr-mute] input[name=sessions]:checked')", 10);
+	mute_kept("utilization", "sessions", "all");
+	run("var f = document.querySelector('form[data-form=tr-mute]'); "
+	    "f.querySelector('input[name=utilization]').checked = false; "
+	    "f.querySelector('input[name=all]').checked = true; "
+	    "f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=tr-mute] "
+	    "input[name=utilization]:checked') && document.querySelector("
+	    "'form[data-form=tr-mute] input[name=all]:checked')", 10);
+	mute_kept("sessions", "all", "utilization");
+	run("var f = document.querySelector('form[data-form=tr-mute]'); "
+	    "f.querySelector('input[name=sessions]').checked = false; "
+	    "f.querySelector('input[name=all]').checked = false; "
+	    "f.requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=tr-mute] "
+	    "input:checked')", 10);
+	ATF_CHECK(js_true("!document.body.textContent.includes('was not "
+	    "saved')"));
+	for (int i = 0; i < 50 && host_has("grep -q notify_mute "
+	    "data/servers.json"); i++)
+		usleep(100000);
+	ATF_CHECK_MSG(!host_has("grep -q notify_mute data/servers.json"),
+	    "a mute is left");
 	host_tab("summary");
 
 	/*
@@ -10838,6 +10894,98 @@ ATF_TC_BODY(pwa_terminal, tc)
 	part_terminal();
 }
 ATF_TC_CLEANUP(pwa_terminal, tc)
+{
+
+	browser_stop();
+}
+
+/*
+ * A mapped login from the Terminal tab: the host's admin maps itself
+ * to alice by the tab's form (under its warning); before Connect the
+ * tab says whom it will be logged in as; Connect logs alice in, no
+ * password, confirmed by the host; the password prompt turned off by
+ * the switch and the mapping removed, the tab says there is no way in
+ * and Connect is off.
+ */
+static void
+part_terminal_mapped(void)
+{
+	char	expr[1024];
+
+	put("passwd", "alice:$6$x:1001:1001::0:0:Alice:/home/alice:/bin/sh\n");
+	put("terminal-users", "host alice admin\n");
+	ATF_REQUIRE(chmod("terminal-users", 0600) == 0);
+	host_open("lab");
+	host_tab("terminal");
+	wait_js("document.querySelector('#term-maps-warn') && document."
+	    "querySelector('#term-maps-warn').textContent.includes('full "
+	    "rights')", 20);
+	ATF_CHECK(js_true("!document.querySelector('#term-as')"));
+	run("const f = document.querySelector('form[data-form=term-map]'); "
+	    "f.user.value = 'admin'; f.account.value = 'alice'; "
+	    "f.requestSubmit();");
+	wait_js("document.querySelector('#term-as') && document.querySelector("
+	    "'#term-as').textContent.includes('You will be logged in as "
+	    "alice')", 20);
+	shot("terminal-mapped");
+	click_when("#term-open", 10);
+	wait_js(TERM_TEXT ".includes('logged in as alice')", 20);
+	wait_js("document.querySelector('.termstat').textContent.includes("
+	    "'confirmed by the host')", 20);
+	run("document.querySelector('.termbox textarea').focus()");
+	keys("echo he''llo\r");
+	wait_js(TERM_TEXT ".includes('hello')", 20);
+	click_when("#term-close", 10);
+	wait_js("document.querySelector('.termwrap').dataset.state === 'ended'",
+	    10);
+	/* The mapping taken out elsewhere, behind the tab's back: the
+	 * tab, stale, turns the password prompt off, which brings back
+	 * nothing (the switch is written by its own path, and the host's
+	 * ETag the tab read refuses it); the tab reads the host again and
+	 * the switch saved then. */
+	snprintf(expr, sizeof(expr), "window.unmapped = false; let tag; "
+	    "fetch('/restconf/data/arcana-console:hosts').then(r => { tag = "
+	    "r.headers.get('ETag'); return r.json(); }).then(j => fetch("
+	    "'/restconf/data/arcana-console:hosts/host=' + "
+	    "j['arcana-console:hosts'].host.find(h => h.name === 'lab').id + "
+	    "'/terminal-login=.,admin', { method: 'DELETE', headers: { "
+	    "'X-Arcana': '1', 'If-Match': tag } })).then(r => { "
+	    "window.unmapped = r.ok; });");
+	run(expr);
+	wait_js("window.unmapped", 10);
+	ATF_CHECK(js_true("document.querySelector('button[data-act="
+	    "term-unmap]') !== null"));
+	run("const f = document.querySelector('form[data-form=term-switch]'); "
+	    "f.prompt.value = 'never'; f.requestSubmit();");
+	wait_js("!document.querySelector('button[data-act=term-unmap]')", 20);
+	ATF_CHECK_MSG(host_has("! grep -q '\"account\": *\"alice\"' "
+	    "data/servers.json"), "the stale tab brought the mapping back");
+	run("const f = document.querySelector('form[data-form=term-switch]'); "
+	    "f.prompt.value = 'never'; f.requestSubmit();");
+	wait_js("document.querySelector('#term-switch') && document."
+	    "querySelector('#term-switch').value === 'never'", 20);
+	ATF_CHECK_MSG(host_has("grep -q '\"terminal_never\": *true' "
+	    "data/servers.json"), "the switch is not kept");
+	/* No password prompt and no mapping: no way in. */
+	wait_js("document.querySelector('#term-as') && document.querySelector("
+	    "'#term-as').textContent.includes('allows no password prompt') "
+	    "&& document.querySelector('#term-open').disabled", 20);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_terminal_mapped);
+ATF_TC_HEAD(pwa_terminal_mapped, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A mapped login: mapped by the Terminal tab's form under its warning, 'you will be logged in as' before Connect, alice logged in without a password and confirmed, the prompt switched off and the mapping removed leaving no way in");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_terminal_mapped, tc)
+{
+
+	prologue(tc, 1);
+	part_terminal_mapped();
+}
+ATF_TC_CLEANUP(pwa_terminal_mapped, tc)
 {
 
 	browser_stop();
@@ -15833,6 +15981,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_follow);
 	ATF_TP_ADD_TC(tp, pwa_service_told);
 	ATF_TP_ADD_TC(tp, pwa_terminal);
+	ATF_TP_ADD_TC(tp, pwa_terminal_mapped);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_unreached);
 	ATF_TP_ADD_TC(tp, pwa_cfgfiles);

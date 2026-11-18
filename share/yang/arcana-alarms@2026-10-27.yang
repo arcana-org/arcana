@@ -40,6 +40,15 @@ module arcana-alarms {
        when every rule is held whole again.";
   }
 
+  identity empty-password {
+    base arcana-fault;
+    description
+      "Accounts of the host have an empty password, which login(1)
+       lets anyone in as, on any terminal: one fault on \"accounts\"
+       that says how many, never which (the names are in the host's
+       authentication log alone).  Cleared when none has.";
+  }
+
   identity tunnel {
     base arcana-fault;
     description

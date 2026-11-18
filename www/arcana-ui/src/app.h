@@ -67,7 +67,7 @@ int		 arc_narrow(void);
 void		 arc_stream_send(const char *);
 /* A host's terminal (term.c): opened in the Terminal tab's element,
  * of the host and jail ("" the host); hung up. */
-void		 arc_term_open(const char *, const char *);
+void		 arc_term_open(const char *, const char *, int);
 void		 arc_term_close(void);
 void		 arc_sse_open(int, const char *);
 void		 arc_sse_close(int);
@@ -752,8 +752,14 @@ ucl_object_t	*event_of_yang(const ucl_object_t *);
 
 /* actions.c: what the buttons do. */
 void		 refresh_servers(void);
-ucl_object_t	*host_conf(const char *);
-void		 host_put(const char *, ucl_object_t *, api_cb *, void *);
+const ucl_object_t *host_entry(const char *);
+void		 host_leaf(const char *, const char *, ucl_object_t *, api_cb *,
+		    void *);
+void		 host_yang_patch(const char *, const char *, ucl_object_t *,
+		    api_cb *, void *);
+void		 host_edit(ucl_object_t *, const char *, const char *,
+		    const char *, ucl_object_t *);
+
 int		 op_quiet_begin(const char *, const char *);
 int		 op_auto(const char *, const char *, int);
 void		 op_quiet_end(int, int);
@@ -1082,6 +1088,7 @@ bool		 logs_form(const char *, const ucl_object_t *);
 bool		 logs_action(const char *, const char *, const char *);
 void		 view_terminal(struct html *, struct server *);
 bool		 term_action(const char *, const char *, const char *);
+bool		 term_form(const char *, const ucl_object_t *);
 void		 usage_open(void);
 void		 usage_host_open(struct server *);
 void		 usage_tick(double);

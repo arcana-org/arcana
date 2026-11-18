@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.465.0"
+#define	ARCW_VERSION		"0.466.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/arcana-org/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -236,6 +236,7 @@ int		 token_maker_of(const char *, const char **, const char **);
 ucl_object_t	*tokens_acl(void);
 bool		 token_principal(struct http_request *, struct principal *);
 bool		 session_by_token(struct http_request *);
+bool		 session_by_key(struct http_request *);
 
 /* ldap.c: sign-in by a directory, when Settings name one. */
 bool		 ldap_enabled(void);
@@ -363,6 +364,7 @@ bool		 user_name_reserved(const char *);
 const char	*principal_nacm(const struct principal *, char *, size_t);
 bool		 user_exists(const char *);
 const char	*user_id(const char *);
+const char	*user_of_id(const char *);
 bool		 user_ldap(const char *);
 bool		 principal_user(struct principal *, const char *);
 ucl_object_t	*principal_record(const struct principal *);
@@ -451,6 +453,10 @@ struct server {
 	char	*notif_token;	/* SHA-256 of its receiver token, hex, or NULL */
 	unsigned int mute;	/* MUTE_*: what is not mailed or sent */
 	bool	 sampling_off;	/* its agent said it samples nothing */
+	bool	 term_never;	/* no password prompt on its Terminal tab */
+	ucl_object_t *term_map;	/* [{"jail" (. the host), "user_id",
+				 * "account", "author", "at"}]: mapped
+				 * logins, or NULL */
 };
 
 /* What of a host is neither mailed nor sent to Telegram (mail.c). */
@@ -461,6 +467,9 @@ unsigned int	 mute_parse(const ucl_object_t *, const char **);
 ucl_object_t	*mute_list(unsigned int);
 unsigned int	 servers_mute(const char *);
 void		 servers_sampling(const char *, bool);
+bool		 servers_term_account(const char *, const char *, const char *,
+		    char *, size_t);
+bool		 servers_term_never(const char *);
 
 void		 servers_init(void);
 int		 servers_add(const char *, const char *, const char *);

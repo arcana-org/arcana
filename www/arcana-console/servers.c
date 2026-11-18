@@ -122,6 +122,8 @@ add(const char *id, const char *name, const char *uri, const char *peer,
 	s->notif_token = NULL;
 	s->mute = 0;
 	s->sampling_off = false;
+	s->term_never = false;
+	s->term_map = NULL;
 	pthread_mutex_unlock(&table_lock);
 }
 
@@ -223,6 +225,8 @@ servers_reload(void)
 		free(servers[i].peer_name);
 		free(servers[i].tenant);
 		free(servers[i].notif_token);
+		if (servers[i].term_map != NULL)
+			ucl_object_unref(servers[i].term_map);
 	}
 	nservers = 0;
 	pthread_mutex_unlock(&table_lock);
@@ -266,6 +270,12 @@ servers_init(void)
 			servers[nservers - 1].mute = (unsigned int)k;
 		servers[nservers - 1].sampling_off = ucl_flag(o,
 		    "sampling_off");
+		servers[nservers - 1].term_never = ucl_flag(o,
+		    "terminal_never");
+		if (ucl_object_type(ucl_object_lookup(o, "terminal_login")) ==
+		    UCL_ARRAY)
+			servers[nservers - 1].term_map = ucl_object_ref(
+			    ucl_object_lookup(o, "terminal_login"));
 	}
 	local_done = ucl_flag(doc, "local_done");
 	ucl_object_unref(doc);
@@ -547,6 +557,58 @@ uri_host_of(const char *uri, char *buf, size_t len)
  * made in safe mode waits to be confirmed there: the server's own, else
  * Settings' for every host, else 0 for the agent's own.
  */
+/*
+ * The account console user uid is logged in as on host sid's terminal
+ * (jail NULL: the host's own), into buf: a mapped login.  Only that
+ * host and jail, by the user's id: a host's mapping is never a jail's.
+ */
+bool
+servers_term_account(const char *sid, const char *jail, const char *uid,
+    char *buf, size_t len)
+{
+	const ucl_object_t	*m;
+	ucl_object_iter_t	 it;
+	bool			 found;
+	int			 i;
+
+	found = false;
+	if (uid == NULL || uid[0] == '\0')
+		return (false);
+	pthread_mutex_lock(&table_lock);
+	for (i = 0; i < nservers && !found; i++) {
+		if (strcmp(servers[i].id, sid) != 0)
+			continue;
+		it = NULL;
+		while ((m = ucl_object_iterate(servers[i].term_map, &it,
+		    true)) != NULL)
+			if (same_str(ucl_str(m, "jail"), jail != NULL ? jail :
+			    ".") && same_str(ucl_str(m, "user_id"), uid) &&
+			    ucl_str(m, "account") != NULL) {
+				snprintf(buf, len, "%s", ucl_str(m, "account"));
+				found = true;
+				break;
+			}
+	}
+	pthread_mutex_unlock(&table_lock);
+	return (found);
+}
+
+/* Has host sid's Terminal tab no password prompt? */
+bool
+servers_term_never(const char *sid)
+{
+	bool	never;
+	int	i;
+
+	never = false;
+	pthread_mutex_lock(&table_lock);
+	for (i = 0; i < nservers; i++)
+		if (strcmp(servers[i].id, sid) == 0)
+			never = servers[i].term_never;
+	pthread_mutex_unlock(&table_lock);
+	return (never);
+}
+
 int
 servers_safe_wait(const char *uri)
 {
@@ -759,6 +821,12 @@ server_object(const struct server *s, bool kept)
 	if (s->sampling_off)
 		ucl_object_insert_key(o, ucl_object_frombool(true),
 		    "sampling_off", 0, false);
+	if (s->term_never)
+		ucl_object_insert_key(o, ucl_object_frombool(true),
+		    "terminal_never", 0, false);
+	if (s->term_map != NULL)
+		ucl_object_insert_key(o, ucl_object_ref(s->term_map),
+		    "terminal_login", 0, false);
 	/* The token's hash is the file's; the API says there is one. */
 	if (kept && s->notif_token != NULL)
 		ucl_object_insert_key(o, ucl_object_fromstring(s->notif_token),
@@ -838,6 +906,8 @@ remove_at(int i)
 	free(servers[i].notif_token);
 	if (servers[i].pkg_repos != NULL)
 		ucl_object_unref(servers[i].pkg_repos);
+	if (servers[i].term_map != NULL)
+		ucl_object_unref(servers[i].term_map);
 	memmove(&servers[i], &servers[i + 1],
 	    (size_t)(nservers - i - 1) * sizeof(servers[0]));
 	nservers--;
@@ -1066,13 +1136,275 @@ api_server_move_free(struct http_request *req)
 }
 
 /*
+ * Host s's mapped logins as arcana-console's terminal-login has them,
+ * for the request: every one to an admin of the host, a user's own to
+ * anyone else; one of a user removed (its id no one's) nowhere.  NULL:
+ * none.
+ */
+static ucl_object_t *
+term_logins(struct http_request *req, const struct server *s)
+{
+	const ucl_object_t	*m;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*a, *r;
+	const char		*name, *me;
+	bool			 all;
+
+	all = req_host_role(req, s->id) == ROLE_ADMIN;
+	me = session_user(req);
+	a = NULL;
+	while ((m = ucl_object_iterate(s->term_map, &it, true)) != NULL) {
+		if ((name = user_of_id(ucl_str(m, "user_id"))) == NULL ||
+		    (!all && (me == NULL || strcmp(me, name) != 0)))
+			continue;
+		r = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+		    "jail")), "jail", 0, false);
+		ucl_object_insert_key(r, ucl_object_fromstring(name), "user", 0,
+		    false);
+		ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+		    "account")), "account", 0, false);
+		if (ucl_str(m, "author") != NULL)
+			ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+			    "author")), "author", 0, false);
+		if (ucl_str(m, "at") != NULL)
+			ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+			    "at")), "changed", 0, false);
+		if (a == NULL)
+			a = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(a, r);
+	}
+	return (a);
+}
+
+/* An account's name as a mapped login takes it (the agent's own test):
+ * [a-z_][a-z0-9_-]{0,31}. */
+static bool
+account_ok(const char *s)
+{
+	size_t	n;
+
+	return (s != NULL && (n = strlen(s)) > 0 && n <= 32 && ((s[0] >= 'a' &&
+	    s[0] <= 'z') || s[0] == '_') && strspn(s,
+	    "abcdefghijklmnopqrstuvwxyz0123456789_-") == n);
+}
+
+/* A jail's name as a mapping keys it, or . for the host. */
+static bool
+map_jail_ok(const char *s)
+{
+	size_t	n;
+
+	if (s == NULL || (n = strlen(s)) == 0 || n > 255)
+		return (false);
+	if (strcmp(s, ".") == 0)
+		return (true);
+	return (s[0] != '.' && s[0] != '-' && strspn(s, "abcdefghijklmnopqrstu"
+	    "vwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n);
+}
+
+/* Why entry e's terminal-prompt and terminal-login are not ones to
+ * keep, or NULL. */
+static const char *
+term_why(const ucl_object_t *e)
+{
+	const ucl_object_t	*m, *k;
+	ucl_object_iter_t	 it, it2;
+	const char		*p;
+
+	if ((p = ucl_str(e, "terminal-prompt")) != NULL && strcmp(p,
+	    "allowed") != 0 && strcmp(p, "never") != 0)
+		return ("terminal-prompt is allowed or never");
+	it = NULL;
+	while ((m = ucl_object_iterate(ucl_object_lookup(e, "terminal-login"),
+	    &it, true)) != NULL) {
+		if (!map_jail_ok(ucl_str(m, "jail")))
+			return ("a mapped login's jail is a jail's name, or . "
+			    "for the host");
+		/* One answer whatever the name: no tenant's admin learns
+		 * which users the console has. */
+		if (ucl_str(m, "user") == NULL || !user_exists(ucl_str(m,
+		    "user")))
+			return ("a mapped login's user is not one that can be "
+			    "mapped here");
+		if (!account_ok(ucl_str(m, "account")))
+			return ("a mapped login's account is a lowercase letter "
+			    "or _, then lowercase letters, digits, _ and -, 32 "
+			    "at most");
+		it2 = NULL;
+		while ((k = ucl_object_iterate(ucl_object_lookup(e,
+		    "terminal-login"), &it2, true)) != NULL && k != m)
+			if (same_str(ucl_str(k, "jail"), ucl_str(m, "jail")) &&
+			    same_str(ucl_str(k, "user"), ucl_str(m, "user")))
+				return ("a user has one mapped login per host "
+				    "or jail");
+	}
+	return (NULL);
+}
+
+/*
+ * Host s's mapped logins as entry e has them now: each with its user's
+ * id, its author and time kept where it is unchanged, else who made it
+ * now; each added, changed or removed in the audit trail.  The table's
+ * lock is the caller's.
+ */
+static ucl_object_t *
+term_map_of(struct http_request *req, const struct server *s,
+    const ucl_object_t *e)
+{
+	const ucl_object_t	*m, *o;
+	ucl_object_iter_t	 it, it2;
+	ucl_object_t		*a, *r;
+	struct principal	 p;
+	const char		*uid, *was;
+	char			 who[USER_NAME_LEN + 16], where[400], when[32];
+	time_t			 now;
+	bool			 seen;
+
+	req_principal(req, &p);
+	(void)principal_who(&p, who, sizeof(who));
+	now = time(NULL);
+	strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+	a = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((m = ucl_object_iterate(ucl_object_lookup(e, "terminal-login"),
+	    &it, true)) != NULL) {
+		uid = user_id(ucl_str(m, "user"));
+		r = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+		    "jail")), "jail", 0, false);
+		ucl_object_insert_key(r, ucl_object_fromstring(uid), "user_id",
+		    0, false);
+		ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(m,
+		    "account")), "account", 0, false);
+		was = NULL;
+		it2 = NULL;
+		while ((o = ucl_object_iterate(s->term_map, &it2, true)) !=
+		    NULL)
+			if (same_str(ucl_str(o, "jail"), ucl_str(m, "jail")) &&
+			    same_str(ucl_str(o, "user_id"), uid)) {
+				was = ucl_str(o, "account");
+				break;
+			}
+		if (o != NULL && same_str(was, ucl_str(m, "account"))) {
+			ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(o,
+			    "author")), "author", 0, false);
+			ucl_object_insert_key(r, ucl_object_fromstring(ucl_str(o,
+			    "at")), "at", 0, false);
+		} else {
+			ucl_object_insert_key(r, ucl_object_fromstring(who),
+			    "author", 0, false);
+			ucl_object_insert_key(r, ucl_object_fromstring(when),
+			    "at", 0, false);
+			snprintf(where, sizeof(where), "host %s (%s)%s%s",
+			    s->name, s->id, strcmp(ucl_str(m, "jail"), ".") !=
+			    0 ? ", jail " : "", strcmp(ucl_str(m, "jail"), ".")
+			    != 0 ? ucl_str(m, "jail") : "");
+			audit_add("terminal-mapping", "Administer", "terminal",
+			    "a mapped login: login -f, the account's full "
+			    "rights without its password", where, who,
+			    "console user %s logged in as %s%s%s",
+			    ucl_str(m, "user"), ucl_str(m, "account"), was !=
+			    NULL ? ", was " : "", was != NULL ? was : "");
+			log_msg(LOG_NOTICE, "server %s: %s mapped console user "
+			    "%s to %s on %s", s->id, who, ucl_str(m, "user"),
+			    ucl_str(m, "account"), ucl_str(m, "jail"));
+		}
+		ucl_array_append(a, r);
+	}
+	/* Those taken out. */
+	it = NULL;
+	while ((o = ucl_object_iterate(s->term_map, &it, true)) != NULL) {
+		seen = false;
+		it2 = NULL;
+		while ((m = ucl_object_iterate(ucl_object_lookup(e,
+		    "terminal-login"), &it2, true)) != NULL)
+			if (same_str(ucl_str(o, "jail"), ucl_str(m, "jail")) &&
+			    same_str(ucl_str(o, "user_id"), user_id(ucl_str(m,
+			    "user"))))
+				seen = true;
+		if (seen || user_of_id(ucl_str(o, "user_id")) == NULL)
+			continue;
+		snprintf(where, sizeof(where), "host %s (%s)%s%s", s->name,
+		    s->id, !same_str(ucl_str(o, "jail"), ".") ? ", jail " : "",
+		    !same_str(ucl_str(o, "jail"), ".") ? ucl_str(o, "jail") :
+		    "");
+		audit_add("terminal-mapping", "Administer", "terminal", "a "
+		    "mapped login: login -f, the account's full rights "
+		    "without its password", where, who, "console user %s no "
+		    "longer logged in as %s", user_of_id(ucl_str(o,
+		    "user_id")), ucl_str(o, "account"));
+	}
+	if (ucl_array_size(a) == 0) {
+		ucl_object_unref(a);
+		return (NULL);
+	}
+	return (a);
+}
+
+/*
+ * A change of host id's mapped logins or password prompt (entry was o,
+ * now e): a security key's session alone, as opening a terminal asks
+ * (403), and with If-Match, the host list's entity-tag as read (428):
+ * a write from a page that read the host long ago, without it, never
+ * brings back a mapping taken out since (a stale one is 412,
+ * restconf_precondition()).  0, or the status and why.
+ */
+static int
+term_change_why(struct http_request *req, const ucl_object_t *o,
+    const ucl_object_t *e, const char *id, char *why, size_t len)
+{
+	const char	*im;
+
+	if (cyang_same(ucl_object_lookup(o, "terminal-login"),
+	    ucl_object_lookup(e, "terminal-login")) &&
+	    same_str(ucl_str(o, "terminal-prompt"), ucl_str(e,
+	    "terminal-prompt")))
+		return (0);
+	if (!session_by_key(req)) {
+		snprintf(why, len, "host %s's mapped logins and password prompt "
+		    "are changed from a security key's session, as a terminal "
+		    "is opened: not by a password or an API token", id);
+		return (403);
+	}
+	if (!http_request_header(req, "if-match", &im) || strcmp(im, "*") ==
+	    0) {
+		snprintf(why, len, "host %s's mapped logins and password prompt "
+		    "are changed with If-Match, the entity-tag of the hosts as "
+		    "read: read them again and repeat the change", id);
+		return (428);
+	}
+	return (0);
+}
+
+/* Host s's password prompt turned on or off (never), in the audit
+ * trail. */
+static void
+term_prompt_audit(struct http_request *req, const struct server *s,
+    bool never)
+{
+	struct principal	p;
+	char			who[USER_NAME_LEN + 16], where[400];
+
+	req_principal(req, &p);
+	(void)principal_who(&p, who, sizeof(who));
+	snprintf(where, sizeof(where), "host %s (%s)", s->name, s->id);
+	audit_add("terminal-prompt", "Administer", "terminal", "the host's "
+	    "Terminal tab: login(1)'s password prompt allowed or never",
+	    where, who, "the password prompt %s", never ? "turned off "
+	    "(never): mapped logins alone" : "allowed again");
+	log_msg(LOG_NOTICE, "server %s: %s set terminal-prompt %s", s->id, who,
+	    never ? "never" : "allowed");
+}
+
+/*
  * arcana-console's hosts (cyang.c): the hosts the request's user has a
  * role on.
  */
 ucl_object_t *
 servers_yang(struct http_request *req)
 {
-	ucl_object_t		*top, *list, *e, *pr, *r;
+	ucl_object_t		*top, *list, *e, *pr, *r, *tl;
 	const ucl_object_t	*jo, *v;
 	ucl_object_iter_t	 it, vit;
 	const char		*u;
@@ -1127,6 +1459,11 @@ servers_yang(struct http_request *req)
 			    "notify-mute", 0, false);
 		ucl_object_insert_key(e, ucl_object_frombool(
 		    !servers[i].sampling_off), "sampled", 0, false);
+		if (servers[i].term_never)
+			ucl_object_insert_key(e, ucl_object_fromstring("never"),
+			    "terminal-prompt", 0, false);
+		if ((tl = term_logins(req, &servers[i])) != NULL)
+			ucl_object_insert_key(e, tl, "terminal-login", 0, false);
 		if (u != NULL)
 			ucl_object_insert_key(e, ucl_object_fromstring(role_name(
 			    req_host_role(req, servers[i].id))), "role", 0,
@@ -1187,6 +1524,8 @@ entry_why(const ucl_object_t *e)
 		    "at most");
 	if (mute_parse(ucl_object_lookup(e, "notify-mute"), &why) == UINT_MAX)
 		return ("notify-mute is utilization, sessions or all");
+	if ((why = term_why(e)) != NULL)
+		return (why);
 	why = NULL;
 	if ((pr = pkg_repos_of(e)) != NULL) {
 		why = pkg_repos_why(pr);
@@ -1218,7 +1557,7 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 	ucl_object_iter_t	 it, it2;
 	const char		*id, *w, *pn, *nu, *rt, *t;
 	char			 oldhost[256], *old;
-	int			 i, nnew, ngone;
+	int			 i, nnew, ngone, st;
 	bool			 seen;
 
 	wl = ucl_object_lookup(was, "host");
@@ -1269,11 +1608,26 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 				    "alone says", id);
 				return (403);
 			}
+			/* Mapped logins and the prompt are its admins'
+			 * alone, from its first entry on. */
+			if ((ucl_object_lookup(e, "terminal-login") != NULL ||
+			    ucl_object_lookup(e, "terminal-prompt") != NULL) &&
+			    (!host_role_ok(req, id, true, true) ||
+			    !session_by_key(req))) {
+				snprintf(why, len, "host %s's mapped logins and "
+				    "password prompt are its admins' to set, from "
+				    "a security key's session: add it without "
+				    "them", id);
+				return (403);
+			}
 			nnew++;
 		} else if (!host_role_ok(req, id, true, true)) {
 			snprintf(why, len, "a %s of host %s may not administer "
 			    "it", role_name(req_host_role(req, id)), id);
 			return (403);
+		} else if ((st = term_change_why(req, o, e, id, why, len)) !=
+		    0) {
+			return (st);
 		} else {
 			const struct server	*s = server_find(id);
 			const char		*pf = ucl_str(e, "peer-name");
@@ -1429,6 +1783,19 @@ servers_yang_set(struct http_request *req, const ucl_object_t *was,
 		servers[i].pkg_repos = pkg_repos_of(e);
 		servers[i].mute = mute_parse(ucl_object_lookup(e,
 		    "notify-mute"), &w);
+		if (servers[i].term_never != same_str(ucl_str(e,
+		    "terminal-prompt"), "never"))
+			term_prompt_audit(req, &servers[i],
+			    !servers[i].term_never);
+		servers[i].term_never = same_str(ucl_str(e, "terminal-prompt"),
+		    "never");
+		{
+			ucl_object_t	*tm = term_map_of(req, &servers[i], e);
+
+			if (servers[i].term_map != NULL)
+				ucl_object_unref(servers[i].term_map);
+			servers[i].term_map = tm;
+		}
 		old = NULL;
 		if (strcmp(nu, servers[i].uri) != 0) {
 			old = servers[i].uri;

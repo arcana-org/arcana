@@ -3413,8 +3413,9 @@ addToLibrary({
 			if (this.term !== null)
 				this.term.options.theme = this.theme();
 		},
-		open: function (sid, jail) {
+		open: function (sid, jail, prompt) {
 			var T = this, wrap, box, ws, enc = new TextEncoder();
+			var account = "";
 
 			wrap = document.getElementById("term-wrap-" + sid);
 			if (wrap === null)
@@ -3488,6 +3489,9 @@ addToLibrary({
 
 				if (jail !== "")
 					q.jail = jail;
+				/* A mapped user who asks for login's own prompt. */
+				if (prompt)
+					q.prompt = true;
 				ws.send(JSON.stringify(q));
 			};
 			ws.onmessage = function (e) {
@@ -3504,7 +3508,18 @@ addToLibrary({
 				} catch (err) {
 					return;
 				}
-				if (m.opened !== undefined) {
+				if (m.opened !== undefined && m.opened.account) {
+					account = m.opened.account;
+					T.say("Connected to " + (jail !== "" ?
+					    "jail " + jail : "the host") +
+					    (m.opened.tty ? " on " + m.opened.tty :
+					    "") + ": logging in as " + account +
+					    (jail !== "" ? " (the jail's own " +
+					    "account, not confirmed by the host)." :
+					    ", until the host confirms it…"),
+					    "open");
+					T.term.focus();
+				} else if (m.opened !== undefined) {
 					T.say("Connected to " + (jail !== "" ?
 					    "jail " + jail : "the host") +
 					    (m.opened.tty ? " on " + m.opened.tty :
@@ -3512,7 +3527,9 @@ addToLibrary({
 					    "its own.", "open");
 					T.term.focus();
 				} else if (m.login !== undefined)
-					T.say("Logged in as " + m.login + ".",
+					T.say("Logged in as " + m.login +
+					    (account !== "" && m.login === account ?
+					    " (confirmed by the host)." : "."),
 					    "open");
 				else if (m.end !== undefined) {
 					T.ended = true;
@@ -3535,8 +3552,9 @@ addToLibrary({
 		}
 	},
 	arc_term_open__deps: ["$arcTerm", "$UTF8ToString"],
-	arc_term_open: function (sidp, jailp) {
-		arcTerm.open(UTF8ToString(sidp), UTF8ToString(jailp));
+	arc_term_open: function (sidp, jailp, prompt) {
+		arcTerm.open(UTF8ToString(sidp), UTF8ToString(jailp),
+		    prompt !== 0);
 	},
 	arc_term_close__deps: ["$arcTerm"],
 	arc_term_close: function () {

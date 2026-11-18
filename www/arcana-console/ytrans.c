@@ -1384,8 +1384,13 @@ named_in(const char *s, char *const *v, size_t n)
  * permitted, as oprules.h says it (the agent's default has the same):
  * arcana-system's read of the system's files, which the agent marks
  * since it gives out keys (ipsec.conf, dma's credentials); BIRD's texts
- * and services' values, which a viewer has not.  What changes the host
- * stays the admin group's, as it was.
+ * and services' values, which a viewer has not; and on a host whose
+ * exec-default is permit alone, arcana-stream's terminal and terminal-as
+ * (TERM-3), which operators had there all the same.  A host whose
+ * exec-default is deny gives its operators no terminal: its admin adds
+ * a rule for it by hand, in a rule-list of its own (this one is made
+ * anew whenever it is not as the console makes it).  What changes the
+ * host stays the admin group's, as it was.
  */
 #define	OP_GROUP	"operator"
 
@@ -1396,43 +1401,58 @@ static const uint8_t	op_read[] = {
 	1u << IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACCESS_OPERATIONS_M1_READ
 };
 static const struct op_rule	op_rules[] = OP_RULES;
+/* An operation's rule (TERM-3's terminal and terminal-as). */
+#define	RULE_TYPE_OPERATION	\
+	IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_PROTOCOL_OPERATION
 
 static struct ietf_netconf_acm_nacm_rule_list *
-op_list(cbl_yarena *a)
+op_list(cbl_yarena *a, bool deny)
 {
 	struct ietf_netconf_acm_nacm_rule_list_group	*lg;
 	struct ietf_netconf_acm_nacm_rule_list_rule	*r;
 	struct ietf_netconf_acm_nacm_rule_list		*l;
-	size_t						 i;
+	size_t						 i, n;
 
 	if ((l = cbl_yarena_alloc(a, sizeof(*l))) == NULL ||
 	    (lg = cbl_yarena_alloc(a, sizeof(*lg))) == NULL ||
 	    (r = cbl_yarena_alloc(a, nitems(op_rules) * sizeof(*r))) == NULL)
 		return (NULL);
 	memset(r, 0, nitems(op_rules) * sizeof(*r));
-	for (i = 0; i < nitems(op_rules); i++) {
-		r[i].name = op_rules[i].name;
-		r[i].has_module_name = true;
-		r[i].module_name.which = 1;
-		r[i].module_name.v.m1 = op_rules[i].module;
-		r[i].rule_type =
-		    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
-		r[i].path = op_rules[i].path;
-		r[i].has_access_operations = true;
-		r[i].access_operations.which = 1;
-		r[i].access_operations.v.m1.p = op_rules[i].exec ? op_exec :
+	for (i = n = 0; i < nitems(op_rules); i++) {
+		/* No terminal for operators where actions are denied. */
+		if (deny && op_rules[i].rpc != NULL)
+			continue;
+		r[n].name = op_rules[i].name;
+		r[n].has_module_name = true;
+		r[n].module_name.which = 1;
+		r[n].module_name.v.m1 = op_rules[i].module;
+		if (op_rules[i].rpc != NULL) {
+			r[n].rule_type =
+			    RULE_TYPE_OPERATION;
+			r[n].has_rpc_name = true;
+			r[n].rpc_name.which = 1;
+			r[n].rpc_name.v.m1 = op_rules[i].rpc;
+		} else {
+			r[n].rule_type =
+			    IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_RULE_TYPE_DATA_NODE;
+			r[n].path = op_rules[i].path;
+		}
+		r[n].has_access_operations = true;
+		r[n].access_operations.which = 1;
+		r[n].access_operations.v.m1.p = op_rules[i].exec ? op_exec :
 		    op_read;
-		r[i].access_operations.v.m1.len = 1;
-		r[i].has_action = true;
-		r[i].action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
-		r[i].comment = op_rules[i].comment;
+		r[n].access_operations.v.m1.len = 1;
+		r[n].has_action = true;
+		r[n].action = IETF_NETCONF_ACM_NACM_RULE_LIST_RULE_ACTION_PERMIT;
+		r[n].comment = op_rules[i].comment;
+		n++;
 	}
 	lg->which = 1;
 	lg->v.m1 = OP_GROUP;
 	l->name = OP_GROUP;
 	l->group.n = 1;
 	l->group.v = lg;
-	l->rule.n = nitems(op_rules);
+	l->rule.n = n;
 	l->rule.v = r;
 	return (l);
 }
@@ -1511,10 +1531,11 @@ allow_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
 	return (true);
 }
 
-/* Has the rule-list operator every rule op_list() makes?  One of a
- * console before is made anew. */
+/* Has the rule-list operator every rule op_list(deny) makes, and none
+ * it leaves out?  One of a console before, or of the other default, is
+ * made anew. */
 static bool
-op_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
+op_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l, bool deny)
 {
 	size_t	i, k;
 
@@ -1523,7 +1544,7 @@ op_list_whole(const struct ietf_netconf_acm_nacm_rule_list *l)
 			if (l->rule.v[k].name != NULL && strcmp(l->rule.v[k].name,
 			    op_rules[i].name) == 0)
 				break;
-		if (k == l->rule.n)
+		if ((k == l->rule.n) != (deny && op_rules[i].rpc != NULL))
 			return (false);
 	}
 	return (true);
@@ -1656,7 +1677,7 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	for (i = 0; i < d.nacm->rule_list.n; i++)
 		if (strcmp(d.nacm->rule_list.v[i].name, OP_GROUP) == 0) {
 			has_list = true;
-			stale = !op_list_whole(&d.nacm->rule_list.v[i]);
+			stale = !op_list_whole(&d.nacm->rule_list.v[i], deny);
 		}
 	if ((!has_list && (og != NULL || nov > 0)) || stale)
 		changed = true;
@@ -1683,7 +1704,7 @@ ytrans_nacm_sync(cbl_conn *conn, char *const *owners, size_t nowners,
 	    (ngs = cbl_yarena_alloc(a, sizeof(*ngs))) == NULL ||
 	    (ng = cbl_yarena_alloc(a, ngroups * sizeof(*ng))) == NULL ||
 	    (nl = cbl_yarena_alloc(a, (d.nacm->rule_list.n + 2) *
-	    sizeof(*nl))) == NULL || (ol = op_list(a)) == NULL ||
+	    sizeof(*nl))) == NULL || (ol = op_list(a, deny)) == NULL ||
 	    (al = allow_list(a)) == NULL) {
 		ucl_object_unref(names);
 		ucl_object_unref(onames);

@@ -2617,6 +2617,70 @@ module arcana-console {
           "Whether its agent samples it, as it last said: one that
            does not has its utilization told to nobody.";
       }
+      leaf terminal-prompt {
+        type enumeration {
+          enum allowed {
+            description
+              "The Terminal tab may open login(1)'s password prompt.";
+          }
+          enum never {
+            description
+              "No password prompt: only mapped logins open a terminal,
+               for a host whose /usr/local/etc/arcana/terminal-users
+               maps its users.";
+          }
+        }
+        default "allowed";
+        description
+          "Whether the host's Terminal tab may open login(1)'s
+           password prompt.  Its admins'.";
+      }
+      list terminal-login {
+        key "jail user";
+        description
+          "Mapped logins: the host's account a console user is logged
+           in as on the host's terminal, or a jail's, without a
+           password (login -f), among what the host's own
+           terminal-users file allows; the account's full rights,
+           sudo and wheel among them.  Kept by the user's id: a user
+           removed and another made with the name has none.  Its
+           admins'; each change in the audit trail.";
+        leaf jail {
+          type string {
+            length "1..255";
+            pattern '\.|[A-Za-z0-9_][A-Za-z0-9_.-]*';
+          }
+          description
+            "A jail's name, . for the host itself.";
+        }
+        leaf user {
+          type string {
+            length "1..64";
+          }
+          description
+            "The console user's name.";
+        }
+        leaf account {
+          type string {
+            pattern '[a-z_][a-z0-9_-]{0,31}';
+          }
+          mandatory true;
+          description
+            "The account there.";
+        }
+        leaf author {
+          type string;
+          config false;
+          description
+            "Who mapped it.";
+        }
+        leaf changed {
+          type yang:date-and-time;
+          config false;
+          description
+            "When.";
+        }
+      }
       action move {
         description
           "The host reached at another address: the agent asked to

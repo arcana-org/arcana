@@ -48,6 +48,7 @@ char		 harness_server[1024];	/* and inside its server { } */
 static char	 console_path[MAXPATHLEN];
 /* The agent's command line and stand-ins, for agent_restart(). */
 static char	*agent_argv[160];
+static char	 agent_pw[MAXPATHLEN], agent_utx[MAXPATHLEN];
 static char	 agent_fjl[MAXPATHLEN], agent_fjf[MAXPATHLEN + 8];
 
 static void	 terminate(const char *);
@@ -453,6 +454,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 pkl[MAXPATHLEN + 16], pkr[MAXPATHLEN + 16];
 	char	 login[MAXPATHLEN], devdir[MAXPATHLEN], devd[MAXPATHLEN];
 	char	 ssld[MAXPATHLEN + 8], sslconf[MAXPATHLEN + 16];
+	char	 tusers[MAXPATHLEN], getent[MAXPATHLEN], fl[MAXPATHLEN + 1024];
 	char	*argv[160];
 	FILE	*fp;
 	pid_t	 pid;
@@ -1731,13 +1733,26 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	/*
 	 * What its terminals run in place of login(1): what it was given,
 	 * a name and a password asked as login asks them (tester, secret),
-	 * then a shell whose prompt says so; a wrong pair refused.
+	 * then a shell whose prompt says so; a wrong pair refused.  With
+	 * -f (a mapped login) the account after -- logged in at once and
+	 * written to ./utx as login writes utmpx (libfakejail's FAKEUTX);
+	 * quiet's writes nothing at all (.hushlogin, an empty prompt).
 	 */
-	put("fake-login", "#!/bin/sh\necho \"args: $*\"\nprintf 'login: '\n"
+	snprintf(fl, sizeof(fl), "#!/bin/sh\n"
+	    "if [ \"$1\" = -f ]; then\n\teval \"acct=\\${$#}\"\n"
+	    "\tif [ \"$acct\" = quiet ]; then\n\t\tt=$(tty)\n"
+	    "\t\techo \"quiet ${t#/dev/} $$\" >> %s/utx\n"
+	    "\t\texec sleep 600\n\tfi\nfi\necho \"args: $*\"\n"
+	    "if [ \"$1\" = -f ]; then\n\teval \"acct=\\${$#}\"\n"
+	    "\tt=$(tty)\n\techo \"$acct ${t#/dev/} $$\" >> %s/utx\n"
+	    "\techo \"logged in as $acct\"\n\tPS1=\"$acct\\$ \" exec /bin/sh -i\n"
+	    "fi\nprintf 'login: '\n"
 	    "read name\nstty -echo\nprintf 'Password:'\nread pw\nstty echo\n"
 	    "echo\nif [ \"$name\" != tester ] || [ \"$pw\" != secret ]; then\n"
 	    "\techo 'Login incorrect'\n\texit 1\nfi\n"
-	    "echo \"logged in as $name\"\nPS1='tester$ ' exec /bin/sh -i\n");
+	    "echo \"logged in as $name\"\nPS1='tester$ ' exec /bin/sh -i\n",
+	    cwd, cwd);
+	put("fake-login", fl);
 	ATF_REQUIRE(chmod("fake-login", 0755) == 0);
 	snprintf(login, sizeof(login), "%s/fake-login", cwd);
 	argv[132] = (char *)(uintptr_t)"--terminal-login";
@@ -1754,7 +1769,16 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	argv[139] = sslconf;
 	argv[140] = (char *)(uintptr_t)"--sslproxy-dir";
 	argv[141] = ssld;
-	n = 142;
+	/* Its mapped logins: the host's file and a jail's getent, the
+	 * test's (no file: the feature off); its accounts and utmpx the
+	 * test's stand-ins (FAKEPASSWD, FAKEUTX), never the host's. */
+	snprintf(tusers, sizeof(tusers), "%s/terminal-users", cwd);
+	snprintf(getent, sizeof(getent), "%s/fake-getent", cwd);
+	argv[142] = (char *)(uintptr_t)"--terminal-users";
+	argv[143] = tusers;
+	argv[144] = (char *)(uintptr_t)"--terminal-getent";
+	argv[145] = getent;
+	n = 146;
 	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
 	if (harness_stamp_port != 0) {
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);
@@ -1825,6 +1849,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
 	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", fjl, 1) == 0);
+	snprintf(agent_pw, sizeof(agent_pw), "%s/passwd", cwd);
+	snprintf(agent_utx, sizeof(agent_utx), "%s/utx", cwd);
+	ATF_REQUIRE(setenv("FAKEPASSWD", agent_pw, 1) == 0);
+	ATF_REQUIRE(setenv("FAKEUTX", agent_utx, 1) == 0);
 	for (int i = 0; i < 159 && argv[i] != NULL; i++) {
 		free(agent_argv[i]);
 		agent_argv[i] = strdup(argv[i]);
@@ -1833,6 +1861,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	snprintf(agent_fjl, sizeof(agent_fjl), "%s", fjl);
 	snprintf(agent_fjf, sizeof(agent_fjf), "%s", fjf);
 	pid = spawn_server(argv, "arcana-agent.out");
+	ATF_REQUIRE(unsetenv("FAKEPASSWD") == 0);
+	ATF_REQUIRE(unsetenv("FAKEUTX") == 0);
 	ATF_REQUIRE(unsetenv("LD_PRELOAD") == 0);
 	ATF_REQUIRE(unsetenv("FAKEJAIL") == 0);
 	ATF_REQUIRE(unsetenv("FAKEIFS") == 0);
@@ -1881,6 +1911,21 @@ restart_console(void)
  * The agent stopped and started again as it was, as a restart of its
  * service (or an update) does; the console stays.
  */
+/* The agent restarted with option opt and its value besides. */
+void
+agent_restart_with(const char *opt, const char *val)
+{
+	int	i;
+
+	for (i = 0; i < 156 && agent_argv[i] != NULL; i++)
+		;
+	ATF_REQUIRE(i < 156);
+	agent_argv[i] = strdup(opt);
+	agent_argv[i + 1] = strdup(val);
+	agent_argv[i + 2] = NULL;
+	agent_restart();
+}
+
 void
 agent_restart(void)
 {
@@ -1893,7 +1938,11 @@ agent_restart(void)
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
 	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", agent_fjl, 1) == 0);
+	ATF_REQUIRE(setenv("FAKEPASSWD", agent_pw, 1) == 0);
+	ATF_REQUIRE(setenv("FAKEUTX", agent_utx, 1) == 0);
 	pid = spawn_server(agent_argv, "arcana-agent.out");
+	ATF_REQUIRE(unsetenv("FAKEPASSWD") == 0);
+	ATF_REQUIRE(unsetenv("FAKEUTX") == 0);
 	ATF_REQUIRE(unsetenv("LD_PRELOAD") == 0);
 	ATF_REQUIRE(unsetenv("FAKEJAIL") == 0);
 	ATF_REQUIRE(unsetenv("FAKEIFS") == 0);

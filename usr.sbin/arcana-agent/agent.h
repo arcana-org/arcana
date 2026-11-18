@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.320.0"
+#define	ARCANA_AGENT_VERSION	"0.321.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -116,6 +116,9 @@
 /* A terminal nobody typed in for this long is hung up. */
 #define	TERM_IDLE_SEC		1800
 #define	PATH_LOGIN_BIN		"/usr/bin/login"
+/* Which console users may become which account by a mapped login. */
+#define	PATH_TERMINAL_USERS	"/usr/local/etc/arcana/terminal-users"
+#define	PATH_GETENT_BIN		"/usr/bin/getent"
 /* Jobs of pkg in jails, each its own jail, at work at once. */
 #define	PKG_LANES		4
 /*
@@ -228,6 +231,14 @@ struct opts {
 	const char	*stamp_clock;	/* --stamp-clock, as given; NULL none */
 	int		 pkg_idle_s;	/* --pkg-idle: a silent pkg, stopped after */
 	const char	*terminal_login; /* --terminal-login: login(1) */
+	const char	*terminal_users; /* --terminal-users: mapped logins'
+					 * file; "none" no terminal-as at all */
+	const char	*terminal_getent; /* --terminal-getent: a jail's
+					 * getent(1), its accounts proved */
+	const char	*terminal_nologin; /* --terminal-nologin: what stands
+					 * for /var/run/nologin */
+	bool		 test_no_terminal_as; /* --test-unregister terminal-as:
+					 * the tests' older agent */
 	int		 terminal_idle_s; /* --terminal-idle: a terminal not
 					 * typed in, hung up after */
 	int		 repo_reach_s;	/* --repo-reach: pkg's repository
@@ -1663,6 +1674,11 @@ struct live	*jobs_live(uint64_t, int, const char **);
 /* ira/terminal.c: login(1) on a terminal of the host's or a jail's */
 int		 terminal_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
+int		 terminal_as_open(cbl_req *, const struct arcana_stream_open *,
+		    cbl_stream *);
+void		 terminal_findings(void);
+void		 terminal_findings_start(void);
+#define	TERM_EMPTY_PW_FAULT	"empty-password"
 /* superbia/tlsfiles.c: the agent's own TLS files renewed */
 const char	*tls_files_ca(void);
 const char	*tls_files_cert(void);

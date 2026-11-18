@@ -5,9 +5,12 @@
  */
 
 /*
- * ytermc [-j jail] [-r rows] [-c cols] [-f from] [-t seconds] uri:
+ * ytermc [-j jail] [-r rows] [-c cols] [-f from] [-t seconds]
+ *     [-u user] [-a account] uri:
  * arcana-stream's terminal opened on uri (a unix socket, as a local
- * user), driven by the script on standard input, a command a line:
+ * user, for the user -u says), or with -a its terminal-as, a mapped
+ * login of that account, driven by the script on standard input, a
+ * command a line:
  *
  *	send TEXT	what is typed, \r \n \t \\ and \xHH escaped
  *	expect TEXT	wait until the terminal wrote TEXT, after what the
@@ -199,8 +202,11 @@ main(int argc, char **argv)
 	struct arcana_stream_chunk	 c;
 	cbl_ctx				*ctx;
 	cbl_stream			*s;
-	const char			*names[4];
+	const char			*names[5];
 	char				 jail[300], rows[16], cols[16], from[80];
+	char				 account[80];
+	const char			*user;
+	uint16_t			 cmd;
 	char				*line, text[4096], *p;
 	size_t				 cap, n;
 	ssize_t				 len;
@@ -208,10 +214,20 @@ main(int argc, char **argv)
 	int				 ch, error, limit, r, k;
 
 	limit = 20;
+	user = NULL;
+	cmd = YS_TERMINAL;
 	memset(&rq, 0, sizeof(rq));
 	n = 0;
-	while ((ch = getopt(argc, argv, "c:f:j:r:t:")) != -1) {
+	while ((ch = getopt(argc, argv, "a:c:f:j:r:t:u:")) != -1) {
 		switch (ch) {
+		case 'a':
+			snprintf(account, sizeof(account), "account=%s", optarg);
+			names[n++] = account;
+			cmd = YS_TERMINAL_AS;
+			break;
+		case 'u':
+			user = optarg;
+			break;
 		case 'c':
 			snprintf(cols, sizeof(cols), "cols=%s", optarg);
 			names[n++] = cols;
@@ -233,7 +249,7 @@ main(int argc, char **argv)
 			break;
 		default:
 			errx(2, "usage: ytermc [-j jail] [-r rows] [-c cols] "
-			    "[-f from] [-t seconds] uri");
+			    "[-f from] [-t seconds] [-u user] [-a account] uri");
 		}
 		if (n == nitems(names))
 			errx(2, "each option once");
@@ -242,15 +258,17 @@ main(int argc, char **argv)
 	argv += optind;
 	if (argc != 1)
 		errx(2, "usage: ytermc [-j jail] [-r rows] [-c cols] [-f from] "
-		    "[-t seconds] uri");
+		    "[-t seconds] [-u user] [-a account] uri");
 	if ((error = cbl_ctx_new(&ctx)) != 0 || (error = cbl_conn_new(ctx,
 	    argv[0], 0, &conn)) != 0)
 		errc(1, error, "%s", argv[0]);
+	if (user != NULL)
+		(void)cbl_conn_set_user(conn, user);
 	if (cbl_conn_connect(conn) != 0)
 		errx(1, "%s: %s", argv[0], cbl_conn_errstr(conn));
 	rq.name.v = names;
 	rq.name.n = n;
-	if ((error = ys_open(conn, YS_TERMINAL, &rq, YS_WINDOW, 0, &cbs, NULL,
+	if ((error = ys_open(conn, cmd, &rq, YS_WINDOW, 0, &cbs, NULL,
 	    &s)) != 0) {
 		fprintf(stderr, "refused: %s\n", strerror(error));
 		return (1);

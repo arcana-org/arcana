@@ -19,6 +19,7 @@
 #include <grp.h>
 #include <libutil.h>
 #include <locale.h>
+#include <paths.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -119,6 +120,9 @@ struct opts opts = {
 	.stampd_keys = "/usr/local/etc/stampd.keys",
 	.pkg_idle_s = PKG_IDLE_SEC,
 	.terminal_login = PATH_LOGIN_BIN,
+	.terminal_users = PATH_TERMINAL_USERS,
+	.terminal_getent = PATH_GETENT_BIN,
+	.terminal_nologin = _PATH_NOLOGIN,
 	.terminal_idle_s = TERM_IDLE_SEC,
 	.repo_reach_s = REPO_REACH_SEC,
 	.pkg_lanes = PKG_LANES,
@@ -154,7 +158,8 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
     OPT_TERMINAL_IDLE, OPT_REPO_REACH, OPT_RC_SUBR, OPT_DEV, OPT_DEVD_PIPE,
-    OPT_ALLOC_FAULT };
+    OPT_ALLOC_FAULT, OPT_TERMINAL_USERS, OPT_TERMINAL_GETENT,
+    OPT_TERMINAL_NOLOGIN, OPT_TEST_UNREGISTER };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -165,6 +170,15 @@ static const struct option longopts[] = {
 	 * test's stand-in; and how long one nobody types in is kept. */
 	{ "terminal-login", required_argument, NULL, OPT_TERMINAL_LOGIN },
 	{ "terminal-idle", required_argument, NULL, OPT_TERMINAL_IDLE },
+	/* Mapped logins: the host's file of who may become whom ("none":
+	 * terminal-as refused, off), and a jail's getent(1). */
+	{ "terminal-users", required_argument, NULL, OPT_TERMINAL_USERS },
+	{ "terminal-getent", required_argument, NULL, OPT_TERMINAL_GETENT },
+	/* What stands for /var/run/nologin (nologin(5)): a test's. */
+	{ "terminal-nologin", required_argument, NULL, OPT_TERMINAL_NOLOGIN },
+	/* For the tests alone: an operation left unregistered, as an agent
+	 * from before it has it (terminal-as alone). */
+	{ "test-unregister", required_argument, NULL, OPT_TEST_UNREGISTER },
 	/* pkg's repository, asked first whether it answers, is given up
 	 * after this long. */
 	{ "repo-reach", required_argument, NULL, OPT_REPO_REACH },
@@ -300,6 +314,8 @@ usage(void)
 	    "                 [--sslproxy-conf file] [--sslproxy-dir directory]\n"
 	    "                 [--sslproxy-watch seconds]\n"
 	    "                 [--terminal-login login] [--terminal-idle seconds]\n"
+	    "                 [--terminal-users file] [--terminal-getent getent]\n"
+	    "                 [--terminal-nologin file]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
 	    "                 [--subscriptions file] [--features list]\n");
 	exit(2);
@@ -697,6 +713,30 @@ main(int argc, char *argv[])
 				    optarg);
 			opts.terminal_login = optarg;
 			break;
+		case OPT_TERMINAL_USERS:
+			if (optarg[0] != '/' && strcmp(optarg, "none") != 0)
+				errx(1, "--terminal-users %s: not a full path, "
+				    "nor none", optarg);
+			opts.terminal_users = optarg;
+			break;
+		case OPT_TERMINAL_GETENT:
+			if (optarg[0] != '/')
+				errx(1, "--terminal-getent %s: not a full path",
+				    optarg);
+			opts.terminal_getent = optarg;
+			break;
+		case OPT_TEST_UNREGISTER:
+			if (strcmp(optarg, "terminal-as") != 0)
+				errx(1, "--test-unregister %s: terminal-as "
+				    "alone", optarg);
+			opts.test_no_terminal_as = true;
+			break;
+		case OPT_TERMINAL_NOLOGIN:
+			if (optarg[0] != '/')
+				errx(1, "--terminal-nologin %s: not a full path",
+				    optarg);
+			opts.terminal_nologin = optarg;
+			break;
 		case OPT_TERMINAL_IDLE:
 			opts.terminal_idle_s = (int)strtonum(optarg, 1, 86400,
 			    &errstr);
@@ -1091,6 +1131,9 @@ main(int argc, char *argv[])
 	jobs_orphans_start();
 	/* The faults before the sampler, which may clear its own. */
 	faults_start();
+	/* Accounts with an empty password: a fault, now and every ten
+	 * minutes, in a thread of its own. */
+	terminal_findings_start();
 	history_start();
 	probe_start();
 	record_start();

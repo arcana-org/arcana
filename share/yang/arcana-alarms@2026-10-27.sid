@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-alarms",
     "module-revision": "2026-10-27",
-    "sid-file-version": 5,
+    "sid-file-version": 6,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -14,6 +14,10 @@
       {
         "entry-point": "77600",
         "size": "100"
+      },
+      {
+        "entry-point": "96020",
+        "size": "10"
       }
     ],
     "item": [
@@ -121,6 +125,11 @@
         "namespace": "identity",
         "identifier": "nacm-rules",
         "sid": "77620"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "empty-password",
+        "sid": "96020"
       }
     ]
   }

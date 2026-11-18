@@ -1748,7 +1748,8 @@ config_bundle_body()
 
 	# A path no bundle carries: refused, nothing written.
 	for p in /root/.ssh/authorized_keys /etc/rc.conf.d/../passwd \
-	    /usr/local/etc/arcana/id_ed25519 /etc/rc.conf.d/.hidden; do
+	    /usr/local/etc/arcana/id_ed25519 /etc/rc.conf.d/.hidden \
+	    /usr/local/etc/arcana/terminal-users; do
 		sed "s|\"files\":\[|\"files\":[{\"path\":\"$p\",\"text\":\"x\"},|" \
 		    b.json > bad.json
 		atf_check -s exit:1 -e match:"$p: not a file a bundle may carry" \
@@ -7157,12 +7158,27 @@ job_follow_cleanup()
 # login(1) stood in for, as --terminal-login names it: what it was
 # given, a name and a password asked as login asks them, then a shell
 # whose prompt says who logged in.  A wrong pair is refused, and it
-# exits as login does.
+# exits as login does.  With -f (a mapped login), the account after --
+# logged in at once, written to ./utx as login writes utmpx (the
+# stand-in database libfakejail reads with FAKEUTX): liar's says root,
+# silent's nothing.
 terminal_login()
 {
 	cat > fake-login <<'EOF'
 #!/bin/sh
 echo "args: $*"
+if [ "$1" = -f ]; then
+	eval "acct=\${$#}"
+	t=$(tty)
+	t=${t#/dev/}
+	case $acct in
+	liar)	echo "root $t $$" >> @UTX@ ;;
+	silent)	;;
+	*)	echo "$acct $t $$" >> @UTX@ ;;
+	esac
+	echo "logged in as $acct"
+	PS1="$acct\$ " exec /bin/sh -i
+fi
 printf 'login: '
 read name
 stty -echo
@@ -7177,6 +7193,7 @@ fi
 echo "logged in as $name"
 PS1='tester$ ' exec /bin/sh -i
 EOF
+	sed -i '' "s|@UTX@|$(pwd)/utx|" fake-login
 	chmod +x fake-login
 	YTC="$(atf_get_srcdir)/ytermc"
 	DAEMON_ARGS="$DAEMON_ARGS --terminal-login $(pwd)/fake-login"
@@ -7313,6 +7330,405 @@ EOF
 	atf_check -o match:'terminal pts/[0-9]+ on jail gw for ' cat daemon.out
 }
 terminal_jail_cleanup()
+{
+	stop_daemon
+}
+
+# Mapped logins' stand-ins: the accounts (FAKEPASSWD, master.passwd
+# lines: never the host's), utmpx (FAKEUTX), the host's file of who may
+# become whom (0600), a jail's getent and jexec; tester and rooter in
+# the group operator, whose rules (oprules.h, TERM-3) permit
+# terminal-as.
+terminal_mapped_setup()
+{
+	terminal_login
+	cat > passwd <<'EOF'
+alice:$6$x:1001:1001::0:0:Alice:/home/alice:/bin/sh
+toor:$6$x:0:0::0:0:Bourne-again Superuser:/root:/bin/sh
+old:$6$x:1002:1002::0:1000000000:Expired:/home/old:/bin/sh
+daemon2:*:1003:1003::0:0:A daemon:/:/usr/sbin/nologin
+locked:*LOCKED*$6$x:1007:1007::0:0:Locked:/:/bin/sh
+liar:$6$x:1004:1004::0:0:Liar:/:/bin/sh
+silent:$6$x:1005:1005::0:0:Silent:/:/bin/sh
+nopw::1006:1006::0:0:No password:/:/bin/sh
+carol:$6$x:1008:1008::0:0:Carol:/home/carol:/bin/sh
+stale:$6$x:1009:1009::1000000000:0:Password due:/home/stale:/bin/sh
+EOF
+	cat > terminal-users <<'EOF'
+# scope account [+root] console users
+host alice tester local:nobody
+host toor tester
+host toor +root rooter
+host old tester
+host daemon2 tester
+host locked tester
+host liar tester
+host silent tester
+host nosuch tester
+jail:gw jdev tester
+jail:gw ghost tester
+jail:gw jnologin tester
+jail:gw jroot tester
+jail:gw jlocked tester
+jail:gw jslow tester
+host carol +root
+host stale tester
+EOF
+	chmod 600 terminal-users
+	cp terminal-users tu.saved
+	: > utx
+	printf 'gw 4 new %s 16.0-CURRENT host.hostname=gw\n' "$(pwd)/gw" > jails
+	cat > fake-jexec <<EOF
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+shift
+exec "\$@"
+EOF
+	cat > fake-getent <<'EOF'
+#!/bin/sh
+case $2 in
+jdev)		echo 'jdev:*:2001:2001:J:/home/jdev:/bin/sh' ;;
+jnologin)	echo 'jnologin:*:2002:2002:J:/:/usr/sbin/nologin' ;;
+jroot)		echo 'jroot:$6$x:0:0:J:/root:/bin/sh' ;;
+jlocked)	echo 'jlocked:*LOCKED*$6$x:2003:2003:J:/:/bin/sh' ;;
+jslow)		sleep 4; echo 'jslow:*:2004:2004:J:/:/bin/sh' ;;
+*)		exit 2 ;;
+esac
+EOF
+	chmod +x fake-jexec fake-getent
+	export FAKEPASSWD="$(pwd)/passwd" FAKEUTX="$(pwd)/utx"
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-users $(pwd)/terminal-users"
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-getent $(pwd)/fake-getent"
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-nologin $(pwd)/nologin"
+}
+
+# The users the operator group has, by the recovery session.
+terminal_operators()
+{
+	atf_check -o ignore "$JGC" -c "$SOCK" set \
+	    /ietf-netconf-acm:nacm/groups/group=operator "{\"user-name\":[$1]}"
+}
+
+atf_test_case terminal_mapped cleanup
+terminal_mapped_head()
+{
+	atf_set "descr" "a mapped login (arcana-stream's terminal-as): login -f -h <from> -- <account> for the request's user as the host's file allows it, established once utmpx says that account; refused: an account that is no name (a leading -), not the host's, of uid 0 without +root, expired, locked, whose shell is nologin, a user the file does not name, a user NACM gives no terminal-as, the recovery session naming no user; another account logged in, or none, hung up; an empty password a fault"
+}
+terminal_mapped_body()
+{
+	terminal_mapped_setup
+	start_daemon
+	terminal_operators '"tester","rooter","+root"'
+	# Logged in as alice: what is typed reaches the shell once utmpx
+	# says alice.
+	cat > script <<'EOF'
+expect args: -f -h 192.0.2.7 -- alice
+expect logged in as alice
+send echo he''llo\r
+expect hello
+close
+EOF
+	atf_check -o match:'hello' -e match:'"account":"alice","scope":"host"' \
+	    -e match:'^login alice$' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < script
+	atf_check -o match:'terminal pts/[0-9]+ on host: console user tester logged in as alice \(confirmed by utmpx\), from 192.0.2.7' \
+	    -o match:'terminal pts/[0-9]+ on host: console user tester as alice \(confirmed\), from 192.0.2.7, ended' \
+	    cat daemon.out
+	# What may not be an account's name: refused before anything.
+	for a in -f Alice 'a b' 1abc; do
+		atf_check -s exit:1 -e match:'^refused: a mapped login is opened by' \
+		    "$YTC" -u tester -a "$a" -f 192.0.2.7 "$SOCK" < /dev/null
+	done
+	# No from=, or account= twice: none.
+	atf_check -s exit:1 -e match:'^refused: a mapped login is opened by' \
+	    "$YTC" -u tester -a alice "$SOCK" < /dev/null
+	atf_check -s exit:1 -e match:'^refused: a mapped login is opened by' \
+	    "$YTC" -u tester -a alice -a bob -f 192.0.2.7 "$SOCK" < /dev/null
+	# What was not a name is not logged as given.
+	atf_check -o not-match:'as -f' -o match:'as \(not given or not a name\)' \
+	    cat daemon.out
+	# The host's account checks, in the session's thread before any
+	# fork: the stream accepted, then closed with why.
+	echo end > script
+	atf_check -o ignore -e match:'^ended: 2 the host has no account nosuch' \
+	    "$YTC" -u tester -a nosuch -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:'^ended: 1 toor is uid 0, root by a name' \
+	    "$YTC" -u tester -a toor -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:'^ended: 1 old has expired' \
+	    "$YTC" -u tester -a old -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:"^ended: 1 stale's password expired" \
+	    "$YTC" -u tester -a stale -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:'^ended: 1 locked is locked' \
+	    "$YTC" -u tester -a locked -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:"^ended: 1 daemon2's shell, /usr/sbin/nologin, does not log in" \
+	    "$YTC" -u tester -a daemon2 -f 192.0.2.7 "$SOCK" < script
+	atf_check -o not-match:'args: -f' cat daemon.out
+	# nologin(5), the test's stand-in (--terminal-nologin); uid 0 past
+	# it, as pam_nologin lets root (+root still asked).
+	: > nologin
+	atf_check -o ignore -e match:'^ended: 1 logins are off: .*nologin is there' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < script
+	printf 'expect logged in as toor\nclose\n' > script2
+	atf_check -o ignore -e match:'^opened' -e not-match:'^ended: 1' \
+	    "$YTC" -u rooter -a toor -f 192.0.2.7 "$SOCK" < script2
+	rm nologin
+	# +root is a flag, never a user.
+	atf_check -s exit:1 -e match:'does not let console user \+root become carol on host' \
+	    "$YTC" -u +root -a carol -f 192.0.2.7 "$SOCK" < /dev/null
+	# The file's say: a user it does not name for the account.
+	atf_check -s exit:1 -e match:'does not let console user rooter become alice on host' \
+	    "$YTC" -u rooter -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	atf_check -s exit:1 -e match:'does not let console user tester become bob on host' \
+	    "$YTC" -u tester -a bob -f 192.0.2.7 "$SOCK" < /dev/null
+	# uid 0 by the line that says +root.
+	printf 'expect args: -f -h 192.0.2.7 -- toor\nexpect logged in as toor\nsend echo ok\047\047ay\\r\nexpect okay\nclose\n' > script
+	atf_check -o ignore -e match:'^login toor$' \
+	    "$YTC" -u rooter -a toor -f 192.0.2.7 "$SOCK" < script
+	# +root taken off under its session: hung up at the next look.
+	cat > script <<EOF
+expect logged in as toor
+send printf 'host toor rooter\\\\n' > $(pwd)/terminal-users\r
+end
+EOF
+	atf_check -o ignore \
+	    -e match:"^ended: 13 the host's terminal-users no longer says \\+root for toor" \
+	    "$YTC" -u rooter -a toor -f 192.0.2.7 "$SOCK" < script
+	cp tu.saved terminal-users
+	# NACM: terminal-as is nacm:default-deny-all, a user in no group
+	# refused before the agent's code; the plain terminal is not.
+	atf_check -s exit:1 -e match:'access denied: arcana-stream:terminal-as' \
+	    "$YTC" -u stranger -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	printf 'expect login: \nclose\n' > script
+	atf_check -o ignore -e match:'^opened' "$YTC" -u stranger "$SOCK" < script
+	# The recovery session naming no user: no one to map.
+	atf_check -s exit:1 -e match:'is for a console user: the recovery session names one' \
+	    "$YTC" -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	# Another account logged in: hung up, nothing typed through.
+	printf 'expect logged in as liar\nsend echo typed''through\\r\nend\n' > script
+	atf_check -o not-match:'typedthrough' \
+	    -e match:'^ended: 1 login\(1\) logged in root, not liar: hung up' \
+	    "$YTC" -u tester -a liar -f 192.0.2.7 "$SOCK" < script
+	# None within the time: hung up.
+	printf 'end\n' > script
+	atf_check -o ignore \
+	    -e match:'^ended: 60 login\(1\) did not log silent in within 10 s' \
+	    "$YTC" -t 30 -u tester -a silent -f 192.0.2.7 "$SOCK" < script
+	# Each refusal to the authentication log too.
+	atf_check -o match:'terminal refused: console user tester as toor on host, from 192.0.2.7: toor is uid 0' \
+	    -o match:'terminal pts/[0-9]+ on host: console user tester as liar \(not confirmed\), from 192.0.2.7, ended: login\(1\) logged in root' \
+	    cat daemon.out
+	# The file emptied under a session: hung up at its next look.
+	cat > script <<EOF
+expect logged in as alice
+send : > $(pwd)/terminal-users\r
+end
+EOF
+	atf_check -o ignore \
+	    -e match:"^ended: 13 the host's terminal-users no longer allows it" \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < script
+	cp tu.saved terminal-users
+	# An empty password: one fault, its count and no name; the names to
+	# the authentication log alone.
+	atf_check -o match:'1 account logs in with no password' \
+	    -o not-match:'nopw' "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'accounts with an empty password, .*: nopw$' \
+	    cat daemon.out
+}
+terminal_mapped_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case terminal_mapped_scope cleanup
+terminal_mapped_scope_head()
+{
+	atf_set "descr" "mapped logins' scope and file: a host line never for a jail nor a jail line for the host; a jail's account proved by its getent first, then login -f by jexec, never said confirmed; the file refused when not 0600, off when not there; --terminal-users none refuses terminal-as, saying so; an agent without it (--test-unregister) says unknown command; no bundle nor sysfile writes the file"
+}
+terminal_mapped_scope_body()
+{
+	terminal_mapped_setup
+	start_daemon
+	terminal_operators '"tester"'
+	atf_check -s exit:1 -e match:'does not let console user tester become alice on jail:gw' \
+	    "$YTC" -u tester -j gw -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	atf_check -s exit:1 -e match:'does not let console user tester become jdev on host' \
+	    "$YTC" -u tester -a jdev -f 192.0.2.7 "$SOCK" < /dev/null
+	# A jail's account proved in the session's thread: the stream is
+	# accepted, then closed with why.
+	echo end > script
+	atf_check -o ignore -e match:'^ended: 2 jail gw has no account ghost' \
+	    "$YTC" -u tester -j gw -a ghost -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:"^ended: 1 jnologin's shell in jail gw, /usr/sbin/nologin, does not log in" \
+	    "$YTC" -u tester -j gw -a jnologin -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:'^ended: 1 jroot is uid 0 in jail gw, root by a name' \
+	    "$YTC" -u tester -j gw -a jroot -f 192.0.2.7 "$SOCK" < script
+	atf_check -o ignore -e match:'^ended: 1 jlocked is locked in jail gw' \
+	    "$YTC" -u tester -j gw -a jlocked -f 192.0.2.7 "$SOCK" < script
+	# A jail's getent that takes its time holds nothing else up.
+	printf 'expect logged in as jslow\nclose\n' > slow
+	"$YTC" -t 30 -u tester -j gw -a jslow -f 192.0.2.7 "$SOCK" < slow \
+	    > slow.out 2>&1 &
+	slow=$!
+	wait_match '^opened' cat slow.out || atf_fail "jslow: $(cat slow.out)"
+	t0=$(date +%s)
+	atf_check -o ignore "$JGC" -c "$SOCK" get alarms
+	printf 'expect login: \nclose\n' > script2
+	atf_check -o ignore -e match:'^opened' "$YTC" "$SOCK" < script2
+	t1=$(date +%s)
+	[ $((t1 - t0)) -lt 3 ] || atf_fail "a slow getent held others $((t1 - t0)) s"
+	wait $slow || atf_fail "jslow: $(cat slow.out)"
+	printf 'expect args: -f -h 192.0.2.7 -- jdev\nexpect logged in as jdev\nsend echo in\047\047jail\\r\nexpect injail\nclose\n' > script
+	atf_check -o match:'injail' -e match:'"account":"jdev","scope":"jail:gw"' \
+	    -e not-match:'^login ' \
+	    "$YTC" -u tester -j gw -a jdev -f 192.0.2.7 "$SOCK" < script
+	atf_check -o match:"^jexec 4 $(pwd)/fake-getent passwd jdev\$" \
+	    -o match:"^jexec 4 $(pwd)/fake-login -f -h 192.0.2.7 -- jdev\$" \
+	    cat jexec.log
+	atf_check -o match:'console user tester as jdev \(not confirmed\)' \
+	    -o not-match:'tester logged in as jdev' cat daemon.out
+	# The file emptied under a jail's session: hung up too.
+	cat > script <<EOF
+expect logged in as jdev
+send : > $(pwd)/terminal-users\r
+end
+EOF
+	atf_check -o ignore \
+	    -e match:"^ended: 13 the host's terminal-users no longer allows it" \
+	    "$YTC" -u tester -j gw -a jdev -f 192.0.2.7 "$SOCK" < script
+	cp tu.saved terminal-users
+	# The file's owner and mode, as StrictModes would.
+	chmod 640 terminal-users
+	atf_check -s exit:1 -e match:'terminal-users is refused: it must be root.s, mode 0600' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	chmod 600 terminal-users
+	# Its directories, each from / down: one another may write refuses
+	# it (a sticky one of root's, /tmp, does not).
+	chmod o+w .
+	atf_check -s exit:1 -e match:'terminal-users is refused: a directory on its way' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	chmod o-w .
+	# A link to it: refused.
+	mv terminal-users tu.real
+	ln -s tu.real terminal-users
+	atf_check -s exit:1 -e match:'terminal-users is refused: it is a symbolic link' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	rm terminal-users
+	mv tu.real terminal-users
+	echo 'host' >> terminal-users
+	atf_check -s exit:1 -e match:'line 19: not scope' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	# A flag it does not know: refused.
+	cp tu.saved terminal-users
+	echo 'host alice +sudo tester' >> terminal-users
+	atf_check -s exit:1 -e match:'line 19: not scope' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	mv terminal-users terminal-users.off
+	atf_check -s exit:1 -e match:'mapped logins are off on this host' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	# Nothing writes it: no sysfile is it (config_bundle: no bundle
+	# carries it; no YANG node names it).
+	echo 'host root +root admin' > tu.new
+	atf_check -s not-exit:0 -e not-empty -o ignore \
+	    "$JGC" -q -c "$SOCK" sysfile terminal-users tu.new
+	atf_check test ! -e terminal-users
+	stop_daemon
+	# --terminal-users none: off, and said so (not an older agent's
+	# unknown command).
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-users none"
+	start_daemon
+	atf_check -s exit:1 -e match:'^refused: mapped logins are off on this host \(--terminal-users none\)' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	stop_daemon
+	# An agent from before terminal-as (the tests' --test-unregister).
+	DAEMON_ARGS="$DAEMON_ARGS --test-unregister terminal-as"
+	start_daemon
+	atf_check -s exit:1 -e match:'^refused: unknown command' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+}
+terminal_mapped_scope_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case terminal_mapped_file cleanup
+terminal_mapped_file_head()
+{
+	atf_set "descr" "mapped logins' file by its way from /: a symbolic link for a directory refused, a directory loosened under a session hangs it up; a file over 64 KB, a FIFO, a line of more than 64 words refused; a CR before LF dropped"
+}
+terminal_mapped_file_body()
+{
+	terminal_mapped_setup
+	mkdir d
+	mv terminal-users d/
+	DAEMON_ARGS="$DAEMON_ARGS --terminal-users $(pwd)/d/terminal-users"
+	start_daemon
+	terminal_operators '"tester"'
+	printf 'expect logged in as alice\nsend echo ok\047\047ay\\r\nexpect okay\nclose\n' > ok
+	atf_check -o ignore -e match:'^login alice$' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < ok
+	# A link for one of its directories: refused.
+	mv d d.real
+	ln -s d.real d
+	atf_check -s exit:1 -e match:'terminal-users is refused: a directory on its way' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	rm d
+	mv d.real d
+	# Its directory loosened under a session: hung up at the next look
+	# (the whole way walked each time).
+	cat > script <<EOF
+expect logged in as alice
+send chmod o+w $(pwd)/d\r
+end
+EOF
+	atf_check -o ignore \
+	    -e match:"^ended: 13 the host's terminal-users no longer allows it: .*a directory on its way" \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < script
+	chmod o-w d
+	# CRLF lines: the CR dropped, the line as it is.
+	awk '{ printf "%s\r\n", $0 }' tu.saved > d/terminal-users
+	atf_check -o ignore -e match:'^login alice$' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < ok
+	# More than 64 words on a line: refused.
+	{ cat tu.saved; printf 'host alice'; for i in $(seq 1 70); do printf ' u%d' $i; done; echo; } \
+	    > d/terminal-users
+	atf_check -s exit:1 -e match:'line 19: not scope .*64 words at most' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	# Over 64 KB: refused.
+	{ cat tu.saved; for i in $(seq 1 1300); do echo "# a comment of some sixty bytes, to make it large ......"; done; } \
+	    > d/terminal-users
+	atf_check -s exit:1 -e match:'terminal-users is refused: larger than 65536 bytes' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	# A FIFO: no regular file.
+	rm d/terminal-users
+	mkfifo -m 600 d/terminal-users
+	atf_check -s exit:1 -e match:'terminal-users is refused: it must be root.s, mode 0600' \
+	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+}
+terminal_mapped_file_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case terminal_mapped_local cleanup
+terminal_mapped_local_head()
+{
+	atf_set "descr" "a mapped login asked by another local account on the unix socket (PEER_LOCAL): refused, though NACM and the host's file would let its user"
+}
+terminal_mapped_local_body()
+{
+	terminal_mapped_setup
+	start_daemon
+	terminal_operators '"local:nobody"'
+	stop_daemon
+	# Every peer of the socket now uid 65534: local:nobody.
+	export FAKEPEERUID=65534
+	start_daemon
+	atf_check -s exit:1 -e match:"^refused: a mapped login is the console's to ask" \
+	    "$YTC" -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	atf_check -o match:'terminal refused: console user local:nobody as alice' \
+	    cat daemon.out
+}
+terminal_mapped_local_cleanup()
 {
 	stop_daemon
 }
@@ -22180,5 +22596,9 @@ atf_init_test_cases()
 	atf_add_test_case terminal_session
 	atf_add_test_case terminal_limits
 	atf_add_test_case terminal_jail
+	atf_add_test_case terminal_mapped
+	atf_add_test_case terminal_mapped_scope
+	atf_add_test_case terminal_mapped_local
+	atf_add_test_case terminal_mapped_file
 	atf_add_test_case dry_run
 }

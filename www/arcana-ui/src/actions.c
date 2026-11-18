@@ -1681,40 +1681,95 @@ host_rc(const char *sid)
 	return (NULL);
 }
 
-/* A copy of host sid's configuration, to be changed and put; NULL:
- * not read. */
-ucl_object_t *
-host_conf(const char *sid)
+/* Host sid's entry as read, the reader's role and mapped logins among
+ * it; NULL: not read. */
+const ucl_object_t *
+host_entry(const char *sid)
 {
-	static const char *const state[] = { "local",
-	    "notification-token-set", "sampled", "role" };
-	const ucl_object_t	*e;
-	ucl_object_t		*c;
-	size_t			 i;
 
-	if ((e = host_rc(sid)) == NULL)
-		return (NULL);
-	c = ucl_object_copy(e);
-	for (i = 0; i < sizeof(state) / sizeof(state[0]); i++)
-		ucl_object_delete_key(c, state[i]);
-	return (c);
+	return (host_rc(sid));
 }
 
-/* Host entry e (host_conf()'s, changed) put whole, e consumed. */
+/*
+ * One node of host sid's entry written by its own path (leaf: a leaf, a
+ * leaf-list or a list's entry, "pkg-repos=." and the like, keys as
+ * rc_key() spells them), never the entry whole: what another page
+ * changed since this one read the host (a mapped login, the password
+ * prompt) stays as it is.  v consumed; NULL deletes the node.
+ */
 void
-host_put(const char *sid, ucl_object_t *e, api_cb *cb, void *arg)
+host_leaf(const char *sid, const char *leaf, ucl_object_t *v, api_cb *cb,
+    void *arg)
 {
-	ucl_object_t	*top, *a;
+	ucl_object_t	*top;
+	unsigned char	*json;
+	char		 url[400], name[96];
+	size_t		 n;
+
+	rc_c(url, sizeof(url), "hosts/host=%s/%s", rc_key(sid), leaf);
+	if (v == NULL) {
+		rc_edit("DELETE", url, NULL, cb, arg);
+		return;
+	}
+	/* The node's name, its keys aside. */
+	n = strcspn(leaf, "=");
+	snprintf(name, sizeof(name), "arcana-console:%.*s", (int)n, leaf);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(top, v, name, 0, true);
+	json = ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(top);
+	rc_edit("PUT", url, (const char *)json, cb, arg);
+	free(json);
+}
+
+/*
+ * An edit of a YANG Patch (RFC 8072) of a host's entry, appended to
+ * edits: op ("merge", "remove") at target below the entry ("/uri",
+ * "/notify-mute=all"), v its value ({"arcana-console:<node>": ...},
+ * consumed) or NULL.  remove takes out what is there and minds no
+ * absence.
+ */
+void
+host_edit(ucl_object_t *edits, const char *id, const char *op,
+    const char *target, ucl_object_t *v)
+{
+	ucl_object_t	*e;
+
+	e = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(e, ucl_object_fromstring(id), "edit-id", 0,
+	    true);
+	ucl_object_insert_key(e, ucl_object_fromstring(op), "operation", 0,
+	    true);
+	ucl_object_insert_key(e, ucl_object_fromstring(target), "target", 0,
+	    true);
+	if (v != NULL)
+		ucl_object_insert_key(e, v, "value", 0, false);
+	ucl_array_append(edits, e);
+}
+
+/*
+ * Host sid's entry changed by one YANG Patch of edits (host_edit()'s,
+ * consumed): one request, one If-Match, all of it or none; never the
+ * entry whole, so what another page changed since (a mapped login, the
+ * password prompt) stays as it is.
+ */
+void
+host_yang_patch(const char *sid, const char *patch_id, ucl_object_t *edits,
+    api_cb *cb, void *arg)
+{
+	ucl_object_t	*top, *p;
 	unsigned char	*json;
 	char		 url[200];
 
-	a = ucl_object_typed_new(UCL_ARRAY);
-	ucl_array_append(a, e);
+	p = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(p, ucl_object_fromstring(patch_id), "patch-id",
+	    0, true);
+	ucl_object_insert_key(p, edits, "edit", 0, false);
 	top = ucl_object_typed_new(UCL_OBJECT);
-	ucl_object_insert_key(top, a, "arcana-console:host", 0, false);
+	ucl_object_insert_key(top, p, "ietf-yang-patch:yang-patch", 0, false);
 	json = ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
-	rc_edit("PUT", rc_c(url, sizeof(url), "hosts/host=%s", rc_key(sid)),
+	rc_edit("PATCH", rc_c(url, sizeof(url), "hosts/host=%s", rc_key(sid)),
 	    (const char *)json, cb, arg);
 	free(json);
 }
@@ -4120,6 +4175,8 @@ readdressed_cb(int status, const ucl_object_t *o, const char *err,
 
 	if (status < 200 || status > 299) {
 		toast(true, "Not changed: %s", err != NULL ? err : "no answer");
+		/* Whatever the console has, the page shows. */
+		refresh_servers();
 		return;
 	}
 	toast(false, "The console reaches it at the new address");
@@ -4134,16 +4191,23 @@ readdressed_cb(int status, const ucl_object_t *o, const char *err,
 void
 server_readdress(struct server *s, const char *uri, const char *peer)
 {
-	ucl_object_t	*e;
+	ucl_object_t	*ed, *v;
 
-	if ((e = host_conf(s->id)) == NULL)
-		return;
-	ucl_object_replace_key(e, ucl_object_fromstring(uri), "uri", 0, true);
-	ucl_object_delete_key(e, "peer-name");
-	if (peer[0] != '\0')
-		ucl_object_insert_key(e, ucl_object_fromstring(peer),
-		    "peer-name", 0, true);
-	host_put(s->id, e, readdressed_cb, NULL);
+	/* One YANG Patch, all or nothing: the address merged, its peer name
+	 * merged or taken out; nothing else of the entry. */
+	ed = ucl_object_typed_new(UCL_ARRAY);
+	v = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(v, ucl_object_fromstring(uri),
+	    "arcana-console:uri", 0, true);
+	host_edit(ed, "uri", "merge", "/uri", v);
+	if (peer[0] != '\0') {
+		v = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(v, ucl_object_fromstring(peer),
+		    "arcana-console:peer-name", 0, true);
+		host_edit(ed, "peer-name", "merge", "/peer-name", v);
+	} else
+		host_edit(ed, "peer-name", "remove", "/peer-name", NULL);
+	host_yang_patch(s->id, "readdress", ed, readdressed_cb, NULL);
 }
 
 static void
@@ -4776,6 +4840,7 @@ static const struct {
 	{ "key-rotation", "IPsec key rotation" }, { "crash", "Process crash" },
 	{ "mail", "Mail (smtpd)" }, { "undo", "Commit not undone" },
 	{ "nacm-rules", "Access rules not whole" },
+	{ "empty-password", "Account without a password" },
 };
 
 /* A row of the cases: type's, as kept says it, or the default. */
@@ -5388,34 +5453,35 @@ void
 pkg_repo_keep(struct server *s, const char *jail, const char *action,
     const char *repo)
 {
-	ucl_object_t		*e, *all, *jo;
-	const ucl_object_t	*j;
+	const ucl_object_t	*e, *j;
+	ucl_object_t		*jo, *a;
 	ucl_object_iter_t	 it = NULL;
 	const char		*key;
+	char			 leaf[300];
 
 	if (s == NULL)
 		return;
 	repo = repo != NULL ? repo : "";
 	if (strcmp(pkg_repo_kept(s, jail, action), repo) == 0 ||
-	    (e = host_conf(s->id)) == NULL)
+	    (e = host_entry(s->id)) == NULL)
 		return;
 	key = jail != NULL && jail[0] != '\0' ? jail : ".";
-	if ((all = (ucl_object_t *)(uintptr_t)jget(e, "pkg-repos")) == NULL) {
-		all = ucl_object_typed_new(UCL_ARRAY);
-		ucl_object_insert_key(e, all, "pkg-repos", 0, false);
-	}
+	/* That jail's entry alone, by its own path. */
 	jo = NULL;
-	while ((j = ucl_object_iterate(all, &it, true)) != NULL)
+	while ((j = ucl_object_iterate(jget(e, "pkg-repos"), &it, true)) !=
+	    NULL)
 		if (jstr(j, "jail") != NULL && strcmp(jstr(j, "jail"), key) ==
 		    0)
-			jo = (ucl_object_t *)(uintptr_t)j;
+			jo = ucl_object_copy(j);
 	if (jo == NULL) {
 		jo = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(jo, ucl_object_fromstring(key), "jail", 0,
 		    true);
-		ucl_array_append(all, jo);
 	}
 	ucl_object_replace_key(jo, ucl_object_fromstring(repo), action, 0,
 	    true);
-	host_put(s->id, e, repo_kept_cb, NULL);
+	a = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(a, jo);
+	snprintf(leaf, sizeof(leaf), "pkg-repos=%s", rc_key(key));
+	host_leaf(s->id, leaf, a, repo_kept_cb, NULL);
 }

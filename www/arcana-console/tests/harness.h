@@ -87,6 +87,7 @@ void		 start(const atf_tc_t *, int, const char *);
 void		 stop(void);
 void		 restart_console(void);
 void		 agent_restart(void);
+void		 agent_restart_with(const char *, const char *);
 void		 need_fibs(int);
 void		 agent_jailed(const char *, const char *);
 void		 console_stop(void);

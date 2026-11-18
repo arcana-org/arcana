@@ -21,19 +21,25 @@
  */
 #define	OP_RULES { \
 	{ "system-read", "arcana-system", "/arcana-system:system/read", \
-	    true, "The console's operators read the system's files." }, \
+	    true, "The console's operators read the system's files.", NULL }, \
 	{ "bird-text", "arcana-bird", \
 	    "/arcana-bird:bird/configuration/file/text", false, \
 	    "The console's operators read what holds secrets, its viewers " \
-	    "not." }, \
+	    "not.", NULL }, \
 	{ "bird-jail-text", "arcana-bird", \
 	    "/arcana-bird:bird/jail/configuration/file/text", false, \
 	    "The console's operators read what holds secrets, its viewers " \
-	    "not." }, \
+	    "not.", NULL }, \
 	{ "service-values", "arcana-services", \
 	    "/arcana-services:services/service/variable/value", false, \
 	    "The console's operators read what holds secrets, its viewers " \
-	    "not." }, \
+	    "not.", NULL }, \
+	{ "terminal", "arcana-stream", NULL, true, \
+	    "The console's operators open a terminal (login asks the " \
+	    "password).", "terminal" }, \
+	{ "terminal-as", "arcana-stream", NULL, true, \
+	    "The console's operators open a mapped login, as the host's " \
+	    "terminal-users allows it.", "terminal-as" }, \
 }
 
 /*
@@ -48,6 +54,7 @@ struct op_rule {
 	const char	*name, *module, *path;
 	bool		 exec;
 	const char	*comment;
+	const char	*rpc;
 };
 
 #endif /* !_OPRULES_H_ */

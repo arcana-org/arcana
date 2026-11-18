@@ -814,7 +814,7 @@ submit(const char *form, const ucl_object_t *f)
 	    naspage_form(form, f) || sysview_form(form, f) || mail_form(form, f) || relay_form(form, f) || monitor_form(form, f) ||
 	    builder_form(form, f) ||
 	    kernel_form(form, f) || storage_form(form, f) || cfg_form(form, f) ||
-	    sysctl_form(form, f) || nacm_form(form, f) || ra_form(form, f) || procs_form(form, f) || logs_form(form, f) || usage_form(form, f) ||
+	    sysctl_form(form, f) || term_form(form, f) || nacm_form(form, f) || ra_form(form, f) || procs_form(form, f) || logs_form(form, f) || usage_form(form, f) ||
 	    macdo_form(form, f) || yform_form(form, f) ||
 	    firewall_form(form, f) || l2_form(form, f))
 		return;

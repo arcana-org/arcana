@@ -93,6 +93,36 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Mapped terminal logins; agent 0.321.0, console 0.466.0
+
+- A host's admin can map a console user to an account of the host, or
+  of one of its jails (Terminal tab, Mapped logins; arcana-console's
+  host terminal-login): that user's Terminal then runs `login -f` of
+  the account, no password asked.  The host must allow it in
+  /usr/local/etc/arcana/terminal-users, root's and mode 0600, every
+  directory above it root's and not group or world writable; lines
+  `host|jail:<name> <account> [+root] <console user>...`, uid 0 only
+  with +root.  Without the file nothing changes (mapped logins are off,
+  and the page says so).  The checks login -f skips are made by the
+  agent: expired or locked accounts, a nologin shell, /var/run/nologin
+  (not for uid 0), the login class's limits, an expired password.  A
+  session counts only once utmpx shows exactly that account; the file
+  is checked again every 2 s and a session it no longer allows is hung
+  up, as one whose mapping is removed is within a second.
+- Changing a mapping or the per-host terminal-prompt (allowed|never)
+  needs a security-key session of the host's admin and If-Match on the
+  request; both are audited.  The page's host forms (mute, rollback
+  timer, readdress, repositories) write their own nodes by YANG Patch.
+- New stream command terminal-as (7), nacm:default-deny-all.  The
+  operator rule-list gains the protocol-operation rules terminal and
+  terminal-as only on hosts whose exec-default is permit.  New fault
+  empty-password (Major): a count of the accounts that log in with no
+  password, their names only in the host's auth log.  New agent options
+  --terminal-users (none turns it off), --terminal-getent,
+  --terminal-nologin.
+- Update the agents before mapping anyone: an older agent answers "this
+  host's agent cannot do mapped logins".
+
 ### RFC 9061's IKE-less lists by PF_KEY (6.2.4); agent 0.320.0, console 0.465.0
 
 - ietf-i2nsf-ikeless's ipsec-ikeless is served: running holds the

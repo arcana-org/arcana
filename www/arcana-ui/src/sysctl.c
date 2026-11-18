@@ -870,22 +870,29 @@ sysctl_form(const char *form, const ucl_object_t *f)
 	if (strcmp(form, "tr-mute") == 0) {
 		static const char *const what[] = { "utilization", "sessions",
 		    "all" };
-		ucl_object_t	*e, *m;
+		ucl_object_t	*ed, *v, *a;
+		char		 target[64];
 		size_t		 i;
 
-		if ((e = host_conf(s->id)) == NULL)
-			return (true);
-		m = ucl_object_typed_new(UCL_ARRAY);
-		for (i = 0; i < sizeof(what) / sizeof(what[0]); i++)
-			if (jbool(f, what[i]))
-				ucl_array_append(m, ucl_object_fromstring(
-				    what[i]));
-		ucl_object_delete_key(e, "notify-mute");
-		if (ucl_array_size(m) > 0)
-			ucl_object_insert_key(e, m, "notify-mute", 0, false);
-		else
-			ucl_object_unref(m);
-		host_put(s->id, e, mute_cb, NULL);
+		/* One YANG Patch, all or nothing, of the leaf-list's entries
+		 * alone: each unticked removed (minding no absence), each
+		 * ticked merged. */
+		ed = ucl_object_typed_new(UCL_ARRAY);
+		for (i = 0; i < nitems(what); i++) {
+			snprintf(target, sizeof(target), "/notify-mute=%s",
+			    what[i]);
+			if (!jbool(f, what[i])) {
+				host_edit(ed, what[i], "remove", target, NULL);
+				continue;
+			}
+			a = ucl_object_typed_new(UCL_ARRAY);
+			ucl_array_append(a, ucl_object_fromstring(what[i]));
+			v = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(v, a, "arcana-console:notify-mute",
+			    0, false);
+			host_edit(ed, what[i], "merge", target, v);
+		}
+		host_yang_patch(s->id, "mute", ed, mute_cb, NULL);
 		return (true);
 	}
 	if (strcmp(form, "tr-safe") == 0) {
@@ -1089,12 +1096,11 @@ static void
 safe_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 
-	if (status < 200 || status > 299) {
+	if (status < 200 || status > 299)
 		toast(true, "The rollback timer was not saved: %s", err != NULL ?
 		    err : "the console refused");
-		return;
-	}
-	toast(false, "Rollback timer saved");
+	else
+		toast(false, "Rollback timer saved");
 	refresh_servers();
 }
 
@@ -1102,27 +1108,34 @@ safe_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 static void
 safe_put(const char *sid, int k)
 {
-	ucl_object_t	*e;
+	ucl_object_t	*ed, *v;
 
-	if ((e = host_conf(sid)) == NULL)
-		return;
-	ucl_object_delete_key(e, "safe-wait");
-	if (k > 0)
-		ucl_object_insert_key(e, ucl_object_fromint(k), "safe-wait", 0,
-		    false);
-	host_put(sid, e, safe_cb, NULL);
+	/* The leaf alone, by one YANG Patch: merged, or removed (none
+	 * there is no failure). */
+	ed = ucl_object_typed_new(UCL_ARRAY);
+	if (k > 0) {
+		v = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(v, ucl_object_fromint(k),
+		    "arcana-console:safe-wait", 0, true);
+		host_edit(ed, "safe-wait", "merge", "/safe-wait", v);
+	} else
+		host_edit(ed, "safe-wait", "remove", "/safe-wait", NULL);
+	host_yang_patch(sid, "safe-wait", ed, safe_cb, NULL);
 }
 
+/* The alerts' mutes saved, or not: either way the form shows the host
+ * as the console has it. */
 static void
 mute_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
 
-	if (status < 200 || status > 299) {
+	(void)o;
+	(void)arg;
+	if (status < 200 || status > 299)
 		toast(true, "What the alerts leave out was not saved: %s", err !=
 		    NULL ? err : "the console refused");
-		return;
-	}
-	toast(false, "Alerts of the host saved");
+	else
+		toast(false, "Alerts of the host saved");
 	refresh_servers();
 }
 

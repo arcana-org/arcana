@@ -230,7 +230,10 @@ static struct setting {
 	    "every read it has; the group admin keeps everything. Written at "
 	    "each host's next synchronization (Roles: Synchronize roles to "
 	    "the hosts). Reads stay permit: the data every role reads is "
-	    "named by no list of the agent's.", v_nacmdef, NULL, NULL },
+	    "named by no list of the agent's. Operators get the Terminal "
+	    "(arcana-stream's terminal and terminal-as) only where it is "
+	    "permit; with deny a host's admin who wants them to adds a rule "
+	    "by hand, in a rule-list of their own.", v_nacmdef, NULL, NULL },
 	{ "safe_wait", K_TEXT, "Rollback timer, every host, in seconds",
 	    "How long a change made in safe mode waits for the console to be "
 	    "heard from again before the host undoes it, for every host "

@@ -60,6 +60,7 @@ static const struct kind {
 	{ "undo", { 6, 0 }, "a confirmed commit could not be undone" },
 	{ "nacm-rules", { 4, 5 }, "the access rules have a path rule whose "
 	    "path does not compile" },
+	{ "empty-password", { 5, 0 }, "accounts have an empty password" },
 	{ "alarm-list-full", { 5, 0 }, "every place of the alarm list is an "
 	    "open alarm: new ones are refused" },
 };
