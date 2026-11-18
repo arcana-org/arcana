@@ -1311,8 +1311,8 @@ whose first part is served.
   unbound, Squid and Suricata instances, SD-WAN's and the Security
   section's (sec-) in one list each, set apart as their setters keep
   them.  An instance's form is a `spec` container of its kind's, as the
-  module says it (bird-form, dhcp-form, dns-form, proxy-form; the IDS'
-  alone still JSON text), with `host`; the rendered file is the `conf`
+  module says it (bird-form, dhcp-form, dns-form, proxy-form,
+  ids-form), with `host`; the rendered file is the `conf`
   state leaf, as decided before; the IDS' other
   settings (capture, offload, lua, plugins, stopped, thresholds) and
   the proxies' lists are leaves of their own.  An edit sets each part

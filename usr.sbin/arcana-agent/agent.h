@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.317.0"
+#define	ARCANA_AGENT_VERSION	"0.318.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1281,8 +1281,8 @@ void		 sdblock_watch(int, int, const char *const *,
 		    const char *const *, const struct ucl_object_s *const *);
 /* luxuria/idsconf.c: Suricata's YAML from an instance's settings. */
 char		*ids_conf_render(struct work *, const struct ucl_object_s *,
-		    const char *, const char *, int64_t, struct ucl_object_s *,
-		    const char **);
+		    const struct ucl_object_s *, const char *, const char *,
+		    int64_t, struct ucl_object_s *, const char **);
 char		*ids_conf_sdwan(struct work *, const struct ucl_object_s *,
 		    const char *, const char *, struct ucl_object_s *,
 		    const char **);

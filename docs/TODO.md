@@ -199,13 +199,12 @@
   again, store_write() now says which step failed and on which
   number, and does not close a descriptor EBADF says is no longer
   its own; start from that line, ktrace and the preload.
-- arcana-sdwan's Suricata instances (ids-instance) still have their
-  form as JSON text (spec), SD-WAN's and the Security section's, beside
-  their conf: BIRD's, dnsmasq's, unbound's and Squid's are the
-  module's now (spec, a container of bird-form, dhcp-form, dns-form or
-  proxy-form; the text the agent rendered the conf state leaf).  The
-  module to say Suricata's form too (idsconf.c's keys), and the IDS'
-  conf, Suricata's YAML whole, to go where a form replaces it.
+- arcana-sdwan's instances all have their form as the module says it
+  (spec, a container of bird-form, dhcp-form, dns-form, proxy-form or
+  ids-form) and the text the agent rendered of it as the conf state
+  leaf (Suricata's YAML whole is no longer taken).  The SD-WAN page
+  folds each instance's form and file below its row; the Security
+  page's URL filters and Suricata instances do not show theirs yet.
 - Done (agent_test:probe_steer_burst, probe_jail_sockets): the
   steering is made again on the prober's worker when a target's state
   changes or a BFD session's, a burst of both in one run (BFD's reader,

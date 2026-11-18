@@ -2,8 +2,8 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sdwan",
     "module-revision": "2026-10-15",
-    "sid-file-version": 10,
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, and 95 600, 300.",
+    "sid-file-version": 11,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, 95 600, 300, and 96 600, 100.",
     "dependency-revision": [
       {
         "module-name": "cblink-gen",
@@ -42,6 +42,10 @@
       {
         "entry-point": "95600",
         "size": "300"
+      },
+      {
+        "entry-point": "96600",
+        "size": "100"
       }
     ],
     "item": [
@@ -3759,6 +3763,201 @@
         "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/proxy-instance/spec/zones/urlf/quarantine",
         "sid": "95842"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/autofp-scheduler",
+        "sid": "96600"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/capture",
+        "sid": "96601"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/defrag-memcap",
+        "sid": "96602"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/eve",
+        "sid": "96603"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/exception-policy",
+        "sid": "96604"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/flavor",
+        "sid": "96605"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/flow-memcap",
+        "sid": "96606"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/home",
+        "sid": "96607"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/host-memcap",
+        "sid": "96608"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/http-memcap",
+        "sid": "96609"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/http-request-body",
+        "sid": "96610"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/http-response-body",
+        "sid": "96611"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/interfaces",
+        "sid": "96612"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/lua-outputs",
+        "sid": "96613"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/management-cpus",
+        "sid": "96614"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/max-pending",
+        "sid": "96615"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/midstream",
+        "sid": "96616"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/mpm",
+        "sid": "96617"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/oneside",
+        "sid": "96618"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/pairs",
+        "sid": "96619"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/payload",
+        "sid": "96620"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/pcap-log",
+        "sid": "96621"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/pcap-log-files",
+        "sid": "96622"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/pcap-log-limit",
+        "sid": "96623"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/plugins",
+        "sid": "96624"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/preset",
+        "sid": "96625"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/profile",
+        "sid": "96626"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/profiling",
+        "sid": "96627"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/profiling-sample-rate",
+        "sid": "96628"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/reassembly-depth",
+        "sid": "96629"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/reassembly-memcap",
+        "sid": "96630"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/ruleset",
+        "sid": "96631"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/runmode",
+        "sid": "96632"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/service",
+        "sid": "96633"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/stats-interval",
+        "sid": "96634"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/stream-inline",
+        "sid": "96635"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/stream-memcap",
+        "sid": "96636"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/worker-cpus",
+        "sid": "96637"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/yaml",
+        "sid": "96638"
       }
     ]
   }

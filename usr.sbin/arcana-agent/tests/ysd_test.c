@@ -569,10 +569,8 @@ main(int argc, char **argv)
 			const struct arcana_sdwan_sdwan_ids_instance *d =
 			    &w.ids_instance.v[i];
 
-			printf("ids %s divert=%u conf=%zu rules=%zu interfaces=",
-			    d->name, d->divert, d->conf != NULL ?
-			    strlen(d->conf) : 0, d->rules != NULL ?
-			    strlen(d->rules) : 0);
+			printf("ids %s divert=%u rules=%zu interfaces=", d->name,
+			    d->divert, d->rules != NULL ? strlen(d->rules) : 0);
 			for (size_t k = 0; k < d->interface.n; k++)
 				printf("%s%s", k > 0 ? "," : "", d->interface.v[k]);
 			printf(" host=%s capture=%s offload=%s stopped=%s "
@@ -582,7 +580,7 @@ main(int argc, char **argv)
 			    (d->offload ? "yes" : "no") : "-", d->has_stopped ?
 			    (d->stopped ? "yes" : "no") : "-", d->thresholds !=
 			    NULL ? strlen(d->thresholds) : 0, d->lua.n,
-			    d->plugin.n, str(d->spec));
+			    d->plugin.n, form("ids-instance", d->spec));
 		}
 		for (int g = 0; g < 2; g++) {
 			if ((js = ysd_instances_json(YSD_IDS, NULL, g, n, v,

@@ -3397,12 +3397,12 @@ sd_rendered(struct work *w, cbl_yarena *a, const char *kind,
  * forms, the conf leaves (config false); a jail's BIRD files are the
  * jail's own.
  */
-#define	SD_RENDERED(w, a, o, list, type, kind) do {			\
+#define	SD_RENDERED(w, a, o, list, type, kind, ext) do {		\
 	for (size_t i_ = 0; i_ < (o)->list.n; i_++) {			\
 		struct type *in_ = (void *)(uintptr_t)&(o)->list.v[i_];	\
 									\
 		in_->conf = sd_rendered((w), (a), (kind), in_->name,	\
-		    "conf");						\
+		    (ext));						\
 	}								\
 } while (0)
 
@@ -3410,13 +3410,17 @@ static void
 sd_conf_rendered(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 {
 
-	SD_RENDERED(w, a, o, bird_instance, arcana_sdwan_bird_instance, "bird");
+	SD_RENDERED(w, a, o, bird_instance, arcana_sdwan_bird_instance, "bird",
+	    "conf");
 	SD_RENDERED(w, a, o, dhcp_instance, arcana_sdwan_sdwan_dhcp_instance,
-	    "dhcp");
+	    "dhcp", "conf");
 	SD_RENDERED(w, a, o, dns_instance, arcana_sdwan_sdwan_dns_instance,
-	    "dns");
+	    "dns", "conf");
 	SD_RENDERED(w, a, o, proxy_instance, arcana_sdwan_sdwan_proxy_instance,
-	    "proxy");
+	    "proxy", "conf");
+	/* Suricata's YAML, its places filled. */
+	SD_RENDERED(w, a, o, ids_instance, arcana_sdwan_sdwan_ids_instance,
+	    "ids", "yaml");
 }
 
 int

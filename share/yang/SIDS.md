@@ -200,6 +200,7 @@ on the wire.
 | 95 900 | 20 | `arcana-jobs`, its third range: the sslproxy kind of job | `share/yang/arcana-jobs@2026-10-14.sid` (10 used) |
 | 95 920 | 20 | `arcana-console`, its fourth range: a host's inspection-ca | `share/yang/arcana-console@2026-11-05.sid` (5 used) |
 | 95 940 | 10 | `arcana-host`, its next range: the sslproxy plugin's identity | `share/yang/arcana-host@2026-10-15.sid` (1 used) |
+| 96 600 | 100 | `arcana-sdwan`, its fifth range: the Suricata instances' form (spec, ids-form), SD-WAN's and the Security section's | `share/yang/arcana-sdwan@2026-10-15.sid` (39 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

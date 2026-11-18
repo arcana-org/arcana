@@ -290,11 +290,50 @@ module: arcana-sdwan
      +--rw ids-instance* [name]
      |  +--rw name          string
      |  +--rw interface*    string
-     |  +--rw conf?         string
+     |  +--ro conf?         string
      |  +--rw rules?        string
      |  +--rw divert?       inet:port-number
      |  +--rw host?         string
-     |  +--rw spec?         string
+     |  +--rw spec
+     |  |  +--rw flavor?                  enumeration
+     |  |  +--rw service?                 string
+     |  |  +--rw interfaces*              string
+     |  |  +--rw home*                    string
+     |  |  +--rw ruleset?                 boolean
+     |  |  +--rw oneside?                 boolean
+     |  |  +--rw capture?                 enumeration
+     |  |  +--rw pairs*                   string
+     |  |  +--rw eve*                     eve-type
+     |  |  +--rw payload?                 boolean
+     |  |  +--rw stats-interval?          uint16
+     |  |  +--rw max-pending?             uint16
+     |  |  +--rw runmode?                 enumeration
+     |  |  +--rw autofp-scheduler?        enumeration
+     |  |  +--rw mpm?                     enumeration
+     |  |  +--rw profile?                 enumeration
+     |  |  +--rw preset?                  enumeration
+     |  |  +--rw management-cpus?         cpu-set
+     |  |  +--rw worker-cpus?             cpu-set
+     |  |  +--rw flow-memcap?             ids-size
+     |  |  +--rw stream-memcap?           ids-size
+     |  |  +--rw reassembly-memcap?       ids-size
+     |  |  +--rw defrag-memcap?           ids-size
+     |  |  +--rw host-memcap?             ids-size
+     |  |  +--rw http-memcap?             ids-size
+     |  |  +--rw reassembly-depth?        ids-size
+     |  |  +--rw http-request-body?       ids-size
+     |  |  +--rw http-response-body?      ids-size
+     |  |  +--rw stream-inline?           enumeration
+     |  |  +--rw midstream?               boolean
+     |  |  +--rw exception-policy?        enumeration
+     |  |  +--rw pcap-log?                boolean
+     |  |  +--rw pcap-log-limit?          ids-size
+     |  |  +--rw pcap-log-files?          uint16
+     |  |  +--rw lua-outputs*             string
+     |  |  +--rw plugins*                 string
+     |  |  +--rw profiling*               enumeration
+     |  |  +--rw profiling-sample-rate?   uint32
+     |  |  +--rw yaml?                    string
      |  +--rw capture?      enumeration
      |  +--rw offload?      boolean
      |  +--rw lua* [name]

@@ -113,24 +113,6 @@ copy(ucl_object_t *m, const char *key, const ucl_object_t *o,
 		put(m, key, ucl_object_copy(v));
 }
 
-/* The IDS' form: a JSON object made its text; text as it is. */
-static void
-spec_put(ucl_object_t *m, const ucl_object_t *o)
-{
-	const ucl_object_t	*v;
-	unsigned char		*t;
-
-	if ((v = ucl_object_lookup(o, "spec")) == NULL)
-		return;
-	if (ucl_object_type(v) == UCL_STRING)
-		put_str(m, "spec", ucl_object_tostring(v));
-	else if (ucl_object_type(v) == UCL_OBJECT && (t = ucl_object_emit(v,
-	    UCL_EMIT_JSON_COMPACT)) != NULL) {
-		put_str(m, "spec", (const char *)t);
-		free(t);
-	}
-}
-
 /*
  * A form (spec) as arcana-sdwan's container of its kind says it, from
  * what the console made of the document: each member named as a node of
@@ -637,11 +619,10 @@ instance_of(const char *kind, const ucl_object_t *in)
 		    "interfaces"), &it, true)) != NULL)
 			ucl_array_append(arr, ucl_object_copy(v));
 		put_list(m, "interface", arr);
-		copy(m, "conf", in, "conf");
 		copy(m, "rules", in, "rules");
 		copy(m, "divert", in, "divert");
 		copy(m, "host", in, "host");
-		spec_put(m, in);
+		form_put(m, "ids-instance", in);
 		copy(m, "capture", in, "capture");
 		copy(m, "offload", in, "offload");
 		put_list(m, "lua", named(ucl_object_lookup(in, "lua")));
@@ -721,7 +702,7 @@ num_bad(const ucl_object_t *o, const char *key, int64_t max, char *err,
 static bool
 kind_bad(const ucl_object_t *o, char *err, size_t errlen)
 {
-	static const char *const texts[] = { "name", "host", "conf", "rules",
+	static const char *const texts[] = { "name", "host", "rules",
 	    "thresholds", "mode", "capture" };
 	static const char *const flags[] = { "stopped", "offload" };
 	const ucl_object_t	*v;
@@ -1709,15 +1690,66 @@ ids_json(const struct arcana_sdwan_sdwan_state_ids *d)
 	return (o);
 }
 
-/* A form of the Security section's, a sec- IDS instance's spec, into
- * arr. */
+/*
+ * The Security section's intrusion detection as its page has the form,
+ * a sec- IDS instance's: its spec, each setting named as the page names
+ * it (a _ for each -), with what the instance has beside: its name,
+ * divert, rules, thresholds, Lua scripts by name, offloading and
+ * whether it is stopped.
+ */
 static void
-security_spec(ucl_object_t *arr, const char *name, const char *spec)
+security_ids(ucl_object_t *arr,
+    const struct arcana_sdwan_sdwan_ids_instance *d)
 {
-	ucl_object_t	*s;
+	struct cbl_ybuf		 b = { NULL, 0, 0 };
+	const struct cbl_ynode	*n;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*f = NULL, *s, *l;
+	char			*text, key[64], *c;
 
-	if (is_sec(name) && (s = reparse(spec)) != NULL)
-		ucl_array_append(arr, s);
+	if (!is_sec(d->name))
+		return;
+	if (d->spec != NULL && (n = yq_child(yq_child(yq_top("arcana-sdwan",
+	    "sdwan"), "ids-instance"), "spec")) != NULL && cbl_yjson(n,
+	    d->spec, &b) == 0 && asprintf(&text, "%.*s", (int)b.len,
+	    (const char *)b.p) != -1) {
+		f = parse(text);
+		free(text);
+	}
+	cbl_ybuf_free(&b);
+	s = ucl_object_typed_new(UCL_OBJECT);
+	it = NULL;
+	while ((e = ucl_object_iterate(f, &it, true)) != NULL) {
+		if (strcmp(ucl_object_key(e), "flavor") == 0)
+			continue;
+		snprintf(key, sizeof(key), "%s", ucl_object_key(e));
+		for (c = key; *c != '\0'; c++)
+			if (*c == '-')
+				*c = '_';
+		put(s, key, ucl_object_copy(e));
+	}
+	if (f != NULL)
+		ucl_object_unref(f);
+	put_str(s, "name", d->name);
+	if (d->has_divert)
+		put(s, "divert", ucl_object_fromint(d->divert));
+	put_str(s, "rules", d->rules);
+	put_str(s, "thresholds", d->thresholds);
+	if (d->lua.n > 0) {
+		l = ucl_object_typed_new(UCL_OBJECT);
+		for (size_t i = 0; i < d->lua.n; i++)
+			if (d->lua.v[i].name != NULL)
+				put(l, d->lua.v[i].name, ucl_object_fromstring(
+				    d->lua.v[i].text != NULL ? d->lua.v[i].text :
+				    ""));
+		put(s, "lua", l);
+	}
+	if (d->has_offload && !d->offload)
+		put(s, "offload_off", ucl_object_frombool(true));
+	if (d->has_stopped && d->stopped)
+		put(s, "stopped", ucl_object_frombool(true));
+	ucl_array_append(arr, s);
 }
 
 /* The Security section's URL filter as its page has the form, a sec-
@@ -1964,8 +1996,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 	}
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; sd != NULL && i < sd->ids_instance.n; i++)
-		security_spec(arr, sd->ids_instance.v[i].name,
-		    sd->ids_instance.v[i].spec);
+		security_ids(arr, &sd->ids_instance.v[i]);
 	put(top, "security_ids", arr);
 	o = ucl_object_typed_new(UCL_OBJECT);
 	if (st->record != NULL) {

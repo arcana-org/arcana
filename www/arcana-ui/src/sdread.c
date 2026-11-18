@@ -334,12 +334,59 @@ ids_json(const ucl_object_t *d)
 	return (o);
 }
 
-/* The Security section's forms of instances list: each sec- one's
- * spec, parsed (the IDS', JSON text); a URL filter's as the module says
- * it (proxy_form()), each address it listens on a word again, with its
+/*
+ * A sec- IDS instance's form as the page has it: its spec (ids_form()),
+ * each setting named as the page names it (a _ for each -), with what
+ * the instance has beside: its name, divert, rules, thresholds, Lua
+ * scripts by name, offloading and whether it is stopped.
+ */
+static ucl_object_t *
+security_ids(const ucl_object_t *v)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*s, *l;
+	char			 key[64], *c;
+
+	s = ucl_object_typed_new(UCL_OBJECT);
+	while ((e = ucl_object_iterate(jget(v, "spec"), &it, true)) != NULL) {
+		if (strcmp(ucl_object_key(e), "flavor") == 0)
+			continue;
+		snprintf(key, sizeof(key), "%s", ucl_object_key(e));
+		for (c = key; *c != '\0'; c++)
+			if (*c == '-')
+				*c = '_';
+		put(s, key, ucl_object_copy(e));
+	}
+	put_str(s, "name", jstr(v, "name"));
+	if (jget(v, "divert") != NULL)
+		put(s, "divert", ucl_object_fromint(jint(v, "divert", 0)));
+	put_str(s, "rules", jstr(v, "rules"));
+	put_str(s, "thresholds", jstr(v, "thresholds"));
+	if (ucl_array_size(jget(v, "lua")) > 0) {
+		l = ucl_object_typed_new(UCL_OBJECT);
+		it = NULL;
+		while ((e = ucl_object_iterate(jget(v, "lua"), &it, true)) !=
+		    NULL)
+			if (jstr(e, "name") != NULL)
+				put_str(l, jstr(e, "name"), jstr(e, "text") !=
+				    NULL ? jstr(e, "text") : "");
+		put(s, "lua", l);
+	}
+	if (ucl_object_type(jget(v, "offload")) == UCL_BOOLEAN &&
+	    !jbool(v, "offload"))
+		put(s, "offload_off", ucl_object_frombool(true));
+	if (jbool(v, "stopped"))
+		put(s, "stopped", ucl_object_frombool(true));
+	return (s);
+}
+
+/* The Security section's forms of instances list: each sec- one's, the
+ * IDS' as security_ids() has it; a URL filter's as the module says it
+ * (proxy_form()), each address it listens on a word again, with its
  * name and whether it is stopped. */
 static ucl_object_t *
-security_specs(const ucl_object_t *list)
+security_specs(const ucl_object_t *list, bool ids)
 {
 	const ucl_object_t	*v, *e;
 	ucl_object_iter_t	 it = NULL, eit;
@@ -349,9 +396,8 @@ security_specs(const ucl_object_t *list)
 	while ((v = ucl_object_iterate(list, &it, true)) != NULL) {
 		if (!is_sec(jstr(v, "name")))
 			continue;
-		if (jstr(v, "spec") != NULL) {
-			if ((s = json_parse(jstr(v, "spec"))) != NULL)
-				ucl_array_append(arr, s);
+		if (ids) {
+			ucl_array_append(arr, security_ids(v));
 			continue;
 		}
 		if (ucl_object_type(jget(v, "spec")) != UCL_OBJECT)
@@ -614,12 +660,15 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 	put(top, "proxy", arr);
 	/* The Security section's forms, from the configuration. */
 	put(top, "security_proxy", security_specs(jget(sd,
-	    "proxy-instance")));
+	    "proxy-instance"), false));
 	clamav_json(top, jget(st, "clamav"));
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;
-	while ((v = ucl_object_iterate(jget(st, "ids"), &it, true)) != NULL)
-		ucl_array_append(arr, ids_json(v));
+	while ((v = ucl_object_iterate(jget(st, "ids"), &it, true)) != NULL) {
+		o = ids_json(v);
+		inst_form(o, sd, "ids-instance", v);
+		ucl_array_append(arr, o);
+	}
 	put(top, "ids", arr);
 	if ((v = jget(st, "ids-build")) != NULL) {
 		o = ucl_object_typed_new(UCL_OBJECT);
@@ -643,7 +692,8 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		file_json(o, v);
 		put(top, "ids_ruleset", o);
 	}
-	put(top, "security_ids", security_specs(jget(sd, "ids-instance")));
+	put(top, "security_ids", security_specs(jget(sd, "ids-instance"),
+	    true));
 	o = ucl_object_typed_new(UCL_OBJECT);
 	if ((v = jget(st, "record")) != NULL) {
 		put(o, "count", ucl_object_fromint(jint(v, "count", 0)));
@@ -1282,16 +1332,45 @@ proxy_form(const ucl_object_t *in, const char *mode, int64_t fib,
 	return (f);
 }
 
-/* The form's own JSON text: what the agent renders the daemon's of. */
-static void
-put_spec(ucl_object_t *m, const ucl_object_t *in)
+/*
+ * The intrusion detection's form as arcana-sdwan's ids-form says it,
+ * the spec the agent renders Suricata's YAML of: each setting of the
+ * page's that idsconf.c reads, named as the module names it (a - for
+ * each _), a list's words each once; what the instance has beside (its
+ * name, divert, rules, thresholds, Lua scripts, offloading, stopped)
+ * left to its own leaves.
+ */
+static ucl_object_t *
+ids_form(const ucl_object_t *in)
 {
-	char	*t;
+	static const char *const keys[] = { "interfaces", "home", "ruleset",
+	    "capture", "pairs", "eve", "payload", "stats_interval",
+	    "max_pending", "runmode", "autofp_scheduler", "mpm", "profile",
+	    "preset", "management_cpus", "worker_cpus", "flow_memcap",
+	    "stream_memcap", "reassembly_memcap", "defrag_memcap",
+	    "host_memcap", "http_memcap", "reassembly_depth",
+	    "http_request_body", "http_response_body", "stream_inline",
+	    "midstream", "exception_policy", "pcap_log", "pcap_log_limit",
+	    "pcap_log_files", "lua_outputs", "plugins", "profiling",
+	    "profiling_sample_rate", "yaml" };
+	const ucl_object_t	*v;
+	ucl_object_t		*f;
+	char			 name[64], *c;
 
-	if ((t = (char *)ucl_object_emit(in, UCL_EMIT_JSON_COMPACT)) != NULL) {
-		put_str(m, "spec", t);
-		free(t);
+	f = ucl_object_typed_new(UCL_OBJECT);
+	for (size_t i = 0; i < nitems(keys); i++) {
+		if ((v = jget(in, keys[i])) == NULL || ucl_object_type(v) ==
+		    UCL_NULL || (ucl_object_type(v) == UCL_STRING &&
+		    ucl_object_tostring(v)[0] == '\0'))
+			continue;
+		snprintf(name, sizeof(name), "%s", keys[i]);
+		for (c = name; *c != '\0'; c++)
+			if (*c == '_')
+				*c = '-';
+		put(f, name, ucl_object_type(v) == UCL_ARRAY ? words_once(v) :
+		    ucl_object_copy(v));
 	}
+	return (f);
 }
 
 /*
@@ -1489,7 +1568,7 @@ ids_one(const ucl_object_t *in, const char *host, char *err, size_t errlen)
 	if (divert > 0)
 		put(o, "divert", ucl_object_fromint(divert));
 	put_str(o, "host", host);
-	put_spec(o, in);
+	put(o, "spec", ids_form(in));
 	if (jstr(in, "capture") != NULL && strcmp(jstr(in, "capture"),
 	    "netmap") == 0)
 		put_str(o, "capture", "netmap");

@@ -1212,11 +1212,12 @@ plugins_ok(struct work *w, const char *name, const ucl_object_t *pl,
 }
 
 /*
- * The instances applied: {"instances": [{"name", "interfaces", "conf",
- * "rules", "thresholds", "stopped"}, ...]}.  Suricata must be there (a plugin); each instance's
- * files are written, checked by suricata -T, and it is started, again
- * when they changed; those not named any more are stopped.  Kept for
- * the next start.
+ * The instances applied: {"instances": [{"name", "interfaces", "spec",
+ * "rules", "thresholds", "stopped"}, ...]}, each spec its form, which
+ * Suricata's YAML is rendered from (idsconf.c).  Suricata must be there
+ * (a plugin); each instance's files are written, checked by suricata
+ * -T, and it is started, again when they changed; those not named any
+ * more are stopped.  Kept for the next start.
  */
 int
 do_sdwan_ids(struct work *w, const char *json, const char **errp)
@@ -1237,7 +1238,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		if (top != NULL)
 			ucl_object_unref(top);
 		*errp = "the instances are an object: instances, each a name, "
-		    "its interfaces, its conf and its rules";
+		    "its interfaces, its form (spec) and its rules";
 		return (-1);
 	}
 	sec = ucl_object_lookup(top, "group") != NULL && strcmp(
@@ -1249,14 +1250,11 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	while ((in = ucl_object_iterate(ucl_object_lookup(top, "instances"),
 	    &it, true)) != NULL) {
 		v = ucl_object_lookup(in, "name");
-		/* Its settings (the form, rendered here), or its YAML whole
-		 * with the agent's places, as arcanactl gives it. */
+		/* Its settings: the form, rendered here. */
 		if (n == INSTANCES_MAX || v == NULL || ucl_object_type(v) !=
 		    UCL_STRING || !name_ok(ucl_object_tostring(v)) ||
-		    (ucl_object_type(ucl_object_lookup(in, "spec")) != UCL_OBJECT
-		    && (ucl_object_tostring(ucl_object_lookup(in, "conf")) == NULL
-		    || strlen(ucl_object_tostring(ucl_object_lookup(in, "conf")))
-		    > CONF_MAX)) || (ucl_object_lookup(in, "rules") != NULL &&
+		    ucl_object_type(ucl_object_lookup(in, "spec")) != UCL_OBJECT
+		    || (ucl_object_lookup(in, "rules") != NULL &&
 		    (ucl_object_type(ucl_object_lookup(in, "rules")) !=
 		    UCL_STRING || strlen(ucl_object_tostring(ucl_object_lookup(
 		    in, "rules"))) > RULES_MAX)) ||
@@ -1266,8 +1264,8 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		    in, "thresholds"))) > CONF_MAX))) {
 			ucl_object_unref(top);
 			*errp = wfmt(w, "an instance is a name of letters, digits, "
-			    "_ and -, 32 at most, its interfaces, its conf and its "
-			    "rules, %d of them at most", INSTANCES_MAX);
+			    "_ and -, 32 at most, its interfaces, its form (spec) "
+			    "and its rules, %d of them at most", INSTANCES_MAX);
 			return (-1);
 		}
 		snprintf(ni[n].name, sizeof(ni[n].name), "%s",
@@ -1423,11 +1421,9 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			step_end(w, step, true, NULL);
 			continue;
 		}
-		/* Its YAML: given whole (arcanactl's way), or rendered from
-		 * its settings, the console's. */
+		/* Its YAML, rendered from its settings. */
 		e = NULL;
-		if (ucl_object_tostring(ucl_object_lookup(in, "conf")) == NULL &&
-		    ucl_object_type(ucl_object_lookup(in, "spec")) == UCL_OBJECT) {
+		{
 			const ucl_object_t	*spec = ucl_object_lookup(in, "spec");
 			ucl_object_t		*seen = ucl_object_typed_new(UCL_ARRAY);
 			const char		*host, *flavor;
@@ -1443,8 +1439,8 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			    "flavor"));
 			conf = flavor != NULL && strcmp(flavor, "sdwan") == 0 ?
 			    ids_conf_sdwan(w, spec, ni[k].name, host, seen, &e) :
-			    ids_conf_render(w, spec, ni[k].name, host,
-			    ni[k].divert, seen, &e);
+			    ids_conf_render(w, spec, ucl_object_lookup(in, "lua"),
+			    ni[k].name, host, ni[k].divert, seen, &e);
 			ucl_object_unref(seen);
 			if (conf == NULL) {
 				step_end(w, step_begin(w, STEP_DAEMON,
@@ -1454,9 +1450,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 				ok = false;
 				break;
 			}
-		} else
-			conf = (char *)(uintptr_t)ucl_object_tostring(
-			    ucl_object_lookup(in, "conf"));
+		}
 		raw = conf;
 		conf = inst_conf(w, ni[k].name, conf);
 		if ((conf = expand_any(w, conf, &e)) == NULL) {

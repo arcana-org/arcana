@@ -197,21 +197,26 @@ named_of(cbl_yarena *a, const ucl_object_t *o, size_t *np,
 
 /*
  * The form an instance's file is rendered from (spec), of a kind: its
- * container in the module, the struct of it; the IDS', JSON text.  The
- * module's names have a - where the setters' have a _ (sdconf.c): those
- * below.
+ * container in the module, the struct of it.  The module's names have a
+ * - where the setters' have a _ (sdconf.c, idsconf.c): those below.
  */
 static const char *const form_words[] = { "end-point", "router-id",
     "hold-time", "route-monitoring", "as-path", "next-hop", "cluster-id",
-    "dnf-id", "upstream-tls" };
+    "dnf-id", "upstream-tls", "stats-interval", "max-pending",
+    "autofp-scheduler", "management-cpus", "worker-cpus", "flow-memcap",
+    "stream-memcap", "reassembly-memcap", "defrag-memcap", "host-memcap",
+    "http-memcap", "reassembly-depth", "http-request-body",
+    "http-response-body", "stream-inline", "exception-policy", "pcap-log",
+    "pcap-log-limit", "pcap-log-files", "lua-outputs",
+    "profiling-sample-rate" };
 
 static const struct cbl_ynode *
 form_node(int kind)
 {
 	static const char *const lists[] = { "bird-instance",
-	    "proxy-instance", NULL, "dhcp-instance", "dns-instance" };
+	    "proxy-instance", "ids-instance", "dhcp-instance", "dns-instance" };
 
-	if (kind < 0 || kind >= (int)nitems(lists) || lists[kind] == NULL)
+	if (kind < 0 || kind >= (int)nitems(lists))
 		return (NULL);
 	return (yj_node(&ymodel_schema, "arcana-sdwan", "sdwan", lists[kind],
 	    "spec", NULL));
@@ -276,23 +281,6 @@ form_json(int kind, const void *p)
 	r = form_spelled(o);
 	ucl_object_unref(o);
 	return (r);
-}
-
-/* The IDS' form of o's as JSON text, the arena's. */
-static const char *
-spec_of(cbl_yarena *a, const ucl_object_t *o, const char *key)
-{
-	const ucl_object_t	*v;
-	unsigned char		*t;
-	const char		*s;
-
-	if ((v = ucl_object_lookup(o, key)) == NULL || ucl_object_type(v) !=
-	    UCL_OBJECT || (t = ucl_object_emit(v, UCL_EMIT_JSON_COMPACT)) ==
-	    NULL)
-		return (NULL);
-	s = dup(a, (const char *)t);
-	free(t);
-	return (s);
 }
 
 /* A string of o's, a number made one. */
@@ -590,10 +578,10 @@ ysd_steer_from_json(const char *json, cbl_yarena *a,
 
 /*
  * The instances of one kind, as the setters keep them: name, fib, host
- * and spec, the form, as the module says it (the IDS', JSON text); the
- * proxy's mode, lists and stopped beside; the ids' interfaces, conf,
- * rules, divert, capture, offload, lua, plugins, stopped and
- * thresholds.  BIRD's, dnsmasq's and unbound's entries have one layout,
+ * and spec, the form, as the module says it; the proxy's mode, lists
+ * and stopped beside; the ids' interfaces, rules, divert, capture,
+ * offload, lua, plugins, stopped and thresholds (its conf, the YAML the
+ * agent rendered, state).  BIRD's, dnsmasq's and unbound's entries have one layout,
  * each its own form.
  */
 int
@@ -654,11 +642,10 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 			    &v[n].lua.n, (const struct named **)(void *)
 			    &v[n].lua.v) != 0)
 				goto nomem;
-			v[n].conf = yj_str(a, e, "conf");
 			v[n].rules = yj_str(a, e, "rules");
 			YJ_NUM(e, "divert", &v[n], divert);
 			v[n].host = yj_str(a, e, "host");
-			v[n].spec = spec_of(a, e, "spec");
+			v[n].spec = form_of(a, e, kind);
 			if ((f = ucl_object_lookup(e, "capture")) != NULL &&
 			    ucl_object_type(f) == UCL_STRING) {
 				v[n].has_capture = true;
@@ -922,21 +909,6 @@ ysd_steer_json(const char *jail, const struct arcana_sdwan_steer_config *s)
 	return (emit(top));
 }
 
-/* The IDS' form's JSON text as an object; NULL where it is none. */
-static ucl_object_t *
-spec_object(const char *spec)
-{
-	ucl_object_t	*o;
-
-	if (spec == NULL || (o = yj_parse(spec)) == NULL)
-		return (NULL);
-	if (ucl_object_type(o) != UCL_OBJECT) {
-		ucl_object_unref(o);
-		return (NULL);
-	}
-	return (o);
-}
-
 static ucl_object_t *
 named_object(size_t n, const struct named *v)
 {
@@ -961,14 +933,15 @@ is_sec(const char *name)
  * The instances of one kind, of an edge (jail; NULL the host's), as its
  * setter takes them, each form a JSON object; for the proxies and the
  * IDS those of one group (group 1 the Security section's, sec-; 0
- * SD-WAN's), group -1 for the others.  NULL and why when an IDS' form
- * is no JSON object.
+ * SD-WAN's), group -1 for the others.  NULL and why when there is no
+ * memory for it.
  */
 char *
 ysd_instances_json(int kind, const char *jail, int group, size_t n,
     const void *vp, const char **errp)
 {
 	ucl_object_t	*top, *arr, *o, *sp;
+	char		*json;
 
 	top = top_of(jail);
 	if (group == 1)
@@ -976,8 +949,8 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	put(top, "instances", arr);
 	for (size_t i = 0; i < n; i++) {
-		const char	*name, *spec = NULL;
-		const void	*form = NULL;
+		const char	*name;
+		const void	*form;
 
 		if (kind == YSD_PROXY) {
 			name = ((const struct arcana_sdwan_sdwan_proxy_instance *)
@@ -987,7 +960,7 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 		} else if (kind == YSD_IDS) {
 			name = ((const struct arcana_sdwan_sdwan_ids_instance *)
 			    vp)[i].name;
-			spec = ((const struct arcana_sdwan_sdwan_ids_instance *)
+			form = ((const struct arcana_sdwan_sdwan_ids_instance *)
 			    vp)[i].spec;
 		} else {
 			/* dnsmasq's and unbound's have BIRD's layout. */
@@ -999,11 +972,6 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 		if (group >= 0 && is_sec(name) != (group == 1))
 			continue;
 		sp = form != NULL ? form_json(kind, form) : NULL;
-		if (spec != NULL && (sp = spec_object(spec)) == NULL) {
-			*errp = "an instance's spec is no JSON object";
-			ucl_object_unref(top);
-			return (NULL);
-		}
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put_str(o, "name", name);
 		if (kind == YSD_IDS) {
@@ -1040,7 +1008,6 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 				put(o, "stopped", ucl_object_frombool(v->stopped));
 			put_str(o, "rules", v->rules);
 			put_str(o, "thresholds", v->thresholds);
-			put_str(o, "conf", v->conf);
 		} else if (kind == YSD_PROXY) {
 			const struct arcana_sdwan_sdwan_proxy_instance *v =
 			    &((const struct arcana_sdwan_sdwan_proxy_instance *)
@@ -1070,7 +1037,9 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 			put(o, "spec", sp);
 		ucl_array_append(arr, o);
 	}
-	return (emit(top));
+	if ((json = emit(top)) == NULL)
+		*errp = "no memory for the instances";
+	return (json);
 }
 
 /* ---- The state -------------------------------------------------------- */

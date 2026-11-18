@@ -93,6 +93,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Suricata's forms in the module; agent 0.318.0, console 0.463.0
+
+- arcana-sdwan's Suricata instances (ids-instance), SD-WAN's and the
+  Security section's, have their form (spec) as the module says it: a
+  container of ids-form (SIDs 96 600 to 96 638), no longer JSON text;
+  conf is now state, Suricata's YAML as the agent rendered it, shown
+  under each instance on the SD-WAN page.  Suricata's YAML is no longer
+  taken whole (arcanactl sdwan ids without a spec is refused).
+- Update the agent and the console together.  Nothing to save again: a
+  kept form loads as it is, its name, divert and stopped (the
+  instance's own) left out of it.
+
 ### No pools without ZFS in the kernel; agent 0.317.0
 
 - A host whose kernel has no ZFS (zfs.ko not loaded, a UFS root) reads

@@ -13198,8 +13198,12 @@ part_security(void)
 	ATF_CHECK_MSG(i < 300, "the settings are not written");
 	wait_js("document.querySelector('table.secids') && !document."
 	    "querySelector('table.secids .chip.warn')", 20);
-	ATF_CHECK(system("grep -q '\"offload_off\":true' security-ids.json") ==
-	    0);
+	/* Kept as arcana-sdwan says it: the settings its form (spec,
+	 * ids-form), the offloading the instance's own. */
+	ATF_CHECK(system("grep -q '\"offload\":false' security-ids.json && "
+	    "grep -q '\"spec\":{[^}]*\"runmode\":\"workers\"' security-ids.json "
+	    "&& grep -q '\"worker_cpus\":\"0\"' security-ids.json && ! grep -q "
+	    "'\"offload_off\"' security-ids.json") == 0);
 	ATF_CHECK(system("grep -q 'suppress gen_id 1, sig_id 1000009' "
 	    "sdwan-ids-sec-lan.threshold") == 0);
 	wait_js("document.querySelector('table.secids') && !document."
@@ -13209,7 +13213,9 @@ part_security(void)
 	wait_js("document.querySelector('form[data-form=sec-ids]') && "
 	    "document.querySelector('form[data-form=sec-ids]').runmode.value "
 	    "=== 'workers' && document.querySelector('form[data-form=sec-ids]')"
-	    ".eve_http.checked", 10);
+	    ".eve_http.checked && document.querySelector('form[data-form="
+	    "sec-ids]').offload_off.checked && document.querySelector('form"
+	    "[data-form=sec-ids]').worker_cpus.value === '0'", 10);
 	shot("9v-security-ids-settings");
 	click_when("form[data-form=sec-ids] button[data-act=sec-cancel]", 5);
 	/* The ruleset's rules: fetched, then searched and one enabled by

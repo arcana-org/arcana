@@ -41,9 +41,9 @@ module arcana-sdwan {
      criterion) instances of the services, one each in its FIB
      (setfib), and the Security section's Squid and Suricata (named
      sec-), as the console writes them, each from its form as this
-     module says it (Suricata's still JSON text), the text the agent
-     rendered of it its state; the rules, steering and BIRD of
-     each edge that is a vnet jail under jail; and as state what each
+     module says it, the text the agent rendered of it its state; the
+     rules, steering and BIRD of each edge that is a vnet jail under
+     jail; and as state what each
      is doing, the security policies' record (ipfw's logdst rtsock),
      the IPsec keys of the tunnels (sdwan-key-*.pem) and the faults of
      the day (Mplify 119 §11.3).  Written by EDIT and a commit: what
@@ -1343,6 +1343,514 @@ module arcana-sdwan {
     }
   }
 
+  typedef ids-size {
+    type string {
+      pattern '[0-9]{1,6}([kKmMgG][bB])?';
+    }
+    description
+      "A size as Suricata reads one: bytes, or a number of kb, mb or gb
+       (64mb, 512kb, 1gb).";
+  }
+
+  typedef cpu-set {
+    type string {
+      length "1..64";
+      pattern '[0-9]([0-9,-]*[0-9])?';
+    }
+    description
+      "CPUs and ranges of them, as cpu-affinity has them: 0, 1-3,
+       0,2,4-7.";
+  }
+
+  typedef eve-type {
+    type enumeration {
+      enum anomaly {
+        description
+          "Anomalies of the decoders and parsers.";
+      }
+      enum http {
+        description
+          "HTTP's transactions.";
+      }
+      enum dns {
+        description
+          "DNS's queries and answers.";
+      }
+      enum tls {
+        description
+          "TLS's handshakes.";
+      }
+      enum ssh {
+        description
+          "SSH's handshakes.";
+      }
+      enum flow {
+        description
+          "Flows as they end.";
+      }
+      enum netflow {
+        description
+          "Flows, one record a direction.";
+      }
+      enum fileinfo {
+        description
+          "The files seen.";
+      }
+      enum drop {
+        description
+          "The packets dropped.";
+      }
+      enum smtp {
+        description
+          "SMTP's.";
+      }
+      enum dhcp {
+        description
+          "DHCP's.";
+      }
+      enum smb {
+        description
+          "SMB's.";
+      }
+      enum nfs {
+        description
+          "NFS's.";
+      }
+      enum ftp {
+        description
+          "FTP's.";
+      }
+      enum krb5 {
+        description
+          "Kerberos 5's.";
+      }
+      enum snmp {
+        description
+          "SNMP's.";
+      }
+      enum sip {
+        description
+          "SIP's.";
+      }
+      enum rdp {
+        description
+          "RDP's.";
+      }
+      enum mqtt {
+        description
+          "MQTT's.";
+      }
+      enum quic {
+        description
+          "QUIC's.";
+      }
+      enum http2 {
+        description
+          "HTTP/2's.";
+      }
+      enum ike {
+        description
+          "IKE's.";
+      }
+      enum rfb {
+        description
+          "RFB's (VNC).";
+      }
+      enum dnp3 {
+        description
+          "DNP3's.";
+      }
+      enum modbus {
+        description
+          "Modbus's.";
+      }
+    }
+    description
+      "An event type eve.json has beside the alerts.";
+  }
+
+  grouping ids-form {
+    description
+      "The form Suricata's YAML of an instance is rendered from (luxuria
+       idsconf.c): an SD-WAN service's at this edge (flavor sdwan: its
+       home the UNIs' prefixes, alerts alone), or the Security
+       section's, every setting of its page.  What a setting does not
+       say is Suricata's default.";
+    leaf flavor {
+      type enumeration {
+        enum sdwan {
+          description
+            "An SD-WAN service's.";
+        }
+        enum security {
+          description
+            "The Security section's.";
+        }
+      }
+      description
+        "Whose; none the Security section's.";
+    }
+    leaf service {
+      type string;
+      description
+        "The service, an SD-WAN service's.";
+    }
+    leaf-list interfaces {
+      type string;
+      ordered-by user;
+      description
+        "The interfaces it captures from: names, any (each up but the
+         loopback), or em0^ (a host stack, netmap's alone).";
+    }
+    leaf-list home {
+      type string;
+      ordered-by user;
+      description
+        "HOME_NET: the networks it guards (a.b.c.d/n, x::/n), or any
+         alone; none, the private ranges of RFC 1918.";
+    }
+    leaf ruleset {
+      type boolean;
+      description
+        "The ruleset suricata-update keeps loaded beside its own rules.";
+    }
+    leaf oneside {
+      type boolean;
+      description
+        "An SD-WAN service's: the edge answers some of the UNIs' traffic
+         itself and sees one side of those flows, taken as they come.";
+    }
+    leaf capture {
+      type enumeration {
+        enum pcap {
+          description
+            "By libpcap.";
+        }
+        enum netmap {
+          description
+            "By netmap(4).";
+        }
+      }
+      description
+        "How it takes the packets; none, pcap.";
+    }
+    leaf-list pairs {
+      type string;
+      ordered-by user;
+      description
+        "netmap's: the pairs it prevents between at L2, copy-mode ips
+         both ways (em0:em1, or em0:em0^ its host stack).";
+    }
+    leaf-list eve {
+      type eve-type;
+      description
+        "What eve.json has beside the alerts.";
+    }
+    leaf payload {
+      type boolean;
+      description
+        "An alert's payload and packet in eve.json.";
+    }
+    leaf stats-interval {
+      type uint16 {
+        range "0..3600";
+      }
+      units "seconds";
+      description
+        "Its statistics every so many seconds, 0 none; 10 unless
+         said.";
+    }
+    leaf max-pending {
+      type uint16;
+      description
+        "max-pending-packets; 0 Suricata's default.";
+    }
+    leaf runmode {
+      type enumeration {
+        enum autofp {
+          description
+            "Capture threads, then workers by flow.";
+        }
+        enum workers {
+          description
+            "Each thread the whole of a packet's path.";
+        }
+        enum single {
+          description
+            "One thread.";
+        }
+      }
+      description
+        "Its runmode.";
+    }
+    leaf autofp-scheduler {
+      type enumeration {
+        enum hash {
+          description
+            "By flow.";
+        }
+        enum ippair {
+          description
+            "By the pair of addresses.";
+        }
+        enum ftp-hash {
+          description
+            "By flow, FTP's data with its control.";
+        }
+      }
+      description
+        "autofp's packets to its workers; none, hash.";
+    }
+    leaf mpm {
+      type enumeration {
+        enum auto {
+          description
+            "Suricata's choice.";
+        }
+        enum ac {
+          description
+            "Aho-Corasick.";
+        }
+        enum ac-ks {
+          description
+            "Aho-Corasick, Ken Steele's.";
+        }
+        enum hs {
+          description
+            "Hyperscan.";
+        }
+      }
+      description
+        "Its multi-pattern matcher (mpm-algo).";
+    }
+    leaf profile {
+      type enumeration {
+        enum low {
+          description
+            "Less memory.";
+        }
+        enum medium {
+          description
+            "Between.";
+        }
+        enum high {
+          description
+            "More memory, faster.";
+        }
+      }
+      description
+        "Its detection engine's profile.";
+    }
+    leaf preset {
+      type enumeration {
+        enum small {
+          description
+            "A small host.";
+        }
+        enum medium {
+          description
+            "A middling one.";
+        }
+        enum large {
+          description
+            "A large one.";
+        }
+      }
+      description
+        "What a setting not said is, for a host of its size.";
+    }
+    leaf management-cpus {
+      type cpu-set;
+      description
+        "The CPUs its management threads run on.";
+    }
+    leaf worker-cpus {
+      type cpu-set;
+      description
+        "The CPUs its workers run on, exclusive.";
+    }
+    leaf flow-memcap {
+      type ids-size;
+      description
+        "The flow engine's memory.";
+    }
+    leaf stream-memcap {
+      type ids-size;
+      description
+        "The TCP stream engine's memory.";
+    }
+    leaf reassembly-memcap {
+      type ids-size;
+      description
+        "Its reassembly's memory.";
+    }
+    leaf defrag-memcap {
+      type ids-size;
+      description
+        "Defragmentation's memory.";
+    }
+    leaf host-memcap {
+      type ids-size;
+      description
+        "The host table's memory.";
+    }
+    leaf http-memcap {
+      type ids-size;
+      description
+        "HTTP's memory.";
+    }
+    leaf reassembly-depth {
+      type ids-size;
+      description
+        "How far into a TCP stream it inspects.";
+    }
+    leaf http-request-body {
+      type ids-size;
+      description
+        "How much of a request's body it inspects.";
+    }
+    leaf http-response-body {
+      type ids-size;
+      description
+        "How much of a response's body it inspects.";
+    }
+    leaf stream-inline {
+      type enumeration {
+        enum auto {
+          description
+            "Inline where it prevents.";
+        }
+        enum yes {
+          description
+            "Inline.";
+        }
+        enum no {
+          description
+            "Not.";
+        }
+      }
+      description
+        "The stream engine inline.";
+    }
+    leaf midstream {
+      type boolean;
+      description
+        "TCP sessions picked up midstream.";
+    }
+    leaf exception-policy {
+      type enumeration {
+        enum auto {
+          description
+            "Suricata's choice.";
+        }
+        enum drop-packet {
+          description
+            "The packet dropped.";
+        }
+        enum drop-flow {
+          description
+            "The flow dropped.";
+        }
+        enum pass-packet {
+          description
+            "The packet let by.";
+        }
+        enum pass-flow {
+          description
+            "The flow let by.";
+        }
+        enum bypass {
+          description
+            "The flow bypassed.";
+        }
+        enum reject {
+          description
+            "Rejected.";
+        }
+        enum ignore {
+          description
+            "Nothing done.";
+        }
+      }
+      description
+        "What it does past a limit.";
+    }
+    leaf pcap-log {
+      type boolean;
+      description
+        "The packets of its alerts kept, a ring of files.";
+    }
+    leaf pcap-log-limit {
+      type ids-size;
+      description
+        "Each file's size; 100mb unless said.";
+    }
+    leaf pcap-log-files {
+      type uint16 {
+        range "1..1000";
+      }
+      description
+        "The files kept; 10 unless said.";
+    }
+    leaf-list lua-outputs {
+      type string;
+      ordered-by user;
+      description
+        "Its Lua scripts run as outputs, each one of its lua.";
+    }
+    leaf-list plugins {
+      type string;
+      ordered-by user;
+      description
+        "The plugins it loads, .so files under /usr/local/lib.";
+    }
+    leaf-list profiling {
+      type enumeration {
+        enum rules {
+          description
+            "The rules' ticks.";
+        }
+        enum keywords {
+          description
+            "The keywords'.";
+        }
+        enum prefilter {
+          description
+            "The prefilter's.";
+        }
+        enum rulegroups {
+          description
+            "The rule groups'.";
+        }
+        enum packets {
+          description
+            "The packets'.";
+        }
+        enum locks {
+          description
+            "The locks'.";
+        }
+      }
+      description
+        "The profiling sections on, where Suricata is built with it.";
+    }
+    leaf profiling-sample-rate {
+      type uint32 {
+        range "1..65536";
+      }
+      description
+        "One packet in so many profiled, a power of 2.";
+    }
+    leaf yaml {
+      type string {
+        length "0..16384";
+      }
+      description
+        "YAML of the admin's own, appended to what the form made: block
+         mappings and sequences of scalars, no key the form sets.";
+    }
+  }
+
   grouping instance {
     description
       "A service's instance of a program, in its FIB: the form the
@@ -1872,9 +2380,10 @@ module arcana-sdwan {
       }
       leaf conf {
         type string;
+        config false;
         description
-          "Suricata's YAML whole, with @LOGDIR@, @RULES@, @PID@ and
-           @THRESHOLD@ for what the agent places; or spec instead.";
+          "Suricata's YAML, as the agent rendered it from spec, its
+           places filled.";
       }
       leaf rules {
         type string;
@@ -1891,12 +2400,10 @@ module arcana-sdwan {
         description
           "The host's name, for the YAML's comment.";
       }
-      leaf spec {
-        type string;
+      container spec {
         description
-          "Its settings, a JSON object (RFC 8259), which the agent
-           renders into Suricata's YAML: the console's form, or for an
-           SD-WAN service flavor sdwan.";
+          "The form Suricata's YAML is rendered from.";
+        uses ids-form;
       }
       leaf capture {
         type enumeration {

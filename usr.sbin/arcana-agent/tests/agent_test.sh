@@ -2443,15 +2443,33 @@ set {"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","lis
 yang-cbor 262 bytes, the same back
 EOT
 	atf_check -o file:want "$y" proxy proxy.json
+	# The IDS' forms as ids-form says them (spec): SD-WAN's (flavor
+	# sdwan) and the Security section's, what is not of the model left
+	# out, an object again for the setter with its words spelled as
+	# idsconf.c reads them (stats_interval, lua_outputs, ...).
 	cat > ids.json <<'EOT'
-{"instances":[{"name":"svc1","interfaces":["vtnet1","vtnet2"],"conf":"%YAML 1.1\n","rules":"alert tcp any any -> any 23 (msg:\"telnet\"; sid:1;)\n","divert":8000},{"name":"sec-lan","host":"edge-a","interfaces":["em0"],"capture":"netmap","offload":false,"lua":{"a.lua":"return 1\n"},"plugins":["/usr/local/lib/x.so"],"stopped":true,"thresholds":"suppress gen_id 1, sig_id 1\n","spec":{"home":["any"]}}]}
+{"instances":[{"name":"svc1","interfaces":["vtnet1","vtnet2"],"rules":"alert tcp any any -> any 23 (msg:\"telnet\"; sid:1;)\n","divert":8000,"spec":{"flavor":"sdwan","service":"acme","home":["10.1.0.0/24"],"interfaces":["vtnet1","vtnet2"],"ruleset":true,"oneside":true,"what":"not of the model"}},{"name":"sec-lan","host":"edge-a","interfaces":["em0"],"capture":"netmap","offload":false,"lua":{"a.lua":"return 1\n"},"plugins":["/usr/local/lib/x.so"],"stopped":true,"thresholds":"suppress gen_id 1, sig_id 1\n","spec":{"home":["any"],"interfaces":["em0"],"capture":"netmap","eve":["http","dns"],"stats_interval":30,"preset":"small","reassembly_depth":"1mb","exception_policy":"drop-flow","lua_outputs":["a.lua"],"plugins":["/usr/local/lib/x.so"],"profiling":["rules"],"profiling_sample_rate":4,"yaml":"# mine\n"}}]}
 EOT
 	cat > want <<'EOT'
-ids svc1 divert=8000 conf=10 rules=51 interfaces=vtnet1,vtnet2 host=- capture=- offload=- stopped=- thresholds=0 lua=0 plugins=0 spec=-
-ids sec-lan divert=0 conf=0 rules=0 interfaces=em0 host=edge-a capture=netmap offload=no stopped=yes thresholds=28 lua=1 plugins=1 spec={"home":["any"]}
-set {"instances":[{"name":"svc1","interfaces":["vtnet1","vtnet2"],"divert":8000,"rules":"alert tcp any any -> any 23 (msg:\"telnet\"; sid:1;)\n","conf":"%YAML 1.1\n"}]}
-set {"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["em0"],"capture":"netmap","offload":false,"lua":{"a.lua":"return 1\n"},"plugins":["/usr/local/lib/x.so"],"stopped":true,"thresholds":"suppress gen_id 1, sig_id 1\n","spec":{"home":["any"]}}]}
-yang-cbor 219 bytes, the same back
+ids svc1 divert=8000 rules=51 interfaces=vtnet1,vtnet2 host=- capture=- offload=- stopped=- thresholds=0 lua=0 plugins=0 spec={"flavor":"sdwan","home":["10.1.0.0/24"],"interfaces":["vtnet1","vtnet2"],"oneside":true,"ruleset":true,"service":"acme"}
+ids sec-lan divert=0 rules=0 interfaces=em0 host=edge-a capture=netmap offload=no stopped=yes thresholds=28 lua=1 plugins=1 spec={"capture":"netmap","eve":["http","dns"],"exception-policy":"drop-flow","home":["any"],"interfaces":["em0"],"lua-outputs":["a.lua"],"plugins":["/usr/local/lib/x.so"],"preset":"small","profiling":["rules"],"profiling-sample-rate":4,"reassembly-depth":"1mb","stats-interval":30,"yaml":"# mine\n"}
+set {"instances":[{"name":"svc1","interfaces":["vtnet1","vtnet2"],"divert":8000,"rules":"alert tcp any any -> any 23 (msg:\"telnet\"; sid:1;)\n","spec":{"flavor":"sdwan","home":["10.1.0.0/24"],"interfaces":["vtnet1","vtnet2"],"oneside":true,"ruleset":true,"service":"acme"}}]}
+set {"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["em0"],"capture":"netmap","offload":false,"lua":{"a.lua":"return 1\n"},"plugins":["/usr/local/lib/x.so"],"stopped":true,"thresholds":"suppress gen_id 1, sig_id 1\n","spec":{"capture":"netmap","eve":["http","dns"],"exception_policy":"drop-flow","home":["any"],"interfaces":["em0"],"lua_outputs":["a.lua"],"plugins":["/usr/local/lib/x.so"],"preset":"small","profiling":["rules"],"profiling_sample_rate":4,"reassembly_depth":"1mb","stats_interval":30,"yaml":"# mine\n"}}]}
+yang-cbor 347 bytes, the same back
+EOT
+	atf_check -o file:want "$y" ids ids.json
+	# The Security section's sec-lan as a host keeps it from before the
+	# module said the form: its name, divert and stopped, the
+	# instance's own, left out of it; what Suricata's YAML is made of
+	# kept whole.
+	cat > ids.json <<'EOT'
+{"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["any"],"divert":8600,"stopped":true,"spec":{"name":"sec-lan","interfaces":["any"],"home":["any"],"ruleset":true,"divert":8600,"capture":"pcap","eve":[],"stats_interval":10,"stopped":true}}]}
+EOT
+	cat > want <<'EOT'
+ids sec-lan divert=8600 rules=0 interfaces=any host=edge-a capture=- offload=- stopped=yes thresholds=0 lua=0 plugins=0 spec={"capture":"pcap","home":["any"],"interfaces":["any"],"ruleset":true,"stats-interval":10}
+set {"instances":[]}
+set {"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["any"],"divert":8600,"stopped":true,"spec":{"capture":"pcap","home":["any"],"interfaces":["any"],"ruleset":true,"stats_interval":10}}]}
+yang-cbor 64 bytes, the same back
 EOT
 	atf_check -o file:want "$y" ids ids.json
 	# The state, all of it.
@@ -11028,7 +11046,8 @@ EOS
 	# negates any as Suricata does; run, it writes an alert and a flow
 	# to eve.json in its log directory, says its pid, and notes a USR2.
 	# Suricata's command socket, as it answers: a version, then a
-	# command a line; gone by itself after two minutes.
+	# command a line, where the YAML says SCSRV; gone by itself after
+	# two minutes.
 	cat > tools/scsrv.py <<'EOS'
 import json, os, signal, socket, sys
 signal.alarm(120)
@@ -11066,7 +11085,7 @@ echo "suricata \$*" >> $(pwd)/suricata.log
 [ "\$3" = -r ] && { printf '%s\\n' '{"timestamp":"2026-10-19T11:00:00.000000+0000","event_type":"alert","src_ip":"10.1.1.1","src_port":1,"dest_ip":"10.2.2.2","dest_port":2,"proto":"TCP","alert":{"action":"allowed","signature_id":2000009,"rev":1,"signature":"ET REPLAYED","category":"","severity":1}}' >> "\$6/eve.json"; exit 0; }
 [ "\$1" = --build-info ] && { printf 'This is Suricata version 8.0.7 RELEASE\nFeatures: IPFW NETMAP HAVE_LUA RUST\n  IPFW support:                            yes\n  Netmap support:                          yes v14+\n  Hyperscan support:                       no\n  Profiling enabled:                       no\n  Profiling rules enabled:                 no\n  Plugin support (experimental):           yes\n'; exit 0; }
 k=\$(sed -n 's/^  filename: \(.*\.sock\)\$/\1/p' "\$2" 2>/dev/null)
-[ -n "\$k" ] && [ "\$1" != -T ] && /usr/local/bin/python3 $(pwd)/tools/scsrv.py "\$k" > /dev/null 2>&1 &
+[ -n "\$k" ] && [ "\$1" != -T ] && grep -q '^# SCSRV\$' "\$2" && /usr/local/bin/python3 $(pwd)/tools/scsrv.py "\$k" > /dev/null 2>&1 &
 [ "\$1" = -T ] && { grep -q BROKEN "\$3" && { [ "\$5" = logging.outputs.0.console.enabled=yes ] && echo "E: detect: rule BROKEN at line 1" >&2; exit 1; }
 r=\$(sed -n 's/^  - \(.*\/suricata.rules\)\$/\\1/p' "\$3")
 [ -n "\$r" ] && grep -q NEGATED "\$r" && { echo "i: suricata: This is Suricata"; { echo "E: detect: Complete IP space negated. Rule address range is NIL."; echo "E: detect: error parsing signature \\"alert\\" from file \$r at line 1"; echo "E: suricata: Loading signatures failed."; } >&2; exit 1; }
@@ -13281,15 +13300,18 @@ sdwan_ids_body()
 	# Intrusion detection: Suricata of each instance checked,
 	# started on its interfaces, its alerts read into events and the
 	# read; the same files again leave it be; gone with the instance.
+	# Its YAML is rendered from its form (spec), never given whole.
+	atf_check -s exit:1 -e match:'its form \(spec\)' -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    '{"instances":[{"name":"sw1","interfaces":["wg5"],"conf":"default-log-dir: @LOGDIR@\n"}]}'
 	atf_check -s exit:1 -e match:'watches no interface' -o ignore "$JGC" -c "$SOCK" sdwan ids \
-	    '{"instances":[{"name":"sw1","interfaces":[],"conf":"x"}]}'
+	    '{"instances":[{"name":"sw1","interfaces":[],"spec":{"home":["any"]}}]}'
 	atf_check -s exit:1 -e match:'its interfaces are names' -o ignore "$JGC" -c "$SOCK" sdwan ids \
-	    '{"instances":[{"name":"sw1","interfaces":["wg5; rm"],"conf":"x"}]}'
+	    '{"instances":[{"name":"sw1","interfaces":["wg5; rm"],"spec":{"home":["any"]}}]}'
 	# Its reason, which Suricata says only where it logs: on the console
 	# for the check.
 	atf_check -s exit:1 -e match:'suricata does not take it: E: detect: rule BROKEN at line 1' -o ignore "$JGC" -c "$SOCK" sdwan ids \
-	    '{"instances":[{"name":"sw1","interfaces":["wg5"],"conf":"BROKEN"}]}'
-	ids='{"instances":[{"name":"sw1","interfaces":["wg5"],"conf":"default-log-dir: @LOGDIR@\nrule-files:\n  - @RULES@\nclassification-file: @CLASSIFICATION@\nreference-config-file: @REFERENCE@\n","rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	    '{"instances":[{"name":"sw1","interfaces":["wg5"],"spec":{"interfaces":["wg5"],"yaml":"# BROKEN\n"}}]}'
+	ids='{"instances":[{"name":"sw1","interfaces":["wg5"],"spec":{"interfaces":["wg5"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "$ids"
 	atf_check -o match:'^suricata -T -c .*sdwan-ids-sw1.yaml --set logging.outputs.0.console.enabled=yes$' \
 	    -o match:'^suricata -c .*sdwan-ids-sw1.yaml --pidfile .*sdwan-ids-sw1.pid --pcap -D$' cat suricata.log
@@ -13316,7 +13338,7 @@ sdwan_ids_body()
 	# Critical fault (what it guards passes nothing), cleared once it
 	# runs again.
 	atf_check -s exit:1 -e match:"divert: '70000' is not a value" -o ignore "$JGC" -c "$SOCK" sdwan ids \
-	    '{"instances":[{"name":"sw1","interfaces":["wg5"],"conf":"x","divert":70000}]}'
+	    '{"instances":[{"name":"sw1","interfaces":["wg5"],"spec":{"home":["any"]},"divert":70000}]}'
 	ipsd=$(echo "$ids" | sed 's/"name":"sw1",/"name":"sw1","divert":8001,/')
 	atf_check -o match:'suricata sw1 on 1 interface, prevents by divert 8001: started' \
 	    "$JGC" -t -c "$SOCK" sdwan ids "$ipsd"
@@ -13363,9 +13385,9 @@ sdwan_ids_body()
 	# The Security section's Suricata beside SD-WAN's: each list its
 	# own, what was read of the other's kept.
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids \
-	    '{"group":"security","instances":[{"name":"sec-lan","interfaces":["wg5"],"conf":"default-log-dir: @LOGDIR@\nrule-files:\n  - @RULES@\n","spec":{"name":"sec-lan"}}]}'
+	    '{"group":"security","instances":[{"name":"sec-lan","interfaces":["wg5"],"spec":{"interfaces":["wg5"],"home":["any"]}}]}'
 	atf_check -o match:'"ids":\[\{"name":"sw1",.*"alerts_seen":1,.*\{"name":"sec-lan",' \
-	    -o match:'"security_ids":\[\{"name":"sec-lan"\}\]' "$JGC" -c "$SOCK" sdwan
+	    -o match:'"security_ids":\[\{"home":\["any"\],"interfaces":\["wg5"\],"name":"sec-lan"\}\]' "$JGC" -c "$SOCK" sdwan
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"instances":[]}'
 	atf_check -o match:'"ids":\[\{"name":"sec-lan"' "$JGC" -c "$SOCK" sdwan
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
@@ -13388,7 +13410,7 @@ sdwan_ids_rules_body()
 
 	# The ruleset suricata-update keeps: not fetched yet, its line is
 	# left out and the instance runs on its own rules, saying so.
-	rs='{"instances":[{"name":"sw1","interfaces":["wg5"],"conf":"default-log-dir: @LOGDIR@\nrule-files:\n  - @RULES@\n  - @RULESET@\n","rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	rs='{"instances":[{"name":"sw1","interfaces":["wg5"],"spec":{"interfaces":["wg5"],"home":["any"],"ruleset":true},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	atf_check -o match:'suricata sw1 on 1 interface, detects: started.*the ruleset is not fetched yet' \
 	    "$JGC" -t -c "$SOCK" sdwan ids "$rs"
 	atf_check -o not-match:'suricata.rules' cat "$(dirname "$f")/sdwan-ids-sw1.yaml"
@@ -13519,7 +13541,7 @@ sdwan_ids_run_body()
 
 	# Interface any: FreeBSD's libpcap has none, so each interface up
 	# but the loopback, pflog, pfsync and enc.
-	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"conf":"default-log-dir: @LOGDIR@\npcap:\n  - interface: any\nrule-files:\n  - @RULES@\n","rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"spec":{"interfaces":["any"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "$rs3"
 	atf_check -o not-match:'interface: any' -o not-match:'interface: lo[0-9]' \
 	    -o match:'^  - interface: [a-z]+[0-9]+[a-z0-9]*$' cat "$(dirname "$f")/sdwan-ids-sw1.yaml"
@@ -13532,11 +13554,10 @@ sdwan_ids_run_body()
 	atf_check -o match:'suricata sw1 on [0-9]+ interfaces?, detects: started' \
 	    "$JGC" -t -c "$SOCK" sdwan ids "$rs4"
 	atf_check -s exit:0 kill -0 "$(cat "$(dirname "$f")/sdwan-ids-sw1.pid")"
-	# Its thresholds and suppressions: its own file, where the
-	# configuration says; changed, it starts again; not a string,
-	# refused.
-	rs7=$(echo "$rs4" | sed 's|rule-files:|threshold-file: @THRESHOLD@\\nrule-files:|; s|"rules":|"thresholds":"suppress gen_id 1, sig_id 1000004, track by_src, ip 10.0.0.9\\n","rules":|')
-	atf_check -o match:'suricata sw1 on [0-9]+ interfaces?, detects: started' \
+	# Its thresholds and suppressions: its own file, which the YAML
+	# rendered always names, read again live; not a string, refused.
+	rs7=$(echo "$rs4" | sed 's|"rules":|"thresholds":"suppress gen_id 1, sig_id 1000004, track by_src, ip 10.0.0.9\\n","rules":|')
+	atf_check -o match:'suricata sw1 on [0-9]+ interfaces?, detects: its rules read again' \
 	    "$JGC" -t -c "$SOCK" sdwan ids "$rs7"
 	atf_check -o inline:'suppress gen_id 1, sig_id 1000004, track by_src, ip 10.0.0.9\n' \
 	    cat "$(dirname "$f")/sdwan-ids-sw1.threshold"
@@ -13559,7 +13580,7 @@ sdwan_ids_run_body()
 	# as it starts, em0^ (a host stack, netmap's alone) being em0's.
 	printf '#!/bin/sh\necho "ifconfig $*" >> %s/ifconfig.log\n' "$(pwd)" > fake-ifconfig
 	chmod +x fake-ifconfig
-	rs8=$(echo "$rs4" | sed 's/"interfaces":\["any"\]/"interfaces":["wg5","wg5^"],"capture":"netmap","offload":false/')
+	rs8=$(echo "$rs4" | sed 's/"interfaces":\["any"\]/"interfaces":["wg5","wg5^"],"capture":"netmap","offload":false/; s/"spec":{"interfaces":\["any"\]/"spec":{"interfaces":["wg5","wg5^"],"capture":"netmap"/')
 	atf_check -o match:'suricata sw1 on 2 interfaces, detects: started' \
 	    -o match:'wg5: checksum, TSO and LRO offloading off' \
 	    "$JGC" -t -c "$SOCK" sdwan ids "$rs8"
@@ -13578,7 +13599,7 @@ sdwan_ids_run_body()
 	atf_check -o match:'"ids_build":\{"version":"8.0.7","lua":true,"profiling":false,"profiling_rules":false,"hyperscan":false,"netmap":true,"ipfw":true,"plugins":true\}' \
 	    "$JGC" -c "$SOCK" sdwan
 	if [ -x /usr/local/bin/python3 ]; then
-		rs9=$(echo "$rs4" | sed 's|rule-files:|unix-command:\\n  enabled: yes\\n  filename: @SOCKET@\\nrule-files:|; s/sid:1000004;/sid:1000009;/')
+		rs9=$(echo "$rs4" | sed 's|"home":\["any"\]|"home":["any"],"yaml":"# SCSRV\\n"|; s/sid:1000004;/sid:1000009;/')
 		atf_check -o match:'detects: started' "$JGC" -t -c "$SOCK" sdwan ids "$rs9"
 		atf_check -o match:"^  filename: /.*/sdwan-ids-sw1.sock\$" cat "$(dirname "$f")/sdwan-ids-sw1.yaml"
 		for i in $(seq 1 50); do [ -S sdwan-ids-sw1.sock ] && break; sleep 0.1; done
@@ -13590,10 +13611,10 @@ sdwan_ids_run_body()
 		atf_check -s exit:1 -e match:'it alone, names an iface' "$JGC" -c "$SOCK" suricata rules instance=sw1 command=iface-stat
 		atf_check -s exit:1 -e match:'does not answer' "$JGC" -c "$SOCK" suricata rules instance=nosuch command=uptime
 	fi
-	# Its Lua scripts: written to its own directory, which its
-	# configuration names; the same, left running; changed, started
-	# again; gone, taken away.  A name not NAME.lua refused.
-	rs10=$(echo "$rs4" | sed 's|rule-files:|default-rule-path: @LUADIR@\\nrule-files:|; s|"rules":|"lua":{"ua.lua":"-- one\\n"},"rules":|')
+	# Its Lua scripts: written to its own directory, which the YAML
+	# rendered names; the same, left running; changed, started again;
+	# gone, taken away.  A name not NAME.lua refused.
+	rs10=$(echo "$rs4" | sed 's|"rules":|"lua":{"ua.lua":"-- one\\n"},"rules":|')
 	atf_check -o match:'detects: started' "$JGC" -t -c "$SOCK" sdwan ids "$rs10"
 	atf_check -o inline:'-- one\n' cat sdwan-ids-sw1.lua/ua.lua
 	atf_check -o match:"^default-rule-path: /.*/sdwan-ids-sw1.lua\$" cat sdwan-ids-sw1.yaml
@@ -13629,7 +13650,7 @@ sdwan_ids_pcap_body()
 {
 	sdwan_start
 	# An instance running on any interface, as the one before left it.
-	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"conf":"default-log-dir: @LOGDIR@\npcap:\n  - interface: any\nrule-files:\n  - @RULES@\n","rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"spec":{"interfaces":["any"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	rs4=$(echo "$rs3" | sed 's/sid:1000001;/sid:1000004;/')
 	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids "$rs4"
 
@@ -13726,11 +13747,11 @@ sdwan_ids_forms_body()
 	# An instance running on any interface, as the one before left it;
 	# an older error in its log: why a start fails is what that start
 	# logged, not this.
-	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"conf":"default-log-dir: @LOGDIR@\npcap:\n  - interface: any\nrule-files:\n  - @RULES@\n","rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	rs3='{"instances":[{"name":"sw1","interfaces":["any"],"spec":{"interfaces":["any"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	rs4=$(echo "$rs3" | sed 's/sid:1000001;/sid:1000004;/')
 	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids "$rs4"
 	echo "[1 - Main] 2026-10-18 Error: an old one" >> "$(dirname "$f")/sdwan-ids-sw1.d/suricata.log"
-	rs5=$(echo "$rs3" | sed 's/rule-files:/# FAILSTART\\nrule-files:/')
+	rs5=$(echo "$rs3" | sed 's/"home":\["any"\]/"home":["any"],"yaml":"# FAILSTART\\n"/')
 	printf '#!/bin/sh\necho "ifconfig $*" >> %s/ifconfig.log\n' "$(pwd)" > fake-ifconfig
 	chmod +x fake-ifconfig
 
@@ -13765,7 +13786,7 @@ sdwan_ids_forms_body()
 	atf_check -o match:'^    HOME_NET: "any"$' -o match:'^runmode: autofp$' -o match:'^    depth: 1mb$' \
 	    -o match:'^        - http$' -o match:'^# mine$' -o match:'^unix-command:$' \
 	    -o match:'^autofp-scheduler: hash$' cat "$(dirname "$f")/sdwan-ids-sec-x.yaml"
-	atf_check -s exit:1 -e match:"autofp's scheduler is hash, ippair or ftp-hash" -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	atf_check -s exit:1 -e match:"autofp-scheduler: 'round-robin' is not a value of it" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"autofp_scheduler":"round-robin"},"rules":"x"}]}'
 	# Its profiling: the sections named on, the others off, each its
 	# file; rules from the start, by ticks, as JSON.
@@ -13778,7 +13799,7 @@ sdwan_ids_forms_body()
 	atf_check -o inline:'  rules: yes\n  keywords: no\n  prefilter: no\n  rulegroups: no\n  packets: yes\n  locks: no\n' \
 	    awk '/^profiling:/ { p = 1; next } p && /^[a-z]/ { p = 0 } p && /^  [a-z]+:$/ { s = $0 } p && /^    enabled:/ { print s " " $2 }' \
 	    "$(dirname "$f")/sdwan-ids-sec-x.yaml"
-	atf_check -s exit:1 -e match:"sec-x: profiling's sections are rules, keywords" -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	atf_check -s exit:1 -e match:"profiling: 'cpu' is not a value of it" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"profiling":["cpu"]},"rules":"x"}]}'
 	atf_check -s exit:1 -e match:"sec-x: profiling's sample rate is a power of 2" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"profiling":["rules"],"profiling_sample_rate":3},"rules":"x"}]}'
@@ -13819,16 +13840,31 @@ sdwan_ids_forms_body()
 	atf_check -s exit:1 -e match:"sec-x: its own YAML, line 1: plugins is the form's to set" -o ignore "$JGC" -c "$SOCK" sdwan ids \
 	    '{"group":"security","instances":[{"name":"sec-x","interfaces":["lo0"],"spec":{"interfaces":["lo0"],"yaml":"plugins:\n  - /tmp/x.so\n"},"rules":"x"}]}'
 	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
-	# Many placeholders: the configuration comes out whole, as long as
-	# it is (the buffer was once a fixed size, and the loop hung).
-	many=$(printf '%s' "$rs4" | sed "s|rule-files:|$(printf '# @PID@%.0s' $(seq 1 400))\\\\nrule-files:|")
+	# The Security section's sec-lan as a host keeps it from before the
+	# module said the form (its name, divert and stopped in it too):
+	# taken, kept stopped; started, its YAML what the form says; read
+	# back as the page has it.
+	lan='{"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfaces":["any"],"divert":8600,"stopped":true,"spec":{"name":"sec-lan","interfaces":["any"],"home":["any"],"ruleset":true,"divert":8600,"capture":"pcap","eve":[],"stats_interval":10,"stopped":true}}]}'
+	atf_check -o match:'suricata sec-lan stopped, kept' "$JGC" -t -c "$SOCK" sdwan ids "$lan"
+	atf_check -o match:'suricata sec-lan on [0-9]+ interfaces?, prevents by divert 8600: started' \
+	    "$JGC" -t -c "$SOCK" sdwan ids "$(echo "$lan" | sed 's/"stopped":true,//')"
+	atf_check -o match:'^# Written by arcana-agent for the Arcana console: the Security section.s intrusion detection sec-lan at edge-a,$' \
+	    -o match:'^# by Suricata, preventing: what ipfw diverts to it\.$' -o match:'^    HOME_NET: "any"$' \
+	    -o match:'^  interval: 10$' -o match:'^pcap:$' cat "$(dirname "$f")/sdwan-ids-sec-lan.yaml"
+	atf_check -o match:'"security_ids":\[\{"capture":"pcap","home":\["any"\],"interfaces":\["any"\],"ruleset":true,"stats_interval":10,"name":"sec-lan","divert":8600\}\]' "$JGC" -c "$SOCK" sdwan
+	atf_check -o ignore "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
+	# Many placeholders (the admin's own YAML has them): the
+	# configuration comes out whole, as long as it is (the buffer was
+	# once a fixed size, and the loop hung).
+	y=$(printf '# @PID@\\n%.0s' $(seq 1 400))
+	many='{"instances":[{"name":"sw1","interfaces":["any"],"spec":{"interfaces":["any"],"home":["any"],"yaml":"'"$y"'"},"rules":"alert tcp any any -> any 80 (sid:1000004;)\n"}]}'
 	atf_check -o match:'detects: started' "$JGC" -t -c "$SOCK" sdwan ids "$many"
-	atf_check -o match:'^# /.*/sdwan-ids-sw1\.pid# /.*/sdwan-ids-sw1\.pid# ' cat "$(dirname "$f")/sdwan-ids-sw1.yaml"
+	atf_check -o inline:'400\n' grep -c '^# /.*/sdwan-ids-sw1\.pid$' "$(dirname "$f")/sdwan-ids-sw1.yaml"
 	atf_check -s exit:1 -e match:'did not start: Error: suricata: this start fails( \(at /[^)]*\))?$' \
 	    -e not-match:'an old one' -o ignore "$JGC" -c "$SOCK" sdwan ids "$rs5"
 	# Its pid file written, then stopped: not started, and why is the
 	# first error of the start, not the rules it left out.
-	rs6=$(echo "$rs3" | sed 's/rule-files:/# DIESTART\\nrule-files:/')
+	rs6=$(echo "$rs3" | sed 's/"home":\["any"\]/"home":["any"],"yaml":"# DIESTART\\n"/')
 	atf_check -s exit:1 -e match:"did not start: Error: ipfw: Can't create divert socket: .*; Error: suricata: Engine initialization failed" \
 	    -e not-match:'IP space' -o ignore "$JGC" -c "$SOCK" sdwan ids "$rs6"
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"instances":[]}'

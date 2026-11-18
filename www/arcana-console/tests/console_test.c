@@ -19534,11 +19534,21 @@ ATF_TC_BODY(sdwan_apply_stamp_half, tc)
 static ucl_object_t *
 r4_sec_one(const ucl_object_t *in, bool ids, const char *host)
 {
+	static const char *const idskeys[] = { "interfaces", "home",
+	    "ruleset", "capture", "pairs", "eve", "payload", "stats_interval",
+	    "max_pending", "runmode", "autofp_scheduler", "mpm", "profile",
+	    "preset", "management_cpus", "worker_cpus", "flow_memcap",
+	    "stream_memcap", "reassembly_memcap", "defrag_memcap",
+	    "host_memcap", "http_memcap", "reassembly_depth",
+	    "http_request_body", "http_response_body", "stream_inline",
+	    "midstream", "exception_policy", "pcap_log", "pcap_log_limit",
+	    "pcap_log_files", "lua_outputs", "plugins", "profiling",
+	    "profiling_sample_rate", "yaml" };
 	const ucl_object_t	*e, *v;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*o, *ifs, *lua, *l;
 	const char		*s, *colon;
-	char			*spec, a[24];
+	char			 a[24], *c;
 
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, ucl_object_copy(ucl_object_lookup(in,
@@ -19645,10 +19655,19 @@ r4_sec_one(const ucl_object_t *in, bool ids, const char *host)
 		ucl_object_insert_key(o, l, "spec", 0, false);
 		return (o);
 	}
-	spec = (char *)ucl_object_emit(in, UCL_EMIT_JSON_COMPACT);
-	ucl_object_insert_key(o, ucl_object_fromstring(spec), "spec", 0,
-	    false);
-	free(spec);
+	/* Its form as arcana-sdwan's ids-form says it (sdread.c's
+	 * ids_form()): the settings idsconf.c reads, a - for each _. */
+	l = ucl_object_typed_new(UCL_OBJECT);
+	for (size_t i = 0; i < nitems(idskeys); i++) {
+		if ((v = ucl_object_lookup(in, idskeys[i])) == NULL)
+			continue;
+		snprintf(a, sizeof(a), "%s", idskeys[i]);
+		for (c = a; *c != '\0'; c++)
+			if (*c == '_')
+				*c = '-';
+		ucl_object_insert_key(l, ucl_object_copy(v), a, 0, true);
+	}
+	ucl_object_insert_key(o, l, "spec", 0, false);
 	return (o);
 }
 
@@ -19951,8 +19970,9 @@ ATF_TC_BODY(sdwan_apply_security, tc)
 	    "\"runmode\":\"fast\",\"rules\":\"alert tcp any any -> any 23 "
 	    "(sid:1000009;)\"}]}", &r);
 	ATF_CHECK_MSG(r.status >= 400, "%d %s", r.status, r.body);
-	ATF_CHECK_MSG(strstr(r.body, "runmode is autofp, workers or single") !=
-	    NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "'fast' is not a value of it") != NULL ||
+	    strstr(r.body, "runmode is autofp, workers or single") != NULL,
+	    "%s", r.body);
 	resp_free(&r);
 	r4_sec(sa, "a", "{\"what\":\"ids\",\"instances\":[{\"name\":"
 	    "\"sec-lan\",\"interfaces\":[\"lo0\"],\"home\":[\"any\"],"
@@ -19989,6 +20009,27 @@ ATF_TC_BODY(sdwan_apply_security, tc)
 		ATF_CHECK_MSG(system("/usr/local/bin/suricata -T -c "
 		    "sdwan-ids-sec-lan.yaml > suricata-T.out 2>&1") == 0,
 		    "Suricata refuses the settings: see suricata-T.out");
+	/* Read back as arcana-sdwan has it: its form as ids-form says it
+	 * (spec), the YAML the agent rendered of it its state (conf), not
+	 * running's configuration. */
+	snprintf(t1, sizeof(t1), FLEET "%s/arcana-sdwan:sdwan/"
+	    "ids-instance=sec-lan", sa);
+	rc_get(t1, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"spec\":{") != NULL && strstr(r.body,
+	    "\"stats-interval\":30") != NULL && strstr(r.body,
+	    "\"exception-policy\":\"drop-flow\"") != NULL && strstr(r.body,
+	    "\"eve\":[\"http\",\"dns\",\"tls\",\"flow\"]") != NULL &&
+	    strstr(r.body, "runmode: workers") != NULL, "%s", r.body);
+	resp_free(&r);
+	snprintf(t1, sizeof(t1), "/restconf/ds/ietf-datastores:running/"
+	    "arcana-fleet:fleet/host=%s/arcana-sdwan:sdwan/ids-instance=sec-lan",
+	    sa);
+	rc_get(t1, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"stats-interval\":30") != NULL &&
+	    strstr(r.body, "runmode: workers") == NULL, "%s", r.body);
+	resp_free(&r);
 	/* By netmap(4): a pair at L2, copy-mode ips both ways, a worker's
 	 * to the end; pairs are netmap's; not with divert.  A preset's
 	 * values where a field says none. */

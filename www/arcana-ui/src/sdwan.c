@@ -4963,6 +4963,7 @@ view_ids(struct html *h)
 			    "</td><td>%lld</td></tr>", jbool(di, "running") ? "up" :
 			    "down", jbool(di, "running") ? "running" : "not running",
 			    (long long)jint(di, "alerts_seen", 0));
+			inst_details(h, di, 6);
 			ait = NULL;
 			while ((a = ucl_object_iterate(jget(di, "alerts"), &ait,
 			    true)) != NULL) {

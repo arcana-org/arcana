@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Luxuria: Suricata's YAML for an instance, rendered here from its
- * settings, the page's form as the console passes it on, so that what
+ * settings, the page's form as the console passes it on (arcana-sdwan's
+ * ids-form; ysd.c gives the names it has a - in with a _), so that what
  * is checked (a plugin's path, a Lua script's name, the keys the form
  * owns) is what runs.  Two shapes: the Security section's, with every
  * setting of the form; and SD-WAN's, a service's security policies
@@ -500,11 +501,11 @@ profiling(struct work *w, const ucl_object_t *in, const char *name,
  * bodies it inspects, and what it does past a limit (exception-policy).
  * Each only when given, Suricata's default otherwise; what the form
  * has not, as YAML of the admin's, last (checked by suricata -T with
- * the rest).
+ * the rest).  lua: the instance's scripts, by name.
  */
 static bool
-settings(struct work *w, const ucl_object_t *in, const char *name, FILE *b,
-    const char **errp)
+settings(struct work *w, const ucl_object_t *in, const ucl_object_t *lua,
+    const char *name, FILE *b, const char **errp)
 {
 	static const char *const evtypes[] = { "anomaly", "http", "dns",
 	    "tls", "ssh", "flow", "netflow", "fileinfo", "drop", "smtp",
@@ -663,9 +664,8 @@ settings(struct work *w, const ucl_object_t *in, const char *name, FILE *b,
 		while ((e = ucl_object_iterate(ucl_object_lookup(in,
 		    "lua_outputs"), &it, true)) != NULL) {
 			if (ucl_object_type(e) != UCL_STRING || !lua_name_ok(
-			    ucl_object_tostring(e)) || ucl_object_lookup(
-			    ucl_object_lookup(in, "lua"), ucl_object_tostring(e)) ==
-			    NULL) {
+			    ucl_object_tostring(e)) || ucl_object_lookup(lua,
+			    ucl_object_tostring(e)) == NULL) {
 				*errp = wfmt(w, "%s: a Lua output is one of its "
 				    "scripts", name);
 				return (false);
@@ -695,9 +695,8 @@ settings(struct work *w, const ucl_object_t *in, const char *name, FILE *b,
 		fprintf(b, "stats:\n  enabled: no\n");
 	/* Lua rules where it has scripts, its directory theirs. */
 	it = NULL;
-	if (ucl_object_type(ucl_object_lookup(in, "lua")) == UCL_OBJECT &&
-	    ucl_object_iterate(ucl_object_lookup(in, "lua"), &it, true) !=
-	    NULL)
+	if (ucl_object_type(lua) == UCL_OBJECT && ucl_object_iterate(lua,
+	    &it, true) != NULL)
 		fprintf(b, "default-rule-path: @LUADIR@\nsecurity:\n"
 		    "  lua:\n    allow-rules: yes\n");
 	/* Its plugins, shared objects plugins_ok() finds root's. */
@@ -932,12 +931,14 @@ closed(struct work *w, FILE *fp, char **bufp, const char **errp)
 
 /*
  * The Security section's instance: its YAML from the form, with the
- * places the agent fills; the interfaces it watches into ifs.  NULL
- * and why in *errp when the form is not right.
+ * places the agent fills, its Lua scripts lua (by name); the interfaces
+ * it watches into ifs.  NULL and why in *errp when the form is not
+ * right.
  */
 char *
-ids_conf_render(struct work *w, const ucl_object_t *in, const char *name,
-    const char *host, int64_t divert, ucl_object_t *ifs, const char **errp)
+ids_conf_render(struct work *w, const ucl_object_t *in,
+    const ucl_object_t *lua, const char *name, const char *host,
+    int64_t divert, ucl_object_t *ifs, const char **errp)
 {
 	const ucl_object_t	*e;
 	ucl_object_iter_t	 it;
@@ -989,7 +990,7 @@ ids_conf_render(struct work *w, const ucl_object_t *in, const char *name,
 	fprintf(b, "%s\"\n    EXTERNAL_NET: \"%s\"\n", home_any ? "" : "]",
 	    home_any ? "any" : "!$HOME_NET");
 	fprintf(b, "%sdefault-log-dir: @LOGDIR@\n", groups);
-	if (!settings(w, in, name, b, errp))
+	if (!settings(w, in, lua, name, b, errp))
 		goto bad;
 	fprintf(b, "logging:\n  default-log-level: notice\n  outputs:\n"
 	    "    - console:\n        enabled: no\n    - file:\n        enabled: "
