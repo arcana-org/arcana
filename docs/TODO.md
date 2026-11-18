@@ -343,11 +343,14 @@ Written and tested with stand-ins only:
   authentication. The agent sets -r 128 on every SA, which is right
   anyway (R47), and then GCM with ESN works; worth a fix upstream (the
   same test on both paths).
-- SCTP to an address on lo0 from another host is answered only by a
-  kernel that scopes SCTP by address (net.inet.sctp.ignore_loopback_iftype,
-  a patch not upstream); a stock kernel counts such an address out of
-  a non-loopback peer's scope (sctp_is_address_in_scope()) and sends
-  no INIT-ACK.  That is the kernel, not Arcana.
+- net.inet.tcp.bind_all_fibs (and udp's) is 1 by default in main (a
+  change to 0 was reverted on 2026-10-29 and may come back).  Arcana
+  reads both ways: the BMP stations listen a port apart per FIB for it
+  (gula/bmp.c), but c-icap's place (sdconf.c icap_conf_render) and its
+  comment take 0 (nothing in a service's table can bind the loopback),
+  and with 1 a service's table could reach a Security-section c-icap
+  on the loopback.  To decide: set the value Arcana needs on an edge
+  (rc.conf.d), or make the c-icap rendering safe under 1.
 - The standard models have no place for a vxlan's or geneve's VNI and
   ends.  ifconfig(8) does not set an ipsec(4) interface's ends from
   addresses that are not the host's, and says nothing (exit 0).

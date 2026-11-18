@@ -59,7 +59,7 @@ CONSOLE_BUILD_DEPENDS=	emcc:devel/emscripten \
 			libyang3>0:net/libyang3
 CONSOLE_LIB_DEPENDS=	libwebsockets.so:net/libwebsockets
 CONSOLE_USES=		ssl
-CONSOLE_GH_TUPLE=	vstakhov:libucl:0.9.4:libucl/libucl \
+CONSOLE_GH_TUPLE=	vstakhov:libucl:0.10.0:libucl/libucl \
 			yaml:libyaml:0.2.5:libyaml/libyaml
 # arcana-console's libcrypto must be the one libwebsockets uses.
 CONSOLE_MAKE_ARGS=	LIBUCL_SRC=${WRKSRC_libucl} \
