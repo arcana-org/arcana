@@ -2757,7 +2757,8 @@ sdwan_key_event_body()
 	[ -n "$p1" ] || atf_fail "no public half for gre9"
 	"$JGC" -c "$SOCK" events > ev1.json
 	atf_check -o inline:'1\n' sh -c "grep -o '\"kind\":\"sdwan-key\"' ev1.json | wc -l | tr -d ' '"
-	atf_check -o match:"\"interface\":\"gre9\",\"public\":\"$p1\"" cat ev1.json
+	# Base64 has + in it: matched as it is, not as a regular expression.
+	atf_check grep -qF "\"interface\":\"gre9\",\"public\":\"$p1\"" ev1.json
 	# Asked again: the pair kept, nothing told.
 	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key gre9
 	"$JGC" -c "$SOCK" events > ev2.json
@@ -2768,7 +2769,7 @@ sdwan_key_event_body()
 	p2=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"gre9"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
 	[ -n "$p2" ] && [ "$p2" != "$p1" ] || atf_fail "gre9's pair not made again"
 	"$JGC" -c "$SOCK" events > ev3.json
-	atf_check -o match:"\"interface\":\"gre9\",\"public\":\"$p2\"" cat ev3.json
+	atf_check grep -qF "\"interface\":\"gre9\",\"public\":\"$p2\"" ev3.json
 }
 sdwan_key_event_cleanup()
 {
@@ -15372,12 +15373,9 @@ agent_update_body()
 	atf_check cmp -s "$JGD" installed-agent
 	atf_check -o inline:'old\n' cat installed-agent.old
 	atf_check test ! -e running.arcana_agent
-	# As it is with -p, as to an agent before compressed updates.
-	rm -f installed-agent && echo old > installed-agent
-	atf_check -o match:'^Agent: +[0-9]+\.[0-9]+.* in place' \
-	    -o not-match:'inflate' \
-	    "$JGC" -t -c "$SOCK" agent-update -p "$JGD"
-	atf_check cmp -s "$JGD" installed-agent
+	# -p, which sent it as it is, is gone.
+	atf_check -s exit:2 -e match:'illegal option -- p' \
+	    "$JGC" -c "$SOCK" agent-update -p "$JGD"
 	# With -r the service is restarted, after the reply.
 	atf_check -o match:'"restarting":"true"' -o match:'replace' \
 	    "$JGC" --libxo json -t -c "$SOCK" agent-update -r "$JGD"
@@ -15452,8 +15450,8 @@ agent_update_gzip_cleanup()
 atf_test_case agent_update_old cleanup
 agent_update_old_head()
 {
-	atf_set "descr" "An agent before compressed updates is sent the " \
-	    "program as it is, within a frame"
+	atf_set "descr" "An agent before compressed updates is sent no " \
+	    "update and asked for no build: it is updated by hand"
 }
 agent_update_old_body()
 {
@@ -15463,14 +15461,12 @@ agent_update_old_body()
 	echo old > installed-agent
 	atf_check -o not-match:'gzip-update' \
 	    "$JGC" --libxo json -c "$SOCK" hello
-	atf_check -o match:'in place' -o not-match:'inflate' \
-	    "$JGC" -t -c "$SOCK" agent-update "$JGD"
-	atf_check cmp -s "$JGD" installed-agent
-	# One past what a frame carries is not sent.
-	dd if=/dev/zero of=zeros bs=1m count=7 2>/dev/null
-	cat "$JGD" zeros > big-agent
-	atf_check -s exit:1 -e match:'takes no compressed update' \
-	    "$JGC" -c "$SOCK" agent-update big-agent
+	atf_check -s exit:1 \
+	    -e match:'too old for an update by the console: update it by hand' \
+	    "$JGC" -c "$SOCK" agent-update "$JGD"
+	atf_check -o inline:'old\n' cat installed-agent
+	atf_check -s exit:1 -e match:'too old for a build by the console' \
+	    "$JGC" -c "$SOCK" agent-build https://example.org/arcana.git main
 	# What it would not decode, it refuses.
 	gzip -9 < "$JGD" > agent.gz
 	atf_check -s exit:1 -o match:'program-size' \

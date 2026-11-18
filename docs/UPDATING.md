@@ -93,6 +93,16 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Updates only compressed; agent 0.312.0, console 0.460.0
+
+- The console and arcanactl send an agent update only compressed, to
+  an agent that says gzip-update in arcana-host's agent features; an
+  agent before is refused ("this host's arcana-agent is too old for an
+  update by the console: update it by hand (arcana-agent's port or the
+  package)"), and is asked for no build either.  `arcanactl
+  agent-update -p` is gone.  Every agent since compressed updates
+  takes them.
+
 ### SSL inspection by SSLproxy, phase 1; agent 0.311.0, console 0.459.0
 
 - Security > SSL inspection (docs/notes/ssl-inspection.md).  SSLproxy

@@ -1148,9 +1148,8 @@ yh_console_update(cbl_conn *conn, const char *source, const char *ref,
 
 int
 yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
-    const char *host_keys, const char *ssh_key, bool compress,
-    ucl_object_t **data, uint8_t **progp, size_t *lenp, char *err,
-    size_t errlen)
+    const char *host_keys, const char *ssh_key, ucl_object_t **data,
+    uint8_t **progp, size_t *lenp, char *err, size_t errlen)
 {
 	struct arcana_agent_agent_build_input	 in;
 	struct arcana_agent_agent_build_output	 out;
@@ -1168,10 +1167,9 @@ yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 	in.ref = ref != NULL && ref[0] != '\0' ? ref : NULL;
 	in.host_keys = host_keys;
 	in.ssh_key = ssh_key;
-	/* Not said to an agent before compressed updates, which has no
-	 * compress. */
-	in.has_compress = compress;
-	in.compress = compress;
+	/* Sent back compressed, as an update carries it. */
+	in.has_compress = true;
+	in.compress = true;
 	if ((a = cbl_yarena_new()) == NULL)
 		return (ENOMEM);
 	memset(&out, 0, sizeof(out));
@@ -1182,28 +1180,18 @@ yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 		    out.fingerprint.n, out.deploy_key);
 		error = EPERM;
 	} else if (error == 0 && (out.binary.len == 0 || out.sha256 ==
-	    NULL)) {
-		snprintf(err, errlen, "the host sent no program");
+	    NULL || !out.has_program_size)) {
+		snprintf(err, errlen, "the host sent no compressed program");
 		error = EINVAL;
 	} else if (error == 0) {
 		/* Compressed, inflated: the SHA-256 is the program's. */
-		if (out.has_program_size) {
-			if ((why = zprog_inflate(out.binary.p, out.binary.len,
-			    out.program_size, ZPROG_MAX_PROGRAM, &prog)) !=
-			    NULL) {
-				snprintf(err, errlen, "%s", why);
-				cbl_yarena_free(a);
-				return (EINVAL);
-			}
-			*lenp = out.program_size;
-		} else {
-			if ((prog = malloc(out.binary.len)) == NULL) {
-				cbl_yarena_free(a);
-				return (ENOMEM);
-			}
-			memcpy(prog, out.binary.p, out.binary.len);
-			*lenp = out.binary.len;
+		if ((why = zprog_inflate(out.binary.p, out.binary.len,
+		    out.program_size, ZPROG_MAX_PROGRAM, &prog)) != NULL) {
+			snprintf(err, errlen, "%s", why);
+			cbl_yarena_free(a);
+			return (EINVAL);
 		}
+		*lenp = out.program_size;
 		*progp = prog;
 		*data = ucl_object_typed_new(UCL_OBJECT);
 		put_str(*data, "version", out.version);
@@ -1217,8 +1205,8 @@ yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
 int
 yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
     const char *sha256, const uint8_t *sig, size_t siglen,
-    const char *version, bool downgrade, bool restart, bool gzip,
-    int timeout_ms, ucl_object_t **data, char *err, size_t errlen)
+    const char *version, bool downgrade, bool restart, int timeout_ms,
+    ucl_object_t **data, char *err, size_t errlen)
 {
 	struct arcana_agent_agent_update_input	 in;
 	struct arcana_agent_agent_update_output	 out;
@@ -1232,36 +1220,25 @@ yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
 	z = NULL;
 	memset(&in, 0, sizeof(in));
 	/*
-	 * Compressed to an agent that takes it so; as it is to one before,
-	 * which has no program-size and takes no more than a frame holds.
-	 * The signature and the SHA-256 are the program's either way.
+	 * Compressed: the agent inflates it to program-size.  The
+	 * signature and the SHA-256 are the program's.
 	 */
-	if (gzip) {
-		if ((error = zprog_deflate(prog, len, &z, &zlen)) != 0) {
-			snprintf(err, errlen, "the program cannot be "
-			    "compressed: %s", strerror(error));
-			return (error);
-		}
-		if (zlen > ZPROG_MAX_BINARY) {
-			free(z);
-			snprintf(err, errlen, "the program, %zu bytes "
-			    "compressed, does not fit in an update (%d at "
-			    "most)", zlen, ZPROG_MAX_BINARY);
-			return (EFBIG);
-		}
-		in.binary.p = z;
-		in.binary.len = zlen;
-		in.has_program_size = true;
-		in.program_size = (uint32_t)len;
-	} else if (len > ZPROG_MAX_BINARY) {
-		snprintf(err, errlen, "this host's arcana-agent takes no "
-		    "compressed update, and the program, %zu bytes, is more "
-		    "than one carries as it is (%d)", len, ZPROG_MAX_BINARY);
-		return (EFBIG);
-	} else {
-		in.binary.p = prog;
-		in.binary.len = len;
+	if ((error = zprog_deflate(prog, len, &z, &zlen)) != 0) {
+		snprintf(err, errlen, "the program cannot be compressed: %s",
+		    strerror(error));
+		return (error);
 	}
+	if (zlen > ZPROG_MAX_BINARY) {
+		free(z);
+		snprintf(err, errlen, "the program, %zu bytes compressed, "
+		    "does not fit in an update (%d at most)", zlen,
+		    ZPROG_MAX_BINARY);
+		return (EFBIG);
+	}
+	in.binary.p = z;
+	in.binary.len = zlen;
+	in.has_program_size = true;
+	in.program_size = (uint32_t)len;
 	in.sha256 = sha256;
 	in.signature.p = sig;
 	in.signature.len = sig != NULL ? siglen : 0;

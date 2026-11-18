@@ -5324,7 +5324,7 @@ ATF_TC_BODY(agent_update, tc)
 	resp_free(&r);
 	/*
 	 * An agent before compressed updates, as one with no features in
-	 * arcana-host: the program as it is, within a frame.
+	 * arcana-host: sent nothing, updated by hand.
 	 */
 	snprintf(jgd, sizeof(jgd), "%s", locate(tc,
 	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
@@ -5356,16 +5356,17 @@ ATF_TC_BODY(agent_update, tc)
 	rc_act(old, "", &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
-	    "true") == 0, "%s", r.body);
-	ATF_CHECK_MSG(strstr(r.body, "inflate") == NULL, "%s", r.body);
-	ATF_CHECK(stat("installed-agent3", &sb) == 0 && stat(jgd, &sbig) == 0 &&
-	    sb.st_size == sbig.st_size);
+	    "false") == 0, "%s", r.body);
+	ATF_CHECK_MSG(jstr(&r, "error") != NULL && strstr(jstr(&r, "error"),
+	    "too old for an update by the console: update it by hand") !=
+	    NULL, "%s", r.body);
+	ATF_CHECK(stat("installed-agent3", &sb) == -1);
 	resp_free(&r);
 
 	/*
 	 * Past a frame, the agent with 7 MiB of zeros after it: carried
-	 * compressed to the one that takes it so, refused for the one
-	 * before.
+	 * compressed to the one that takes it so, still nothing for the
+	 * one before.
 	 */
 	snprintf(body, sizeof(body), "cat '%s' > big-agent && dd if=/dev/zero "
 	    "bs=1m count=7 >> big-agent 2>/dev/null && chmod 755 big-agent",
@@ -5388,10 +5389,9 @@ ATF_TC_BODY(agent_update, tc)
 	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
 	    "false") == 0, "%s", r.body);
 	ATF_CHECK_MSG(jstr(&r, "error") != NULL && strstr(jstr(&r, "error"),
-	    "takes no compressed update") != NULL, "%s", r.body);
+	    "too old for an update by the console") != NULL, "%s", r.body);
 	resp_free(&r);
-	ATF_CHECK(stat("installed-agent3", &sb) == 0 && sb.st_size !=
-	    sbig.st_size);
+	ATF_CHECK(stat("installed-agent3", &sb) == -1);
 	snprintf(body, sizeof(body), "{\"arcana-console:agent-binary\":"
 	    "\"%s\"}", jgd);
 	http("PUT", CC "settings/agent-binary", body, &r);
@@ -11808,21 +11808,25 @@ agent_spawn(const char *prog, const char *listen, const char *tcp,
 	return (pid);
 }
 
-/* id's agent-update, its answer in r, checked: as it is, or compressed. */
+/*
+ * id's agent-update, its answer in r, checked: compressed, or refused
+ * for an agent before compressed updates.
+ */
 static void
 bridge_update(const char *id, bool gz, struct resp *r)
 {
 
 	r3_verb(id, "agent-update", NULL, r);
 	EXPECT(r, 200);
-	ATF_CHECK_MSG(jstr(r, "ok") != NULL && strcmp(jstr(r, "ok"), "true") ==
-	    0, "%s", r->body);
+	ATF_CHECK_MSG(jstr(r, "ok") != NULL && strcmp(jstr(r, "ok"), gz ?
+	    "true" : "false") == 0, "%s", r->body);
 	if (gz)
 		ATF_CHECK_MSG(strstr(r->body, "inflate(3)") != NULL, "%s",
 		    r->body);
 	else
-		ATF_CHECK_MSG(strstr(r->body, "inflate") == NULL, "%s",
-		    r->body);
+		ATF_CHECK_MSG(jstr(r, "error") != NULL && strstr(jstr(r,
+		    "error"), "too old for an update by the console") != NULL,
+		    "%s", r->body);
 }
 
 /* id's host as hello said it (arcana-host's host), in r. */
@@ -11836,9 +11840,9 @@ bridge_hello(const char *id, struct resp *r)
 
 CONSOLE_TC(agent_update_bridge, "An agent of the release before the "
     "interim protocol went, a real build of it (ARCANA_OLD_AGENT), is read "
-    "and updated through YANG alone, over a unix socket and over TCP with "
-    "mutual TLS, sent its program as it is; the agent it becomes takes the "
-    "next one compressed")
+    "and refused an update through YANG alone, over a unix socket and over "
+    "TCP with mutual TLS; updated by hand, it takes the next one "
+    "compressed")
 ATF_TC_BODY(agent_update_bridge, tc)
 {
 	struct authn	a;
@@ -11899,28 +11903,24 @@ ATF_TC_BODY(agent_update_bridge, tc)
 	    "\"sec-web\",\"stopped\":true}]}}", &r));
 	resp_free(&r);
 
-	/* Over the unix socket: as it is, taken unsigned. */
+	/* Over the unix socket and over TCP: sent nothing. */
 	bridge_update(id, false, &r);
 	printf("unix: %s\n", r.body);
 	resp_free(&r);
-	ATF_CHECK(stat("installed-old", &sb) == 0 && sb.st_size ==
-	    snew.st_size);
-	ATF_REQUIRE(unlink("installed-old") == 0);
-
-	/* Over TCP with mutual TLS: as it is, signed by the CA key. */
+	ATF_CHECK(stat("installed-old", &sb) == -1);
 	host_add("old-tcp", tcp, id, sizeof(id));
 	bridge_update(id, false, &r);
 	printf("tcp: %s\n", r.body);
 	resp_free(&r);
-	ATF_CHECK(stat("installed-old", &sb) == 0 && sb.st_size ==
-	    snew.st_size);
+	ATF_CHECK(stat("installed-old", &sb) == -1);
 
-	/* What it became runs, and takes the next one compressed. */
+	/* Updated by hand, it runs, and takes the next one compressed. */
 	(void)kill(pid, SIGTERM);
 	for (i = 0; i < 100 && kill(pid, 0) == 0; i++)
 		usleep(50000);
-	ATF_REQUIRE(system("cp installed-old became && chmod 755 became") ==
-	    0);
+	snprintf(became, sizeof(became), "cp '%s' became && chmod 755 became",
+	    jgd);
+	ATF_REQUIRE(system(became) == 0);
 	snprintf(became, sizeof(became), "%s/became", cwd);
 	snprintf(unix, sizeof(unix), "unix:%s/new.sock", cwd);
 	(void)agent_spawn(became, unix, NULL, "installed-new");

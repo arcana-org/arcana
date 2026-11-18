@@ -17,8 +17,14 @@
  * arcanactl build the same file.
  */
 
-/* What arcana-host's agent feature names for it. */
+/*
+ * What arcana-host's agent feature names for it.  An agent without it
+ * is sent no update and asked for no build: it is updated by hand.
+ */
 #define	ZPROG_FEATURE	"gzip-update"
+#define	ZPROG_TOO_OLD(what)	"this host's arcana-agent is too old for " \
+				what " by the console: update it by hand " \
+				"(arcana-agent's port or the package)"
 
 /*
  * The feature of an agent whose update's signature is of the update's
@@ -38,10 +44,9 @@
 				"sha256 %s\ndowngrade %s\n"
 
 /*
- * The most bytes of program an update carries, compressed or not: an
- * agent's frame is 8 MiB, the rest of the request well within the
- * 64 KiB left.  An agent without ZPROG_FEATURE takes the program as it
- * is, so no bigger.  The most a compressed one inflates to.
+ * The most bytes of compressed program an update carries: an agent's
+ * frame is 8 MiB, the rest of the request well within the 64 KiB left.
+ * The most it inflates to.
  */
 #define	ZPROG_MAX_BINARY	(8 * 1024 * 1024 - 64 * 1024)
 #define	ZPROG_MAX_PROGRAM	(32 * 1024 * 1024)

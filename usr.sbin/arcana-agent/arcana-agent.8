@@ -1897,9 +1897,10 @@ action: the console does, and
 with
 .Cm agent-update .
 A frame of 8 MiB carries the program as it is, with the rest of the
-request; a client that sees
+request; the console and arcanactl send an update only to an agent
+that has
 .Li gzip-update
-in arcana-host's agent features sends it compressed with gzip
+in arcana-host's agent features, compressed with gzip
 .Pq Xr zlib 3 ,
 with the size it inflates to
 .Pq Ic program-size ,

@@ -88,16 +88,17 @@ int	yh_source_log(cbl_conn *conn, const char *source, const char *ref,
  * the agent restarting, {"commit", "restarting"}.
  * yh_agent_build(): arcana-agent built, {"version", "sha256",
  * "commit"}, the program into *progp (malloc(3)), *lenp bytes, sent
- * compressed with compress (to an agent that takes it so, yh_hello())
- * and inflated here; its SHA-256 is the caller's to check.
+ * compressed and inflated here (only to an agent that takes it so,
+ * yh_takes_gzip()); its SHA-256 is the caller's to check.
  * yh_agent_update(): the program, len bytes, put in place, sha256 its
  * SHA-256, sig its signature by the CA key (of the update's statement
  * with version, to an agent that takes it so, yh_takes_signed(); of the
  * program to one before), version what it reports (NULL: not said),
  * downgrade whether an older one may replace the agent's; sent
- * compressed with gzip, as it is otherwise, waited for timeout_ms (-1:
- * the connection's longest); {"version", "restarting"}.  EFBIG and err:
- * too big for an update to carry.
+ * compressed with gzip (only to an agent that takes it so,
+ * yh_takes_gzip()), waited for timeout_ms (-1: the connection's
+ * longest); {"version", "restarting"}.  EFBIG and err: too big for an
+ * update to carry.
  */
 int	yh_source_head(cbl_conn *conn, const char *source, const char *ref,
 	    const char *host_keys, const char *ssh_key, ucl_object_t **data,
@@ -106,13 +107,12 @@ int	yh_console_update(cbl_conn *conn, const char *source, const char *ref,
 	    const char *host_keys, const char *ssh_key, ucl_object_t **data,
 	    char *err, size_t errlen);
 int	yh_agent_build(cbl_conn *conn, const char *source, const char *ref,
-	    const char *host_keys, const char *ssh_key, bool compress,
-	    ucl_object_t **data, uint8_t **progp, size_t *lenp, char *err,
-	    size_t errlen);
+	    const char *host_keys, const char *ssh_key, ucl_object_t **data,
+	    uint8_t **progp, size_t *lenp, char *err, size_t errlen);
 int	yh_agent_update(cbl_conn *conn, const uint8_t *prog, size_t len,
 	    const char *sha256, const uint8_t *sig, size_t siglen,
-	    const char *version, bool downgrade, bool restart, bool gzip,
-	    int timeout_ms, ucl_object_t **data, char *err, size_t errlen);
+	    const char *version, bool downgrade, bool restart, int timeout_ms,
+	    ucl_object_t **data, char *err, size_t errlen);
 /*
  * The steps of a request as the agent tells them (arcana-jobs' steps,
  * on group notify), msg one notification heard: NULL where it is

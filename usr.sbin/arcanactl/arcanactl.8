@@ -3239,8 +3239,12 @@ It is saved as
 .Ar file ,
 .Pa arcana-agent
 by default, after a check against its SHA-256.
-An agent that takes a program compressed sends it back compressed with
-gzip, and it is inflated, to no more than 32 MiB, before the check.
+The agent sends it back compressed with gzip, and it is inflated, to no
+more than 32 MiB, before the check; an agent without the feature
+.Li gzip-update
+in its
+.Cm hello
+is asked for no build.
 For a repository reached over SSH, a host that does not know the
 server's host key builds nothing: the fingerprints of the keys the
 server showed are printed, with the public key the host shows the
@@ -3276,7 +3280,7 @@ and
 .Fl i
 are as for
 .Cm agent-build .
-.It Cm agent-update Oo Fl dpr Oc Ar program
+.It Cm agent-update Oo Fl dr Oc Ar program
 Put
 .Ar program
 in place of the host's
@@ -3289,11 +3293,11 @@ to an agent whose
 .Cm hello
 has the feature
 .Li gzip-update ,
-which inflates it to no more than 32 MiB, and as it is, no bigger than
-8 MiB less 64 KiB (what the agent's frame carries with the rest of the
-request), to an agent before, or with
-.Fl p .
-A program bigger than that for an agent before is not sent.
+which inflates it to no more than 32 MiB; compressed, it is no bigger
+than 8 MiB less 64 KiB (what the agent's frame carries with the rest of
+the request).
+An agent before that feature is sent nothing: it is updated by hand,
+from arcana-agent's port or the package.
 The host checks the program, inflated, against its SHA-256 and by
 running it with
 .Fl V

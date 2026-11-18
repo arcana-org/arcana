@@ -3419,16 +3419,24 @@ connected:
 		break;
 	case OP_AGENT_BUILD:
 		/*
-		 * arcana-agent's build (yhostjson.c), sent back compressed by
-		 * an agent that can (its features in arcana-host).
+		 * arcana-agent's build (yhostjson.c), sent back compressed:
+		 * an agent that cannot (its features in arcana-host) is
+		 * asked for none.
 		 */
 		ysteps_begin(conn, c, &ys);
 		if ((error = yh_hello(conn, &e, ywhy, sizeof(ywhy))) == 0) {
 			gz = yh_takes_gzip(e);
 			ucl_object_unref(e);
-			error = yh_agent_build(conn, cfg.agent_source,
-			    cfg.agent_ref, c->host_keys, cfg.agent_ssh_key, gz,
-			    &e, &bin, &binlen, ywhy, sizeof(ywhy));
+			e = NULL;
+			if (!gz) {
+				snprintf(ywhy, sizeof(ywhy), "%s",
+				    ZPROG_TOO_OLD("a build"));
+				error = EINVAL;
+			} else
+				error = yh_agent_build(conn, cfg.agent_source,
+				    cfg.agent_ref, c->host_keys,
+				    cfg.agent_ssh_key, &e, &bin, &binlen, ywhy,
+				    sizeof(ywhy));
 		}
 		ysteps_end(conn, &ys, &steps, &nsteps);
 		if (error == EINVAL) {
@@ -3466,12 +3474,12 @@ connected:
 			break;
 		}
 		/*
-		 * arcana-agent's update (yhostjson.c): compressed for an agent
-		 * whose features in arcana-host say it takes it so, as it is
-		 * for one before.  Signed by the CA key, the host takes no
-		 * other: the update's statement, its version and SHA-256
-		 * (zprog.h), to an agent that takes it so, which runs no
-		 * older version unless asked; the program to one before.
+		 * arcana-agent's update (yhostjson.c): compressed, to an agent
+		 * whose features in arcana-host say it takes it so; one
+		 * before is updated by hand.  Signed by the CA key, the host
+		 * takes no other: the update's statement, its version and
+		 * SHA-256 (zprog.h), to an agent that takes it so, which runs
+		 * no older version unless asked; the program to one before.
 		 * Not waited for without end: an agent that restarts as its
 		 * answer leaves can leave the connection open with no answer
 		 * on it, and the update would show as under way for ever.
@@ -3486,7 +3494,9 @@ connected:
 			ucl_object_unref(e);
 			e = NULL;
 			ver = agent_version();
-			if (signs && (ver == NULL || hname[0] == '\0'))
+			if (!gz)
+				msg = ZPROG_TOO_OLD("an update");
+			else if (signs && (ver == NULL || hname[0] == '\0'))
 				msg = "the console cannot say the version of the "
 				    "arcana-agent it sends, or the host's name";
 			else if (signs) {
@@ -3506,7 +3516,7 @@ connected:
 			}
 			error = yh_agent_update(conn, bin, binlen, sha, sig,
 			    siglen, signs ? ver : NULL, signs && c->downgrade,
-			    c->restart, gz, AGENT_UPDATE_WAIT_MS, &e, ywhy,
+			    c->restart, AGENT_UPDATE_WAIT_MS, &e, ywhy,
 			    sizeof(ywhy));
 		}
 		ysteps_end(conn, &ys, &steps, &nsteps);
