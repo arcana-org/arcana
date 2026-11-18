@@ -413,7 +413,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 fstab[MAXPATHLEN], pdetc[MAXPATHLEN], surules[MAXPATHLEN];
 	char	 fjl[MAXPATHLEN], fjf[MAXPATHLEN + 8], tls[4 * MAXPATHLEN + 128];
 	char	 ca[MAXPATHLEN], acert[MAXPATHLEN], akey[MAXPATHLEN];
-	char	 sport[16], bport[16];
+	char	 sport[16], bport[16], fpk[MAXPATHLEN], pks[MAXPATHLEN + 16];
+	char	 pkl[MAXPATHLEN + 16], pkr[MAXPATHLEN + 16];
 	char	*argv[144];
 	FILE	*fp;
 	pid_t	 pid;
@@ -436,6 +437,11 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "libfakejail.so"));
 	ATF_REQUIRE_MSG(access(fjl, R_OK) == 0, "no libfakejail.so at %s",
 	    fjl);
+	/* The kernel's PF_KEY stood in for, for the manual SAs. */
+	snprintf(fpk, sizeof(fpk), "%s", locate(tc,
+	    "../../../usr.sbin/arcana-agent/tests/fakepfkey", "fakepfkey",
+	    "/usr/local/tests/arcana/arcana-agent/fakepfkey"));
+	ATF_REQUIRE_MSG(access(fpk, X_OK) == 0, "no fakepfkey at %s", fpk);
 	snprintf(console, sizeof(console), "%s", locate(tc, "../arcana-console",
 	    "arcana-console", "/usr/local/sbin/arcana-console"));
 	ATF_REQUIRE_MSG(access(console, X_OK) == 0, "no arcana-console at %s",
@@ -939,10 +945,22 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "unbound.log\nexit 0\n");
 	ATF_REQUIRE(chmod("fake-local-unbound-checkconf", 0755) == 0);
 	ATF_REQUIRE(chmod("fake-rtsol", 0755) == 0);
-	/* The keys on its standard input (setkey -c), in no file. */
-	put("fake-setkey", "#!/bin/sh\necho \"setkey $*\" >> setkey.log\n[ \"$1\" "
-	    "= -c ] && cat >> setkey.conf\nexit 0\n");
-	ATF_REQUIRE(chmod("fake-setkey", 0755) == 0);
+	/* The manual SAs' PF_KEY messages to a stand-in (fakepfkey.c),
+	 * written to setkey.conf as setkey(8)'s lines of them. */
+	snprintf(pks, sizeof(pks), "%s/pfkey.sock", cwd);
+	snprintf(pkl, sizeof(pkl), "%s/setkey.conf", cwd);
+	snprintf(pkr, sizeof(pkr), "%s/pfkey.refuse", cwd);
+	argv[0] = fpk;
+	argv[1] = pks;
+	argv[2] = pkl;
+	argv[3] = pkr;
+	argv[4] = NULL;
+	pid = spawn_server(argv, "fakepfkey.out");
+	ATF_REQUIRE((fp = fopen("fakepfkey.pid", "w")) != NULL);
+	fprintf(fp, "%d\n", (int)pid);
+	fclose(fp);
+	for (n = 0; n < 100 && access(pks, F_OK) != 0; n++)
+		usleep(20000);
 	/*
 	 * bird(8)'s check of a configuration (-p): where the host has
 	 * BIRD, its own parser says, so that what the forms write is
@@ -1606,8 +1624,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	argv[93] = (char *)(uintptr_t)"./fake-dnsmasq";
 	argv[94] = (char *)(uintptr_t)"-8";
 	argv[95] = (char *)(uintptr_t)"./fake-rtsol";
-	argv[96] = (char *)(uintptr_t)"-9";
-	argv[97] = (char *)(uintptr_t)"./fake-setkey";
+	argv[96] = (char *)(uintptr_t)"--pfkey";
+	argv[97] = pks;
 	argv[98] = (char *)(uintptr_t)"-0";
 	argv[99] = (char *)(uintptr_t)"./fake-local-unbound";
 	/* The system's files under a tree of the test's: config-export
@@ -1955,6 +1973,7 @@ stop(void)
 	terminate("arcana-agent3.pid");
 	terminate("console.pid");
 	terminate("arcana-agent.pid");
+	terminate("fakepfkey.pid");
 }
 
 void

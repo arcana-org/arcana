@@ -93,6 +93,18 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### IPsec SAs by PF_KEY, agent 0.298.0
+
+- Manually keyed IPsec SAs (`ipsec-sa` set, derive, commit, clear;
+  PLAN-SDN-YANG 6.2.1) are set by PF_KEY (pfkey(4) messages, as
+  setkey(8) builds them) from the agent's own process, and each SA is
+  read back after it is added: the job fails and says what differs.
+  setkey(8) is no longer run for them; the agent's `-9 setkey` option
+  is gone and `--pfkey socket` points it at a test's stand-in.  A clear
+  deletes each SA between the two ends by its SPI, found by a dump,
+  rather than with setkey's deleteall.  Otherwise unchanged (the same
+  window, ESN, NAT-T and algorithms); needs ipsec.ko loaded, as before.
+
 ### ACL refusals, logging and statistics; agent 0.297.0, console 0.448.1
 
 - **ACLs** (PLAN-SDN-YANG 6.1.3, 6.1.4): what ipfw cannot match is

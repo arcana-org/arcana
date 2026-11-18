@@ -4094,6 +4094,65 @@ whose first part is served.
 - 6.2.1 A: PF_KEYv2 in-process (libipsec): SADB_ADD/UPDATE/DELETE/GET/
   DUMP replacing setkey text; check: the SA tests and the root ipsec
   test.
+  Design (decided here): the agent's manual SAs (`ipsec-sa` set, derive,
+  commit, clear and a safe job's undo, invidia/sa.c) are PF_KEY
+  messages on a PF_KEY socket of the agent's own (invidia/pfkey.c),
+  built from <net/pfkeyv2.h> as sbin/setkey's parse.y builds them;
+  libipsec has no public PF_KEY builder (its libpfkey.h is not
+  installed) and is left for 6.2.2's policies (ipsec_set_policy).
+  Every behaviour of the setkey path kept: ESP in tunnel mode on the
+  interface's reqid, a replay window of 128 bytes (1024 packets, R47,
+  the AEAD and ESN mismatch in docs/TODO.md) on every SA, ESN by
+  SADB_X_SAFLAGS_ESN, SADB_X_EXT_CYCSEQ as setkey's default, ESP in
+  UDP on port 4500 both ways (NAT-T type, ports, OAI and OAR), the
+  same algorithms by number, no kernel lifetimes (`lifetime` is kept
+  for the console's rotation, as before), out then in, the old SPIs
+  taken out first and a deletion that finds nothing no error.  Each
+  request's reply is told apart from the kernel's copies of other
+  sockets' messages by its sequence number and the agent's pid; the
+  keys are in the messages alone (no pipe to a program, no trace of
+  them, the buffers cleansed).  SADB_ADD is followed by SADB_GET: the
+  SA read back mature with its SPI, reqid, mode, window, ESN flag,
+  algorithms and NAT-T as asked (an AEAD cipher's authentication
+  number is the kernel's own, AES-GCM's GMAC), or the job fails and
+  says which; the step says what was read back.  A clear (and an undo) is SADB_DUMP
+  of the SAs between the two ends, either way, each taken out by
+  SADB_DELETE with its SPI, the step naming the SPIs.  SADB_UPDATE is
+  not used: the kernel updates a larval SA (GETSPI's, an IKE daemon's)
+  and of a mature one only its lifetimes and NAT-T addresses
+  (key_update()), so manual keys change by a new SA of its own SPI
+  (RFC 4301 4.5); 6.2.3's lifetimes may use it.  Work in a vnet jail
+  gets its PF_KEY socket from the helper attached to the jail
+  (`pfkey-socket`, invidia/scope.c), as the ICMP and ipfw sockets are;
+  `ipsec-sa` has no jail leaf yet (the job is not scoped), so today
+  that path is the one 6.2.4's lists will take.  setkey(8) stays only
+  where the plan keeps it: ipsec.conf's rc service (sysfiles.c,
+  `setkey -DP`) until 6.2.2.  The agent's `-9 setkey` option is gone;
+  `--pfkey socket` gives a test's stand-in.
+  Done.  Checked: agent_test:ipsec_sa and safe_ipsec_sa against
+  tests/fakepfkey.c, a stand-in on a unix SOCK_SEQPACKET socket that
+  keeps the SAs, answers ADD, DELETE, GET and DUMP as key.c does, and
+  logs each message as setkey(8)'s line of it, read from its bytes (the
+  former setkey -c lines, now the messages themselves: the reqid,
+  `-r 128`, `-esn`, `-natt`, the algorithms and keys, no flags but
+  CYCSEQ and ESN, each SA read back by GET, a clear's DUMP and DELETEs;
+  a refused ADD fails the job with the kernel's error and keeps
+  nothing); console_test:sdwan_uswe and sdwan_uswe_rekey and
+  pwa_test:pwa_ipsec_sa, whose harness now starts the same stand-in
+  (its log still setkey.conf) and gives the agent --pfkey;
+  agent_root_test:ipsec_sa_vnet (an agent in each of two
+  vnet jails, its PF_KEY socket the jail's: ipsec(4) interfaces of
+  reqid 100 on an epair, the SAs set on both ends, `setkey -D` in the
+  jail showing the SPIs, reqid 100, `replay=128 flags=0x00000440
+  state=mature`; a ping over the tunnel through and the SAs' counters
+  moved; set anew with other SPIs and AES-GCM with ESN, the old SPIs
+  gone and the ping through, GCM with ESN working with the window;
+  cleared, `No SAD
+  entries` in both jails and the ping not through).  Not checked: the
+  helper's jail socket through a job (no job is scoped to a jail
+  yet), ESP in UDP for real (no IKE daemon's UDP encapsulation socket
+  in the lab: read back by the stand-in only), IPv6 outer addresses
+  for real.
 - 6.2.2 A: SPD by SADB_X_SPDADD/SPDDELETE/SPDDUMP and the ipsec(4)
   reqid mapping; check: a policy both ways.
 - 6.2.3 A: SADB_REGISTER; `sadb-acquire` and `sadb-expire`

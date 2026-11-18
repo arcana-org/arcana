@@ -14849,7 +14849,7 @@ ATF_TC_BODY(sdwan_uswe, tc)
 	resp_free(&r);
 	/* Applied: the pairs made (one agent stands for both ends, so two
 	 * files), the far halves read from the sdwan read, the two SAs each
-	 * way set by setkey, mirrored. */
+	 * way set by PF_KEY, mirrored. */
 	http("POST", CC "sdwan/apply", accepting(false), &r);
 	EXPECT(&r, 200);
 	resp_free(&r);

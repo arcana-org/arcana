@@ -341,11 +341,13 @@ Written and tested with stand-ins only:
   cipher (AES-GCM, ChaCha20) and ESN, esp_input adds the ESN high bits
   to the separate AAD only when the SA has a replay window (wsize !=
   0), while esp_output adds them whenever the SA has replay state; an
-  SA without a window (setkey without -r) sends an ICV over four more
-  bytes than the receiver checks, and every packet is a bad
-  authentication. The agent sets -r 128 on every SA, which is right
-  anyway (R47), and then GCM with ESN works; worth a fix upstream (the
-  same test on both paths).
+  SA without a window (sadb_sa_replay 0, setkey without -r) sends an
+  ICV over four more bytes than the receiver checks, and every packet
+  is a bad authentication. The agent gives every SA a window of 128
+  bytes (setkey's -r 128, by PF_KEY since PLAN-SDN-YANG 6.2.1), which
+  is right anyway (R47), and then GCM with ESN works
+  (agent_root_test:ipsec_sa_vnet); worth a fix upstream (the same test
+  on both paths).
 - net.inet.tcp.bind_all_fibs (and udp's) is 1 by default in main (a
   change to 0 was reverted on 2026-10-29 and may come back).  Arcana
   reads both ways: the BMP stations listen a port apart per FIB for it

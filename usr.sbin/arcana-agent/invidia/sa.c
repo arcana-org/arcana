@@ -6,18 +6,20 @@
 
 /*
  * Manually keyed security associations for an ipsec(4) interface, by
- * the base system's setkey(8) (Mplify 119 §10: ESP in tunnel mode, ESN,
- * ESP in UDP, the keys given, R41-R50, R55).  The two SAs of a tunnel,
- * out and in, each its SPI and keys, with the interface's reqid so its
- * policies take them; written as a file setkey reads, 0600 and taken
- * out again, and the keys never in a trace or a title.
+ * PF_KEY in the agent's own process (pfkey.c; Mplify 119 §10: ESP in
+ * tunnel mode, ESN, ESP in UDP, the keys given, R41-R50, R55).  The two
+ * SAs of a tunnel, out and in, each its SPI and keys, with the
+ * interface's reqid so its policies take them; each read back once it
+ * is in, and the keys never in a trace or a title.
  */
 
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <net/pfkeyv2.h>
 #include <netinet/in.h>
+#include <netipsec/ipsec.h>
 
 #include <arpa/inet.h>
 
@@ -58,6 +60,8 @@
 #define	STATE_FILE	"sdwan-sa-%s.json"	/* the SPIs set, when, for how long */
 #define	HKDF_SALT	"arcana uswe v1"
 #define	PUB_B64		44	/* 32 bytes as base64 */
+#define	SA_REPLAY	128	/* the window, bytes: 1024 packets (R47) */
+#define	NATT_PORT	4500	/* ESP in UDP's (RFC 3948) */
 
 /* What the words say: the SAs of the two directions. */
 struct sa_words {
@@ -76,13 +80,15 @@ static const struct {
 	const char	*name;
 	int		 keylens[3];	/* hex digits allowed, 0 ends */
 	bool		 aead;
+	uint8_t		 alg;		/* PF_KEY's number of it */
 } encs[] = {
-	{ "aes-cbc", { 32, 48, 64 }, false },
-	{ "aes-gcm-16", { 40, 56, 72 }, true },
+	{ "aes-cbc", { 32, 48, 64 }, false, SADB_X_EALG_AESCBC },
+	/* The key and the nonce's four bytes after it, as one. */
+	{ "aes-gcm-16", { 40, 56, 72 }, true, SADB_X_EALG_AESGCM16 },
 }, auths[] = {
-	{ "hmac-sha1", { 40, 0, 0 }, false },
-	{ "hmac-sha2-256", { 64, 0, 0 }, false },
-	{ "hmac-sha2-512", { 128, 0, 0 }, false },
+	{ "hmac-sha1", { 40, 0, 0 }, false, SADB_AALG_SHA1HMAC },
+	{ "hmac-sha2-256", { 64, 0, 0 }, false, SADB_X_AALG_SHA2_256 },
+	{ "hmac-sha2-512", { 128, 0, 0 }, false, SADB_X_AALG_SHA2_512 },
 };
 
 static const char *
@@ -690,73 +696,240 @@ word_next(const struct arc_job_spec *sp)
 	return (false);
 }
 
+/* An address sa_check() took, as a sockaddr. */
+static void
+sa_sockaddr(const char *s, struct sockaddr_storage *ss)
+{
+	struct sockaddr_in	*sin = (struct sockaddr_in *)ss;
+	struct sockaddr_in6	*sin6 = (struct sockaddr_in6 *)ss;
+
+	memset(ss, 0, sizeof(*ss));
+	if (inet_pton(AF_INET, s, &sin->sin_addr) == 1) {
+		sin->sin_len = sizeof(*sin);
+		sin->sin_family = AF_INET;
+	} else if (inet_pton(AF_INET6, s, &sin6->sin6_addr) == 1) {
+		sin6->sin6_len = sizeof(*sin6);
+		sin6->sin6_family = AF_INET6;
+	}
+}
+
+static bool
+sa_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+
+	if (a->ss_family != b->ss_family)
+		return (false);
+	if (a->ss_family == AF_INET)
+		return (memcmp(&((const struct sockaddr_in *)a)->sin_addr,
+		    &((const struct sockaddr_in *)b)->sin_addr,
+		    sizeof(struct in_addr)) == 0);
+	return (a->ss_family == AF_INET6 && memcmp(&((const struct
+	    sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->
+	    sin6_addr, sizeof(struct in6_addr)) == 0);
+}
+
+static int
+nibble(char c)
+{
+
+	return (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ?
+	    c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
+}
+
+/* A key's hex digits (hex_ok()'s) as bytes; how many. */
+static size_t
+hex_bytes(const char *hex, unsigned char *out, size_t max)
+{
+	size_t	n;
+
+	for (n = 0; n < max && hex[2 * n] != '\0' && hex[2 * n + 1] != '\0';
+	    n++)
+		out[n] = (unsigned char)(nibble(hex[2 * n]) << 4 |
+		    nibble(hex[2 * n + 1]));
+	return (n);
+}
+
+/* The job's PF_KEY socket, opened at its first message. */
+static int
+sa_fd(struct work *w, int *fdp, const char **errp)
+{
+
+	if (*fdp == -1)
+		*fdp = pfkey_open(w, errp);
+	return (*fdp);
+}
+
 /*
- * The lines to setkey -c on its standard input, a pipe: the keys are
- * in no file, not even for a moment.  What it said when strict.
+ * The SA of spi from src to dst taken out, if one was set (spi not 0);
+ * one not there is none to take out.  What went wrong is in the step
+ * alone: the SA put in after it says.
+ */
+static void
+sa_del(struct work *w, int *fdp, const char *src, const char *dst,
+    uint32_t spi)
+{
+	struct sockaddr_storage	 s, d;
+	const char		*e;
+	int			 step;
+
+	if (spi == 0)
+		return;
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_DELETE", "%s to %s, "
+	    "SPI %#x", src, dst, spi);
+	if (work_dry(w, step))
+		return;
+	sa_sockaddr(src, &s);
+	sa_sockaddr(dst, &d);
+	e = NULL;
+	if (sa_fd(w, fdp, &e) == -1 || pfkey_delete(w, *fdp, (struct sockaddr *)
+	    &s, (struct sockaddr *)&d, spi, &e) == -1)
+		step_end(w, step, errno == ESRCH, "%s to %s, SPI %#x: %s", src,
+		    dst, spi, errno == ESRCH ? "none there" : e);
+	else
+		step_end(w, step, true, NULL);
+}
+
+struct sa_between {
+	struct sockaddr_storage	 a, b;
+	uint32_t		 spi[64];
+	bool			 fwd[64];	/* from a to b */
+	size_t			 n;
+};
+
+static void
+sa_between_one(const struct pfkey_sa *sa, void *arg)
+{
+	struct sa_between	*sb = arg;
+	bool			 fwd;
+
+	if ((fwd = sa_same_addr(&sa->src, &sb->a) && sa_same_addr(&sa->dst,
+	    &sb->b)) || (sa_same_addr(&sa->src, &sb->b) &&
+	    sa_same_addr(&sa->dst, &sb->a))) {
+		if (sb->n < nitems(sb->spi)) {
+			sb->spi[sb->n] = sa->spi;
+			sb->fwd[sb->n++] = fwd;
+		}
+	}
+}
+
+/*
+ * Every ESP SA between a and b, either way, taken out: those the
+ * kernel has (SADB_DUMP), each by its SPI.  -1 when they could not be
+ * read.
  */
 static int
-sa_setkey(struct work *w, const char *text, bool strict, const char **errp)
+sa_clear(struct work *w, int *fdp, const char *a, const char *b)
 {
-	struct execres	 res;
-	char		*argv[3];
-	int		 rc;
+	struct sa_between	 sb;
+	const char		*e;
+	char			*spis;
+	size_t			 i;
+	int			 step;
 
-	argv[0] = (char *)(uintptr_t)opts.setkey_bin;
-	argv[1] = (char *)(uintptr_t)"-c";
-	argv[2] = NULL;
-	/* What it reads has the keys: what it says of it is not kept. */
-	exec_set_stdin(text, strlen(text));
-	exec_set_secret(true);
-	rc = run_exec(w, argv, &res);
-	exec_set_secret(false);
-	if (rc != 0 && strict) {
-		*errp = wfmt(w, "setkey: exit status %d%s%.200s", res.status,
-		    res.errlen > 0 ? ": " : "", res.errlen > 0 ? res.err : "");
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_DUMP", "the SAs "
+	    "between %s and %s", a, b);
+	if (work_dry(w, step))
+		return (0);
+	memset(&sb, 0, sizeof(sb));
+	sa_sockaddr(a, &sb.a);
+	sa_sockaddr(b, &sb.b);
+	e = NULL;
+	if (sa_fd(w, fdp, &e) == -1 || pfkey_dump(w, *fdp, sa_between_one,
+	    &sb, &e) == -1) {
+		step_end(w, step, false, "%s", e);
 		return (-1);
 	}
+	spis = wstrdup(w, "");
+	for (i = 0; i < sb.n; i++)
+		spis = wfmt(w, "%s %#x", spis, sb.spi[i]);
+	step_end(w, step, true, "between %s and %s: %s%s", a, b, sb.n == 0 ?
+	    "none" : "SPI", spis);
+	for (i = 0; i < sb.n; i++)
+		sa_del(w, fdp, sb.fwd[i] ? a : b, sb.fwd[i] ? b : a, sb.spi[i]);
 	return (0);
 }
 
 /*
- * One SA's line: ESP in tunnel mode on the interface's reqid, with an
+ * One SA put in: ESP in tunnel mode on the interface's reqid, with an
  * anti-replay window of 1024 packets (R47) always: ESN without one has
  * the kernel's two ends disagree on the AAD of an AEAD cipher
  * (xform_esp.c, the window checked on input only), and every ICV
- * fails.
+ * fails.  The sequence number may wrap (SADB_X_EXT_CYCSEQ), as
+ * setkey(8)'s SAs' may.  Read back once in (SADB_GET): the kernel has
+ * it as asked, mature, or the job fails (an AEAD cipher's
+ * authentication is the kernel's to name: AES-GCM's GMAC, xform_esp.c).
  */
-static void
-sa_add_line(char *buf, size_t len, const struct sa_words *sw, uint32_t reqid,
+static int
+sa_put(struct work *w, int *fdp, const struct sa_words *sw, uint32_t reqid,
     const char *src, const char *dst, uint32_t spi, const char *key,
-    const char *akey)
+    const char *akey, const char **errp)
 {
-	size_t	n;
+	struct pfkey_sa	 sa, got;
+	unsigned char	 ek[64], ak[64];
+	const char	*bad;
+	size_t		 j;
+	int		 step, rc;
 
-	n = strlen(buf);
-	n += (size_t)snprintf(buf + n, len - n, "add %s %s esp %#x -m tunnel -u "
-	    "%u -r 128%s", src, dst, spi, reqid, sw->esn ? " -esn" : "");
-	if (sw->encap && n < len)
-		n += (size_t)snprintf(buf + n, len - n, " -natt %s[4500] "
-		    "%s[4500]", src, dst);
-	if (n < len)
-		n += (size_t)snprintf(buf + n, len - n, " -E %s 0x%s", sw->enc,
-		    key);
-	if (sw->auth != NULL && n < len)
-		n += (size_t)snprintf(buf + n, len - n, " -A %s 0x%s", sw->auth,
-		    akey);
-	if (n < len)
-		(void)snprintf(buf + n, len - n, " ;\n");
-}
-
-static void
-sa_del_line(char *buf, size_t len, const char *src, const char *dst,
-    uint32_t spi)
-{
-	size_t	n;
-
-	n = strlen(buf);
-	if (spi != 0 && n < len)
-		(void)snprintf(buf + n, len - n, "delete %s %s esp %#x ;\n", src,
-		    dst, spi);
+	step = step_begin(w, STEP_SYSCALL, "PF_KEY SADB_ADD", "%s to %s, SPI "
+	    "%#x, reqid %u", src, dst, spi, reqid);
+	if (work_dry(w, step))
+		return (0);
+	memset(&sa, 0, sizeof(sa));
+	sa_sockaddr(src, &sa.src);
+	sa_sockaddr(dst, &sa.dst);
+	sa.spi = spi;
+	sa.reqid = reqid;
+	sa.mode = IPSEC_MODE_TUNNEL;
+	sa.replay = SA_REPLAY;
+	sa.flags = SADB_X_EXT_CYCSEQ | (sw->esn ? SADB_X_SAFLAGS_ESN : 0);
+	for (j = 0; j < nitems(encs); j++)
+		if (strcmp(sw->enc, encs[j].name) == 0)
+			sa.ealg = encs[j].alg;
+	sa.aalg = SADB_AALG_NONE;
+	for (j = 0; sw->auth != NULL && j < nitems(auths); j++)
+		if (strcmp(sw->auth, auths[j].name) == 0)
+			sa.aalg = auths[j].alg;
+	sa.ekeylen = hex_bytes(key, ek, sizeof(ek));
+	sa.ekey = ek;
+	if (sw->auth != NULL && akey != NULL) {
+		sa.akeylen = hex_bytes(akey, ak, sizeof(ak));
+		sa.akey = ak;
+	}
+	if (sw->encap) {
+		sa.natt = true;
+		sa.sport = sa.dport = NATT_PORT;
+	}
+	rc = sa_fd(w, fdp, errp) == -1 ? -1 : pfkey_add(w, *fdp, &sa, errp);
+	OPENSSL_cleanse(ek, sizeof(ek));
+	OPENSSL_cleanse(ak, sizeof(ak));
+	if (rc == 0)
+		rc = pfkey_get(w, *fdp, (struct sockaddr *)&sa.src,
+		    (struct sockaddr *)&sa.dst, spi, &got, errp);
+	if (rc != 0) {
+		*errp = wfmt(w, "%s to %s, SPI %#x: %s", src, dst, spi, *errp);
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	bad = got.spi != spi ? "another SPI" : got.state !=
+	    SADB_SASTATE_MATURE ? "not mature" : got.reqid != reqid ?
+	    "another reqid" : got.mode != IPSEC_MODE_TUNNEL ? "not in tunnel "
+	    "mode" : got.replay != SA_REPLAY ? "another replay window" :
+	    (got.flags & SADB_X_SAFLAGS_ESN) != (sa.flags &
+	    SADB_X_SAFLAGS_ESN) ? (sw->esn ? "no ESN" : "ESN") : got.ealg !=
+	    sa.ealg || (sa.aalg != SADB_AALG_NONE && got.aalg != sa.aalg) ?
+	    "other algorithms" : got.natt !=
+	    sa.natt ? (sa.natt ? "no ESP in UDP" : "ESP in UDP") : NULL;
+	if (bad != NULL) {
+		*errp = wfmt(w, "%s to %s, SPI %#x: the kernel has it with %s",
+		    src, dst, spi, bad);
+		step_end(w, step, false, "%s", *errp);
+		return (-1);
+	}
+	step_end(w, step, true, "%s to %s, SPI %#x, reqid %u: read back: "
+	    "mature, a window of %u packets%s%s", src, dst, spi, reqid,
+	    got.replay * 8, got.flags & SADB_X_SAFLAGS_ESN ? ", ESN" : "",
+	    got.natt ? ", ESP in UDP" : "");
+	return (0);
 }
 
 /*
@@ -769,17 +942,16 @@ sa_del_line(char *buf, size_t len, const char *src, const char *dst,
  * takes the old inbound SA out, makes the next pair the pair, and the
  * next SPIs the SPIs: a rotation in three steps on each end, in, out,
  * commit, so neither end sends on keys the other has not got, nor
- * drops what the other still sends (R110, R112).  The file for setkey
- * is 0600 and taken out again.
+ * drops what the other still sends (R110, R112).
  */
 static int
-sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
+sa_job1(struct work *w, const struct arc_job_spec *sp, int *fdp,
+    const char **errp)
 {
 	struct sa_words	 sw;
 	ucl_object_t	*stt;
 	const char	*e, *l, *r;
 	char		 pub[PUB_B64 + 1], kout[80], kin[80], aout[136], ain[136];
-	char		 text[1600], del[400];
 	unsigned char	 okm[2 * (36 + 64) + 8];
 	size_t		 enclen, authlen, at;
 	int		 step, rc;
@@ -808,7 +980,6 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	r = sp->tunnel_remote;
 	memset(&sw, 0, sizeof(sw));
 	kout[0] = kin[0] = aout[0] = ain[0] = '\0';
-	text[0] = del[0] = '\0';
 	if (!clear && !commit)
 		(void)sa_parse(sp, &sw, derive);
 	if ((stt = sa_state_load(w, sp->interface)) == NULL)
@@ -817,9 +988,7 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	in = sw.install != 2;
 	out = sw.install != 1;
 	if (clear) {
-		snprintf(text, sizeof(text), "deleteall %s %s esp ;\ndeleteall %s "
-		    "%s esp ;\n", l, r, r, l);
-		(void)sa_setkey(w, text, false, errp);
+		(void)sa_clear(w, fdp, l, r);
 		(void)unlink(key_path(w, sp->interface, true));
 		(void)sa_state_save(w, sp->interface, NULL, errp);
 		ucl_object_unref(stt);
@@ -843,9 +1012,7 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		    "the next keys the keys", sp->interface);
 		/* The old inbound SA out (the outbound went with the new one
 		 * in), the next pair the pair. */
-		sa_del_line(del, sizeof(del), r, l, u32(stt, "spi_in"));
-		if (del[0] != '\0')
-			(void)sa_setkey(w, del, false, errp);
+		sa_del(w, fdp, r, l, u32(stt, "spi_in"));
 		if (rename(key_path(w, sp->interface, true), key_path(w,
 		    sp->interface, false)) != 0) {
 			*errp = wfmt(w, "%s: the next pair not made the pair: %s",
@@ -913,34 +1080,27 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	/* What is being put in, taken out first where it is in already. */
 	if (rotate) {
 		if (in)
-			sa_del_line(del, sizeof(del), r, l, u32(stt, "next_spi_in"));
+			sa_del(w, fdp, r, l, u32(stt, "next_spi_in"));
 		if (out)
-			sa_del_line(del, sizeof(del), l, r, u32(stt,
-			    "next_spi_out"));
+			sa_del(w, fdp, l, r, u32(stt, "next_spi_out"));
 	} else {
-		sa_del_line(del, sizeof(del), r, l, u32(stt, "spi_in"));
-		sa_del_line(del, sizeof(del), l, r, u32(stt, "spi_out"));
+		sa_del(w, fdp, r, l, u32(stt, "spi_in"));
+		sa_del(w, fdp, l, r, u32(stt, "spi_out"));
 	}
-	if (del[0] != '\0')
-		(void)sa_setkey(w, del, false, errp);
 	/* Out, then in. */
+	rc = 0;
 	if (out)
-		sa_add_line(text, sizeof(text), &sw, sp->reqid, l, r, sw.spi_out,
-		    sw.key_out, sw.akey_out);
-	if (in)
-		sa_add_line(text, sizeof(text), &sw, sp->reqid, r, l, sw.spi_in,
-		    sw.key_in, sw.akey_in);
-	rc = sa_setkey(w, text, true, errp);
+		rc = sa_put(w, fdp, &sw, sp->reqid, l, r, sw.spi_out, sw.key_out,
+		    sw.akey_out, errp);
+	if (rc == 0 && in)
+		rc = sa_put(w, fdp, &sw, sp->reqid, r, l, sw.spi_in, sw.key_in,
+		    sw.akey_in, errp);
 	/* A rotation's new outbound SA in: the old one out at once, so this
 	 * end sends on the new keys from here on, whatever the kernel
 	 * prefers; the far end has the new inbound one already. */
 	if (rc == 0 && rotate && out && u32(stt, "spi_out") != 0 && u32(stt,
-	    "spi_out") != sw.spi_out) {
-		del[0] = '\0';
-		sa_del_line(del, sizeof(del), l, r, u32(stt, "spi_out"));
-		(void)sa_setkey(w, del, false, errp);
-	}
-	OPENSSL_cleanse(text, sizeof(text));
+	    "spi_out") != sw.spi_out)
+		sa_del(w, fdp, l, r, u32(stt, "spi_out"));
 	OPENSSL_cleanse(kout, sizeof(kout));
 	OPENSSL_cleanse(kin, sizeof(kin));
 	OPENSSL_cleanse(aout, sizeof(aout));
@@ -981,6 +1141,18 @@ sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		    "lifetime", 0, false);
 	rc = sa_state_save(w, sp->interface, stt, errp);
 	ucl_object_unref(stt);
+	return (rc);
+}
+
+static int
+sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
+{
+	int	fd, rc;
+
+	fd = -1;
+	rc = sa_job1(w, sp, &fd, errp);
+	if (fd != -1)
+		close(fd);
 	return (rc);
 }
 
@@ -1122,18 +1294,17 @@ int
 sa_undo(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
 	ucl_object_t	*stt;
-	char		 text[400];
-	int		 step, rc;
+	int		 step, rc, fd;
 	bool		 any;
 
 	if (strcmp(sp->verb, "key") == 0)
 		return (0);
 	step = step_begin(w, STEP_DAEMON, "arcana-agent", "%s: its "
 	    "SAs as they were", sp->interface);
-	snprintf(text, sizeof(text), "deleteall %s %s esp ;\ndeleteall %s %s "
-	    "esp ;\n", sp->tunnel_local, sp->tunnel_remote, sp->tunnel_remote,
-	    sp->tunnel_local);
-	(void)sa_setkey(w, text, false, errp);
+	fd = -1;
+	(void)sa_clear(w, &fd, sp->tunnel_local, sp->tunnel_remote);
+	if (fd != -1)
+		close(fd);
 	rc = 0;
 	any = false;
 	if ((stt = sa_state_load(w, sp->interface)) != NULL) {

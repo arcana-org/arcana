@@ -120,7 +120,6 @@ struct opts opts = {
 	.dnsmasq_bin = PATH_DNSMASQ_BIN,
 	.unbound_bin = PATH_UNBOUND_BIN,
 	.rtsol_bin = PATH_RTSOL_BIN,
-	.setkey_bin = PATH_SETKEY_BIN,
 	.safe_wait = 60,
 	.telegram_api = "https://api.telegram.org",
 	.make_bin = PATH_MAKE_BIN,
@@ -140,7 +139,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
-    OPT_BMP_PORT, OPT_ARCHIVE };
+    OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -173,6 +172,9 @@ static const struct option longopts[] = {
 	/* Where the samples' long run is kept (gula/archive.c): a test's
 	 * own. */
 	{ "archive", required_argument, NULL, OPT_ARCHIVE },
+	/* A unix socket that answers PF_KEY's messages in place of the
+	 * kernel (RFC 2367): a test's stand-in. */
+	{ "pfkey", required_argument, NULL, OPT_PFKEY },
 	/* This host's clock as STAMP tells it, for one ntp_gettime(2)
 	 * does not know is synchronised: source[:error]. */
 	{ "stamp-clock", required_argument, NULL, OPT_STAMP_CLOCK },
@@ -246,6 +248,7 @@ usage(void)
 	    "                 [--smtpd-conf file] [--smtpd-dir directory]\n"
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
 	    "                 [--bmp-port port] [--archive directory]\n"
+	    "                 [--pfkey socket]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
@@ -447,7 +450,7 @@ main(int argc, char *argv[])
 	if (argc >= 2 && strcmp(argv[1], "--scope-helper") == 0)
 		return (scope_helper(argc - 2, argv + 2));
 	/* The letters are all taken: what comes after has a name. */
-	while ((ch = getopt_long(argc, argv, "A:a:B:b:C:c:D:dE:e:Ff:G:g:H:h:I:J:j:K:k:l:M:N:n:O:o:P:p:Q:R:r:s:i:m:q:S:T:t:u:U:Vv:w:W:X:0:1:2:3:4:5:6:7:8:9:x:Y:y:Z:z:", longopts, NULL)) != -1) {
+	while ((ch = getopt_long(argc, argv, "A:a:B:b:C:c:D:dE:e:Ff:G:g:H:h:I:J:j:K:k:l:M:N:n:O:o:P:p:Q:R:r:s:i:m:q:S:T:t:u:U:Vv:w:W:X:0:1:2:3:4:5:6:7:8:x:Y:y:Z:z:", longopts, NULL)) != -1) {
 		switch (ch) {
 		case OPT_ROOT:
 			opts.root = optarg;
@@ -531,6 +534,9 @@ main(int argc, char *argv[])
 				errx(1, "--archive %s: not an absolute path",
 				    optarg);
 			opts.archive_dir = optarg;
+			break;
+		case OPT_PFKEY:
+			opts.pfkey_path = optarg;
 			break;
 		case OPT_BMP_PORT:
 			opts.bmp_port = (int)strtonum(optarg, 1, 65535, &errstr);
@@ -713,9 +719,6 @@ main(int argc, char *argv[])
 			break;
 		case '8':
 			opts.rtsol_bin = optarg;
-			break;
-		case '9':
-			opts.setkey_bin = optarg;
 			break;
 		case 'b':
 			opts.birdc_bin = optarg;

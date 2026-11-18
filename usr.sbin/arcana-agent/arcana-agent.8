@@ -72,6 +72,7 @@
 .Op Fl -stamp-port Ar port
 .Op Fl -bmp-port Ar port
 .Op Fl -archive Ar directory
+.Op Fl -pfkey Ar socket
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
@@ -835,6 +836,15 @@ Default:
 beside
 .Ar history.conf ,
 .Pa /usr/local/etc/arcana/archive .
+.It Fl -pfkey Ar socket
+A unix socket
+.Pq Dv SOCK_SEQPACKET
+that answers the PF_KEY messages of the manually keyed SAs
+.Pq Ql ipsec-sa
+in place of the kernel's PF_KEY socket
+.Pq Xr ipsec 4 :
+a test's stand-in.
+Without it they go to a PF_KEY socket of the host's network.
 .It Fl -stamp-clock Ar source Ns Op : Ns Ar error
 This host's clock as the STAMP probes tell it, for one that
 .Xr ntp_gettime 2

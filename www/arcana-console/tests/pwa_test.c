@@ -10155,7 +10155,7 @@ part_suricata_forms(void)
 /*
  * Manually keyed SAs of an ipsec(4) interface by the IPsec tab's form:
  * set from keys given, not in safe mode (keys set by hand cannot be
- * put back); setkey was given both SAs with their SPIs and reqid.
+ * put back); PF_KEY was sent both SAs with their SPIs and reqid.
  */
 static void
 part_ipsec_sa(void)
@@ -10191,7 +10191,7 @@ ATF_TC_WITH_CLEANUP(pwa_ipsec_sa);
 ATF_TC_HEAD(pwa_ipsec_sa, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs set by the IPsec tab's form, found in what setkey was given");
+	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs set by the IPsec tab's form, found in what PF_KEY was sent");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_ipsec_sa, tc)

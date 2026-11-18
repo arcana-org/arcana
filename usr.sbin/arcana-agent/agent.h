@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.297.0"
+#define	ARCANA_AGENT_VERSION	"0.298.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -75,7 +75,6 @@
 #define	PATH_DNSMASQ_BIN	"/usr/local/sbin/dnsmasq"
 #define	PATH_UNBOUND_BIN	"/usr/sbin/local-unbound"
 #define	PATH_RTSOL_BIN		"/sbin/rtsol"
-#define	PATH_SETKEY_BIN		"/sbin/setkey"
 #define	PATH_BIRD_CONF		"/usr/local/etc/bird.conf"
 #define	OWN_SERVICE		"arcana_agent"	/* the rc.d name of this daemon */
 #define	PATH_MAKE_BIN		"/usr/bin/make"
@@ -172,7 +171,7 @@ struct opts {
 	const char	*dnsmasq_bin;	/* dnsmasq(8): the UNIs' DHCP */
 	const char	*unbound_bin;	/* local-unbound(8): the DNS filters */
 	const char	*rtsol_bin;	/* rtsol(8): an interface's SLAAC */
-	const char	*setkey_bin;	/* setkey(8): manual SAs */
+	const char	*pfkey_path;	/* --pfkey: a stand-in for PF_KEY */
 	const char	*bird_conf;	/* its main file */
 	int		 safe_wait;	/* s, for a safe change to be confirmed */
 	const char	*sctp_also;	/* more addresses for SCTP listeners */
@@ -1303,7 +1302,33 @@ void		 suricata_profiling(struct work *, const char *,
 		    struct json_rsp *);
 int		 do_rtadvd(struct work *, const char *, const char *const *,
 		    size_t, bool, bool, const char **);
-/* invidia/sa.c: manually keyed SAs by setkey(8). */
+/* invidia/pfkey.c: PF_KEYv2 in the agent's own process.  An SA as it is
+ * put in or read back: the keys raw, put in only, never read back. */
+struct pfkey_sa {
+	struct sockaddr_storage	 src, dst;
+	const unsigned char	*ekey, *akey;
+	size_t			 ekeylen, akeylen;
+	uint64_t		 bytes, added;	/* read: current lifetime */
+	uint32_t		 packets;
+	uint32_t		 spi, reqid;
+	uint32_t		 replay;	/* the window, bytes */
+	uint32_t		 flags;		/* SADB_X_EXT_*, SADB_X_SAFLAGS_* */
+	uint16_t		 sport, dport;	/* NAT-T's ports */
+	uint8_t			 mode, state, ealg, aalg;
+	bool			 natt;		/* ESP in UDP */
+};
+int		 pfkey_open(struct work *, const char **);
+int		 pfkey_add(struct work *, int, const struct pfkey_sa *,
+		    const char **);
+int		 pfkey_delete(struct work *, int, const struct sockaddr *,
+		    const struct sockaddr *, uint32_t, const char **);
+int		 pfkey_get(struct work *, int, const struct sockaddr *,
+		    const struct sockaddr *, uint32_t, struct pfkey_sa *,
+		    const char **);
+int		 pfkey_dump(struct work *, int,
+		    void (*)(const struct pfkey_sa *, void *), void *,
+		    const char **);
+/* invidia/sa.c: manually keyed SAs, by PF_KEY. */
 const char	*sa_check(const struct arc_job_spec *);
 int		 do_sa_job(struct work *, const struct arc_job_spec *,
 		    const char **);
@@ -1593,6 +1618,7 @@ int		 helper_netlink(int);
 int		 helper_icmp_socket(int, int);
 int		 helper_ipfw_socket(int);
 int		 helper_bmp_socket(int, int, int);
+int		 helper_pfkey_socket(int);
 unsigned int	 plugins_here(void);
 int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);

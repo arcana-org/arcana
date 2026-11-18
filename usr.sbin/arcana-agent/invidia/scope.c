@@ -42,6 +42,7 @@
 #include <sys/sysctl.h>
 #include <sys/wait.h>
 
+#include <net/pfkeyv2.h>
 #include <netinet/in.h>
 
 #include <errno.h>
@@ -333,6 +334,15 @@ helper_bmp_socket(int jid, int fib, int port)
 
 	snprintf(word, sizeof(word), "%d:%d", fib, port);
 	return (helper_socket(jid, "bmp-socket", word));
+}
+
+/* A PF_KEY socket (RFC 2367) in a jail's own network: its SAs, not
+ * the host's (invidia/pfkey.c). */
+int
+helper_pfkey_socket(int jid)
+{
+
+	return (helper_socket(jid, "pfkey-socket", NULL));
 }
 
 /* The helper's side: fd handed over on its standard output. */
@@ -853,6 +863,16 @@ scope_helper(int argc, char **argv)
 			return (2);
 		if ((fd = bmp_listen(fib, port)) == -1) {
 			fprintf(stderr, "bmp-socket: %s\n", strerror(errno));
+			return (1);
+		}
+		return (fd_send(fd));
+	}
+	/* The jail's SAD and SPD's socket, for PF_KEY. */
+	if (strcmp(argv[1], "pfkey-socket") == 0 && argc == 2) {
+		int	fd;
+
+		if ((fd = socket(PF_KEY, SOCK_RAW, PF_KEY_V2)) == -1) {
+			fprintf(stderr, "socket: %s\n", strerror(errno));
 			return (1);
 		}
 		return (fd_send(fd));
