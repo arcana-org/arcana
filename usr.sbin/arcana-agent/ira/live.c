@@ -33,7 +33,6 @@
 
 #include <sys/param.h>
 
-#include <err.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -168,7 +167,8 @@ live_tail(struct work *w, struct live *l, size_t *lenp, bool *cutp)
 void
 live_put(struct live *l, const char *p, size_t len)
 {
-	size_t	cap;
+	size_t	 cap;
+	char	*nb;
 
 	if (l == NULL || len == 0)
 		return;
@@ -183,9 +183,15 @@ live_put(struct live *l, const char *p, size_t len)
 		while (cap < l->len + len)
 			cap *= 2;
 		cap = MIN(cap, l->max);
-		if ((l->buf = realloc(l->buf, cap)) == NULL)
-			err(1, "realloc");
-		l->cap = cap;
+		/* Out of memory: the copy kept as far as it is, cut. */
+		if ((nb = realloc(l->buf, cap)) == NULL) {
+			l->max = l->len;
+			l->truncated = true;
+			len = 0;
+		} else {
+			l->buf = nb;
+			l->cap = cap;
+		}
 	}
 	if (len > 0) {
 		memcpy(l->buf + l->len, p, len);
@@ -411,8 +417,17 @@ exec_follow_open(cbl_req *req, const struct arcana_stream_open *rq,
 	}
 	nfollowers++;
 	pthread_mutex_unlock(&live_lock);
-	if ((f = calloc(1, sizeof(*f))) == NULL)
-		err(1, "calloc");
+	if ((f = calloc(1, sizeof(*f))) == NULL) {
+		pthread_mutex_lock(&live_lock);
+		nfollowers--;
+		pthread_mutex_unlock(&live_lock);
+		pthread_mutex_lock(&l->lock);
+		follow_end(l);
+		pthread_mutex_unlock(&l->lock);
+		live_rele(l);
+		(void)cbl_req_set_err(req, "out of memory", NULL, 0, -1);
+		return (ENOMEM);
+	}
 	f->l = l;
 	f->s = s;
 	f->refs = 2;

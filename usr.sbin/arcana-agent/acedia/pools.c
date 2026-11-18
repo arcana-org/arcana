@@ -12,7 +12,6 @@
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 
-#include <err.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +27,7 @@ pools_measure(struct work *w, struct host_stats *st)
 	struct host_pool	*v;
 	struct execres	 res;
 	char		*argv[6], *copy, *line, *it, *f[5];
-	size_t		 n, i;
+	size_t		 n, i, cap;
 
 	argv[0] = (char *)(uintptr_t)opts.zpool_bin;
 	argv[1] = (char *)(uintptr_t)"list";
@@ -40,7 +39,7 @@ pools_measure(struct work *w, struct host_stats *st)
 	    run_exec(w, argv, &res) != 0)
 		return;
 	v = NULL;
-	n = 0;
+	n = cap = 0;
 	copy = wstrndup(w, res.out, res.outlen);
 	for (it = copy; (line = strsep(&it, "\n")) != NULL; ) {
 		for (i = 0; i < 5; i++)
@@ -48,8 +47,7 @@ pools_measure(struct work *w, struct host_stats *st)
 				break;
 		if (i < 5)
 			continue;
-		if ((v = reallocarray(v, n + 1, sizeof(*v))) == NULL)
-			err(1, "reallocarray");
+		v = wgrow(w, v, n, &cap, sizeof(*v));
 		memset(&v[n], 0, sizeof(v[n]));
 		v[n].name = wtext(w, f[0]);
 		v[n].has_size = v[n].has_alloc = v[n].has_free = true;
@@ -59,6 +57,6 @@ pools_measure(struct work *w, struct host_stats *st)
 		v[n].health = wtext(w, f[4]);
 		n++;
 	}
-	st->pools.v = wadopt(w, v);
+	st->pools.v = v;
 	st->pools.n = n;
 }

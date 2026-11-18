@@ -556,6 +556,7 @@ lne_serve(void)
 		.on_close = served_closed,
 	};
 	static cbl_loop				*loop;
+	const struct cbl_yserver		*srv;
 	cbl_conn				*c;
 	cbl_ctx					*ctx;
 	int					 error;
@@ -570,8 +571,12 @@ lne_serve(void)
 	(void)cbl_ctx_set_limit(ctx, CBL_LIM_MAX_ATTRS, LNE_MAX_ATTRS);
 	(void)cbl_ctx_set_limit(ctx, CBL_LIM_MAX_DEPTH, LNE_MAX_DEPTH);
 	(void)cbl_ctx_set_limit(ctx, CBL_LIM_IDLE_MS, 0);
+	if ((srv = yserver_guarded()) == NULL) {
+		error = E2BIG;
+		goto fail;
+	}
 	if ((error = cbl_ctx_set_conn_cbs(ctx, &cbs, &loop)) != 0 ||
-	    (error = cbl_yserver_add(ctx, &ymodel_server, NULL)) != 0 ||
+	    (error = cbl_yserver_add(ctx, srv, NULL)) != 0 ||
 	    (error = cbl_loop_new(ctx, &loop)) != 0 ||
 	    (error = cbl_conn_new_fd(ctx, STDIN_FILENO, CBL_CF_ACCEPT,
 	    &c)) != 0 || (error = cbl_conn_attach(c, loop)) != 0)

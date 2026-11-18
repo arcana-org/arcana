@@ -83,8 +83,11 @@ answer(cbl_req *req, struct work *w, int root, const struct json_rsp *r,
 		return (said(req, r->error));
 	if ((top = yj_parse(r->json)) == NULL)
 		return (EIO);
-	if (mask)
-		ucl_mask(top);
+	if (mask && ucl_mask(top) != 0) {
+		ucl_object_unref(top);
+		work_oom(w);
+		return (ENOMEM);
+	}
 	error = flat_in(mod, path, top, out, a, names);
 	ucl_object_unref(top);
 	return (error);
@@ -427,8 +430,11 @@ arcana_smtpd_smtpd_read_action(cbl_req *req, const struct cbl_bytes *target,
 		return (EIO);
 	/* smtpd.conf's inline tables and the like, and a table's text,
 	 * masked for a viewer. */
-	if (clearance(req) < CLEAR_OPERATOR)
-		ucl_mask(top);
+	if (clearance(req) < CLEAR_OPERATOR && ucl_mask(top) != 0) {
+		ucl_object_unref(top);
+		work_oom(w);
+		return (ENOMEM);
+	}
 	/* The form is the console's JSON, a text; a table its text, or a
 	 * secret one its names. */
 	as_text(top, "spec", "spec");

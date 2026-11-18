@@ -23,7 +23,6 @@
 #include <netinet6/nd6.h>
 #include <arpa/inet.h>
 
-#include <err.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -46,15 +45,13 @@ list_edit(struct work *w, const char *key, const char *list, const char *addr,
 
 	out = "";
 	if (list != NULL && *list != '\0') {
-		if ((copy = strdup(list)) == NULL)
-			err(1, "strdup");
+		copy = wstrdup(w, list);
 		for (p = copy; (tok = strsep(&p, ",")) != NULL; ) {
 			if (!add && jc_value_equal(key, tok, addr))
 				continue;
 			out = *out == '\0' ? wstrdup(w, tok) :
 			    wfmt(w, "%s,%s", out, tok);
 		}
-		free(copy);
 	}
 	if (add)
 		out = *out == '\0' ? wstrdup(w, addr) :
@@ -63,20 +60,18 @@ list_edit(struct work *w, const char *key, const char *list, const char *addr,
 }
 
 bool
-list_has(const char *key, const char *list, const char *addr)
+list_has(struct work *w, const char *key, const char *list, const char *addr)
 {
 	char	*copy, *p, *tok;
 	bool	 found;
 
 	if (list == NULL || *list == '\0')
 		return (false);
-	if ((copy = strdup(list)) == NULL)
-		err(1, "strdup");
+	copy = wstrdup(w, list);
 	found = false;
 	for (p = copy; (tok = strsep(&p, ",")) != NULL; )
 		if (jc_value_equal(key, tok, addr))
 			found = true;
-	free(copy);
 	return (found);
 }
 

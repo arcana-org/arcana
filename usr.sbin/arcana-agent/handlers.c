@@ -19,7 +19,6 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -45,7 +44,6 @@ static time_t		note_since;
 static bool		stopping;
 
 static char	*peer_name(cbl_req *);
-static char	*xstrdup(const char *);
 static const char *check_spec(const struct arc_job_spec *);
 static const char *cuts_off(cbl_req *, const struct arc_job_spec *);
 
@@ -100,19 +98,8 @@ valid_service(const char *s)
 	return (true);
 }
 
-static char *
-xstrdup(const char *s)
-{
-	char	*p;
-
-	if (s == NULL)
-		return (NULL);
-	if ((p = strdup(s)) == NULL)
-		err(1, "strdup");
-	return (p);
-}
-
-/* Who asked, by peer_kind(): the certificate subject, or the local uid. */
+/* Who asked, by peer_kind(): the certificate subject, or the local uid;
+ * NULL: out of memory. */
 static char *
 peer_name(cbl_req *req)
 {
@@ -127,17 +114,17 @@ peer_name(cbl_req *req)
 	case PEER_GROUP:
 	case PEER_LOCAL:
 		if (asprintf(&s, "uid %u", (unsigned)uid) == -1)
-			err(1, "asprintf");
+			return (NULL);
 		return (s);
 	case PEER_CONSOLE:
 	case PEER_HOST:
 		if ((subj = cbl_peer_subject(peer)) != NULL)
-			return (xstrdup(subj));
+			return (strdup(subj));
 		break;
 	case PEER_NONE:
 		break;
 	}
-	return (xstrdup("unknown peer"));
+	return (strdup("unknown peer"));
 }
 
 /*
@@ -796,8 +783,12 @@ jobs_submit_checked(cbl_req *req, const struct arc_job_spec *specs, size_t n,
 		    "cancel them";
 		return (-1);
 	}
-	peer = peer_name(req);
-	jobs_submit(specs, n, peer, cbl_req_user(req), w, v, nv);
+	if ((peer = peer_name(req)) == NULL || jobs_submit(specs, n, peer,
+	    cbl_req_user(req), w, v, nv) != 0) {
+		free(peer);
+		*errp = "out of memory: no job queued";
+		return (-1);
+	}
 	free(peer);
 	return (0);
 }

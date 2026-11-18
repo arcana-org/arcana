@@ -149,7 +149,8 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
-    OPT_TERMINAL_IDLE, OPT_REPO_REACH, OPT_RC_SUBR, OPT_DEV, OPT_DEVD_PIPE };
+    OPT_TERMINAL_IDLE, OPT_REPO_REACH, OPT_RC_SUBR, OPT_DEV, OPT_DEVD_PIPE,
+    OPT_ALLOC_FAULT };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -225,6 +226,9 @@ static const struct option longopts[] = {
 	{ "smtpd-dir", required_argument, NULL, OPT_SMTPD_DIR },
 	/* The log UDPspeeder's relay writes to, through syslogd. */
 	{ "speederv2-log", required_argument, NULL, OPT_SPEEDER_LOG },
+	/* A file naming the allocation of the next request or job that
+	 * fails as out of memory would (work.c): a test's. */
+	{ "alloc-fault", required_argument, NULL, OPT_ALLOC_FAULT },
 	{ NULL, 0, NULL, 0 },
 };
 
@@ -639,6 +643,9 @@ main(int argc, char *argv[])
 			break;
 		case OPT_SPEEDER_LOG:
 			opts.speederv2_log = optarg;
+			break;
+		case OPT_ALLOC_FAULT:
+			opts.alloc_fault = optarg;
 			break;
 		case OPT_JOBS_CONF:
 			opts.jobs_conf = optarg;

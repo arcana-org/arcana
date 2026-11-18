@@ -49,6 +49,7 @@ struct capture {
 	size_t	 len;
 	size_t	 max;
 	bool	 truncated;
+	bool	 oom;		/* out of memory: kept no more */
 };
 
 /*
@@ -86,7 +87,7 @@ window_put(struct window *win, const char *p, size_t len)
 static void
 capture_read(int *fd, struct capture *c, struct window *win)
 {
-	char	buf[8192];
+	char	buf[8192], *p;
 	ssize_t	n;
 
 	n = read(*fd, buf, sizeof(buf));
@@ -101,11 +102,27 @@ capture_read(int *fd, struct capture *c, struct window *win)
 		c->truncated = true;
 	}
 	if (n > 0) {
-		if ((c->buf = realloc(c->buf, c->len + (size_t)n)) == NULL)
-			err(1, "realloc");
+		if ((p = realloc(c->buf, c->len + (size_t)n)) == NULL) {
+			c->truncated = c->oom = true;
+			c->max = c->len;
+			return;
+		}
+		c->buf = p;
 		memcpy(c->buf + c->len, buf, (size_t)n);
 		c->len += (size_t)n;
 	}
+}
+
+/* Both ends of a pipe closed, those open. */
+static void
+close_pipe(int p[2])
+{
+
+	if (p[0] != -1)
+		close(p[0]);
+	if (p[1] != -1)
+		close(p[1]);
+	p[0] = p[1] = -1;
 }
 
 /*
@@ -498,6 +515,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	const char			*in;
 	size_t				 inlen, off;
 	ssize_t				 wr;
+	int				 e;
 
 	argv = scope_argv(w, argv);
 	limit = exec_limit;
@@ -543,17 +561,36 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 		step_end(w, step, true, "not run: a dry run");
 		return (0);
 	}
+	/* Out of memory: no program more; the operation's error path. */
+	if (w->oom) {
+		res->status = -1;
+		res->err = wfmt(w, "cannot run %s: out of memory", argv[0]);
+		res->errlen = strlen(res->err);
+		step_end(w, step, false, "%s", res->err);
+		return (-1);
+	}
 
 	memset(&out, 0, sizeof(out));
 	memset(&eout, 0, sizeof(eout));
 	out.max = max;
 	eout.max = ARC_MAX_OUTPUT;
-	op[0] = op[1] = ip[0] = ip[1] = -1;
+	op[0] = op[1] = ep[0] = ep[1] = ip[0] = ip[1] = -1;
+	/* No descriptors left (EMFILE): this program alone not run. */
 	if ((outfd == -1 && pipe2(op, O_CLOEXEC) == -1) ||
-	    pipe2(ep, O_CLOEXEC) == -1)
-		err(1, "pipe2");
-	if (in != NULL && pipe2(ip, O_CLOEXEC) == -1)
-		err(1, "pipe2");
+	    pipe2(ep, O_CLOEXEC) == -1 ||
+	    (in != NULL && pipe2(ip, O_CLOEXEC) == -1)) {
+		e = errno;
+		close_pipe(op);
+		close_pipe(ep);
+		close_pipe(ip);
+		res->status = -1;
+		res->err = wfmt(w, "cannot run %s: pipe2: %s", argv[0],
+		    strerror(e));
+		res->errlen = strlen(res->err);
+		step_exec(w, step, targv, -1, NULL, 0, res->err, res->errlen);
+		step_end(w, step, false, "%s", res->err);
+		return (-1);
+	}
 	posix_spawn_file_actions_init(&fa);
 	if (in != NULL)
 		posix_spawn_file_actions_adddup2(&fa, ip[0], STDIN_FILENO);
@@ -770,6 +807,9 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	res->truncated = out.truncated;
 	free(out.buf);
 	free(eout.buf);
+	/* What it printed could not all be kept: the request fails. */
+	if (out.oom || eout.oom)
+		work_oom(w);
 	if (exec_secret || secret)
 		step_exec(w, step, targv, rc, "(not kept: it has keys in it)\n",
 		    30, secret ? "" : res->err, secret ? 0 : res->errlen);
@@ -869,13 +909,13 @@ run_exec_lines(struct work *w, char *const argv[],
 	char				*env[] = { pathenv, NULL };
 	struct pollfd			 pfd;
 	const char			*cmdline;
-	char				*buf, **targv;
+	char				*buf, *nb, **targv;
 	size_t				 cap, len, i, lines;
 	ssize_t				 got;
 	time_t				 deadline, drain;
 	pid_t				 pid;
 	int				 op[2], status, rc, step, n;
-	bool				 exited, timedout, secret;
+	bool				 exited, timedout, secret, oom;
 
 	argv = scope_argv(w, argv);
 	/* Its lines are not traced: only its command line is. */
@@ -892,8 +932,16 @@ run_exec_lines(struct work *w, char *const argv[],
 		step_end(w, step, true, "not run: a dry run");
 		return (0);
 	}
-	if (pipe2(op, O_CLOEXEC) == -1)
-		err(1, "pipe2");
+	if (w->oom) {
+		step_end(w, step, false, "cannot run %s: out of memory",
+		    argv[0]);
+		return (-1);
+	}
+	if (pipe2(op, O_CLOEXEC) == -1) {
+		step_end(w, step, false, "cannot run %s: pipe2: %s", argv[0],
+		    strerror(errno));
+		return (-1);
+	}
 	posix_spawn_file_actions_init(&fa);
 	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
 	    O_RDONLY, 0);
@@ -929,7 +977,7 @@ run_exec_lines(struct work *w, char *const argv[],
 	buf = NULL;
 	cap = len = 0;
 	lines = 0;
-	exited = timedout = false;
+	exited = timedout = oom = false;
 	deadline = time(NULL) + EXEC_TIMEOUT_SEC;
 	drain = 0;
 	while (op[0] != -1) {
@@ -940,9 +988,16 @@ run_exec_lines(struct work *w, char *const argv[],
 			err(1, "poll");
 		if (n > 0) {
 			if (len + 8192 + 1 > cap) {
+				/* Out of memory: stopped, the request
+				 * failing. */
+				if ((nb = realloc(buf, (len + 8192 + 1) *
+				    2)) == NULL) {
+					exec_kill(pid, false);
+					oom = true;
+					break;
+				}
+				buf = nb;
 				cap = (len + 8192 + 1) * 2;
-				if ((buf = realloc(buf, cap)) == NULL)
-					err(1, "realloc");
 			}
 			if ((got = read(op[0], buf + len, 8192)) <= 0) {
 				close(op[0]);
@@ -975,6 +1030,12 @@ run_exec_lines(struct work *w, char *const argv[],
 		if (errno != EINTR)
 			err(1, "waitpid");
 	rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+	if (oom) {
+		work_oom(w);
+		step_end(w, step, false, "out of memory: stopped after %zu "
+		    "lines", lines);
+		return (-1);
+	}
 	step_end(w, step, rc == 0, "exit status %d, %zu lines read%s", rc,
 	    lines, timedout ? ", killed: out of time" : "");
 	return (rc);

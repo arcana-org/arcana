@@ -44,7 +44,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -87,6 +86,7 @@ struct term {
 	size_t		 inlen, incap;
 	bool		 closed;	/* the stream ended */
 	bool		 flood;		/* more typed than TERM_IN_MAX */
+	bool		 oom;		/* no memory for what was typed */
 	time_t		 last_in;	/* CLOCK_MONOTONIC */
 	uint64_t	 nin, nout;
 	int		 refs;		/* the thread's, the stream's */
@@ -143,6 +143,7 @@ term_data(cbl_stream *s __unused, const struct arcana_stream_chunk *c,
 	struct term	*t = arg;
 	struct winsize	 ws;
 	size_t		 cap;
+	char		*nb;
 
 	pthread_mutex_lock(&t->lock);
 	if (c->has_rows && c->has_cols && t->master != -1) {
@@ -161,12 +162,18 @@ term_data(cbl_stream *s __unused, const struct arcana_stream_chunk *c,
 				cap = MAX(t->incap * 2, 4096);
 				while (cap < t->inlen + c->data.len)
 					cap *= 2;
-				if ((t->in = realloc(t->in, cap)) == NULL)
-					err(1, "realloc");
-				t->incap = cap;
+				if ((nb = realloc(t->in, cap)) == NULL)
+					t->oom = true;
+				else {
+					t->in = nb;
+					t->incap = cap;
+				}
 			}
-			memcpy(t->in + t->inlen, c->data.p, c->data.len);
-			t->inlen += c->data.len;
+			if (!t->oom) {
+				memcpy(t->in + t->inlen, c->data.p,
+				    c->data.len);
+				t->inlen += c->data.len;
+			}
 		}
 	}
 	pthread_mutex_unlock(&t->lock);
@@ -296,6 +303,13 @@ term_run(void *arg)
 			pthread_mutex_unlock(&t->lock);
 			why = "more was typed than the terminal takes";
 			code = ENOBUFS;
+			break;
+		}
+		/* This terminal alone hung up. */
+		if (t->oom) {
+			pthread_mutex_unlock(&t->lock);
+			why = "out of memory: hung up";
+			code = ENOMEM;
 			break;
 		}
 		now = mono();
@@ -527,8 +541,13 @@ terminal_open(cbl_req *req, const struct arcana_stream_open *rq,
 	nterms++;
 	pthread_mutex_unlock(&term_lock);
 
-	if ((t = calloc(1, sizeof(*t))) == NULL)
-		err(1, "calloc");
+	if ((t = calloc(1, sizeof(*t))) == NULL) {
+		pthread_mutex_lock(&term_lock);
+		nterms--;
+		pthread_mutex_unlock(&term_lock);
+		(void)cbl_req_set_err(req, "out of memory", NULL, 0, -1);
+		return (ENOMEM);
+	}
 	pthread_mutex_init(&t->lock, NULL);
 	t->master = t->wake[0] = t->wake[1] = -1;
 	t->refs = 1;

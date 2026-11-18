@@ -14,7 +14,6 @@
 #include <sys/stat.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1569,10 +1568,21 @@ bird_conf_put(struct work *w, const char *path, const char *text,
 	pend.had = had;
 	pend.by = time(NULL) + timeout + 5;
 	pend.ctx = ctx;
+	/*
+	 * Out of memory, or no thread for the timer: not kept, as BIRD
+	 * would not keep it at its timer; the file put back now.
+	 */
 	if (pend.path == NULL || pend.base == NULL || pend.bak == NULL ||
 	    pend.sha == NULL || pthread_create(&thr, NULL, pend_wait, NULL) !=
-	    0)
-		err(1, "bird: a confirmed commit");
+	    0) {
+		pend_clear();
+		pthread_mutex_unlock(&pend_lock);
+		(void)birdc(w, false, "configure", "undo", NULL, &res);
+		conf_unplace(w, path, had, base, bak);
+		*errp = "out of memory: BIRD was told to go back, and the file "
+		    "is as it was";
+		return (-1);
+	}
 	pthread_detach(thr);
 	pthread_mutex_unlock(&pend_lock);
 	return (0);

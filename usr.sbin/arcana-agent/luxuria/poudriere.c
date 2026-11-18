@@ -42,7 +42,6 @@
 
 #include <ctype.h>
 #include <dirent.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -1004,7 +1003,7 @@ do_poudriere_job(struct work *w, const struct arc_job_spec *sp,
 	return (0);
 }
 
-/* The job's line. */
+/* The job's line; NULL: out of memory. */
 char *
 poudriere_title(const struct arc_job_spec *sp)
 {
@@ -1042,9 +1041,7 @@ poudriere_title(const struct arc_job_spec *sp)
 	else
 		rc = asprintf(&t, "poudriere %s %s", verb, name != NULL ? name :
 		    "");
-	if (rc == -1)
-		err(1, "asprintf");
-	return (t);
+	return (rc == -1 ? NULL : t);
 }
 
 /* ---- The read ------------------------------------------------------- */

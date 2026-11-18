@@ -303,7 +303,7 @@ do_address(struct work *w, const struct address_req *rq,
 			    name);
 			goto out;
 		}
-		if (list_has(key, cur, bare) == add) {
+		if (list_has(w, key, cur, bare) == add) {
 			rsp->error = wfmt(w, "%s %s in the running jail's "
 			    "%s", bare, add ? "is already" : "is not", key);
 			goto out;

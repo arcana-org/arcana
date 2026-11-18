@@ -32,6 +32,14 @@ wadopt(struct work *w, void *p)
 	return (p);
 }
 
+void
+work_oom(struct work *w)
+{
+
+	(void)w;
+	errx(1, "out of memory");
+}
+
 char *
 wstrndup(struct work *w, const char *s, size_t n)
 {

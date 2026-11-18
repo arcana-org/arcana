@@ -79,6 +79,7 @@
 .Op Fl -rc-subr Ar file
 .Op Fl -dev Ar directory
 .Op Fl -devd-pipe Ar socket
+.Op Fl -alloc-fault Ar file
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
@@ -998,6 +999,22 @@ socket, heard for the kernel's device events and asked whether devd
 runs.
 Default
 .Pa /var/run/devd.seqpacket.pipe .
+.It Fl -alloc-fault Ar file
+A test's: with
+.Dq request Ar n
+in
+.Ar file ,
+the next request's
+.Ar n Ns th
+allocation fails as when memory runs out, with
+.Dq job Ar n
+the next job's, counted from where its change begins; the file is
+taken away.
+A request or job that runs out of memory fails alone,
+.Dq out of memory :
+what it still allocates comes from a reserve mapped at the start, it
+runs no program more, an edit it made is taken back and a safe change
+undone, and the daemon goes on serving the others.
 .It Fl -stamp-clock Ar source Ns Op : Ns Ar error
 This host's clock as the STAMP probes tell it, for one that
 .Xr ntp_gettime 2

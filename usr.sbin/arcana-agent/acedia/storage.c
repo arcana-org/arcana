@@ -29,7 +29,6 @@
 #include <sys/un.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fstab.h>
@@ -1751,7 +1750,7 @@ storage_check(const struct arc_job_spec *sp)
 	return (e);
 }
 
-/* What the job runs, in words: its title. */
+/* What the job runs, in words: its title; NULL: out of memory. */
 char *
 storage_title(const struct arc_job_spec *sp)
 {
@@ -1774,8 +1773,8 @@ storage_title(const struct arc_job_spec *sp)
 		t = strdup(s);
 	}
 	work_free(&w);
-	if (t == NULL && (t = strdup("storage")) == NULL)
-		err(1, "strdup");
+	if (t == NULL)
+		t = strdup("storage");
 	return (t);
 }
 

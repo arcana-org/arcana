@@ -721,6 +721,7 @@ int	ynetconf_datastores(cbl_ctx *);
  * of a read, freed with the answer's arena; ywork_told(): one whose
  * steps the requester hears (the steps group), its root step what. */
 int	yang_serve(cbl_ctx *);
+const struct cbl_yserver *yserver_guarded(void);
 struct work *ywork(cbl_yarena *a);
 struct work *ywork_told(cbl_req *req, cbl_yarena *a, const char *what,
 	    int *root);

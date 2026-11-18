@@ -214,10 +214,18 @@
   interfaces, where the host keeps a socket every FIB for a target in
   another table than 0 (a jail's would need one per FIB from the
   helper too).
-- The agent's allocations (work.c's wcalloc, wmalloc and the rest, and
-  err(1) on a failed pipe2(2) or realloc(3) in ira/exec.c) end the
-  root daemon when memory runs out, a change half done with it; a
-  failure of one request's alone, said, is to come.
+- Done (agent_test:out_of_memory): a request or a job that runs out of
+  memory fails alone, "out of memory", and the daemon goes on.
+  wmalloc() and the rest serve a malloc(3) that fails from a reserve
+  mapped at the start and mark the work (work.c); it runs no program
+  more (run_exec()), and its end fails it: each model handler's guard
+  (yserve.c) answers ENOMEM and takes an edit back, a job (run()) fails
+  and a safe change is undone.  pipe2(2), or a capture's realloc(3), in
+  ira/exec.c fails that program alone; the job and terminal tables, the
+  live copies, the masks and BIRD's confirmed commit fail their own
+  request.  What still ends the daemon: the reserve spent too,
+  wcalloc()'s product past SIZE_MAX, poll(2) or waitpid(2) failing
+  (EFAULT, EINVAL, ECHILD: a bug), and what fails at the start.
 - Faults held to what they watch (agent 0.287.0 adds sdbird.c's,
   sdids.c's, smtpd.c's and sa.c's to the prober's, the links', the
   sampler's, the crashes' and birdwatch.c's): the tests seed faults an

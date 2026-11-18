@@ -13,7 +13,6 @@
 #include <sys/types.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <glob.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,29 +26,25 @@ struct sbuf {
 	size_t	 cap;
 };
 
+/* x put at the end of v, an array of w's pool. */
 #define	VEC_PUSH(v, n, cap, x) do {					\
-	if ((n) == (cap)) {						\
-		(cap) = (cap) == 0 ? 8 : (cap) * 2;			\
-		if (((v) = reallocarray((v), (cap), sizeof(*(v)))) ==	\
-		    NULL)						\
-			err(1, "reallocarray");				\
-	}								\
+	(v) = wgrow(w, (v), (n), &(cap), sizeof(*(v)));			\
 	(v)[(n)++] = (x);						\
 } while (0)
 
-static void	sb_add(struct sbuf *, char);
+static void	sb_add(struct work *, struct sbuf *, char);
 static char	*sb_take(struct work *, struct sbuf *);
 static bool	includes_confdir(struct work *, const char *, const char *);
 
 static void
-sb_add(struct sbuf *sb, char c)
+sb_add(struct work *w, struct sbuf *sb, char c)
 {
 
-	if (sb->len + 2 > sb->cap) {
-		sb->cap = sb->cap == 0 ? 64 : sb->cap * 2;
-		if ((sb->s = realloc(sb->s, sb->cap)) == NULL)
-			err(1, "realloc");
-	}
+	/* Room for c and the NUL, in w's pool; what is there, NUL and
+	 * all, copied. */
+	if (sb->len + 2 > sb->cap)
+		sb->s = wgrow(w, sb->s, sb->s != NULL ? sb->len + 1 : 0,
+		    &sb->cap, 1);
 	sb->s[sb->len++] = c;
 	sb->s[sb->len] = '\0';
 }
@@ -128,11 +123,11 @@ conf_scope_read(struct work *w, const char *scope, struct cjail **outp,
 		c = i < res.outlen ? res.out[i] : '\n';
 		if (quote != 0) {
 			if (c == '\\' && i + 1 < res.outlen)
-				sb_add(&cur, res.out[++i]);
+				sb_add(w, &cur, res.out[++i]);
 			else if (c == quote)
 				quote = 0;
 			else
-				sb_add(&cur, c);
+				sb_add(w, &cur, c);
 			continue;
 		}
 		if (c != '\n')
@@ -150,12 +145,11 @@ conf_scope_read(struct work *w, const char *scope, struct cjail **outp,
 				memset(&p, 0, sizeof(p));
 				p.key = key;
 				p.values.n = nv;
-				p.values.v = wadopt(w, vals);
+				p.values.v = vals;
 				vals = NULL;
 				capv = 0;
 				VEC_PUSH(params, np, capp, p);
 			}
-			free(vals);
 			vals = NULL;
 			nv = capv = 0;
 			key = NULL;
@@ -163,13 +157,12 @@ conf_scope_read(struct work *w, const char *scope, struct cjail **outp,
 			if (c == '\n' && injail) {
 				if (j.name != NULL) {
 					j.scope = scope;
-					j.params = wadopt(w, params);
+					j.params = params;
 					j.nparams = np;
 					params = NULL;
 					capp = 0;
 					VEC_PUSH(jails, nj, capj, j);
 				}
-				free(params);
 				params = NULL;
 				np = capp = 0;
 				memset(&j, 0, sizeof(j));
@@ -181,14 +174,11 @@ conf_scope_read(struct work *w, const char *scope, struct cjail **outp,
 		} else if ((c == '"' || c == '\'') && haveeq) {
 			quote = c;
 		} else if (c == '\\' && i + 1 < res.outlen) {
-			sb_add(&cur, res.out[++i]);
+			sb_add(w, &cur, res.out[++i]);
 		} else
-			sb_add(&cur, c);
+			sb_add(w, &cur, c);
 	}
-	free(cur.s);
-	free(vals);
-	free(params);
-	*outp = wadopt(w, jails);
+	*outp = jails;
 	*noutp = nj;
 	return (0);
 }
@@ -250,17 +240,15 @@ conf_read(struct work *w, struct cconf *conf)
 		VEC_PUSH(scopes, ns, caps, wstrdup(w, opts.jail_conf));
 	}
 	if (!includes_confdir(w, opts.jail_conf, opts.jail_conf_d)) {
-		if (asprintf(&pat, "%s/*.conf", opts.jail_conf_d) == -1)
-			err(1, "asprintf");
+		pat = wfmt(w, "%s/*.conf", opts.jail_conf_d);
 		memset(&g, 0, sizeof(g));
 		if (glob(pat, 0, NULL, &g) == 0)
 			for (i = 0; i < g.gl_pathc; i++)
 				VEC_PUSH(scopes, ns, caps,
 				    wstrdup(w, g.gl_pathv[i]));
 		globfree(&g);
-		free(pat);
 	}
-	conf->scopes = wadopt(w, scopes);
+	conf->scopes = scopes;
 	conf->nscopes = ns;
 
 	capj = cape = 0;
@@ -282,8 +270,6 @@ conf_read(struct work *w, struct cconf *conf)
 				VEC_PUSH(conf->jails, conf->njails, capj,
 				    js[k]);
 	}
-	wadopt(w, conf->jails);
-	wadopt(w, conf->errors);
 }
 
 const struct cjail *

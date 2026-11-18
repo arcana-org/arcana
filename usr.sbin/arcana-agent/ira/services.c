@@ -41,7 +41,6 @@
 
 #include <ctype.h>
 #include <dirent.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jail.h>
@@ -168,8 +167,7 @@ scan_scripts(struct work *w, struct script **outp, size_t *np)
 
 	v = NULL;
 	n = cap = 0;
-	if ((dirs = strdup(opts.rc_dirs)) == NULL)
-		err(1, "strdup");
+	dirs = wstrdup(w, opts.rc_dirs);
 	for (it = dirs; (dir = strsep(&it, ":")) != NULL; ) {
 		if (*dir == '\0')
 			continue;
@@ -186,12 +184,7 @@ scan_scripts(struct work *w, struct script **outp, size_t *np)
 			if (stat(path, &st) == -1 || !S_ISREG(st.st_mode) ||
 			    (st.st_mode & S_IXUSR) == 0)
 				continue;
-			if (n == cap) {
-				cap = cap == 0 ? 64 : cap * 2;
-				if ((v = reallocarray(v, cap, sizeof(*v))) ==
-				    NULL)
-					err(1, "reallocarray");
-			}
+			v = wgrow(w, v, n, &cap, sizeof(*v));
 			v[n].name = wstrdup(w, de->d_name);
 			v[n].path = path;
 			n++;
@@ -199,10 +192,9 @@ scan_scripts(struct work *w, struct script **outp, size_t *np)
 		closedir(d);
 		step_end(w, step, true, "%zu scripts", n);
 	}
-	free(dirs);
 	if (n > 1)
 		qsort(v, n, sizeof(*v), cmp_script);
-	*outp = wadopt(w, v);
+	*outp = v;
 	*np = n;
 }
 
@@ -905,25 +897,23 @@ svc_about(struct work *w, const char *name, struct service_config_rsp *rsp)
 	struct execres	  res;
 	const char	**cmds;
 	char		 *copy, *it, *tok;
-	size_t		  ncmd;
+	size_t		  ncmd, cap;
 
 	if (svc_run(w, name, "describe", &res) == 0 && res.outlen > 0)
 		rsp->description = wtext(w, wstrndup(w, res.out, res.outlen -
 		    (res.out[res.outlen - 1] == '\n' ? 1 : 0)));
 	cmds = NULL;
-	ncmd = 0;
+	ncmd = cap = 0;
 	if (svc_run(w, name, "extracommands", &res) == 0 && res.outlen > 0) {
 		copy = wstrndup(w, res.out, res.outlen);
 		for (it = copy; (tok = strsep(&it, " \t\n")) != NULL; ) {
 			if (*tok == '\0')
 				continue;
-			if ((cmds = reallocarray(cmds, ncmd + 1,
-			    sizeof(*cmds))) == NULL)
-				err(1, "reallocarray");
+			cmds = wgrow(w, cmds, ncmd, &cap, sizeof(*cmds));
 			cmds[ncmd++] = wtext(w, tok);
 		}
 	}
-	rsp->commands.v = wadopt(w, cmds);
+	rsp->commands.v = cmds;
 	rsp->commands.n = ncmd;
 }
 
@@ -943,7 +933,7 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 	struct execres		 res;
 	const char		*name, *rcvar, *stem, *e, *p, *nl, *sep;
 	char			*argv[4];
-	size_t			 n, i, nv, stemlen, namelen;
+	size_t			 n, i, nv, cap, stemlen, namelen;
 	int			 rc;
 
 	name = rq->service;
@@ -1019,7 +1009,7 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 		goto out;
 	}
 	vars = NULL;
-	nv = 0;
+	nv = cap = 0;
 	for (p = res.out; *p != '\0'; p = nl != NULL ? nl + 1 :
 	    p + strlen(p)) {
 		nl = strchr(p, '\n');
@@ -1028,15 +1018,14 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 		if (!((strncmp(p, name, namelen) == 0 && p[namelen] == '_') ||
 		    (stem != NULL && strncmp(p, stem, stemlen) == 0)))
 			continue;
-		if ((vars = reallocarray(vars, nv + 1, sizeof(*vars))) == NULL)
-			err(1, "reallocarray");
+		vars = wgrow(w, vars, nv, &cap, sizeof(*vars));
 		memset(&vars[nv], 0, sizeof(vars[nv]));
 		vars[nv].key = wtext(w, wstrndup(w, p, (size_t)(sep - p)));
 		vars[nv].value = wtext(w, wstrndup(w, sep + 2, nl != NULL ?
 		    (size_t)(nl - sep - 2) : strlen(sep + 2)));
 		nv++;
 	}
-	rsp->variables.v = wadopt(w, vars);
+	rsp->variables.v = vars;
 	rsp->variables.n = nv;
 	svc_about(w, name, rsp);
 	rsp->ok = true;

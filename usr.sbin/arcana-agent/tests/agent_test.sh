@@ -9098,6 +9098,77 @@ safe_sysctl_cleanup()
 	stop_daemon
 }
 
+atf_test_case out_of_memory cleanup
+out_of_memory_head()
+{
+	atf_set "descr" "An allocation that fails as out of memory fails its request or its job alone, said so: a safe change is undone, whichever allocation it was, and the next request is served"
+}
+out_of_memory_body()
+{
+	# sysctl as safe_sysctl has it: values in a file a set rewrites.
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+echo "sysctl \$*" >> $(pwd)/sysctl.log
+if [ "\$1" = -n ]; then
+	v=\$(sed -n "s/^\$2=//p" $(pwd)/sysctl.values)
+	[ -n "\$v" ] || { echo "sysctl: unknown oid '\$2'" >&2; exit 1; }
+	echo "\$v"
+	exit 0
+fi
+name=\${1%%=*}
+val=\${1#*=}
+sed -i '' "s/^\$name=.*/\$name=\$val/" $(pwd)/sysctl.values
+exit 0
+EOS
+	chmod +x fake-sysctl
+	printf 'kern.ipc.somaxconn=1024\n' > sysctl.values
+	printf '# kept\nkern.ipc.somaxconn=1024\n' > sysctl.conf
+	cp sysctl.conf sysctl.conf.was
+	DAEMON_ARGS="-Q $(pwd)/fake-sysctl -O $(pwd)/sysctl.conf --alloc-fault $(pwd)/alloc-fault"
+	start_daemon
+
+	# A read whose first allocation fails: said, and that one alone.
+	echo "request 1" > alloc-fault
+	atf_check -s not-exit:0 -o ignore -e match:'out of memory' \
+	    "$JGC" -c "$SOCK" jobs
+	atf_check -s exit:1 test -e alloc-fault
+	atf_check -s exit:0 -o ignore "$JGC" -c "$SOCK" jobs
+
+	# A safe sysctl, kept in sysctl.conf too, whose change has its nth
+	# allocation fail, for each n until one is past all it makes: the
+	# job fails, out of memory, and the kernel's value and sysctl.conf
+	# are as they were, its undo run where the change was made.
+	n=1
+	undone=0
+	while [ $n -le 5000 ]; do
+		: > sysctl.log
+		echo "job $n" > alloc-fault
+		"$JGC" -s -p -c "$SOCK" sysctl kern.ipc.somaxconn=4096 > out 2>&1
+		grep -q 'out of memory' out || break
+		grep -q '^kern.ipc.somaxconn=1024$' sysctl.values ||
+		    atf_fail "allocation $n: the kernel's value kept: $(cat out)"
+		cmp -s sysctl.conf sysctl.conf.was ||
+		    atf_fail "allocation $n: sysctl.conf kept: $(cat out)"
+		if grep -q '^sysctl kern.ipc.somaxconn=4096$' sysctl.log &&
+		    grep -q '^sysctl kern.ipc.somaxconn=1024$' sysctl.log; then
+			undone=$((undone + 1))
+			cp out undone.out
+		fi
+		n=$((n + 1))
+	done
+	[ $n -gt 1 ] || atf_fail "the first allocation did not fail: $(cat out)"
+	[ $undone -gt 0 ] || atf_fail "no allocation failed after the change: no undo seen"
+	# Past them all: the job as any, confirmed, and the daemon serving.
+	atf_check -o match:'confirmed: it stays' cat out
+	atf_check -o match:'^kern.ipc.somaxconn=4096$' cat sysctl.values
+	atf_check -o match:'^kern.ipc.somaxconn=4096$' cat sysctl.conf
+	atf_check -o match:'out of memory: undone' cat undone.out
+}
+out_of_memory_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case safe_route_delete cleanup
 safe_route_delete_head()
 {
@@ -21068,6 +21139,7 @@ atf_init_test_cases()
 	atf_add_test_case storage
 	atf_add_test_case notify
 	atf_add_test_case safe_sysctl
+	atf_add_test_case out_of_memory
 	atf_add_test_case safe_route_delete
 	atf_add_test_case safe_bird
 	atf_add_test_case safe_wireguard

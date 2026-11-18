@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.308.0"
+#define	ARCANA_AGENT_VERSION	"0.309.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -234,6 +234,7 @@ struct opts {
 	const char	*subs_file;	/* the configured subscriptions
 					 * (invidia/ynotif.c) */
 	const char	*features;	/* --features: hello's, NULL all */
+	const char	*alloc_fault;	/* --alloc-fault: a test's (work.c) */
 	char		 build[65];	/* SHA-256 of the running program */
 	bool		 debug;
 };
@@ -321,6 +322,16 @@ struct work {
 	 * out (clearance()); a work made for no request a viewer's.
 	 */
 	int		 clear;
+	/*
+	 * Out of memory (work_oom()): what it allocated since came from
+	 * the reserve (work.c).  It runs no program more (run_exec()),
+	 * and its request or job fails at its end, "out of memory".
+	 */
+	bool		 oom;
+	/* --alloc-fault: the allocation that fails as if memory had run
+	 * out, its number (1 the first), and how many it has made. */
+	size_t		 fault_at;
+	size_t		 nalloc;
 };
 
 void		 work_init(struct work *);
@@ -334,6 +345,12 @@ char		*wfmt(struct work *, const char *, ...) __printflike(2, 3);
 char		*wvis(struct work *, const char *);
 const char	*wtext(struct work *, const char *);
 const char	*wname(struct work *, const char *);
+char		*wvfmt(struct work *, const char *, va_list) __printflike(2, 0);
+void		*wgrow(struct work *, void *, size_t, size_t *, size_t);
+void		 work_oom(struct work *);
+bool		 work_oom_seen(void);
+void		 work_oom_clear(void);
+void		 work_fault(struct work *, const char *);
 
 int		 step_begin(struct work *, uint8_t, const char *,
 		    const char *, ...) __printflike(4, 5);
@@ -1803,7 +1820,7 @@ const char	*wjson_mask(struct work *, const char *);
 bool		 text_secret(const char *);
 char		*mask_secrets(const char *);
 struct ucl_object_s;
-void		 ucl_mask(struct ucl_object_s *);
+int		 ucl_mask(struct ucl_object_s *);
 /* luxuria/sdconf.c: a word for a rendered file's comment, or "-". */
 const char	*conf_word(const char *);
 
@@ -1990,7 +2007,8 @@ int		 ifaddr_change_peer(struct work *, const char *, int,
 		    const void *, int, const void *, bool, const char **);
 const char	*list_edit(struct work *, const char *, const char *,
 		    const char *, bool);
-bool		 list_has(const char *, const char *, const char *);
+bool		 list_has(struct work *, const char *, const char *,
+		    const char *);
 char		*block_cut(struct work *, const char *, const char *, const char *,
 		    char **);
 char		*block_add(struct work *, const char *, const char *, const char *,

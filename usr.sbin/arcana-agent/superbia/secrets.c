@@ -36,7 +36,7 @@
 #include <sys/param.h>
 
 #include <ctype.h>
-#include <err.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -379,72 +379,90 @@ mask_words(FILE *f, const char *s, size_t n, bool *hid)
 
 /*
  * o, a reply's JSON, with each string's secrets masked (text_mask()),
- * in place.
+ * in place.  0, or ENOMEM: out of memory, and o not to be given out.
  */
-void
+int
 ucl_mask(ucl_object_t *o)
 {
 	ucl_object_iter_t	 it;
 	ucl_object_t		*c, *old;
-	char			**keys, **m, *t;
+	char			**keys, **m, **nk, **nm, *t;
 	size_t			 i, k, cap;
 	bool			 hid;
+	int			 error;
 
 	if (o == NULL)
-		return;
+		return (0);
 	if (ucl_object_type(o) == UCL_ARRAY) {
 		for (i = 0; i < ucl_array_size(o); i++) {
 			c = __DECONST(ucl_object_t *, ucl_array_find_index(o,
 			    i));
 			if (ucl_object_type(c) != UCL_STRING) {
-				ucl_mask(c);
+				if ((error = ucl_mask(c)) != 0)
+					return (error);
 				continue;
 			}
-			t = text_mask(ucl_object_tostring(c), &hid);
-			if (t != NULL && hid && (old = ucl_array_replace_index(
-			    o, ucl_object_fromstring(t), (unsigned)i)) != NULL)
+			if ((t = text_mask(ucl_object_tostring(c), &hid)) ==
+			    NULL)
+				return (ENOMEM);
+			if (hid && (old = ucl_array_replace_index(o,
+			    ucl_object_fromstring(t), (unsigned)i)) != NULL)
 				ucl_object_unref(old);
 			free(t);
 		}
-		return;
+		return (0);
 	}
 	if (ucl_object_type(o) != UCL_OBJECT)
-		return;
+		return (0);
 	/* Replaced once the walk is done. */
 	keys = m = NULL;
 	k = cap = 0;
+	error = 0;
 	it = NULL;
-	while ((c = __DECONST(ucl_object_t *, ucl_object_iterate(o, &it,
-	    true))) != NULL) {
+	while (error == 0 && (c = __DECONST(ucl_object_t *,
+	    ucl_object_iterate(o, &it, true))) != NULL) {
 		if (ucl_object_type(c) != UCL_STRING) {
-			ucl_mask(c);
+			error = ucl_mask(c);
 			continue;
 		}
-		if ((t = text_mask(ucl_object_tostring(c), &hid)) == NULL)
-			err(1, "malloc");
+		if ((t = text_mask(ucl_object_tostring(c), &hid)) == NULL) {
+			error = ENOMEM;
+			break;
+		}
 		if (!hid) {
 			free(t);
 			continue;
 		}
 		if (k == cap) {
 			cap = cap == 0 ? 8 : cap * 2;
-			keys = reallocf(keys, cap * sizeof(*keys));
-			m = reallocf(m, cap * sizeof(*m));
-			if (keys == NULL || m == NULL)
-				err(1, "malloc");
+			if ((nk = reallocarray(keys, cap, sizeof(*keys))) !=
+			    NULL)
+				keys = nk;
+			if ((nm = reallocarray(m, cap, sizeof(*m))) != NULL)
+				m = nm;
+			if (nk == NULL || nm == NULL) {
+				free(t);
+				error = ENOMEM;
+				break;
+			}
 		}
-		if ((keys[k] = strdup(ucl_object_key(c))) == NULL)
-			err(1, "malloc");
+		if ((keys[k] = strdup(ucl_object_key(c))) == NULL) {
+			free(t);
+			error = ENOMEM;
+			break;
+		}
 		m[k++] = t;
 	}
 	for (i = 0; i < k; i++) {
-		(void)ucl_object_replace_key(o, ucl_object_fromstring(m[i]),
-		    keys[i], 0, true);
+		if (error == 0)
+			(void)ucl_object_replace_key(o,
+			    ucl_object_fromstring(m[i]), keys[i], 0, true);
 		free(keys[i]);
 		free(m[i]);
 	}
 	free(keys);
 	free(m);
+	return (error);
 }
 
 /*
@@ -479,8 +497,13 @@ wmask(struct work *w, const char *s)
 	char	*m;
 	bool	 hid;
 
-	if (s == NULL || (m = text_mask(s, &hid)) == NULL)
+	if (s == NULL)
 		return (s);
+	/* Out of memory: hidden whole, the request failing. */
+	if ((m = text_mask(s, &hid)) == NULL) {
+		work_oom(w);
+		return (MASK_MARK);
+	}
 	if (!hid) {
 		free(m);
 		return (s);
@@ -507,7 +530,11 @@ wjson_mask(struct work *w, const char *json)
 		return (NULL);
 	}
 	ucl_parser_free(p);
-	ucl_mask(top);
+	if (ucl_mask(top) != 0) {
+		ucl_object_unref(top);
+		work_oom(w);
+		return (NULL);
+	}
 	out = ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
 	return (out != NULL ? wadopt(w, out) : NULL);

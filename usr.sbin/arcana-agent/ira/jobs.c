@@ -107,9 +107,9 @@ static int		lanes_busy;
 static int		lanes_max = PKG_LANES;
 static uint64_t		nextid = 1;
 
-static char	*xdup(const char *);
+static char	*xdup(const char *, bool *);
 static char	*title_of(const struct arc_job_spec *);
-static void	 spec_copy(struct arc_job_spec *, const struct arc_job_spec *);
+static bool	 spec_copy(struct arc_job_spec *, const struct arc_job_spec *);
 static void	 job_free(struct qjob *);
 static void	 trim(void);
 static void	 run(struct qjob *, bool) __no_lock_analysis;
@@ -118,7 +118,7 @@ static bool	 lane_jail_busy(const char *);
 static bool	 await_confirm(struct qjob *);
 static const char *undo_prepare(struct qjob *);
 static const char *confirm_apply(struct qjob *);
-static const char *undo(struct qjob *);
+static const char *undo(struct qjob *, const char *);
 static int	 undo_steps(struct qjob *, struct work *, const char **);
 static void	*runner(void *);
 static void	 fill(struct work *, struct arc_job *, struct qjob *);
@@ -128,15 +128,16 @@ static const char *action_names[] = { "start", "stop", "restart", "kill",
 static const char *svc_names[] = { "start", "stop", "restart", "reload",
     "enable", "disable", "pidfile" };
 
+/* s copied; NULL as NULL, and NULL with *badp set: out of memory. */
 static char *
-xdup(const char *s)
+xdup(const char *s, bool *badp)
 {
 	char	*p;
 
 	if (s == NULL)
 		return (NULL);
 	if ((p = strdup(s)) == NULL)
-		err(1, "strdup");
+		*badp = true;
 	return (p);
 }
 
@@ -391,22 +392,24 @@ title_words(const struct arc_job_spec *sp)
 		break;
 	}
 	if (rc == -1)
-		err(1, "asprintf");
+		return (NULL);
 	/* A change to a jail's network says whose it is. */
 	if ((scoped(sp) || sp->kind == ARC_JOB_KIND_CERT ||
 	    sp->kind == ARC_JOB_KIND_SSH) && sp->jail != NULL &&
 	    sp->jail[0] != '\0') {
 		in = t;
-		if (asprintf(&t, "%s: %s", sp->jail, in) == -1)
-			err(1, "asprintf");
+		rc = asprintf(&t, "%s: %s", sp->jail, in);
 		free(in);
+		if (rc == -1)
+			return (NULL);
 	}
 	return (t);
 }
 
 /*
  * The same, the value of a variable whose name says it is a secret
- * hidden (mask_secrets()): a title is read by every role.
+ * hidden (mask_secrets()): a title is read by every role.  NULL: out
+ * of memory.
  */
 static char *
 title_of(const struct arc_job_spec *sp)
@@ -415,87 +418,110 @@ title_of(const struct arc_job_spec *sp)
 
 	if ((t = title_words(sp)) == NULL)
 		return (NULL);
-	if ((m = mask_secrets(t)) == NULL)
-		err(1, "asprintf");
+	m = mask_secrets(t);
 	free(t);
 	return (m);
 }
 
-static void
+/* The title in w's pool; out of memory, w is said so. */
+static const char *
+wtitle(struct work *w, const struct arc_job_spec *sp)
+{
+	char	*t;
+
+	if ((t = title_of(sp)) == NULL) {
+		work_oom(w);
+		return ("a job");
+	}
+	return (wadopt(w, t));
+}
+
+/*
+ * s's copy, every text its own; false: out of memory, d then fit for
+ * job_free() and no more.
+ */
+static bool
 spec_copy(struct arc_job_spec *d, const struct arc_job_spec *s)
 {
 	struct arc_variable	*vars;
 	const char		**names;
 	size_t			 i;
+	bool			 bad;
 
+	bad = false;
 	*d = *s;
-	d->jail = xdup(s->jail);
-	d->address = xdup(s->address);
-	d->interface = xdup(s->interface);
-	d->service = xdup(s->service);
-	d->destination = xdup(s->destination);
-	d->gateway = xdup(s->gateway);
-	d->description = xdup(s->description);
-	d->tunnel_local = xdup(s->tunnel_local);
-	d->tunnel_remote = xdup(s->tunnel_remote);
-	d->parent = xdup(s->parent);
-	d->verb = xdup(s->verb);
-	d->peer = xdup(s->peer);
-	d->endpoint = xdup(s->endpoint);
-	d->allowed_ips = xdup(s->allowed_ips);
-	d->source = xdup(s->source);
+	d->jail = xdup(s->jail, &bad);
+	d->address = xdup(s->address, &bad);
+	d->interface = xdup(s->interface, &bad);
+	d->service = xdup(s->service, &bad);
+	d->destination = xdup(s->destination, &bad);
+	d->gateway = xdup(s->gateway, &bad);
+	d->description = xdup(s->description, &bad);
+	d->tunnel_local = xdup(s->tunnel_local, &bad);
+	d->tunnel_remote = xdup(s->tunnel_remote, &bad);
+	d->parent = xdup(s->parent, &bad);
+	d->verb = xdup(s->verb, &bad);
+	d->peer = xdup(s->peer, &bad);
+	d->endpoint = xdup(s->endpoint, &bad);
+	d->allowed_ips = xdup(s->allowed_ips, &bad);
+	d->source = xdup(s->source, &bad);
 	/* Every text the spec can carry: one left pointing into the request
 	 * that brought it is freed memory by the time the job runs. */
-	d->conn = xdup(s->conn);
-	d->pkg_repo = xdup(s->pkg_repo);
-	d->ipsec_mode = xdup(s->ipsec_mode);
-	d->local_ts = xdup(s->local_ts);
-	d->remote_ts = xdup(s->remote_ts);
-	d->pubkey = xdup(s->pubkey);
-	d->start_action = xdup(s->start_action);
-	d->local_id = xdup(s->local_id);
-	d->remote_id = xdup(s->remote_id);
-	d->child = xdup(s->child);
-	d->local_cert = xdup(s->local_cert);
-	d->remote_cert = xdup(s->remote_cert);
-	d->remote_ca = xdup(s->remote_ca);
-	d->addressing = xdup(s->addressing);
-	d->dataset = xdup(s->dataset);
-	d->snapshot = xdup(s->snapshot);
-	d->copy = xdup(s->copy);
-	d->path = xdup(s->path);
-	d->text = xdup(s->text);
-	d->preshared_key = xdup(s->preshared_key);
-	d->lladdr = xdup(s->lladdr);
-	d->user = xdup(s->user);
-	d->release = xdup(s->release);
+	d->conn = xdup(s->conn, &bad);
+	d->pkg_repo = xdup(s->pkg_repo, &bad);
+	d->ipsec_mode = xdup(s->ipsec_mode, &bad);
+	d->local_ts = xdup(s->local_ts, &bad);
+	d->remote_ts = xdup(s->remote_ts, &bad);
+	d->pubkey = xdup(s->pubkey, &bad);
+	d->start_action = xdup(s->start_action, &bad);
+	d->local_id = xdup(s->local_id, &bad);
+	d->remote_id = xdup(s->remote_id, &bad);
+	d->child = xdup(s->child, &bad);
+	d->local_cert = xdup(s->local_cert, &bad);
+	d->remote_cert = xdup(s->remote_cert, &bad);
+	d->remote_ca = xdup(s->remote_ca, &bad);
+	d->addressing = xdup(s->addressing, &bad);
+	d->dataset = xdup(s->dataset, &bad);
+	d->snapshot = xdup(s->snapshot, &bad);
+	d->copy = xdup(s->copy, &bad);
+	d->path = xdup(s->path, &bad);
+	d->text = xdup(s->text, &bad);
+	d->preshared_key = xdup(s->preshared_key, &bad);
+	d->lladdr = xdup(s->lladdr, &bad);
+	d->user = xdup(s->user, &bad);
+	d->release = xdup(s->release, &bad);
 	d->variables.v = NULL;
 	d->names.v = NULL;
+	d->accept.v = NULL;
+	d->variables.n = d->names.n = d->accept.n = 0;
 	if (s->variables.n > 0) {
 		if ((vars = calloc(s->variables.n, sizeof(*vars))) == NULL)
-			err(1, "calloc");
+			return (false);
+		d->variables.v = vars;
+		d->variables.n = s->variables.n;
 		for (i = 0; i < s->variables.n; i++) {
-			vars[i].key = xdup(s->variables.v[i].key);
-			vars[i].value = xdup(s->variables.v[i].value);
+			vars[i].key = xdup(s->variables.v[i].key, &bad);
+			vars[i].value = xdup(s->variables.v[i].value, &bad);
 			vars[i].remove = s->variables.v[i].remove;
 		}
-		d->variables.v = vars;
 	}
 	if (s->names.n > 0) {
 		if ((names = calloc(s->names.n, sizeof(*names))) == NULL)
-			err(1, "calloc");
-		for (i = 0; i < s->names.n; i++)
-			names[i] = xdup(s->names.v[i]);
+			return (false);
 		d->names.v = names;
+		d->names.n = s->names.n;
+		for (i = 0; i < s->names.n; i++)
+			names[i] = xdup(s->names.v[i], &bad);
 	}
-	d->accept.v = NULL;
 	if (s->accept.n > 0) {
 		if ((names = calloc(s->accept.n, sizeof(*names))) == NULL)
-			err(1, "calloc");
-		for (i = 0; i < s->accept.n; i++)
-			names[i] = xdup(s->accept.v[i]);
+			return (false);
 		d->accept.v = names;
+		d->accept.n = s->accept.n;
+		for (i = 0; i < s->accept.n; i++)
+			names[i] = xdup(s->accept.v[i], &bad);
 	}
+	return (!bad);
 }
 
 static void
@@ -681,8 +707,11 @@ undo_snap_file(struct qjob *j, const char *path)
 		close(dfd);
 	}
 	if ((text = scope_slurp(&j->w, path, &len)) != NULL) {
-		if ((f->text = malloc(len + 1)) == NULL)
-			err(1, "malloc");
+		if ((f->text = malloc(len + 1)) == NULL) {
+			explicit_bzero(text, len);
+			work_oom(&j->w);
+			return (false);
+		}
 		memcpy(f->text, text, len);
 		f->text[len] = '\0';
 		explicit_bzero(text, len);
@@ -1208,26 +1237,24 @@ confirm_apply(struct qjob *j)
 	return (wfmt(&j->w, "confirmed, but BIRD did not keep it: %s", e));
 }
 
-/* Take a safe change back; returns what to say of the job. */
+/*
+ * Take a safe change back, why ("not confirmed within 30 s", "out of
+ * memory"); returns what to say of the job.
+ */
 static const char *
-undo(struct qjob *j)
+undo(struct qjob *j, const char *why)
 {
-	const struct arc_job_spec	*sp;
-	const char			*e;
+	const char	*e;
 
-	sp = &j->spec;
 	if (j->undo_none)
-		return (wfmt(&j->w, "not confirmed within %d s; it was so "
-		    "before, and is left so", safe_wait(sp)));
+		return (wfmt(&j->w, "%s; it was so before, and is left so",
+		    why));
 	if (j->undo_note != NULL)
-		return (wfmt(&j->w, "not confirmed within %d s; %s",
-		    safe_wait(sp), j->undo_note));
+		return (wfmt(&j->w, "%s; %s", why, j->undo_note));
 	if (undo_steps(j, &j->w, &e) != 0)
-		return (wfmt(&j->w, "not confirmed within %d s, and it could "
-		    "not be undone: %s", safe_wait(sp), e != NULL ? e :
-		    "failed"));
-	return (wfmt(&j->w, "not confirmed within %d s: undone",
-	    safe_wait(sp)));
+		return (wfmt(&j->w, "%s, and it could not be undone: %s", why,
+		    e != NULL ? e : "failed"));
+	return (wfmt(&j->w, "%s: undone", why));
 }
 
 /*
@@ -1817,6 +1844,7 @@ run(struct qjob *j, bool lane)
 
 	held = false;
 	sp = &j->spec;
+	work_oom_clear();
 	/* What it runs watched (pkg) is marked as this job's. */
 	exec_set_job(j->id, sp->kind, j->title);
 	root = step_begin(&j->w, STEP_DAEMON, "arcana-agent", "job %ju: %s",
@@ -1845,13 +1873,34 @@ run(struct qjob *j, bool lane)
 		ok = false;
 		if (error == NULL)
 			error = "not run: arcana-agent was stopping";
-	} else
+	} else {
+		work_fault(&j->w, "job");
 		ok = run_kind(j, &j->w, &held, &error);
+	}
+	/*
+	 * Out of memory at work (work.c): the job fails, whatever its kind
+	 * made of what it had, and a safe change is taken back, its undo
+	 * free to run programs again.
+	 */
+	if (j->w.oom || work_oom_seen()) {
+		ok = false;
+		j->w.oom = false;
+		work_oom_clear();
+		if (!go)
+			error = "not run: out of memory";
+		else if (sp->safe) {
+			error = undo(j, "out of memory");
+			held = false;
+		} else
+			error = "out of memory";
+		go = false;
+	}
 	/* A safe change stays only when the client is heard from again;
 	 * and what runs on a timer of its own (BIRD) is then told so. */
 	if (ok && go && sp->safe && !await_confirm(j)) {
 		ok = false;
-		error = undo(j);
+		error = undo(j, wfmt(&j->w, "not confirmed within %d s",
+		    safe_wait(sp)));
 		held = false;
 	} else if (ok && go && sp->safe && (error = confirm_apply(j)) != NULL)
 		ok = false;
@@ -2016,8 +2065,20 @@ lanes(void)
 			j->started = time(NULL);
 			lanes_busy++;
 			yang_changed(YANG_JOBS);
-			if ((error = pthread_create(&tid, &attr, lane, j)) != 0)
-				errc(1, error, "pthread_create");
+			/* No thread for it: this job alone fails. */
+			if ((error = pthread_create(&tid, &attr, lane, j)) !=
+			    0) {
+				logmsg(LOG_ERR, "job %ju: %s: no thread for its "
+				    "lane: %s", (uintmax_t)j->id, j->title,
+				    strerror(error));
+				lanes_busy--;
+				j->ok = false;
+				j->error = "not run: no thread for its lane";
+				j->finished = time(NULL);
+				j->state = ARC_JOB_STATE_DONE;
+				trim();
+				yang_changed(YANG_JOBS);
+			}
 			continue;
 		}
 		if (lanes_busy == 0 && !more)
@@ -2129,18 +2190,31 @@ orphan_found(uint64_t oldid, uint8_t kind, const char *title, pid_t pid,
 	struct qjob	*j;
 	char		*t;
 	int		 root;
+	bool		 bad;
 
+	bad = false;
 	if ((j = calloc(1, sizeof(*j))) == NULL)
-		err(1, "calloc");
-	if (asprintf(&t, "%s", title != NULL && title[0] != '\0' ? title :
-	    "a job's pkg") == -1)
-		err(1, "asprintf");
-	work_init(&j->w);
-	j->w.told = true;
+		bad = true;
+	else {
+		work_init(&j->w);
+		j->w.told = true;
+		if ((t = strdup(title != NULL && title[0] != '\0' ? title :
+		    "a job's pkg")) == NULL)
+			bad = true;
+		j->title = t;
+		j->peer = xdup("arcana-agent", &bad);
+	}
+	/* Stopped all the same; only its record is not kept. */
+	if (bad) {
+		logmsg(LOG_NOTICE, "job %ju of the agent before: pid %d, "
+		    "stopped by %s; out of memory, not recorded",
+		    (uintmax_t)oldid, (int)pid, how);
+		if (j != NULL)
+			job_free(j);
+		return;
+	}
 	j->spec.has_kind = true;
 	j->spec.kind = kind;
-	j->title = t;
-	j->peer = xdup("arcana-agent");
 	j->ok = false;
 	root = step_begin(&j->w, STEP_DAEMON, "arcana-agent", "job %ju of "
 	    "the agent before: %s", (uintmax_t)oldid, j->title);
@@ -2250,23 +2324,41 @@ jobs_submit(const struct arc_job_spec *specs, size_t n, const char *peer,
     const char *user, struct work *w, const struct arc_job **vp, size_t *np)
 {
 	struct arc_job	*v;
-	struct qjob	*j;
+	struct qjob	*j, **made;
 	size_t		 i;
+	bool		 bad;
 
 	v = wcalloc(w, n + 1, sizeof(*v));
-	pthread_mutex_lock(&jobs_lock);
-	for (i = 0; i < n; i++) {
-		if ((j = calloc(1, sizeof(*j))) == NULL)
-			err(1, "calloc");
-		j->id = nextid++;
-		j->state = ARC_JOB_STATE_QUEUED;
-		j->created = time(NULL);
-		spec_copy(&j->spec, &specs[i]);
-		j->title = title_of(&j->spec);
-		j->peer = xdup(peer);
-		j->user = user != NULL ? xdup(user) : NULL;
+	made = wcalloc(w, n + 1, sizeof(*made));
+	/* Each made whole before any is queued: out of memory, none is. */
+	bad = false;
+	for (i = 0; i < n && !bad; i++) {
+		if ((j = calloc(1, sizeof(*j))) == NULL) {
+			bad = true;
+			break;
+		}
 		work_init(&j->w);
 		j->w.told = true;
+		made[i] = j;
+		j->state = ARC_JOB_STATE_QUEUED;
+		j->created = time(NULL);
+		if (!spec_copy(&j->spec, &specs[i]) ||
+		    (j->title = title_of(&j->spec)) == NULL ||
+		    (j->peer = xdup(peer, &bad)) == NULL)
+			bad = true;
+		else if (user != NULL)
+			j->user = xdup(user, &bad);
+	}
+	/* Out of memory before (the request fails): none queued either. */
+	if (bad || work_oom_seen()) {
+		for (i = 0; i < n && made[i] != NULL; i++)
+			job_free(made[i]);
+		return (-1);
+	}
+	pthread_mutex_lock(&jobs_lock);
+	for (i = 0; i < n; i++) {
+		j = made[i];
+		j->id = nextid++;
 		TAILQ_INSERT_TAIL(&jobs, j, link);
 		fill(w, &v[i], j);
 		logmsg(LOG_INFO, "%s%s%s%s: job %ju queued: %s", peer,
@@ -2506,7 +2598,7 @@ dry_refusal(struct work *w, const struct arc_job_spec *sp, bool undo)
 		break;
 	}
 	return (wfmt(w, "%s: not previewable: what %s does cannot be said "
-	    "without doing it", (char *)wadopt(w, title_of(sp)), undo ?
+	    "without doing it", wtitle(w, sp), undo ?
 	    "undoing this kind of job" : "this kind of job"));
 }
 
@@ -2519,13 +2611,12 @@ dry_note(struct work *w, const char ***vp, size_t *np, const char *fmt, ...)
 	char		 *s;
 
 	va_start(ap, fmt);
-	if (vasprintf(&s, fmt, ap) == -1)
-		err(1, "vasprintf");
+	s = wvfmt(w, fmt, ap);
 	va_end(ap);
 	v = wcalloc(w, *np + 2, sizeof(*v));
 	if (*np > 0)
 		memcpy(v, *vp, *np * sizeof(*v));
-	v[(*np)++] = wtext(w, wadopt(w, s));
+	v[(*np)++] = wtext(w, s);
 	*vp = v;
 }
 
@@ -2557,11 +2648,10 @@ jobs_dry_run(const struct arc_job_spec *specs, size_t n, struct work *w,
 	w->dry = true;
 	for (i = 0; i < n; i++) {
 		sp = &specs[i];
-		title = wadopt(w, title_of(sp));
+		title = wtitle(w, sp);
 		/* A job of its own, never queued: the kinds' code takes
 		 * one.  What it would keep for an undo is let go. */
-		if ((dj = calloc(1, sizeof(*dj))) == NULL)
-			err(1, "calloc");
+		dj = wcalloc(w, 1, sizeof(*dj));
 		dj->spec = *sp;
 		dj->title = (char *)(uintptr_t)title;
 		root = step_begin(w, STEP_DAEMON, "arcana-agent", "dry run: %s",
@@ -2573,7 +2663,6 @@ jobs_dry_run(const struct arc_job_spec *specs, size_t n, struct work *w,
 		else
 			ok = run_kind(dj, w, &held, &error);
 		service_job_forget(dj->undo_rca);
-		free(dj);
 		w->jail = NULL;
 		w->jid = 0;
 		w->jroot = NULL;

@@ -1777,17 +1777,157 @@ yang_event_changed(const char *kind, bool jailed)
 	}
 }
 
+/*
+ * The models' handlers, each called through a guard: a request whose
+ * work ran out of memory (work.c) fails alone, "out of memory", however
+ * its handler took it, and an edit it made is taken back first, as
+ * cblink takes back the edits before it.  cblink calls a handler with
+ * no word of which entry of the table it is, so each entry has guards
+ * of its own, made by the preprocessor: YG_MAX entries at most.
+ */
+#define	YG_MAX	256
+
+#define	YG_16(m, h)	m(h##0) m(h##1) m(h##2) m(h##3) m(h##4) m(h##5)	\
+			m(h##6) m(h##7) m(h##8) m(h##9) m(h##a) m(h##b)	\
+			m(h##c) m(h##d) m(h##e) m(h##f)
+#define	YG_ALL(m)	YG_16(m, 0x0) YG_16(m, 0x1) YG_16(m, 0x2)	\
+			YG_16(m, 0x3) YG_16(m, 0x4) YG_16(m, 0x5)	\
+			YG_16(m, 0x6) YG_16(m, 0x7) YG_16(m, 0x8)	\
+			YG_16(m, 0x9) YG_16(m, 0xa) YG_16(m, 0xb)	\
+			YG_16(m, 0xc) YG_16(m, 0xd) YG_16(m, 0xe)	\
+			YG_16(m, 0xf)
+
+static struct cbl_yhandler	yg_handler[YG_MAX];
+static struct cbl_yserver	yg_server;
+
+/* What the request answers: error, or ENOMEM, said, out of memory. */
+static int
+yg_end(cbl_req *req, int error)
+{
+
+	if (!work_oom_seen())
+		return (error);
+	work_oom_clear();
+	logmsg(LOG_ERR, "a request ran out of memory: it failed, alone");
+	(void)cbl_req_set_yerr(req, "out of memory", 0);
+	return (ENOMEM);
+}
+
+static int
+yg_get(int i, cbl_req *req, void *data, cbl_yarena *a)
+{
+
+	work_oom_clear();
+	return (yg_end(req, ymodel_server.handler[i].get(req, data, a)));
+}
+
+static int
+yg_edit(int i, cbl_req *req, const void *before, const void *after)
+{
+	int	error;
+
+	work_oom_clear();
+	error = ymodel_server.handler[i].edit(req, before, after);
+	if (error == 0 && work_oom_seen()) {
+		/* Made: taken back, its own memory then the reserve's. */
+		work_oom_clear();
+		(void)ymodel_server.handler[i].edit(req, after, before);
+		return (yg_end(req, ENOMEM));
+	}
+	return (yg_end(req, error));
+}
+
+static int
+yg_rpc(int i, cbl_req *req, const void *in, void *out, cbl_yarena *a)
+{
+
+	work_oom_clear();
+	return (yg_end(req, ymodel_server.handler[i].rpc(req, in, out, a)));
+}
+
+static int
+yg_action(int i, cbl_req *req, const struct cbl_bytes *target,
+    const void *in, void *out, cbl_yarena *a)
+{
+
+	work_oom_clear();
+	return (yg_end(req, ymodel_server.handler[i].action(req, target, in,
+	    out, a)));
+}
+
+#define	YG(i)								\
+static int								\
+yg_get_##i(cbl_req *req, void *data, cbl_yarena *a)			\
+{									\
+	return (yg_get(i, req, data, a));				\
+}									\
+static int								\
+yg_edit_##i(cbl_req *req, const void *before, const void *after)	\
+{									\
+	return (yg_edit(i, req, before, after));			\
+}									\
+static int								\
+yg_rpc_##i(cbl_req *req, const void *in, void *out, cbl_yarena *a)	\
+{									\
+	return (yg_rpc(i, req, in, out, a));				\
+}									\
+static int								\
+yg_action_##i(cbl_req *req, const struct cbl_bytes *target,		\
+    const void *in, void *out, cbl_yarena *a)				\
+{									\
+	return (yg_action(i, req, target, in, out, a));			\
+}
+YG_ALL(YG)
+
+#define	YG_GET(i)	yg_get_##i,
+#define	YG_EDIT(i)	yg_edit_##i,
+#define	YG_RPC(i)	yg_rpc_##i,
+#define	YG_ACTION(i)	yg_action_##i,
+static cbl_yget_f *const	yg_gets[YG_MAX] = { YG_ALL(YG_GET) };
+static cbl_yedit_f *const	yg_edits[YG_MAX] = { YG_ALL(YG_EDIT) };
+static cbl_yrpc_f *const	yg_rpcs[YG_MAX] = { YG_ALL(YG_RPC) };
+static cbl_yaction_f *const	yg_actions[YG_MAX] = { YG_ALL(YG_ACTION) };
+
+/* The models' server, its handlers guarded; NULL: more than YG_MAX. */
+const struct cbl_yserver *
+yserver_guarded(void)
+{
+	const struct cbl_yhandler	*h;
+	uint32_t			 i;
+
+	if (ymodel_server.nhandler > YG_MAX) {
+		logmsg(LOG_ERR, "%u handlers, guards for %d: YG_MAX in "
+		    "yserve.c is to grow", ymodel_server.nhandler, YG_MAX);
+		return (NULL);
+	}
+	for (i = 0; i < ymodel_server.nhandler; i++) {
+		h = &ymodel_server.handler[i];
+		yg_handler[i].sid = h->sid;
+		yg_handler[i].get = h->get != NULL ? yg_gets[i] : NULL;
+		yg_handler[i].edit = h->edit != NULL ? yg_edits[i] : NULL;
+		yg_handler[i].rpc = h->rpc != NULL ? yg_rpcs[i] : NULL;
+		yg_handler[i].action = h->action != NULL ? yg_actions[i] :
+		    NULL;
+	}
+	yg_server = ymodel_server;
+	yg_server.handler = yg_handler;
+	return (&yg_server);
+}
+
 /* The models served, family 1 beside the agent's own. */
 int
 yang_serve(cbl_ctx *ctx)
 {
 	const struct cbl_ynode	*told[YANG_COUNT];
+	const struct cbl_yserver *srv;
 	size_t			 k;
 	int			 error;
 
+	if ((srv = yserver_guarded()) == NULL)
+		return (E2BIG);
 	/* Each request on a thread of its own: a read of the storage or of
 	 * BIRD holds no other, as the agent's own family's slow reads. */
-	if ((error = cbl_yserver_add(ctx, &ymodel_server, NULL)) != 0 ||
+	if ((error = cbl_yserver_add(ctx, srv, NULL)) != 0 ||
 	    (error = ynetconf_datastores(ctx)) != 0)
 		return (error);
 	yctx = ctx;

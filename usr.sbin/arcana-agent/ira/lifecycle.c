@@ -25,7 +25,6 @@
 #include <netinet6/nd6.h>
 #include <arpa/inet.h>
 
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jail.h>
@@ -200,8 +199,7 @@ drop_aliases(struct work *w, const struct jinfo *ji, const struct cjail *cj,
 	for (k = 0; k < 2; k++) {
 		if (lists[k] == NULL || *lists[k] == '\0')
 			continue;
-		if ((copy = strdup(lists[k])) == NULL)
-			err(1, "strdup");
+		copy = wstrdup(w, lists[k]);
 		for (it = copy; (tok = strsep(&it, ",")) != NULL; ) {
 			p = cjail_param(cj, k == 0 ? "ip4.addr" : "ip6.addr");
 			configured = false;
@@ -214,7 +212,6 @@ drop_aliases(struct work *w, const struct jinfo *ji, const struct cjail *cj,
 				continue;
 			(void)ifaddr_change(w, ifname, af, addr, 0, false, &e);
 		}
-		free(copy);
 	}
 }
 

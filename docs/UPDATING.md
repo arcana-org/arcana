@@ -93,6 +93,16 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Out of memory fails one request; agent 0.309.0
+
+- A request or a job that runs out of memory fails alone, "out of
+  memory", instead of ending the daemon: allocations that fail come
+  from an 8 MiB reserve mapped at the start, the request runs no more
+  programs, a YANG edit is taken back and a safe-mode job is undone
+  ("out of memory: undone").  A pipe2(2) that fails fails only that
+  program.  The daemon still exits if the reserve runs out too.  The
+  new option --alloc-fault is for tests only.
+
 ### RFC 9899 matches, PF_KEY news; agent 0.308.0
 
 - ACL matches (PLAN-SDN-YANG 6.1.6): RFC 9899's ipv4-fragment,

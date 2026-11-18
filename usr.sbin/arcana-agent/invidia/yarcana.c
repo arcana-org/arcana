@@ -79,6 +79,7 @@ ywork(cbl_yarena *a)
 		return (NULL);
 	work_init(w);
 	w->nice = true;
+	work_fault(w, "request");
 	if (cbl_yarena_atfree(a, ywork_free, w) != 0) {
 		ywork_free(w);
 		return (NULL);

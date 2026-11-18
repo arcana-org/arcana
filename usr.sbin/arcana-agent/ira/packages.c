@@ -31,7 +31,6 @@
 #include <netinet/in.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -885,10 +884,10 @@ parse_versions(struct work *w, const struct execres *res,
 {
 	struct package	*v;
 	char			*copy, *it, *line, *nv, *dash, *p, *e;
-	size_t			 n;
+	size_t			 n, cap;
 
 	v = NULL;
-	n = 0;
+	n = cap = 0;
 	copy = wstrndup(w, res->out, res->outlen);
 	for (it = copy; (line = strsep(&it, "\n")) != NULL; ) {
 		if ((nv = strsep(&line, " \t")) == NULL || *nv == '\0' ||
@@ -904,8 +903,7 @@ parse_versions(struct work *w, const struct execres *res,
 		if (line == NULL || strchr("<=>?!", line[0]) == NULL ||
 		    (line[1] != '\0' && line[1] != ' ' && line[1] != '\t'))
 			continue;
-		if ((v = reallocarray(v, n + 1, sizeof(*v))) == NULL)
-			err(1, "reallocarray");
+		v = wgrow(w, v, n, &cap, sizeof(*v));
 		memset(&v[n], 0, sizeof(v[n]));
 		v[n].name = wtext(w, wstrndup(w, nv, (size_t)(dash - nv)));
 		v[n].installed = wtext(w, dash + 1);
@@ -917,7 +915,7 @@ parse_versions(struct work *w, const struct execres *res,
 		}
 		n++;
 	}
-	*outp = wadopt(w, v);
+	*outp = v;
 	*np = n;
 }
 
@@ -960,22 +958,21 @@ installed(struct work *w, const char *jail, struct pkg_read *rsp)
 	struct package	*v;
 	struct execres		 res;
 	char			*copy, *it, *line, *f[6];
-	size_t			 n, i;
+	size_t			 n, i, cap;
 
 	if (pkg_run(w, jail, false, 0, query, 2, &res) != 0) {
 		rsp->error = wtext(w, exec_error(w, &res, "pkg query"));
 		return (0);
 	}
 	v = NULL;
-	n = 0;
+	n = cap = 0;
 	copy = wstrndup(w, res.out != NULL ? res.out : "", res.outlen);
 	for (it = copy; (line = strsep(&it, "\n")) != NULL; ) {
 		for (i = 0; i < 6 && (f[i] = strsep(&line, "\t")) != NULL; i++)
 			;
 		if (i < 5 || f[0][0] == '\0')
 			continue;
-		if ((v = reallocarray(v, n + 1, sizeof(*v))) == NULL)
-			err(1, "reallocarray");
+		v = wgrow(w, v, n, &cap, sizeof(*v));
 		memset(&v[n], 0, sizeof(v[n]));
 		v[n].name = wtext(w, f[0]);
 		v[n].installed = wtext(w, f[1]);
@@ -987,7 +984,7 @@ installed(struct work *w, const char *jail, struct pkg_read *rsp)
 		v[n].comment = i > 5 ? wtext(w, f[5]) : NULL;
 		n++;
 	}
-	rsp->packages = wadopt(w, v);
+	rsp->packages = v;
 	rsp->npackages = n;
 	rsp->ok = true;
 	return (0);

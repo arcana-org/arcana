@@ -16,7 +16,6 @@
 
 #include <sys/types.h>
 
-#include <err.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,11 +60,9 @@ step_begin(struct work *w, uint8_t kind, const char *label,
 	dt = NULL;
 	if (fmt != NULL) {
 		va_start(ap, fmt);
-		if (vasprintf(&d, fmt, ap) == -1)
-			err(1, "vasprintf");
+		d = wvfmt(w, fmt, ap);
 		va_end(ap);
-		dt = wmask(w, wstrdup(w, d));
-		free(d);
+		dt = wmask(w, d);
 	}
 	pthread_mutex_lock(&w->lock);
 	s = &w->steps[w->nsteps];
@@ -100,11 +97,9 @@ step_end(struct work *w, int idx, bool ok, const char *fmt, ...)
 	dt = NULL;
 	if (fmt != NULL) {
 		va_start(ap, fmt);
-		if (vasprintf(&d, fmt, ap) == -1)
-			err(1, "vasprintf");
+		d = wvfmt(w, fmt, ap);
 		va_end(ap);
-		dt = wmask(w, wstrdup(w, d));
-		free(d);
+		dt = wmask(w, d);
 	}
 	pthread_mutex_lock(&w->lock);
 	s = &w->steps[idx];

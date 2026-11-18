@@ -23,7 +23,6 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -527,8 +526,11 @@ wg_showconf(struct work *w, const char *ifname, char **textp,
 		*errp = wtext(w, exec_error(w, &res, "wg showconf"));
 		return (-1);
 	}
-	if ((*textp = strndup(res.out, res.outlen)) == NULL)
-		err(1, "strndup");
+	if ((*textp = strndup(res.out, res.outlen)) == NULL) {
+		work_oom(w);
+		*errp = "out of memory";
+		return (-1);
+	}
 	return (0);
 }
 
