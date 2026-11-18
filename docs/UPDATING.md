@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### ACL match table, agent 0.295.0
+
+- **ACL match table** (RFC 8519, PLAN-SDN-YANG 6.1.2): the agent now
+  compiles DSCP, length, IPv4's TTL, ECN not-ECT/CE, flags and
+  identification, IPv6's flow label, TCP's sequence/acknowledgement
+  numbers, flags (not CWR/ECE) and window, the ingress and egress
+  interface, and Ethernet MAC addresses, masks and the IPv4/IPv6
+  ethertype; the eth and mixed ACL types and features are served.  An
+  ACL with an Ethernet match tags frames on ipfw's layer-2 pass and
+  decides on the IP pass: it needs `net.link.ether.ipfw=1`, set by the
+  admin (the agent never sets it), and is refused on an egress
+  attachment.  Matches ipfw cannot express are still refused by name,
+  nothing loaded.  No new SIDs.
+
 ### The long run on the page, console 0.446.0
 
 - A host's Monitoring tab shows its long run from the agent's archive

@@ -1655,19 +1655,25 @@ sctp_multihome_cleanup()
 atf_test_case acl_vnet cleanup
 acl_vnet_head()
 {
-	atf_set "descr" "RFC 8519's ACLs for real (PLAN-SDN-YANG 6.1.1): the agent" \
-	    "in a vnet jail of its own, its ipfw the jail's: section 4.3's" \
-	    "and 4.4's examples with Appendix A.2's attachment loaded by" \
-	    "ipfw, set 29 holding the bands, the attachment block and rule" \
-	    "8 with their comments, set 28 empty; read back whole; a ping" \
-	    "over lo0 dropped by an ICMP ACE attached to it; taken out, set" \
-	    "29 empty again"
+	atf_set "descr" "RFC 8519's ACLs for real (PLAN-SDN-YANG 6.1.1, 6.1.2): the" \
+	    "agent in a vnet jail of its own, its ipfw the jail's: section" \
+	    "4.3's and 4.4's examples with Appendix A.2's attachment loaded" \
+	    "by ipfw, set 29 holding the bands, the attachment block and" \
+	    "rule 8 with their comments, set 28 empty; read back whole; a" \
+	    "ping over lo0 dropped by an ICMP ACE attached to it; taken" \
+	    "out, set 29 empty again.  The match table's fields loaded by" \
+	    "ipfw and read back; a ping of TTL 7 dropped by an ACE of" \
+	    "ttl and ingress-interface, one of TTL 8 not; over an epair" \
+	    "from a second jail, with net.link.ether.ipfw=1 in the first," \
+	    "an ACE accepting the peer's MAC address ahead of one dropping" \
+	    "echoes lets its ping through, and drops it once the address" \
+	    "is another"
 	atf_set "require.user" "root"
-	atf_set "timeout" "120"
+	atf_set "timeout" "180"
 }
 acl_vnet_body()
 {
-	local d="$(pwd)" i
+	local d="$(pwd)" e i peer
 
 	programs
 	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
@@ -1722,12 +1728,88 @@ EOF
 	    jexec arcw_acl ipfw -S list
 	atf_check -o match:'1 packets received' \
 	    jexec arcw_acl ping -c 1 -t 2 127.0.0.1
+	# 6.1.2: the match table's fields, an ACE each, loaded by ipfw;
+	# TTL and the ingress interface on lo0's way in; an epair from a
+	# second jail, its frames on ipfw's layer-2 pass, the peer's MAC
+	# address accepted ahead of an echo ACE dropping.
+	jls -j arcw_acl2 >/dev/null 2>&1 && atf_skip "a jail arcw_acl2 is there already"
+	atf_check -o ignore jail -c name=arcw_acl2 vnet persist path=/
+	e=$(epair_create) || atf_fail "no epair"
+	e=${e%a}
+	echo "$e" > epair
+	atf_check ifconfig ${e}a vnet arcw_acl2
+	atf_check ifconfig ${e}b vnet arcw_acl
+	atf_check jexec arcw_acl2 ifconfig ${e}a inet 10.93.0.2/24 up
+	atf_check jexec arcw_acl ifconfig ${e}b inet 10.93.0.1/24 up
+	atf_check jexec arcw_acl2 ipfw -q add 1000 allow ip from any to any
+	atf_check -o ignore jexec arcw_acl sysctl net.link.ether.ipfw=1
+	peer=$(jexec arcw_acl2 ifconfig ${e}a ether | awk '/ether/ { print $2 }')
+	[ -n "$peer" ] || atf_fail "no MAC address of ${e}a"
+	cat > fields.json <<EOS
+{"acl":[{"name":"fields","type":"ietf-access-control-list:mixed-eth-ipv4-ipv6-acl-type","aces":{"ace":[{"name":"dscp","matches":{"ipv4":{"dscp":10}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"ecn","matches":{"ipv4":{"ecn":3}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"length","matches":{"ipv4":{"length":1500}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"flags","matches":{"ipv4":{"flags":"fragment"}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"id","matches":{"ipv4":{"identification":4660}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"dscp6","matches":{"ipv6":{"dscp":46}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"length6","matches":{"ipv6":{"length":60}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"flow","matches":{"ipv6":{"flow-label":74565}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"tcp","matches":{"tcp":{"sequence-number":305419896,"acknowledgement-number":1,"flags":"syn ack","window-size":0}},"actions":{"forwarding":"ietf-access-control-list:drop"}},{"name":"xmit","matches":{"ipv4":{"protocol":17},"egress-interface":"lo0"},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}},{"name":"ttl7","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"echo","matches":{"ipv4":{"protocol":1,"ttl":7},"ingress-interface":"lo0"},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}},{"name":"mac","type":"ietf-access-control-list:mixed-eth-ipv4-acl-type","aces":{"ace":[{"name":"peer","matches":{"eth":{"source-mac-address":"$peer"}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"echo","matches":{"ipv4":{"protocol":1},"icmp":{"type":8}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"ttl7"}]}}},{"interface-id":"${e}b","ingress":{"acl-sets":{"acl-set":[{"name":"mac"}]}}}]}}
+EOS
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @fields.json
+	atf_check -o save:list jexec arcw_acl ipfw -S list
+	for i in dscp ecn length flags id dscp6 length6 flow tcp xmit; do
+		atf_check -o match:"^610[0-9][0-9] set 29 deny .*// acl:0\.[0-9]+ fields/$i\$" \
+		    cat list
+	done
+	atf_check -o match:'^61000 set 29 deny .*dscp af11 .*// acl:0.1 fields/dscp$' \
+	    -o match:'^61002 set 29 deny .*iplen 1500 .*// acl:0.3 fields/length$' \
+	    -o match:'^61003 set 29 deny .*frag df .*// acl:0.4 fields/flags$' \
+	    -o match:'^61004 set 29 deny .*ipid 4660 .*// acl:0.5 fields/id$' \
+	    -o match:'^61006 set 29 deny .*iplen 100 .*// acl:0.7 fields/length6$' \
+	    -o match:'^61007 set 29 deny .*flow-id 74565 .*// acl:0.8 fields/flow$' \
+	    -o match:'^61008 set 29 deny .*tcpseq 305419896 .*// acl:0.9 fields/tcp$' \
+	    -o match:'^61009 set 29 deny .*xmit lo0 .*// acl:0.10 fields/xmit$' \
+	    -o match:'^61020 set 29 deny .*ipttl 7 recv lo0 // acl:1.1 ttl7/echo$' \
+	    -o match:"^61030 set 29 count tag 61030 .*layer2 MAC any $peer // acl:2.1 mac/peer\$" \
+	    -o match:'^61030 set 29 allow .*not layer2 tagged 61030 .*// acl:2.1 mac/peer$' \
+	    -o match:'^61031 set 29 deny .*icmptypes 8 not layer2 // acl:2.2 mac/echo$' \
+	    -o not-match:' set 28 ' cat list
+	atf_check -o save:g.json "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"name":"fields"' -o match:'"name":"ttl7"' \
+	    -o match:'"name":"mac"' -o match:'"flow-label":74565' \
+	    -o match:"\"source-mac-address\":\"$peer\"" \
+	    -o match:"\"interface-id\":\"${e}b\"" cat g.json
+	# TTL 7 on lo0's way in dropped, TTL 8 not.
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 -m 7 127.0.0.1
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl ping -c 1 -t 2 -m 8 127.0.0.1
+	# The peer's frame tagged on the layer-2 pass, its echo accepted
+	# on the IP pass before the echo ACE.
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl2 ping -c 1 -t 2 10.93.0.1
+	atf_check -o match:'^61031 +0 +0 ' jexec arcw_acl ipfw -a list 61031
+	# Another address: the echo ACE drops it.
+	sed -e "s/$peer/00:00:5e:00:53:99/" fields.json > fields2.json
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @fields2.json
+	atf_check -s not-exit:0 -o match:'0 packets received' \
+	    jexec arcw_acl2 ping -c 1 -t 2 10.93.0.1
+	atf_check -o match:'^61031 +1 ' jexec arcw_acl ipfw -a list 61031
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o not-match:' set 29 ' jexec arcw_acl ipfw -S list
+	atf_check -o match:'1 packets received' \
+	    jexec arcw_acl2 ping -c 1 -t 2 10.93.0.1
 }
 acl_vnet_cleanup()
 {
 	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
 	sleep 0.5
+	# The epair out of the jails before they go: a vnet torn down with
+	# an interface in it can panic.
+	if [ -f epair ]; then
+		e=$(cat epair)
+		ifconfig ${e}a -vnet arcw_acl2 2>/dev/null
+		ifconfig ${e}b -vnet arcw_acl 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
 	jail -r arcw_acl 2>/dev/null
+	jail -r arcw_acl2 2>/dev/null
 	true
 }
 

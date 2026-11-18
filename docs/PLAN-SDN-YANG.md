@@ -3935,6 +3935,69 @@ whose first part is served.
   console's tables carry the module, nothing reads it yet).
 - 6.1.2 A: the match table of RFC 8519 (eth, ipv4, ipv6, tcp, udp,
   icmp, ports with operators, interfaces); check: one test per field.
+  Design (decided here): every field ipfw(8) can say is compiled into
+  the ACE's rule, read back as 6.1.1's are (by the name map, the
+  operational datastore returning the ACE whole when its band is):
+  IPv4's and IPv6's DSCP `dscp`; length `iplen` (ipfw's is the whole
+  packet's, so IPv6's payload length plus 40, measured: a ping6 of 60
+  bytes of payload matched `iplen 100`); IPv4's TTL `ipttl`; ECN 0
+  `iptos !congestion` and 3 `iptos congestion` (`congestion` is both
+  bits, 0x03; neither bit has a name of its own, so ECT(0) and ECT(1)
+  are refused); flags `frag rf,df,mf`; identification `ipid`; IPv6's
+  flow label `flow-id`; TCP's sequence and acknowledgement numbers
+  `tcpseq`, `tcpack`, window `tcpwin`, flags `tcpflags`; the ingress
+  interface `recv`, the egress one `xmit`.  A bits leaf (IPv4's and
+  TCP's flags) matches the bits named set and the others as they may
+  be, RFC 8519 saying neither way (RFC 9899's flags-bitmask is 6.1.6's
+  to say which).  Ethernet (features match-on-eth, eth and the three
+  mixed ones now advertised, with the mixed ACL types): ipfw sees a
+  frame's MAC header only on its layer-2 pass (ether_demux(),
+  `net.link.ether.ipfw`), while the ACL's other ACEs decide on the IP
+  pass; so an ACL with an Ethernet match decides on the IP pass alone
+  (each rule `not layer2`), and its Ethernet ACE is two rules at its
+  number: `count tag N ... layer2 mac DST SRC mac-type T` on the
+  layer-2 pass (a mask `addr&mask`), tagging the frame with the ACE's
+  rule number, and the ACE's own rule `... not layer2 tagged N` on the
+  IP pass, which the frame reaches with its tags.  First match holds
+  across the two passes, and only on the way in (on the way out the
+  layer-2 pass comes after the IP one): such an ACL attached on an
+  egress is refused, as is an Ethernet match where
+  `net.link.ether.ipfw` is 0 (the admin's to set, never the agent's;
+  read by sysctl(8)'s stand-in, -Q, in the harness), an ethertype other
+  than IPv4's or IPv6's, and any ACE of such an ACL that would match
+  frames other than IP's (no family by the ACL's type, an ipv4 or
+  ipv6 match, the protocol or the ethertype): ARP and the rest meet
+  ipfw on the layer-2 pass alone.  `egress-interface` in an ACL
+  attached on a way in is refused (routing has not chosen it yet).
+  Refused by name, nothing loaded, for 6.1.3: ihl, offset (the model's
+  range is 20 up, and `frag` tells only whether it is 0), IPv6's TTL
+  (ipfw has no hop limit match) and ECN, IPv4's ECN 1 and 2, the IPv6
+  length above 65495, TCP's data offset, reserved, urgent pointer,
+  options and CWR/ECE, UDP's length, ICMP's code and rest of header.
+  Done.  Checked: agent_test:acl_match_fields (the stand-in ipfw: an
+  ACE a field, its rule as loaded and the field read back from the
+  operational datastore: destination and source MAC address and mask,
+  the ethertype by name and by number, an IP ACE of an Ethernet ACL
+  `not layer2`, IPv4's DSCP, ECN 0 and 3, length, TTL, flags,
+  identification, IPv6's DSCP, length, flow label, TCP's sequence and
+  acknowledgement numbers, flags, window, the ingress and egress
+  interfaces; refused, nothing loaded and running as it was: an ARP
+  ethertype, an Ethernet ACE of no family, an ethertype against an
+  ipv4 match, an Ethernet ACL on an egress, net.link.ether.ipfw 0,
+  ECN 2, an offset, an IPv6 length too long, IPv6's TTL and ECN, TCP's
+  CWR and ECE, egress-interface on an ingress), agent_root_test:
+  acl_vnet (ipfw for real in a vnet jail of its own: an ACE a field,
+  each loaded by the kernel and read back; a ping of TTL 7 over lo0
+  dropped by an ACE of ttl and ingress-interface, one of TTL 8 not;
+  over an epair from a second vnet jail, net.link.ether.ipfw=1 in the
+  first, an ACE accepting the peer's MAC address ahead of one dropping
+  echoes lets its ping through, the echo ACE's counter 0, and drops it
+  once the address is another), acl_rfc8519 still passing.  Not
+  checked: a packet matched by each field for real (the kernel takes
+  every rule; TTL, the ingress interface and the MAC address are
+  matched by packets), masks and the ethertype on a real frame, the
+  egress interface on a forwarded packet; a VLAN's frames (mac-type
+  sees the outer type).
 - 6.1.3 A: the refusals with extended acks (ICMP code, ECN, ihl,
   offset, identification, TCP fields, ECE/CWR/AE, IPv6 ff/lf, the three
   extension headers); check: one test per refusal.

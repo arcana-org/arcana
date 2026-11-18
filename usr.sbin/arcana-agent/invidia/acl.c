@@ -46,16 +46,26 @@
  * commit undone is cblink's: running's acls as they were are applied
  * again (cbl_yds.c).
  *
- * What 6.1.1 compiles: the ACL's type (IPv4, IPv6, none), the IPv4 and
- * IPv6 networks and protocol, the TCP and UDP ports with their
- * operators, the ICMP type, the forwarding actions (reject an ICMP
- * unreachable, administratively prohibited).  Every other match, and
- * logging other than log-none, is refused, nothing loaded: an ACE is
- * never installed matching more than it says.
+ * What is compiled (6.1.1, 6.1.2): the ACL's type (IPv4, IPv6, the
+ * Ethernet and mixed ones, none); the IPv4 and IPv6 networks, protocol,
+ * DSCP (dscp), length (iplen, IPv6's payload and its header), IPv4's
+ * TTL (ipttl), ECN not-ECT or CE (iptos), flags (frag),
+ * identification (ipid), IPv6's flow label (flow-id); the TCP
+ * and UDP ports with their operators, TCP's sequence and
+ * acknowledgement numbers, flags but CWR and ECE, window (tcpseq,
+ * tcpack, tcpflags, tcpwin); the ICMP type; the ingress and egress
+ * interface (recv, xmit); the MAC addresses with their masks and the
+ * ethertype IPv4's or IPv6's (mac, mac-type, on the way in, above); the
+ * forwarding actions (reject an ICMP unreachable, administratively
+ * prohibited).  Bits leaves (IPv4's and TCP's flags) match the bits
+ * named set, the others as they may be.  Every other match, and
+ * logging other than log-none, is refused by name, nothing loaded: an
+ * ACE is never installed matching more than it says.
  */
 
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 
 #include <net/if.h>
 
@@ -63,6 +73,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -304,8 +315,55 @@ port_words(char *b, size_t len, const char *opt, const struct pmatch *m,
 	}
 }
 
-/* What 6.1.1 does not compile, refused by name: nothing is installed
- * that matches more than the ACE says. */
+/* Words appended to an option buffer. */
+static void __printflike(3, 4)
+words_add(char *b, size_t len, const char *fmt, ...)
+{
+	va_list	ap;
+	size_t	off = strlen(b);
+
+	va_start(ap, fmt);
+	vsnprintf(b + off, len - off, fmt, ap);
+	va_end(ap);
+}
+
+/* Whether a bits value (RFC 9254: position p in byte p / 8, from the
+ * low bit) has position pos set. */
+static bool
+bit_set(const struct cbl_bytes *b, unsigned pos)
+{
+
+	return (pos / 8 < b->len &&
+	    (((const uint8_t *)b->p)[pos / 8] & (1u << (pos % 8))) != 0);
+}
+
+/* A MAC address as the model's pattern has it, a word of ipfw's. */
+static bool
+mac_ok(const char *s)
+{
+
+	return (strlen(s) == 17 && strspn(s, "0123456789abcdefABCDEF:") == 17);
+}
+
+/* A MAC match as ipfw's word: any, the address, the address&mask; -1
+ * where it is none or a mask has no address. */
+static int
+mac_word(char *b, size_t len, const char *addr, const char *mask)
+{
+
+	if (addr == NULL) {
+		snprintf(b, len, "any");
+		return (mask == NULL ? 0 : -1);
+	}
+	if (!mac_ok(addr) || (mask != NULL && !mac_ok(mask)))
+		return (-1);
+	snprintf(b, len, "%s%s%s", addr, mask != NULL ? "&" : "",
+	    mask != NULL ? mask : "");
+	return (0);
+}
+
+/* What this agent does not compile, refused by name: nothing is
+ * installed that matches more than the ACE says. */
 #define	REFUSE(cond, what) do {						\
 	if (cond) {							\
 		snprintf(err, errlen, "acl %s, ace %s: %s is not compiled "	\
@@ -314,24 +372,35 @@ port_words(char *b, size_t len, const char *opt, const struct pmatch *m,
 	}								\
 } while (0)
 
+#define	ATT_IN	1		/* attached on an interface's way in */
+#define	ATT_OUT	2		/* on its way out */
+
 /*
- * An ACE as ipfw's rules at number num, into fp: one, or two where a
- * reject of either family needs each its own unreachable.  fam is the
- * ACL's family (4, 6; 0 either).
+ * An ACE as ipfw's rules at number num, into fp.  fam is the ACL's
+ * family (4, 6; 0 either), att how the ACL is attached (ATT_IN,
+ * ATT_OUT), l2 whether it has an Ethernet match.  An ACL with one
+ * decides on the IP pass alone ("not layer2"): an Ethernet match is a
+ * rule of the layer-2 pass that tags the frame with the ACE's number,
+ * which the ACE's rule looks for on the IP pass ("tagged"); a frame
+ * comes up from ether_demux() with its tags, so this holds on the way
+ * in alone.  One rule, or two where a reject of either family needs
+ * each its own unreachable, and the tagging one before.
  */
 static int
-ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
-    const char *cm, char *err, size_t errlen)
+ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
+    const yace *e, const char *cm, char *err, size_t errlen)
 {
 	const ymatch	*m = e->matches;
 	struct pmatch	 sp, dp;
-	char		 more[200], proto[16];
+	char		 more[512], ethw[160], frag[32], tcpf[48], l2w[32];
+	char		 dmac[40], smac[40], proto[16];
 	const char	*src, *dst, *act;
 	uint64_t	 fwd;
+	unsigned	 et;
 	int		 p, fams[2], nf;
 
 	src = dst = "any";
-	more[0] = '\0';
+	more[0] = ethw[0] = frag[0] = tcpf[0] = l2w[0] = '\0';
 	p = -1;
 	if (e->actions == NULL || !e->actions->has_forwarding) {
 		snprintf(err, errlen, "acl %s, ace %s: no forwarding action",
@@ -340,10 +409,37 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 	}
 	REFUSE(e->actions->has_logging && e->actions->logging !=
 	    acl_ident("log-none"), "logging");
+	if (m != NULL && m->eth != NULL) {
+		if (mac_word(dmac, sizeof(dmac),
+		    m->eth->destination_mac_address,
+		    m->eth->destination_mac_address_mask) != 0 ||
+		    mac_word(smac, sizeof(smac), m->eth->source_mac_address,
+		    m->eth->source_mac_address_mask) != 0) {
+			snprintf(err, errlen, "acl %s, ace %s: a MAC mask "
+			    "without its address", acl, e->name);
+			return (-1);
+		}
+		if (strcmp(dmac, "any") != 0 || strcmp(smac, "any") != 0)
+			words_add(ethw, sizeof(ethw), " mac %s %s", dmac, smac);
+		if (m->eth->has_ethertype) {
+			et = m->eth->ethertype.which == 0 ?
+			    m->eth->ethertype.v.m0 :
+			    (unsigned)m->eth->ethertype.v.m1;
+			REFUSE(et != 0x0800 && et != 0x86dd,
+			    "an ethertype other than IPv4's or IPv6's (other "
+			    "frames never reach the IP pass, where the ACL "
+			    "decides)");
+			if (fam == (et == 0x0800 ? 6 : 4)) {
+				snprintf(err, errlen, "acl %s, ace %s: "
+				    "ethertype 0x%04x in an IPv%d ACL", acl,
+				    e->name, et, fam);
+				return (-1);
+			}
+			fam = et == 0x0800 ? 4 : 6;
+			words_add(ethw, sizeof(ethw), " mac-type 0x%04x", et);
+		}
+	}
 	if (m != NULL) {
-		REFUSE(m->l2 != 0, "an Ethernet match");
-		REFUSE(m->egress_interface != NULL, "egress-interface");
-		REFUSE(m->ingress_interface != NULL, "ingress-interface");
 		if (m->ipv4 != NULL) {
 			if (fam == 6) {
 				snprintf(err, errlen, "acl %s, ace %s: an IPv4 "
@@ -351,15 +447,41 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 				return (-1);
 			}
 			fam = 4;
-			REFUSE(m->ipv4->has_dscp, "ipv4 dscp");
-			REFUSE(m->ipv4->has_ecn, "ipv4 ecn");
-			REFUSE(m->ipv4->has_length, "ipv4 length");
-			REFUSE(m->ipv4->has_ttl, "ipv4 ttl");
+			if (m->ipv4->has_dscp)
+				words_add(more, sizeof(more), " dscp %u",
+				    m->ipv4->dscp);
+			/* The two ECN bits: iptos reads both at once
+			 * (congestion is 0x03) and neither alone. */
+			REFUSE(m->ipv4->has_ecn && m->ipv4->ecn != 0 &&
+			    m->ipv4->ecn != 3, "ipv4 ecn 1 or 2 (ECT)");
+			if (m->ipv4->has_ecn)
+				words_add(more, sizeof(more), " iptos %s",
+				    m->ipv4->ecn == 3 ? "congestion" :
+				    "!congestion");
+			if (m->ipv4->has_length)
+				words_add(more, sizeof(more), " iplen %u",
+				    m->ipv4->length);
+			if (m->ipv4->has_ttl)
+				words_add(more, sizeof(more), " ipttl %u",
+				    m->ipv4->ttl);
 			REFUSE(m->ipv4->has_ihl, "ipv4 ihl");
-			REFUSE(m->ipv4->flags.len > 0, "ipv4 flags");
+			/* The flags named set, the others as they may be. */
+			if (bit_set(&m->ipv4->flags, 0))
+				words_add(frag, sizeof(frag), ",rf");
+			if (bit_set(&m->ipv4->flags, 1))
+				words_add(frag, sizeof(frag), ",df");
+			if (bit_set(&m->ipv4->flags, 2))
+				words_add(frag, sizeof(frag), ",mf");
+			/* An offset of the model's (20 up, never the first
+			 * fragment's 0) is no match of ipfw's: frag reads
+			 * whether it is 0, never its value. */
 			REFUSE(m->ipv4->has_offset, "ipv4 offset");
-			REFUSE(m->ipv4->has_identification,
-			    "ipv4 identification");
+			if (frag[0] != '\0')
+				words_add(more, sizeof(more), " frag %s",
+				    frag + 1);
+			if (m->ipv4->has_identification)
+				words_add(more, sizeof(more), " ipid %u",
+				    m->ipv4->identification);
 			if (m->ipv4->has_protocol)
 				p = m->ipv4->protocol;
 			if (m->ipv4->source_ipv4_network != NULL)
@@ -374,11 +496,21 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 				return (-1);
 			}
 			fam = 6;
-			REFUSE(m->ipv6->has_dscp, "ipv6 dscp");
+			if (m->ipv6->has_dscp)
+				words_add(more, sizeof(more), " dscp %u",
+				    m->ipv6->dscp);
 			REFUSE(m->ipv6->has_ecn, "ipv6 ecn");
-			REFUSE(m->ipv6->has_length, "ipv6 length");
-			REFUSE(m->ipv6->has_ttl, "ipv6 ttl");
-			REFUSE(m->ipv6->has_flow_label, "ipv6 flow-label");
+			/* iplen is IPv6's whole length, the payload's and
+			 * the 40 bytes of its header. */
+			REFUSE(m->ipv6->has_length && m->ipv6->length > 65535 -
+			    40, "ipv6 length above 65495");
+			if (m->ipv6->has_length)
+				words_add(more, sizeof(more), " iplen %u",
+				    m->ipv6->length + 40u);
+			REFUSE(m->ipv6->has_ttl, "ipv6 ttl (the hop limit)");
+			if (m->ipv6->has_flow_label)
+				words_add(more, sizeof(more), " flow-id %u",
+				    m->ipv6->flow_label);
 			if (m->ipv6->has_protocol)
 				p = m->ipv6->protocol;
 			if (m->ipv6->source_ipv6_network != NULL)
@@ -394,13 +526,11 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 			return (-1);
 		}
 		if (m->tcp != NULL) {
-			REFUSE(m->tcp->has_sequence_number, "tcp sequence-number");
-			REFUSE(m->tcp->has_acknowledgement_number,
-			    "tcp acknowledgement-number");
 			REFUSE(m->tcp->has_data_offset, "tcp data-offset");
 			REFUSE(m->tcp->has_reserved, "tcp reserved");
-			REFUSE(m->tcp->flags.len > 0, "tcp flags");
-			REFUSE(m->tcp->has_window_size, "tcp window-size");
+			REFUSE(bit_set(&m->tcp->flags, 1) ||
+			    bit_set(&m->tcp->flags, 2),
+			    "tcp flags cwr and ece");
 			REFUSE(m->tcp->has_urgent_pointer, "tcp urgent-pointer");
 			REFUSE(m->tcp->options.len > 0, "tcp options");
 			PMATCH(m->tcp->source_port, sp);
@@ -415,6 +545,32 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 			    errlen) != 0 || port_words(more, sizeof(more),
 			    "dst-port", &dp, err, errlen) != 0)
 				return (-1);
+			if (m->tcp->has_sequence_number)
+				words_add(more, sizeof(more), " tcpseq %u",
+				    m->tcp->sequence_number);
+			if (m->tcp->has_acknowledgement_number)
+				words_add(more, sizeof(more), " tcpack %u",
+				    m->tcp->acknowledgement_number);
+			/* The flags named set, the others as they may be
+			 * (RFC 9899's flags-bitmask says which, 6.1.6). */
+			if (bit_set(&m->tcp->flags, 3))
+				words_add(tcpf, sizeof(tcpf), ",urg");
+			if (bit_set(&m->tcp->flags, 4))
+				words_add(tcpf, sizeof(tcpf), ",ack");
+			if (bit_set(&m->tcp->flags, 5))
+				words_add(tcpf, sizeof(tcpf), ",psh");
+			if (bit_set(&m->tcp->flags, 6))
+				words_add(tcpf, sizeof(tcpf), ",rst");
+			if (bit_set(&m->tcp->flags, 7))
+				words_add(tcpf, sizeof(tcpf), ",syn");
+			if (bit_set(&m->tcp->flags, 8))
+				words_add(tcpf, sizeof(tcpf), ",fin");
+			if (tcpf[0] != '\0')
+				words_add(more, sizeof(more), " tcpflags %s",
+				    tcpf + 1);
+			if (m->tcp->has_window_size)
+				words_add(more, sizeof(more), " tcpwin %u",
+				    m->tcp->window_size);
 		}
 		if (m->udp != NULL) {
 			REFUSE(m->udp->has_length, "udp length");
@@ -448,10 +604,45 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 			}
 			p = fam == 4 ? 1 : 58;
 			if (m->icmp->has_type)
-				snprintf(more + strlen(more), sizeof(more) -
-				    strlen(more), " %s %u", fam == 4 ?
-				    "icmptypes" : "icmp6types", m->icmp->type);
+				words_add(more, sizeof(more), " %s %u",
+				    fam == 4 ? "icmptypes" : "icmp6types",
+				    m->icmp->type);
 		}
+		if (m->ingress_interface != NULL) {
+			if (!ifname_ok(m->ingress_interface)) {
+				snprintf(err, errlen, "acl %s, ace %s: "
+				    "ingress-interface %s is no interface name "
+				    "ipfw reads", acl, e->name,
+				    m->ingress_interface);
+				return (-1);
+			}
+			words_add(more, sizeof(more), " recv %s",
+			    m->ingress_interface);
+		}
+		if (m->egress_interface != NULL) {
+			/* Not known on the way in: routing has not chosen. */
+			REFUSE(att & ATT_IN, "egress-interface in an ACL "
+			    "attached on an interface's way in");
+			if (!ifname_ok(m->egress_interface)) {
+				snprintf(err, errlen, "acl %s, ace %s: "
+				    "egress-interface %s is no interface name "
+				    "ipfw reads", acl, e->name,
+				    m->egress_interface);
+				return (-1);
+			}
+			words_add(more, sizeof(more), " xmit %s",
+			    m->egress_interface);
+		}
+	}
+	/* Where the ACL decides on the IP pass alone, an ACE matching
+	 * any frame would leave ARP and the rest to the layer-2 pass. */
+	if (l2 && fam == 0 && p == -1) {
+		snprintf(err, errlen, "acl %s, ace %s: an ACE of an ACL with "
+		    "an Ethernet match that matches frames other than IP's "
+		    "(they meet ipfw on the layer-2 pass alone): name the "
+		    "family, by the ACL's type, an ipv4 or ipv6 match, the "
+		    "protocol or the ethertype", acl, e->name);
+		return (-1);
 	}
 	switch (p) {
 	case -1:
@@ -473,6 +664,12 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 		snprintf(proto, sizeof(proto), "%d", p);
 		break;
 	}
+	if (l2 && m != NULL && m->eth != NULL) {
+		fprintf(fp, "add %d set %d count tag %d ip from any to any "
+		    "layer2%s // %s\n", num, ACL_STAGE, num, ethw, cm);
+		snprintf(l2w, sizeof(l2w), " not layer2 tagged %d", num);
+	} else if (l2)
+		snprintf(l2w, sizeof(l2w), " not layer2");
 	fwd = e->actions->forwarding;
 	nf = 0;
 	if (fam == 0 && fwd == acl_ident("reject")) {
@@ -493,37 +690,87 @@ ace_compile(FILE *fp, const char *acl, int fam, int num, const yace *e,
 			    "action this agent does not know", acl, e->name);
 			return (-1);
 		}
-		fprintf(fp, "add %d set %d %s %s from %s to %s%s%s // %s\n", num,
-		    ACL_STAGE, act, proto, src, dst, more, fams[i] == 4 ? " ip4" :
-		    fams[i] == 6 ? " ip6" : "", cm);
+		fprintf(fp, "add %d set %d %s %s from %s to %s%s%s%s // %s\n",
+		    num, ACL_STAGE, act, proto, src, dst, more, l2w,
+		    fams[i] == 4 ? " ip4" : fams[i] == 6 ? " ip6" : "", cm);
 	}
 	return (0);
 }
 
 #undef	REFUSE
 
+/* Whether an ACL has an Ethernet match. */
+static bool
+acl_l2(const yacl *l)
+{
+
+	for (size_t j = 0; l->aces != NULL && j < l->aces->ace.n; j++)
+		if (l->aces->ace.v[j].matches != NULL &&
+		    l->aces->ace.v[j].matches->eth != NULL)
+			return (true);
+	return (false);
+}
+
+/* How each ACL is attached, ATT_IN and ATT_OUT, into att; -1 and why
+ * where an attachment names no ACL. */
+static int
+attached(const yacls *c, int *att, char *err, size_t errlen)
+{
+	const yattach	*ap;
+	const char	*name;
+	size_t		 i, j, nin, nout;
+	int		 k;
+
+	for (i = 0; c->attachment_points != NULL &&
+	    i < c->attachment_points->interface.n; i++) {
+		ap = &c->attachment_points->interface.v[i];
+		nin = ap->ingress != NULL && ap->ingress->acl_sets != NULL ?
+		    ap->ingress->acl_sets->acl_set.n : 0;
+		nout = ap->egress != NULL && ap->egress->acl_sets != NULL ?
+		    ap->egress->acl_sets->acl_set.n : 0;
+		for (j = 0; j < nin + nout; j++) {
+			name = j < nin ?
+			    ap->ingress->acl_sets->acl_set.v[j].name :
+			    ap->egress->acl_sets->acl_set.v[j - nin].name;
+			if ((k = acl_index(c, name)) == -1) {
+				snprintf(err, errlen, "attachment point %s: no "
+				    "acl %s", ap->interface_id, name);
+				return (-1);
+			}
+			att[k] |= j < nin ? ATT_IN : ATT_OUT;
+		}
+	}
+	return (0);
+}
+
 /*
  * The ACLs as ipfw's commands for the staging set, a line each, into
- * fp; how many rules into *nrules.  -1 and why when one cannot be.
+ * fp; how many rules into *nrules, the first ACL with an Ethernet match
+ * into *l2 (NULL none).  -1 and why when one cannot be.
  */
 static int
-acl_compile(const yacls *c, FILE *fp, int *nrules, char *err, size_t errlen)
+acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
+    char *err, size_t errlen)
 {
 	const yacl	*l;
 	const yattach	*ap;
 	char		 cm[ACL_COMMENT + 1], tag[32];
-	int		*band, fam, num, k;
+	int		*band, *att, fam, num, k;
 	size_t		 i, j;
+	bool		 eth;
 
 	*nrules = 0;
+	*l2 = NULL;
 	if (c == NULL || (c->acl.n == 0 && (c->attachment_points == NULL ||
 	    c->attachment_points->interface.n == 0)))
 		return (0);
-	if ((band = calloc(c->acl.n + 1, sizeof(*band))) == NULL) {
+	if ((band = calloc(2 * (c->acl.n + 1), sizeof(*band))) == NULL) {
 		snprintf(err, errlen, "%s", strerror(errno));
 		return (-1);
 	}
-	if (bands_of(c, band, err, errlen) != 0)
+	att = band + c->acl.n + 1;
+	if (bands_of(c, band, err, errlen) != 0 ||
+	    attached(c, att, err, errlen) != 0)
 		goto bad;
 	comment_of(cm, sizeof(cm), "guard", NULL, NULL);
 	fprintf(fp, "add %d set %d skipto %d ip from any to any // %s\n",
@@ -533,22 +780,38 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, char *err, size_t errlen)
 		l = &c->acl.v[i];
 		fam = 0;
 		if (l->has_type) {
-			if (l->type == acl_ident("ipv4-acl-type"))
+			if (l->type == acl_ident("ipv4-acl-type") ||
+			    l->type == acl_ident("mixed-eth-ipv4-acl-type"))
 				fam = 4;
-			else if (l->type == acl_ident("ipv6-acl-type"))
+			else if (l->type == acl_ident("ipv6-acl-type") ||
+			    l->type == acl_ident("mixed-eth-ipv6-acl-type"))
 				fam = 6;
-			else {
+			else if (l->type != acl_ident("eth-acl-type") &&
+			    l->type != acl_ident("mixed-eth-ipv4-ipv6-acl-type")) {
 				snprintf(err, errlen, "acl %s: its type is not "
 				    "compiled into ipfw by this agent", l->name);
 				goto bad;
 			}
 		}
+		if ((eth = acl_l2(l))) {
+			if (att[i] & ATT_OUT) {
+				snprintf(err, errlen, "acl %s: an Ethernet match "
+				    "in an ACL attached on an interface's way "
+				    "out (ipfw sees the frame after the IP pass "
+				    "has decided) is not compiled into ipfw by "
+				    "this agent", l->name);
+				goto bad;
+			}
+			if (*l2 == NULL)
+				*l2 = l->name;
+		}
 		for (j = 0; l->aces != NULL && j < l->aces->ace.n; j++) {
 			snprintf(tag, sizeof(tag), "%zu.%zu", i, j + 1);
 			comment_of(cm, sizeof(cm), tag, l->name,
 			    l->aces->ace.v[j].name);
-			if (ace_compile(fp, l->name, fam, band[i] + (int)j,
-			    &l->aces->ace.v[j], cm, err, errlen) != 0)
+			if (ace_compile(fp, l->name, fam, att[i], eth,
+			    band[i] + (int)j, &l->aces->ace.v[j], cm, err,
+			    errlen) != 0)
 				goto bad;
 			(*nrules)++;
 		}
@@ -729,6 +992,30 @@ ipfw_quiet(struct work *w, const char *const *words, char *err,
 	ipfw_quiet((w), (const char *const []){ __VA_ARGS__, NULL }, (err), \
 	    (errlen))
 
+/* Whether frames reach ipfw on the layer-2 pass: net.link.ether.ipfw,
+ * the admin's to set (sysctl(8) where a stand-in is given). */
+static bool
+ether_ipfw(struct work *w)
+{
+	struct execres	 res;
+	char		*argv[4];
+	size_t		 len;
+	int		 v;
+
+	if (strcmp(opts.sysctl_bin, "/sbin/sysctl") == 0) {
+		len = sizeof(v);
+		return (sysctlbyname("net.link.ether.ipfw", &v, &len, NULL,
+		    0) == 0 && v != 0);
+	}
+	argv[0] = (char *)(uintptr_t)opts.sysctl_bin;
+	argv[1] = (char *)(uintptr_t)"-n";
+	argv[2] = (char *)(uintptr_t)"net.link.ether.ipfw";
+	argv[3] = NULL;
+	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
+		return (false);
+	return (strtol(wstrndup(w, res.out, res.outlen), NULL, 10) != 0);
+}
+
 /*
  * The ACLs c made what the kernel has, all at once (above); none, set
  * 29 deleted.  -1 and why, the kernel as it was.
@@ -737,6 +1024,7 @@ static int
 acl_apply(struct work *w, const yacls *c, char *err, size_t errlen)
 {
 	struct krule	*k;
+	const char	*l2;
 	char		 path[MAXPATHLEN], *buf;
 	size_t		 nk, blen;
 	FILE		*fp;
@@ -749,7 +1037,7 @@ acl_apply(struct work *w, const yacls *c, char *err, size_t errlen)
 		snprintf(err, errlen, "open_memstream: %s", strerror(errno));
 		return (-1);
 	}
-	rc = acl_compile(c, fp, &nrules, err, errlen);
+	rc = acl_compile(c, fp, &nrules, &l2, err, errlen);
 	if (fclose(fp) != 0 && rc == 0) {
 		snprintf(err, errlen, "the rules: %s", strerror(errno));
 		rc = -1;
@@ -759,6 +1047,12 @@ acl_apply(struct work *w, const yacls *c, char *err, size_t errlen)
 		return (-1);
 	}
 	wadopt(w, buf);
+	if (l2 != NULL && !ether_ipfw(w)) {
+		snprintf(err, errlen, "acl %s: an Ethernet match needs the "
+		    "frames on ipfw's layer-2 pass, net.link.ether.ipfw=1, "
+		    "which is the admin's to set (this agent does not)", l2);
+		return (-1);
+	}
 	if (kernel_rules(w, &k, &nk) != 0) {
 		if (nrules == 0)
 			return (0);

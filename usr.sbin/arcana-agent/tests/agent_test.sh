@@ -2938,6 +2938,204 @@ acl_rfc8519_cleanup()
 	stop_daemon
 }
 
+# One field of RFC 8519's match table (PLAN-SDN-YANG 6.1.2): an ACL of
+# the type given with one ACE matching on the field, dropping; set,
+# each rule given loaded as it is (the band's number 61000), and the
+# field read back from the operational datastore.
+acl_field()
+{
+	local type="$1" matches="$2" back="$3" r
+
+	shift 3
+	printf '{"acl":[{"name":"f","type":"ietf-access-control-list:%s","aces":{"ace":[{"name":"r","matches":%s,"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}\n' \
+	    "$type" "$matches" > f.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @f.json
+	for r in "$@"; do
+		atf_check -o ignore grep -Fx "add 61000 set 28 $r // acl:0.1 f/r" \
+		    ipfw.log
+	done
+	atf_check -o match:'^61001 29 return ' cat fw.state
+	atf_check -o save:fg.json "$JGC" -c "$SOCK" get acls
+	grep -qF "$back" fg.json || atf_fail "not read back: $back in $(cat fg.json)"
+}
+
+# A field refused by name: nothing loaded, the kernel's rules and
+# running as they were.  $3 is the whole ACLs' JSON where $1 is "-".
+acl_field_refused()
+{
+	local type="$1" matches="$2" why="$3"
+
+	if [ "$type" = - ]; then
+		printf '%s\n' "$matches" > f.json
+	else
+		printf '{"acl":[{"name":"f","type":"ietf-access-control-list:%s","aces":{"ace":[{"name":"r","matches":%s,"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}\n' \
+		    "$type" "$matches" > f.json
+	fi
+	cp fw.state before.state
+	"$JGC" -c "$SOCK" get -d running acls > before.json 2>&1
+	: > ipfw.log
+	atf_check -s exit:1 -e match:"$why" -o ignore "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @f.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	atf_check -o not-match:'^ipfw -q' cat ipfw.log
+	atf_check -o file:before.state cat fw.state
+	atf_check -o file:before.json "$JGC" -c "$SOCK" get -d running acls
+}
+
+atf_test_case acl_match_fields cleanup
+acl_match_fields_head()
+{
+	atf_set "descr" "RFC 8519's match table compiled to ipfw (PLAN-SDN-YANG" \
+	    "6.1.2), a stand-in ipfw that keeps what it is given: one ACE a" \
+	    "field, its rule as loaded and the field read back: the MAC" \
+	    "addresses and masks and the ethertype (a layer-2 rule tagging," \
+	    "the IP pass's rule looking for the tag), IPv4's DSCP, ECN," \
+	    "length, TTL, flags, offset and identification, IPv6's DSCP," \
+	    "length and flow label, TCP's sequence and acknowledgement" \
+	    "numbers, flags and window, the ingress and egress interfaces;" \
+	    "what ipfw cannot say of them refused by name, nothing loaded;" \
+	    "an Ethernet match refused with net.link.ether.ipfw off and on" \
+	    "an egress attachment"
+	atf_set "timeout" "300"
+}
+acl_match_fields_body()
+{
+	acl_fake_ipfw
+	# sysctl(8) as a stand-in: net.link.ether.ipfw is ./ether.
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+[ "\$*" = "-n net.link.ether.ipfw" ] && exec cat $(pwd)/ether
+exit 1
+EOS
+	chmod +x fake-sysctl
+	echo 1 > ether
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -Q $(pwd)/fake-sysctl" start_daemon
+
+	# Ethernet: a rule of the layer-2 pass tags the frame with the
+	# ACE's number, the IP pass's rule looks for it.
+	acl_field mixed-eth-ipv4-acl-type \
+	    '{"eth":{"destination-mac-address":"00:00:5e:00:53:01"}}' \
+	    '"destination-mac-address":"00:00:5e:00:53:01"' \
+	    'count tag 61000 ip from any to any layer2 mac 00:00:5e:00:53:01 any' \
+	    'deny ip from any to any not layer2 tagged 61000 ip4'
+	acl_field mixed-eth-ipv4-acl-type \
+	    '{"eth":{"destination-mac-address":"00:00:5e:00:53:00","destination-mac-address-mask":"ff:ff:ff:ff:ff:00"}}' \
+	    '"destination-mac-address-mask":"ff:ff:ff:ff:ff:00"' \
+	    'count tag 61000 ip from any to any layer2 mac 00:00:5e:00:53:00&ff:ff:ff:ff:ff:00 any'
+	acl_field mixed-eth-ipv6-acl-type \
+	    '{"eth":{"source-mac-address":"00:00:5e:00:53:02"}}' \
+	    '"source-mac-address":"00:00:5e:00:53:02"' \
+	    'count tag 61000 ip from any to any layer2 mac any 00:00:5e:00:53:02' \
+	    'deny ip from any to any not layer2 tagged 61000 ip6'
+	acl_field mixed-eth-ipv6-acl-type \
+	    '{"eth":{"source-mac-address":"00:00:5e:00:53:00","source-mac-address-mask":"ff:ff:ff:00:00:00"}}' \
+	    '"source-mac-address-mask":"ff:ff:ff:00:00:00"' \
+	    'count tag 61000 ip from any to any layer2 mac any 00:00:5e:00:53:00&ff:ff:ff:00:00:00'
+	acl_field eth-acl-type '{"eth":{"ethertype":"ipv6"}}' \
+	    '"ethertype":"ipv6"' \
+	    'count tag 61000 ip from any to any layer2 mac-type 0x86dd' \
+	    'deny ip from any to any not layer2 tagged 61000 ip6'
+	acl_field eth-acl-type '{"eth":{"ethertype":2048}}' \
+	    '"ethertype":2048' \
+	    'count tag 61000 ip from any to any layer2 mac-type 0x0800' \
+	    'deny ip from any to any not layer2 tagged 61000 ip4'
+	# Another ACE of an ACL with an Ethernet match: the IP pass alone.
+	printf '%s\n' '{"acl":[{"name":"f","type":"ietf-access-control-list:mixed-eth-ipv4-ipv6-acl-type","aces":{"ace":[{"name":"r","matches":{"eth":{"source-mac-address":"00:00:5e:00:53:02"},"ipv4":{"source-ipv4-network":"192.0.2.0/24"}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"s","matches":{"ipv6":{"protocol":17}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"f"}]}}}]}}' > f.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @f.json
+	atf_check -o ignore grep -Fx 'add 61000 set 28 count tag 61000 ip from any to any layer2 mac any 00:00:5e:00:53:02 // acl:0.1 f/r' ipfw.log
+	atf_check -o ignore grep -Fx 'add 61000 set 28 allow ip from 192.0.2.0/24 to any not layer2 tagged 61000 ip4 // acl:0.1 f/r' ipfw.log
+	atf_check -o ignore grep -Fx 'add 61001 set 28 deny udp from any to any not layer2 ip6 // acl:0.2 f/s' ipfw.log
+	atf_check -o match:'"ingress":\{"acl-sets"' "$JGC" -c "$SOCK" get acls
+	acl_field_refused eth-acl-type '{"eth":{"ethertype":"arp"}}' \
+	    'acl f, ace r: an ethertype other than IPv4.s or IPv6.s'
+	acl_field_refused eth-acl-type \
+	    '{"eth":{"destination-mac-address":"00:00:5e:00:53:01"}}' \
+	    'acl f, ace r: an ACE of an ACL with an Ethernet match that matches frames other than IP'
+	acl_field_refused mixed-eth-ipv4-ipv6-acl-type \
+	    '{"eth":{"ethertype":"ipv6"},"ipv4":{"ttl":1}}' \
+	    'acl f, ace r: an IPv4 match in an IPv6 ACL'
+	acl_field_refused - '{"acl":[{"name":"f","type":"ietf-access-control-list:eth-acl-type","aces":{"ace":[{"name":"r","matches":{"eth":{"ethertype":"ipv4"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","egress":{"acl-sets":{"acl-set":[{"name":"f"}]}}}]}}' \
+	    'acl f: an Ethernet match in an ACL attached on an interface.s way out'
+	echo 0 > ether
+	acl_field_refused eth-acl-type '{"eth":{"ethertype":"ipv4"}}' \
+	    'acl f: an Ethernet match needs the frames on ipfw.s layer-2 pass, net.link.ether.ipfw=1'
+	echo 1 > ether
+
+	# IPv4.
+	acl_field ipv4-acl-type '{"ipv4":{"dscp":10}}' '"dscp":10' \
+	    'deny ip from any to any dscp 10 ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ecn":3}}' '"ecn":3' \
+	    'deny ip from any to any iptos congestion ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ecn":0}}' '"ecn":0' \
+	    'deny ip from any to any iptos !congestion ip4'
+	acl_field_refused ipv4-acl-type '{"ipv4":{"ecn":2}}' \
+	    'acl f, ace r: ipv4 ecn 1 or 2 \(ECT\) is not compiled into ipfw'
+	acl_field ipv4-acl-type '{"ipv4":{"length":1500}}' '"length":1500' \
+	    'deny ip from any to any iplen 1500 ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"ttl":7}}' '"ttl":7' \
+	    'deny ip from any to any ipttl 7 ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"flags":"fragment more"}}' \
+	    '"flags":"fragment more"' 'deny ip from any to any frag df,mf ip4'
+	acl_field ipv4-acl-type '{"ipv4":{"flags":"reserved"}}' \
+	    '"flags":"reserved"' 'deny ip from any to any frag rf ip4'
+	acl_field_refused ipv4-acl-type '{"ipv4":{"offset":185}}' \
+	    'acl f, ace r: ipv4 offset is not compiled into ipfw'
+	acl_field ipv4-acl-type '{"ipv4":{"identification":4660}}' \
+	    '"identification":4660' 'deny ip from any to any ipid 4660 ip4'
+
+	# IPv6.
+	acl_field ipv6-acl-type '{"ipv6":{"dscp":46}}' '"dscp":46' \
+	    'deny ip from any to any dscp 46 ip6'
+	acl_field ipv6-acl-type '{"ipv6":{"length":60}}' '"length":60' \
+	    'deny ip from any to any iplen 100 ip6'
+	acl_field_refused ipv6-acl-type '{"ipv6":{"length":65500}}' \
+	    'acl f, ace r: ipv6 length above 65495 is not compiled into ipfw'
+	acl_field ipv6-acl-type '{"ipv6":{"flow-label":74565}}' \
+	    '"flow-label":74565' 'deny ip from any to any flow-id 74565 ip6'
+	acl_field_refused ipv6-acl-type '{"ipv6":{"ttl":1}}' \
+	    'acl f, ace r: ipv6 ttl \(the hop limit\) is not compiled into ipfw'
+	acl_field_refused ipv6-acl-type '{"ipv6":{"ecn":3}}' \
+	    'acl f, ace r: ipv6 ecn is not compiled into ipfw'
+
+	# TCP.
+	acl_field ipv4-acl-type '{"tcp":{"sequence-number":305419896}}' \
+	    '"sequence-number":305419896' \
+	    'deny tcp from any to any tcpseq 305419896 ip4'
+	acl_field ipv4-acl-type '{"tcp":{"acknowledgement-number":1}}' \
+	    '"acknowledgement-number":1' 'deny tcp from any to any tcpack 1 ip4'
+	acl_field ipv6-acl-type '{"tcp":{"flags":"syn ack"}}' \
+	    '"flags":"ack syn"' 'deny tcp from any to any tcpflags ack,syn ip6'
+	acl_field ipv4-acl-type '{"tcp":{"flags":"urg psh rst fin"}}' \
+	    '"flags":"urg psh rst fin"' \
+	    'deny tcp from any to any tcpflags urg,psh,rst,fin ip4'
+	acl_field_refused ipv4-acl-type '{"tcp":{"flags":"syn ece cwr"}}' \
+	    'acl f, ace r: tcp flags cwr and ece is not compiled into ipfw'
+	acl_field ipv4-acl-type '{"tcp":{"window-size":0}}' \
+	    '"window-size":0' 'deny tcp from any to any tcpwin 0 ip4'
+
+	# The interfaces.
+	acl_field ipv4-acl-type '{"ingress-interface":"lo0"}' \
+	    '"ingress-interface":"lo0"' 'deny ip from any to any recv lo0 ip4'
+	acl_field ipv6-acl-type '{"egress-interface":"lo0"}' \
+	    '"egress-interface":"lo0"' 'deny ip from any to any xmit lo0 ip6'
+	acl_field_refused - '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"egress-interface":"lo0"},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"f"}]}}}]}}' \
+	    'acl f, ace r: egress-interface in an ACL attached on an interface.s way in'
+
+	# Taken out: set 29 deleted, the admin's rules as they were.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    cat fw.state
+}
+acl_match_fields_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case faults_store
 faults_store_head()
 {
@@ -19047,6 +19245,7 @@ atf_init_test_cases()
 	atf_add_test_case viewer_programs
 	atf_add_test_case alarm_shelving
 	atf_add_test_case acl_rfc8519
+	atf_add_test_case acl_match_fields
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key

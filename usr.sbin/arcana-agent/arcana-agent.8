@@ -384,7 +384,16 @@ once; it is kept as
 beside the agent's files and applied again when the agent starts.
 A change is refused, nothing loaded, where a rule of the admin's is at
 rule 8 or 60000 to 64999, or in set 28 or 29, and where an ACE matches
-what ipfw cannot (an ICMP code, ECN, TCP flags and the like).
+what ipfw cannot (an ICMP code, IPv6's hop limit, TCP's options and the
+like).
+An ACL with an Ethernet match decides on the IP pass alone: its
+Ethernet ACE tags the frame on the layer-2 pass
+.Pq Ic layer2 mac ... tag
+and the ACE's rule looks for the tag
+.Pq Ic not layer2 tagged ;
+it is refused attached on an egress, and unless
+.Va net.link.ether.ipfw
+is 1, which the agent never sets.
 The operational datastore has the ACLs the kernel has whole.
 .Pp
 Every request has a trace: the library calls, system calls, files and
