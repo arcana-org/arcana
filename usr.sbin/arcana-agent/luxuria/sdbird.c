@@ -619,7 +619,8 @@ insts_changed(const struct instance *in, int n)
 /*
  * The sessions read again every second, each change an event
  * (sdwan-tunnel, by bfd, R60), and the steering told, which takes
- * BFD's word over the probe's where there is a session.
+ * BFD's word over the probe's where there is a session: made again on
+ * the prober's worker, the changes counted with the probes'.
  */
 static void *
 bfd_watch(void *arg __unused)
@@ -711,6 +712,17 @@ bfd_watch(void *arg __unused)
 		memcpy(bfds, now, sizeof(*now) * (size_t)m);
 		nbfds = m;
 		pthread_mutex_unlock(&lock);
+		/* Published: the changes counted for the prober's worker,
+		 * which makes the steering again with its own (gula/
+		 * probe_engine.c), a session listed or gone one; at once,
+		 * not after the events, which may wait on the steering's
+		 * lock while a run of it is in ipfw. */
+		if (changed) {
+			logmsg(LOG_DEBUG, "sdwan bird: %d BFD change%s counted "
+			    "for the steering", nchg > 0 ? nchg : 1, nchg > 1 ?
+			    "s" : "");
+			probe_steer_due(nchg > 0 ? (unsigned)nchg : 1);
+		}
 		/* Told without the lock: the steering has a lock of its own,
 		 * taken the other way round when it asks BFD. */
 		for (k = 0; k < nchg; k++) {
@@ -748,8 +760,6 @@ bfd_watch(void *arg __unused)
 				bird_reconcile(in, n, bgp, nb);
 		}
 		work_free(&w);
-		if (changed)
-			sdwan_probe_changed();
 	}
 	return (NULL);
 }

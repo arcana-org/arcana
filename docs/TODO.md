@@ -206,16 +206,19 @@
   proxy-form; the text the agent rendered the conf state leaf).  The
   module to say Suricata's form too (idsconf.c's keys), and the IDS'
   conf, Suricata's YAML whole, to go where a form replaces it.
-- The steering is made again on the prober's worker when a target's
-  state changes, a burst in one run, and a jail's echo targets share
-  one socket a jail, FIB and family (gula/probe_engine.c,
-  gula/probe_icmp.c).  Left: BFD's changes (luxuria/sdbird.c) still
-  make it again on the BFD reader's thread, beside the worker (both
-  under invidia/sdwan.c's lock, so in turn, not counted together); and
-  a jail's socket hears only the replies that come in on its FIB's
-  interfaces, where the host keeps a socket every FIB for a target in
-  another table than 0 (a jail's would need one per FIB from the
-  helper too).
+- Done (agent_test:probe_steer_burst, probe_jail_sockets): the
+  steering is made again on the prober's worker when a target's state
+  changes or a BFD session's, a burst of both in one run (BFD's reader,
+  luxuria/sdbird.c, publishes its sessions, then counts its changes
+  into the worker's steer_due, gula/probe_engine.c); a jail's echo
+  targets share one socket a jail, FIB and family, made by the helper
+  in the jail with its FIB set there, and while one is in another
+  table than 0 the jail has every FIB's socket of its family kept for
+  the replies, as the host does (gula/probe_icmp.c).  Left: a vnet
+  jail's net.fibs may be fewer than the host's, which counts the FIBs;
+  the sockets of FIBs the jail lacks are asked of the helper again and
+  again (the wait doubling to a minute): to read the jail's own
+  net.fibs.
 - Done (agent_test:out_of_memory): a request or a job that runs out of
   memory fails alone, "out of memory", and the daemon goes on.
   wmalloc() and the rest serve a malloc(3) that fails from a reserve

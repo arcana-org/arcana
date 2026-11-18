@@ -4336,10 +4336,11 @@ atf_test_case probe_jail_sockets cleanup
 probe_jail_sockets_head()
 {
 	atf_set "descr" "a jail's echo targets share one socket a jail, a FIB" \
-	    "and a family, made once by the helper in the jail and handed" \
-	    "over: three of a family in one jail, one of the other, one in" \
-	    "another jail, three sockets asked for; a target added to them" \
-	    "takes the one there"
+	    "and a family, made once by the helper in the jail, in its FIB," \
+	    "and handed over: three of a family in one jail, one of the" \
+	    "other, one in another jail, three sockets asked for; a target" \
+	    "added to them takes the one there; two FIBs in one jail, a" \
+	    "socket each, and every FIB's kept for the replies"
 	atf_set "timeout" "60"
 }
 probe_jail_sockets_body()
@@ -4347,19 +4348,20 @@ probe_jail_sockets_body()
 	local d="$(pwd)"
 
 	command -v python3 >/dev/null || atf_skip "no python3 to hand a socket over"
-	mkdir -p jroot jroot2
-	printf 'gw 4 new %s/jroot\ngw2 5 new %s/jroot2\n' "$d" "$d" > jails
+	mkdir -p jroot jroot2 jroot3
+	printf 'gw 4 new %s/jroot\ngw2 5 new %s/jroot2\ngw3 6 new %s/jroot3\n' \
+	    "$d" "$d" "$d" > jails
 	DAEMON_ARGS="-d" start_daemon
-	# The helper's icmp-socket: a datagram socket of the family (one a
-	# user may make), handed over as the helper hands its raw one; each
-	# asked for logged.
+	# The helper's icmp-socket family:fib: a datagram socket of the
+	# family (one a user may make), handed over as the helper hands its
+	# raw one; each asked for logged.
 	mv fake-helper fake-helper.real
 	cat > fake-helper <<EOS
 #!/bin/sh
 if [ "\$3" = icmp-socket ]; then
 	echo "\$2 icmp-socket \$4" >> $d/sockets.log
 	exec python3 -I -c 'import socket, sys
-s = socket.socket(socket.AF_INET6 if sys.argv[1] == "inet6" else socket.AF_INET, socket.SOCK_DGRAM)
+s = socket.socket(socket.AF_INET6 if sys.argv[1].split(":")[0] == "inet6" else socket.AF_INET, socket.SOCK_DGRAM)
 socket.send_fds(socket.socket(fileno=1), [b"x"], [s.fileno()])' "\$4"
 fi
 exec $d/fake-helper.real "\$@"
@@ -4375,7 +4377,7 @@ EOS
 	wait_match 'jail gw, FIB 0, inet6$' cat daemon.out ||
 	    atf_fail "no socket made: $(cat daemon.out)"
 	sleep 2
-	atf_check -o inline:'4 icmp-socket inet\n4 icmp-socket inet6\n5 icmp-socket inet\n' \
+	atf_check -o inline:'4 icmp-socket inet6:0\n4 icmp-socket inet:0\n5 icmp-socket inet:0\n' \
 	    sort sockets.log
 	atf_check -o inline:'1\n' grep -c 'probe: echo socket of jail gw, FIB 0, inet$' \
 	    daemon.out
@@ -4398,8 +4400,40 @@ EOS
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes '{"jail":"gw2","targets":[]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
 	    '{"jail":"gw2","targets":[{"id":"t7","address":"127.0.0.1"}]}'
-	wait_match '^5 icmp-socket inet$' sed -n 4p sockets.log ||
+	wait_match '^5 icmp-socket inet:0$' sed -n 4p sockets.log ||
 	    atf_fail "not asked again: $(cat sockets.log)"
+	# Two FIBs in one jail: a socket each, the helper asked for each
+	# FIB; and as on the host, while one is in another table than 0,
+	# every FIB's of the family in the jail (net.fibs, 16 at most) kept
+	# for the replies, which come in on whichever FIB's interface they
+	# do: only the two where raw sockets hear every table's.
+	nf=$(/sbin/sysctl -n net.fibs)
+	[ "$nf" -gt 16 ] && nf=16
+	[ "$(/sbin/sysctl -n net.inet.raw.bind_all_fibs 2>/dev/null)" = 1 ] && nf=2
+	[ "$nf" -lt 2 ] && nf=2
+	: > sockets.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw3","targets":[{"id":"t8","address":"127.0.0.1"},{"id":"t9","address":"127.0.0.1","fib":1}]}'
+	wait_match "^$nf\$" sh -c 'wc -l < sockets.log | tr -d " "' ||
+	    atf_fail "not every FIB's: $(cat sockets.log)"
+	sleep 1
+	atf_check -o inline:"$(jot - 0 $((nf - 1)) | sed 's/^/6 icmp-socket inet:/')\n" \
+	    sort -t: -k2n sockets.log
+	for i in $(jot - 0 $((nf - 1))); do
+		wait_match "probe: echo socket of jail gw3, FIB $i, inet\$" \
+		    cat daemon.out || atf_fail "FIB $i's not made: $(cat daemon.out)"
+	done
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"id":"t8","address":"127.0.0.1","family":"inet","jail":"gw3","fib":0,"state":"(unknown|up|down)"' \
+	    -o match:'"id":"t9","address":"127.0.0.1","family":"inet","jail":"gw3","fib":1,"state":"(unknown|up|down)"' \
+	    cat sd.json
+	# Back to FIB 0 alone: no more asked for, t8's kept.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw3","targets":[{"id":"t8","address":"127.0.0.1"}]}'
+	sleep 1
+	atf_check -o inline:"$nf\n" sh -c 'wc -l < sockets.log | tr -d " "'
+	atf_check -o match:'"id":"t8","address":"127.0.0.1","family":"inet","jail":"gw3","fib":0,"state":"(unknown|up|down)"' \
+	    "$JGC" -c "$SOCK" sdwan
 }
 probe_jail_sockets_cleanup()
 {
@@ -4411,14 +4445,16 @@ probe_steer_burst_head()
 {
 	atf_set "descr" "the steering made again on the prober's worker as" \
 	    "the targets' states change, in their order: three tunnels up" \
-	    "where nothing was down, no ipfw run; the three down at once" \
-	    "while ipfw is slow, at most two runs, changes taken together," \
-	    "the last one's table the final steering (none)"
+	    "where nothing was down, no ipfw run; one down, its run held" \
+	    "in ipfw, while the two others go down and a BFD session with" \
+	    "them: the next run takes the three changes together, BFD's" \
+	    "reader's counted with the prober's, its table the final" \
+	    "steering (none)"
 	atf_set "timeout" "120"
 }
 probe_steer_burst_body()
 {
-	local d="$(pwd)" P i n s
+	local d="$(pwd)" P i n
 
 	stamp_programs
 	P=$(jot -r 1 20000 59999)
@@ -4429,18 +4465,23 @@ probe_steer_burst_body()
 		sleep 0.05
 	done
 	grep -q started sd.out || atf_fail "stampd: $(cat sd.out)"
-	# ipfw: logged; slow while ./slow is there.
+	# ipfw: logged; a change held while ./hold is there.
 	cat > fake-ipfw <<EOS
 #!/bin/sh
-[ -f $d/slow ] && sleep 0.3
+if [ "\$1" = -q ] && [ -f $d/hold ]; then
+	echo held >> $d/held.log
+	while [ -f $d/hold ]; do sleep 0.1; done
+fi
 echo "ipfw \$*" >> $d/ipfw.log
 exit 0
 EOS
 	chmod +x fake-ipfw
 	printf '#!/bin/sh\nexit 0\n' > fake-kldload
 	chmod +x fake-kldload
-	mkdir -p tools
-	DAEMON_ARGS="-d --stamp-port $P -h $d/fake-ipfw -2 $d/tools"
+	# BIRD as a stand-in: a BFD session to t1's far end, down while
+	# ./bfd.down is there.
+	sdwan_daemons
+	DAEMON_ARGS="-d --stamp-port $P -h $d/fake-ipfw -3 $d/fake-setfib -2 $d/tools"
 	start_daemon
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan rules \
 	    '{"set":30,"tables":[{"name":"sw1_p0","valtype":"ipv4","entries":[]}],"rules":["00500 fwd tablearg ip from any to table(sw1_p0)"]}'
@@ -4448,10 +4489,15 @@ EOS
 	    '{"entries":[{"table":"sw1_p0","prefix":"10.1.0.0/24","candidates":[{"id":"t1","via":"100.64.0.1"},{"id":"t2","via":"100.64.0.2"}]},{"table":"sw1_p0","prefix":"10.2.0.0/24","candidates":[{"id":"t2","via":"100.64.0.2"},{"id":"t3","via":"100.64.0.3"}]},{"table":"sw1_p0","prefix":"10.3.0.0/24","candidates":[{"id":"t3","via":"100.64.0.3"},{"id":"t1","via":"100.64.0.1"}]}]}'
 	atf_check -o match:'^ipfw -q set 30 table sw1_p0_alt atomic add 10.1.0.0/24 100.64.0.1 10.2.0.0/24 100.64.0.2 10.3.0.0/24 100.64.0.3$' \
 	    cat ipfw.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird \
+	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"table":1,"router_id":"100.64.0.0"}}]}'
+	wait_match '"bfd":\[\{"address":"100.64.0.1","interface":"gre100","state":"up"' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "no BFD: $("$JGC" -c "$SOCK" sdwan)"
 	: > ipfw.log
-	# Up, each from unknown: no choice changes, no ipfw run.
+	# Up, each from unknown: no choice changes, no ipfw run.  t2 goes
+	# down after 3 misses, the others after 40.
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
-	    '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3},{"id":"t2","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3},{"id":"t3","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3}]'
+	    '[{"id":"t1","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":40},{"id":"t2","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":3},{"id":"t3","address":"127.0.0.1","kind":"stamp","interval":50,"eval":500,"timeout":300,"down":40}]'
 	for i in 1 2 3; do
 		wait_match "\"id\":\"t$i\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"up\"" \
 		    "$JGC" -c "$SOCK" sdwan || atf_fail "t$i not up: $("$JGC" -c "$SOCK" sdwan)"
@@ -4460,33 +4506,36 @@ EOS
 	    cat daemon.out || atf_fail "no steering: $(cat daemon.out)"
 	sleep 1
 	atf_check -o not-match:'^ipfw -q set 30 table' cat ipfw.log
-	# All three down at once, ipfw slow: the changes that come while a
-	# run is in ipfw are the next run's, together.
-	n=$(grep -c 'probe: steering made again' daemon.out)
-	touch slow
+	# t2 down first: its run held in ipfw (no read of the steering
+	# meanwhile, which waits for it).  While it is, t1 and t3 go down
+	# and BFD to t1's far end (whose word the steering takes over the
+	# probe's), its reader counting its change for the worker as the
+	# prober counts its own.
+	n=$(wc -l < daemon.out)
+	touch hold
 	kill "$(cat sd.spid)"
-	for i in 1 2 3; do
-		wait_match "\"id\":\"t$i\",\"address\":\"127\\.0\\.0\\.1\",\"family\":\"inet\",\"fib\":0,\"state\":\"down\"" \
-		    "$JGC" -c "$SOCK" sdwan || atf_fail "t$i not down: $("$JGC" -c "$SOCK" sdwan)"
+	wait_match held cat held.log || atf_fail "no run held: $(cat daemon.out)"
+	touch bfd.down
+	for i in 1 3; do
+		wait_match "sdwan: t$i \\(127\\.0\\.0\\.1\\) is down" cat daemon.out ||
+		    atf_fail "t$i not down: $(cat daemon.out)"
 	done
-	# ipfw done: nothing more in two seconds.
-	s=-1
-	for i in $(seq 1 30); do
-		[ "$(wc -c < ipfw.log)" = "$s" ] && break
-		s=$(wc -c < ipfw.log)
-		sleep 2
-	done
-	rm -f slow
-	atf_check -o match:'probe: steering made again: [23] state changes, one run' \
-	    sed -n "$((n + 1)),\$p" daemon.out
-	i=$(grep -c '^ipfw -q set 30 table sw1_p0 swap sw1_p0_alt$' ipfw.log)
-	[ "$i" -ge 1 ] && [ "$i" -le 2 ] ||
-	    atf_fail "$i swaps for three changes: $(cat ipfw.log)"
+	wait_match 'sdwan bird: 1 BFD change counted for the steering' \
+	    sed -n "$((n + 1)),\$p" daemon.out ||
+	    atf_fail "BFD's not counted: $(cat daemon.out)"
+	rm -f hold
+	wait_match '^2$' sh -c "sed -n '$((n + 1)),\$p' daemon.out | grep -c 'probe: steering made again'" ||
+	    atf_fail "not two runs: $(cat daemon.out)"
+	sleep 2
+	# Two runs: t2's, then the three changes together, BFD's with them.
+	atf_check -o inline:'1\n3\n' sh -c "sed -n '$((n + 1)),\$p' daemon.out | sed -n 's/.*probe: steering made again: \\([0-9]*\\) state changes*, one run\$/\\1/p'"
+	atf_check -o inline:'2\n' grep -c '^ipfw -q set 30 table sw1_p0 swap sw1_p0_alt$' ipfw.log
 	# The last run's table: emptied, nothing added, swapped in (the
 	# reads' ipfw runs passed over).
 	atf_check -o inline:'ipfw -q set 30 table sw1_p0_alt flush\nipfw -q set 30 table sw1_p0 swap sw1_p0_alt\nipfw -q set 30 table sw1_p0_alt flush\n' \
 	    sh -c "grep '^ipfw -q ' ipfw.log | tail -3"
 	atf_check -o match:'"steer":\[\{"table":"sw1_p0","prefix":"10.1.0.0/24","chosen":-1,' \
+	    -o match:'"bfd":\[\{"address":"100.64.0.1","interface":"gre100","state":"down"' \
 	    "$JGC" -c "$SOCK" sdwan
 	# Only the console's set: never a rule or a table outside it.
 	atf_check -o not-match:'^ipfw -q (add|delete|flush|table)' cat ipfw.log

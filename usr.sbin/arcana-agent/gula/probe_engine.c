@@ -35,6 +35,9 @@
  * sdwan.c's sdwan_probe_changed(), ipfw run, at each edge) is the
  * worker's too, before any job: the engine publishes the snapshot the
  * steering reads, then counts the changes for the worker (steer_due).
+ * BFD's reader (luxuria/sdbird.c) counts its sessions' changes there
+ * too (probe_steer_due()), each after it has published them (its
+ * table, which the steering asks), so a burst of both is one run.
  * The changes are applied in their order: one worker, one steering at a
  * time, each reading the snapshot as it is when it begins, which has
  * every change it was counted for (published before), so the tables
@@ -77,9 +80,9 @@
 #define	OPEN_RETRY_MAX	60.0
 #define	PUB_S		0.1	/* s: the snapshot published, at most */
 #define	LATE_S		0.01	/* s: a probe later than this is late */
-/* Each target's STAMP socket and its jail's echo socket at most (one a
- * target), the FIBs' (probe_icmp.c's FSOCKS_MAX), the pipe. */
-#define	POLL_MAX	(2 * TARGETS_MAX + 2 * (16 + TARGETS_MAX) + 1)
+/* Each target's STAMP socket, the FIBs' echo sockets and the jails'
+ * (probe_icmp.c's FSOCKS_MAX and JSOCKS_MAX), the pipe. */
+#define	POLL_MAX	(TARGETS_MAX + 4 * (16 + TARGETS_MAX) + 1)
 
 /* The engine's: the table, its state. */
 static struct target	*targets;
@@ -186,7 +189,8 @@ job_do(struct job *j)
 		j->ok = stamp_key_derive(j->ifname, j->peer, j->cls, &j->key,
 		    j->err, sizeof(j->err)) == 0;
 	else
-		j->fd = jail_socket(j->jail, j->af, j->err, sizeof(j->err));
+		j->fd = jail_socket(j->jail, j->af, j->fib, j->err,
+		    sizeof(j->err));
 }
 
 static void
@@ -272,6 +276,17 @@ engine_steer(unsigned n)
 	pthread_mutex_unlock(&wk_mtx);
 }
 
+/* n changes of a state said elsewhere (BFD's sessions, luxuria/
+ * sdbird.c), each published before: counted with the targets' for the
+ * worker's next steering. */
+void
+probe_steer_due(unsigned n)
+{
+
+	if (n > 0)
+		engine_steer(n);
+}
+
 /* A plain tunnel's key asked of the worker: its STAMP waits for it. */
 void
 engine_key(struct target *t)
@@ -294,22 +309,20 @@ engine_key(struct target *t)
 	job_post(j);
 }
 
-/* A jail's echo socket of t's FIB and family asked of the worker, its
- * answer gen; false, not asked. */
+/* A jail's echo socket of FIB fib and family af asked of the worker,
+ * its answer gen; false, not asked (errno why). */
 static bool
-engine_jail(struct target *t, uint32_t gen)
+engine_jail(const char *jail, int fib, int af, uint32_t gen)
 {
 	struct job	*j;
 
-	if ((j = calloc(1, sizeof(*j))) == NULL) {
-		snprintf(t->error, sizeof(t->error), "%s", strerror(errno));
+	if ((j = calloc(1, sizeof(*j))) == NULL)
 		return (false);
-	}
 	j->kind = JOB_JAIL;
 	j->gen = gen;
-	snprintf(j->jail, sizeof(j->jail), "%s", t->jail);
-	j->af = t->af;
-	j->fib = t->fib;
+	snprintf(j->jail, sizeof(j->jail), "%s", jail);
+	j->af = af;
+	j->fib = fib;
 	job_post(j);
 	return (true);
 }
@@ -336,7 +349,7 @@ jail_answer(struct job *j, double now)
 		if (waits_for(&targets[i], j->jail, j->fib, j->af))
 			waiting++;
 	if ((fd = jsock_made(j->jail, j->fib, j->af, j->gen, j->fd,
-	    waiting > 0, j->err, sizeof(j->err))) == -2)
+	    waiting > 0, now, j->err)) == -2)
 		return;
 	for (i = 0; i < ntargets; i++) {
 		t = &targets[i];
@@ -557,7 +570,8 @@ prober(void *arg __unused)
 	double		 now, wait, d;
 	uint32_t	 gen;
 	unsigned	 moved;
-	int		 i, j, n, ms, *pt, *pk;
+	char		 jail[64];
+	int		 i, j, n, ms, fib, af, *pt, *pk;
 	bool		 held;
 	char		 c[64];
 
@@ -575,6 +589,12 @@ prober(void *arg __unused)
 		engine_requests();
 		now = now_s();
 		engine_answers(now);
+		/* A jail's sockets kept for every FIB's replies, each asked
+		 * of the worker as it is due. */
+		while (jsock_ask(now, jail, sizeof(jail), &fib, &af, &gen))
+			if (!engine_jail(jail, fib, af, gen))
+				(void)jsock_made(jail, fib, af, gen, -1, false,
+				    now, strerror(errno));
 		wait = 0.2;
 		n = 0;
 		for (i = 0; i < ntargets; i++) {
@@ -596,10 +616,16 @@ prober(void *arg __unused)
 					case JS_HAVE:
 						break;
 					case JS_ASK:
-						if (!engine_jail(t, gen)) {
+						if (!engine_jail(t->jail,
+						    t->fib, t->af, gen)) {
+							snprintf(t->error,
+							    sizeof(t->error),
+							    "%s", strerror(
+							    errno));
 							(void)jsock_made(t->jail,
 							    t->fib, t->af, gen,
-							    -1, false, NULL, 0);
+							    -1, false, now,
+							    NULL);
 							open_later(t, now);
 							state_set(t, ST_ERROR);
 							continue;

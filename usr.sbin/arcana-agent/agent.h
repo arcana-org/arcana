@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.312.0"
+#define	ARCANA_AGENT_VERSION	"0.313.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1074,6 +1074,7 @@ int		 probe_state_of(const char *, const char *);
 bool		 probe_sample_of(const char *, const char *, double *, double *,
 		    double *);
 void		 probe_link(const char *, const char *, bool);
+void		 probe_steer_due(unsigned);
 int		 probe_fibs(int *, int);
 /* gula/stampd.c: stampd(8), the STAMP reflector of the submodule stamp/,
  * set in rc.conf to answer in each FIB the host's services use. */
@@ -1739,7 +1740,7 @@ int		 neigh_list(FILE *, int, const char *);
 int		 addr_lines(FILE *);
 int		 route_socket(void);
 int		 helper_netlink(int);
-int		 helper_icmp_socket(int, int);
+int		 helper_icmp_socket(int, int, int);
 int		 helper_ipfw_socket(int);
 int		 helper_bmp_socket(int, int, int);
 int		 helper_pfkey_socket(int);

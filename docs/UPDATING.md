@@ -93,6 +93,16 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### BFD in the prober's steering, a jail's echo socket every FIB; agent 0.313.0
+
+- BFD session changes no longer remake the SD-WAN steering on BFD's
+  reader thread: they are counted into the prober's worker with the
+  probes' state changes, so a burst of both is one ipfw run.
+- A jail's echo sockets are made by the helper with their FIB set
+  inside the jail (helper verb icmp-socket takes family:fib); while a
+  jail's target is in a table other than 0 the jail gets an echo socket
+  for every FIB (up to 16), as the host already did.
+
 ### Updates only compressed; agent 0.312.0, console 0.460.0
 
 - The console and arcanactl send an agent update only compressed, to

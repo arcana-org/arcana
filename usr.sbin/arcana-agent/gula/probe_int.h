@@ -412,9 +412,10 @@ enum { JS_HAVE, JS_WAIT, JS_ASK, JS_FULL };
 
 bool		 target_open(struct target *);
 int		 jsock_want(struct target *, uint32_t *);
-int		 jsock_made(const char *, int, int, uint32_t, int, bool, char *,
-		    size_t);
-int		 jail_socket(const char *, int, char *, size_t);
+int		 jsock_made(const char *, int, int, uint32_t, int, bool, double,
+		    const char *);
+bool		 jsock_ask(double, char *, size_t, int *, int *, uint32_t *);
+int		 jail_socket(const char *, int, int, char *, size_t);
 void		 icmp_send(struct target *);
 void		 icmp_recv_sock(int, int, struct target *, int, double);
 void		 icmp_table(struct target *, int);

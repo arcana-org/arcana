@@ -306,14 +306,17 @@ helper_netlink(int jid)
 	return (helper_socket(jid, "route-socket", NULL));
 }
 
-/* A raw ICMP or ICMPv6 socket in a jail's own network: probes sent
- * from there, as the jail's routing tables have them. */
+/* A raw ICMP or ICMPv6 socket of FIB fib in a jail's own network, its
+ * FIB set there: probes sent from there, as the jail's routing tables
+ * have them, and the replies that come in on that FIB's interfaces. */
 int
-helper_icmp_socket(int jid, int af)
+helper_icmp_socket(int jid, int af, int fib)
 {
+	char	word[32];
 
-	return (helper_socket(jid, "icmp-socket", af == AF_INET ? "inet" :
-	    "inet6"));
+	snprintf(word, sizeof(word), "%s:%d", af == AF_INET ? "inet" :
+	    "inet6", fib);
+	return (helper_socket(jid, "icmp-socket", word));
 }
 
 /* The raw socket ipfw(8) asks its firewall on (IP_FW3), in a jail's own
@@ -847,14 +850,25 @@ scope_helper(int argc, char **argv)
 	/* The jail's models served on standard input, its LNE root. */
 	if (strcmp(argv[1], "lne-serve") == 0 && argc == 2)
 		return (lne_serve());
-	/* A raw ICMP socket of the jail's network, for the probes. */
+	/* A raw ICMP socket of the jail's network, for the probes: in
+	 * the FIB asked for (family:fib), as the jail's net.fibs has it. */
 	if (strcmp(argv[1], "icmp-socket") == 0 && argc == 3) {
-		int	af, fd;
+		char	fam[8];
+		int	af, fd, fib;
 
-		af = strcmp(argv[2], "inet6") == 0 ? AF_INET6 : AF_INET;
+		if (sscanf(argv[2], "%7[a-z0-9]:%d", fam, &fib) != 2 || fib <
+		    0 || (strcmp(fam, "inet") != 0 && strcmp(fam, "inet6") !=
+		    0))
+			return (2);
+		af = strcmp(fam, "inet6") == 0 ? AF_INET6 : AF_INET;
 		if ((fd = socket(af, SOCK_RAW, af == AF_INET ? IPPROTO_ICMP :
 		    IPPROTO_ICMPV6)) == -1) {
 			fprintf(stderr, "socket: %s\n", strerror(errno));
+			return (1);
+		}
+		if (setsockopt(fd, SOL_SOCKET, SO_SETFIB, &fib, sizeof(fib)) ==
+		    -1) {
+			fprintf(stderr, "fib %d: %s\n", fib, strerror(errno));
 			return (1);
 		}
 		return (fd_send(fd));
