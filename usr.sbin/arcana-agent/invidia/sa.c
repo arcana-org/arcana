@@ -137,6 +137,27 @@ key_public(EVP_PKEY *k, char *b64, size_t len)
 }
 
 /*
+ * An interface's pair not what it was (made, turned, put back): told as
+ * sdwan-key with its public half, so that the console gives the far end
+ * the half its key is derived from (a plain tunnel's STAMP key, the
+ * far end's own derived anew only from it).
+ */
+static void
+key_told(struct work *w, const char *ifname)
+{
+	EVP_PKEY	*k;
+	const char	*e;
+	char		 pub[PUB_B64 + 1], qi[6 * 32 + 1];
+
+	if (w->dry || (k = key_load(w, ifname, false, &e)) == NULL)
+		return;
+	if (key_public(k, pub, sizeof(pub)))
+		event_add("sdwan-key", "{\"interface\":\"%s\",\"public\":"
+		    "\"%s\"}", json_quote(ifname, qi, sizeof(qi)), pub);
+	EVP_PKEY_free(k);
+}
+
+/*
  * A pair made for an interface unless it has one, or its next pair made
  * anew (R110: a new pair for the keys to come); its public half.
  */
@@ -190,6 +211,8 @@ key_make(struct work *w, const char *ifname, bool next, char *pub,
 	step_end(w, step, true, NULL);
 	(void)key_public(k, pub, plen);
 	EVP_PKEY_free(k);
+	if (!next)
+		key_told(w, ifname);
 	return (0);
 }
 
@@ -1699,6 +1722,8 @@ sa_job1(struct work *w, const struct arc_job_spec *sp, int *fdp,
 		else
 			step_end(w, step, false, "%s", *errp);
 		ucl_object_unref(stt);
+		/* The next pair the pair: its half is another. */
+		key_told(w, sp->interface);
 		return (rc);
 	}
 	/* The interface's own policies' reqid, before anything changes. */
@@ -1965,8 +1990,15 @@ sa_undo(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	int		 step, rc, fd;
 	bool		 any;
 
-	if (strcmp(sp->verb, "key") == 0)
+	/* A pair made undone: the one before put back, if there was one. */
+	if (strcmp(sp->verb, "key") == 0) {
+		if (!word_next(sp))
+			key_told(w, sp->interface);
 		return (0);
+	}
+	/* A turn undone: the pair before it put back, told. */
+	if (strcmp(sp->verb, "commit") == 0)
+		key_told(w, sp->interface);
 	/* A selector's policies: only they, as kept. */
 	if (strcmp(sp->verb, "policy") == 0 || strcmp(sp->verb, "unpolicy") ==
 	    0) {

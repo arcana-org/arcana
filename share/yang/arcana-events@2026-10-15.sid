@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-events",
     "module-revision": "2026-10-15",
-    "sid-file-version": 8,
+    "sid-file-version": 9,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -25,6 +25,10 @@
       },
       {
         "entry-point": "80100",
+        "size": "100"
+      },
+      {
+        "entry-point": "94900",
         "size": "100"
       }
     ],
@@ -2523,6 +2527,56 @@
         "namespace": "data",
         "identifier": "/arcana-events:events/read/output/event/block/time",
         "sid": "80198"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "sdwan-key",
+        "sid": "80199"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/key",
+        "sid": "94900"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/key/interface",
+        "sid": "94901"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/key/public",
+        "sid": "94902"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/key",
+        "sid": "94903"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/key/interface",
+        "sid": "94904"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/key/public",
+        "sid": "94905"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/key",
+        "sid": "94906"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/key/interface",
+        "sid": "94907"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/key/public",
+        "sid": "94908"
       }
     ]
   }

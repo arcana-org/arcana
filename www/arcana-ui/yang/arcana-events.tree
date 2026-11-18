@@ -167,18 +167,22 @@ module: arcana-events
      |     |        +--ro out-packets?   uint64
      |     |        +--ro in-packets?    uint64
      |     +--:(block)
-     |        +--ro block
-     |           +--ro instance?   string
-     |           +--ro daemon?     string
-     |           +--ro time?       string
-     |           +--ro src?        string
-     |           +--ro function?   string
-     |           +--ro service?    string
-     |           +--ro policy?     string
-     |           +--ro list?       string
-     |           +--ro target?     string
-     |           +--ro action?     string
-     |           +--ro detail?     string
+     |     |  +--ro block
+     |     |     +--ro instance?   string
+     |     |     +--ro daemon?     string
+     |     |     +--ro time?       string
+     |     |     +--ro src?        string
+     |     |     +--ro function?   string
+     |     |     +--ro service?    string
+     |     |     +--ro policy?     string
+     |     |     +--ro list?       string
+     |     |     +--ro target?     string
+     |     |     +--ro action?     string
+     |     |     +--ro detail?     string
+     |     +--:(key)
+     |        +--ro key
+     |           +--ro interface?   string
+     |           +--ro public?      string
      +---x read
         +---w input
         |  +---w after?   uint64
@@ -349,18 +353,22 @@ module: arcana-events
            |     |        +--ro out-packets?   uint64
            |     |        +--ro in-packets?    uint64
            |     +--:(block)
-           |        +--ro block
-           |           +--ro instance?   string
-           |           +--ro daemon?     string
-           |           +--ro time?       string
-           |           +--ro src?        string
-           |           +--ro function?   string
-           |           +--ro service?    string
-           |           +--ro policy?     string
-           |           +--ro list?       string
-           |           +--ro target?     string
-           |           +--ro action?     string
-           |           +--ro detail?     string
+           |     |  +--ro block
+           |     |     +--ro instance?   string
+           |     |     +--ro daemon?     string
+           |     |     +--ro time?       string
+           |     |     +--ro src?        string
+           |     |     +--ro function?   string
+           |     |     +--ro service?    string
+           |     |     +--ro policy?     string
+           |     |     +--ro list?       string
+           |     |     +--ro target?     string
+           |     |     +--ro action?     string
+           |     |     +--ro detail?     string
+           |     +--:(key)
+           |        +--ro key
+           |           +--ro interface?   string
+           |           +--ro public?      string
            +--ro kept?    uint16
 
   notifications:
@@ -528,15 +536,19 @@ module: arcana-events
           |        +---- out-packets?   uint64
           |        +---- in-packets?    uint64
           +--:(block)
-             +---- block
-                +---- instance?   string
-                +---- daemon?     string
-                +---- time?       string
-                +---- src?        string
-                +---- function?   string
-                +---- service?    string
-                +---- policy?     string
-                +---- list?       string
-                +---- target?     string
-                +---- action?     string
-                +---- detail?     string
+          |  +---- block
+          |     +---- instance?   string
+          |     +---- daemon?     string
+          |     +---- time?       string
+          |     +---- src?        string
+          |     +---- function?   string
+          |     +---- service?    string
+          |     +---- policy?     string
+          |     +---- list?       string
+          |     +---- target?     string
+          |     +---- action?     string
+          |     +---- detail?     string
+          +--:(key)
+             +---- key
+                +---- interface?   string
+                +---- public?      string

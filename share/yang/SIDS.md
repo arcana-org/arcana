@@ -145,7 +145,7 @@ on the wire.
 | 79 500 | 100 | `arcana-packages`, its second range: the read action, pkgbase, the refresh action's update, ignore-osversion and output, every-jail, no-repo-check | `share/yang/arcana-packages@2026-10-14.sid` (21 used) |
 | 79 600 | 200 | `arcana-storage`, its second range: the read action's output, create-encrypted | `share/yang/arcana-storage@2026-10-14.sid` (76 used) |
 | 80 000 | 100 | `arcana-history`, its second range: the read action's settings and totals, the archive and read-archive | `share/yang/arcana-history@2026-10-15.sid` (49 used) |
-| 80 100 | 100 | `arcana-events`, its second range: a route's nexthop and paths, a neighbour's family, a tunnel's jail, undo-failed's data, the read's kept, a job's user, numbered again in path order with sdwan-altmark (PLAN-SDN-YANG 5.5), sdwan-block (MEF 138's SENs of unbound, Squid and c-icap) | `share/yang/arcana-events@2026-10-15.sid` (99 used) |
+| 80 100 | 100 | `arcana-events`, its second range: a route's nexthop and paths, a neighbour's family, a tunnel's jail, undo-failed's data, the read's kept, a job's user, numbered again in path order with sdwan-altmark (PLAN-SDN-YANG 5.5), sdwan-block (MEF 138's SENs of unbound, Squid and c-icap), sdwan-key's identity | `share/yang/arcana-events@2026-10-15.sid` (100 used) |
 | 80 300 | 100 | `arcana-probe`, its second range | `share/yang/arcana-probe@2026-10-15.sid` (100 used) |
 | 80 400 | 300 | `arcana-bird`, its second range: the read, ospf and check actions, a protocol's detail, the jails' configuration, a channel's family, preferred and filtered, a neighbour's interface | `share/yang/arcana-bird@2026-10-15.sid` (161 used) |
 | 81 000 | 200 | `arcana-sdwan`, its second range: the forms (spec, host), the jails' edges, the breakout's routes, a rule's place, the IDS' and the proxies' settings, the apply action, the state's routes, bfd, ClamAV and the IDS' build, host, ruleset, statistics and captures | `share/yang/arcana-sdwan@2026-10-15.sid` (200 used) |
@@ -191,6 +191,7 @@ on the wire.
 | 93 400 | 200 | `ietf-access-control-list@2019-03-04`, RFC 8519 (no IETF range): the ACLs compiled to ipfw (PLAN-SDN-YANG 6.1); `ietf-packet-fields`' groupings numbered in it, the module itself having no items but its name | `share/yang/ietf-access-control-list@2019-03-04.sid` (127 used) |
 | 94 600 | 200 | `ietf-acl-enh@2025-12-22`, RFC 9899 (no IETF range): the defined sets compiled to ipfw with RFC 8519's ACLs (PLAN-SDN-YANG 6.1.5) | `share/yang/ietf-acl-enh@2025-12-22.sid` (133 used) |
 | 94 800 | 100 | `arcana-acl-deviations`, RFC 9899's ipv4-fragment must as its Section 3.5 means it | `share/yang/arcana-acl-deviations@2026-11-18.sid` (1 used) |
+| 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed | `share/yang/arcana-events@2026-10-15.sid` (9 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

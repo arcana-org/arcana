@@ -8899,6 +8899,97 @@ applied_of(struct run *r, const char *sid)
 	return (e);
 }
 
+/*
+ * A plain tunnel's STAMP key (PLAN-SDN-YANG 5.1.7) is derived by each end
+ * from its own pair and the far end's public half, which the apply puts
+ * in its target (${stamp:SID:IF}): a pair made again at one end leaves
+ * the far end's key the old one, its STAMP unauthenticated (the agent's
+ * alarm stamp-unauthenticated), until the far end is given the new half.
+ * What is known of each end's half, by its reference: {half, why}, from
+ * the apply that made the pair, the agent's sdwan-key event, or its
+ * sdwan read (st_lock); what each edge's targets were given, the
+ * state's stamp_sent, edge to reference to half.  An edge given another
+ * half than the one known has its probes made again by the console's
+ * own apply (stamp_tick(), stamp_apply()).
+ */
+static ucl_object_t	*stamp_halves;
+
+static ucl_object_t	*rekey_keys_of(const char *, const char *, char *,
+			    size_t);
+
+/* An end's half as now known, and why; the why of one known already
+ * kept. */
+static void
+stamp_known(const char *ref, const char *half, const char *why)
+{
+	const ucl_object_t	*was;
+	ucl_object_t		*o;
+
+	pthread_mutex_lock(&st_lock);
+	if (stamp_halves == NULL)
+		stamp_halves = ucl_object_typed_new(UCL_OBJECT);
+	was = ucl_object_lookup(stamp_halves, ref);
+	if (was == NULL || str(was, "half") == NULL || strcmp(str(was,
+	    "half"), half) != 0) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		put(o, "half", S(half));
+		put(o, "why", S(why));
+		put(stamp_halves, ref, o);
+	}
+	pthread_mutex_unlock(&st_lock);
+}
+
+/* An end's half read from its agent, known with why; false: none. */
+static bool
+stamp_read(const char *sid, const char *ifn, const char *why)
+{
+	ucl_object_t	*keys;
+	char		 ref[160], w2[300];
+	bool		 ok;
+
+	if ((keys = rekey_keys_of(sid, ifn, w2, sizeof(w2))) == NULL)
+		return (false);
+	if ((ok = str(keys, "public") != NULL)) {
+		snprintf(ref, sizeof(ref), "${stamp:%s:%s}", sid, ifn);
+		stamp_known(ref, str(keys, "public"), why);
+	}
+	ucl_object_unref(keys);
+	return (ok);
+}
+
+/* The far halves an edge's probes were made with, as the apply read
+ * them; none, the edge's forgotten. */
+static void
+stamp_sent_keep(struct run *r, const char *sid, const ucl_object_t *make)
+{
+	ucl_object_t		*all, *sent;
+	const ucl_object_t	*t, *v;
+	ucl_object_iter_t	 it;
+	int			 n;
+
+	if ((all = (ucl_object_t *)(uintptr_t)ucl_object_lookup(r->st,
+	    "stamp_sent")) == NULL) {
+		all = ucl_object_typed_new(UCL_OBJECT);
+		put(r->st, "stamp_sent", all);
+	}
+	sent = ucl_object_typed_new(UCL_OBJECT);
+	n = 0;
+	it = NULL;
+	while ((t = ucl_object_iterate(ucl_object_lookup(ucl_array_find_index(
+	    make, 0), "targets"), &it, true)) != NULL)
+		if (str(t, "stamp_peer") != NULL && (v = ucl_object_lookup(
+		    r->keys, str(t, "stamp_peer"))) != NULL) {
+			put(sent, str(t, "stamp_peer"), ucl_object_copy(v));
+			n++;
+		}
+	if (n > 0)
+		put(all, sid, sent);
+	else {
+		ucl_object_unref(sent);
+		(void)ucl_object_delete_key(all, sid);
+	}
+}
+
 /* What was made taken away: its jobs, each tried. */
 static bool
 do_unmake(struct run *r, ucl_object_t *s)
@@ -8921,6 +9012,9 @@ do_unmake(struct run *r, ucl_object_t *s)
 	/* Gone or not, it is no longer the console's to keep. */
 	(void)ucl_object_delete_key(applied_of(r, str(s, "server")), str(s,
 	    "key"));
+	if (strcmp(str(s, "key"), "probes") == 0)
+		(void)ucl_object_delete_key((ucl_object_t *)(uintptr_t)
+		    ucl_object_lookup(r->st, "stamp_sent"), str(s, "server"));
 	step_set(r, s, ok ? "done" : "failed", ok ? NULL : all);
 	return (ok);
 }
@@ -9011,6 +9105,14 @@ made:
 	put(keep, "unmake", ucl_object_copy(ucl_object_lookup(s, "unmake")));
 	/* In the old one's place: insert_key would keep both. */
 	put(applied_of(r, str(s, "server")), str(s, "key"), keep);
+	/* A probes' far halves as given; a pair's half as made, which its
+	 * far end is given by a later step or the apply after (stamp_tick()). */
+	if (strcmp(str(s, "key"), "probes") == 0)
+		stamp_sent_keep(r, str(s, "server"), ucl_object_lookup(s,
+		    "make"));
+	else if (strncmp(str(s, "key"), "stampkey:", 9) == 0)
+		(void)stamp_read(str(s, "server"), str(s, "key") + 9, "the "
+		    "apply made its pair");
 	step_set(r, s, "done", why[0] != '\0' ? why : NULL);
 	return (true);
 }
@@ -9707,7 +9809,8 @@ api_sdwan_lists(struct http_request *req)
 }
 
 static bool	 apply_now(ucl_object_t *, char *, size_t);
-static bool	 apply_console(const ucl_object_t *, char *, size_t);
+static bool	 apply_console(const ucl_object_t *, const char *, char *,
+		    size_t);
 
 /* ---- Identities: issued, listed, revoked ------------------- */
 
@@ -10318,7 +10421,7 @@ identities_tick(const ucl_object_t *doc, time_t now)
 	}
 	prev = now;
 	if (ucl_object_type(due) == UCL_OBJECT && due->len > 0 &&
-	    !apply_console(due, why, sizeof(why)))
+	    !apply_console(due, NULL, why, sizeof(why)))
 		log_msg(LOG_NOTICE, "identities: an authorisation ran out, no "
 		    "apply: %s", why);
 	ucl_object_unref(due);
@@ -10969,6 +11072,157 @@ rekey_tick(ucl_object_t *st, time_t now)
 	ucl_object_unref(seen);
 }
 
+#define	MGR_STAMP_RETRY_S	60	/* a far end not given its half, again */
+
+/*
+ * The far ends the edges' targets were given halves of, each looked at:
+ * what its agent told since the last look (sdwan-key), or each half read
+ * when it was never looked at, its agent started again, or more happened
+ * than its events keep.  An edge whose targets were given another half
+ * than the one known is due, with why, into due (not again for a while
+ * after one that was).
+ */
+static void
+stamp_tick(const ucl_object_t *st, time_t now, ucl_object_t *due)
+{
+	static ucl_object_t	*cursors, *tried;
+	const ucl_object_t	*b, *v, *e, *h, *data;
+	ucl_object_iter_t	 it, vit;
+	ucl_object_t		*fars, *ifs, *ans;
+	char			 sid[96], ifn[32], ref[160], why[400];
+	char			 uri[256], peer[256], name[128], jail[64], *json;
+	const char		*fsid;
+	int64_t			 last;
+	int			 status;
+	bool			 full;
+
+	if (cursors == NULL) {
+		cursors = ucl_object_typed_new(UCL_OBJECT);
+		tried = ucl_object_typed_new(UCL_OBJECT);
+	}
+	/* The far ends named, each its interfaces. */
+	fars = ucl_object_typed_new(UCL_OBJECT);
+	it = NULL;
+	while ((b = ucl_object_iterate(ucl_object_lookup(st, "stamp_sent"), &it,
+	    true)) != NULL) {
+		vit = NULL;
+		while ((v = ucl_object_iterate(b, &vit, true)) != NULL) {
+			if (sscanf(ucl_object_key(v), "${stamp:%95[^:]:%31[^}]}",
+			    sid, ifn) != 2)
+				continue;
+			if ((ifs = (ucl_object_t *)(uintptr_t)ucl_object_lookup(
+			    fars, sid)) == NULL) {
+				ifs = ucl_object_typed_new(UCL_OBJECT);
+				put(fars, sid, ifs);
+			}
+			put(ifs, ifn, B(true));
+		}
+	}
+	it = NULL;
+	while ((ifs = (ucl_object_t *)(uintptr_t)ucl_object_iterate(fars, &it,
+	    true)) != NULL) {
+		fsid = ucl_object_key(ifs);
+		if (!edge_ref(fsid, uri, sizeof(uri), peer, sizeof(peer), name,
+		    sizeof(name), jail, sizeof(jail)))
+			continue;
+		v = ucl_object_lookup(cursors, fsid);
+		last = v != NULL ? ucl_object_toint(v) : 0;
+		json = hosts_events(uri, peer[0] != '\0' ? peer : NULL, name,
+		    (uint64_t)last, &status);
+		ans = parse(json);
+		free(json);
+		if (status != 200 || (data = ucl_object_lookup(ans, "data")) ==
+		    NULL) {
+			if (ans != NULL)
+				ucl_object_unref(ans);
+			continue;
+		}
+		full = v == NULL || ucl_object_toint(ucl_object_lookup(data,
+		    "first")) > last + 1 || ucl_object_toint(ucl_object_lookup(
+		    data, "last")) < last;
+		vit = NULL;
+		while (full && (e = ucl_object_iterate(ifs, &vit, true)) != NULL)
+			(void)stamp_read(fsid, ucl_object_key(e), "read from its "
+			    "agent: not the half its far end was given");
+		vit = NULL;
+		while (!full && (e = ucl_object_iterate(ucl_object_lookup(data,
+		    "events"), &vit, true)) != NULL) {
+			h = ucl_object_lookup(e, "data");
+			if (str(e, "kind") == NULL || strcmp(str(e, "kind"),
+			    "sdwan-key") != 0 || (str(e, "jail") != NULL &&
+			    str(e, "jail")[0] != '\0') || str(h, "interface") ==
+			    NULL || str(h, "public") == NULL ||
+			    ucl_object_lookup(ifs, str(h, "interface")) == NULL)
+				continue;
+			snprintf(ref, sizeof(ref), "${stamp:%s:%s}", fsid, str(h,
+			    "interface"));
+			stamp_known(ref, str(h, "public"), "its agent told that "
+			    "its pair changed (sdwan-key)");
+		}
+		put(cursors, fsid, I(ucl_object_toint(ucl_object_lookup(data,
+		    "last"))));
+		ucl_object_unref(ans);
+	}
+	ucl_object_unref(fars);
+	/* Each edge given another half than the one known. */
+	it = NULL;
+	while ((b = ucl_object_iterate(ucl_object_lookup(st, "stamp_sent"), &it,
+	    true)) != NULL) {
+		why[0] = '\0';
+		pthread_mutex_lock(&st_lock);
+		vit = NULL;
+		while ((v = ucl_object_iterate(b, &vit, true)) != NULL) {
+			h = ucl_object_lookup(stamp_halves, ucl_object_key(v));
+			if (why[0] != '\0' || h == NULL || str(h, "half") ==
+			    NULL || strcmp(str(h, "half"), ucl_object_tostring(v))
+			    == 0 || sscanf(ucl_object_key(v),
+			    "${stamp:%95[^:]:%31[^}]}", sid, ifn) != 2)
+				continue;
+			snprintf(why, sizeof(why), "%s", str(h, "why"));
+		}
+		pthread_mutex_unlock(&st_lock);
+		if (why[0] == '\0')
+			continue;
+		snprintf(ref, sizeof(ref), "%s", why);
+		snprintf(why, sizeof(why), "the pair of %s's %s made again, %s",
+		    server_name_of(sid), ifn, ref);
+		if ((v = ucl_object_lookup(tried, ucl_object_key(b))) != NULL &&
+		    now - ucl_object_toint(v) < MGR_STAMP_RETRY_S)
+			continue;
+		put(tried, ucl_object_key(b), I(now));
+		put(due, ucl_object_key(b), S(why));
+	}
+}
+
+/*
+ * The edges due given their far ends' new halves, by the console's own
+ * apply (the same steps, locks and fencing as a user's), their probes
+ * alone made again; each said in the audit trail with why.
+ */
+static void
+stamp_apply(const ucl_object_t *due)
+{
+	const ucl_object_t	*d;
+	ucl_object_iter_t	 it;
+	char			 why[300];
+
+	if (!apply_console(due, "probes", why, sizeof(why))) {
+		thread_log(LOG_NOTICE, "sdwan: a STAMP key's new half not given: "
+		    "%s", why);
+		return;
+	}
+	it = NULL;
+	while ((d = ucl_object_iterate(due, &it, true)) != NULL) {
+		audit_add("policies-applied", "Administer", "the services' "
+		    "document", "its probes made again by the console, its "
+		    "STAMP key derived from the far end's new half",
+		    server_name_of(ucl_object_key(d)), "the console, by itself",
+		    "%s", ucl_object_tostring(d));
+		thread_log(LOG_INFO, "sdwan: %s given a STAMP key's new half: %s",
+		    server_name_of(ucl_object_key(d)), ucl_object_tostring(d));
+	}
+}
+
 /* An edge's steering as its sdwan read has it: {at, steer, routes}. */
 static void
 live_keep(ucl_object_t *live, const char *sid, const ucl_object_t *data,
@@ -10992,7 +11246,7 @@ static void
 manager_tick(void)
 {
 	ucl_object_t		*st, *doc, *entries, *sent, *e, *cands, *all;
-	ucl_object_t		*live;
+	ucl_object_t		*live, *due;
 	const ucl_object_t	*ap, *s, *spec, *sw, *pol, *perf, *was, *w;
 	ucl_object_iter_t	 it, eit;
 	char			 uri[256], peer[256], name[128], *json, *text;
@@ -11127,11 +11381,17 @@ manager_tick(void)
 	ucl_object_unref(doc);
 	rekey_tick(st, now);
 	lists_tick(now);
+	due = ucl_object_typed_new(UCL_OBJECT);
+	stamp_tick(st, now, due);
 	pthread_mutex_lock(&st_lock);
 	if (!applying)
 		(void)store_save(STATE_FILE, st);
 	pthread_mutex_unlock(&st_lock);
 	ucl_object_unref(st);
+	/* After the state is written: the apply writes its own. */
+	if (due->len > 0)
+		stamp_apply(due);
+	ucl_object_unref(due);
 }
 
 /* A rotation asked for by hand, in a thread of the console. */
@@ -12006,17 +12266,20 @@ apply_now(ucl_object_t *doc, char *why, size_t wlen)
  * again now (identities whose time ran out drop out of it), on the edges
  * of edges alone (an object keyed by server id), what else it would
  * change there or elsewhere left to the next user's apply.  Nothing
- * kept and not applied yet is made by it.
+ * kept and not applied yet is made by it.  With only, of those edges
+ * that object alone, made again whether it changed or not (a far end's
+ * probes given a pair's new half, stamp_apply()).
  */
 static bool
-apply_console(const ucl_object_t *edges, char *why, size_t wlen)
+apply_console(const ucl_object_t *edges, const char *only, char *why,
+    size_t wlen)
 {
 	struct plan		 pl;
 	ucl_object_t		*st, *chg, *needs, *y;
 	ucl_object_t		*c;
 	ucl_object_iter_t	 it;
 	char			 sid[64], jail[64];
-	int			 n, status;
+	int			 n, status, left;
 
 	pthread_mutex_lock(&st_lock);
 	st = state_load();
@@ -12045,13 +12308,28 @@ apply_console(const ucl_object_t *edges, char *why, size_t wlen)
 	}
 	ucl_object_unref(needs);
 	chg = changes(&pl, st, false);
+	left = 0;
 	it = NULL;
 	while ((c = (ucl_object_t *)(uintptr_t)ucl_object_iterate(chg, &it,
-	    true)) != NULL)
+	    true)) != NULL) {
 		if (str(c, "server") == NULL || !sdwan_edge_split(str(c,
 		    "server"), sid, sizeof(sid), jail, sizeof(jail)) ||
-		    ucl_object_lookup(edges, sid) == NULL)
+		    ucl_object_lookup(edges, sid) == NULL || (only != NULL &&
+		    strcmp(str(c, "key"), only) != 0))
 			put(c, "change", S("keep"));
+		else if (only != NULL && strcmp(str(c, "change"), "keep") == 0)
+			put(c, "change", S("remake"));
+		if (strcmp(str(c, "change"), "keep") != 0)
+			left++;
+	}
+	if (only != NULL && left == 0) {
+		snprintf(why, wlen, "the edges have no %s to make again", only);
+		ucl_object_unref(chg);
+		plan_free(&pl);
+		ucl_object_unref(y);
+		ucl_object_unref(st);
+		return (false);
+	}
 	n = apply_begin(&pl, y, st, chg, false, NULL, why, wlen, &status);
 	ucl_object_unref(y);
 	return (n >= 0);

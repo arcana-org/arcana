@@ -204,19 +204,6 @@
   BIRD's, dnsmasq's, unbound's and Squid's are forms now (spec), which
   the agent renders (luxuria/sdconf.c), as Suricata's already were.
   The module to say the form, or the text the agent rendered.
-- A plain tunnel's STAMP key when the FAR end's pair is made again
-  (agent 0.277.0): each end derives its key from its own pair and the
-  far end's public half, which the console puts in the target
-  (`stamp_peer`, `${stamp:SID:IF}` read from the far end's sdwan read
-  when the apply runs).  A pair made again at this end is used at the
-  next STAMP try without the console (the key derived anew when it
-  brings no authenticated answer), but the far end has this end's new
-  half only after an apply to it, and this end has the far end's new
-  half only after an apply to this end: until then the tunnel's STAMP
-  fails authentication, the target is pinged and arcana-alarms'
-  stamp-unauthenticated is raised.  Whether the console applies both
-  ends when it remakes a pair (or a pair's change is told to it and
-  answered by an apply) is open.
 - The steering is made again on the prober's worker when a target's
   state changes, a burst in one run, and a jail's echo targets share
   one socket a jail, FIB and family (gula/probe_engine.c,
@@ -351,6 +338,25 @@ Written and tested with stand-ins only:
 
 ## Known limits
 
+- A plain tunnel's STAMP key when one end's pair is made again (agent
+  0.277.0): each end derives its key from its own pair and the far
+  end's public half, which the console puts in the target
+  (`stamp_peer`, `${stamp:SID:IF}` read from the far end's sdwan read
+  when the apply runs).  The agent tells a pair made, turned or put
+  back as the event sdwan-key (arcana-events' key case); the console
+  keeps what each edge's targets were given (sdwan-state's stamp_sent)
+  and what each end's half is (from the apply that made the pair, the
+  far end's sdwan-key events the SD-WAN manager reads each tick, or its
+  sdwan read when its events were never read, its agent started again
+  or more happened than it keeps), and an edge given another half than
+  the one known has its probes alone made again by the console's own
+  apply (apply_console(): the same steps, locks and fencing), said in
+  the audit trail with why (console_test:sdwan_apply_stamp_half,
+  agent_test:sdwan_key_event).  Until that apply, a tick or two, the
+  far end's STAMP fails authentication and stamp-unauthenticated is
+  raised.  A pair file changed by hand, no job, is told by nothing: seen
+  once the console reads that end's halves again (its restart).  An
+  apply refused (one running, a role) is tried again a minute on.
 - libwebsockets 5.1 ends a whole HTTP/2 connection (GOAWAY
   PROTOCOL_ERROR, "Another stream not allowed", lib/sansio/h2/http2.c
   in lws_h2_parse_frame_header()) for a HEADERS frame that would open

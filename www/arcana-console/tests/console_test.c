@@ -19357,6 +19357,157 @@ ATF_TC_BODY(sdwan_apply_change, tc)
 	    0);
 }
 
+/* The far half an edge's targets were given for ref, as the state keeps
+ * it (stamp_sent), into buf; "" when none. */
+static void
+stamp_sent_of(const char *sid, const char *ref, char *buf, size_t len)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*st;
+	const ucl_object_t	*v;
+
+	buf[0] = '\0';
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO);
+	if (ucl_parser_add_file(p, "data/sdwan-state.json") && (st =
+	    ucl_parser_get_object(p)) != NULL) {
+		v = ucl_object_lookup(ucl_object_lookup(ucl_object_lookup(st,
+		    "stamp_sent"), sid), ref);
+		if (v != NULL && ucl_object_tostring(v) != NULL)
+			snprintf(buf, len, "%s", ucl_object_tostring(v));
+		ucl_object_unref(st);
+	}
+	ucl_parser_free(p);
+}
+
+/* An edge's object forgotten by the state, as if never made: the next
+ * apply makes it. */
+static void
+stamp_forget(const char *sid, const char *key)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*st;
+	unsigned char		*json;
+	FILE			*fp;
+
+	p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
+	    UCL_PARSER_DISABLE_MACRO);
+	ATF_REQUIRE(ucl_parser_add_file(p, "data/sdwan-state.json"));
+	st = ucl_parser_get_object(p);
+	ucl_parser_free(p);
+	ATF_REQUIRE(ucl_object_delete_key((ucl_object_t *)(uintptr_t)
+	    ucl_object_lookup(ucl_object_lookup(st, "applied"), sid), key));
+	json = ucl_object_emit(st, UCL_EMIT_JSON);
+	ucl_object_unref(st);
+	ATF_REQUIRE((fp = fopen("data/sdwan-state.json.new", "w")) != NULL);
+	fputs((char *)json, fp);
+	fclose(fp);
+	free(json);
+	ATF_REQUIRE(rename("data/sdwan-state.json.new",
+	    "data/sdwan-state.json") == 0);
+}
+
+/* Until an edge's targets are given another half than was: into now. */
+static bool
+stamp_given(const char *sid, const char *ref, const char *was, char *now,
+    size_t len)
+{
+	int	i;
+
+	for (i = 0; i < 400; i++) {
+		stamp_sent_of(sid, ref, now, len);
+		if (now[0] != '\0' && strcmp(now, was) != 0)
+			return (true);
+		usleep(100000);
+	}
+	return (false);
+}
+
+CONSOLE_TC_LONG(sdwan_apply_stamp_half, "SD-WAN's plain tunnel: its pair "
+    "made again at one end, by its agent or by the apply, the far end "
+    "given the new half by the console's own apply, its probes alone")
+ATF_TC_BODY(sdwan_apply_stamp_half, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sb[16], doc[8192], lifn[32], laddr[64];
+	char		refa[80], refb[80], ha[64], hb[64], now[64], jid[24];
+	char		path[200];
+	const char	*st;
+
+	need_fibs(2);
+	sdwan_apply_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc), lifn,
+	    sizeof(lifn), laddr, sizeof(laddr));
+	sdwan_apply_done();
+	/* The gif's ends (PLAN-SDN-YANG 5.1.7): a's targets given b's half
+	 * of gif103, b's a's of gif102, as the apply read them. */
+	snprintf(refb, sizeof(refb), "${stamp:%s:gif103}", sb);
+	snprintf(refa, sizeof(refa), "${stamp:%s:gif102}", sa);
+	stamp_sent_of(sa, refb, hb, sizeof(hb));
+	stamp_sent_of(sb, refa, ha, sizeof(ha));
+	ATF_REQUIRE_MSG(strlen(hb) == 44 && strlen(ha) == 44 && strcmp(ha, hb)
+	    != 0, "%s %s", ha, hb);
+
+	/* By its agent: b's pair made again (its file gone, a key job by
+	 * hand), told as sdwan-key; a's probes made again with the new half
+	 * by the console, b's left as they were. */
+	/* The manager's first look at b first (its halves read, its events
+	 * from then on): two of its ticks. */
+	sleep(11);
+	ATF_REQUIRE(system("f=$(find . -name sdwan-key-gif103.pem | head -1) && "
+	    "[ -n \"$f\" ] && rm \"$f\"") == 0);
+	(void)r1_job(sb, "{\"ipsec-sa\":{\"verb\":\"key\",\"interface\":"
+	    "\"gif103\"}}", &r, jid, sizeof(jid));
+	st = jstr(&r, "arcana-jobs:output.state");
+	ATF_REQUIRE_MSG(st != NULL && (strcmp(st, "done") == 0 || strcmp(st,
+	    "unconfirmed") == 0), "%s", r.body);
+	if (strcmp(st, "unconfirmed") == 0) {
+		resp_free(&r);
+		snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:jobs/job=%s/"
+		    "confirm", sb, jid);
+		http("POST", path, NULL, &r);
+	}
+	resp_free(&r);
+	ATF_REQUIRE_MSG(stamp_given(sa, refb, hb, now, sizeof(now)),
+	    "a's targets not given b's new half");
+	snprintf(hb, sizeof(hb), "%s", now);
+	sdwan_wait(&r);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "done") == 0 &&
+	    strstr(r.body, "\"key\":\"probes\"") != NULL && strstr(r.body,
+	    "\"key\":\"stampkey:") == NULL && strstr(r.body,
+	    "\"change\":\"make\"") == NULL, "%s", r.body);
+	resp_free(&r);
+	stamp_sent_of(sb, refa, now, sizeof(now));
+	ATF_CHECK_STREQ(ha, now);
+	if (system("grep 'policies-applied' data/sdwan-audit.jsonl | "
+	    "grep -q 'its agent told that its pair changed'") != 0)
+		show("data/sdwan-audit.jsonl");
+	ATF_CHECK(system("grep 'policies-applied' data/sdwan-audit.jsonl | "
+	    "grep -q 'its agent told that its pair changed'") == 0);
+
+	/* By the apply: a's pair made again (its file gone, the state's
+	 * stampkey forgotten), the user's apply making it alone; b's probes
+	 * given the new half after, by the console's own apply. */
+	ATF_REQUIRE(system("f=$(find . -name sdwan-key-gif102.pem | head -1) && "
+	    "[ -n \"$f\" ] && rm \"$f\"") == 0);
+	stamp_forget(sa, "stampkey:gif102");
+	r4_read("plan", &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE_EQ_MSG(1, changes_of(&r, "make"), "%s", r.body);
+	resp_free(&r);
+	sdwan_apply_done();
+	ATF_REQUIRE_MSG(stamp_given(sb, refa, ha, now, sizeof(now)),
+	    "b's targets not given a's new half");
+	sdwan_wait(&r);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "done") == 0 &&
+	    strstr(r.body, "\"key\":\"probes\"") != NULL, "%s", r.body);
+	resp_free(&r);
+	stamp_sent_of(sa, refb, now, sizeof(now));
+	ATF_CHECK_STREQ(hb, now);
+	ATF_CHECK(system("grep 'policies-applied' data/sdwan-audit.jsonl | "
+	    "grep -q 'the apply made its pair'") == 0);
+}
+
 /*
  * A Security form (the page's) as arcana-sdwan's sec- instance, made as
  * the page makes it (sdread.c's proxy_one(), ids_one()), unchecked:
@@ -27925,6 +28076,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, feeds_shrink);
 	ATF_TP_ADD_TC(tp, mtls_sctp);
 	ATF_TP_ADD_TC(tp, sdwan_apply_change);
+	ATF_TP_ADD_TC(tp, sdwan_apply_stamp_half);
 	ATF_TP_ADD_TC(tp, sdwan_apply);
 	ATF_TP_ADD_TC(tp, feeds_local);
 	ATF_TP_ADD_TC(tp, sdwan_uswe);

@@ -298,6 +298,10 @@ data_of(const yevent *e)
 		put_str(d, "detail", bl->detail);
 		break;
 	}
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_KEY:
+		put_str(d, "interface", e->key->interface);
+		put_str(d, "public", e->key->public);
+		break;
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_UNDO:
 		put_str(d, "node", e->undo->node);
 		PUT_NUM(d, "errno", e->undo, errno_);

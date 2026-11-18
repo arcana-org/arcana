@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A remade STAMP pair reaches the far end; agent 0.307.0, console 0.456.0
+
+- The agent tells a tunnel interface's pair made, turned or put back as
+  arcana-events' new event sdwan-key (its key case: interface, public;
+  SIDs 80199 and 94900 to 94908, a third range of arcana-events).
+- The console keeps the far halves each edge's targets were given
+  (sdwan-state's stamp_sent), reads the far ends' sdwan-key events each
+  manager tick, and makes an edge's probes alone again by its own apply
+  when a far end's half changed, said in the audit trail
+  (policies-applied, "the console, by itself").  Until then, a tick and
+  an apply, stamp-unauthenticated is raised as before.
+- Update the agents and the console together: an older agent tells no
+  sdwan-key, and an older console cannot read the event.
+
 ### Sign-in retried when unanswered; console 0.455.0
 
 - A page that cannot reach the console as it opens says so ("Cannot

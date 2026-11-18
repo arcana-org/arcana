@@ -201,6 +201,14 @@ module arcana-events {
        inner wildcards) or c-icap with ClamAV (MD+R), read from its
        own log.";
   }
+  identity sdwan-key {
+    base event-kind;
+    description
+      "A tunnel interface's key pair, X25519, made, turned or put
+       back: its public half is not what it was (a plain tunnel's
+       authenticated STAMP key, a uswe tunnel's SAs, are derived from
+       it and the far end's).";
+  }
 
   grouping event {
     description
@@ -1033,6 +1041,20 @@ module arcana-events {
           type string;
           description
             "The entry matched, or the rest of the line.";
+        }
+      }
+      container key {
+        description
+          "sdwan-key: an interface's key pair changed.";
+        leaf interface {
+          type string;
+          description
+            "The tunnel interface whose pair it is.";
+        }
+        leaf public {
+          type string;
+          description
+            "Its public half now, base64.";
         }
       }
     }

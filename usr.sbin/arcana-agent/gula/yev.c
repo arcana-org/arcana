@@ -410,6 +410,15 @@ data_of(cbl_yarena *a, const char *kind, const ucl_object_t *d, yevent *y)
 		c->detail = yj_str(a, d, "detail");
 		y->block = c;
 		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_BLOCK;
+	} else if (strcmp(kind, "sdwan-key") == 0) {
+		struct arcana_events_event_entry_key	*k;
+
+		if (!ALLOC(a, k))
+			return (ENOMEM);
+		k->interface = yj_str(a, d, "interface");
+		k->public = yj_str(a, d, "public");
+		y->key = k;
+		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_KEY;
 	} else if (strcmp(kind, "undo-failed") == 0) {
 		struct arcana_events_event_entry_undo	*c;
 
