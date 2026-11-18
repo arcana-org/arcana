@@ -62,7 +62,7 @@ ARC_YMODS=	ietf-interfaces@2018-02-20 arcana-interfaces@2026-10-14 \
 		ietf-vpn-common@2022-02-11 ietf-network@2018-02-26 \
 		ietf-network-topology@2018-02-26 ietf-sap-ntw@2023-06-20 \
 		ietf-access-control-list@2019-03-04 ietf-acl-enh@2025-12-22 \
-		arcana-acl-deviations@2026-11-18 \
+		arcana-acl-deviations@2026-11-18 arcana-acl@2026-11-19 \
 		ietf-i2nsf-ikeless@2021-07-14 arcana-ikeless-deviations@2026-11-18
 # Modules only imported whose identities are used: their .sid files
 # alone (a VLAN tag's types, the PHY types, the port algorithms; the

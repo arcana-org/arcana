@@ -1,0 +1,60 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-acl",
+    "module-revision": "2026-11-19",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 96 800, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-yang-types",
+        "module-revision": "2025-12-22"
+      },
+      {
+        "module-name": "ietf-access-control-list",
+        "module-revision": "2019-03-04"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "96800",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-acl",
+        "sid": "96800"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters",
+        "sid": "96801"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters/counter",
+        "sid": "96802"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters/counter/ace",
+        "sid": "96803"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters/counter/matched-octets",
+        "sid": "96804"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters/counter/matched-packets",
+        "sid": "96805"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-access-control-list:acls/arcana-acl:counters/counter/name",
+        "sid": "96806"
+      }
+    ]
+  }
+}

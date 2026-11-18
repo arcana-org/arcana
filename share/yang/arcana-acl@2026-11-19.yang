@@ -1,0 +1,69 @@
+module arcana-acl {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-acl";
+  prefix arcacl;
+
+  import ietf-yang-types {
+    prefix yang;
+    reference
+      "RFC 9911: Common YANG Data Types";
+  }
+  import ietf-access-control-list {
+    prefix acl;
+    reference
+      "RFC 8519: YANG Data Model for Network Access Control Lists
+                 (ACLs)";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "Arcana's augments of RFC 8519's ACLs.
+
+     RFC 9899's counter-action names the counters an ACE's matches
+     update and has nothing to read them by: their values are here,
+     each name's the sum over every ACE that names it.";
+
+  revision 2026-11-19 {
+    description
+      "Initial revision: the named counters.";
+  }
+
+  augment "/acl:acls" {
+    description
+      "The counters RFC 9899's counter-action names.";
+    container counters {
+      config false;
+      description
+        "The named counters of the ACLs the system has.";
+      list counter {
+        key "name";
+        description
+          "A counter, by the name an ACE's counter-action gives it
+           (acl-enh:counter-name).";
+        leaf name {
+          type string;
+          description
+            "The counter's name.";
+        }
+        leaf matched-packets {
+          type yang:counter64;
+          description
+            "The packets matched by the ACEs naming the counter.";
+        }
+        leaf matched-octets {
+          type yang:counter64;
+          description
+            "The octets of those packets.";
+        }
+        leaf-list ace {
+          type string;
+          description
+            "The ACEs naming the counter, each 'ACL/ACE'.";
+        }
+      }
+    }
+  }
+}

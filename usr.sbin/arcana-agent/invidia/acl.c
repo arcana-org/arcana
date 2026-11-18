@@ -108,6 +108,28 @@
  * (no M flag), its first where atomic fragments reach the rules, the
  * flags tcpflags does not name (ECE, CWR, AE, reserved), the headers
  * ipfw's IPv6 parser does not know (mobility, HIP, shim6).
+ *
+ * RFC 9899's actions (6.1.7): a rate-limit, accept's alone, is a
+ * dummynet pipe of the ACE's own, "pipe P config bw Bbit/s" (bytes per
+ * second times eight, dummynet's queue of 50 packets, what is past it
+ * dropped), the ACE's rules "pipe P" for "allow"; a packet out of
+ * dummynet goes on accepted (net.inet.ip.fw.one_pass=1, the default and
+ * the admin's: refused otherwise, as is a host without dummynet(4),
+ * which this agent never loads).  The pipes are the ACLs' too, numbered
+ * from the ACE's rule, P = N - 20000 for generation 0 (41000 to 44999)
+ * and N - 10000 for generation 1 (51000 to 54999), the generation the
+ * tables' (above): an edit configures the pipes of the generation not
+ * in use, and the old ones are deleted after the swap.  SD-WAN's
+ * shaping has its pipes and queues from 3000 (the console's
+ * sdwan_edge.c).  A rate of 0 passes nothing: "deny".  A log-action
+ * (local-log) is the rule's log to the destinations its log-id names,
+ * ipfw's logdst: syslog (none named), bpf (the rule's tap, ipfwN, or
+ * ipfw0 where nothing listens there; "ipfw0" names it too), rtsock;
+ * with log-syslog's, both.  A counter-action is a count rule a name
+ * before each of the ACE's rules, the same match, its comment the
+ * ACE's tag with ".cK" (the K-th name); the operational datastore's
+ * counters (arcana-acl) are those rules' counters, a name's summed over
+ * every ACE naming it.
  */
 
 #include <sys/param.h>
@@ -153,6 +175,12 @@
 #define	ACL_PORTLIST	30		/* ipfw's longest port list, in ranges */
 #define	ACL_TABLE_PORTS	8192		/* the most ports a port table holds */
 #define	ACL_PORTS	65536
+#define	ACL_PIPES	41000		/* rate-limit pipes, generation 0's */
+#define	ACL_PIPES_GEN	10000		/* generation 1's from 51000 */
+#define	ACL_BW_MAX	4294967295LL	/* dummynet's bandwidth, bit/s */
+#define	LOGD_SYSLOG	0x1		/* ipfw's logdst */
+#define	LOGD_BPF	0x2
+#define	LOGD_RTSOCK	0x4
 
 typedef struct ietf_access_control_list_acls yacls;
 typedef struct ietf_access_control_list_acls_acl yacl;
@@ -169,10 +197,12 @@ typedef struct ietf_access_control_list_acls_acl_enh_defined_sets_aliases_alias
 static pthread_mutex_t	acl_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* A rule of the kernel's: its number, set, counters and comment ("" none);
- * count whether its action is count (a layer-2 pass's tagging), gen the
- * generation of the ACLs' tables it names (-1 none). */
+ * count whether its action is count (a layer-2 pass's tagging, a named
+ * counter), pipe the dummynet pipe it sends to (0 none), gen the
+ * generation of the ACLs' tables or pipes it names (-1 none). */
 struct krule {
 	long		 num;
+	long		 pipe;
 	int		 set;
 	int		 gen;
 	bool		 count;
@@ -1346,6 +1376,49 @@ ext6_word(unsigned h)
 
 /* ---- The ACEs -------------------------------------------------------- */
 
+/* The rate-limit pipe of the ACE at rule num in generation gen. */
+static int
+pipe_of(int num, int gen)
+{
+
+	return (ACL_PIPES + gen * ACL_PIPES_GEN + (num - ACL_BANDS));
+}
+
+/* The generation of an ACLs' pipe, -1 where p is none of theirs. */
+static int
+pipe_gen(long p)
+{
+
+	for (int g = 0; g < 2; g++)
+		if (p >= pipe_of(ACL_BANDS, g) && p <= pipe_of(ACL_BANDS_END, g))
+			return (g);
+	return (-1);
+}
+
+/* A log-id as ipfw's log destinations (LOGD_*) into *d: a comma list of
+ * syslog, bpf (ipfw0 too) and rtsock.  -1 where it names another. */
+static int
+logdst_of(const char *id, unsigned *d)
+{
+	const char	*p;
+	size_t		 n;
+
+	for (p = id;; p += n + 1) {
+		n = strcspn(p, ",");
+		if (n == 6 && strncmp(p, "syslog", n) == 0)
+			*d |= LOGD_SYSLOG;
+		else if ((n == 3 && strncmp(p, "bpf", n) == 0) ||
+		    (n == 5 && strncmp(p, "ipfw0", n) == 0))
+			*d |= LOGD_BPF;
+		else if (n == 6 && strncmp(p, "rtsock", n) == 0)
+			*d |= LOGD_RTSOCK;
+		else
+			return (-1);
+		if (p[n] == '\0')
+			return (0);
+	}
+}
+
 /*
  * What ipfw cannot say, refused (6.1.3): the node at fault by its path
  * below the ACE's matches or actions, what of it, and why ipfw cannot;
@@ -1377,21 +1450,30 @@ ext6_word(unsigned h)
  * comes up from ether_demux() with its tags, so this holds on the way
  * in alone.  One rule, or two where a reject of either family needs
  * each its own unreachable, and the tagging one before; an ACE naming
- * aliases has those for each alias, every one at its number.
+ * aliases has those for each alias, every one at its number.  tag is
+ * the ACE's in the name map; a counter-action's count rules go before
+ * each of the ACE's rules, a rate-limit's pipe is configured in the
+ * same file (*rate set).
  */
 static int
 ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
-    const yace *e, const char *cm, const ysets *ds, int gen, bool *ff6,
-    struct aclerr *ae)
+    const yace *e, const char *tag, const char *cm, const ysets *ds, int gen,
+    bool *ff6, bool *rate, struct aclerr *ae)
 {
+	const struct ietf_access_control_list_acls_acl_aces_ace_actions_acl_enh_log_action
+	    *la;
+	const struct ietf_access_control_list_acls_acl_aces_ace_actions_acl_enh_counter_action
+	    *ca;
 	const ymatch	*m = e->matches;
 	struct pmatch	 sp, dp;
 	char		 more[4096], aw[2048], ethw[160], frag[32], tcpf[48];
-	char		 l2w[32], dmac[40], smac[40], proto[16], act[48];
-	const char	*src, *dst, *log;
+	char		 l2w[32], dmac[40], smac[40], proto[16], act[64];
+	char		 log[40], rule[6400], ctag[48], ccm[ACL_COMMENT + 1];
+	const char	*src, *dst;
 	uint64_t	 fwd;
-	unsigned	 et;
-	size_t		 na;
+	int64_t		 rl, bits;
+	unsigned	 et, logd;
+	size_t		 na, nc;
 	int		 p, fams[2], nf;
 
 	src = dst = "any";
@@ -1400,26 +1482,52 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 	if (e->actions == NULL || !e->actions->has_forwarding)
 		INVALID("actions/forwarding", "acl %s, ace %s: no forwarding "
 		    "action", acl, e->name);
-	/* RFC 9899's actions are 6.1.7's: refused until then. */
-	REFUSE(e->actions->acl_enh_log_action != NULL,
-	    "actions/ietf-acl-enh:log-action", "log-action", "not yet "
-	    "(logging, RFC 8519's, is log-syslog)");
-	REFUSE(e->actions->acl_enh_counter_action != NULL,
-	    "actions/ietf-acl-enh:counter-action", "counter-action", "not yet "
-	    "(the ACE's statistics are its rule's counters)");
-	REFUSE(e->actions->has_acl_enh_rate_limit,
-	    "actions/ietf-acl-enh:rate-limit", "rate-limit", "not yet (a "
-	    "dummynet pipe)");
-	/* Logging: to syslogd(8), the rule's own destination. */
-	log = "";
+	/* Logging: RFC 8519's log-syslog and RFC 9899's local-log, the
+	 * rule's own destinations (logdst). */
+	logd = 0;
 	if (e->actions->has_logging && e->actions->logging ==
 	    acl_ident("log-syslog"))
-		log = " log logdst syslog";
+		logd |= LOGD_SYSLOG;
 	else
 		REFUSE(e->actions->has_logging && e->actions->logging !=
 		    acl_ident("log-none"), "actions/logging", "a log action "
 		    "other than log-syslog and log-none", "ipfw logs to "
 		    "syslogd(8), bpf(4) or the routing socket");
+	if ((la = e->actions->acl_enh_log_action) != NULL &&
+	    la->has_log_type) {
+		REFUSE(la->log_type != enh_ident("local-log"),
+		    "actions/ietf-acl-enh:log-action/log-type", "a log type "
+		    "other than local-log", "ipfw logs to syslogd(8), bpf(4) "
+		    "or the routing socket");
+		if (la->log_id == NULL)
+			logd |= LOGD_SYSLOG;
+		else if (logdst_of(la->log_id, &logd) != 0)
+			return (fault(ae, EOPNOTSUPP, "acl/aces/ace/actions/"
+			    "ietf-acl-enh:log-action/log-id", "acl %s, ace %s: "
+			    "log-id %s is not compiled into ipfw by this agent: "
+			    "ipfw logs to syslog (syslogd(8), the security "
+			    "facility; a file is syslog.conf(5)'s), bpf (the "
+			    "rule's bpf(4) tap) or rtsock (the routing socket), "
+			    "a comma list of them", acl, e->name, la->log_id));
+	}
+	log[0] = '\0';
+	if (logd != 0)
+		snprintf(log, sizeof(log), " log logdst %s%s%s%s%s",
+		    logd & LOGD_SYSLOG ? "syslog" : "",
+		    (logd & LOGD_SYSLOG) && (logd & ~LOGD_SYSLOG) ? "," : "",
+		    logd & LOGD_BPF ? "bpf" : "",
+		    (logd & LOGD_BPF) && (logd & LOGD_RTSOCK) ? "," : "",
+		    logd & LOGD_RTSOCK ? "rtsock" : "");
+	/* Counters: a count rule a name. */
+	nc = 0;
+	if ((ca = e->actions->acl_enh_counter_action) != NULL &&
+	    ca->has_counter_type) {
+		REFUSE(ca->counter_type != enh_ident("counter-name"),
+		    "actions/ietf-acl-enh:counter-action/counter-type",
+		    "a counter type other than counter-name", "a counter is a "
+		    "count rule of ipfw's, by its name");
+		nc = ca->counter_name.n;
+	}
 	if (m != NULL && m->eth != NULL) {
 		if (mac_word(dmac, sizeof(dmac),
 		    m->eth->destination_mac_address,
@@ -1829,7 +1937,34 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 		fams[nf++] = 6;
 	} else
 		fams[nf++] = fam;
-	if (fwd == acl_ident("accept"))
+	/* A rate-limit, in hundredths of bytes a second: a pipe of the
+	 * ACE's own, configured before its rules. */
+	rl = e->actions->acl_enh_rate_limit;
+	if (e->actions->has_acl_enh_rate_limit) {
+		if (fwd != acl_ident("accept"))
+			INVALID("actions/ietf-acl-enh:rate-limit", "acl %s, ace "
+			    "%s: a rate-limit is accept's alone", acl, e->name);
+		if (rl < 0)
+			INVALID("actions/ietf-acl-enh:rate-limit", "acl %s, ace "
+			    "%s: a rate-limit below 0", acl, e->name);
+		REFUSE(rl > ACL_BW_MAX * 100 / 8,
+		    "actions/ietf-acl-enh:rate-limit", "a rate-limit past "
+		    "536870911.87 bytes per second", "dummynet's bandwidth is "
+		    "32 bits of bits per second");
+		REFUSE(rl * 8 % 100 != 0, "actions/ietf-acl-enh:rate-limit",
+		    "a rate-limit of a fraction of a bit per second",
+		    "dummynet's bandwidth is whole bits per second (bytes per "
+		    "second in steps of 0.25)");
+	}
+	if (e->actions->has_acl_enh_rate_limit && rl > 0) {
+		bits = rl * 8 / 100;
+		fprintf(fp, "pipe %d config bw %jdbit/s\n", pipe_of(num, gen),
+		    (intmax_t)bits);
+		*rate = true;
+		snprintf(act, sizeof(act), "pipe %d%s", pipe_of(num, gen), log);
+	} else if (e->actions->has_acl_enh_rate_limit)
+		snprintf(act, sizeof(act), "deny%s", log);
+	else if (fwd == acl_ident("accept"))
 		snprintf(act, sizeof(act), "allow%s", log);
 	else if (fwd == acl_ident("drop"))
 		snprintf(act, sizeof(act), "deny%s", log);
@@ -1854,10 +1989,17 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				snprintf(act, sizeof(act), "%s%s", fams[i] == 6 ?
 				    "unreach6 admin-prohib" :
 				    "unreach filter-prohib", log);
-			fprintf(fp, "add %d set %d %s %s from %s to %s%s%s%s%s "
-			    "// %s\n", num, ACL_STAGE, act, proto, src, dst,
-			    more, aw, l2w, fams[i] == 4 ? " ip4" : fams[i] == 6 ?
-			    " ip6" : "", cm);
+			snprintf(rule, sizeof(rule), "%s from %s to %s%s%s%s%s",
+			    proto, src, dst, more, aw, l2w, fams[i] == 4 ?
+			    " ip4" : fams[i] == 6 ? " ip6" : "");
+			for (size_t k = 0; k < nc; k++) {
+				snprintf(ctag, sizeof(ctag), "%s.c%zu", tag, k);
+				comment_of(ccm, sizeof(ccm), ctag, acl, e->name);
+				fprintf(fp, "add %d set %d count %s // %s\n", num,
+				    ACL_STAGE, rule, ccm);
+			}
+			fprintf(fp, "add %d set %d %s %s // %s\n", num,
+			    ACL_STAGE, act, rule, cm);
 		}
 	}
 	return (0);
@@ -1915,23 +2057,23 @@ attached(const yacls *c, int *att, struct aclerr *ae)
 /*
  * The ACLs as ipfw's commands for the staging set, a line each, into
  * fp, the defined sets' tables of generation gen first; how many rules
- * into *nrules, the first ACL with an Ethernet match into *l2 and the
- * first with an IPv6 first-fragment match into *ff6 (NULL none).  -1
- * and why when one cannot be.
+ * into *nrules, the first ACL with an Ethernet match into *l2, the
+ * first with an IPv6 first-fragment match into *ff6 and the first with
+ * a rate-limit into *dn (NULL none).  -1 and why when one cannot be.
  */
 static int
 acl_compile(const yacls *c, int gen, FILE *fp, int *nrules, const char **l2,
-    const char **ff6, struct aclerr *ae)
+    const char **ff6, const char **dn, struct aclerr *ae)
 {
 	const yacl	*l;
 	const yattach	*ap;
 	char		 cm[ACL_COMMENT + 1], tag[32];
 	int		*band, *att, fam, num, k;
 	size_t		 i, j;
-	bool		 eth, ff;
+	bool		 eth, ff, rate;
 
 	*nrules = 0;
-	*l2 = *ff6 = NULL;
+	*l2 = *ff6 = *dn = NULL;
 	if (c == NULL || (c->acl.n == 0 && (c->attachment_points == NULL ||
 	    c->attachment_points->interface.n == 0)))
 		return (0);
@@ -1982,13 +2124,15 @@ acl_compile(const yacls *c, int gen, FILE *fp, int *nrules, const char **l2,
 			snprintf(tag, sizeof(tag), "%zu.%zu", i, j + 1);
 			comment_of(cm, sizeof(cm), tag, l->name,
 			    l->aces->ace.v[j].name);
-			ff = false;
+			ff = rate = false;
 			if (ace_compile(fp, l->name, fam, att[i], eth,
-			    band[i] + (int)j, &l->aces->ace.v[j], cm,
-			    c->acl_enh_defined_sets, gen, &ff, ae) != 0)
+			    band[i] + (int)j, &l->aces->ace.v[j], tag, cm,
+			    c->acl_enh_defined_sets, gen, &ff, &rate, ae) != 0)
 				goto bad;
 			if (ff && *ff6 == NULL)
 				*ff6 = l->name;
+			if (rate && *dn == NULL)
+				*dn = l->name;
 			(*nrules)++;
 		}
 		snprintf(tag, sizeof(tag), "%zu.end", i);
@@ -2069,9 +2213,9 @@ bad:
 
 /*
  * The kernel's rules, ipfw -a -S list's: each number, counters, set,
- * comment (a disabled set's, "# DISABLED", left out) and the generation
- * of the ACLs' tables it names.  -1 where ipfw cannot be read (not
- * loaded, or not there).
+ * comment (a disabled set's, "# DISABLED", left out), the pipe it sends
+ * to and the generation of the ACLs' tables or pipes it names.  -1
+ * where ipfw cannot be read (not loaded, or not there).
  */
 static int
 kernel_rules(struct work *w, struct krule **out, size_t *np)
@@ -2116,12 +2260,15 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 		v[n].pkts = pkts;
 		v[n].bytes = bytes;
 		v[n].count = strncmp(line + off, "count ", 6) == 0;
+		v[n].pipe = strncmp(line + off, "pipe ", 5) == 0 ?
+		    strtol(line + off + 5, NULL, 10) : 0;
 		c = strstr(line + off, "// ");
 		v[n].comment = c != NULL ? c + 3 : "";
 		if (c != NULL)
 			line[c - line] = '\0';
 		v[n].gen = strstr(line + off, ACL_TABLE "0-") != NULL ? 0 :
-		    strstr(line + off, ACL_TABLE "1-") != NULL ? 1 : -1;
+		    strstr(line + off, ACL_TABLE "1-") != NULL ? 1 :
+		    pipe_gen(v[n].pipe);
 		n++;
 	}
 	*out = v;
@@ -2150,6 +2297,13 @@ kernel_free(const struct krule *k, size_t n, struct aclerr *ae)
 			    "a number the ACLs keep (%d, %d to %d): renumber it "
 			    "first", k[i].num, k[i].set, ACL_ENTRY, ACL_GUARD,
 			    ACL_PAST - 1));
+		if (pipe_gen(k[i].pipe) != -1)
+			return (fault(ae, EBUSY, NULL, "rule %ld of set %d sends "
+			    "to pipe %ld, a number the ACLs' rate-limits keep (%d "
+			    "to %d, %d to %d): give it a pipe of its own first",
+			    k[i].num, k[i].set, k[i].pipe, pipe_of(ACL_BANDS, 0),
+			    pipe_of(ACL_BANDS_END, 0), pipe_of(ACL_BANDS, 1),
+			    pipe_of(ACL_BANDS_END, 1)));
 		if (k[i].gen != -1)
 			return (fault(ae, EBUSY, NULL, "rule %ld of set %d names "
 			    "a table the ACLs keep (" ACL_TABLE "0-*, " ACL_TABLE
@@ -2287,27 +2441,82 @@ tables_drop(struct work *w, int gen)
 			(void)IPFW(w, NULL, 0, "table", t[i].name, "destroy");
 }
 
-/* Whether an integer sysctl of the admin's is set (sysctl(8) where a
- * stand-in is given); 0 where it cannot be read. */
-static bool
-fw_sysctl(struct work *w, const char *name)
+/* An integer sysctl of the admin's into *v (sysctl(8) where a stand-in
+ * is given); -1 where it cannot be read. */
+static int
+fw_sysctl_get(struct work *w, const char *name, int *v)
 {
 	struct execres	 res;
 	char		*argv[4];
 	size_t		 len;
-	int		 v;
 
 	if (strcmp(opts.sysctl_bin, "/sbin/sysctl") == 0) {
-		len = sizeof(v);
-		return (sysctlbyname(name, &v, &len, NULL, 0) == 0 && v != 0);
+		len = sizeof(*v);
+		return (sysctlbyname(name, v, &len, NULL, 0) == 0 ? 0 : -1);
 	}
 	argv[0] = (char *)(uintptr_t)opts.sysctl_bin;
 	argv[1] = (char *)(uintptr_t)"-n";
 	argv[2] = (char *)(uintptr_t)name;
 	argv[3] = NULL;
 	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
-		return (false);
-	return (strtol(wstrndup(w, res.out, res.outlen), NULL, 10) != 0);
+		return (-1);
+	*v = (int)strtol(wstrndup(w, res.out, res.outlen), NULL, 10);
+	return (0);
+}
+
+/* Whether an integer sysctl of the admin's is set; not where it cannot
+ * be read. */
+static bool
+fw_sysctl(struct work *w, const char *name)
+{
+	int	v;
+
+	return (fw_sysctl_get(w, name, &v) == 0 && v != 0);
+}
+
+/* Whether dummynet(4) is there: its sysctls are, net.inet.ip.dummynet. */
+static bool
+dn_loaded(struct work *w)
+{
+	int	v;
+
+	return (fw_sysctl_get(w, "net.inet.ip.dummynet.hash_size", &v) == 0);
+}
+
+/*
+ * The ACLs' pipes of generation gen (-1 both) deleted, as dummynet has
+ * them now (ipfw pipe show: a pipe's line "NNNNN: bandwidth ..."); none
+ * of them may be named by an enabled rule then.  Nothing without
+ * dummynet.
+ */
+static void
+pipes_drop(struct work *w, int gen)
+{
+	struct execres	 res;
+	const char	*p, *nl;
+	char		*argv[4], num[16], *e;
+	long		 n;
+	int		 g;
+
+	if (!dn_loaded(w))
+		return;
+	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
+	argv[1] = (char *)(uintptr_t)"pipe";
+	argv[2] = (char *)(uintptr_t)"show";
+	argv[3] = NULL;
+	if (run_exec_max(w, argv, &res, ARC_MAX_JSON) != 0 || res.out == NULL)
+		return;
+	for (p = res.out; *p != '\0'; p = *nl != '\0' ? nl + 1 : nl) {
+		nl = p + strcspn(p, "\n");
+		if (!isdigit((unsigned char)*p))
+			continue;
+		n = strtol(p, &e, 10);
+		if (*e != ':' || (g = pipe_gen(n)) == -1 ||
+		    (gen != -1 && g != gen))
+			continue;
+		snprintf(num, sizeof(num), "%ld", n);
+		(void)IPFW(w, NULL, 0, "pipe", num, "delete");
+	}
 }
 
 /* Whether frames reach ipfw on the layer-2 pass: net.link.ether.ipfw,
@@ -2321,8 +2530,8 @@ ether_ipfw(struct work *w)
 
 /*
  * The ACLs c made what the kernel has, all at once (above); none, set
- * 29 deleted and the ACLs' tables destroyed.  -1 and why into ae, the
- * kernel as it was.
+ * 29 deleted and the ACLs' tables destroyed and pipes deleted.  -1 and
+ * why into ae, the kernel as it was.
  */
 static int
 acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
@@ -2331,11 +2540,11 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	size_t		 errlen = sizeof(ae->msg);
 	struct krule	*k;
 	struct ktable	*t;
-	const char	*l2, *ff6;
+	const char	*l2, *ff6, *dn;
 	char		 path[MAXPATHLEN], *buf;
 	size_t		 nk, nt, blen;
 	FILE		*fp;
-	int		 nrules, fd, rc, gen;
+	int		 nrules, fd, rc, gen, v;
 	bool		 ours, readable;
 
 	/* The tables' generation: the one not in use. */
@@ -2350,7 +2559,7 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	if ((fp = open_memstream(&buf, &blen)) == NULL)
 		return (fault(ae, errno, NULL, "open_memstream: %s",
 		    strerror(errno)));
-	rc = acl_compile(c, gen, fp, &nrules, &l2, &ff6, ae);
+	rc = acl_compile(c, gen, fp, &nrules, &l2, &ff6, &dn, ae);
 	if (fclose(fp) != 0 && rc == 0)
 		rc = fault(ae, errno, NULL, "the rules: %s", strerror(errno));
 	if (rc != 0) {
@@ -2376,6 +2585,22 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 		    "admin's to set, not this agent's): ipfw reads no M flag of "
 		    "IPv6's, and an atomic fragment (offset 0, no M) would match "
 		    "as a first one", ff6));
+	/* A rate-limit's pipe is dummynet's, which this agent never loads;
+	 * a packet out of it goes on accepted only with one_pass. */
+	if (dn != NULL && !dn_loaded(w))
+		return (fault(ae, EIO, "acl/aces/ace/actions/ietf-acl-enh:"
+		    "rate-limit", "acl %s: a rate-limit is a dummynet(4) pipe, "
+		    "and dummynet is not loaded (no net.inet.ip.dummynet): "
+		    "loading it (kldload dummynet, dummynet_enable=YES) is the "
+		    "admin's, not this agent's", dn));
+	if (dn != NULL && fw_sysctl_get(w, "net.inet.ip.fw.one_pass", &v) ==
+	    0 && v == 0)
+		return (fault(ae, EOPNOTSUPP, "acl/aces/ace/actions/"
+		    "ietf-acl-enh:rate-limit", "acl %s: a rate-limit is not "
+		    "compiled into ipfw by this agent with "
+		    "net.inet.ip.fw.one_pass=0 (the admin's to set, not this "
+		    "agent's): a packet out of the pipe would meet the rules "
+		    "after the ACE again, where accept ends them", dn));
 	if (!readable) {
 		if (nrules == 0)
 			return (0);
@@ -2406,6 +2631,7 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 			return (-1);
 		if (nt > 0)
 			tables_drop(w, -1);
+		pipes_drop(w, -1);
 		return (0);
 	}
 	sdwan_conf_path(ACL_LOAD, path, sizeof(path));
@@ -2419,27 +2645,32 @@ acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 	}
 	close(fd);
 	/* The staging set emptied and disabled, what is left of the new
-	 * generation's tables destroyed; the tables filled and the rules
-	 * loaded into set 28, then swapped in: set 28 holds the old ones,
-	 * disabled, and goes, and so do the old generation's tables. */
+	 * generation's tables and pipes gone; the tables filled, the pipes
+	 * configured and the rules loaded into set 28, then swapped in: set
+	 * 28 holds the old ones, disabled, and goes, and so do the old
+	 * generation's tables and pipes. */
 	(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
 	tables_drop(w, gen);
+	pipes_drop(w, gen);
 	rc = -1;
 	if (IPFW(w, err, errlen, "set", "disable", "28") != 0)
 		goto out;
 	if (IPFW(w, err, errlen, path) != 0) {
 		(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
 		tables_drop(w, gen);
+		pipes_drop(w, gen);
 		goto out;
 	}
 	if (IPFW(w, err, errlen, "set", "swap", "28", "29") != 0) {
 		(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
 		tables_drop(w, gen);
+		pipes_drop(w, gen);
 		goto out;
 	}
 	(void)IPFW(w, NULL, 0, "set", "enable", "29");
 	(void)IPFW(w, NULL, 0, "-f", "delete", "set", "28");
 	tables_drop(w, 1 - gen);
+	pipes_drop(w, 1 - gen);
 	rc = 0;
 out:
 	(void)unlink(path);
@@ -2583,6 +2814,101 @@ arena_str(cbl_yarena *a, const char *s)
 	return (p);
 }
 
+/* An ACE's counter-action, NULL where it names no counter. */
+static const struct ietf_access_control_list_acls_acl_aces_ace_actions_acl_enh_counter_action *
+ace_counters(const yace *e)
+{
+	const struct ietf_access_control_list_acls_acl_aces_ace_actions_acl_enh_counter_action
+	    *ca;
+
+	if (e->actions == NULL || (ca = e->actions->acl_enh_counter_action) ==
+	    NULL || !ca->has_counter_type ||
+	    ca->counter_type != enh_ident("counter-name") ||
+	    ca->counter_name.n == 0)
+		return (NULL);
+	return (ca);
+}
+
+/*
+ * The named counters (arcana-acl) into *out: each name's count rules in
+ * set 29 (the ACE's tag with ".cK"), over every ACE naming it of the
+ * ACLs installed whole (whole[i]), summed; NULL none.
+ */
+static int
+counters_installed(const struct krule *k, size_t nk, const yacls *c,
+    const bool *whole, cbl_yarena *a,
+    const struct ietf_access_control_list_acls_arcacl_counters **out)
+{
+	const struct ietf_access_control_list_acls_acl_aces_ace_actions_acl_enh_counter_action
+	    *ca;
+	struct ietf_access_control_list_acls_arcacl_counters *cs;
+	struct ietf_access_control_list_acls_arcacl_counters_counter *v;
+	const yacl	*l;
+	const char	**aces;
+	char		 tag[48], cm[ACL_COMMENT + 1], *an;
+	size_t		 max, n, i, j, q, x, len;
+
+	*out = NULL;
+	max = 0;
+	for (i = 0; i < c->acl.n; i++)
+		for (j = 0; whole[i] && c->acl.v[i].aces != NULL &&
+		    j < c->acl.v[i].aces->ace.n; j++)
+			if ((ca = ace_counters(&c->acl.v[i].aces->ace.v[j])) !=
+			    NULL)
+				max += ca->counter_name.n;
+	if (max == 0)
+		return (0);
+	if ((cs = cbl_yarena_alloc(a, sizeof(*cs))) == NULL ||
+	    (v = cbl_yarena_alloc(a, max * sizeof(*v))) == NULL)
+		return (ENOMEM);
+	memset(v, 0, max * sizeof(*v));
+	n = 0;
+	for (i = 0; i < c->acl.n; i++) {
+		l = &c->acl.v[i];
+		for (j = 0; whole[i] && l->aces != NULL && j < l->aces->ace.n;
+		    j++) {
+			if ((ca = ace_counters(&l->aces->ace.v[j])) == NULL)
+				continue;
+			len = strlen(l->name) + strlen(l->aces->ace.v[j].name) + 2;
+			if ((an = cbl_yarena_alloc(a, len)) == NULL)
+				return (ENOMEM);
+			snprintf(an, len, "%s/%s", l->name,
+			    l->aces->ace.v[j].name);
+			for (q = 0; q < ca->counter_name.n; q++) {
+				for (x = 0; x < n && strcmp(v[x].name,
+				    ca->counter_name.v[q]) != 0; x++)
+					;
+				if (x == n) {
+					if ((aces = cbl_yarena_alloc(a, max *
+					    sizeof(*aces))) == NULL)
+						return (ENOMEM);
+					v[n].name = ca->counter_name.v[q];
+					v[n].has_matched_packets =
+					    v[n].has_matched_octets = true;
+					v[n].ace.v = aces;
+					n++;
+				}
+				aces = (const char **)(uintptr_t)v[x].ace.v;
+				aces[v[x].ace.n++] = an;
+				snprintf(tag, sizeof(tag), "%zu.%zu.c%zu", i, j + 1,
+				    q);
+				comment_of(cm, sizeof(cm), tag, l->name,
+				    l->aces->ace.v[j].name);
+				for (size_t r = 0; r < nk; r++)
+					if (k[r].set == ACL_SET &&
+					    strcmp(k[r].comment, cm) == 0) {
+						v[x].matched_packets += k[r].pkts;
+						v[x].matched_octets += k[r].bytes;
+					}
+			}
+		}
+	}
+	cs->counter.n = n;
+	cs->counter.v = v;
+	*out = cs;
+	return (0);
+}
+
 /* A table's entries as a's prefixes, into *v and *n; ENOMEM. */
 static int
 table_prefixes(const struct ktable *t, cbl_yarena *a, const char *const **v,
@@ -2695,9 +3021,9 @@ sets_installed(const ysets *ds, const struct ktable *t, size_t nt, int gen,
 /*
  * Running's acls as the kernel has them, into out: each ACL whose band
  * is whole (every ACE's rule and the return, by the name map), its ACEs
- * with their statistics, each attachment whose call is there, the
- * defined sets where the ACLs are installed (sets_installed()); nothing
- * where ipfw cannot be read.
+ * with their statistics, the named counters (counters_installed()),
+ * each attachment whose call is there, the defined sets where the ACLs
+ * are installed (sets_installed()); nothing where ipfw cannot be read.
  */
 static int
 acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
@@ -2774,6 +3100,9 @@ acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
 	}
 	r->acl.n = n;
 	r->acl.v = v;
+	if ((error = counters_installed(k, nk, c, whole, a,
+	    &r->arcacl_counters)) != 0)
+		return (error);
 	if (c->attachment_points != NULL &&
 	    c->attachment_points->interface.n > 0 &&
 	    has_rule(k, nk, "entry", NULL, NULL)) {

@@ -2901,8 +2901,10 @@ alarm_shelving_cleanup()
 # disable change nothing it lists.  Its tables are the files of
 # fw.tables, a key a line: table T create, add, destroy (refused while
 # a rule names T, as the kernel's), table all list as ipfw prints them;
-# a file's table lines too, in their order.  Every command logged in
-# ipfw.log, a file's lines after it.
+# a file's table lines too, in their order.  Its dummynet pipes are the
+# files of fw.pipes, each its config: a file's "pipe N config" lines,
+# pipe show as ipfw prints a pipe's first line, pipe N delete.  Every
+# command logged in ipfw.log, a file's lines after it.
 acl_fake_ipfw()
 {
 	local d="$(pwd)"
@@ -2911,6 +2913,7 @@ acl_fake_ipfw()
 #!/bin/sh
 st=$d/fw.state
 tb=$d/fw.tables
+dp=$d/fw.pipes
 tbl()
 {
 	case "\$2" in
@@ -2935,6 +2938,14 @@ case "\$1 \$2 \$3" in
 "table "*)
 	tbl "\$2" "\$3" "\$4"
 	exit \$? ;;
+"pipe show ")
+	for p in \$(ls "\$dp"); do
+		printf '%05d: %s\n' "\$p" "\$(cat "\$dp/\$p")"
+	done
+	exit 0 ;;
+"pipe "*" delete")
+	rm "\$dp/\$2"
+	exit \$? ;;
 "-a -S list")
 	sort -n "\$st" | awk 'FILENAME != "-" { c[\$1] = \$2 " " \$3; next } { n = \$1; s = \$2; \$1 = ""; \$2 = ""; sub(/^ +/, ""); printf "%05d %s set %d %s\n", n, ((n in c) ? c[n] : "0 0"), s, \$0 }' $d/fw.counters -
 	exit 0 ;;
@@ -2953,6 +2964,9 @@ if [ -f "\$1" ]; then
 	grep '^table ' "\$1" | while read -r w t c k; do
 		tbl "\$t" "\$c" "\$k" || exit 1
 	done || exit 1
+	grep '^pipe ' "\$1" | while read -r w n c k; do
+		echo "\$k" > "\$dp/\$n"
+	done
 	awk '\$1 == "add" && \$3 == "set" { n = \$2; s = \$4; \$1 = \$2 = \$3 = \$4 = ""; sub(/^ +/, ""); print n, s, \$0 }' "\$1" >> "\$st"
 	exit 0
 fi
@@ -2962,7 +2976,7 @@ EOS
 	# The admin's rules: set 0's, and the default.
 	printf '100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' > fw.state
 	: > fw.counters
-	mkdir -p fw.tables
+	mkdir -p fw.tables fw.pipes
 }
 
 atf_test_case acl_rfc8519 cleanup
@@ -3591,7 +3605,7 @@ acl_defined_sets_head()
 	    "generation of their own, the old one destroyed after the" \
 	    "swap; the prefix sets read back from the tables; refused," \
 	    "nothing loaded: a type's code, an FQDN, a port set too big," \
-	    "protocol 0, RFC 9899's actions not compiled yet;" \
+	    "protocol 0;" \
 	    "taken out, every table destroyed"
 	atf_set "timeout" "120"
 }
@@ -3665,8 +3679,7 @@ EOF
 	    "$JGC" -c "$SOCK" get acls
 	: > fw.tables/acl-1-4.0
 
-	# Refused, nothing loaded: what ipfw cannot say of a set, and RFC
-	# 9899's matches and actions this agent does not compile yet.
+	# Refused, nothing loaded: what ipfw cannot say of a set.
 	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"icmp":{"ietf-acl-enh:icmpv4-set":"e"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"icmpv4-type-sets":{"set":[{"name":"e","icmpv4-type":[{"type":3,"code":4}]}]}}}' \
 	    'icmpv4 type set e: a type.s code is not compiled into ipfw by this agent: icmptypes reads the type alone.*icmpv4-type/code'
 	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"ietf-acl-enh:alias-name":["n"]},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"aliases":{"alias":[{"name":"n","fqdn":["www.example.com"]}]}}}' \
@@ -3679,10 +3692,6 @@ EOF
 	    'port set big: 31 ranges and 31000 ports, more than ipfw.s port list \(30 ranges\) and this agent.s port table \(8192 ports\) hold'
 	acl_sets_refused '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv6-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv6":{"ietf-acl-enh:protocol-set":"z"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"ietf-acl-enh:defined-sets":{"protocol-sets":{"protocol-set":[{"name":"z","protocol":[0]}]}}}' \
 	    'protocol set z: protocol 0 is not compiled into ipfw by this agent: ipfw reads proto 0 as any protocol'
-	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"destination-port":{"operator":"eq","port":22}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log"}}}]}}]}' \
-	    'acl f, ace r: log-action is not compiled into ipfw by this agent'
-	acl_sets_refused '{"acl":[{"name":"f","aces":{"ace":[{"name":"r","matches":{"tcp":{"destination-port":{"operator":"eq","port":22}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}]}' \
-	    'acl f, ace r: rate-limit is not compiled into ipfw by this agent'
 
 	# Taken out: set 29 deleted, every table of the ACLs' destroyed.
 	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
@@ -3703,8 +3712,8 @@ acl_rfc9899_matches_head()
 	    "6.1.6), the stand-in ipfw: Appendix B.2's two ACLs (IPv4's" \
 	    "fragments an or-block of frag, IPv6's ext6hdr frag), B.1's null" \
 	    "scan refused for the flags tcpflags does not name and compiled" \
-	    "over the six it does, B.6's SYN match (its rate-limit refused," \
-	    "6.1.7's); each fragment type and operator, IPv6's first" \
+	    "over the six it does, B.6's SYN match (its rate-limit is" \
+	    "acl_rfc9899_actions'); each fragment type and operator, IPv6's first" \
 	    "fragment by the atomic fragments' sysctls, explicit TCP flags," \
 	    "extension headers by number and name; refused, nothing loaded:" \
 	    "IPv6's last fragment and df, match and any at once, a header" \
@@ -3758,12 +3767,10 @@ EOF2
 	acl_field ipv4-acl-type \
 	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"not any","bitmask":63}}}' \
 	    '"bitmask":63' 'deny tcp from any to any tcpflags !fin,!syn,!rst,!psh,!ack,!urg ip4'
-	# Appendix B.6: SYN set; its rate-limit is 6.1.7's.
+	# Appendix B.6: SYN set; its rate-limit is acl_rfc9899_actions'.
 	acl_field ipv4-acl-type \
 	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}}' \
 	    '"bitmask":2' 'deny tcp from any to any tcpflags syn ip4'
-	acl_field_refused - '{"acl":[{"name":"tcp-flags-example-with-rate-limit","aces":{"ace":[{"name":"rate-limit-syn","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}]}' \
-	    'ace rate-limit-syn: rate-limit is not compiled into ipfw by this agent'
 	# Explicit flags: all set, any set, not all set.
 	acl_field ipv4-acl-type \
 	    '{"tcp":{"ietf-acl-enh:flags-bitmask":{"explicit-tcp-flag":["ietf-acl-enh:syn","ietf-acl-enh:ack"]}}}' \
@@ -3836,6 +3843,181 @@ EOF2
 	    cat fw.state
 }
 acl_rfc9899_matches_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case acl_rfc9899_actions cleanup
+acl_rfc9899_actions_head()
+{
+	atf_set "descr" "RFC 9899's actions compiled to ipfw (PLAN-SDN-YANG" \
+	    "6.1.7), the stand-in ipfw keeping dummynet's pipes too:" \
+	    "Appendix B.6's SYN rate-limit at 20 bytes a second as a pipe of" \
+	    "160 bit/s configured before the rule sending to it; another" \
+	    "edit's pipe the other generation's, the old one deleted after" \
+	    "the swap; a rate of 0 a deny; log-action's local-log to" \
+	    "syslog, bpf, rtsock and ipfw0, with log-syslog, with a" \
+	    "rate-limit; counter-action a count rule a name before each of" \
+	    "the ACE's rules, the counters read back summed over the ACEs" \
+	    "naming them; refused, nothing loaded: a fraction of a bit per" \
+	    "second, past dummynet's 32 bits, below 0, a log file, no" \
+	    "dummynet, one_pass 0, an admin's rule sending to the ACLs'" \
+	    "pipes; taken out, every pipe deleted"
+	atf_set "timeout" "300"
+}
+acl_rfc9899_actions_body()
+{
+	local d="$(pwd)" b6
+
+	acl_fake_ipfw
+	# sysctl(8) as a stand-in: dummynet there unless no-dummynet is,
+	# one_pass from a file.
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+case "\$*" in
+"-n net.inet.ip.dummynet.hash_size") [ -e $d/no-dummynet ] && exit 1
+	echo 64; exit 0 ;;
+"-n net.inet.ip.fw.one_pass") exec cat $d/one_pass ;;
+"-n net.link.ether.ipfw") echo 1; exit 0 ;;
+esac
+exit 1
+EOS
+	chmod +x fake-sysctl
+	echo 1 > one_pass
+	DAEMON_ARGS="-h $d/fake-ipfw -Q $d/fake-sysctl" start_daemon
+
+	# Appendix B.6: SYNs accepted at 20 bytes a second, a pipe of 160
+	# bit/s numbered from the ACE's rule (generation 0: 61000 - 20000).
+	b6='{"acl":[{"name":"tcp-flags-example-with-rate-limit","aces":{"ace":[{"name":"rate-limit-syn","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"tcp-flags-example-with-rate-limit"}]}}}]}}'
+	printf '%s\n' "$b6" > b6.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6.json
+	atf_check -o inline:'pipe 41000 config bw 160bit/s\nadd 61000 set 28 pipe 41000 tcp from any to any tcpflags syn // acl:0.1 tcp-flags-example-with-rate-limit/rate-limit-syn\n' \
+	    sh -c "sed -n '/^pipe /p; /^add 61000 /p' ipfw.log"
+	atf_check -o match:'^ipfw -q set swap 28 29$' cat ipfw.log
+	atf_check -o inline:'41000\n' ls fw.pipes
+	atf_check -o inline:'bw 160bit/s\n' cat fw.pipes/41000
+	atf_check -o match:'^61000 29 pipe 41000 ' cat fw.state
+	printf '61000 7 420\n' > fw.counters
+	atf_check -o match:'"ietf-acl-enh:rate-limit":"?20(\.00?)?"?' \
+	    -o match:'"name":"rate-limit-syn","statistics":\{"matched-octets":"?420"?,"matched-packets":"?7"?\}' \
+	    "$JGC" -c "$SOCK" get acls
+	# Another edit: generation 1's pipe, 51000, then generation 0's
+	# again; the old one deleted once the swap has let go of it.
+	sed -e 's/"20.00"/"100.25"/' b6.json > b6b.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6b.json
+	atf_check -o ignore grep -Fx 'pipe 51000 config bw 802bit/s' ipfw.log
+	atf_check -o ignore grep -Fx 'add 61000 set 28 pipe 51000 tcp from any to any tcpflags syn // acl:0.1 tcp-flags-example-with-rate-limit/rate-limit-syn' ipfw.log
+	atf_check -o inline:'ipfw -q set swap 28 29\nipfw -q pipe 41000 delete\n' \
+	    sh -c "grep -e '^ipfw -q set swap' -e '^ipfw -q pipe' ipfw.log"
+	atf_check -o inline:'51000\n' ls fw.pipes
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6.json
+	atf_check -o ignore grep -Fx 'pipe 41000 config bw 160bit/s' ipfw.log
+	atf_check -o match:'^ipfw -q pipe 51000 delete$' cat ipfw.log
+	atf_check -o inline:'41000\n' ls fw.pipes
+	# A rate of 0 passes nothing.
+	acl_act - '{"tcp":{"destination-port":{"operator":"eq","port":25}}}' \
+	    '{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"0.00"}' \
+	    '"forwarding":"ietf-access-control-list:accept"' \
+	    'deny tcp from any to any dst-port 25'
+	atf_check -o not-match:'^pipe ' cat ipfw.log
+	atf_check -o inline:'' ls fw.pipes
+
+	# log-action: local-log to syslog where no log-id names another.
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:drop","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log"}}' \
+	    '"log-type":"ietf-acl-enh:local-log"' \
+	    'deny log logdst syslog icmp from any to any ip4'
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:drop","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log","log-id":"bpf"}}' \
+	    '"log-id":"bpf"' 'deny log logdst bpf icmp from any to any ip4'
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:drop","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log","log-id":"ipfw0"}}' \
+	    '"log-id":"ipfw0"' 'deny log logdst bpf icmp from any to any ip4'
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:accept","logging":"ietf-access-control-list:log-syslog","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log","log-id":"rtsock,bpf"}}' \
+	    '"log-id":"rtsock,bpf"' \
+	    'allow log logdst syslog,bpf,rtsock icmp from any to any ip4'
+	acl_act - '{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}}' \
+	    '{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log"}}' \
+	    '"ietf-acl-enh:rate-limit"' \
+	    'pipe 41000 log logdst syslog tcp from any to any tcpflags syn'
+
+	# counter-action: a count rule a name before each of the ACE's
+	# rules, a reject of either family's two included; the counters
+	# read back summed over the ACEs naming them, the ACE's own
+	# statistics its rules' alone.
+	cat > c.json <<'EOF'
+{"acl":[{"name":"c","aces":{"ace":[{"name":"http","matches":{"tcp":{"destination-port":{"operator":"eq","port":80}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:counter-action":{"counter-type":"ietf-acl-enh:counter-name","counter-name":["web","all"]}}},{"name":"https","matches":{"tcp":{"destination-port":{"operator":"eq","port":443}}},"actions":{"forwarding":"ietf-access-control-list:reject","ietf-acl-enh:counter-action":{"counter-type":"ietf-acl-enh:counter-name","counter-name":["web"]}}},{"name":"rest","matches":{"udp":{"destination-port":{"operator":"eq","port":53}}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}]}
+EOF
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @c.json
+	atf_check -o inline:'add 61000 set 28 count tcp from any to any dst-port 80 // acl:0.1.c0 c/http
+add 61000 set 28 count tcp from any to any dst-port 80 // acl:0.1.c1 c/http
+add 61000 set 28 allow tcp from any to any dst-port 80 // acl:0.1 c/http
+add 61001 set 28 count tcp from any to any dst-port 443 ip4 // acl:0.2.c0 c/https
+add 61001 set 28 unreach filter-prohib tcp from any to any dst-port 443 ip4 // acl:0.2 c/https
+add 61001 set 28 count tcp from any to any dst-port 443 ip6 // acl:0.2.c0 c/https
+add 61001 set 28 unreach6 admin-prohib tcp from any to any dst-port 443 ip6 // acl:0.2 c/https
+add 61002 set 28 deny udp from any to any dst-port 53 // acl:0.3 c/rest
+' sh -c "sed -n '/^add 6100[0-2] /p' ipfw.log"
+	printf '61000 5 300\n61001 2 100\n' > fw.counters
+	atf_check -o save:cg.json "$JGC" -c "$SOCK" get acls
+	atf_check \
+	    -o match:'"name":"http","statistics":\{"matched-octets":"?300"?,"matched-packets":"?5"?\}' \
+	    -o match:'"name":"https","statistics":\{"matched-octets":"?200"?,"matched-packets":"?4"?\}' \
+	    -o match:'"arcana-acl:counters":\{"counter":\[\{"ace":\["c/http","c/https"\],"matched-octets":"?500"?,"matched-packets":"?9"?,"name":"web"\},\{"ace":\["c/http"\],"matched-octets":"?300"?,"matched-packets":"?5"?,"name":"all"\}\]\}' \
+	    cat cg.json
+	atf_check -o not-match:'arcana-acl:counters' \
+	    "$JGC" -c "$SOCK" get -d running acls
+
+	# Refused, nothing loaded, the pipes as they were.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6.json
+	acl_refused - "$(sed -e 's/"20.00"/"0.10"/' b6.json)" \
+	    'acl tcp-flags-example-with-rate-limit, ace rate-limit-syn: a rate-limit of a fraction of a bit per second is not compiled into ipfw by this agent: dummynet.s bandwidth is whole bits per second' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?rate-limit'
+	acl_refused - "$(sed -e 's/"20.00"/"600000000.00"/' b6.json)" \
+	    'a rate-limit past 536870911.87 bytes per second is not compiled into ipfw by this agent: dummynet.s bandwidth is 32 bits' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?rate-limit'
+	acl_refused - "$(sed -e 's/"20.00"/"-1.00"/' b6.json)" \
+	    'ace rate-limit-syn: a rate-limit below 0' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?rate-limit'
+	acl_refused - '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"ipv4":{"protocol":1}},"actions":{"forwarding":"ietf-access-control-list:drop","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log","log-id":"/var/log/acl.log"}}}]}}]}' \
+	    'acl f, ace r: log-id /var/log/acl.log is not compiled into ipfw by this agent: ipfw logs to syslog' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?log-action/log-id'
+	touch no-dummynet
+	acl_refused - "$(sed -e 's/"20.00"/"40.00"/' b6.json)" \
+	    'acl tcp-flags-example-with-rate-limit: a rate-limit is a dummynet\(4\) pipe, and dummynet is not loaded' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?rate-limit'
+	rm no-dummynet
+	echo 0 > one_pass
+	acl_refused - "$(sed -e 's/"20.00"/"40.00"/' b6.json)" \
+	    'acl tcp-flags-example-with-rate-limit: a rate-limit is not compiled into ipfw by this agent with net.inet.ip.fw.one_pass=0' \
+	    'acl/aces/ace/actions/(ietf-acl-enh:)?rate-limit'
+	echo 1 > one_pass
+	# An admin's rule sending to a pipe of the ACLs' numbers.
+	cp fw.state admin.state
+	echo '1000 0 pipe 41500 ip from any to any' >> fw.state
+	acl_field_refused - "$(sed -e 's/"20.00"/"40.00"/' b6.json)" \
+	    'rule 1000 of set 0 sends to pipe 41500, a number the ACLs. rate-limits keep \(41000 to 44999, 51000 to 54999\)'
+	cp admin.state fw.state
+	atf_check -o inline:'41000\n' ls fw.pipes
+
+	# Taken out: every pipe of the ACLs' deleted.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    cat fw.state
+	atf_check -o inline:'' ls fw.pipes
+}
+acl_rfc9899_actions_cleanup()
 {
 	stop_daemon
 }
@@ -21397,6 +21579,7 @@ atf_init_test_cases()
 	atf_add_test_case acl_actions
 	atf_add_test_case acl_defined_sets
 	atf_add_test_case acl_rfc9899_matches
+	atf_add_test_case acl_rfc9899_actions
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key

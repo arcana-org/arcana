@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### RFC 9899's ACL actions; agent 0.314.0
+
+- RFC 9899's ACL actions are compiled to ipfw (PLAN-SDN-YANG 6.1.7).  A
+  rate-limit is a dummynet pipe of the ACE's own (pipes 41000 to 44999
+  and 51000 to 54999 are now the ACLs', two generations swapped with
+  the rules; SD-WAN keeps 3000 up).  An edit with a rate-limit is
+  refused where dummynet is not loaded (the agent does not load it for
+  ACLs) or net.inet.ip.fw.one_pass is 0.  log-action is the rule's `log
+  logdst` (syslog, bpf, rtsock).  counter-action is a count rule per
+  name, read back by the new module arcana-acl (SIDs 96 800) as
+  acls/counters.
+- Move any rule of yours that sends to a pipe in those ranges first; a
+  host with pipes of its own in 41000 to 54999 should renumber them.
+
 ### BFD in the prober's steering, a jail's echo socket every FIB; agent 0.313.0
 
 - BFD session changes no longer remake the SD-WAN steering on BFD's

@@ -1946,6 +1946,163 @@ acl_vnet_cleanup()
 	true
 }
 
+atf_test_case acl_actions_vnet cleanup
+acl_actions_vnet_head()
+{
+	atf_set "descr" "RFC 9899's actions for real (PLAN-SDN-YANG 6.1.7): the" \
+	    "agent in a vnet jail of its own, dummynet(4) loaded by the" \
+	    "admin (skipped where not; the agent never loads it).  Appendix" \
+	    "B.6's SYN rate-limit at 20 bytes a second on lo0's way in, a" \
+	    "dummynet pipe of 160 bit/s numbered from the ACE's rule: a" \
+	    "hundred connections at once to a listener, the pipe dropping" \
+	    "and at most a few through; at 100000 bytes a second, the next" \
+	    "generation's pipe and the old one gone, five connections in a" \
+	    "row through and no drop.  A log-action to syslog and bpf: the" \
+	    "echoes on the rule's bpf(4) tap and in the message buffer.  A" \
+	    "counter-action: its count rule and the named counter rising" \
+	    "with the echoes.  Taken out, no pipe of the ACLs' left"
+	atf_set "require.user" "root"
+	atf_set "timeout" "240"
+}
+acl_actions_vnet_body()
+{
+	local d="$(pwd)" i pids ok drops logged n
+
+	programs
+	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
+	kldstat -q -m dummynet ||
+	    atf_skip "dummynet(4) is not loaded (the admin's to load, never the agent's)"
+	jls -j arcw_acla >/dev/null 2>&1 && atf_skip "a jail arcw_acla is there already"
+	atf_check -o ignore jail -c name=arcw_acla vnet persist path=/
+	atf_check jexec arcw_acla ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check -o inline:'1\n' jexec arcw_acla sysctl -n net.inet.ip.fw.one_pass
+	atf_check jexec arcw_acla ipfw -q add 1000 allow ip from any to any
+	mkdir -p etc/jail.conf.d
+	: > etc/jail.conf
+	SOCK="unix:$d/s.sock"
+	jexec arcw_acla "$JGD" -F -l "$SOCK" -f "$d/etc/jail.conf" \
+	    -D "$d/etc/jail.conf.d" -1 "$d/history.conf" \
+	    --nacm "$d/nacm.cbor" > daemon.out 2>&1 &
+	echo $! > daemon.pid
+	for i in $(seq 1 100); do
+		grep -q 'ready' daemon.out 2>/dev/null && break
+		sleep 0.05
+	done
+	# A listener in the jail, for the connections' SYNs.
+	jexec arcw_acla nc -lk 127.0.0.1 7777 > /dev/null 2>&1 &
+	echo $! > nc.pid
+	sleep 0.5
+	atf_check -e ignore jexec arcw_acla nc -z -w 2 127.0.0.1 7777
+
+	# Appendix B.6: SYNs (and SYN-ACKs, SYN set) accepted at 20 bytes a
+	# second on lo0's way in: pipe 41000 of 160 bit/s.
+	cat > b6.json <<'EOF'
+{"acl":[{"name":"tcp-flags-example-with-rate-limit","aces":{"ace":[{"name":"rate-limit-syn","matches":{"tcp":{"ietf-acl-enh:flags-bitmask":{"operator":"match","bitmask":2}}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:rate-limit":"20.00"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"tcp-flags-example-with-rate-limit"}]}}}]}}
+EOF
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6.json
+	atf_check -o match:'^61000 set 29 pipe 41000 tcp from any to any tcpflags syn // acl:0.1 tcp-flags-example-with-rate-limit/rate-limit-syn$' \
+	    -o not-match:' set 28 ' jexec arcw_acla ipfw -S list
+	atf_check -o match:'^41000: +160\.000 bit/s' jexec arcw_acla ipfw pipe 41000 show
+	# A flood above the rate: a hundred connections at once, each SYN
+	# 60 bytes or so, three seconds of the pipe's; the pipe's queue
+	# of 50 fills and drops, and few if any get through in 2 seconds.
+	: > flood.out
+	pids=
+	for i in $(seq 1 100); do
+		{ jexec arcw_acla nc -z -w 2 127.0.0.1 7777 >/dev/null 2>&1 &&
+		    echo ok >> flood.out; } &
+		pids="$pids $!"
+	done
+	wait $pids
+	ok=$(grep -c ok flood.out)
+	[ "$ok" -le 10 ] || atf_fail "$ok of 100 connections through 20 bytes a second"
+	jexec arcw_acla ipfw pipe 41000 show > pipe.out
+	drops=$(awk '$2 == "ip" { print $NF }' pipe.out)
+	[ "${drops:-0}" -gt 0 ] || atf_fail "the pipe dropped nothing: $(cat pipe.out)"
+	atf_check -o match:'^61000 +(1[0-9][0-9]|[2-9][0-9][0-9]|[0-9]{4,}) ' \
+	    jexec arcw_acla ipfw -a list 61000
+	atf_check -o match:'"name":"rate-limit-syn","statistics":\{"matched-octets":"?[1-9][0-9]*"?,"matched-packets":"?[1-9][0-9]*"?\}' \
+	    -o match:'"ietf-acl-enh:rate-limit":"?20' "$JGC" -c "$SOCK" get acls
+	# Below the rate: 100000 bytes a second, the other generation's
+	# pipe (51000), the old one deleted with what it held; five
+	# connections in a row through, nothing dropped.
+	sed -e 's/"20.00"/"100000.00"/' b6.json > b6b.json
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6b.json
+	atf_check -o match:'^61000 set 29 pipe 51000 ' jexec arcw_acla ipfw -S list
+	atf_check -o match:'^51000: +800\.000 Kbit/s' -o not-match:'^41000:' \
+	    jexec arcw_acla ipfw pipe show
+	for i in 1 2 3 4 5; do
+		atf_check -e ignore jexec arcw_acla nc -z -w 2 127.0.0.1 7777
+	done
+	jexec arcw_acla ipfw pipe 51000 show > pipe.out
+	drops=$(awk '$2 == "ip" { print $NF }' pipe.out)
+	[ "${drops:-0}" -eq 0 ] || atf_fail "the pipe dropped below its rate: $(cat pipe.out)"
+	atf_check -o match:'^61000 +([1-9][0-9]) ' jexec arcw_acla ipfw -a list 61000
+
+	# A log-action to syslog and the rule's bpf(4) tap, and a counter
+	# named by the echo ACE: three echoes over lo0, 84 bytes each.
+	cat > log.json <<'EOF'
+{"acl":[{"name":"log","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"echo","matches":{"ipv4":{"protocol":1},"icmp":{"type":8}},"actions":{"forwarding":"ietf-access-control-list:accept","ietf-acl-enh:log-action":{"log-type":"ietf-acl-enh:local-log","log-id":"syslog,bpf"},"ietf-acl-enh:counter-action":{"counter-type":"ietf-acl-enh:counter-name","counter-name":["echoes"]}}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"log"}]}}}]}}
+EOF
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @log.json
+	atf_check -o save:list jexec arcw_acla ipfw -S list
+	atf_check -o match:'^61000 set 29 count .*icmptypes 8.*// acl:0.1.c0 log/echo$' \
+	    -o match:'^61000 set 29 allow log .*syslog.*bpf.*icmptypes 8.*// acl:0.1 log/echo$' \
+	    cat list
+	atf_check -o not-match:'^[45]1000:' jexec arcw_acla ipfw pipe show
+	logged='ipfw: 61000 Accept ICMP:8\.0 127\.0\.0\.1 127\.0\.0\.1 in via lo0'
+	n=$(dmesg -a | grep -c "$logged")
+	# The rule's own bpf tap, ipfw61000, read inside the jail: a vnet
+	# jail's devfs hides bpf(4) unless its ruleset shows it, and then
+	# only syslog's copy is checked.
+	if jexec arcw_acla test -c /dev/bpf; then
+		jexec arcw_acla timeout 15 tcpdump -n -l -c 3 -i ipfw61000 \
+		    > tap.out 2>&1 &
+		echo $! > tap.pid
+		sleep 2
+	fi
+	atf_check -o match:'3 packets received' \
+	    jexec arcw_acla ping -c 3 -i 0.2 -t 4 127.0.0.1
+	if [ -f tap.pid ]; then
+		wait "$(cat tap.pid)"
+		[ $(grep -c 'ICMP echo request' tap.out) -eq 3 ] ||
+		    atf_fail "not on the rule's bpf tap three times: $(cat tap.out)"
+	fi
+	[ $(($(dmesg -a | grep -c "$logged") - n)) -eq 3 ] ||
+	    atf_fail "not logged three times: $(dmesg -a | grep 'ipfw: 61000' | tail -5)"
+	atf_check -o match:'^61000 +3 +252 count ' -o match:'^61000 +3 +252 allow log ' \
+	    jexec arcw_acla ipfw -a list 61000
+	atf_check -o save:g.json "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'"name":"echo","statistics":\{"matched-octets":"?252"?,"matched-packets":"?3"?\}' \
+	    -o match:'"arcana-acl:counters":\{"counter":\[\{"ace":\["log/echo"\],"matched-octets":"?252"?,"matched-packets":"?3"?,"name":"echoes"\}\]\}' \
+	    cat g.json
+	# The counter rising with the next echo.
+	atf_check -o ignore jexec arcw_acla ping -c 1 -t 2 127.0.0.1
+	atf_check -o match:'"matched-octets":"?336"?,"matched-packets":"?4"?,"name":"echoes"' \
+	    "$JGC" -c "$SOCK" get acls
+
+	# Taken out: set 29 empty, no pipe of the ACLs' left.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @b6.json
+	atf_check -o match:'^41000:' jexec arcw_acla ipfw pipe show
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+	atf_check -o not-match:' set 29 ' jexec arcw_acla ipfw -S list
+	atf_check -o not-match:'^[45][1-4][0-9][0-9][0-9]:' jexec arcw_acla ipfw pipe show
+}
+acl_actions_vnet_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	[ -f nc.pid ] && kill "$(cat nc.pid)" 2>/dev/null
+	[ -f tap.pid ] && kill "$(cat tap.pid)" 2>/dev/null
+	sleep 0.5
+	jail -r arcw_acla 2>/dev/null
+	true
+}
+
 atf_test_case ipsec_sa_vnet cleanup
 ipsec_sa_vnet_head()
 {
@@ -6436,6 +6593,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_bmp_jail_lab
 	atf_add_test_case sctp_multihome
 	atf_add_test_case acl_vnet
+	atf_add_test_case acl_actions_vnet
 	atf_add_test_case ipsec_sa_vnet
 	atf_add_test_case ipsec_sp_vnet
 	atf_add_test_case sadb_vnet

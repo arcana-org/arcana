@@ -457,8 +457,38 @@ the flags
 .Ic tcpflags
 does not name (ECE, CWR, AE, the reserved bits), and the mobility, HIP
 and shim6 headers.
-The operational datastore has the ACLs the kernel has whole, and the
-prefix sets as their tables hold them.
+RFC 9899's actions: a rate-limit is a
+.Xr dummynet 4
+pipe of the ACE's own,
+.Ic pipe P config bw
+the bytes per second times eight in bit/s, the ACE's rule
+.Ic pipe P
+for
+.Ic allow
+(a rate of 0
+.Ic deny ) ;
+the pipes are numbered from the ACE's rule, 41000 to 44999 and 51000 to
+54999 as the tables' generations, configured before the swap and the
+old ones deleted after it.
+It is refused where dummynet is not loaded, which the agent never
+does, and where
+.Va net.inet.ip.fw.one_pass
+is 0.
+A log-action is the rule's
+.Ic log logdst ,
+its log-id
+.Ic syslog
+(none given),
+.Ic bpf
+or
+.Ic rtsock ;
+a counter-action a
+.Ic count
+rule a name before the ACE's rules.
+The operational datastore has the ACLs the kernel has whole, the
+prefix sets as their tables hold them, and the named counters
+.Pq Li arcana-acl
+as their rules count.
 .Pp
 What the kernel's PF_KEY tells of the host's SAs is told as RFC 9061's
 IKE-less notifications

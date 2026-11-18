@@ -4218,6 +4218,69 @@ whose first part is served.
   real packet, a TCP packet by its flags.
 - 6.1.7 A: RFC 9899 actions: `rate-limit` as a pipe, `log-action`,
   `counter-action`; check: B.6 at 20 bytes per second.
+  Design (decided here): a rate-limit (accept's alone, the model's
+  `when`) is a dummynet pipe of the ACE's own, `pipe P config bw
+  Bbit/s`, the bytes per second times eight (whole bits: steps of 0.25
+  bytes per second, a fraction refused; past dummynet's 32 bits,
+  536 870 911.87 bytes per second, refused; below 0 invalid-value),
+  dummynet's queue of 50 packets its default, what is past it dropped;
+  the ACE's rules `pipe P` where accept's are `allow`, and a rate of 0
+  `deny`.  A packet out of the pipe goes on accepted only with
+  net.inet.ip.fw.one_pass=1 (the default, the admin's: refused when 0,
+  as the packet would meet the rules after the ACE again), and a host
+  without dummynet(4) (no net.inet.ip.dummynet) is refused, saying so:
+  the agent loads no kernel module for an ACL (SD-WAN's rules, the
+  console's, still kldload it as before).  The pipes are numbered from
+  the ACE's rule in the tables' generation (6.1.5): P = N - 20000 for
+  generation 0 (41000 to 44999), N - 10000 for generation 1 (51000 to
+  54999), clear of SD-WAN's shaping (pipes, queues and NAT instances
+  from 3000, the console's sdwan_edge.c); an edit configures the new
+  generation's pipes in the file before the rules naming them, the
+  generation in use the one set 29's rules name by table or pipe, and
+  deletes the old generation's after the swap (a failure, the new
+  one's); taken out, every pipe of both ranges deleted.  An admin's
+  rule sending to a pipe in those ranges refuses an edit (in-use); a
+  pipe the admin configured there unnamed by any rule is taken as the
+  ACLs' (the ranges are theirs, as the `acl-0-`/`acl-1-` tables are).
+  A log-action of type local-log is the rule's log to ipfw's logdst:
+  its log-id a comma list of `syslog` (none given: syslogd(8), the
+  security facility), `bpf` (the rule's tap, ipfwN, or ipfw0 where none
+  listens there; `ipfw0` names it too) and `rtsock`; with RFC 8519's
+  log-syslog, both; a file or any other name refused (a file is
+  syslog.conf(5)'s), another log type refused.  A counter-action of
+  type counter-name is a `count` rule a name before each of the ACE's
+  rules (each family's, each alias's), the same match, its comment the
+  ACE's tag with `.cK` (K the name's place); the ACE's statistics stay
+  its own rules' (count rules left out).  The counters are read back
+  by `arcana-acl` (SIDs 96 800, 100): `acls/counters/counter`, config
+  false, a name's matched-packets and matched-octets summed over every
+  ACE naming it, with those ACEs (`ACL/ACE`); RFC 9899 has no node to
+  read them by.
+  Done.  Checked: agent_test:acl_rfc9899_actions (the stand-in ipfw
+  keeping pipes as files: B.6 whole, `pipe 41000 config bw 160bit/s`
+  before `pipe 41000 tcp from any to any tcpflags syn`, read back with
+  the ACE's statistics; another edit generation 1's pipe 51000 of 802
+  bit/s, 41000 deleted after the swap, then back to 41000; a rate of 0
+  a deny with no pipe; local-log to syslog, bpf, ipfw0, rtsock with
+  log-syslog, and with a rate-limit `pipe 41000 log logdst syslog`;
+  counter-action count rules before an accept's rule and a reject of
+  either family's two, the counters summed over two ACEs; refused,
+  nothing loaded and the pipes as they were: 0.10 bytes per second,
+  600 000 000, -1, a log file, no dummynet, one_pass 0, an admin's rule
+  sending to pipe 41500; taken out, no pipe), acl_rfc9899_matches (B.6
+  now acl_rfc9899_actions'), acl_defined_sets (its action refusals
+  gone), acl_rfc8519, acl_match_fields, acl_refusals and acl_actions
+  still passing.  Written, not run here (root, vnet jails, dummynet
+  loaded by the admin): agent_root_test:acl_actions_vnet (B.6 on lo0's
+  way in, a hundred connections at once to a listener, the pipe
+  dropping and at most ten through; at 100 000 bytes a second the next
+  generation's pipe, the old one gone, five connections through and
+  no drop; a log-action to syslog and bpf, three echoes on the rule's
+  tap ipfw61000 and in the message buffer; a counter's count rule and
+  the named counter at 3 echoes and 252 bytes, then 4; taken out, no
+  pipe of the ACLs').  Not checked: rtsock's messages, a pipe's
+  accuracy at a rate (dummynet's, not the agent's), the page (no ACL
+  editor yet).
 - 6.1.8 A: the Arcana augments: attachment to a FIB, a jail, all
   interfaces; `default-action`; `stateful`; reject code; check: one
   test each.
