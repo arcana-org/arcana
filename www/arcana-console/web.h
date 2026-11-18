@@ -257,12 +257,21 @@ struct task {
 	/* Whom it acts for, its request's or the one it was given: no
 	 * one, unless one of the two. */
 	struct principal	 who;
+	/* Its request's, in words, and from where (web_describe()). */
+	char			 words[256];
+	char			 from[80];
 };
 
 /* The program's: whom a request acts for; this thread acting for one
  * (NULL: for no one). */
 void		 web_principal(struct http_request *, struct principal *);
 void		 web_act(const struct principal *);
+/* The program's: who a request is, in words, and from where. */
+void		 web_describe(struct http_request *, char *, size_t, char *,
+		    size_t);
+/* Who this thread acts for, in words, and from where: its request's
+ * or its task's; "" for none (the console's own). */
+void		 web_acting_words(char *, size_t, char *, size_t);
 /* The program's: said as the worker stops; its writes let finish. */
 void		 hosts_tally_log(void);
 void		 store_quiesce(void);

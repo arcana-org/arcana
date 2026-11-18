@@ -150,19 +150,27 @@ tree_json(const cbl_dtree *t)
 /*
  * Tree t kept, as RFC 7951's JSON, its version one more than the kept
  * one's and than floor, with who made it (who, NULL the console's own
- * change), for the audit.
+ * change), for the audit.  Where tell says, each Security Function
+ * Policy whose values it changes a SAN (MEF 138 R31, sen.c): here,
+ * where every way the services change meets (the SD-WAN document's
+ * PUT, RESTCONF's writes of the L3NM, a SAP's attachment merged), the
+ * document before and after compared, who did it and from where in
+ * the words of the request the thread runs for.
  */
 static int
-l3nm_save(const cbl_dtree *t, int64_t floor, const struct principal *who)
+l3nm_save(const cbl_dtree *t, int64_t floor, const struct principal *who,
+    bool tell)
 {
-	ucl_object_t	*o, *kept;
+	ucl_object_t	*o, *kept, *before, *after;
 	int64_t		 v;
 	int		 rc;
+	char		 words[256], from[80];
 
 	if ((o = tree_json(t)) == NULL)
 		return (-1);
 	kept = store_load(L3NM_FILE);
 	v = ucl_object_toint(ucl_object_lookup(kept, "version"));
+	before = tell ? mef_export(ucl_object_lookup(kept, L3NM_MEMBER)) : NULL;
 	ucl_object_unref(kept);
 	ucl_object_insert_key(o, ucl_object_fromint(MAX(v, floor) + 1),
 	    "version", 0, false);
@@ -172,6 +180,15 @@ l3nm_save(const cbl_dtree *t, int64_t floor, const struct principal *who)
 		ucl_object_insert_key(o, principal_record(who), "author", 0,
 		    false);
 	rc = store_save(L3NM_FILE, o);
+	if (rc == 0 && tell) {
+		after = mef_export(ucl_object_lookup(o, L3NM_MEMBER));
+		web_acting_words(words, sizeof(words), from, sizeof(from));
+		san_changes(before, after, from, words[0] != '\0' ? words :
+		    "the console");
+		ucl_object_unref(after);
+	}
+	if (before != NULL)
+		ucl_object_unref(before);
 	ucl_object_unref(o);
 	return (rc);
 }
@@ -605,7 +622,7 @@ api_l3nm(struct http_request *req)
 		if (now != NULL)
 			ucl_object_unref(now);
 	}
-	if (changed && l3nm_save(t, 0, writer(&p)) != 0) {
+	if (changed && l3nm_save(t, 0, writer(&p), true) != 0) {
 		free(json);
 		json = restconf_errors(500, "the services could not be kept");
 		status = 500;
@@ -662,12 +679,13 @@ error_of(const char *json, char *why, size_t len)
  * Document doc imported into the L3NM kept, run as a PUT of it, for who
  * (NULL: the console's own), each edge it changes theirs (touch_ok()):
  * 0, or the HTTP status and why.  expect, unless -1, the version it was
- * made from; floor, the least the version kept is before it.  Under
- * the lock.
+ * made from; floor, the least the version kept is before it; tell,
+ * whether its changes of the function policies are SANs (not for the
+ * import of a document kept before).  Under the lock.
  */
 static int
 put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor,
-    const struct principal *who, char *why, size_t len)
+    const struct principal *who, bool tell, char *why, size_t len)
 {
 	struct rcreq	*r;
 	ucl_object_t	*o, *y, *body, *now;
@@ -728,7 +746,7 @@ put_doc(const ucl_object_t *doc, int64_t expect, int64_t floor,
 	} else if (!touch_ok(who, ucl_object_lookup(o, L3NM_MEMBER),
 	    ucl_object_lookup(now, L3NM_MEMBER), why, len))
 		status = 403;
-	else if (l3nm_save(t, floor, who) != 0) {
+	else if (l3nm_save(t, floor, who, tell) != 0) {
 		snprintf(why, len, "the services could not be kept");
 		status = 500;
 	} else {
@@ -776,7 +794,7 @@ l3nm_sdwan_migrate(void)
 	done = mef_has_sdwan(ucl_object_lookup(o, L3NM_MEMBER));
 	ucl_object_unref(o);
 	rc = done ? 0 : put_doc(old, -1, ucl_object_toint(ucl_object_lookup(
-	    old, "version")) - 1, NULL, why, sizeof(why));
+	    old, "version")) - 1, NULL, false, why, sizeof(why));
 	if (rc == 0 && store_save(MEF_BACKUP, old) == 0 &&
 	    store_remove(MEF_FILE) == 0)
 		thread_log(LOG_NOTICE, "%s: %s as L3NM, kept as %s", MEF_FILE,
@@ -883,7 +901,7 @@ l3nm_merge(const ucl_object_t *y, char *why, size_t len)
 		if (now == NULL)
 			snprintf(why, len, "out of memory");
 		status = now == NULL ? 500 : 403;
-	} else if (changed && l3nm_save(t, 0, writer(&p)) != 0) {
+	} else if (changed && l3nm_save(t, 0, writer(&p), true) != 0) {
 		snprintf(why, len, "the services could not be kept");
 		status = 500;
 	} else {
@@ -917,7 +935,7 @@ l3nm_sdwan_put(const ucl_object_t *doc, int64_t expect, char *why,
 
 	l3nm_sdwan_migrate();
 	pthread_mutex_lock(&l3nm_lock);
-	rc = put_doc(doc, expect, 0, writer(&p), why, len);
+	rc = put_doc(doc, expect, 0, writer(&p), true, why, len);
 	pthread_mutex_unlock(&l3nm_lock);
 	return (rc);
 }

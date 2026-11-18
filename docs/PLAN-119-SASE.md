@@ -64,14 +64,23 @@ The security policies are MEF 138's Security Function Policies. Done
 (console 0.327 and after, agent 0.229 and after):
 
 - SEN and SAN (R24–R36): `www/arcana-console/sen.c`. A SEN for each
-  deny the edges' rules logged (the record's `sdwan-security` events)
-  and each Suricata alert (`sdwan-ids`), with Table 3's items: issuer,
+  deny the edges' rules logged (the record's `sdwan-security` events),
+  each block of a service's unbound (DNF's local zones, PDNS's RPZ
+  triggers), Squid (URLF, MBSF's HTTP, DNF's inner wildcards) and
+  c-icap with ClamAV (MD+R) that the agent reads from the daemons' own
+  logs and matches back to the zone, the policy and the list
+  (`sdwan-block`, `usr.sbin/arcana-agent/luxuria/sdblock.c`; where the
+  policy tells that list, twenty a second a log at most), and each
+  Suricata alert (`sdwan-ids`), with Table 3's items: issuer,
   UTC timestamp, a UUID, the function and its policy, IOC or OTHER,
   the event, source, details, action, and the UNI where known (D2);
   domains and URLs neutralised with `[.]` (R28, D3). A SAN for each
-  function policy whose values a kept document changes (R31), with
-  Table 4's: who, from where, the values that changed alone, a Block's
-  and Quarantine's names neutralised (R34). Both kept in the data
+  function policy whose values a change of the services changes (R31),
+  made where the L3NM is kept (`l3nm.c`, l3nm_save) so that the SD-WAN
+  document's PUT, RESTCONF's writes of the L3NM and a SAP's attachment
+  merged all make them, with Table 4's: who, from where, the values
+  that changed alone, a Block's and Quarantine's names neutralised
+  (R34). Both kept in the data
   directory, readable by the console alone (R26, R32), read by
   `arcana-console:sdwan/sen` and `san` (CSV by Accept), shown on the Security
   tab, and sent to their recipients (R30, R36): `mail_sen`, `mail_san`,
@@ -116,6 +125,9 @@ Left, and why:
   name (Table 9's criteria) are inside IKE_SA_INIT, which ipfw does
   not read. Blocking or allowing IPsec as a protocol is IPPF's
   (`protv4` esp, ah, udp 500 and 4500). TLS alone meets R45.
+- SENs of a PDNS's A and AAAA entries and its No-match: none. They
+  are unbound's response-ip, which logs only its inform actions, and
+  none of those answers NXDOMAIN (docs/TODO.md).
 - DLP: none; FreeBSD has no engine for it, nor do the packages Arcana
   uses (c-icap's modules scan for malware alone).
 - The book's conformance rows (arcana-docs, sdwan/conformance.md and

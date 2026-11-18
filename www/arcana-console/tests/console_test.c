@@ -13028,9 +13028,19 @@ ATF_TC_BODY(sapnet_attach, tc)
 	enrol(&a);
 	snprintf(uri, sizeof(uri), "unix:%s/jgd.sock", cwd);
 	host_add("one", uri, id1, sizeof(id1));
+	/* Made with a function policy, by RESTCONF: its SAN (MEF 138
+	 * R31). */
 	http("POST", L3NM, "{\"ietf-l3vpn-ntw:vpn-services\":{\"vpn-service\":"
-	    "[{\"vpn-id\":\"s1\"}]}}", &r);
+	    "[{\"vpn-id\":\"s1\",\"arcana-l3nm:sdwan\":{\"security-function-"
+	    "policy\":[{\"id\":\"p-urlf\",\"function\":\"urlf\",\"block\":{"
+	    "\"value\":[\"bad.example\"]},\"no-match\":\"allow\"}]}}]}}", &r);
 	EXPECT(&r, 201);
+	resp_free(&r);
+	http("GET", CC "sdwan/san", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"count\":1") != NULL && strstr(r.body,
+	    "\"policy\":\"p-urlf\"") != NULL && strstr(r.body,
+	    "bad[.]example") != NULL, "%s", r.body);
 	resp_free(&r);
 
 	/* No such service, no such SAP. */
@@ -13067,6 +13077,12 @@ ATF_TC_BODY(sapnet_attach, tc)
 	    "vpn-network-access.0.interface-id") != NULL);
 	ATF_CHECK_STREQ("placed", jstr(&r, "ietf-l3vpn-ntw:vpn-node.0."
 	    "vpn-network-accesses.vpn-network-access.0.description"));
+	resp_free(&r);
+	/* Merged into the L3NM as the others are (l3nm_merge()), it
+	 * changes no function policy: no SAN of it. */
+	http("GET", CC "sdwan/san", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"count\":1") != NULL, "%s", r.body);
 	resp_free(&r);
 
 	/* The SAP the service's now, no longer free. */
@@ -14415,6 +14431,35 @@ ATF_TC_BODY(sdwan_notices, tc)
 	    "\"g-dnf\",\"block: added \"\"bad[.]example\"\"") != NULL, "%s",
 	    r.body);
 	resp_free(&r);
+	/* RESTCONF's write of the L3NM, not the document: the same SAN,
+	 * made where the services are kept (l3nm.c), the entry added
+	 * alone, by whom. */
+	http("PATCH", "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/"
+	    "vpn-service=acme", "{\"ietf-l3vpn-ntw:vpn-service\":[{\"vpn-id\":"
+	    "\"acme\",\"arcana-l3nm:sdwan\":{\"security-function-policy\":[{"
+	    "\"id\":\"g-dnf\",\"block\":{\"value\":[\"evil.example\"]}}]}}]}",
+	    &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	r3_sdwan("san", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(ucl_object_toint(ucl_object_lookup(r.json, "count")) == 7
+	    && strcmp(jstr(&r, "notices.0.policy"), "g-dnf") == 0 && strcmp(
+	    jstr(&r, "notices.0.details"), "block: added \"evil[.]example\"")
+	    == 0 && strncmp(jstr(&r, "notices.0.who"), "user admin ", 11) == 0,
+	    "%s", r.body);
+	resp_free(&r);
+	/* A RESTCONF write that changes no function policy: none. */
+	http("PATCH", "/restconf/data/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/"
+	    "vpn-service=acme", "{\"ietf-l3vpn-ntw:vpn-service\":[{\"vpn-id\":"
+	    "\"acme\",\"vpn-description\":\"the offices\"}]}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	r3_sdwan("san", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(ucl_object_toint(ucl_object_lookup(r.json, "count")) == 7,
+	    "%s", r.body);
+	resp_free(&r);
 	/* None without a session; nothing of SENs yet. */
 	r3_sdwan("sen", &r);
 	EXPECT(&r, 200);
@@ -14635,20 +14680,21 @@ ATF_TC_BODY(sdwan_sfp, tc)
 	    "\"resolver\":true,\"icap\":true,") != NULL, "%s", c);
 	/* The DNF's names with a * inside (R71) are the zone's Squid's. */
 	ATF_CHECK_MSG(strstr(c, "{\"name\":\"z0\",\"dnf\":[\"cdn.*.example\","
-	    "\"*.track.*\"],\"prefixes\":") != NULL, "%s", c);
+	    "\"*.track.*\"],\"dnf_id\":\"g-dnf\",\"prefixes\":") != NULL, "%s",
+	    c);
 	ATF_CHECK_MSG(strstr(c, "\"zones\":[{\"name\":\"z0\",\"dnf\":[\"cdn.*."
-	    "example\",\"*.track.*\"],\"prefixes\":"
+	    "example\",\"*.track.*\"],\"dnf_id\":\"g-dnf\",\"prefixes\":"
 	    "[\"10.1.0.0/16\",\"10.30.0.2/32\",\"10.30.0.64/32\"],") != NULL &&
 	    strstr(c, "{\"name\":\"z1\",\"dnf\":[\"cdn.*.example\",\"*.track.*\"],"
-	    "\"default\":true,\"urlf\"") != NULL &&
+	    "\"dnf_id\":\"g-dnf\",\"default\":true,\"urlf\"") != NULL &&
 	    strstr(c, "\"name\":\"z0\"") < strstr(c, "\"name\":\"z1\""), "%s",
 	    c);
 	ATF_CHECK_MSG(strstr(c, "\"urlf\":{\"no-match\":\"block\",\"block\":["
 	    "\"bad.example\",\"*.worse.example/ads/*\"],\"allow\":["
-	    "\"bad.example/ok\"]},\"mbsf\":{\"no-match\":\"block\",\"block\":["
+	    "\"bad.example/ok\"],\"id\":\"g-urlf\"},\"mbsf\":{\"no-match\":\"block\",\"block\":["
 	    "\"tls1.0\",\"tls1.1\"],\"allow\":[\"tls1.2\",\"tls1.3\"],"
 	    "\"pass-through\":[\"bank.example\"],\"invalid-server-certificate\":"
-	    "\"block\",\"unencrypted\":\"block\"},\"mdr\":{\"no-match\":\"allow\","
+	    "\"block\",\"unencrypted\":\"block\",\"id\":\"g-mbsf\"},\"mdr\":{\"no-match\":\"allow\","
 	    "\"block\":[\"44D88612FEA8A8F36DE82E1278ABB02F:68\",\"275a021bbfb6489e"
 	    "54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f\"],\"allow\":["
 	    "\"3395856ce81f2b7382dee72602f798b642f14140\"],\"id\":\"g-mdr\"}}") !=
@@ -14666,10 +14712,12 @@ ATF_TC_BODY(sdwan_sfp, tc)
 	    ",\"encryption\":\"any\"},{\"type\":\"NS\",\"value\":\"198.51.100.53\"}"
 	    ",{\"type\":\"NS\",\"value\":\"2001:db8::53/128\"}],\"allow\":[{"
 	    "\"type\":\"AAAA\",\"value\":\"any\"},{\"type\":\"CNAME\",\"value\":"
-	    "\"ok.tracker.example\",\"encryption\":[\"unencrypted\",\"dot\"]}]}")
+	    "\"ok.tracker.example\",\"encryption\":[\"unencrypted\",\"dot\"]}],"
+	    "\"id\":\"g-pdns\"}")
 	    != NULL && strstr(c, "\"dnf\":{\"no-match\":"
 	    "\"allow\",\"block\":[\"ads.example\",\"cdn.*.example\"],"
-	    "\"quarantine\":[\"*.track.*\"],\"allow\":[\"ok.ads.example\"]}") !=
+	    "\"quarantine\":[\"*.track.*\"],\"allow\":[\"ok.ads.example\"],"
+	    "\"id\":\"g-dnf\"}") !=
 	    NULL, "%s", c);
 	/* How the PDNS has DNS carried (D21, D22), the resolver's: DNS over
 	 * TLS to the clients too, its questions over TLS to the servers
@@ -17749,7 +17797,8 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	    "\"z0\",\"prefixes\":[\"10.1.0.0/16\",") != NULL, "%s", r.body);
 	ATF_CHECK_MSG(strstr(r.body, "\"dnf\":{\"no-match\":\"allow\",\"block\":"
 	    "[\"ads.example\"],\"allow\":[\"ok.ads.example\"],\"listed\":{"
-	    "\"block\":[\"bad-feed.example\",\"bad.example\"]}}") != NULL, "%s",
+	    "\"block\":[\"bad-feed.example\",\"bad.example\"]},\"id\":\"g-dnf\"}")
+	    != NULL, "%s",
 	    r.body);
 	ATF_CHECK(strstr(r.body, "\"10 fwd 10.1.0.1,53") == NULL);
 	/* HTTP and TLS of the office zone to its proxy, by its table. */
@@ -17969,8 +18018,8 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	    "\"end_point\":\"road\",\"address\":\"10.30.0.1\"}],\"resolver\":"
 	    "true,") != NULL && strstr(r.body, "\"zones\":[{\"name\":\"z0\","
 	    "\"prefixes\":[\"10.1.0.0/16\",\"10.30.0.2/32\",\"10.30.0.64/32\"],"
-	    "\"urlf\":{\"no-match\":\"allow\",\"block\":[\"bad.example\"]},"
-	    "\"mdr\":{\"no-match\":\"allow\",\"block\":[\"44D88612FEA8A8F36DE82E1278"
+	    "\"urlf\":{\"no-match\":\"allow\",\"block\":[\"bad.example\"],"
+	    "\"id\":\"g-urlf\"},\"mdr\":{\"no-match\":\"allow\",\"block\":[\"44D88612FEA8A8F36DE82E1278"
 	    "ABB02F:68\",\"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aa"
 	    "bf651fd0f\"],\"allow\":[\"3395856ce81f2b7382dee72602f798b642f14140\"],"
 	    "\"id\":\"g-mdr\"}}]},\"lists\":{}") != NULL, "%s", r.body);
@@ -18078,6 +18127,41 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	resp_free(&r);
 }
 
+/*
+ * A SEN of what a daemon blocked: the newest with the daemon's name in
+ * it, a Block List's match of the policy, from 10.1.0.9, its details
+ * starting so.
+ */
+static void
+sen_block(const char *daemon, const char *fn, const char *policy,
+    const char *details)
+{
+	struct resp	r;
+	char		q[64];
+	int		i;
+
+	snprintf(q, sizeof(q), "sen?q=%s%%20", daemon);
+	for (i = 0; i < 300; i++) {
+		r4_read(q, &r);
+		if (r.status == 200 && jstr(&r, "notices.0.id") != NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_CHECK_MSG(r.status == 200 && jstr(&r, "notices.0.id") != NULL &&
+	    strcmp(jstr(&r, "notices.0.function"), fn) == 0 && strcmp(jstr(&r,
+	    "notices.0.policy"), policy) == 0 && strcmp(jstr(&r,
+	    "notices.0.service"), "acme") == 0 && strcmp(jstr(&r,
+	    "notices.0.type"), "IOC") == 0 && strcmp(jstr(&r,
+	    "notices.0.event"), "Block List match") == 0 && strcmp(jstr(&r,
+	    "notices.0.source"), "10.1.0.9") == 0 && strcmp(jstr(&r,
+	    "notices.0.action"), "Blocked") == 0 && strcmp(jstr(&r,
+	    "notices.0.uni"), strcmp(jstr(&r, "notices.0.edge"), "a") == 0 ?
+	    "uni-hq" : "") == 0 && strncmp(jstr(&r, "notices.0.details"),
+	    details, strlen(details)) == 0, "%s: %s", daemon, r.body);
+	resp_free(&r);
+}
+
 CONSOLE_TC_LONG(sdwan_apply, "SD-WAN made on the edges: refused without what "
     "a service needs, applied, its SENs, kept")
 ATF_TC_BODY(sdwan_apply, tc)
@@ -18170,6 +18254,19 @@ ATF_TC_BODY(sdwan_apply, tc)
 	    "mail.out && grep -q '^Subject: Arcana: .*Security Event "
 	    "Notification' mail.out && grep -qx 'To: soc@example.org' mail.out")
 	    == 0, "no mail of the SEN");
+	/* What the service's unbound, Squid and c-icap blocked (their
+	 * stand-ins write it to their logs a while after they start):
+	 * each a SEN of its function policy and list (sdblock.c), the
+	 * client's UNI by its address. */
+	sen_block("unbound", "Domain Name Filtering", "g-dnf",
+	    "unbound always_nxdomain: www[.]ads[.]example (entry ads[.]example) "
+	    "for 10.1.0.9 at ");
+	sen_block("squid", "URL Filtering", "g-urlf", "squid TCP_DENIED/403: "
+	    "http[://]bad[.]example/x (entry bad[.]example) for 10.1.0.9 at ");
+	sen_block("c-icap", "Malware Detection and Removal", "g-mdr", "c-icap "
+	    "Arcana[.]acme[.]g-mdr[.]block[.]UNOFFICIAL: http[://]files[.]"
+	    "example/x[.]exe (entry Arcana[.]acme[.]g-mdr[.]block[.]UNOFFICIAL) "
+	    "for 10.1.0.9 at ");
 	ATF_CHECK(system("grep -q '^gre100 fib 1' ifconfig.log") == 0);
 	ATF_CHECK(system("grep -q '^gre100 tunnel 192.0.2.1 192.0.2.2' "
 	    "ifconfig.log") == 0);

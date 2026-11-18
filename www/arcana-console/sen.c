@@ -7,9 +7,10 @@
  * MEF 138's notifications.  A Security Event Notification (SEN, §6.2)
  * is issued for each subset of a Service Flow a Security Function
  * blocks and tells (R24): what the edges' rules logged (the record,
- * sdwan-security) and what their Suricata found (sdwan-ids, Arcana's
- * own function), as the console reads the edges' events for its
- * alerts.  Each has what Table 3 asks: the issuer, a UTC timestamp, an
+ * sdwan-security), what their unbound, Squid and c-icap blocked
+ * (sdwan-block: DNF, PDNS, URLF, MBSF, MD+R, from the daemons' logs)
+ * and what their Suricata found (sdwan-ids, Arcana's own function), as
+ * the console reads the edges' events for its alerts.  Each has what Table 3 asks: the issuer, a UTC timestamp, an
  * ID (a UUID), the function and its policy, the type (IOC for a list's
  * entry, OTHER for a No-match and for Suricata's rules), the event, the
  * source address, the details, the action, and the UNI where it is
@@ -27,6 +28,10 @@
 
 #include <sys/param.h>
 #include <sys/file.h>
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -279,6 +284,59 @@ uni_of(const ucl_object_t *sw, const char *edge, const char *iface)
 	return ("");
 }
 
+/* Whether address a is in prefix p. */
+static bool
+in_prefix(const char *a, const char *p)
+{
+	uint8_t		 x[16], y[16];
+	char		 buf[64], *sl;
+	int		 af, len, i, bits;
+
+	snprintf(buf, sizeof(buf), "%s", p);
+	len = -1;
+	if ((sl = strchr(buf, '/')) != NULL) {
+		*sl = '\0';
+		len = atoi(sl + 1);
+	}
+	af = strchr(buf, ':') != NULL ? AF_INET6 : AF_INET;
+	if ((strchr(a, ':') != NULL) != (af == AF_INET6) || inet_pton(af, a,
+	    x) != 1 || inet_pton(af, buf, y) != 1)
+		return (false);
+	bits = af == AF_INET6 ? 128 : 32;
+	if (len < 0 || len > bits)
+		len = bits;
+	for (i = 0; i < len / 8; i++)
+		if (x[i] != y[i])
+			return (false);
+	return (len % 8 == 0 || ((x[i] ^ y[i]) & (0xff << (8 - len % 8))) ==
+	    0);
+}
+
+/* The UNI of the service at the edge whose prefix the client's
+ * address is in (D2), or "": a daemon's log names no interface. */
+static const char *
+uni_by_addr(const ucl_object_t *sw, const char *edge, const char *src)
+{
+	const ucl_object_t	*ep, *u, *v;
+	ucl_object_iter_t	 it;
+	int			 i;
+
+	it = NULL;
+	while (sw != NULL && edge != NULL && src != NULL && (ep =
+	    ucl_object_iterate(ucl_object_lookup(sw, "end_points"), &it, true))
+	    != NULL) {
+		if (str(ep, "edge") == NULL || strcmp(str(ep, "edge"), edge) != 0 ||
+		    (u = ucl_object_lookup(ep, "uni")) == NULL)
+			continue;
+		for (i = 0; i < 2; i++)
+			if ((v = ucl_object_lookup(u, i == 0 ? "ipv4" : "ipv6")) !=
+			    NULL && str(v, "prefix") != NULL && in_prefix(src,
+			    str(v, "prefix")))
+				return (str(u, "id") != NULL ? str(u, "id") : "");
+	}
+	return ("");
+}
+
 /* MEF 138's name of a function, for a SEN. */
 static const char *
 function_name(const char *fn)
@@ -421,6 +479,44 @@ sen_event(const char *edge_id, const char *edge_name, const ucl_object_t *e)
 		    "proto") != NULL ? str(d, "proto") : "", str(d, "iface") !=
 		    NULL ? str(d, "iface") : "", edge_name);
 		put(o, "uni", uni_of(sw, edge_id, str(d, "iface")));
+	} else if (strcmp(kind, "sdwan-block") == 0) {
+		/* What a service's unbound, Squid or c-icap blocked, matched
+		 * by the agent to the policy and its list (sdblock.c). */
+		snprintf(svc, sizeof(svc), "%s", str(d, "service") != NULL ?
+		    str(d, "service") : "");
+		snprintf(pol, sizeof(pol), "%s", str(d, "policy") != NULL ?
+		    str(d, "policy") : "");
+		snprintf(list, sizeof(list), "%s", str(d, "list") != NULL ?
+		    str(d, "list") : "");
+		sw = service_by_id(svc);
+		f = policy_of(sw, pol);
+		fn = str(f, "function") != NULL ? str(f, "function") : str(d,
+		    "function");
+		put(o, "function", function_name(fn));
+		put(o, "policy", pol);
+		put(o, "service", svc);
+		type = strcmp(list, "block") == 0 || strcmp(list, "quarantine") ==
+		    0 || strcmp(list, "allow") == 0 ? "IOC" : "OTHER";
+		snprintf(ety, sizeof(ety), "%s", strcmp(list, "no-match") == 0 ?
+		    "no match, blocked by policy" : strcmp(list, "quarantine") ==
+		    0 ? "Quarantine List match" : strcmp(list, "allow") == 0 ?
+		    "Allow List match" : strcmp(list, "block") == 0 ?
+		    "Block List match" : strcmp(list, "unencrypted") == 0 ?
+		    "unencrypted HTTP, blocked" : strcmp(list, "malware") == 0 ?
+		    "malware found" : "blocked by the function");
+		action = strcmp(list, "quarantine") == 0 ? "Quarantined" :
+		    strcmp(list, "allow") == 0 ? "Allowed" : "Blocked";
+		snprintf(src, sizeof(src), "%s", str(d, "src") != NULL ? str(d,
+		    "src") : "");
+		snprintf(details, sizeof(details), "%s %s: %s%s%s%s for %s at %s",
+		    str(d, "daemon") != NULL ? str(d, "daemon") : "", str(d,
+		    "action") != NULL ? str(d, "action") : "", str(d, "target") !=
+		    NULL ? str(d, "target") : "", str(d, "detail") != NULL &&
+		    str(d, "detail")[0] != '\0' ? " (entry " : "", str(d,
+		    "detail") != NULL ? str(d, "detail") : "", str(d, "detail") !=
+		    NULL && str(d, "detail")[0] != '\0' ? ")" : "", src,
+		    edge_name);
+		put(o, "uni", uni_by_addr(sw, edge_id, src));
 	} else {
 		ucl_object_unref(o);
 		return;

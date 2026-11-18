@@ -31,7 +31,8 @@ module arcana-events {
      119 §11.3), a security policy's rule seeing a packet (ipfw's
      logdst rtsock), a job ending, a jail made or removed (kqueue(2)'s
      EVFILT_JAIL), a process dying of a signal that dumps core
-     (kern.logsigexit).  Each is one of the kinds, with that kind's
+     (kern.logsigexit), a service's unbound, Squid or c-icap blocking
+     what a function policy names (their own logs).  Each is one of the kinds, with that kind's
      data.  The agent keeps the last 512; a read after a number
      misses none unless the oldest kept is beyond it.  The events and
      event operations of arcana.yaml converted (Y-3): the list is the
@@ -190,6 +191,15 @@ module arcana-events {
     description
       "A block of alternate marking (RFC 9341) read: a service's
        tunnels' packets in and out at this edge.";
+  }
+
+  identity sdwan-block {
+    base event-kind;
+    description
+      "A daemon of a service's told that it blocked what a function
+       policy names: unbound (DNF, PDNS), Squid (URLF, MBSF, DNF's
+       inner wildcards) or c-icap with ClamAV (MD+R), read from its
+       own log.";
   }
 
   grouping event {
@@ -959,6 +969,70 @@ module arcana-events {
             description
               "Packets that came out of it here.";
           }
+        }
+      }
+      container block {
+        description
+          "sdwan-block: what a service's daemon blocked, as its log
+           told it, with the function policy and the list it was
+           matched by where the agent could tell.";
+        leaf instance {
+          type string;
+          description
+            "The daemon's instance, sw and the service's table.";
+        }
+        leaf daemon {
+          type string;
+          description
+            "unbound, squid or c-icap.";
+        }
+        leaf time {
+          type string;
+          description
+            "When, as the daemon wrote it.";
+        }
+        leaf src {
+          type string;
+          description
+            "The client's address.";
+        }
+        leaf function {
+          type string;
+          description
+            "The function: dnf, pdns, urlf, mbsf or mdr.";
+        }
+        leaf service {
+          type string;
+          description
+            "The service.";
+        }
+        leaf policy {
+          type string;
+          description
+            "The function policy's ID, where known.";
+        }
+        leaf list {
+          type string;
+          description
+            "What matched: block, quarantine, allow, no-match,
+             unencrypted (MBSF's HTTP), malware (a signature of
+             ClamAV's own), or nothing where not known.";
+        }
+        leaf target {
+          type string;
+          description
+            "What was asked for: a name, a URL, a TLS name.";
+        }
+        leaf action {
+          type string;
+          description
+            "What the daemon did, in its words (always_nxdomain,
+             TCP_DENIED/403, terminate, the signature found).";
+        }
+        leaf detail {
+          type string;
+          description
+            "The entry matched, or the rest of the line.";
         }
       }
     }

@@ -154,18 +154,31 @@ module: arcana-events
      |     |     +--ro message?   string
      |     |     +--ro report?    string
      |     +--:(altmark)
-     |        +--ro altmark
-     |           +--ro service?   string
-     |           +--ro block?     uint64
-     |           +--ro start?     yang:date-and-time
-     |           +--ro period?    uint16
-     |           +--ro colour?    uint8
-     |           +--ro valid?     boolean
-     |           +--ro tunnel* [id]
-     |              +--ro id             string
-     |              +--ro interface?     string
-     |              +--ro out-packets?   uint64
-     |              +--ro in-packets?    uint64
+     |     |  +--ro altmark
+     |     |     +--ro service?   string
+     |     |     +--ro block?     uint64
+     |     |     +--ro start?     yang:date-and-time
+     |     |     +--ro period?    uint16
+     |     |     +--ro colour?    uint8
+     |     |     +--ro valid?     boolean
+     |     |     +--ro tunnel* [id]
+     |     |        +--ro id             string
+     |     |        +--ro interface?     string
+     |     |        +--ro out-packets?   uint64
+     |     |        +--ro in-packets?    uint64
+     |     +--:(block)
+     |        +--ro block
+     |           +--ro instance?   string
+     |           +--ro daemon?     string
+     |           +--ro time?       string
+     |           +--ro src?        string
+     |           +--ro function?   string
+     |           +--ro service?    string
+     |           +--ro policy?     string
+     |           +--ro list?       string
+     |           +--ro target?     string
+     |           +--ro action?     string
+     |           +--ro detail?     string
      +---x read
         +---w input
         |  +---w after?   uint64
@@ -323,18 +336,31 @@ module: arcana-events
            |     |     +--ro message?   string
            |     |     +--ro report?    string
            |     +--:(altmark)
-           |        +--ro altmark
-           |           +--ro service?   string
-           |           +--ro block?     uint64
-           |           +--ro start?     yang:date-and-time
-           |           +--ro period?    uint16
-           |           +--ro colour?    uint8
-           |           +--ro valid?     boolean
-           |           +--ro tunnel* [id]
-           |              +--ro id             string
-           |              +--ro interface?     string
-           |              +--ro out-packets?   uint64
-           |              +--ro in-packets?    uint64
+           |     |  +--ro altmark
+           |     |     +--ro service?   string
+           |     |     +--ro block?     uint64
+           |     |     +--ro start?     yang:date-and-time
+           |     |     +--ro period?    uint16
+           |     |     +--ro colour?    uint8
+           |     |     +--ro valid?     boolean
+           |     |     +--ro tunnel* [id]
+           |     |        +--ro id             string
+           |     |        +--ro interface?     string
+           |     |        +--ro out-packets?   uint64
+           |     |        +--ro in-packets?    uint64
+           |     +--:(block)
+           |        +--ro block
+           |           +--ro instance?   string
+           |           +--ro daemon?     string
+           |           +--ro time?       string
+           |           +--ro src?        string
+           |           +--ro function?   string
+           |           +--ro service?    string
+           |           +--ro policy?     string
+           |           +--ro list?       string
+           |           +--ro target?     string
+           |           +--ro action?     string
+           |           +--ro detail?     string
            +--ro kept?    uint16
 
   notifications:
@@ -489,15 +515,28 @@ module: arcana-events
           |     +---- message?   string
           |     +---- report?    string
           +--:(altmark)
-             +---- altmark
-                +---- service?   string
-                +---- block?     uint64
-                +---- start?     yang:date-and-time
-                +---- period?    uint16
-                +---- colour?    uint8
-                +---- valid?     boolean
-                +---- tunnel* [id]
-                   +---- id             string
-                   +---- interface?     string
-                   +---- out-packets?   uint64
-                   +---- in-packets?    uint64
+          |  +---- altmark
+          |     +---- service?   string
+          |     +---- block?     uint64
+          |     +---- start?     yang:date-and-time
+          |     +---- period?    uint16
+          |     +---- colour?    uint8
+          |     +---- valid?     boolean
+          |     +---- tunnel* [id]
+          |        +---- id             string
+          |        +---- interface?     string
+          |        +---- out-packets?   uint64
+          |        +---- in-packets?    uint64
+          +--:(block)
+             +---- block
+                +---- instance?   string
+                +---- daemon?     string
+                +---- time?       string
+                +---- src?        string
+                +---- function?   string
+                +---- service?    string
+                +---- policy?     string
+                +---- list?       string
+                +---- target?     string
+                +---- action?     string
+                +---- detail?     string

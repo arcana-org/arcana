@@ -941,7 +941,7 @@ event(const struct mailconf *mc, const char *id, const char *host,
 		return;
 	/* What a security function told: a SEN (MEF 138 R24). */
 	if (strcmp(kind, "sdwan-security") == 0 || strcmp(kind, "sdwan-ids") ==
-	    0)
+	    0 || strcmp(kind, "sdwan-block") == 0)
 		sen_event(id, host, e);
 	/* The host's mutes; what no setting stops goes all the same. */
 	mute = servers_mute(id);

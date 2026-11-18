@@ -926,9 +926,14 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "exit 0\n");
 	ATF_REQUIRE(chmod("fake-dnsmasq", 0755) == 0);
 	put("fake-rtsol", "#!/bin/sh\necho \"rtsol $*\" >> rtsol.log\nexit 0\n");
-	/* local-unbound: checkconf takes any file; started by fake-setfib. */
+	/* local-unbound: checkconf takes any file; started by fake-setfib,
+	 * it blocks a name of a DNF's Block, as its log says (sdblock.c),
+	 * a while after it starts. */
 	put("fake-local-unbound", "#!/bin/sh\necho \"unbound $*\" >> "
-	    "unbound.log\nexit 0\n");
+	    "unbound.log\nl=$(sed -n 's/^.logfile: \"\\(.*\\)\"$/\\1/p' "
+	    "\"$2\")\n[ -n \"$l\" ] && (sleep 5; echo '[1792000000] unbound[1:0] "
+	    "info: ads.example. always_nxdomain 10.1.0.9@5353 www.ads.example. "
+	    "A IN' >> \"$l\") > /dev/null 2>&1 &\nexit 0\n");
 	ATF_REQUIRE(chmod("fake-local-unbound", 0755) == 0);
 	put("fake-local-unbound-checkconf", "#!/bin/sh\necho \"checkconf $*\" >> "
 	    "unbound.log\nexit 0\n");
@@ -1022,6 +1027,11 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	put("tools/squid", "#!/bin/sh\necho \"squid $*\" >> squid.log\n"
 	    "[ \"$2\" = parse ] && { grep -q BROKEN \"$4\" && exit 1; exit 0; }\n"
 	    "[ \"$1\" = -f ] && echo $$ > \"$(dirname \"$2\")/sdwan-proxy-sw1.pid\"\n"
+	    /* Started: a URLF's Block refused, as its access log says. */
+	    "a=$(sed -n 's/^access_log \\(.*\\) arcana$/\\1/p' \"$2\")\n"
+	    "[ \"$1\" = -f ] && [ -n \"$a\" ] && (sleep 5; mkdir -p \"$(dirname "
+	    "\"$a\")\"; echo '1792000010.000 10.1.0.9 TCP_DENIED/403 GET "
+	    "http://bad.example/x - -' >> \"$a\") > /dev/null 2>&1 &\n"
 	    "exit 0\n");
 	put("tools/security_file_certgen", "#!/bin/sh\necho \"certgen $*\" >> "
 	    "squid.log\nmkdir -p \"$3\"\n");
@@ -1031,6 +1041,13 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "[ \"$1\" = --hold ] && { echo $$ > \"$2\"; sleep 60; exit 0; }\n"
 	    "echo \"c-icap $*\" >> squid.log\n"
 	    "p=$(sed -n 's/^PidFile //p' \"$2\")\n"
+	    /* A hash of an MD+R Block found, as virus_scan says. */
+	    "l=$(sed -n 's/^ServerLog //p' \"$2\")\n"
+	    "[ -n \"$l\" ] && (sleep 5; mkdir -p \"$(dirname \"$l\")\"; echo "
+	    "'Wed Nov 18 10:00:00 2026, 1/2, VIRUS DETECTED: "
+	    "Arcana.acme.g-mdr.block.UNOFFICIAL , http client ip: 10.1.0.9, "
+	    "http user: -, http url: http://files.example/x.exe ' >> \"$l\") "
+	    "> /dev/null 2>&1 &\n"
 	    "\"$0\" --hold \"$p\" > /dev/null 2>&1 &\nexit 0\n");
 	/* suricata, a plugin: checked, it takes all; run, it stays a while
 	 * with its pid file where it is told. */

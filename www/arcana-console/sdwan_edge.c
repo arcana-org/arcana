@@ -3015,16 +3015,33 @@ static const char *const mbsf_keys[] = { "no-match", "block", "allow",
  * the entries of the named lists it names, of the kind it takes
  * (prefixes or domains), by list ("listed").
  */
+static void	sfp_listed(struct plan *, const ucl_object_t *, bool,
+		    ucl_object_t *);
+
 static ucl_object_t *
 sfp_spec(struct plan *pl, const ucl_object_t *f, const char *const *keys,
     bool lists, bool prefixes)
 {
-	ucl_object_t	*o, *listed, *a;
-	int		 k;
+	ucl_object_t	*o;
 
 	o = pick(f, keys);
-	if (!lists)
-		return (o);
+	if (lists)
+		sfp_listed(pl, f, prefixes, o);
+	/* Its ID, last, which the agent names in what the daemon blocked
+	 * (sdblock.c) and ClamAV's signatures by. */
+	if (str(f, "id") != NULL)
+		put(o, "id", S(str(f, "id")));
+	return (o);
+}
+
+/* The named lists' entries of f's into o, as "listed". */
+static void
+sfp_listed(struct plan *pl, const ucl_object_t *f, bool prefixes,
+    ucl_object_t *o)
+{
+	ucl_object_t	*listed, *a;
+	int		 k;
+
 	listed = ucl_object_typed_new(UCL_OBJECT);
 	for (k = 0; k < 3; k++) {
 		a = ucl_object_typed_new(UCL_ARRAY);
@@ -3040,7 +3057,6 @@ sfp_spec(struct plan *pl, const ucl_object_t *f, const char *const *keys,
 		put(o, "listed", listed);
 	else
 		ucl_object_unref(listed);
-	return (o);
 }
 
 /*
@@ -3229,8 +3245,12 @@ proxy_spec(struct plan *pl, const ucl_object_t *sw, const char *sid,
 			z = ucl_object_typed_new(UCL_OBJECT);
 			put(z, "name", S(zn));
 			/* The DNF's names with a * inside (R71): Squid's. */
-			if (dw != NULL)
+			if (dw != NULL) {
 				put(z, "dnf", dw);
+				if (str(zone_fn(sw, zone, "dnf"), "id") != NULL)
+					put(z, "dnf_id", S(str(zone_fn(sw, zone,
+					    "dnf"), "id")));
+			}
 			if (zone_default(zone))
 				put(z, "default", B(true));
 			else {
@@ -3250,7 +3270,6 @@ proxy_spec(struct plan *pl, const ucl_object_t *sw, const char *sid,
 				ucl_object_t	*mo;
 
 				mo = sfp_spec(pl, md, sfp_keys, false, false);
-				put(mo, "id", S(str(md, "id")));
 				put(z, "mdr", mo);
 			}
 			ucl_array_append(zones, z);

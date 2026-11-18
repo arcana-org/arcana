@@ -295,6 +295,8 @@ do_sdwan_dns(struct work *w, const char *json, const char **errp)
 	const ucl_object_t	*z;
 	ucl_object_iter_t	 zit;
 	char			*argv[3], *text, *confs[INSTANCES_MAX];
+	const char		*names[INSTANCES_MAX], *paths[INSTANCES_MAX];
+	const ucl_object_t	*specs[INSTANCES_MAX];
 	const char		*conf, *e;
 	int			 n, i, k, step;
 	bool			 was, ok;
@@ -394,10 +396,13 @@ do_sdwan_dns(struct work *w, const char *json, const char **errp)
 			break;
 		}
 		/* The agent's own clause after the console's: the pid file,
-		 * no chroot and the user it runs as. */
+		 * no chroot, the user it runs as, and its log, which the
+		 * agent reads for what it blocked (sdblock.c). */
 		text = wfmt(w, "%s%sserver:\n\tpidfile: \"%s\"\n\tchroot: \"\"\n\t"
-		    "username: \"\"\n", conf, conf[0] != '\0' && conf[strlen(conf)
-		    - 1] != '\n' ? "\n" : "", inst_path(w, ni[k].name, "pid"));
+		    "username: \"\"\n\tlogfile: \"%s\"\n\tuse-syslog: no\n", conf,
+		    conf[0] != '\0' && conf[strlen(conf) - 1] != '\n' ? "\n" : "",
+		    inst_path(w, ni[k].name, "pid"), inst_path(w, ni[k].name,
+		    "log"));
 		if (sdwan_conf_write(wfmt(w, "sdwan-dns-%s.conf", ni[k].name),
 		    text, &e) != 0) {
 			step_end(w, step, false, "%s", e);
@@ -430,6 +435,16 @@ do_sdwan_dns(struct work *w, const char *json, const char **errp)
 	if (ok) {
 		memcpy(instances, ni, sizeof(*ni) * (size_t)n);
 		ninstances = n;
+		/* Their logs read for what they blocked. */
+		it = NULL;
+		for (k = 0; k < n; k++) {
+			in = ucl_object_iterate(ucl_object_lookup(top,
+			    "instances"), &it, true);
+			names[k] = ni[k].name;
+			paths[k] = inst_path(w, ni[k].name, "log");
+			specs[k] = ucl_object_lookup(in, "spec");
+		}
+		sdblock_watch(SDB_UNBOUND, n, names, paths, specs);
 	}
 	pthread_mutex_unlock(&lock);
 	for (k = 0; k < n; k++)

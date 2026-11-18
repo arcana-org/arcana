@@ -39,14 +39,17 @@
   module's tree.
   For the user: the CORECONF draft's examples number some
   ietf-interfaces items otherwise than SIDS.md.
-- MEF 138's SEN and SAN fall short of PLAN-119-SASE's SASE-6 "done"
-  (found 2026-11-17 bringing the book's rows up to date): a SEN is made
-  only for ipfw denies (IPPF, DPF) and Suricata alerts (console sen.c,
-  sen_event from mail.c), none for blocks by unbound, Squid or c-icap
-  (DNF, PDNS, URLF, MBSF, MD+R): the agent tells no event of them.  A SAN
-  is made only by the document PUT (sdwan.c, san_changes), not by a
-  RESTCONF write of the L3NM (l3nm.c api_l3nm) nor by l3nm_merge from
-  the SAP network (sapnet.c).
+- MEF 138's SENs of the daemons (agent luxuria/sdblock.c), what is
+  left: a PDNS's A and AAAA entries and its No-match are unbound's
+  response-ip, which logs only its inform actions (none of which
+  answers NXDOMAIN), so they are told by no SEN; a URLF match of a
+  named list (a file of Squid's) is told as Block without its entry; a
+  DNF name with a * inside that Squid ends is told as Block, Quarantine
+  or not.  The log lines read are unbound's, from its source
+  (log-local-actions, rpz-log), Squid's in the arcana format, and
+  c-icap virus_scan's "VIRUS DETECTED"; only stand-ins wrote them in the
+  tests: what a real Squid logs for an ssl_bump terminate is to be
+  checked on an edge.
 - MEF 138's model, what stays undone and why (docs/PLAN-119-SASE.md,
   SASE-6): the middlebox for IPsec (no IPsec proxy on FreeBSD) and
   DLP (no engine). The book's conformance rows are to be brought up to

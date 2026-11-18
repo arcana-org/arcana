@@ -27,9 +27,11 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <ucl.h>
 
@@ -40,6 +42,10 @@
 #define	ITAB		"\t\timport table on;\n"
 #define	WORD_MAX	1024
 #define	LIST_MAX	4096	/* addresses, prefixes or names a list */
+/* Squid's line of a request, read back by sdblock.c: when, the client,
+ * the status, the method, the URL, the TLS name and the SslBump mode. */
+#define	SQUID_LOGFORMAT	"%%ts.%%03tu %%>a %%Ss/%%03>Hs %%rm %%ru %%ssl::>sni " \
+	"%%ssl::bump_mode"
 
 static const char *
 sstr(const ucl_object_t *o, const char *k)
@@ -1040,12 +1046,17 @@ dns_conf_render(struct work *w, const ucl_object_t *spec, const char *host,
 		}
 		ucl_object_unref(seen);
 	}
-	/* The zones' response policy zones, each for its tag alone. */
+	/* The zones' response policy zones, each for its tag alone; told
+	 * by the zone's name, which the agent reads back (sdblock.c). */
 	it = NULL;
-	while ((e = ucl_object_iterate(rpz, &it, true)) != NULL)
+	while ((e = ucl_object_iterate(rpz, &it, true)) != NULL) {
 		fprintf(b, "rpz:\n\tname: \"%s.rpz.\"\n\tzonefile: \"%s%s\"\n\ttags: "
-		    "\"%s\"\n%s", ucl_object_key(e), p->rpz_pre, ucl_object_key(e),
-		    ucl_object_key(e), logit ? "\trpz-log: yes\n" : "");
+		    "\"%s\"\n", ucl_object_key(e), p->rpz_pre, ucl_object_key(e),
+		    ucl_object_key(e));
+		if (logit)
+			fprintf(b, "\trpz-log: yes\n\trpz-log-name: \"%s\"\n",
+			    ucl_object_key(e));
+	}
 	/* The servers it asks, where the form names them: over TLS on port
 	 * 853 unless one says another, each checked by its name. */
 	if (ucl_array_size(ucl_object_lookup(spec, "upstream")) > 0) {
@@ -1423,6 +1434,7 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	char			*out, *tb;
 	size_t			 tl;
 	FILE			*t;
+	char			 alog[MAXPATHLEN];
 	int			 tlsmin;
 	intmax_t		 fib;
 	bool			 v6;
@@ -1459,11 +1471,11 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	fprintf(b.fp, "# Written by arcana-agent for the Arcana console: SD-WAN "
 	    "service %s at %s, in routing table %jd.\n# The URL filtering, "
 	    "middlebox and malware scanning of its zones (MEF 138), by Squid.\n"
-	    "pid_filename %s\naccess_log /var/log/squid/sdwan-sw%jd-access.log\n"
-	    "cache_log /var/log/squid/sdwan-sw%jd-cache.log\ncache deny all\n"
-	    "visible_hostname sdwan-sw%jd\n", conf_word(sstr(spec, "service")),
-	    conf_word(host), fib,
-	    p->pid, fib, fib, fib);
+	    "pid_filename %s\nlogformat arcana " SQUID_LOGFORMAT "\n"
+	    "access_log %s arcana\ncache_log %s/squid/sdwan-sw%jd-cache.log\n"
+	    "cache deny all\nvisible_hostname sdwan-sw%jd\n", conf_word(sstr(
+	    spec, "service")), conf_word(host), fib, p->pid, sdwan_squid_log(
+	    alog, sizeof(alog), fib), opts.log_dir, fib, fib);
 	/* The oldest TLS let through: the strictest zone's MBSF. */
 	tlsmin = 0;
 	zit = NULL;
@@ -1915,6 +1927,257 @@ clamav_sigs_render(struct work *w, const ucl_object_t *instances,
 	return (out);
 }
 
+/* ---- What the daemons blocked, matched back (sdblock.c) ---------------- */
+
+/* Where an SD-WAN service's Squid writes its requests, in the arcana
+ * format; where its c-icap writes what it says (the viruses found). */
+const char *
+sdwan_squid_log(char *buf, size_t len, intmax_t fib)
+{
+
+	snprintf(buf, len, "%s/squid/sdwan-sw%jd-access.log", opts.log_dir, fib);
+	return (buf);
+}
+
+const char *
+sdwan_icap_log(char *buf, size_t len, intmax_t fib)
+{
+
+	snprintf(buf, len, "%s/c-icap/sdwan-sw%jd-server.log", opts.log_dir,
+	    fib);
+	return (buf);
+}
+
+const char *
+sdwan_list_name(int k)
+{
+
+	return (k >= 0 && k < 3 ? sfl[k] : "");
+}
+
+bool
+sdwan_notifies(const ucl_object_t *f, const char *list)
+{
+
+	return (sfp_notifies(f, list));
+}
+
+/*
+ * The list of a DNF whose entry is the name unbound's local zone is
+ * (without its last dot), as dns_conf_render() wrote it: the first
+ * list, each name with its *. or without; -1 for none.
+ */
+int
+sdwan_dnf_list(const ucl_object_t *df, const char *zone)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*names;
+	const char		*n;
+	int			 k, found;
+
+	found = -1;
+	for (k = 0; found == -1 && k < 3; k++) {
+		names = ucl_object_typed_new(UCL_ARRAY);
+		sfp_strings(df, sfl[k], true, names);
+		it = NULL;
+		while (found == -1 && (e = ucl_object_iterate(names, &it, true)) !=
+		    NULL) {
+			n = ucl_object_tostring(e);
+			if (dnf_inner(n))
+				continue;
+			if (strncmp(n, "*.", 2) == 0)
+				n += 2;
+			if (strcasecmp(n, zone) == 0)
+				found = k;
+		}
+		ucl_object_unref(names);
+	}
+	return (found);
+}
+
+/*
+ * The list of a PDNS whose RPZ trigger is own (the owner's name in the
+ * zone, without the zone's origin), as rpz_zone() wrote it, the entry
+ * into *entryp; -1 for none.
+ */
+int
+sdwan_pdns_list(const ucl_object_t *pd, const char *own, const char **entryp)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	char			 o[300], ip[80];
+	const char		*v;
+	int			 k;
+
+	for (k = 0; k < 3; k++) {
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(pd, sfl[k]), &it,
+		    true)) != NULL) {
+			if ((v = sstr(e, "value")) == NULL)
+				continue;
+			if (pdns_type(e, "CNAME"))
+				snprintf(o, sizeof(o), "%s", v);
+			else if (pdns_type(e, "NS") && rpz_ip(v, ip, sizeof(ip)))
+				snprintf(o, sizeof(o), "%s.rpz-nsip", ip);
+			else if (pdns_type(e, "NS"))
+				snprintf(o, sizeof(o), "%s.rpz-nsdname", v);
+			else
+				continue;
+			if (strcasecmp(o, own) == 0) {
+				*entryp = v;
+				return (k);
+			}
+		}
+	}
+	return (-1);
+}
+
+/* Whether host is a name of a DNF's with a * inside, as squid_wild()'s
+ * regex takes it: each * a whole label, the names beneath it too. */
+bool
+sdwan_dnf_wild(const ucl_object_t *dw, const char *host, const char **entryp)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	const char		*n, *h;
+	char			 pat[300];
+
+	it = NULL;
+	while ((e = ucl_object_iterate(dw, &it, true)) != NULL) {
+		n = ucl_object_tostring_forced(e);
+		snprintf(pat, sizeof(pat), "%s", strncmp(n, "*.", 2) == 0 ? n + 2 :
+		    n);
+		for (h = host; h != NULL; h = (h = strchr(h, '.')) != NULL ? h + 1 :
+		    NULL)
+			if (fnmatch(pat, h, FNM_PERIOD | FNM_CASEFOLD) == 0 &&
+			    strchr(pat, '*') != NULL) {
+				/* A * is one label: as many dots in both. */
+				const char *a, *b;
+				int	    da = 0, db = 0;
+
+				for (a = pat; *a != '\0'; a++)
+					da += *a == '.';
+				for (b = h; *b != '\0'; b++)
+					db += *b == '.';
+				if (da == db) {
+					*entryp = n;
+					return (true);
+				}
+			}
+	}
+	return (false);
+}
+
+/*
+ * The list of a URLF whose entry, the most specific first as
+ * squid_urlf() orders them, matches the request: its host (a TLS name
+ * alone where path is NULL: the entries of a host alone then) and its
+ * path; the entry into *entryp; -1 for none.
+ */
+int
+sdwan_urlf_list(const ucl_object_t *uf, const char *host, const char *path,
+    const char **entryp)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	struct uentry		*ue;
+	const char		*eh, *ep, *h;
+	char			 hb[256], pat[1024];
+	size_t			 n, i, hlen, sl;
+	int			 k, found;
+
+	n = ucl_array_size(ucl_object_lookup(uf, "block")) + ucl_array_size(
+	    ucl_object_lookup(uf, "quarantine")) + ucl_array_size(
+	    ucl_object_lookup(uf, "allow"));
+	if (n == 0 || (ue = calloc(n, sizeof(*ue))) == NULL)
+		return (-1);
+	for (i = 0, k = 0; k < 3; k++) {
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(uf, sfl[k]), &it,
+		    true)) != NULL && i < n) {
+			if (ucl_object_type(e) != UCL_STRING)
+				continue;
+			ue[i].s = ucl_object_tostring(e);
+			ue[i].list = k;
+			ue[i].spec = url_specific(ue[i].s, &eh, &hlen, &ep);
+			ue[i].at = (int)i;
+			i++;
+		}
+	}
+	n = i;
+	qsort(ue, n, sizeof(*ue), uentry_cmp);
+	found = -1;
+	for (i = 0; found == -1 && i < n; i++) {
+		(void)url_specific(ue[i].s, &eh, &hlen, &ep);
+		if (hlen >= sizeof(hb) || (path == NULL && ep != NULL))
+			continue;
+		snprintf(hb, sizeof(hb), "%.*s", (int)hlen, eh);
+		if (strncmp(hb, "*.", 2) == 0) {
+			h = strcasecmp(host, hb + 2) == 0 ? host : NULL;
+			sl = strlen(hb + 2);
+			if (h == NULL && strlen(host) > sl && host[strlen(host) - sl
+			    - 1] == '.' && strcasecmp(host + strlen(host) - sl, hb +
+			    2) == 0)
+				h = host;
+		} else
+			h = strcasecmp(host, hb) == 0 ? host : NULL;
+		if (h == NULL)
+			continue;
+		/* Its path anchored at the start, its * anything. */
+		if (ep != NULL) {
+			snprintf(pat, sizeof(pat), "%s*", ep);
+			if (fnmatch(pat, path, 0) != 0)
+				continue;
+		}
+		found = ue[i].list;
+		*entryp = ue[i].s;
+	}
+	free(ue);
+	return (found);
+}
+
+/*
+ * The function policy and the list a ClamAV signature's name says, as
+ * clamav_sigs_render() named them (Arcana.service.policy.list, ClamAV
+ * adding .UNOFFICIAL to a name not its own): the zone's MD+R of the
+ * form's whose name it is; false for none (a signature of ClamAV's).
+ */
+bool
+sdwan_mdr_sig(const ucl_object_t *spec, const char *virus,
+    const char **policyp, int *kp)
+{
+	const ucl_object_t	*z, *md;
+	ucl_object_iter_t	 zit;
+	char			 name[200], *q;
+	size_t			 n;
+	int			 k;
+
+	zit = NULL;
+	while ((z = ucl_object_iterate(ucl_object_lookup(spec, "zones"), &zit,
+	    true)) != NULL) {
+		md = ucl_object_lookup(z, "mdr");
+		if (md == NULL || sstr(md, "id") == NULL)
+			continue;
+		for (k = 0; k < 3; k++) {
+			snprintf(name, sizeof(name), "Arcana.%s.%s.%s", sval(spec,
+			    "service"), sstr(md, "id"), sfl[k]);
+			for (q = name; *q != '\0'; q++)
+				if (!isalnum((unsigned char)*q) && *q != '.' &&
+				    *q != '_' && *q != '-')
+					*q = '_';
+			n = strlen(name);
+			if (strncmp(virus, name, n) == 0 && (virus[n] == '\0' ||
+			    virus[n] == '.')) {
+				*policyp = sstr(md, "id");
+				*kp = k;
+				return (true);
+			}
+		}
+	}
+	return (false);
+}
+
 /* ---- c-icap: malware scanning, for the Squid beside it ---------------- */
 
 static const char *const icap_tail =
@@ -1943,7 +2206,7 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 {
 	const char		*own;
 	FILE			*b;
-	char			*buf;
+	char			*buf, slog[MAXPATHLEN];
 	size_t			 len;
 	intmax_t		 fib;
 
@@ -1969,10 +2232,11 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 		    "scanning of its security zones (MEF 138's MD+R), by c-icap "
 		    "and ClamAV, for its Squid.\nPidFile %s\nCommandsSocket %s\n"
 		    "Port %s:%d\nacl squid src %s/255.255.255.255\n%sServerLog "
-		    "/var/log/c-icap/sdwan-sw%jd-server.log\nAccessLog "
-		    "/var/log/c-icap/sdwan-sw%jd-access.log\n%s", conf_word(sstr(spec,
-		    "service")), conf_word(host), fib, p->icap_pid, p->icap_cmd, own,
-		    SDWAN_ICAP_PORT(fib), own, icap_tail, fib, fib, icap_scan);
+		    "%s\nAccessLog %s/c-icap/sdwan-sw%jd-access.log\n%s",
+		    conf_word(sstr(spec, "service")), conf_word(host), fib,
+		    p->icap_pid, p->icap_cmd, own, SDWAN_ICAP_PORT(fib), own,
+		    icap_tail, sdwan_icap_log(slog, sizeof(slog), fib),
+		    opts.log_dir, fib, icap_scan);
 	} else
 		fprintf(b, "# Written by arcana-agent for the Arcana console: the "
 		    "Security section's malware scanning for %s at %s,\n# by "

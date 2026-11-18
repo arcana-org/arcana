@@ -93,6 +93,26 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SEN of the daemons' blocks, SAN on every path; agent 0.296.0, console 0.447.0
+
+- **SEN for blocks by unbound, Squid and c-icap** (MEF 138, SASE-6):
+  the agent reads the SD-WAN daemons' own logs of what they blocked
+  (DNF and PDNS by unbound, URLF, MBSF and DNF's inner wildcards by
+  Squid, MD+R and malware by c-icap and ClamAV), matches each line back
+  to its zone, function policy and list, and tells it as the new event
+  sdwan-block (arcana-events' block case, SIDs 80162 and up); the
+  console makes a SEN of it as of ipfw's denies and Suricata's alerts.
+  Update the console with the agents.  The services' Squid now logs in
+  its own arcana format to `-v`'s directory (`/var/log` by default)
+  `/squid/sdwan-sw<fib>-access.log`, c-icap to
+  `/c-icap/sdwan-sw<fib>-server.log`, and their unbound to
+  `sdwan-dns-<name>.log` beside the agent's kept files, not to syslog;
+  the next apply renders these files again.  A PDNS's A and AAAA
+  entries and its no-match make no SEN yet (unbound logs none).
+- **SAN on every path**: SANs are made where the L3NM is kept, so a
+  RESTCONF write of it and the SAP network's merge make them too, not
+  the document's PUT alone.
+
 ### ACL match table, agent 0.295.0
 
 - **ACL match table** (RFC 8519, PLAN-SDN-YANG 6.1.2): the agent now

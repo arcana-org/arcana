@@ -1292,6 +1292,17 @@ web_principal(struct http_request *req, struct principal *p)
 	req_principal(req, p);
 }
 
+/* web.h's: who a request is, in words (session_who()), and from
+ * where (web_peer()). */
+void
+web_describe(struct http_request *req, char *who, size_t wlen, char *from,
+    size_t flen)
+{
+
+	snprintf(who, wlen, "%s", session_who(req));
+	(void)web_peer(req, from, flen);
+}
+
 /* The request's role on host sid (principal_host()). */
 enum role
 req_host_role(struct http_request *req, const char *sid)

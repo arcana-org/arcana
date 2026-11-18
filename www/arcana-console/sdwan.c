@@ -4049,9 +4049,9 @@ sdwan_valid(const ucl_object_t *doc, char *why, size_t len)
 int
 api_sdwan(struct http_request *req)
 {
-	ucl_object_t	*body, *doc, *kept, *o;
+	ucl_object_t	*body, *kept, *o;
 	struct ck	 c;
-	char		 peer[80], why[400];
+	char		 why[400];
 	int		 st;
 
 	if (req->method == HTTP_METHOD_GET) {
@@ -4082,10 +4082,8 @@ api_sdwan(struct http_request *req)
 	 * zone's, an underlay's) the user's to change, and an identity's
 	 * issued the console's (l3nm.c).
 	 */
-	doc = l3nm_sdwan();
 	if ((st = l3nm_sdwan_put(body, ucl_object_toint(ucl_object_lookup(
 	    body, "version")), why, sizeof(why))) != 0) {
-		ucl_object_unref(doc);
 		ucl_object_unref(body);
 		return (reply_error(req, st, st == 409 ? "stale" : st == 400 ?
 		    "invalid" : st == 403 ? "role" : "store", "%s", why));
@@ -4098,10 +4096,8 @@ api_sdwan(struct http_request *req)
 	    "the console (the Policy Administration Point)", session_who(req),
 	    "version %jd kept", (intmax_t)ucl_object_toint(ucl_object_lookup(
 	    kept, "version")));
-	/* Each function policy whose values changed: a SAN (MEF 138 R31). */
-	san_changes(doc, kept, web_peer(req, peer, sizeof(peer)),
-	    session_who(req));
-	ucl_object_unref(doc);
+	/* Each function policy whose values changed was a SAN (MEF 138
+	 * R31), made where the L3NM is kept (l3nm.c). */
 	ucl_object_unref(body);
 	return (reply_json(req, 200, kept));
 }

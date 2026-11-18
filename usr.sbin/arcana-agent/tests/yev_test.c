@@ -148,6 +148,14 @@ event(const struct arcana_events_event_entry *e)
 		    str(e->alert->interface), e->alert->severity,
 		    str(e->alert->action), str(e->alert->signature));
 		break;
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_BLOCK:
+		printf("block %s %s %s from %s: %s %s %s %s %s (%s)",
+		    str(e->block->instance), str(e->block->daemon),
+		    str(e->block->function), str(e->block->src),
+		    str(e->block->service), str(e->block->policy),
+		    str(e->block->list), str(e->block->target),
+		    str(e->block->action), str(e->block->detail));
+		break;
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_UNDO:
 		printf("undo %s errno=%d %s", str(e->undo->node),
 		    e->undo->errno_, str(e->undo->message));

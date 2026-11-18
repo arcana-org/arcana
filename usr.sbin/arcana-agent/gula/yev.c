@@ -392,6 +392,24 @@ data_of(cbl_yarena *a, const char *kind, const ucl_object_t *d, yevent *y)
 		c->action = yj_str(a, d, "action");
 		y->alert = c;
 		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_ALERT;
+	} else if (strcmp(kind, "sdwan-block") == 0) {
+		struct arcana_events_event_entry_block	*c;
+
+		if (!ALLOC(a, c))
+			return (ENOMEM);
+		c->instance = yj_str(a, d, "name");
+		c->daemon = yj_str(a, d, "daemon");
+		c->time = yj_str(a, d, "time");
+		c->src = yj_str(a, d, "src");
+		c->function = yj_str(a, d, "function");
+		c->service = yj_str(a, d, "service");
+		c->policy = yj_str(a, d, "policy");
+		c->list = yj_str(a, d, "list");
+		c->target = yj_str(a, d, "target");
+		c->action = yj_str(a, d, "action");
+		c->detail = yj_str(a, d, "detail");
+		y->block = c;
+		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_BLOCK;
 	} else if (strcmp(kind, "undo-failed") == 0) {
 		struct arcana_events_event_entry_undo	*c;
 
@@ -540,5 +558,6 @@ yev_one_from_json(const char *json, cbl_yarena *a,
 	out->alert = (const void *)y.alert;
 	out->undo = (const void *)y.undo;
 	out->altmark = (const void *)y.altmark;
+	out->block = (const void *)y.block;
 	return (0);
 }

@@ -73,6 +73,9 @@ static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 
+static void	proxies_watch(struct work *, const ucl_object_t *,
+		    const struct instance *, int);
+
 static bool
 name_ok(const char *s)
 {
@@ -645,6 +648,8 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	sec = ucl_object_lookup(top, "group") != NULL && strcmp(
 	    ucl_object_tostring_forced(ucl_object_lookup(top, "group")),
 	    "security") == 0;
+	/* Each one's flags false unless said (stopped). */
+	memset(ni, 0, sizeof(ni));
 	n = 0;
 	it = NULL;
 	while ((in = ucl_object_iterate(ucl_object_lookup(top, "instances"),
@@ -856,6 +861,10 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 				instances[nkeep++] = instances[i];
 		memcpy(instances + nkeep, ni, sizeof(*ni) * (size_t)n);
 		ninstances = nkeep + n;
+		/* The SD-WAN's logs read for what they blocked: each
+		 * running Squid's, and its c-icap's. */
+		if (!sec)
+			proxies_watch(w, top, ni, n);
 	}
 	pthread_mutex_unlock(&lock);
 	ucl_object_unref(top);
@@ -867,6 +876,42 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		return (-1);
 	}
 	return (0);
+}
+
+/*
+ * The SD-WAN instances' logs, those not stopped, read for what they
+ * blocked (sdblock.c): Squid's access log, c-icap's server log, where
+ * sdconf.c had them write.
+ */
+static void
+proxies_watch(struct work *w, const ucl_object_t *top,
+    const struct instance *ni, int n)
+{
+	const ucl_object_t	*in, *sq[INSTANCES_MAX], *ic[INSTANCES_MAX];
+	const char		*sn[INSTANCES_MAX], *sp[INSTANCES_MAX];
+	const char		*in_[INSTANCES_MAX], *ip[INSTANCES_MAX];
+	ucl_object_iter_t	 it;
+	char			 buf[MAXPATHLEN];
+	int			 k, ns, ni_;
+
+	ns = ni_ = 0;
+	it = NULL;
+	for (k = 0; k < n; k++) {
+		in = ucl_object_iterate(ucl_object_lookup(top, "instances"), &it,
+		    true);
+		if (ni[k].stopped)
+			continue;
+		sn[ns] = ni[k].name;
+		sp[ns] = wstrdup(w, sdwan_squid_log(buf, sizeof(buf), ni[k].fib));
+		sq[ns++] = ucl_object_lookup(in, "spec");
+		if (!ni[k].icap)
+			continue;
+		in_[ni_] = ni[k].name;
+		ip[ni_] = wstrdup(w, sdwan_icap_log(buf, sizeof(buf), ni[k].fib));
+		ic[ni_++] = ucl_object_lookup(in, "spec");
+	}
+	sdblock_watch(SDB_SQUID, ns, sn, sp, sq);
+	sdblock_watch(SDB_ICAP, ni_, in_, ip, ic);
 }
 
 /* At the start: the instances kept, started again. */

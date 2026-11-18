@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-events",
     "module-revision": "2026-10-15",
-    "sid-file-version": 7,
+    "sid-file-version": 8,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -2338,6 +2338,191 @@
         "namespace": "data",
         "identifier": "/arcana-events:events/read/output/last",
         "sid": "80161"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "sdwan-block",
+        "sid": "80162"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block",
+        "sid": "80163"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/action",
+        "sid": "80164"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/daemon",
+        "sid": "80165"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/detail",
+        "sid": "80166"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/function",
+        "sid": "80167"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/instance",
+        "sid": "80168"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/list",
+        "sid": "80169"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/policy",
+        "sid": "80170"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/service",
+        "sid": "80171"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/src",
+        "sid": "80172"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/target",
+        "sid": "80173"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/block/time",
+        "sid": "80174"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block",
+        "sid": "80175"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/action",
+        "sid": "80176"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/daemon",
+        "sid": "80177"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/detail",
+        "sid": "80178"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/function",
+        "sid": "80179"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/instance",
+        "sid": "80180"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/list",
+        "sid": "80181"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/policy",
+        "sid": "80182"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/service",
+        "sid": "80183"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/src",
+        "sid": "80184"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/target",
+        "sid": "80185"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/block/time",
+        "sid": "80186"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block",
+        "sid": "80187"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/action",
+        "sid": "80188"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/daemon",
+        "sid": "80189"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/detail",
+        "sid": "80190"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/function",
+        "sid": "80191"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/instance",
+        "sid": "80192"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/list",
+        "sid": "80193"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/policy",
+        "sid": "80194"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/service",
+        "sid": "80195"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/src",
+        "sid": "80196"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/target",
+        "sid": "80197"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/block/time",
+        "sid": "80198"
       }
     ]
   }

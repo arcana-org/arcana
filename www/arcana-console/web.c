@@ -450,6 +450,23 @@ task_ready(struct task *t)
 		lws_cancel_service(ctx);
 }
 
+/* What this thread runs for: a request's handler, or a task. */
+static _Thread_local struct http_request	*acting_req;
+static _Thread_local const struct task		*acting_task;
+
+void
+web_acting_words(char *who, size_t wlen, char *from, size_t flen)
+{
+
+	who[0] = from[0] = '\0';
+	if (acting_req != NULL)
+		web_describe(acting_req, who, wlen, from, flen);
+	else if (acting_task != NULL) {
+		snprintf(who, wlen, "%s", acting_task->words);
+		snprintf(from, flen, "%s", acting_task->from);
+	}
+}
+
 static void *
 pool_thread(void *arg)
 {
@@ -467,7 +484,9 @@ pool_thread(void *arg)
 		t->state = TASK_STATE_RUNNING;
 		pthread_mutex_unlock(&t->lock);
 		web_act(&t->who);
+		acting_task = t;
 		rc = t->entry(t);
+		acting_task = NULL;
 		web_act(NULL);
 		/*
 		 * Finished and on the loop's list in one step: the loop may
@@ -507,6 +526,8 @@ task_bind_request(struct task *t, struct http_request *req)
 	t->req = req;
 	LIST_INSERT_HEAD(&req->tasks, t, rlist);
 	web_principal(req, &t->who);
+	web_describe(req, t->words, sizeof(t->words), t->from,
+	    sizeof(t->from));
 }
 
 void
@@ -1146,7 +1167,9 @@ req_run(struct http_request *req)
 	/* What it asks the hosts, and the threads it starts, its user's. */
 	web_principal(req, &p);
 	web_act(&p);
+	acting_req = req;
 	rc = req->rt->handler(req);
+	acting_req = NULL;
 	web_act(NULL);
 	if (req->status != 0 || (req->flags & F_UPGRADE))
 		return;

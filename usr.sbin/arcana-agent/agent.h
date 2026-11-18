@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.295.0"
+#define	ARCANA_AGENT_VERSION	"0.296.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1191,6 +1191,24 @@ char		*icap_conf_render(struct work *, const struct ucl_object_s *,
 		    const char **);
 char		*bird_conf_render(struct work *, const struct ucl_object_s *,
 		    const char *, const char **);
+/* What the daemons blocked, matched back to their forms (sdblock.c). */
+const char	*sdwan_squid_log(char *, size_t, intmax_t);
+const char	*sdwan_icap_log(char *, size_t, intmax_t);
+const char	*sdwan_list_name(int);
+bool		 sdwan_notifies(const struct ucl_object_s *, const char *);
+int		 sdwan_dnf_list(const struct ucl_object_s *, const char *);
+int		 sdwan_pdns_list(const struct ucl_object_s *, const char *,
+		    const char **);
+bool		 sdwan_dnf_wild(const struct ucl_object_s *, const char *,
+		    const char **);
+int		 sdwan_urlf_list(const struct ucl_object_s *, const char *,
+		    const char *, const char **);
+bool		 sdwan_mdr_sig(const struct ucl_object_s *, const char *,
+		    const char **, int *);
+/* luxuria/sdblock.c: the daemons' logs of what they blocked, events. */
+enum { SDB_UNBOUND, SDB_SQUID, SDB_ICAP };
+void		 sdblock_watch(int, int, const char *const *,
+		    const char *const *, const struct ucl_object_s *const *);
 /* luxuria/idsconf.c: Suricata's YAML from an instance's settings. */
 char		*ids_conf_render(struct work *, const struct ucl_object_s *,
 		    const char *, const char *, int64_t, struct ucl_object_s *,

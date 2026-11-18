@@ -940,7 +940,12 @@ names, where given).
 .It Fl v Ar log-directory
 Where
 .Xr syslogd 8
-writes: the files a log is read from.
+writes: the files a log is read from; beneath it, in
+.Pa squid
+and
+.Pa c-icap ,
+the SD-WAN services' Squid and c-icap write their logs, which the
+agent reads for what they blocked.
 Default:
 .Pa /var/log .
 .It Fl 1 Ar history.conf

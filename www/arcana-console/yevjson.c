@@ -282,6 +282,22 @@ data_of(const yevent *e)
 		put_str(d, "action", l->action);
 		break;
 	}
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_BLOCK: {
+		const struct arcana_events_event_entry_block *bl = e->block;
+
+		put_str(d, "name", bl->instance);
+		put_str(d, "daemon", bl->daemon);
+		put_str(d, "time", bl->time);
+		put_str(d, "src", bl->src);
+		put_str(d, "function", bl->function);
+		put_str(d, "service", bl->service);
+		put_str(d, "policy", bl->policy);
+		put_str(d, "list", bl->list);
+		put_str(d, "target", bl->target);
+		put_str(d, "action", bl->action);
+		put_str(d, "detail", bl->detail);
+		break;
+	}
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_UNDO:
 		put_str(d, "node", e->undo->node);
 		PUT_NUM(d, "errno", e->undo, errno_);
@@ -369,6 +385,8 @@ yev_ntf_json(const struct arcana_events_event *n)
 	e.monitor = (const void *)n->monitor;
 	e.alert = (const void *)n->alert;
 	e.undo = (const void *)n->undo;
+	e.altmark = (const void *)n->altmark;
+	e.block = (const void *)n->block;
 	return (yev_json(&e));
 }
 

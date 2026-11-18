@@ -1918,10 +1918,10 @@ EOT
 	# makes the events reply of the read (yevjson.c): the same but a
 	# double's digits.
 	cat > real.json <<'EOT'
-{"last":40,"first":3,"kept":512,"events":[{"n":3,"t":1791995110,"kind":"route-add","data":{"destination":"198.51.100.0/24","gateway":"127.0.0.1","flags":"UGS","nhop":5,"mtu":1400,"interface-name":"lo0","metric":0,"weight":1,"fib":0,"prefixlen":24,"source":"127.0.0.1","path":1,"paths":2,"expire-time":"1791999999"}},{"n":4,"t":1791995111,"kind":"routes","data":{"changed":40}},{"n":5,"t":1791995112,"kind":"link","jail":"r1","data":{"interface":"epair0b","up":true,"carrier":true,"mtu":1500}},{"n":6,"t":1791995113,"kind":"address-add","data":{"interface":"em0","address":"2001:db8::7","prefixlen":64}},{"n":7,"t":1791995114,"kind":"neigh","data":{"family":"inet","address":"192.0.2.202","lladdr":"02:00:00:00:00:09","interface-name":"em0","state":"reachable","router":true,"next":1791995200}},{"n":8,"t":1791995115,"kind":"threshold","data":{"what":"jail-cpu","name":"web","value":55,"limit":50,"over":true}},{"n":9,"t":1791995115,"kind":"threshold","data":{"what":"mem","value":3,"limit":1,"over":true}},{"n":10,"t":1791995115,"kind":"threshold","data":{"what":"storage","name":"tank","limit":0,"over":false}},{"n":11,"t":1791995116,"kind":"kmsg","data":{"seq":41,"text":"em0: link state changed to UP"}},{"n":12,"t":1791995116,"kind":"kmsg","data":{"seq":62,"more":7}},{"n":13,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"jlo","address":"127.0.0.1","state":"up","misses":0,"jail":"arcw_sdj"}},{"n":14,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"t1","address":"100.64.0.1","interface":"gre100","state":"unknown","by":"bfd"}},{"n":15,"t":1791995117,"kind":"monitor","data":{"id":"lo","address":"127.0.0.1","state":"up","misses":0,"interface":"lo0"}},{"n":16,"t":1791995118,"kind":"sdwan-fault","data":{"type":"tunnel","severity":"Major","object":"tvc-1","by":"probe","description":"no reply","state":"set"}},{"n":17,"t":1791995118,"kind":"sdwan-fault","data":{"type":"ids","severity":"Cleared","object":"sw1","description":"Suricata sw1 runs again","state":"cleared"}},{"n":18,"t":1791995119,"kind":"sdwan-security","data":{"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"em0","comment":"deny-ssh"}},{"n":19,"t":1791995120,"kind":"job","data":{"id":77,"title":"ipfw table T46 add","ok":false,"error":"ipfw: bad"}},{"n":20,"t":1791995120,"kind":"job","data":{"id":78,"title":"x","ok":true}},{"n":21,"t":1791995121,"kind":"jail-state","data":{"jail":"web","state":"running","jid":5}},{"n":22,"t":1791995122,"kind":"crash","data":{"pid":812,"process":"nginx","jid":5,"jail":"web","uid":80,"signal":11,"core":false,"reason":"sugid process denied by kern.sugid_coredump"}},{"n":23,"t":1791995123,"kind":"conf","data":{"file":"/etc/rc.conf"}},{"n":24,"t":1791995124,"kind":"device","data":{"cdev":"md3","state":"created"}},{"n":25,"t":1791995125,"kind":"zfs","data":{"type":"pool_import","pool":"tank"}},{"n":26,"t":1791995126,"kind":"procs","data":{"started":4,"exited":3}},{"n":27,"t":1791995127,"kind":"monitor-threshold","data":{"id":"edge-b","metric":"delay","value":42.5,"threshold":40,"over":true,"interface":"gre0"}},{"n":28,"t":1791995128,"kind":"sdwan-ids","data":{"name":"sec-lan","time":"2026-10-14T16:25:28+0000","src":"10.0.0.9","sport":4444,"dst":"10.0.0.1","dport":23,"proto":"TCP","iface":"em0","sid":1000009,"rev":1,"signature":"LOCAL telnet","category":"","severity":2,"action":"allowed"}},{"n":29,"t":1791995129,"kind":"undo-failed","data":{"node":"/ietf-interfaces:interfaces","errno":5,"message":"why","report":"arcana-agent 0.1\n"}}]}
+{"last":40,"first":3,"kept":512,"events":[{"n":3,"t":1791995110,"kind":"route-add","data":{"destination":"198.51.100.0/24","gateway":"127.0.0.1","flags":"UGS","nhop":5,"mtu":1400,"interface-name":"lo0","metric":0,"weight":1,"fib":0,"prefixlen":24,"source":"127.0.0.1","path":1,"paths":2,"expire-time":"1791999999"}},{"n":4,"t":1791995111,"kind":"routes","data":{"changed":40}},{"n":5,"t":1791995112,"kind":"link","jail":"r1","data":{"interface":"epair0b","up":true,"carrier":true,"mtu":1500}},{"n":6,"t":1791995113,"kind":"address-add","data":{"interface":"em0","address":"2001:db8::7","prefixlen":64}},{"n":7,"t":1791995114,"kind":"neigh","data":{"family":"inet","address":"192.0.2.202","lladdr":"02:00:00:00:00:09","interface-name":"em0","state":"reachable","router":true,"next":1791995200}},{"n":8,"t":1791995115,"kind":"threshold","data":{"what":"jail-cpu","name":"web","value":55,"limit":50,"over":true}},{"n":9,"t":1791995115,"kind":"threshold","data":{"what":"mem","value":3,"limit":1,"over":true}},{"n":10,"t":1791995115,"kind":"threshold","data":{"what":"storage","name":"tank","limit":0,"over":false}},{"n":11,"t":1791995116,"kind":"kmsg","data":{"seq":41,"text":"em0: link state changed to UP"}},{"n":12,"t":1791995116,"kind":"kmsg","data":{"seq":62,"more":7}},{"n":13,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"jlo","address":"127.0.0.1","state":"up","misses":0,"jail":"arcw_sdj"}},{"n":14,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"t1","address":"100.64.0.1","interface":"gre100","state":"unknown","by":"bfd"}},{"n":15,"t":1791995117,"kind":"monitor","data":{"id":"lo","address":"127.0.0.1","state":"up","misses":0,"interface":"lo0"}},{"n":16,"t":1791995118,"kind":"sdwan-fault","data":{"type":"tunnel","severity":"Major","object":"tvc-1","by":"probe","description":"no reply","state":"set"}},{"n":17,"t":1791995118,"kind":"sdwan-fault","data":{"type":"ids","severity":"Cleared","object":"sw1","description":"Suricata sw1 runs again","state":"cleared"}},{"n":18,"t":1791995119,"kind":"sdwan-security","data":{"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"em0","comment":"deny-ssh"}},{"n":19,"t":1791995120,"kind":"job","data":{"id":77,"title":"ipfw table T46 add","ok":false,"error":"ipfw: bad"}},{"n":20,"t":1791995120,"kind":"job","data":{"id":78,"title":"x","ok":true}},{"n":21,"t":1791995121,"kind":"jail-state","data":{"jail":"web","state":"running","jid":5}},{"n":22,"t":1791995122,"kind":"crash","data":{"pid":812,"process":"nginx","jid":5,"jail":"web","uid":80,"signal":11,"core":false,"reason":"sugid process denied by kern.sugid_coredump"}},{"n":23,"t":1791995123,"kind":"conf","data":{"file":"/etc/rc.conf"}},{"n":24,"t":1791995124,"kind":"device","data":{"cdev":"md3","state":"created"}},{"n":25,"t":1791995125,"kind":"zfs","data":{"type":"pool_import","pool":"tank"}},{"n":26,"t":1791995126,"kind":"procs","data":{"started":4,"exited":3}},{"n":27,"t":1791995127,"kind":"monitor-threshold","data":{"id":"edge-b","metric":"delay","value":42.5,"threshold":40,"over":true,"interface":"gre0"}},{"n":28,"t":1791995128,"kind":"sdwan-ids","data":{"name":"sec-lan","time":"2026-10-14T16:25:28+0000","src":"10.0.0.9","sport":4444,"dst":"10.0.0.1","dport":23,"proto":"TCP","iface":"em0","sid":1000009,"rev":1,"signature":"LOCAL telnet","category":"","severity":2,"action":"allowed"}},{"n":29,"t":1791995129,"kind":"undo-failed","data":{"node":"/ietf-interfaces:interfaces","errno":5,"message":"why","report":"arcana-agent 0.1\n"}},{"n":30,"t":1791995130,"kind":"sdwan-block","data":{"name":"sw1","daemon":"squid","time":"1792000010.123","src":"10.1.0.9","function":"urlf","service":"acme","policy":"g-urlf","list":"block","target":"http://bad.example/x","action":"TCP_DENIED/403","detail":"bad.example"}}]}
 EOT
 	cat > want <<'EOT'
-{"last":40,"first":3,"kept":512,"events":[{"n":3,"t":1791995110,"kind":"route-add","data":{"destination":"198.51.100.0/24","gateway":"127.0.0.1","flags":"UGS","nhop":5,"mtu":1400,"interface-name":"lo0","metric":0,"weight":1,"fib":0,"prefixlen":24,"source":"127.0.0.1","path":1,"paths":2,"expire-time":"1791999999"}},{"n":4,"t":1791995111,"kind":"routes","data":{"changed":40}},{"n":5,"t":1791995112,"kind":"link","jail":"r1","data":{"interface":"epair0b","up":true,"carrier":true,"mtu":1500}},{"n":6,"t":1791995113,"kind":"address-add","data":{"interface":"em0","address":"2001:db8::7","prefixlen":64}},{"n":7,"t":1791995114,"kind":"neigh","data":{"family":"inet","address":"192.0.2.202","lladdr":"02:00:00:00:00:09","interface-name":"em0","state":"reachable","router":true,"next":1791995200}},{"n":8,"t":1791995115,"kind":"threshold","data":{"what":"jail-cpu","name":"web","value":55,"limit":50,"over":true}},{"n":9,"t":1791995115,"kind":"threshold","data":{"what":"mem","value":3,"limit":1,"over":true}},{"n":10,"t":1791995115,"kind":"threshold","data":{"what":"storage","name":"tank","limit":0,"over":false}},{"n":11,"t":1791995116,"kind":"kmsg","data":{"seq":41,"text":"em0: link state changed to UP"}},{"n":12,"t":1791995116,"kind":"kmsg","data":{"seq":62,"more":7}},{"n":13,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"jlo","address":"127.0.0.1","state":"up","misses":0,"jail":"arcw_sdj"}},{"n":14,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"t1","address":"100.64.0.1","interface":"gre100","state":"unknown","by":"bfd"}},{"n":15,"t":1791995117,"kind":"monitor","data":{"id":"lo","address":"127.0.0.1","state":"up","misses":0,"interface":"lo0"}},{"n":16,"t":1791995118,"kind":"sdwan-fault","data":{"type":"tunnel","severity":"Major","object":"tvc-1","by":"probe","description":"no reply","state":"set"}},{"n":17,"t":1791995118,"kind":"sdwan-fault","data":{"type":"ids","severity":"Cleared","object":"sw1","description":"Suricata sw1 runs again","state":"cleared"}},{"n":18,"t":1791995119,"kind":"sdwan-security","data":{"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"em0","comment":"deny-ssh"}},{"n":19,"t":1791995120,"kind":"job","data":{"id":77,"title":"ipfw table T46 add","ok":false,"error":"ipfw: bad"}},{"n":20,"t":1791995120,"kind":"job","data":{"id":78,"title":"x","ok":true}},{"n":21,"t":1791995121,"kind":"jail-state","data":{"jail":"web","state":"running","jid":5}},{"n":22,"t":1791995122,"kind":"crash","data":{"pid":812,"process":"nginx","jid":5,"jail":"web","uid":80,"signal":11,"core":false,"reason":"sugid process denied by kern.sugid_coredump"}},{"n":23,"t":1791995123,"kind":"conf","data":{"file":"/etc/rc.conf"}},{"n":24,"t":1791995124,"kind":"device","data":{"cdev":"md3","state":"created"}},{"n":25,"t":1791995125,"kind":"zfs","data":{"type":"pool_import","pool":"tank"}},{"n":26,"t":1791995126,"kind":"procs","data":{"started":4,"exited":3}},{"n":27,"t":1791995127,"kind":"monitor-threshold","data":{"id":"edge-b","metric":"delay","value":42.500000,"threshold":40,"over":true,"interface":"gre0"}},{"n":28,"t":1791995128,"kind":"sdwan-ids","data":{"name":"sec-lan","time":"2026-10-14T16:25:28+0000","src":"10.0.0.9","sport":4444,"dst":"10.0.0.1","dport":23,"proto":"TCP","iface":"em0","sid":1000009,"rev":1,"signature":"LOCAL telnet","category":"","severity":2,"action":"allowed"}},{"n":29,"t":1791995129,"kind":"undo-failed","data":{"node":"/ietf-interfaces:interfaces","errno":5,"message":"why","report":"arcana-agent 0.1\n"}}]}
+{"last":40,"first":3,"kept":512,"events":[{"n":3,"t":1791995110,"kind":"route-add","data":{"destination":"198.51.100.0/24","gateway":"127.0.0.1","flags":"UGS","nhop":5,"mtu":1400,"interface-name":"lo0","metric":0,"weight":1,"fib":0,"prefixlen":24,"source":"127.0.0.1","path":1,"paths":2,"expire-time":"1791999999"}},{"n":4,"t":1791995111,"kind":"routes","data":{"changed":40}},{"n":5,"t":1791995112,"kind":"link","jail":"r1","data":{"interface":"epair0b","up":true,"carrier":true,"mtu":1500}},{"n":6,"t":1791995113,"kind":"address-add","data":{"interface":"em0","address":"2001:db8::7","prefixlen":64}},{"n":7,"t":1791995114,"kind":"neigh","data":{"family":"inet","address":"192.0.2.202","lladdr":"02:00:00:00:00:09","interface-name":"em0","state":"reachable","router":true,"next":1791995200}},{"n":8,"t":1791995115,"kind":"threshold","data":{"what":"jail-cpu","name":"web","value":55,"limit":50,"over":true}},{"n":9,"t":1791995115,"kind":"threshold","data":{"what":"mem","value":3,"limit":1,"over":true}},{"n":10,"t":1791995115,"kind":"threshold","data":{"what":"storage","name":"tank","limit":0,"over":false}},{"n":11,"t":1791995116,"kind":"kmsg","data":{"seq":41,"text":"em0: link state changed to UP"}},{"n":12,"t":1791995116,"kind":"kmsg","data":{"seq":62,"more":7}},{"n":13,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"jlo","address":"127.0.0.1","state":"up","misses":0,"jail":"arcw_sdj"}},{"n":14,"t":1791995117,"kind":"sdwan-tunnel","data":{"id":"t1","address":"100.64.0.1","interface":"gre100","state":"unknown","by":"bfd"}},{"n":15,"t":1791995117,"kind":"monitor","data":{"id":"lo","address":"127.0.0.1","state":"up","misses":0,"interface":"lo0"}},{"n":16,"t":1791995118,"kind":"sdwan-fault","data":{"type":"tunnel","severity":"Major","object":"tvc-1","by":"probe","description":"no reply","state":"set"}},{"n":17,"t":1791995118,"kind":"sdwan-fault","data":{"type":"ids","severity":"Cleared","object":"sw1","description":"Suricata sw1 runs again","state":"cleared"}},{"n":18,"t":1791995119,"kind":"sdwan-security","data":{"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"em0","comment":"deny-ssh"}},{"n":19,"t":1791995120,"kind":"job","data":{"id":77,"title":"ipfw table T46 add","ok":false,"error":"ipfw: bad"}},{"n":20,"t":1791995120,"kind":"job","data":{"id":78,"title":"x","ok":true}},{"n":21,"t":1791995121,"kind":"jail-state","data":{"jail":"web","state":"running","jid":5}},{"n":22,"t":1791995122,"kind":"crash","data":{"pid":812,"process":"nginx","jid":5,"jail":"web","uid":80,"signal":11,"core":false,"reason":"sugid process denied by kern.sugid_coredump"}},{"n":23,"t":1791995123,"kind":"conf","data":{"file":"/etc/rc.conf"}},{"n":24,"t":1791995124,"kind":"device","data":{"cdev":"md3","state":"created"}},{"n":25,"t":1791995125,"kind":"zfs","data":{"type":"pool_import","pool":"tank"}},{"n":26,"t":1791995126,"kind":"procs","data":{"started":4,"exited":3}},{"n":27,"t":1791995127,"kind":"monitor-threshold","data":{"id":"edge-b","metric":"delay","value":42.500000,"threshold":40,"over":true,"interface":"gre0"}},{"n":28,"t":1791995128,"kind":"sdwan-ids","data":{"name":"sec-lan","time":"2026-10-14T16:25:28+0000","src":"10.0.0.9","sport":4444,"dst":"10.0.0.1","dport":23,"proto":"TCP","iface":"em0","sid":1000009,"rev":1,"signature":"LOCAL telnet","category":"","severity":2,"action":"allowed"}},{"n":29,"t":1791995129,"kind":"undo-failed","data":{"node":"/ietf-interfaces:interfaces","errno":5,"message":"why","report":"arcana-agent 0.1\n"}},{"n":30,"t":1791995130,"kind":"sdwan-block","data":{"name":"sw1","daemon":"squid","time":"1792000010.123","src":"10.1.0.9","function":"urlf","service":"acme","policy":"g-urlf","list":"block","target":"http://bad.example/x","action":"TCP_DENIED/403","detail":"bad.example"}}]}
 EOT
 	atf_check -o file:want "$y" back real.json
 	cat > one.json <<'EOT'
@@ -1929,6 +1929,12 @@ EOT
 EOT
 	atf_check -o inline:'16 2026-10-14T16:25:23Z link-del: link epair9a up=no carrier=no mtu=1500\nyang-cbor 54 bytes, the same back\n' \
 	    "$y" one one.json
+	# What a service's daemon blocked (sdblock.c), the same.
+	cat > one.json <<'EOT'
+{"n":30,"t":1791995130,"kind":"sdwan-block","data":{"name":"sw1","daemon":"unbound","time":"1792000000","src":"10.1.0.9","function":"dnf","service":"acme","policy":"g-dnf","list":"block","target":"www.ads.example","action":"always_nxdomain","detail":"ads.example"}}
+EOT
+	atf_check -o match:'^30 2026-10-14T16:25:30Z sdwan-block: block sw1 unbound dnf from 10.1.0.9: acme g-dnf block www.ads.example always_nxdomain \(ads.example\)$' \
+	    -o match:'^yang-cbor [0-9]+ bytes, the same back$' "$y" one one.json
 }
 
 atf_test_case yang_plugins
@@ -11065,6 +11071,92 @@ sdwan_dhcp_dns_cleanup()
 	stop_daemon
 }
 
+atf_test_case sdwan_blocks cleanup
+sdwan_blocks_head()
+{
+	atf_set "descr" "What the services' unbound, Squid and c-icap blocked, read from their logs: an event each, matched to the policy and its list, where the policy tells it"
+	atf_set "timeout" "90"
+}
+sdwan_blocks_body()
+{
+	mkdir -p logs/squid logs/c-icap
+	SDWAN_ARGS="-v $(pwd)/logs"
+	sdwan_start
+
+	# unbound: its log the agent's file, the RPZ told by the zone's
+	# name.  The stand-in writes nothing: the lines are written here
+	# as unbound writes them (log-local-actions, rpz-log).
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns \
+	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","address":"10.1.0.1","prefix":"10.1.0.0/24"}],"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":{"id":"g-dnf","no-match":"block","block":["ads.example"],"quarantine":["*.q.example"],"allow":["ok.example"]},"pdns":{"id":"g-pdns","no-match":"allow","block":[{"type":"CNAME","value":"bad.example"},{"type":"NS","value":"ns.evil.example"}]}}]}}]}'
+	d=$(dirname "$f")
+	atf_check -o match:"^	logfile: \"$d/sdwan-dns-sw1.log\"\$" -o match:'^	use-syslog: no$' \
+	    -o match:'^	log-local-actions: yes$' -o match:'^	rpz-log-name: "z0"$' \
+	    cat "$d/sdwan-dns-sw1.conf"
+	cat >> "$d/sdwan-dns-sw1.log" <<'EOS'
+[1792000000] unbound[123:0] info: ads.example. always_nxdomain 10.1.0.9@5353 www.ads.example. A IN
+[1792000001] unbound[123:0] info: ok.example. always_transparent 10.1.0.9@5353 ok.example. A IN
+[1792000002] unbound[123:0] info: 10.in-addr.arpa. static 10.1.0.9@5353 9.0.1.10.in-addr.arpa. PTR IN
+[1792000003] unbound[123:0] info: q.example. always_nxdomain 10.1.0.9@5353 a.q.example. AAAA IN
+[1792000004] unbound[123:0] info: . always_nxdomain 10.1.0.9@5353 other.example. A IN
+[1792000005] unbound[123:0] info: rpz: applied [z0] bad.example.z0.rpz. nxdomain 10.1.0.9@5353 x.bad.example. A IN
+[1792000006] unbound[123:0] info: rpz: applied [z0] nsdname ns.evil.example.rpz-nsdname.z0.rpz. nxdomain 10.1.0.9@5353 y.example. A IN
+[1792000007] unbound[123:0] error: something else
+EOS
+	wait_match '"function":"pdns","service":"acme","policy":"g-pdns","list":"block","target":"y.example"' \
+	    "$JGC" -c "$SOCK" events || atf_fail "$("$JGC" -c "$SOCK" events)"
+	"$JGC" -c "$SOCK" events > ev.json
+	atf_check -o match:'"kind":"sdwan-block","data":\{"name":"sw1","daemon":"unbound","time":"1792000000","src":"10.1.0.9","function":"dnf","service":"acme","policy":"g-dnf","list":"block","target":"www.ads.example","action":"always_nxdomain","detail":"ads.example"\}' \
+	    -o match:'"function":"dnf","service":"acme","policy":"g-dnf","list":"quarantine","target":"a.q.example"' \
+	    -o match:'"function":"dnf","service":"acme","policy":"g-dnf","list":"no-match","target":"other.example"' \
+	    -o match:'"function":"pdns","service":"acme","policy":"g-pdns","list":"block","target":"x.bad.example","action":"nxdomain","detail":"bad.example"' \
+	    -o match:'"list":"block","target":"y.example","action":"nxdomain","detail":"ns.evil.example"' \
+	    -o not-match:'"target":"ok.example"' -o not-match:'in-addr.arpa' cat ev.json
+	# Squid's access log in the arcana format, c-icap's server log,
+	# where the configurations say (beneath -v).
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
+	    '{"instances":[{"name":"sw1","fib":1,"mode":"sni","host":"edge-a","spec":{"flavor":"sdwan","service":"acme","fib":1,"listen":[],"icap":true,"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":["host.*.tld"],"dnf_id":"g-dnf","urlf":{"id":"g-urlf","no-match":"block","block":["bad.example/path*"],"allow":["good.example"]},"mdr":{"id":"g-mdr","block":["44d88612fea8a8f36de82e1278abb02f:68"]}},{"name":"z1","prefixes":["10.2.0.0/24"],"mbsf":{"id":"g-mbsf","unencrypted":"block"}}]}}]}'
+	atf_check -o match:'^logformat arcana %ts.%03tu %>a %Ss/%03>Hs %rm %ru %ssl::>sni %ssl::bump_mode$' \
+	    -o match:"^access_log $(pwd)/logs/squid/sdwan-sw1-access.log arcana\$" \
+	    cat "$d/sdwan-proxy-sw1.conf"
+	atf_check -o match:"^ServerLog $(pwd)/logs/c-icap/sdwan-sw1-server.log\$" \
+	    cat "$d/sdwan-icap-sw1.conf"
+	cat >> logs/squid/sdwan-sw1-access.log <<'EOS'
+1792000010.123 10.1.0.9 TCP_DENIED/403 GET http://bad.example/path/x - -
+1792000011.000 10.1.0.9 TCP_DENIED/403 GET http://other.example/ - -
+1792000012.000 10.1.0.9 NONE_NONE/200 CONNECT 192.0.2.1:443 host.a.tld terminate
+1792000013.000 10.1.0.9 TCP_MISS/200 GET http://good.example/ - -
+1792000014.000 10.2.0.9 TCP_DENIED/403 GET http://plain.example/ - -
+EOS
+	cat >> logs/c-icap/sdwan-sw1-server.log <<'EOS'
+Wed Nov 18 10:00:00 2026, 100/200, VIRUS DETECTED: Arcana.acme.g-mdr.block.UNOFFICIAL , http client ip: 10.1.0.9, http user: -, http url: http://files.example/x.exe 
+Wed Nov 18 10:00:01 2026, 100/200, VIRUS DETECTED: Eicar-Signature , http client ip: 10.1.0.9, http user: -, http url: http://files.example/eicar.com 
+Wed Nov 18 10:00:02 2026, 100/200, General, something else
+EOS
+	wait_match '"daemon":"c-icap".*"list":"malware"' \
+	    "$JGC" -c "$SOCK" events || atf_fail "$("$JGC" -c "$SOCK" events)"
+	wait_match '"daemon":"squid".*"function":"mbsf"' \
+	    "$JGC" -c "$SOCK" events || atf_fail "$("$JGC" -c "$SOCK" events)"
+	"$JGC" -c "$SOCK" events > ev.json
+	atf_check -o match:'"daemon":"squid","time":"1792000010.123","src":"10.1.0.9","function":"urlf","service":"acme","policy":"g-urlf","list":"block","target":"http://bad.example/path/x","action":"TCP_DENIED/403","detail":"bad.example/path\*"' \
+	    -o match:'"function":"urlf","service":"acme","policy":"g-urlf","list":"no-match","target":"http://other.example/"' \
+	    -o match:'"function":"dnf","service":"acme","policy":"g-dnf","list":"block","target":"host.a.tld","action":"terminate","detail":"host.\*.tld"' \
+	    -o match:'"src":"10.2.0.9","function":"mbsf","service":"acme","policy":"g-mbsf","list":"unencrypted","target":"http://plain.example/"' \
+	    -o match:'"daemon":"c-icap","time":"","src":"10.1.0.9","function":"mdr","service":"acme","policy":"g-mdr","list":"block","target":"http://files.example/x.exe","action":"Arcana.acme.g-mdr.block.UNOFFICIAL"' \
+	    -o match:'"function":"mdr","service":"acme","policy":"g-mdr","list":"malware","target":"http://files.example/eicar.com","action":"Eicar-Signature"' \
+	    -o not-match:'good.example' cat ev.json
+	# What was there before a log is watched is not told again: the
+	# instances applied anew, the logs read on from where they were.
+	n=$(grep -o '"kind":"sdwan-block"' ev.json | wc -l | tr -d ' ')
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns "$(cat sdwan-dns.json)"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "$(cat sdwan-proxy.json)"
+	sleep 2
+	atf_check -o inline:"$n\n" sh -c "\"$JGC\" -c \"$SOCK\" events | grep -o '\"kind\":\"sdwan-block\"' | wc -l | tr -d ' '"
+}
+sdwan_blocks_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sdwan_proxy cleanup
 sdwan_proxy_head()
 {
@@ -19183,6 +19275,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_ids_run
 	atf_add_test_case observe_keep
 	atf_add_test_case safe_mode_undo
+	atf_add_test_case sdwan_blocks
 	atf_add_test_case sdwan_proxy
 	atf_add_test_case history_hold_storage
 	atf_add_test_case sdwan_dhcp_dns
