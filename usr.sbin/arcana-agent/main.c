@@ -14,12 +14,15 @@
 
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <grp.h>
 #include <libutil.h>
 #include <locale.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -131,6 +134,9 @@ struct opts opts = {
 	.build_dir = PATH_BUILD_DIR,
 	.build_conf = PATH_BUILD_CONF,
 	.build_user = "_arcanabuild",
+	.rc_subr = "/etc/rc.subr",
+	.dev_dir = "/dev",
+	.devd_pipe = "/var/run/devd.seqpacket.pipe",
 };
 
 static bool	foreground;
@@ -143,7 +149,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
-    OPT_TERMINAL_IDLE, OPT_REPO_REACH };
+    OPT_TERMINAL_IDLE, OPT_REPO_REACH, OPT_RC_SUBR, OPT_DEV, OPT_DEVD_PIPE };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -171,6 +177,10 @@ static const struct option longopts[] = {
 	/* How often BIRD's sessions are looked at for faults; 0, never. */
 	{ "bird-watch", required_argument, NULL, OPT_BIRD_WATCH },
 	{ "smtpd-watch", required_argument, NULL, OPT_SMTPD_WATCH },
+	/* rc.subr(8), /dev and devd(8)'s socket: stand-ins in the tests. */
+	{ "rc-subr", required_argument, NULL, OPT_RC_SUBR },
+	{ "dev", required_argument, NULL, OPT_DEV },
+	{ "devd-pipe", required_argument, NULL, OPT_DEVD_PIPE },
 	/* How long a FIB's count of routes is told again before it is
 	 * dumped anew; 0, every read. */
 	{ "routes-cache", required_argument, NULL, OPT_ROUTES_CACHE },
@@ -225,7 +235,17 @@ static void	stop_now(void *);
 static void	*stopper(void *) __no_lock_analysis;
 
 static cbl_loop		*stop_loop;
-static struct pidfh	*stop_pfh;
+/* A stop asked for by a signal (stopper()): the daemon is on its way. */
+static _Atomic bool	 stop_signalled;
+
+/*
+ * The daemon's pidfile, by which rc(8) stops it: own_pidfile() keeps it
+ * this daemon's.  NULL in the foreground (-F), which has none.
+ */
+static pthread_mutex_t	 pid_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct pidfh	*own_pfh;
+static const char	*own_pidpath;
+static char		 own_pid_said[256];	/* what was logged last */
 
 static void
 usage(void)
@@ -260,6 +280,8 @@ usage(void)
 	    "                 [--smtpd-watch seconds] [--stamp-port port]\n"
 	    "                 [--bmp-port port] [--archive directory]\n"
 	    "                 [--pfkey socket]\n"
+	    "                 [--rc-subr file] [--dev directory] "
+	    "[--devd-pipe socket]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--terminal-login login] [--terminal-idle seconds]\n"
@@ -331,6 +353,7 @@ stopper(void *arg __unused)
 	sigaddset(&set, SIGINT);
 	while (sigwait(&set, &sig) != 0)
 		;
+	stop_signalled = true;
 	logmsg(LOG_NOTICE, "signal %d, stopping", sig);
 	history_save();
 	archive_sync(true);
@@ -359,9 +382,117 @@ stopper(void *arg __unused)
 	sleep(cut ? 1 : STOP_GRACE);
 	logmsg(LOG_NOTICE, "the loop did not stop in %d s; exiting",
 	    cut ? 1 : STOP_GRACE);
-	if (stop_pfh != NULL)
-		pidfile_remove(stop_pfh);
+	pthread_mutex_lock(&pid_lock);
+	if (own_pfh != NULL)
+		pidfile_remove(own_pfh);
 	_exit(cut ? 1 : 0);
+}
+
+/* Has a signal asked the daemon to stop?  It stops once what is under
+ * way ends. */
+bool
+stop_asked(void)
+{
+
+	return (stop_signalled);
+}
+
+/*
+ * Is the pidfile rc(8) stops this daemon by still this daemon's, with
+ * its pid?  /var/run cleaned under it (the file gone) or the file written
+ * over, rc's stop and restart find nothing to stop: the update's restart
+ * leaves this program running, and a start makes a second one.  So it is
+ * looked at, every few seconds (gula/hostwatch.c) and before the agent's
+ * own restart, and written back: a fault, cleared once written.  False
+ * when it is not this daemon's and could not be made so (another
+ * process holds it, or it cannot be written), why says; true in the
+ * foreground (-F), which has no pidfile.
+ */
+bool
+own_pidfile(char *why, size_t len)
+{
+	struct pidfh	*np;
+	struct stat	 st, fst;
+	char		 buf[32], what[96];
+	pid_t		 self, other;
+	ssize_t		 n;
+	int		 fd;
+	bool		 same, tell;
+
+	why[0] = '\0';
+	pthread_mutex_lock(&pid_lock);
+	if (own_pfh == NULL) {
+		pthread_mutex_unlock(&pid_lock);
+		return (true);
+	}
+	self = getpid();
+	what[0] = '\0';
+	same = false;
+	if (stat(own_pidpath, &st) == -1)
+		snprintf(what, sizeof(what), "is gone");
+	else if (fstat(pidfile_fileno(own_pfh), &fst) == -1 ||
+	    st.st_dev != fst.st_dev || st.st_ino != fst.st_ino)
+		snprintf(what, sizeof(what), "is another file");
+	else {
+		same = true;
+		n = -1;
+		if ((fd = open(own_pidpath, O_RDONLY | O_CLOEXEC)) != -1) {
+			n = read(fd, buf, sizeof(buf) - 1);
+			close(fd);
+		}
+		buf[n > 0 ? n : 0] = '\0';
+		buf[strcspn(buf, " \t\n")] = '\0';
+		if (n < 0 || strtol(buf, NULL, 10) != (long)self)
+			snprintf(what, sizeof(what), "names %s%.20s",
+			    buf[0] != '\0' ? "pid " : "no pid", buf);
+	}
+	if (what[0] == '\0') {
+		pthread_mutex_unlock(&pid_lock);
+		return (true);
+	}
+	fault_set("pidfile", "Major", own_pidpath, "agent", "arcana-agent's "
+	    "pidfile %s %s: rc(8) cannot stop or restart pid %d by it",
+	    own_pidpath, what, (int)self);
+	if (same) {
+		/* Its own file, written over: written again. */
+		if (pidfile_write(own_pfh) == -1)
+			snprintf(why, len, "%s %s, and writing pid %d in it "
+			    "failed: %s", own_pidpath, what, (int)self,
+			    strerror(errno));
+	} else if ((np = pidfile_open(own_pidpath, 0600, &other)) == NULL) {
+		if (errno == EEXIST)
+			snprintf(why, len, "%s %s, held by pid %d, another "
+			    "arcana-agent: rc(8) stops that one, not this one "
+			    "(pid %d)", own_pidpath, what, (int)other,
+			    (int)self);
+		else
+			snprintf(why, len, "%s %s, and it cannot be made "
+			    "again: %s", own_pidpath, what, strerror(errno));
+	} else if (pidfile_write(np) == -1) {
+		snprintf(why, len, "%s %s, and writing pid %d in it failed: "
+		    "%s", own_pidpath, what, (int)self, strerror(errno));
+		pidfile_remove(np);
+	} else {
+		/* The old one's lock, on a file no name has now, let go. */
+		(void)pidfile_close(own_pfh);
+		own_pfh = np;
+	}
+	/* What cannot be mended is said once, not every few seconds. */
+	tell = strcmp(why, own_pid_said) != 0;
+	strlcpy(own_pid_said, why, sizeof(own_pid_said));
+	pthread_mutex_unlock(&pid_lock);
+	if (why[0] != '\0') {
+		if (tell) {
+			fault_update("pidfile", own_pidpath, "%s", why);
+			logmsg(LOG_ERR, "%s", why);
+		}
+		return (false);
+	}
+	fault_clear("pidfile", own_pidpath, "written back with pid %d",
+	    (int)self);
+	logmsg(LOG_WARNING, "pidfile %s %s: written back with pid %d",
+	    own_pidpath, what, (int)self);
+	return (true);
 }
 
 /*
@@ -586,6 +717,15 @@ main(int argc, char *argv[])
 				errx(1, "--stamp-clock %s: ntp, ptp, ssu, gnss or "
 				    "local, and :error in seconds", optarg);
 			opts.stamp_clock = optarg;
+			break;
+		case OPT_RC_SUBR:
+			opts.rc_subr = optarg;
+			break;
+		case OPT_DEV:
+			opts.dev_dir = optarg;
+			break;
+		case OPT_DEVD_PIPE:
+			opts.devd_pipe = optarg;
 			break;
 		case OPT_SMTPD_WATCH:
 			opts.smtpd_watch_s = (int)strtonum(optarg, 0, 3600, &errstr);
@@ -864,6 +1004,10 @@ main(int argc, char *argv[])
 		}
 		openlog("arcana-agent", LOG_PID, LOG_DAEMON);
 		pidfile_write(pfh);
+		pthread_mutex_lock(&pid_lock);
+		own_pfh = pfh;
+		own_pidpath = pidpath;
+		pthread_mutex_unlock(&pid_lock);
 	}
 
 	if ((error = cbl_ctx_new(&ctx)) != 0)
@@ -941,7 +1085,6 @@ main(int argc, char *argv[])
 	nacm_check(ctx);
 	logmsg(LOG_INFO, "version %s ready", ARCANA_AGENT_VERSION);
 	stop_loop = loop;
-	stop_pfh = pfh;
 	if ((error = pthread_create(&tid, NULL, stopper, NULL)) != 0)
 		fatal(pfh, "pthread_create: %s", strerror(error));
 	(void)pthread_detach(tid);
@@ -964,7 +1107,11 @@ main(int argc, char *argv[])
 	cbl_loop_free(loop);
 	cbl_tls_free(tls);
 	(void)cbl_ctx_free(ctx);
-	if (pfh != NULL)
-		pidfile_remove(pfh);
+	/* The pidfile as own_pidfile() last made it, not the first. */
+	pthread_mutex_lock(&pid_lock);
+	if (own_pfh != NULL)
+		pidfile_remove(own_pfh);
+	own_pfh = NULL;
+	pthread_mutex_unlock(&pid_lock);
 	return (error == 0 ? 0 : 1);
 }

@@ -646,6 +646,38 @@ module arcana-storage {
           "What is used of it.";
       }
     }
+    container dev {
+      description
+        "/dev, as devfs(4) gives it, and devd(8), which hears the
+         kernel's device events through it: read with the mounts.";
+      leaf devfs-mounts {
+        type uint32;
+        description
+          "How many devfs file systems are mounted on /dev (mount -p
+           -t devfs): one on a sound host.  More, the last one mounted
+           is the one seen, with its ruleset: a jail's devfs mounted
+           over the host's /dev (a jail whose path is / with
+           mount.devfs, or a devfs mount on the wrong path) hides
+           from the host's programs what the jail's ruleset hides.
+           Absent when mount(8) could not say.";
+      }
+      leaf-list hidden {
+        type string;
+        description
+          "Device nodes the kernel has that /dev does not show:
+           devctl always (devd(8)'s), mdctl with md(4) (mdconfig(8)'s),
+           vmmctl with vmm(4) (bhyve(8)'s).";
+      }
+      leaf devd {
+        type boolean;
+        description
+          "Whether devd(8) answers on its socket
+           (/var/run/devd.seqpacket.pipe).  Without it nothing acts on
+           the kernel's device events: a disk or an interface that
+           comes, ZFS's events, link changes run none of devd.conf's
+           rules, and the agent hears none of them.";
+      }
+    }
   }
 
   container storage {

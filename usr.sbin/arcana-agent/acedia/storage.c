@@ -11,7 +11,8 @@
  * with what camcontrol(8) says of each; the ZFS pools with their
  * devices from zpool(8), the datasets and the snapshots from zfs(8);
  * what is mounted from getfsstat(2), beside what fstab(5) says should
- * be.
+ * be; with it /dev: its devfs mounts (more than one hides devices),
+ * the nodes it does not show, and whether devd(8) answers.
  *
  * Changed, by a job: with zfs(8), zpool(8), mount(8), umount(8),
  * gpart(8) and camcontrol(8).  A job says a verb and its words; each
@@ -21,8 +22,11 @@
  */
 
 #include <sys/param.h>
+#include <sys/module.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -844,9 +848,73 @@ mount_flags(struct work *w, uint64_t fl)
 }
 
 /*
+ * /dev, read with the mounts: {"devfs_mounts": how many devfs file
+ * systems mount(8) lists on it, "hidden": [the nodes the kernel has
+ * that it does not show], "devd": whether devd(8) answers on its
+ * socket}.  Shown, never mended: a forced unmount of /dev is the
+ * admin's to choose.
+ */
+static ucl_object_t *
+dev_state(struct work *w)
+{
+	static const struct {
+		const char	*node;
+		const char	*module;	/* the kernel has it with; NULL always */
+	} nodes[] = {
+		{ "devctl", NULL }, { "mdctl", "g_md" }, { "vmmctl", "vmm" },
+	};
+	struct sockaddr_un	 sun;
+	struct execres		 res;
+	struct stat		 st;
+	ucl_object_t		*o, *arr;
+	char			*argv[5], *out, *line, *on;
+	size_t			 i;
+	int			 n, s;
+
+	o = ucl_object_typed_new(UCL_OBJECT);
+	argv[0] = (char *)(uintptr_t)opts.mount_bin;
+	argv[1] = (char *)(uintptr_t)"-p";
+	argv[2] = (char *)(uintptr_t)"-t";
+	argv[3] = (char *)(uintptr_t)"devfs";
+	argv[4] = NULL;
+	if (run_read(w, argv, &res) == 0) {
+		n = 0;
+		out = wstrndup(w, res.out, res.outlen);
+		while ((line = strsep(&out, "\n")) != NULL) {
+			(void)strsep(&line, " \t");
+			while ((on = strsep(&line, " \t")) != NULL &&
+			    *on == '\0')
+				;
+			if (on != NULL && strcmp(on, opts.dev_dir) == 0)
+				n++;
+		}
+		putn(o, "devfs_mounts", n);
+	}
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (i = 0; i < nitems(nodes); i++)
+		if ((nodes[i].module == NULL || modfind(nodes[i].module) !=
+		    -1) && stat(wfmt(w, "%s/%s", opts.dev_dir, nodes[i].node),
+		    &st) == -1 && errno == ENOENT)
+			ucl_array_append(arr, ucl_object_fromstring(
+			    nodes[i].node));
+	ucl_object_insert_key(o, arr, "hidden", 0, false);
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	strlcpy(sun.sun_path, opts.devd_pipe, sizeof(sun.sun_path));
+	n = 0;
+	if ((s = socket(PF_LOCAL, SOCK_SEQPACKET | SOCK_CLOEXEC, 0)) != -1) {
+		n = connect(s, (struct sockaddr *)&sun, sizeof(sun)) == 0;
+		close(s);
+	}
+	ucl_object_insert_key(o, ucl_object_frombool(n != 0), "devd", 0,
+	    false);
+	return (o);
+}
+
+/*
  * {"mounts": [{"from", "on", "type", "options", "size", "used",
  * "avail"}], "fstab": [{"spec", "file", "vfstype", "mntops", "type",
- * "freq", "passno", "mounted"}]}.
+ * "freq", "passno", "mounted"}], "swap", "dev" (dev_state())}.
  */
 static int
 mounts(struct work *w, struct storage_rsp *rsp)
@@ -907,6 +975,7 @@ mounts(struct work *w, struct storage_rsp *rsp)
 	pthread_mutex_unlock(&fstab_lock);
 	ucl_object_insert_key(top, arr, "fstab", 0, false);
 	ucl_object_insert_key(top, swap_list(w), "swap", 0, false);
+	ucl_object_insert_key(top, dev_state(w), "dev", 0, false);
 	return (emit(w, top, rsp));
 }
 

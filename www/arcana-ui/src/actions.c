@@ -2099,7 +2099,8 @@ jail_action(const char *jail, const char *action)
 
 static const char *const svc_map[] = { "name", "name", "path", "path",
     "rcvar", "rcvar", "enabled", "enabled", "running", "running", "pid",
-    "pid", "status", "status", NULL };
+    "pid", "status", "status", "pidfile-stale", "pidfile_stale", "pidfile",
+    "pidfile", "pidfile-pid", "pidfile_pid", NULL };
 
 static void
 services_cb(int status, const ucl_object_t *o, const char *err, void *arg)

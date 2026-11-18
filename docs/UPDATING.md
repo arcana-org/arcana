@@ -93,6 +93,26 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The agent's own pidfile, stale pidfiles, /dev; agent 0.304.0, console 0.453.0
+
+- The agent keeps /var/run/arcana-agent.pid its own: written back if
+  removed or replaced (fault `pidfile` meanwhile).  After an update, a
+  restart rc cannot do is done by the agent's pid when
+  arcana_agent_enable is YES.  The fleet workflow's `agents` step waits
+  up to 60 s for each host to answer as the new build and fails
+  otherwise.
+- Services: an enabled service rc says is stopped while its program
+  runs is shown "running, its pidfile is stale" (arcana-services
+  pidfile-stale, pidfile, pidfile-pid); the service-action job `pidfile`
+  (arcanactl service NAME pidfile, Mend pidfile on the page) writes the
+  found process's pid, after checking its jail and argv.
+- Storage mounts carry arcana-storage `dev`: devfs mounts on /dev, the
+  nodes they hide (devctl, mdctl, vmmctl) and whether devd answers; the
+  page explains each and how to mend it by hand, with no button.
+- New agent options for tests: --rc-subr, --dev, --devd-pipe.
+- Update the agents with the console: arcana-services, arcana-storage
+  and the service-action job gained leaves.
+
 ### pkg jobs that know their phase; agent 0.303.0, console 0.452.0
 
 - pkg's silence watchdog knows pkg's phase.  While pkg fetches, silence

@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <paths.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdint.h>
@@ -100,6 +101,41 @@ need_fibs(int n)
 		atf_tc_skip("net.fibs is %d here, the plan wants %d tables: "
 		    "net.fibs=%d (loader.conf; a vnet jail's own by sysctl)",
 		    fibs, n, n);
+}
+
+/*
+ * devd(8)'s socket stood in for, at path: a child that takes each
+ * connection and closes it, so that the agent finds devd answering;
+ * it ends once the test that made it has.  Taken away (unlink(2)),
+ * devd is down.
+ */
+void
+devd_stand_in(const char *path)
+{
+	struct sockaddr_un	 sun;
+	struct pollfd		 pfd;
+	pid_t			 parent;
+	int			 s, c;
+
+	parent = getpid();
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	strlcpy(sun.sun_path, path, sizeof(sun.sun_path));
+	(void)unlink(path);
+	ATF_REQUIRE((s = socket(PF_LOCAL, SOCK_SEQPACKET, 0)) != -1);
+	ATF_REQUIRE(bind(s, (struct sockaddr *)&sun, sizeof(sun)) == 0);
+	ATF_REQUIRE(listen(s, 64) == 0);
+	if (fork() != 0) {
+		close(s);
+		return;
+	}
+	pfd.fd = s;
+	pfd.events = POLLIN;
+	while (getppid() == parent)
+		if (poll(&pfd, 1, 1000) > 0 && (c = accept(s, NULL, NULL)) !=
+		    -1)
+			close(c);
+	_exit(0);
 }
 
 static pid_t
@@ -415,7 +451,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 ca[MAXPATHLEN], acert[MAXPATHLEN], akey[MAXPATHLEN];
 	char	 sport[16], bport[16], fpk[MAXPATHLEN], pks[MAXPATHLEN + 16];
 	char	 pkl[MAXPATHLEN + 16], pkr[MAXPATHLEN + 16];
-	char	 login[MAXPATHLEN];
+	char	 login[MAXPATHLEN], devdir[MAXPATHLEN], devd[MAXPATHLEN];
 	char	*argv[152];
 	FILE	*fp;
 	pid_t	 pid;
@@ -1010,8 +1046,20 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "'status -j') printf '%s\\n' '{\"output_version\":{\"command\":\"zpool status\",\"vers_major\":0,\"vers_minor\":1},\"pools\":{\"tank\":{\"name\":\"tank\",\"state\":\"DEGRADED\",\"pool_guid\":\"1\",\"txg\":\"1\",\"spa_version\":\"5000\",\"zpl_version\":\"5\",\"status\":\"One or more devices has been taken offline by the administrator. Sufficient replicas exist for the pool to continue functioning.\",\"action\":\"Online the device using '\\''zpool online'\\''.\",\"msgid\":\"ZFS-8000-2Q\",\"moreinfo\":\"https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-2Q\",\"scan_stats\":{\"function\":\"SCRUB\",\"state\":\"FINISHED\",\"start_time\":\"Sun Oct  4 02:49:49 2026\",\"end_time\":\"Sun Oct  4 03:00:00 2026\",\"errors\":\"0\"},\"vdevs\":{\"tank\":{\"name\":\"tank\",\"vdev_type\":\"root\",\"guid\":\"1\",\"class\":\"normal\",\"state\":\"DEGRADED\",\"read_errors\":\"0\",\"write_errors\":\"0\",\"checksum_errors\":\"0\",\"vdevs\":{\"mirror-0\":{\"name\":\"mirror-0\",\"vdev_type\":\"mirror\",\"guid\":\"2\",\"class\":\"normal\",\"state\":\"DEGRADED\",\"read_errors\":\"0\",\"write_errors\":\"0\",\"checksum_errors\":\"0\",\"vdevs\":{\"ada1p1\":{\"name\":\"ada1p1\",\"vdev_type\":\"disk\",\"guid\":\"3\",\"path\":\"/dev/ada1p1\",\"class\":\"normal\",\"state\":\"ONLINE\",\"read_errors\":\"0\",\"write_errors\":\"0\",\"checksum_errors\":\"0\"},\"ada2p1\":{\"name\":\"ada2p1\",\"vdev_type\":\"disk\",\"guid\":\"4\",\"path\":\"/dev/ada2p1\",\"class\":\"normal\",\"state\":\"OFFLINE\",\"read_errors\":\"0\",\"write_errors\":\"0\",\"checksum_errors\":\"0\"}}}}}},\"error_count\":\"0\",\"errlist\":[]}}}' ;;\nesac\nexit 0\n");
 	put("fake-gpart", "#!/bin/sh\necho \"gpart $*\" >> storage.log\n"
 	    "exit 0\n");
+	/* mount -p -t devfs: ./dev's, as many as devfs.n says (one). */
 	put("fake-mount", "#!/bin/sh\necho \"mount $*\" >> storage.log\n"
+	    "[ \"$*\" = '-p -t devfs' ] && { n=$(cat devfs.n 2>/dev/null || "
+	    "echo 1); while [ $n -gt 0 ]; do printf 'devfs\\t%s\\tdevfs\\trw"
+	    "\\t0 0\\n' \"$PWD/dev\"; n=$((n - 1)); done; }\n"
 	    "exit 0\n");
+	/* /dev, the nodes it should show, and devd answering. */
+	(void)mkdir("dev", 0755);
+	put("dev/devctl", "");
+	put("dev/mdctl", "");
+	put("dev/vmmctl", "");
+	snprintf(devdir, sizeof(devdir), "%s/dev", cwd);
+	snprintf(devd, sizeof(devd), "%s/devd.pipe", cwd);
+	devd_stand_in(devd);
 	put("fake-umount", "#!/bin/sh\necho \"umount $*\" >> storage.log\n"
 	    "exit 0\n");
 	put("fake-camcontrol", "#!/bin/sh\necho \"camcontrol $*\" >> "
@@ -1689,7 +1737,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	snprintf(login, sizeof(login), "%s/fake-login", cwd);
 	argv[132] = (char *)(uintptr_t)"--terminal-login";
 	argv[133] = login;
-	n = 134;
+	/* /dev and devd(8)'s socket, the test's (devd_stand_in()). */
+	argv[134] = (char *)(uintptr_t)"--dev";
+	argv[135] = devdir;
+	argv[136] = (char *)(uintptr_t)"--devd-pipe";
+	argv[137] = devd;
+	n = 138;
 	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
 	if (harness_stamp_port != 0) {
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);

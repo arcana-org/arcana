@@ -766,6 +766,10 @@ definitions:
         doc: sysrc(8) sets the service's rcvar to YES.
       - name: disable
         doc: sysrc(8) sets the service's rcvar to NO.
+      - name: pidfile
+        doc: |
+          The service's stale pidfile written again with the pid of its
+          program's one process (services.c svc_pidfile()).
 attribute-sets:
   - name: jail
     doc: |
@@ -885,6 +889,17 @@ attribute-sets:
       - name: status
         type: text
         doc: The status line, as the script printed it.
+      - name: pidfile
+        type: text
+        doc: Its pidfile, as its script sets it, when it is stale.
+      - name: pidfile-pid
+        type: u32
+        doc: The pid its stale pidfile names; absent when none.
+      - name: pidfile-stale
+        type: text
+        doc: |
+          Present when rc says it does not run while its program does:
+          what is wrong with its pidfile, and the process found.
 
   - name: variable
     attributes:

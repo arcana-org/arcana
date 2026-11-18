@@ -33,18 +33,38 @@
       on pkgbase (arcana-packages pkgbase-jail, pkg -j info -q
       FreeBSD-runtime each); the confirm says that their FreeBSD base
       packages are upgraded too.
-  - The agent's update restarts it by `service arcana_agent restart`;
-    with its pidfile gone (/var/run cleaned under it) the restart
-    cannot stop the running daemon, the update says done and the old
-    program keeps running.  The agent should see that its pidfile is
-    missing or not its own pid (a fault, and write it back), and restart
-    itself without rc's pidfile when rc cannot.
-  - A service whose pidfile names a dead pid while its daemon runs is
-    "not running" to rc and to Arcana's services view; a restart from
-    the panel then starts a second copy.  The view could compare the
-    pidfile with the processes it already reads and say so.
-  - Nothing in Arcana shows /dev's mounts (stray devfs mounts over the
-    host's /dev hid devctl, mdctl and vmmctl) nor that devd is down.
+  - Done (agent_test:agent_pidfile, agent_restart_nopidfile): the
+    agent keeps its pidfile its own (main.c own_pidfile()): every few
+    seconds (gula/hostwatch.c) and before its restart after an update,
+    a pidfile removed, written over or replaced by another file is
+    written back with its pid, a `pidfile` fault set and cleared; one
+    another arcana-agent holds is left, the fault saying so.  Still
+    running 10 s after `service arcana_agent restart`, the restart is
+    done by its pid (helper service-replace, ira/update.c): if rc says
+    the service is enabled, the daemon is stopped by SIGTERM, then
+    started by rc unless rc says it runs; not enabled, the old program
+    stays and the log says why.  The fleet workflow's agents step is
+    done only once each host answers as the build sent (60 s), failed
+    otherwise (console workflows.c).
+  - Done (agent_test:services_stale_pidfile, pwa_test:pwa_host_gaps):
+    an enabled service rc says is stopped is looked at again
+    (ira/services.c svc_stale()): its script read after rc.subr with
+    run_rc_command stood in for gives its pidfile and program
+    (${name}_program, procname, interpreter, service jail); its
+    program's processes where rc looks (jid 0 or its svcj), matched as
+    rc.subr matches them.  Running while the pidfile is missing, names
+    no pid, or a pid gone or another program's: arcana-services'
+    pidfile-stale, pidfile, pidfile-pid, pid the process when alone.
+    The page says "running, its pidfile is stale" with Mend pidfile,
+    the service-action job `pidfile`, which checks the process again
+    and writes its pid (a file of the same mode renamed over; refused
+    for a symbolic link, for two processes or none, in safe mode).
+  - Done (agent_test:storage_dev, pwa_test:pwa_host_gaps): the mounts'
+    read has arcana-storage's dev: devfs-mounts (mount -p -t devfs on
+    /dev), hidden (devctl; mdctl with md, vmmctl with vmm, not in
+    /dev) and devd (its socket answers).  The Storage page's mounts
+    say each, with what to do on the host (no button: a forced umount
+    of /dev is the admin's to choose).
   - Done (agent 0.302.0): a job's watched program (pkg) has
     ARCANA_AGENT_JOB=<agent pid>:<job>:<kind> and ARCANA_AGENT_JOB_TITLE
     in its environment and runs in its own process group.  At start the

@@ -24,15 +24,29 @@
  * console's or the recovery session's request ran; the scripts there
  * and whether each is enabled are read as ever (the rc.d directories,
  * libvarconf, sysrc -A), which runs none.
+ *
+ * An enabled service rc says does not run is looked at once more: its
+ * pidfile and program as its script sets them, and the host's processes
+ * (svc_stale()).  Its program running where rc looks for it while the
+ * pidfile is missing, or names a pid gone or another program's, the
+ * pidfile is stale: rc's stop and restart miss the daemon, and a start
+ * makes a second one.  A job (the service-action pidfile) writes it
+ * again with the pid of the one process found.
  */
 
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
 
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <jail.h>
+#include <libutil.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,10 +70,25 @@ struct collected {
 	char		 name[65];
 	char		 rcvar[65];
 	char		 status[256];
+	char		 pidfile[MAXPATHLEN];
+	char		 stale[512];
 	uint32_t	 pid;
+	uint32_t	 pidfile_pid;
 	bool		 has_running;
 	bool		 running;
 	bool		 has_pid;
+	bool		 has_pidfile_pid;
+};
+
+/*
+ * A service's pidfile and program, as its script sets them for
+ * run_rc_command (svc_rcproc()), and where rc(8) looks for its process.
+ */
+struct rcproc {
+	const char	*pidfile;
+	const char	*procname;
+	const char	*interp;	/* command_interpreter, or "" */
+	int		 jid;		/* 0, or its service jail's */
 };
 
 static pthread_mutex_t	 coll_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -76,6 +105,10 @@ static const struct script *script_find(const struct script *, size_t,
 static int	svc_run(struct work *, const char *, const char *,
 		    struct execres *);
 static void	svc_status(struct work *, struct arc_service *);
+static pid_t	svc_stale(struct work *, struct arc_service *,
+		    struct rcproc *);
+static void	svc_pidfile(struct work *, const struct script *,
+		    struct service_action_rsp *);
 static const char *svc_rcvar(struct work *, const char *, const char **);
 static bool	rc_yes(const char *);
 static bool	enabled_in(const struct execres *, const char *);
@@ -327,6 +360,334 @@ svc_status(struct work *w, struct arc_service *s)
 		s->has_pid = true;
 		s->pid = (uint32_t)strtoul(p + 4, NULL, 10);
 	}
+	/* Not running to rc: is its program running all the same?  Not in
+	 * a dry run: what it read follows a change it did not make. */
+	if (s->has_running && !s->running && s->path != NULL && !w->dry)
+		(void)svc_stale(w, s, NULL);
+}
+
+/*
+ * The script sourced after rc.subr(8), run_rc_command stood in for:
+ * what it would check, printed (the pidfile, the program as procname or
+ * command, ${name}_program taken as rc.subr takes it, the interpreter,
+ * the service jail).  $1 the script, $2 rc.subr.
+ */
+static const char rc_probe[] =
+    "s=$1 r=$2; set -- status; . \"$r\"\n"
+    "run_rc_command() {\n"
+    "\teval _o=\\$${name}_program; _c=${_o:-$command}\n"
+    "\teval _v=\\$${name}_svcj; _j=\n"
+    "\tcase $_v in [Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|[Oo][Nn]|1) "
+    "_j=svcj-$name ;; esac\n"
+    "\tprintf '%s\\n%s\\n%s\\n%s\\n' \"$pidfile\" \"${procname:-$_c}\" "
+    "\"$command_interpreter\" \"$_j\"\n"
+    "}\n"
+    ". \"$s\"\n";
+
+/*
+ * A service's pidfile and program, as its script sets them: its top
+ * level runs, as service(8) status runs it, so never for a viewer
+ * (clearance()).  False when it has no pidfile.
+ */
+static bool
+svc_rcproc(struct work *w, const char *path, struct rcproc *rp)
+{
+	struct execres	 res;
+	char		*argv[7], *out, *f[4];
+	int		 i;
+
+	argv[0] = (char *)(uintptr_t)"/bin/sh";
+	argv[1] = (char *)(uintptr_t)"-c";
+	argv[2] = (char *)(uintptr_t)rc_probe;
+	argv[3] = (char *)(uintptr_t)"sh";
+	argv[4] = (char *)(uintptr_t)path;
+	argv[5] = (char *)(uintptr_t)opts.rc_subr;
+	argv[6] = NULL;
+	if (run_read(w, argv, &res) != 0 || res.outlen == 0)
+		return (false);
+	out = wstrndup(w, res.out, res.outlen);
+	for (i = 0; i < 4; i++)
+		f[i] = strsep(&out, "\n");
+	if (f[3] == NULL || f[0][0] != '/' || f[1][0] == '\0')
+		return (false);
+	rp->pidfile = f[0];
+	rp->procname = f[1];
+	rp->interp = f[2];
+	rp->jid = 0;
+	/* rc.subr's own fallback: no such jail, the host. */
+	if (f[3][0] != '\0' && (rp->jid = jail_getid(f[3])) < 0)
+		rp->jid = 0;
+	return (true);
+}
+
+/*
+ * What rc.subr's _find_processes matches: the first word of a daemon's
+ * command line is procname, its base name, or that as setproctitle(3)
+ * and the kernel write it; an interpreted script's line is its
+ * interpreter, as its #! line says, then procname.
+ */
+static bool
+rc_match(struct work *w, const char *av, size_t len,
+    const struct rcproc *rp)
+{
+	const char	*bn, *interp;
+	char		*line, *p, word[MAXPATHLEN];
+	size_t		 n;
+	FILE		*fp;
+
+	bn = strrchr(rp->procname, '/') != NULL ? strrchr(rp->procname, '/') +
+	    1 : rp->procname;
+	line = wstrndup(w, av, len);
+	for (p = line; p < line + len; p++)
+		if (*p == '\0')
+			*p = ' ';
+	if (rp->interp[0] == '\0') {
+		n = strcspn(line, " \t");
+		snprintf(word, sizeof(word), "%.*s", (int)n, line);
+		return (strcmp(word, rp->procname) == 0 || strcmp(word, bn) ==
+		    0 || (strncmp(word, bn, strlen(bn)) == 0 &&
+		    strcmp(word + strlen(bn), ":") == 0) || strcmp(word,
+		    wfmt(w, "(%s)", bn)) == 0 || strcmp(word, wfmt(w, "[%s]",
+		    bn)) == 0);
+	}
+	interp = rp->interp;
+	if ((fp = fopen(rp->procname, "re")) != NULL) {
+		if (fgets(word, sizeof(word), fp) != NULL && word[0] == '#' &&
+		    word[1] == '!') {
+			word[strcspn(word, "\n")] = '\0';
+			p = word + 2 + strspn(word + 2, " \t");
+			/* env(1) dropped, for the name it runs. */
+			n = strcspn(p, " \t");
+			if (n >= 8 && strncmp(p + n - 8, "/bin/env", 8) == 0)
+				p += n + strspn(p + n, " \t");
+			interp = wstrdup(w, p);
+		}
+		fclose(fp);
+	}
+	p = wfmt(w, "%s %s", interp, rp->procname);
+	n = strlen(p);
+	return (strcmp(line, p) == 0 || (strncmp(line, p, n) == 0 &&
+	    line[n] == ' '));
+}
+
+/* Process pid's command line, its words NUL-separated; NULL unread. */
+static char *
+proc_args(struct work *w, pid_t pid, size_t *lenp)
+{
+	int	 mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ARGS, (int)pid };
+	char	*av;
+	size_t	 len = 2 * MAXPATHLEN;
+
+	av = wcalloc(w, 1, len + 1);
+	if (sysctl(mib, 4, av, &len, NULL, 0) == -1 || len == 0)
+		return (NULL);
+	*lenp = len;
+	return (av);
+}
+
+/* Is pid a process of rp's program, where rc looks for it? */
+static bool
+rc_proc_is(struct work *w, pid_t pid, const struct rcproc *rp)
+{
+	struct kinfo_proc	*kp;
+	const char		*av;
+	size_t			 len;
+	bool			 is;
+
+	if (pid <= 1 || (kp = kinfo_getproc(pid)) == NULL)
+		return (false);
+	is = kp->ki_stat != SZOMB && kp->ki_jid == rp->jid;
+	free(kp);
+	return (is && (av = proc_args(w, pid, &len)) != NULL && rc_match(w,
+	    av, len, rp));
+}
+
+/*
+ * Service s, which rc says does not run: does its program run all the
+ * same, where rc looks for it, while its pidfile is missing or names a
+ * pid that is gone or another program's?  Its pidfile is then stale,
+ * said in s (pidfile, pidfile_pid, pidfile_stale; pid, the process,
+ * when there is one alone).  The process found alone, or 0; rpp, the
+ * script's pidfile and program.
+ */
+static pid_t
+svc_stale(struct work *w, struct arc_service *s, struct rcproc *rpp)
+{
+	struct kinfo_proc	*kp, *other;
+	struct rcproc		 rp;
+	const char		*why, *av, *pids;
+	FILE			*fp;
+	size_t			 len, n, i, k;
+	pid_t			 self, found, fpid;
+	long			 v;
+	int			 mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_PROC };
+	const char		*bn;
+
+	if (!svc_rcproc(w, s->path, &rp))
+		return (0);
+	if (rpp != NULL)
+		*rpp = rp;
+	bn = strrchr(rp.procname, '/') != NULL ? strrchr(rp.procname, '/') +
+	    1 : rp.procname;
+	/* The processes of its program, where rc looks for them. */
+	if (sysctl(mib, 3, NULL, &len, NULL, 0) == -1)
+		return (0);
+	len += len / 4;
+	kp = wcalloc(w, 1, len);
+	if (sysctl(mib, 3, kp, &len, NULL, 0) == -1)
+		return (0);
+	self = getpid();
+	found = 0;
+	pids = "";
+	for (i = k = 0; i < len / sizeof(*kp); i++) {
+		if (kp[i].ki_pid == self || kp[i].ki_stat == SZOMB ||
+		    kp[i].ki_jid != rp.jid || (rp.interp[0] == '\0' &&
+		    strncmp(kp[i].ki_comm, bn, COMMLEN) != 0))
+			continue;
+		if ((av = proc_args(w, kp[i].ki_pid, &n)) == NULL ||
+		    !rc_match(w, av, n, &rp))
+			continue;
+		found = kp[i].ki_pid;
+		pids = wfmt(w, "%s%s%d", pids, k > 0 ? ", " : "",
+		    (int)found);
+		k++;
+	}
+	if (k == 0)
+		return (0);
+	/* What its pidfile says. */
+	fpid = 0;
+	if ((fp = fopen(rp.pidfile, "re")) == NULL)
+		why = wfmt(w, "%s is not there", rp.pidfile);
+	else {
+		if (fscanf(fp, "%ld", &v) == 1 && v > 1 && v <= INT_MAX)
+			fpid = (pid_t)v;
+		fclose(fp);
+		if (fpid == 0)
+			why = wfmt(w, "%s names no pid", rp.pidfile);
+		else if (rc_proc_is(w, fpid, &rp))
+			/* Its own: rc's status failed for another reason. */
+			return (0);
+		else if ((other = kinfo_getproc(fpid)) == NULL ||
+		    other->ki_stat == SZOMB) {
+			free(other);
+			why = wfmt(w, "%s names pid %d, which is gone",
+			    rp.pidfile, (int)fpid);
+		} else {
+			why = other->ki_jid != 0 ? wfmt(w, "%s names pid %d, "
+			    "another program's (%s, in jail %d)", rp.pidfile,
+			    (int)fpid, other->ki_comm, other->ki_jid) : wfmt(w,
+			    "%s names pid %d, another program's (%s)",
+			    rp.pidfile, (int)fpid, other->ki_comm);
+			free(other);
+		}
+	}
+	s->pidfile = wtext(w, rp.pidfile);
+	if (fpid != 0) {
+		s->has_pidfile_pid = true;
+		s->pidfile_pid = (uint32_t)fpid;
+	}
+	if (k == 1) {
+		s->has_pid = true;
+		s->pid = (uint32_t)found;
+		s->pidfile_stale = wtext(w, wfmt(w, "%s, while %s runs as "
+		    "pid %d", why, rp.procname, (int)found));
+		return (found);
+	}
+	s->has_pid = false;
+	s->pidfile_stale = wtext(w, wfmt(w, "%s, while %zu processes of %s "
+	    "run (pids %s): which is the service's is not known", why, k,
+	    rp.procname, pids));
+	return (0);
+}
+
+/*
+ * The service's stale pidfile written again with the pid of its
+ * program's process, the one svc_stale() found alone, checked again
+ * just before (where rc looks for it, its command line rc's match):
+ * a file of the same mode next to it, renamed over it.  Refused when
+ * rc says it runs, when nothing of it runs or more than one process
+ * does, and when the pidfile is not a plain file.
+ */
+static void
+svc_pidfile(struct work *w, const struct script *sc,
+    struct service_action_rsp *rsp)
+{
+	struct arc_service	 s;
+	struct rcproc		 rp;
+	struct stat		 st;
+	const char		*tmp;
+	char			 line[32];
+	pid_t			 pid;
+	mode_t			 mode;
+	int			 fd, step;
+	ssize_t			 n;
+
+	memset(&s, 0, sizeof(s));
+	s.name = sc->name;
+	s.path = sc->path;
+	memset(&rp, 0, sizeof(rp));
+	svc_status(w, &s);
+	if (s.running) {
+		rsp->error = wfmt(w, "service %s status says it runs: its "
+		    "pidfile is not stale", sc->name);
+		return;
+	}
+	pid = s.pidfile_stale != NULL ? svc_stale(w, &s, &rp) : 0;
+	if (s.pidfile_stale == NULL) {
+		rsp->error = wfmt(w, "%s does not run, as far as its pidfile "
+		    "and its processes tell: nothing to write; start it",
+		    sc->name);
+		return;
+	}
+	if (pid == 0) {
+		rsp->error = wfmt(w, "%s; write the right pid in %s yourself, "
+		    "or stop those processes and start the service",
+		    s.pidfile_stale, s.pidfile);
+		return;
+	}
+	step = step_begin(w, STEP_FILE, "write", "%s: pid %d", rp.pidfile,
+	    (int)pid);
+	if (work_dry(w, step)) {
+		rsp->ok = true;
+		return;
+	}
+	mode = 0644;
+	if (lstat(rp.pidfile, &st) == 0) {
+		if (!S_ISREG(st.st_mode)) {
+			step_end(w, step, false, "not a plain file");
+			rsp->error = wfmt(w, "%s is not a plain file: not "
+			    "written", rp.pidfile);
+			return;
+		}
+		mode = st.st_mode & 0777;
+	}
+	/* The process checked again, now: still its program's. */
+	if (!rc_proc_is(w, pid, &rp)) {
+		step_end(w, step, false, "pid %d is gone", (int)pid);
+		rsp->error = wfmt(w, "pid %d is no longer %s's: not written",
+		    (int)pid, rp.procname);
+		return;
+	}
+	tmp = wfmt(w, "%s.arcana", rp.pidfile);
+	snprintf(line, sizeof(line), "%d\n", (int)pid);
+	(void)unlink(tmp);
+	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
+	    O_CLOEXEC, mode)) == -1) {
+		step_end(w, step, false, "%s: %s", tmp, strerror(errno));
+		rsp->error = wfmt(w, "%s: %s", tmp, strerror(errno));
+		return;
+	}
+	n = write(fd, line, strlen(line));
+	(void)fchmod(fd, mode);
+	if (n != (ssize_t)strlen(line) || fsync(fd) == -1 || close(fd) == -1 ||
+	    rename(tmp, rp.pidfile) == -1) {
+		step_end(w, step, false, "%s", strerror(errno));
+		rsp->error = wfmt(w, "%s: %s", rp.pidfile, strerror(errno));
+		(void)unlink(tmp);
+		return;
+	}
+	step_end(w, step, true, "%s's pid, %d", rp.procname, (int)pid);
+	rsp->ok = true;
 }
 
 /*
@@ -495,6 +856,9 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 			rsp->ok = true;
 		else
 			rsp->error = wtext(w, exec_error(w, &res, "sysrc"));
+		break;
+	case ARC_SERVICE_ACTION_PIDFILE:
+		svc_pidfile(w, sc, rsp);
 		break;
 	default:
 		verb = action == ARC_SERVICE_ACTION_START ? "start" :
@@ -778,6 +1142,12 @@ collect_keep(const struct arc_service *v, size_t n, bool all)
 		c->pid = v[i].pid;
 		(void)strlcpy(c->status, v[i].status != NULL ? v[i].status : "",
 		    sizeof(c->status));
+		(void)strlcpy(c->pidfile, v[i].pidfile != NULL ? v[i].pidfile :
+		    "", sizeof(c->pidfile));
+		(void)strlcpy(c->stale, v[i].pidfile_stale != NULL ?
+		    v[i].pidfile_stale : "", sizeof(c->stale));
+		c->has_pidfile_pid = v[i].has_pidfile_pid;
+		c->pidfile_pid = v[i].pidfile_pid;
 		if (v[i].rcvar != NULL)
 			(void)strlcpy(c->rcvar, v[i].rcvar, sizeof(c->rcvar));
 	}
@@ -805,6 +1175,12 @@ collected_of(struct work *w, struct arc_service *s)
 		s->pid = coll[k].pid;
 		if (coll[k].status[0] != '\0')
 			s->status = wtext(w, coll[k].status);
+		if (coll[k].pidfile[0] != '\0')
+			s->pidfile = wtext(w, coll[k].pidfile);
+		if (coll[k].stale[0] != '\0')
+			s->pidfile_stale = wtext(w, coll[k].stale);
+		s->has_pidfile_pid = coll[k].has_pidfile_pid;
+		s->pidfile_pid = coll[k].pidfile_pid;
 		if (coll[k].rcvar[0] != '\0')
 			s->rcvar = wtext(w, coll[k].rcvar);
 		seen = coll[k].has_running;

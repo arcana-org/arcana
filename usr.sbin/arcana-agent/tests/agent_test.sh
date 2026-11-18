@@ -9790,6 +9790,296 @@ agent_restart_cleanup()
 	stop_daemon
 }
 
+atf_test_case agent_restart_nopidfile cleanup
+agent_restart_nopidfile_head()
+{
+	atf_set "descr" "After an update, a restart rc cannot do (no pidfile" \
+	    "of its own) is done by the agent's pid; not enabled, the old" \
+	    "program is left running and says so"
+	atf_set "timeout" "150"
+}
+agent_restart_nopidfile_body()
+{
+	programs
+	write_conf
+	write_rc
+	write_net
+	write_pkg
+	SOCK="unix:$(pwd)/s.sock"
+	cp "$JGD" installed
+	cp "$JGD" newer
+	printf x >> newer
+	cat > run-agent <<EOS
+#!/bin/sh
+cd $(pwd)
+./installed -F -l "$SOCK" -f "$(pwd)/etc/jail.conf" \\
+    -D "$(pwd)/etc/jail.conf.d" -j "$(pwd)/fake-jail" \\
+    -R "$(pwd)/rc.d" -s "$(pwd)/rc-service" >> daemon.out 2>&1 &
+echo \$! > daemon.pid
+EOS
+	# service(8) for arcana_agent as rc.subr says it when the pidfile
+	# is gone: not running, so restart stops nothing and starts
+	# nothing; enabled as ./enabled says; start runs the program.
+	cat > rc-service <<EOS
+#!/bin/sh
+cd $(pwd)
+[ "\$1" = arcana_agent ] || exit 2
+echo "\$2" >> verbs
+case "\$2" in
+restart)	echo "arcana_agent not running? (check /var/run/arcana-agent.pid)." >&2
+		exit 1 ;;
+enabled)	[ -f enabled ] ;;
+status)		echo "arcana_agent is not running."; exit 1 ;;
+start)		exec ./run-agent ;;
+*)		exit 2 ;;
+esac
+EOS
+	chmod +x run-agent rc-service
+	./run-agent
+	for i in $(seq 1 100); do
+		grep -q ready daemon.out 2>/dev/null && break
+		sleep 0.05
+	done
+	old=$(sha256 -q installed)
+	new=$(sha256 -q newer)
+	first=$(cat daemon.pid)
+
+	# Not enabled: nothing would start it again, so it stays, the
+	# program before, and its log says why.
+	atf_check -o match:'restarting' "$JGC" -c "$SOCK" agent-update -r newer
+	for i in $(seq 1 450); do
+		grep -q 'nor a restart by its pid' daemon.out && break
+		sleep 0.1
+	done
+	atf_check -o match:'restart: still running 10 s after "service arcana_agent restart": stopping this daemon' \
+	    -o match:'neither "service arcana_agent restart" nor a restart by its pid stopped this daemon' \
+	    cat daemon.out
+	atf_check -o match:"Build: +$old" "$JGC" -c "$SOCK" hello
+	atf_check test "$(cat daemon.pid)" = "$first"
+	atf_check -o match:'^enabled$' -o not-match:'^start$' cat verbs
+
+	# Enabled: stopped by its pid, then started by rc; the daemon
+	# that answers is the new build.
+	touch enabled
+	: > verbs
+	cp "$JGD" newer
+	printf y >> newer
+	new=$(sha256 -q newer)
+	atf_check -o match:'restarting' "$JGC" -c "$SOCK" agent-update -r newer
+	for i in $(seq 1 600); do
+		"$JGC" -c "$SOCK" hello 2>/dev/null | grep -q "Build: *$new" &&
+		    break
+		sleep 0.1
+	done
+	atf_check -o match:"Build: +$new" "$JGC" -c "$SOCK" hello
+	atf_check test "$(cat daemon.pid)" != "$first"
+	alive "$first" && atf_fail "the daemon before still runs"
+	atf_check -o match:'^restart$' -o match:'^enabled$' \
+	    -o match:'^status$' -o match:'^start$' cat verbs
+}
+agent_restart_nopidfile_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case agent_pidfile cleanup
+agent_pidfile_head()
+{
+	atf_set "descr" "The detached agent keeps its pidfile its own:" \
+	    "removed, written over or replaced, it is written back, a" \
+	    "fault set and cleared"
+	atf_set "timeout" "120"
+}
+agent_pidfile_body()
+{
+	local pf pid i
+
+	programs
+	write_conf
+	write_rc
+	write_net
+	write_pkg
+	SOCK="unix:$(pwd)/s.sock"
+	pf="$(pwd)/agent.pid"
+	[ -f "$FJL" ] || atf_fail "no libfakejail.so at $FJL"
+	# Detached, as rc(8) starts it, with a pidfile of the case's.
+	FAKEJAIL="$(pwd)/jails" LD_PRELOAD="$FJL" \
+	"$JGD" -p "$pf" -l "$SOCK" -f "$(pwd)/etc/jail.conf" \
+	    -D "$(pwd)/etc/jail.conf.d" -j "$(pwd)/fake-jail" \
+	    -R "$(pwd)/rc.d:$(pwd)/local/rc.d" -s "$(pwd)/fake-service" \
+	    -y "$(pwd)/fake-sysrc" -N "$(pwd)/fake-netstat" \
+	    -P "$(pwd)/fake-pkg" -1 "$(pwd)/history.conf" \
+	    --jobs-conf "$(pwd)/jobs.conf" --nacm "$(pwd)/nacm.cbor" \
+	    --pfkey "$(pwd)/pfkey.sock" --bird-watch 0 ||
+	    atf_fail "arcana-agent did not start"
+	for i in $(seq 1 600); do
+		[ -s "$pf" ] && "$JGC" -c "$SOCK" hello > /dev/null 2>&1 &&
+		    break
+		sleep 0.1
+	done
+	pid=$(cat "$pf")
+	echo "$pid" > daemon.pid
+	alive "$pid" || atf_fail "no daemon at pid $pid"
+
+	# Removed, as /var/run cleaned under it.
+	rm "$pf"
+	wait_match "^$pid\$" cat "$pf" || atf_fail "not written back"
+	# Written over in place, another pid in it.
+	echo 1 > "$pf"
+	wait_match "^$pid\$" cat "$pf" || atf_fail "not written again"
+	# Another file renamed over it.
+	echo 99999 > other.pid
+	mv other.pid "$pf"
+	wait_match "^$pid\$" cat "$pf" || atf_fail "not made its own again"
+	# Said as a fault and cleared once written back.
+	atf_check -o match:"\"type\":\"pidfile\",\"severity\":\"Cleared\",\"was\":\"Major\",\"object\":\"$pf\",\"by\":\"agent\",\"description\":\"written back with pid $pid\",\"cleared\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	# Its own still: stopped by it, as rc stops it, and removed.
+	kill "$(cat "$pf")"
+	for i in $(seq 1 600); do
+		alive "$pid" || break
+		sleep 0.1
+	done
+	alive "$pid" && atf_fail "not stopped by its pidfile"
+	atf_check test ! -e "$pf"
+}
+agent_pidfile_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case services_stale_pidfile cleanup
+services_stale_pidfile_head()
+{
+	atf_set "descr" "A service rc says is stopped while its program" \
+	    "runs: its pidfile said stale, and written again by the job" \
+	    "with the one process's pid; refused with two, or with none"
+	atf_set "timeout" "120"
+}
+services_stale_pidfile_body()
+{
+	local sp sp2 dead
+
+	mkdir -p root/etc/defaults
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'sshd_enable="YES"\nstaled_enable="YES"\n' > root/etc/rc.conf
+	# rc.subr(8) stood in for: the script sets what run_rc_command
+	# checks, the probe prints it.
+	printf '# rc.subr, stood in for\n' > rc.subr
+	DAEMON_ARGS="--root $(pwd)/root --rc-subr $(pwd)/rc.subr"
+	start_daemon
+	cat > rc.d/staled <<EOS
+#!/bin/sh
+name=staled
+pidfile=$(pwd)/staled.pid
+command=$(pwd)/staled
+run_rc_command "\$1"
+EOS
+	chmod +x rc.d/staled
+	cp /bin/sleep staled
+	"$(pwd)/staled" 300 &
+	sp=$!
+	echo "$sp" >> procs
+	# Its pidfile names another program's process: this shell's.
+	echo $$ > staled.pid
+	atf_check -o match:"^staled +enabled +stale +$sp" \
+	    -o match:'^sshd +enabled +stopped' "$JGC" -c "$SOCK" services
+	atf_check -o match:'Running: no' \
+	    -o match:"Pidfile stale: .*/staled.pid names pid $$, another program.s \([a-z-]+\), while .*/staled runs as pid $sp" \
+	    "$JGC" -c "$SOCK" service staled config
+	# Gone: a pid no process has now.
+	sh -c 'exit 0' &
+	dead=$!
+	wait "$dead"
+	echo "$dead" > staled.pid
+	atf_check -o match:"names pid $dead, which is gone, while" \
+	    "$JGC" -c "$SOCK" service staled config
+	# Not there at all.
+	rm staled.pid
+	atf_check -o match:'staled.pid is not there, while' \
+	    "$JGC" -c "$SOCK" service staled config
+	# Mended: the one process's pid, in a file of the same name.
+	echo $$ > staled.pid
+	chmod 640 staled.pid
+	atf_check -o match:'done +service staled pidfile' \
+	    -o match:"write: .*/staled's pid, $sp" \
+	    "$JGC" -c "$SOCK" service staled pidfile
+	atf_check -o inline:"$sp\n" cat staled.pid
+	atf_check -o match:'640' stat -f %Lp staled.pid
+	atf_check -o match:'^staled +enabled +stopped' \
+	    "$JGC" -c "$SOCK" services
+	# Not stale now: nothing to write.
+	atf_check -s exit:1 -o match:'nothing to write' \
+	    "$JGC" -c "$SOCK" service staled pidfile
+	# Two of its program: which is the service's is not known.
+	"$(pwd)/staled" 300 &
+	sp2=$!
+	echo "$sp2" >> procs
+	echo $$ > staled.pid
+	atf_check -o match:"^staled +enabled +stale +$" \
+	    "$JGC" -c "$SOCK" services
+	atf_check -s exit:1 -o match:"2 processes of .*/staled run \(pids [0-9, ]+\): which is the service.s is not known; write the right pid" \
+	    "$JGC" -c "$SOCK" service staled pidfile
+	atf_check -o inline:"$$\n" cat staled.pid
+	# A symbolic link is not written through.
+	kill "$sp2"
+	rm staled.pid
+	ln -s "$(pwd)/elsewhere" staled.pid
+	atf_check -s exit:1 -o match:'is not a plain file' \
+	    "$JGC" -c "$SOCK" service staled pidfile
+	atf_check test ! -e elsewhere
+	# Not in safe mode: nothing to undo.
+	atf_check -s exit:1 -e match:'nothing to undo' -o ignore \
+	    "$JGC" -s -c "$SOCK" service staled pidfile
+}
+services_stale_pidfile_cleanup()
+{
+	[ -f procs ] && kill $(cat procs) 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case storage_dev cleanup
+storage_dev_head()
+{
+	atf_set "descr" "/dev with the mounts: devfs mounted on it more than" \
+	    "once, the nodes it does not show, devd not answering"
+}
+storage_dev_body()
+{
+	mkdir dev
+	touch dev/mdctl dev/vmmctl
+	# mount -p -t devfs, as mount(8) lists two on /dev.
+	cat > fake-mount <<EOS
+#!/bin/sh
+echo "mount \$*" >> $(pwd)/storage.log
+[ "\$*" = "-p -t devfs" ] || exit 0
+echo "fstab: /etc/fstab:0: No such file or directory" >&2
+n=\$(cat $(pwd)/devfs.n)
+while [ \$n -gt 0 ]; do
+	printf 'devfs\t\t\t$(pwd)/dev\t\t\tdevfs\trw\t\t0 0\n'
+	n=\$((n - 1))
+done
+printf 'devfs\t\t\t/jails/web/dev\t\tdevfs\trw\t\t0 0\n'
+EOS
+	chmod +x fake-mount
+	echo 2 > devfs.n
+	DAEMON_ARGS="-m $(pwd)/fake-mount --dev $(pwd)/dev --devd-pipe $(pwd)/devd.pipe"
+	start_daemon
+	atf_check -o match:'"dev":\{"devfs_mounts":2,"hidden":\["devctl"\],"devd":false\}' \
+	    "$JGC" -c "$SOCK" storage mounts
+	atf_check -o match:'^mount -p -t devfs$' cat storage.log
+	echo 1 > devfs.n
+	touch dev/devctl
+	atf_check -o match:'"dev":\{"devfs_mounts":1,"hidden":\[\],"devd":false\}' \
+	    "$JGC" -c "$SOCK" storage mounts
+	# Nothing is unmounted, nor anything run but the listing.
+	atf_check -o not-match:'umount|-f' cat storage.log
+}
+storage_dev_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case traceroute cleanup
 traceroute_head()
 {
@@ -20384,6 +20674,10 @@ atf_init_test_cases()
 	atf_add_test_case agent_update_gzip
 	atf_add_test_case agent_update_old
 	atf_add_test_case agent_restart
+	atf_add_test_case agent_restart_nopidfile
+	atf_add_test_case agent_pidfile
+	atf_add_test_case services_stale_pidfile
+	atf_add_test_case storage_dev
 	atf_add_test_case agent_build
 	atf_add_test_case stop
 	atf_add_test_case hello

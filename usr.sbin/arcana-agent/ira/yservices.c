@@ -54,6 +54,10 @@ yservices_from(const struct services_rsp *list, cbl_yarena *a,
 		if ((y->has_pid = s->has_pid))
 			y->pid = s->pid;
 		y->status = s->status;
+		y->pidfile_stale = s->pidfile_stale;
+		y->pidfile = s->pidfile;
+		if ((y->has_pidfile_pid = s->has_pidfile_pid))
+			y->pidfile_pid = s->pidfile_pid;
 	}
 	ss->service.n = list->services.n;
 	ss->service.v = v;
@@ -79,6 +83,10 @@ yservices_read(const struct service_config_rsp *r,
 		if ((out->has_pid = s->has_pid))
 			out->pid = s->pid;
 		out->status = s->status;
+		out->pidfile_stale = s->pidfile_stale;
+		out->pidfile = s->pidfile;
+		if ((out->has_pidfile_pid = s->has_pidfile_pid))
+			out->pidfile_pid = s->pidfile_pid;
 	}
 	out->description = r->description;
 	out->command.n = r->commands.n;

@@ -4425,7 +4425,8 @@ arcana_storage_storage_read_action(cbl_req *req, const struct cbl_bytes *target,
 	 */
 	_Static_assert(sizeof(*out->dataset.v) == sizeof(*st.dataset.v) &&
 	    sizeof(*out->snapshot.v) == sizeof(*st.snapshot.v) &&
-	    sizeof(*out->fstab) == sizeof(*st.fstab), "read's own structs");
+	    sizeof(*out->fstab) == sizeof(*st.fstab) &&
+	    sizeof(*out->dev) == sizeof(*st.dev), "read's own structs");
 	out->has_datasets_total = st.has_datasets_total;
 	out->datasets_total = st.datasets_total;
 	out->dataset.n = st.dataset.n;
@@ -4439,6 +4440,7 @@ arcana_storage_storage_read_action(cbl_req *req, const struct cbl_bytes *target,
 	out->fstab = (const void *)st.fstab;
 	out->swap.n = st.swap.n;
 	out->swap.v = st.swap.v;
+	out->dev = (const void *)st.dev;
 	return (0);
 }
 

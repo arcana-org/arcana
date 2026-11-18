@@ -25,7 +25,9 @@
  *   imported, exported, scrubbed, a vdev's state, the event zfs,
  *   {"type", "pool"}) and a disk's device node made or destroyed
  *   (DEVFS's CDEV, the event device, {"cdev", "state"}).  Without devd
- *   it is tried again every half minute.
+ *   it is tried again every half minute;
+ * - and every few seconds, that the agent's pidfile is still its own
+ *   (own_pidfile()).
  *
  * Each kind is said at most once a second, of each file, pool or disk
  * once: a storm of them is one event.
@@ -51,9 +53,9 @@
 
 #include "agent.h"
 
-#define	DEVD_SOCK	"/var/run/devd.seqpacket.pipe"
 #define	DEVD_RETRY	30	/* seconds before devd is tried again */
 #define	TICK_MS		1000	/* what was seen is said this often */
+#define	PIDFILE_TICKS	5	/* the agent's pidfile looked at, in ticks */
 #define	DEVD_MSG	8192
 
 #define	CONF_FILES	7
@@ -350,7 +352,7 @@ devd_open(int kq)
 		return;
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
-	strlcpy(sun.sun_path, DEVD_SOCK, sizeof(sun.sun_path));
+	strlcpy(sun.sun_path, opts.devd_pipe, sizeof(sun.sun_path));
 	if (connect(s, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
 		close(s);
 		return;
@@ -386,6 +388,7 @@ static void
 tick(int kq)
 {
 	static unsigned	ticks;
+	char		why[256];
 
 	for (size_t i = 0; i < nitems(files); i++)
 		if (files[i].changed) {
@@ -407,6 +410,9 @@ tick(int kq)
 	nseen = 0;
 	if (devd == -1 && time(NULL) >= devd_next)
 		devd_open(kq);
+	/* rc(8) stops the agent by its pidfile: kept the agent's. */
+	if (ticks % PIDFILE_TICKS == 0)
+		(void)own_pidfile(why, sizeof(why));
 	/* What the kernel announces nowhere (a description, a FIB, a
 	 * group, media; a jail's), read again a minute on. */
 	if (++ticks % (60000 / TICK_MS) == 0) {

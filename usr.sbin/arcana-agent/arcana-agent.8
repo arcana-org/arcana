@@ -76,6 +76,9 @@
 .Op Fl -bmp-port Ar port
 .Op Fl -archive Ar directory
 .Op Fl -pfkey Ar socket
+.Op Fl -rc-subr Ar file
+.Op Fl -dev Ar directory
+.Op Fl -devd-pipe Ar socket
 .Op Fl -stamp-clock Ar source Ns Op : Ns Ar error
 .Op Fl -stampd-keys Ar file
 .Op Fl -sctp-also Ar addresses
@@ -552,6 +555,26 @@ action listens on another address, closes one and keeps the change in
 .It Fl p Ar pidfile
 Default
 .Pa /var/run/arcana-agent.pid .
+.Xr rc 8
+stops and restarts the agent by the pid in it, so the agent keeps it
+its own: every few seconds, and before it restarts itself after an
+update, a pidfile removed
+.Pq Pa /var/run No cleaned under it ,
+written over, or replaced by another file is written back with its pid,
+a fault of type
+.Ql pidfile
+set and cleared.
+One another arcana-agent holds is left alone, the fault saying so.
+After an update, a restart
+.Xr service 8
+did not do (the daemon still runs 10 seconds on) is done by the
+daemon's pid: a process of its own asks
+.Xr rc 8
+whether the service is enabled, stops the daemon, and starts the
+service unless
+.Xr rc 8
+says it runs; not enabled, the program before is left running and the
+log says so.
 .It Fl R Ar rc.d dirs
 The directories whose scripts are the host's services, colon separated.
 Default
@@ -896,6 +919,32 @@ in place of the kernel's PF_KEY socket
 .Pq Xr ipsec 4 :
 a test's stand-in.
 Without it they go to a PF_KEY socket of the host's network.
+.It Fl -rc-subr Ar file
+.Xr rc.subr 8 ,
+which a service's script is read after to know its pidfile and
+program, when
+.Xr rc 8
+says it does not run: its pidfile is stale when its program runs all
+the same.
+Default
+.Pa /etc/rc.subr .
+.It Fl -dev Ar directory
+.Pa /dev ,
+whose
+.Xr devfs 4
+mounts
+.Pq more than one hides devices
+and missing nodes
+.Pq devctl , mdctl , vmmctl
+the mounts' read says.
+Default
+.Pa /dev .
+.It Fl -devd-pipe Ar socket
+.Xr devd 8 Ns 's
+socket, heard for the kernel's device events and asked whether devd
+runs.
+Default
+.Pa /var/run/devd.seqpacket.pipe .
 .It Fl -stamp-clock Ar source Ns Op : Ns Ar error
 This host's clock as the STAMP probes tell it, for one that
 .Xr ntp_gettime 2

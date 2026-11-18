@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-services",
     "module-revision": "2026-10-14",
-    "sid-file-version": 4,
+    "sid-file-version": 5,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 200, 100.",
     "dependency-revision": [
       {
@@ -411,6 +411,96 @@
         "namespace": "data",
         "identifier": "/arcana-services:services/release/output/service/variable/restored/value",
         "sid": "62278"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/pidfile",
+        "sid": "62279"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/pidfile-pid",
+        "sid": "62280"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/pidfile-stale",
+        "sid": "62281"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/read/output/pidfile",
+        "sid": "62282"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/read/output/pidfile-pid",
+        "sid": "62283"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/read/output/pidfile-stale",
+        "sid": "62284"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/reload/output/pidfile",
+        "sid": "62285"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/reload/output/pidfile-pid",
+        "sid": "62286"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/reload/output/pidfile-stale",
+        "sid": "62287"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/restart/output/pidfile",
+        "sid": "62288"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/restart/output/pidfile-pid",
+        "sid": "62289"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/restart/output/pidfile-stale",
+        "sid": "62290"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/start/output/pidfile",
+        "sid": "62291"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/start/output/pidfile-pid",
+        "sid": "62292"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/start/output/pidfile-stale",
+        "sid": "62293"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/stop/output/pidfile",
+        "sid": "62294"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/stop/output/pidfile-pid",
+        "sid": "62295"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-services:services/service/stop/output/pidfile-stale",
+        "sid": "62296"
       }
     ]
   }

@@ -51,6 +51,35 @@ module arcana-services {
       description
         "The status line, as the script printed it.";
     }
+    leaf pidfile-stale {
+      type string;
+      config false;
+      description
+        "Present when the script says the service does not run while
+         its program does: rc(8) checks the process its pidfile
+         names, and that pidfile is missing, or names a pid that is
+         gone or another program's (a jail's process, after a
+         restart).  rc's stop and restart then miss the daemon and
+         its start makes a second one.  What is wrong with it, and the
+         process found: its program's processes where rc looks for
+         them (outside jails, or in its service jail), their command
+         line matched as rc.subr(8) matches it.  pid is that process,
+         when it is the only one; the service-action job pidfile
+         writes it in the pidfile.";
+    }
+    leaf pidfile {
+      type string;
+      config false;
+      description
+        "The stale pidfile, as the script sets it.";
+    }
+    leaf pidfile-pid {
+      type uint32;
+      config false;
+      description
+        "The pid the stale pidfile names; absent when it names none
+         or is not there.";
+    }
   }
 
   container services {

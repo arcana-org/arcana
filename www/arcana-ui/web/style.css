@@ -1430,6 +1430,8 @@ html.fx .gauge .spark .line {
 .svc .flags { color: var(--dim); font-size: .74rem; }
 .svc .flags b { font-weight: 400; }
 .svc .flags b.on { color: var(--cyan); }
+/* Running while rc says not: its pidfile is stale. */
+.svc .flags b.warn { color: var(--amber); }
 .svc .acts { display: flex; gap: .3rem; }
 .svc .acts button { font-size: .72rem; padding: .2rem .55rem; }
 .vars .var {

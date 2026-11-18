@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.303.0"
+#define	ARCANA_AGENT_VERSION	"0.304.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -214,6 +214,10 @@ struct opts {
 	int		 bird_watch_s;	/* --bird-watch: BIRD's sessions, how often */
 	int		 routes_cache_s;	/* --routes-cache: a FIB's count kept */
 	int		 smtpd_watch_s;	/* --smtpd-watch: OpenSMTPD, how often */
+	const char	*rc_subr;	/* --rc-subr: rc.subr(8), a service's
+					 * pidfile and program asked of it */
+	const char	*dev_dir;	/* --dev: /dev, its devfs mounts */
+	const char	*devd_pipe;	/* --devd-pipe: devd(8)'s socket */
 	int		 stamp_port;	/* --stamp-port: far ends' STAMP; 0 none */
 	int		 bmp_port;	/* --bmp-port: FIB 0's BMP station */
 	const char	*stampd_keys;	/* --stampd-keys: stampd(8)'s key file */
@@ -1480,6 +1484,9 @@ extern pthread_mutex_t	 build_lock;
 /* After an update's answer, the console's service restarted, then the
  * agent's. */
 void		 restart_after(bool, bool);
+/* main.c: the daemon's pidfile kept its own; false, why it is not. */
+bool		 own_pidfile(char *, size_t);
+bool		 stop_asked(void);
 const char	*change_busy(struct work *);
 bool		 valid_service(const char *);
 bool		 valid_ifname(const char *);
@@ -1711,6 +1718,7 @@ int		 zfs_pipe(int, char **);
 int		 debug_as_nobody(int, char **);
 int		 run_wait(int, char **);
 int		 service_detach(int, char **);
+int		 service_replace(int, char **);
 const char	*tool(struct work *, const char *);
 int		 do_health(struct work *, struct storage_rsp *);
 struct ucl_object_s;
@@ -2047,6 +2055,7 @@ int		 do_agent_update(struct work *, const uint8_t *, size_t,
 		    size_t, const struct agent_update *, struct build_rsp *);
 void		 service_restart(const char *);
 void		 service_detached(const char *, const char *);
+void		 service_replaced(const char *);
 
 /* handlers.c */
 bool		 change_note(const char *, ...) __printflike(1, 2);

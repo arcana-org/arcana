@@ -188,6 +188,23 @@ module arcana {
       description
         "The status line, as the script printed it.";
     }
+    leaf pidfile {
+      type string;
+      description
+        "Its pidfile, as its script sets it, when it is stale.";
+    }
+    leaf pidfile-pid {
+      type uint32;
+      description
+        "The pid its stale pidfile names; absent when none.";
+    }
+    leaf pidfile-stale {
+      type string;
+      description
+        "Present when rc says it does not run while its program does:
+         what is wrong with its pidfile, and the process found.
+         ";
+    }
   }
 
   grouping set-variable {
@@ -254,10 +271,10 @@ module arcana {
     }
     leaf service-action {
       type uint8 {
-        range "0..5";
+        range "0..6";
       }
       description
-        "One of service-action: 0 start 1 stop 2 restart 3 reload 4 enable 5 disable.";
+        "One of service-action: 0 start 1 stop 2 restart 3 reload 4 enable 5 disable 6 pidfile.";
     }
     list variables {
       cg:struct "variable";

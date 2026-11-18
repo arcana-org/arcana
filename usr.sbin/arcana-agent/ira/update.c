@@ -26,10 +26,13 @@
 
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -47,6 +50,7 @@
 #include "zprog.h"
 
 #define	VERSION_PREFIX	"arcana-agent "
+#define	RESTART_STOP_WAIT 30	/* s, for the daemon to stop by its pid */
 
 extern char	**environ;
 
@@ -308,6 +312,8 @@ do_agent_update(struct work *w, const uint8_t *data, size_t len,
 	return (rc);
 }
 
+static void	helper_detached(const char *, const char *, const char *);
+
 /*
  * Restart the service, from a process of its own that outlives this
  * one: service(8) stops this daemon and starts the new program.  It
@@ -331,6 +337,28 @@ service_restart(const char *name)
 void
 service_detached(const char *name, const char *verb)
 {
+
+	helper_detached("service-detach", name, verb);
+}
+
+/*
+ * The daemon's own service restarted without its pidfile: rc(8) said
+ * it did not run (service_replace(), below), from a process of its own.
+ */
+void
+service_replaced(const char *name)
+{
+	char	pid[16];
+
+	snprintf(pid, sizeof(pid), "%d", (int)getpid());
+	helper_detached("service-replace", name, pid);
+}
+
+/* The helper's what, with service(8), name and arg, run and waited for:
+ * it forks and is gone at once, its child init's. */
+static void
+helper_detached(const char *what, const char *name, const char *arg)
+{
 	posix_spawn_file_actions_t	 fa;
 	posix_spawnattr_t		 at;
 	sigset_t			 none, all;
@@ -341,10 +369,10 @@ service_detached(const char *name, const char *verb)
 	argv[0] = (char *)(uintptr_t)opts.own_bin;
 	argv[1] = (char *)(uintptr_t)"--scope-helper";
 	argv[2] = (char *)(uintptr_t)"0";
-	argv[3] = (char *)(uintptr_t)"service-detach";
+	argv[3] = (char *)(uintptr_t)what;
 	argv[4] = (char *)(uintptr_t)opts.service_bin;
 	argv[5] = (char *)(uintptr_t)name;
-	argv[6] = (char *)(uintptr_t)verb;
+	argv[6] = (char *)(uintptr_t)arg;
 	argv[7] = NULL;
 	posix_spawn_file_actions_init(&fa);
 	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
@@ -364,7 +392,7 @@ service_detached(const char *name, const char *verb)
 	posix_spawnattr_destroy(&at);
 	posix_spawn_file_actions_destroy(&fa);
 	if (rc != 0) {
-		logmsg(LOG_ERR, "%s %s: %s: %s", name, verb, argv[0],
+		logmsg(LOG_ERR, "%s %s: %s: %s", name, arg, argv[0],
 		    strerror(rc));
 		return;
 	}
@@ -405,5 +433,90 @@ service_detach(int argc, char **argv)
 		execl("/usr/bin/logger", "logger", "-t", "arcana-agent", "-p",
 		    "daemon.err", "service(8) failed:", argv[2], argv[3],
 		    "(is it enabled in rc.conf?)", (char *)NULL);
+	_exit(0);
+}
+
+/* service(8) svc name verb, run and waited for: its exit status, or -1. */
+static int
+service_run(const char *svc, const char *name, const char *verb)
+{
+	pid_t	pid;
+	int	status;
+
+	if ((pid = fork()) == 0) {
+		execl(svc, svc, name, verb, (char *)NULL);
+		_exit(127);
+	}
+	if (pid == -1 || waitpid(pid, &status, 0) == -1 || !WIFEXITED(status))
+		return (-1);
+	return (WEXITSTATUS(status));
+}
+
+/* Is pid a process still, not one gone that waits to be reaped? */
+static bool
+proc_alive(pid_t pid)
+{
+	struct kinfo_proc	kp;
+	size_t			len = sizeof(kp);
+	int			mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID,
+				    (int)pid };
+
+	if (sysctl(mib, nitems(mib), &kp, &len, NULL, 0) == -1 || len == 0)
+		return (false);
+	return (kp.ki_stat != SZOMB);
+}
+
+static void
+service_log(const char *msg, const char *name)
+{
+
+	execl("/usr/bin/logger", "logger", "-t", "arcana-agent", "-p",
+	    "daemon.err", msg, name, (char *)NULL);
+	_exit(1);
+}
+
+/*
+ * The helper's "service-replace service name pid": the daemon's own
+ * service restarted without rc(8)'s pidfile, which did not stop it
+ * (restart_after()).  Forked and gone, in a session of its own: if rc
+ * says the service is enabled, the daemon (pid) is stopped by its pid
+ * (SIGTERM, waited for), then started by rc unless rc says it runs now
+ * (a restart whose start went through after all).  Not enabled, the
+ * daemon is left running: nothing would start it again.
+ */
+int
+service_replace(int argc, char **argv)
+{
+	struct timespec	 ts = { 0, 100 * 1000 * 1000 };
+	const char	*errstr;
+	pid_t		 pid, agent;
+	int		 i;
+
+	if (argc != 4)
+		return (2);
+	agent = (pid_t)strtonum(argv[3], 2, INT_MAX, &errstr);
+	if (errstr != NULL)
+		return (2);
+	closefrom(3);
+	if ((pid = fork()) != 0)
+		return (pid == -1 ? 1 : 0);
+	(void)setsid();
+	if (service_run(argv[1], argv[2], "enabled") != 0)
+		service_log("restart without its pidfile: not done, the "
+		    "service is not enabled in rc.conf; the program before "
+		    "the update keeps running:", argv[2]);
+	if (kill(agent, SIGTERM) == -1 && errno != ESRCH)
+		service_log("restart without its pidfile: the agent could "
+		    "not be stopped by its pid:", argv[2]);
+	for (i = 0; i < RESTART_STOP_WAIT * 10 && proc_alive(agent); i++)
+		(void)nanosleep(&ts, NULL);
+	if (proc_alive(agent))
+		service_log("restart without its pidfile: the agent did not "
+		    "stop; nothing started:", argv[2]);
+	if (service_run(argv[1], argv[2], "status") == 0)
+		_exit(0);
+	if (service_run(argv[1], argv[2], "start") != 0)
+		service_log("restart without its pidfile: service(8) start "
+		    "failed:", argv[2]);
 	_exit(0);
 }

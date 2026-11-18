@@ -486,6 +486,15 @@ offline(bool off)
  */
 static char	cwd[MAXPATHLEN];	/* the case's directory, for the parts */
 
+/* name in the case's directory, into buf. */
+static char *
+wfmt_cwd(char *buf, size_t len, const char *name)
+{
+
+	snprintf(buf, len, "%s/%s", cwd, name);
+	return (buf);
+}
+
 static void
 prologue(const atf_tc_t *tc, int nservers)
 {
@@ -4853,6 +4862,104 @@ part_storage_zfs(void)
 	ATF_CHECK(system("grep -q '^mount -F .*/fstab /mnt/web$' storage.log")
 	    == 0);
 	run("document.querySelector('.dock > header').click()");
+}
+
+/*
+ * What running Arcana on its own hosts found missing: /dev with two
+ * devfs mounted on it, devctl hidden and devd down, said on the mounts
+ * with what to do on the host and no button; a service rc says is
+ * stopped while its program runs, its pidfile stale, said so and
+ * mended by its job, the pidfile then naming that process.
+ */
+static void
+part_host_gaps(void)
+{
+	char	 buf[2048], *argv[3], prog[MAXPATHLEN];
+	pid_t	 sp;
+	FILE	*fp;
+	long	 v;
+
+	put("devfs.n", "2\n");
+	ATF_REQUIRE(unlink("dev/devctl") == 0);
+	ATF_REQUIRE(unlink("devd.pipe") == 0);
+	host_open(NULL);
+	host_tab("storage");
+	click_when("button[data-act=st-kind][data-arg=mounts]", 20);
+	wait_js("document.querySelector('.notice.dev-stacked')?.textContent."
+	    "includes('2 devfs file systems are mounted on /dev') && document."
+	    "querySelector('.notice.dev-hidden')?.textContent.includes("
+	    "'devctl') && document.querySelector('.notice.dev-devd')?."
+	    "textContent.includes('devd is not running')", 20);
+	/* Said how, never done: no button, nothing unmounted. */
+	ATF_CHECK(js_true("!document.querySelector('.notice.dev-stacked "
+	    "button') && document.querySelector('.notice.dev-stacked')."
+	    "textContent.includes('umount /dev') && document.querySelector("
+	    "'.notice.dev-devd').textContent.includes('service devd start')"));
+	ATF_CHECK(system("grep -q '^mount -p -t devfs$' storage.log && ! grep "
+	    "-q umount storage.log") == 0);
+	shot("7n-storage-dev");
+	/* Mended on the host: the notices go at the next read. */
+	put("devfs.n", "1\n");
+	put("dev/devctl", "");
+	devd_stand_in(wfmt_cwd(buf, sizeof(buf), "devd.pipe"));
+	run("document.querySelector('button[data-act=refresh]').click()");
+	wait_js("!document.querySelector('.notice.dev-stacked') && !document."
+	    "querySelector('.notice.dev-hidden') && !document.querySelector("
+	    "'.notice.dev-devd') && document.querySelector('table.mounts')",
+	    20);
+
+	/* A service whose program runs while its pidfile names this
+	 * test's own process. */
+	snprintf(prog, sizeof(prog), "%s/staled", cwd);
+	snprintf(buf, sizeof(buf), "cp /bin/sleep '%s'", prog);
+	ATF_REQUIRE(system(buf) == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nname=staled\npidfile=%s/"
+	    "staled.pid\ncommand=%s\nrun_rc_command \"$1\"\n", cwd, prog);
+	put("rc.d/staled", buf);
+	ATF_REQUIRE(chmod("rc.d/staled", 0755) == 0);
+	ATF_REQUIRE(system("echo 'staled_enable=\"YES\"' >> root/etc/rc.conf")
+	    == 0);
+	argv[0] = prog;
+	argv[1] = (char *)(uintptr_t)"300";
+	argv[2] = NULL;
+	sp = spawn(argv, "staled.out");
+	snprintf(buf, sizeof(buf), "%d\n", (int)getpid());
+	put("staled.pid", buf);
+	host_tab("services");
+	run("document.querySelector('button[data-act=refresh]').click()");
+	snprintf(buf, sizeof(buf), "document.querySelector('.svc[data-arg="
+	    "staled].stale b.warn')?.textContent.includes('pid %d, its "
+	    "pidfile is stale') && document.querySelector('.svc[data-arg="
+	    "staled] button[data-act=svc][data-value=pidfile]') && !document."
+	    "querySelector('.svc[data-arg=staled] button[data-value=start]')",
+	    (int)sp);
+	wait_js(buf, 30);
+	run("document.querySelector('.svc[data-arg=staled]').click()");
+	snprintf(buf, sizeof(buf), "document.querySelector('.drawer "
+	    ".svc-stale')?.textContent.includes('names pid %d, another "
+	    "program') && document.querySelector('.drawer .svc-stale')."
+	    "textContent.includes('writes pid %d')", (int)getpid(), (int)sp);
+	wait_js(buf, 20);
+	shot("6c-service-stale");
+	run("document.querySelector('.drawer .svc-stale button[data-act=svc]"
+	    "[data-value=pidfile]').click()");
+	click_when("button[data-act=queue-run]", 5);
+	wait_js("[...document.querySelectorAll('.dock .o-ok')].some(t => "
+	    "t.textContent.includes('service staled pidfile'))", 20);
+	run("document.querySelector('.dock > header').click()");
+	/* The host's effect: the pidfile names the process. */
+	v = 0;
+	if ((fp = fopen("staled.pid", "r")) != NULL) {
+		if (fscanf(fp, "%ld", &v) != 1)
+			v = 0;
+		fclose(fp);
+	}
+	ATF_CHECK_EQ_MSG(v, (long)sp, "staled.pid names %ld, not %d", v,
+	    (int)sp);
+	run("document.querySelector('button[data-act=refresh]').click()");
+	wait_js("document.querySelector('.svc[data-arg=staled]') && !document."
+	    "querySelector('.svc[data-arg=staled].stale')", 20);
+	(void)kill(sp, SIGTERM);
 }
 
 /*
@@ -12115,6 +12222,26 @@ ATF_TC_CLEANUP(pwa_storage_zfs, tc)
 	browser_stop();
 }
 
+ATF_TC_WITH_CLEANUP(pwa_host_gaps);
+ATF_TC_HEAD(pwa_host_gaps, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "/dev mounted over and devd down said on the mounts; a service's stale pidfile said and mended by its job");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_host_gaps, tc)
+{
+
+	prologue(tc, 1);
+	part_host_gaps();
+}
+ATF_TC_CLEANUP(pwa_host_gaps, tc)
+{
+
+	(void)system("pkill -f \"$(pwd)/staled\" 2>/dev/null");
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_storage_kernel);
 ATF_TC_HEAD(pwa_storage_kernel, tc)
 {
@@ -15104,6 +15231,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_firewall_apply);
 	ATF_TP_ADD_TC(tp, pwa_map_full);
 	ATF_TP_ADD_TC(tp, pwa_storage_zfs);
+	ATF_TP_ADD_TC(tp, pwa_host_gaps);
 	ATF_TP_ADD_TC(tp, pwa_storage_dma);
 	ATF_TP_ADD_TC(tp, pwa_flows_builder);
 	ATF_TP_ADD_TC(tp, pwa_nettab_kinds);

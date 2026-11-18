@@ -320,6 +320,29 @@ snapshots(const ucl_object_t *top, cbl_yarena *a, ystorage *st,
 	return (0);
 }
 
+/* /dev, read with the mounts: its devfs mounts, what it hides, devd. */
+static int
+dev(const ucl_object_t *top, cbl_yarena *a, ystorage *st)
+{
+	const ucl_object_t *o;
+	struct arcana_storage_storage_dev *dv;
+	bool has;
+
+	if ((o = ucl_object_lookup(top, "dev")) == NULL)
+		return (0);
+	if ((dv = cbl_yarena_alloc(a, sizeof(*dv))) == NULL)
+		return (ENOMEM);
+	memset(dv, 0, sizeof(*dv));
+	YJ_NUM(o, "devfs_mounts", dv, devfs_mounts);
+	if (yj_strs(a, ucl_object_lookup(o, "hidden"), &dv->hidden.n,
+	    &dv->hidden.v) != 0)
+		return (ENOMEM);
+	dv->devd = yj_yes(o, "devd", &has);
+	dv->has_devd = has;
+	st->dev = dv;
+	return (0);
+}
+
 static int
 mounts(const ucl_object_t *top, cbl_yarena *a, ystorage *st)
 {
@@ -393,7 +416,7 @@ mounts(const ucl_object_t *top, cbl_yarena *a, ystorage *st)
 	}
 	st->swap.n = i;
 	st->swap.v = sv;
-	return (0);
+	return (dev(top, a, st));
 }
 
 /*

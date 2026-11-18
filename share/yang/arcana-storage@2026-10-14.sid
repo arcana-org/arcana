@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-storage",
     "module-revision": "2026-10-14",
-    "sid-file-version": 4,
+    "sid-file-version": 5,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 63 400, 200, and 79 600, 200.",
     "dependency-revision": [
       {
@@ -1413,6 +1413,46 @@
         "namespace": "data",
         "identifier": "/arcana-storage:storage/create-encrypted/output",
         "sid": "79675"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/dev",
+        "sid": "79676"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/dev/devd",
+        "sid": "79677"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/dev/devfs-mounts",
+        "sid": "79678"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/dev/hidden",
+        "sid": "79679"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/dev",
+        "sid": "79680"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/dev/devd",
+        "sid": "79681"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/dev/devfs-mounts",
+        "sid": "79682"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/dev/hidden",
+        "sid": "79683"
       }
     ]
   }

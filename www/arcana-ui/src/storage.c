@@ -240,6 +240,8 @@ storage_conv(int k, const ucl_object_t *o, bool *cut)
 	    "freq", "passno", "passno", "mounted", "mounted", NULL };
 	static const char *const swp[] = { "device", "device", "size", "size",
 	    "used", "used", NULL };
+	static const char *const dev[] = { "devfs-mounts", "devfs_mounts",
+	    "hidden", "hidden", "devd", "devd", NULL };
 	const ucl_object_t	*e;
 	ucl_object_t		*r, *a, *x;
 	ucl_object_iter_t	 it = NULL;
@@ -295,6 +297,8 @@ storage_conv(int k, const ucl_object_t *o, bool *cut)
 		put(r, "mounts", jmap_each(jget(o, "mount"), mnt));
 		put(r, "fstab", jmap_each(jget(o, "fstab.entry"), fst));
 		put(r, "swap", jmap_each(jget(o, "swap"), swp));
+		if (jget(o, "dev") != NULL)
+			put(r, "dev", jmap(jget(o, "dev"), dev));
 		break;
 	default:
 		ucl_object_unref(a);
@@ -1214,6 +1218,73 @@ view_health(struct html *h)
 	    "The agent has to be root to ask.</p>");
 }
 
+/*
+ * /dev, as the mounts' read has it: more than one devfs mounted on it
+ * (the last hides what its ruleset hides), the nodes it does not show,
+ * devd(8) down.  Said, with what to do: no button, a forced unmount of
+ * /dev being nothing to press for.
+ */
+static void
+view_dev(struct html *h, const ucl_object_t *d)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it;
+	int64_t			 n;
+	bool			 first;
+
+	if (d == NULL)
+		return;
+	n = jint(d, "devfs_mounts", 1);
+	if (n > 1) {
+		h_fmt(h, "<div class=\"notice bad dev-stacked\"><b>%lld devfs "
+		    "file systems are mounted on /dev, one over the other.</b> "
+		    "The host's programs see the last one, with its ruleset: "
+		    "a jail's devfs mounted over the host's /dev (a jail whose "
+		    "path is <code>/</code> with <code>mount.devfs</code>, or "
+		    "a devfs mount on the wrong path) hides what the jail's "
+		    "ruleset hides, devd's <code>devctl</code>, mdconfig's "
+		    "<code>mdctl</code>, bhyve's <code>vmmctl</code> among "
+		    "them. On the host: find what mounted it and stop that "
+		    "first (the jail, its <code>exec.prestart</code>, an "
+		    "fstab line), then <code>umount /dev</code> once for each "
+		    "one too many, without <code>-f</code>, checking "
+		    "<code>mount -t devfs</code> after each, until one is "
+		    "left; then <code>service devd restart</code>. A busy "
+		    "<code>/dev</code> refuses: close what holds it rather "
+		    "than force it, a forced unmount of the wrong one takes "
+		    "the host's devices away.</div>", (long long)n);
+	}
+	if (ucl_array_size(jget(d, "hidden")) > 0) {
+		h_raw(h, "<div class=\"notice bad dev-hidden\"><b>/dev does "
+		    "not show what the kernel has:</b> ");
+		first = true;
+		it = NULL;
+		while ((v = ucl_object_iterate(jget(d, "hidden"), &it,
+		    true)) != NULL) {
+			h_raw(h, first ? "<code>" : ", <code>");
+			h_txt(h, ucl_object_tostring(v));
+			h_raw(h, "</code>");
+			first = false;
+		}
+		h_raw(h, n > 1 ? ". The devfs mounted over it hides them, "
+		    "above." : ". A devfs ruleset applied to the host's /dev "
+		    "(<code>devfs rule</code>, <code>devfs_system_ruleset"
+		    "</code> in rc.conf) hides them: <code>devfs rule show"
+		    "</code> says which.");
+		h_raw(h, "</div>");
+	}
+	if (jget(d, "devd") != NULL && !jbool(d, "devd"))
+		h_raw(h, "<div class=\"notice bad dev-devd\"><b>devd is not "
+		    "running</b>: it does not answer on "
+		    "<code>/var/run/devd.seqpacket.pipe</code>. Nothing acts on "
+		    "the kernel's device events (a disk or an interface that "
+		    "comes, ZFS's events, link changes run none of devd.conf's "
+		    "rules) and the agent hears none of them. On the host: "
+		    "<code>service devd start</code>; it needs "
+		    "<code>/dev/devctl</code>, which a devfs mounted over /dev "
+		    "can hide.</div>");
+}
+
 static void
 view_mounts(struct html *h)
 {
@@ -1232,6 +1303,7 @@ view_mounts(struct html *h)
 	char			 a[32], b[32];
 	int			 r;
 
+	view_dev(h, jget(sg.data[SK_MOUNTS], "dev"));
 	h_raw(h, "<table class=\"net mounts\">");
 	tbl_head(h, "mounts", mcols, 5, 1);
 	h_raw(h, "<tbody>");

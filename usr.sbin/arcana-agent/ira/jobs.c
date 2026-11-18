@@ -126,7 +126,7 @@ static void	 fill(struct work *, struct arc_job *, struct qjob *);
 static const char *action_names[] = { "start", "stop", "restart", "kill",
     "enable", "disable" };
 static const char *svc_names[] = { "start", "stop", "restart", "reload",
-    "enable", "disable" };
+    "enable", "disable", "pidfile" };
 
 static char *
 xdup(const char *s)

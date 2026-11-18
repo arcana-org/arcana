@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana",
     "module-revision": "2026-10-22",
-    "sid-file-version": 14,
+    "sid-file-version": 15,
     "description": "Arcana's SIDs for arcana (RFC 9595's experimental range; share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -10959,6 +10959,21 @@
         "namespace": "data",
         "identifier": "/arcana:job-spec/no-repo-check",
         "sid": "74842"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana:service/pidfile",
+        "sid": "74843"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana:service/pidfile-pid",
+        "sid": "74844"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana:service/pidfile-stale",
+        "sid": "74845"
       }
     ]
   }

@@ -566,7 +566,7 @@ With
 nothing is written.
 All or nothing: a marked line that would not read back as it was
 refuses the request, and failing, every file is put back.
-.It Cm service Oo Fl a Ar warning Oc ... Ar name Cm start | stop | restart | reload | enable | disable
+.It Cm service Oo Fl a Ar warning Oc ... Ar name Cm start | stop | restart | reload | enable | disable | pidfile
 Change a service:
 .Cm start ,
 .Cm stop ,
@@ -597,6 +597,16 @@ the service-action job instead, its rcvar written to Arcana's rc.conf
 file as a commit writes it, the warnings
 .Fl a
 accepts carried in the job.
+.Cm pidfile ,
+always a job, writes a stale pidfile again: the services list says one
+is stale when
+.Xr rc 8
+says the service does not run while its program does, its pidfile gone
+or naming a pid that is gone or another program's.
+The job writes the pid of that program's one process, outside jails
+(or in its service jail), after checking its command line as
+.Xr rc.subr 8
+would; with more than one, or none, it refuses.
 The service as it is after follows, by its
 .Ic read
 action.

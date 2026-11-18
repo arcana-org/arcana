@@ -279,7 +279,7 @@ snapshots_of(const yread *r)
 	return (arr);
 }
 
-/* What is mounted, what fstab(5) says to mount, the swap. */
+/* What is mounted, what fstab(5) says to mount, the swap, /dev. */
 static void
 mounts_of(const yread *r, ucl_object_t *top)
 {
@@ -327,6 +327,19 @@ mounts_of(const yread *r, ucl_object_t *top)
 		ucl_array_append(arr, o);
 	}
 	put(top, "swap", arr);
+	/* /dev: its devfs mounts, the nodes it hides, devd. */
+	if (r->dev != NULL) {
+		o = ucl_object_typed_new(UCL_OBJECT);
+		PUT_NUM(o, "devfs_mounts", r->dev, devfs_mounts);
+		arr = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < r->dev->hidden.n; i++)
+			ucl_array_append(arr, ucl_object_fromstring(
+			    r->dev->hidden.v[i]));
+		put(o, "hidden", arr);
+		if (r->dev->has_devd)
+			put(o, "devd", ucl_object_frombool(r->dev->devd));
+		put(top, "dev", o);
+	}
 }
 
 /* The storage's read of part kind into out, a's. */

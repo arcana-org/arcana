@@ -1,48 +1,66 @@
 module: arcana-services
   +--rw services
      +--rw service* [name]
-     |  +--rw name           string
-     |  +--rw enabled?       boolean
+     |  +--rw name             string
+     |  +--rw enabled?         boolean
      |  +--rw variable* [name]
      |  |  +--rw name     string
      |  |  +--rw value?   string
-     |  +--ro path?          string
-     |  +--ro rcvar?         string
-     |  +--ro running?       boolean
-     |  +--ro pid?           uint32
-     |  +--ro status?        string
-     |  +--ro description?   string
-     |  +--ro command*       string
+     |  +--ro path?            string
+     |  +--ro rcvar?           string
+     |  +--ro running?         boolean
+     |  +--ro pid?             uint32
+     |  +--ro status?          string
+     |  +--ro pidfile-stale?   string
+     |  +--ro pidfile?         string
+     |  +--ro pidfile-pid?     uint32
+     |  +--ro description?     string
+     |  +--ro command*         string
      |  +---x start
      |  |  +--ro output
-     |  |     +--ro running?   boolean
-     |  |     +--ro pid?       uint32
-     |  |     +--ro status?    string
+     |  |     +--ro running?         boolean
+     |  |     +--ro pid?             uint32
+     |  |     +--ro status?          string
+     |  |     +--ro pidfile-stale?   string
+     |  |     +--ro pidfile?         string
+     |  |     +--ro pidfile-pid?     uint32
      |  +---x stop
      |  |  +--ro output
-     |  |     +--ro running?   boolean
-     |  |     +--ro pid?       uint32
-     |  |     +--ro status?    string
+     |  |     +--ro running?         boolean
+     |  |     +--ro pid?             uint32
+     |  |     +--ro status?          string
+     |  |     +--ro pidfile-stale?   string
+     |  |     +--ro pidfile?         string
+     |  |     +--ro pidfile-pid?     uint32
      |  +---x restart
      |  |  +--ro output
-     |  |     +--ro running?   boolean
-     |  |     +--ro pid?       uint32
-     |  |     +--ro status?    string
+     |  |     +--ro running?         boolean
+     |  |     +--ro pid?             uint32
+     |  |     +--ro status?          string
+     |  |     +--ro pidfile-stale?   string
+     |  |     +--ro pidfile?         string
+     |  |     +--ro pidfile-pid?     uint32
      |  +---x reload
      |  |  +--ro output
-     |  |     +--ro running?   boolean
-     |  |     +--ro pid?       uint32
-     |  |     +--ro status?    string
+     |  |     +--ro running?         boolean
+     |  |     +--ro pid?             uint32
+     |  |     +--ro status?          string
+     |  |     +--ro pidfile-stale?   string
+     |  |     +--ro pidfile?         string
+     |  |     +--ro pidfile-pid?     uint32
      |  +---x read
      |     +--ro output
-     |        +--ro enabled?       boolean
-     |        +--ro path?          string
-     |        +--ro rcvar?         string
-     |        +--ro running?       boolean
-     |        +--ro pid?           uint32
-     |        +--ro status?        string
-     |        +--ro description?   string
-     |        +--ro command*       string
+     |        +--ro enabled?         boolean
+     |        +--ro path?            string
+     |        +--ro rcvar?           string
+     |        +--ro running?         boolean
+     |        +--ro pid?             uint32
+     |        +--ro status?          string
+     |        +--ro pidfile-stale?   string
+     |        +--ro pidfile?         string
+     |        +--ro pidfile-pid?     uint32
+     |        +--ro description?     string
+     |        +--ro command*         string
      +---x convert
      |  +---w input
      |  |  +---w service*   string

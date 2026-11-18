@@ -132,6 +132,10 @@ module: arcana-storage
      |  +--ro device    string
      |  +--ro size?     bytes
      |  +--ro used?     bytes
+     +--ro dev
+     |  +--ro devfs-mounts?   uint32
+     |  +--ro hidden*         string
+     |  +--ro devd?           boolean
      +---x create-encrypted
      |  +---w input
      |     +---w dataset       string
@@ -257,6 +261,10 @@ module: arcana-storage
            |     +--ro passno?    int32
            |     +--ro mounted?   boolean
            +--ro swap* [device]
-              +--ro device    string
-              +--ro size?     bytes
-              +--ro used?     bytes
+           |  +--ro device    string
+           |  +--ro size?     bytes
+           |  +--ro used?     bytes
+           +--ro dev
+              +--ro devfs-mounts?   uint32
+              +--ro hidden*         string
+              +--ro devd?           boolean

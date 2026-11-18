@@ -3770,7 +3770,7 @@ static void
 service_row(struct html *h, const ucl_object_t *sv)
 {
 	const ucl_object_t	*en, *run;
-	const char		*name, *state;
+	const char		*name, *state, *stale;
 	bool			 enabled, running, known, busy;
 
 	name = jstr(sv, "name");
@@ -3780,17 +3780,29 @@ service_row(struct html *h, const ucl_object_t *sv)
 	    ucl_object_toboolean(en);
 	known = run != NULL && ucl_object_type(run) == UCL_BOOLEAN;
 	running = known && ucl_object_toboolean(run);
-	state = !known ? "unknown" : running ? "running" : "stopped";
+	/* rc says stopped, its program runs: its pidfile is stale. */
+	stale = known && !running ? jstr(sv, "pidfile_stale") : NULL;
+	state = !known ? "unknown" : running || stale != NULL ? "running" :
+	    "stopped";
 	busy = cur_server() != NULL && service_busy(cur_server(), name);
-	h_fmt(h, "<li class=\"svc s-%s%s%s\"", state, enabled ? " enabled" : "",
-	    strcmp(app.service, name) == 0 ? " open" : "");
+	h_fmt(h, "<li class=\"svc s-%s%s%s%s\"", state, enabled ? " enabled" :
+	    "", stale != NULL ? " stale" : "", strcmp(app.service, name) == 0 ?
+	    " open" : "");
 	h_raw(h, " data-act=\"open-svc\"");
 	h_attr(h, "data-arg", name);
 	h_raw(h, "><i class=\"led\"></i><span class=\"name\">");
 	h_txt(h, name);
 	h_raw(h, "</span><span class=\"flags\">");
 	h_raw(h, enabled ? "<b class=\"on\">enabled</b>" : "<b>disabled</b>");
-	if (known) {
+	if (stale != NULL) {
+		h_raw(h, " <b class=\"warn\"");
+		h_attr(h, "title", stale);
+		h_raw(h, ">running");
+		if (jget(sv, "pid") != NULL && ucl_object_type(jget(sv,
+		    "pid")) == UCL_INT)
+			h_fmt(h, " · pid %lld", (long long)jint(sv, "pid", 0));
+		h_raw(h, ", its pidfile is stale</b>");
+	} else if (known) {
 		h_raw(h, running ? " <b class=\"on\">running" : " <b>stopped");
 		if (jget(sv, "pid") != NULL && ucl_object_type(jget(sv,
 		    "pid")) == UCL_INT)
@@ -3798,14 +3810,27 @@ service_row(struct html *h, const ucl_object_t *sv)
 		h_raw(h, "</b>");
 	}
 	h_raw(h, "</span><span class=\"acts\">");
-	if (known && !running)
+	/* A start would make a second copy: the pidfile mended instead,
+	 * when the process is known. */
+	if (stale != NULL) {
+		if (jget(sv, "pid") != NULL) {
+			h_fmt(h, "<button class=\"act go\" data-act=\"svc\" "
+			    "data-value=\"pidfile\"%s", busy ? " disabled" : "");
+			h_attr(h, "data-arg", name);
+			h_attr(h, "title", stale);
+			h_raw(h, ">Mend pidfile</button>");
+		}
+	} else if (known && !running) {
 		h_fmt(h, "<button class=\"act go\" data-act=\"svc\" "
 		    "data-value=\"start\"%s", busy ? " disabled" : "");
-	else
+		h_attr(h, "data-arg", name);
+		h_raw(h, ">Start</button>");
+	} else {
 		h_fmt(h, "<button class=\"act\" data-act=\"svc\" "
 		    "data-value=\"stop\"%s", busy ? " disabled" : "");
-	h_attr(h, "data-arg", name);
-	h_raw(h, known && !running ? ">Start</button>" : ">Stop</button>");
+		h_attr(h, "data-arg", name);
+		h_raw(h, ">Stop</button>");
+	}
 	h_fmt(h, "<button class=\"act\" data-act=\"svc\" data-value=\"restart\""
 	    "%s", busy ? " disabled" : "");
 	h_attr(h, "data-arg", name);
@@ -3815,6 +3840,45 @@ service_row(struct html *h, const ucl_object_t *sv)
 	h_attr(h, "data-arg", name);
 	h_raw(h, enabled ? ">Disable</button>" : ">Enable</button>");
 	h_raw(h, "</span></li>");
+}
+
+/*
+ * A stale pidfile, in the drawer: what is wrong, why it matters, and the
+ * job that mends it when its process is known; what to do otherwise.
+ */
+static void
+service_stale(struct html *h, const ucl_object_t *sv, const char *name)
+{
+	const char	*stale;
+
+	if (jbool(sv, "running") || (stale = jstr(sv, "pidfile_stale")) ==
+	    NULL)
+		return;
+	h_raw(h, "<div class=\"notice warn svc-stale\"><b>Running, its "
+	    "pidfile is stale:</b> ");
+	h_txt(h, stale);
+	h_raw(h, ". rc(8) finds the daemon by the pid in its pidfile, so "
+	    "<code>service ");
+	h_txt(h, name);
+	h_raw(h, " status</code> says it is not running, a stop or a restart "
+	    "misses it, and a start runs a second copy beside it.");
+	if (jget(sv, "pid") != NULL) {
+		h_fmt(h, " <b>Mend pidfile</b> writes pid %lld in ",
+		    (long long)jint(sv, "pid", 0));
+		h_txt(h, jstr(sv, "pidfile") != NULL ? jstr(sv, "pidfile") :
+		    "it");
+		h_raw(h, ", after checking again that it is that program's, "
+		    "outside jails. <button class=\"act go\" data-act=\"svc\" "
+		    "data-value=\"pidfile\"");
+		if (cur_server() != NULL && service_busy(cur_server(), name))
+			h_raw(h, " disabled");
+		h_attr(h, "data-arg", name);
+		h_raw(h, ">Mend pidfile</button>");
+	} else
+		h_raw(h, " Which process is the service's is not known: on the "
+		    "host, write the right pid in its pidfile, or stop those "
+		    "processes and start the service.");
+	h_raw(h, "</div>");
 }
 
 /* The services tab: the rc.d scripts of the server. */
@@ -3974,6 +4038,8 @@ view_service_drawer(struct html *h, struct server *s)
 		    "script says none, or only an operator of the host has it "
 		    "run (a viewer is shown what the agent last saw of it, its "
 		    "status and its pid).</p>");
+	if (sv != NULL)
+		service_stale(h, sv, name);
 	if (sv != NULL) {
 		h_raw(h, "<dl class=\"kv\"><dt>script</dt><dd class=\"mono\">");
 		h_txt(h, jstr(sv, "path"));

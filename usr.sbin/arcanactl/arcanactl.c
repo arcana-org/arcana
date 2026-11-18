@@ -198,7 +198,7 @@ usage(void)
 	    "    services convert [-n] [-a warning]... [name ...]\n"
 	    "    services release [-n] name ...\n"
 	    "    service [-a warning]... name start | stop | restart | reload |\n"
-	    "        enable | disable\n"
+	    "        enable | disable | pidfile\n"
 	    "    service [-a warning]... name config [-x key ...] "
 	    "[key=value ...]\n"
 	    "    net routes | nexthops | connections | sockets | interfaces | "
@@ -2899,9 +2899,10 @@ emit_service(const struct arc_service *s, bool table)
 		xo_open_instance("service");
 		xo_emit("{k:name/%-24s/%s} {:enabled/%-8s/%s} ", tx(s->name),
 		    !s->has_enabled ? "?" : s->enabled ? "enabled" : "-");
+		/* Running while rc says not: its pidfile is stale. */
 		if (s->has_running)
 			xo_emit("{:running/%-8s/%s} ", s->running ? "running" :
-			    "stopped");
+			    s->pidfile_stale != NULL ? "stale" : "stopped");
 		else
 			xo_emit("{P:/%-8s} ", "");
 		if (s->has_pid)
@@ -2924,6 +2925,9 @@ emit_service(const struct arc_service *s, bool table)
 		xo_emit("\n");
 	if (s->status != NULL)
 		xo_emit("{Lwc:Status}{:status/%s}\n", tx(s->status));
+	if (s->pidfile_stale != NULL)
+		xo_emit("{Lwc:Pidfile stale}{:pidfile-stale/%s}\n",
+		    tx(s->pidfile_stale));
 	xo_close_container("service");
 }
 
@@ -2962,6 +2966,10 @@ service_of(const yservice *y)
 	s.has_pid = y->has_pid;
 	s.pid = y->pid;
 	s.status = y->status;
+	s.pidfile = y->pidfile;
+	s.has_pidfile_pid = y->has_pidfile_pid;
+	s.pidfile_pid = y->pidfile_pid;
+	s.pidfile_stale = y->pidfile_stale;
 	return (s);
 }
 
@@ -3031,6 +3039,8 @@ service_show(cbl_conn *conn, const char *name, bool vars)
 	s.has_pid = o.has_pid;
 	s.pid = o.pid;
 	s.status = o.status;
+	s.pidfile = o.pidfile;
+	s.pidfile_stale = o.pidfile_stale;
 	emit_service(&s, false);
 	if (vars) {
 		if (o.description != NULL)
@@ -3357,14 +3367,15 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
  * config [-x key] [key=value]: start, stop, restart and reload are
  * arcana-services' actions; enable, disable and the variables its
  * configuration, committed (service_commit()), the accepts given with
- * -a; with -q or -s, each a job, as before.  The service as it is
- * after, by its read action.
+ * -a; with -q or -s, each a job, as before; pidfile, a stale pidfile
+ * written again, always one.  The service as it is after, by its read
+ * action.
  */
 static int
 cmd_service(cbl_conn *conn, int argc, char **argv)
 {
 	static const char *verbs[] = { "start", "stop", "restart", "reload",
-	    "enable", "disable" };
+	    "enable", "disable", "pidfile" };
 	const struct cbl_ynode	*n;
 	struct arc_variable	*vars;
 	const void		*vals[1];
@@ -3393,7 +3404,8 @@ cmd_service(cbl_conn *conn, int argc, char **argv)
 	if (i < nitems(verbs)) {
 		if (argc != 3)
 			usage();
-		if (queue || safe) {
+		/* A stale pidfile mended: a job alone. */
+		if (queue || safe || i == ARC_SERVICE_ACTION_PIDFILE) {
 			struct arc_job_spec sp;
 
 			memset(&sp, 0, sizeof(sp));

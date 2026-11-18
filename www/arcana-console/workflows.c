@@ -104,6 +104,7 @@
 #define	WF_ON_MAX	8
 #define	RUNS_KEEP	30
 #define	RUN_HOSTS_MAX	32
+#define	AGENT_RESTART_WAIT 60	/* s, for an updated agent to answer anew */
 #define	TICK_S		5
 #define	EVERY_FILE	"every.json"	/* when each ran by its interval */
 #define	SUB_QUEUE	256		/* events heard, not yet looked at */
@@ -1784,15 +1785,36 @@ run_approval(struct hostrun *hr, int k, const ucl_object_t *step)
 	return (true);
 }
 
+/* Does the host answer as the arcana-agent of build (its SHA-256)? */
+static bool
+agent_runs(const struct hostref *h, const char *build)
+{
+	ucl_object_t	*ans;
+	const char	*b;
+	char		*json;
+	int		 status;
+	bool		 runs;
+
+	json = hosts_read(h->uri, h->peer, h->name, "hello", &status);
+	ans = parse(json);
+	free(json);
+	runs = status == 200 && ans != NULL && (b = ucl_str(ucl_object_lookup(
+	    ans, "host"), "build")) != NULL && strcmp(b, build) == 0;
+	if (ans != NULL)
+		ucl_object_unref(ans);
+	return (runs);
+}
+
 static bool
 run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 {
 	struct hostref	 all[256];
-	ucl_object_t	*ans, *st, *list, *one;
+	ucl_object_t	*ans, *st, *list, *one, *wait_one[256];
 	const char	*what, *head, *updated, *agents;
-	char		 why[400];
+	char		 why[400], sent[256][65];
 	char		 who[sizeof(((struct hoststep *)0)->error)];
-	int		 i, m, n, failed;
+	int		 i, j, m, n, nw, failed, wait_ref[256];
+	time_t		 until;
 	bool		 na, nc;
 
 	what = ucl_str(step, "arcana");
@@ -1857,7 +1879,7 @@ run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 	memcpy(all, refs, sizeof(all[0]) * (size_t)n);
 	pthread_mutex_unlock(&ref_lock);
 	list = ucl_object_typed_new(UCL_ARRAY);
-	failed = 0;
+	failed = nw = 0;
 	who[0] = '\0';
 	for (i = 0, m = 0; i < n && !cancelled(hr->run); i++) {
 		/* Those whom it acts for knows of: each needs an admin of
@@ -1880,9 +1902,49 @@ run_arcana(struct hostrun *hr, int k, const ucl_object_t *step)
 			if (ucl_str(ans, "version") != NULL)
 				put(one, "version", ucl_object_fromstring(
 				    ucl_str(ans, "version")));
+			/* Restarting: done once it answers as what it was
+			 * sent, below. */
+			if (ucl_object_toboolean(ucl_object_lookup(ans,
+			    "restarting")) && ucl_str(ans, "build") != NULL) {
+				snprintf(sent[nw], sizeof(sent[nw]), "%s",
+				    ucl_str(ans, "build"));
+				wait_ref[nw] = i;
+				wait_one[nw++] = one;
+			}
 			ucl_object_unref(ans);
 		}
 		ucl_array_append(list, one);
+	}
+	/* Taken is not running: each restarted host asked until it
+	 * answers as the build sent, or said not to. */
+	for (until = time(NULL) + AGENT_RESTART_WAIT; nw > 0 &&
+	    !cancelled(hr->run); ) {
+		for (j = 0; j < nw; j++)
+			if (wait_one[j] != NULL && agent_runs(&all[wait_ref[j]],
+			    sent[j])) {
+				put(wait_one[j], "running", ucl_object_frombool(
+				    true));
+				wait_one[j] = NULL;
+			}
+		for (j = 0; j < nw && wait_one[j] == NULL; j++)
+			;
+		if (j == nw || time(NULL) >= until)
+			break;
+		sleep(2);
+	}
+	for (j = 0; j < nw; j++) {
+		if (wait_one[j] == NULL)
+			continue;
+		failed++;
+		snprintf(why, sizeof(why), "%s: took the new arcana-agent but "
+		    "still answers as the one before %d s on: its service did "
+		    "not restart it (see its log, arcana_agent_enable)",
+		    all[wait_ref[j]].name, AGENT_RESTART_WAIT);
+		put(wait_one[j], "ok", ucl_object_frombool(false));
+		put(wait_one[j], "running", ucl_object_frombool(false));
+		put(wait_one[j], "error", ucl_object_fromstring(why));
+		snprintf(who + strlen(who), sizeof(who) - strlen(who), "%s%s",
+		    who[0] != '\0' ? "; " : "", why);
 	}
 	ans = ucl_object_typed_new(UCL_OBJECT);
 	put(ans, "hosts", list);

@@ -241,6 +241,7 @@ changes_log(int pri)
 void
 restart_after(bool console, bool agent)
 {
+	char	why[256];
 
 	if (console)
 		service_restart("arcana_console");
@@ -248,18 +249,40 @@ restart_after(bool console, bool agent)
 		/*
 		 * No change starts while the service is on its way to stop
 		 * this daemon, and nothing is held that would keep it from
-		 * stopping.  Still here after a while, the service did not
-		 * stop it: say so, and take changes again.
+		 * stopping.  rc(8) stops it by its pidfile: made this
+		 * daemon's first, if it is not (own_pidfile()).
 		 */
 		changes_stop(true);
+		if (!own_pidfile(why, sizeof(why)))
+			logmsg(LOG_WARNING, "restart: %s", why);
 		service_restart("arcana_agent");
 		sleep(RESTART_WAIT);
+		/* Signalled, it is stopping, slowly behind a change under
+		 * way: a second signal would cut that short. */
+		if (stop_asked())
+			return;
+		/*
+		 * Still here, rc did not stop it: its pidfile could not be
+		 * made right, or rc does not run it so.  Restarted without
+		 * the pidfile: a process of its own stops this daemon by its
+		 * pid and has rc start the service, if rc says it is enabled
+		 * (service_replace()).  Still here after that, it is not:
+		 * say so, and take changes again.
+		 */
+		logmsg(LOG_WARNING, "restart: still running %d s after "
+		    "\"service arcana_agent restart\": stopping this daemon "
+		    "(pid %d) by its pid and starting the service again",
+		    RESTART_WAIT, (int)getpid());
+		service_replaced("arcana_agent");
+		sleep(RESTART_WAIT);
+		if (stop_asked())
+			return;
 		changes_stop(false);
 		logmsg(LOG_ERR, "restart: still running %d s after an update: "
-		    "\"service arcana_agent restart\" did not stop this "
-		    "daemon; is the service enabled, and is it what runs it? "
-		    "The new program is in place and runs from the next "
-		    "start", RESTART_WAIT);
+		    "neither \"service arcana_agent restart\" nor a restart "
+		    "by its pid stopped this daemon; is the service enabled, "
+		    "and is it what runs it? The new program is in place and "
+		    "runs from the next start", 2 * RESTART_WAIT);
 	}
 }
 
@@ -582,13 +605,17 @@ check_spec(const struct arc_job_spec *sp)
 		if (sp->service == NULL || !valid_service(sp->service))
 			return ("invalid service name");
 		if (!sp->has_service_action ||
-		    sp->service_action > ARC_SERVICE_ACTION_DISABLE)
+		    sp->service_action > ARC_SERVICE_ACTION_PIDFILE)
 			return ("invalid action");
 		if (sp->safe && (sp->service_action ==
 		    ARC_SERVICE_ACTION_RESTART || sp->service_action ==
 		    ARC_SERVICE_ACTION_RELOAD))
 			return ("a restart or a reload cannot be undone: not "
 			    "in safe mode");
+		if (sp->safe && sp->service_action ==
+		    ARC_SERVICE_ACTION_PIDFILE)
+			return ("a pidfile written again has nothing to undo: "
+			    "not in safe mode");
 		break;
 	case ARC_JOB_KIND_SERVICE_CONFIG:
 		if (sp->service == NULL || !valid_service(sp->service))

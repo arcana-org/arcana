@@ -3476,6 +3476,10 @@ connected:
 		}
 		if (!fetch_put(top, error, e, ywhy, &ok))
 			goto yfail;
+		/* The build sent, by which the host is known to run it once
+		 * it restarted (workflows.c run_arcana()). */
+		if (ok)
+			put_str(top, "build", sha);
 		break;
 	default:
 		/* The variables set or unset first, committed confirmed as
