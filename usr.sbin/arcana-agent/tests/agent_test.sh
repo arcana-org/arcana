@@ -2759,10 +2759,12 @@ alarm_shelving_cleanup()
 }
 
 # ipfw(8) as a stand-in that keeps what it was given (fw.state, a rule
-# a line: number, set, text): ipfw -S list prints it as the kernel's
-# would, a file's "add N set S ..." lines go in, set swap and delete set
-# act on it, set enable and disable change nothing it lists.  Every
-# command logged in ipfw.log, a file's lines after it.
+# a line: number, set, text): ipfw -a -S list prints it as the kernel's
+# would, each rule's counters those of its number in fw.counters
+# ("number packets bytes"; 0 0 where none), a file's "add N set S ..."
+# lines go in, set swap and delete set act on it, set enable and
+# disable change nothing it lists.  Every command logged in ipfw.log, a
+# file's lines after it.
 acl_fake_ipfw()
 {
 	local d="$(pwd)"
@@ -2773,8 +2775,8 @@ st=$d/fw.state
 echo "ipfw \$*" >> $d/ipfw.log
 [ "\$1" = -q ] && shift
 case "\$1 \$2 \$3" in
-"-S list ")
-	sort -n "\$st" | awk '{ n = \$1; s = \$2; \$1 = ""; \$2 = ""; sub(/^ +/, ""); printf "%05d set %d %s\n", n, s, \$0 }'
+"-a -S list")
+	sort -n "\$st" | awk 'FILENAME != "-" { c[\$1] = \$2 " " \$3; next } { n = \$1; s = \$2; \$1 = ""; \$2 = ""; sub(/^ +/, ""); printf "%05d %s set %d %s\n", n, ((n in c) ? c[n] : "0 0"), s, \$0 }' $d/fw.counters -
 	exit 0 ;;
 "-f delete set")
 	awk -v s="\$4" '\$2 != s' "\$st" > "\$st.t"; mv "\$st.t" "\$st"
@@ -2796,6 +2798,7 @@ EOS
 	chmod +x fake-ipfw
 	# The admin's rules: set 0's, and the default.
 	printf '100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' > fw.state
+	: > fw.counters
 }
 
 atf_test_case acl_rfc8519 cleanup
@@ -3138,6 +3141,265 @@ EOS
 	    cat fw.state
 }
 acl_match_fields_cleanup()
+{
+	stop_daemon
+}
+
+# A refusal's extended ack (PLAN-SDN-YANG 6.1.3): refused as
+# acl_field_refused() has it, the message saying what and why, and the
+# node at fault, the error-path, as arcanactl says it.
+acl_refused()
+{
+	local type="$1" matches="$2" why="$3" at="$4"
+
+	acl_field_refused "$type" "$matches" \
+	    "$why.* \\(at /ietf-access-control-list:acls/$at\\)"
+}
+
+atf_test_case acl_refusals cleanup
+acl_refusals_head()
+{
+	atf_set "descr" "What ipfw cannot say of RFC 8519's ACLs refused" \
+	    "(PLAN-SDN-YANG 6.1.3), a stand-in ipfw: each refusal its own," \
+	    "nothing loaded and running as it was, the extended ack naming" \
+	    "the node at fault (error-path) and saying why: IPv4's ihl, ECN" \
+	    "1 and 2, offset; IPv6's ECN, hop limit, a length past iplen's;" \
+	    "TCP's data offset, reserved, CWR, ECE, urgent pointer and" \
+	    "options; UDP's length; ICMP's code and rest of header; an" \
+	    "ethertype other than IP's; egress-interface on a way in; an" \
+	    "Ethernet ACL on a way out; an Ethernet ACL's ACE of no family;" \
+	    "what does not hold together named as well"
+	atf_set "timeout" "300"
+}
+acl_refusals_body()
+{
+	acl_fake_ipfw
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+[ "\$*" = "-n net.link.ether.ipfw" ] && echo 1 && exit 0
+exit 1
+EOS
+	chmod +x fake-sysctl
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -Q $(pwd)/fake-sysctl" start_daemon
+	# Something installed first: a refusal leaves it as it is.
+	acl_field ipv4-acl-type '{"ipv4":{"ttl":7}}' '"ttl":7' \
+	    'deny ip from any to any ipttl 7 ip4'
+
+	# IPv4.
+	acl_refused ipv4-acl-type '{"ipv4":{"ihl":6}}' \
+	    'acl f, ace r: ipv4 ihl is not compiled into ipfw by this agent: ipfw has no header length match' \
+	    acl/aces/ace/matches/ipv4/ihl
+	acl_refused ipv4-acl-type '{"ipv4":{"ecn":1}}' \
+	    'acl f, ace r: ipv4 ecn 1 or 2 \(ECT\) is not compiled into ipfw by this agent: iptos reads ECN.s two bits at once' \
+	    acl/aces/ace/matches/ipv4/ecn
+	acl_refused ipv4-acl-type '{"ipv4":{"ecn":2}}' \
+	    'acl f, ace r: ipv4 ecn 1 or 2 \(ECT\) is not compiled' \
+	    acl/aces/ace/matches/ipv4/ecn
+	acl_refused ipv4-acl-type '{"ipv4":{"offset":185}}' \
+	    'acl f, ace r: ipv4 offset is not compiled into ipfw by this agent: frag reads whether the offset is 0' \
+	    acl/aces/ace/matches/ipv4/offset
+
+	# IPv6.
+	acl_refused ipv6-acl-type '{"ipv6":{"ecn":3}}' \
+	    'acl f, ace r: ipv6 ecn is not compiled into ipfw by this agent: iptos, ipfw.s ECN match, reads IPv4.s header alone' \
+	    acl/aces/ace/matches/ipv6/ecn
+	acl_refused ipv6-acl-type '{"ipv6":{"ttl":1}}' \
+	    'acl f, ace r: ipv6 ttl \(the hop limit\) is not compiled into ipfw by this agent: ipfw has no hop limit match' \
+	    acl/aces/ace/matches/ipv6/ttl
+	acl_refused ipv6-acl-type '{"ipv6":{"length":65500}}' \
+	    'acl f, ace r: ipv6 length above 65495 is not compiled into ipfw by this agent: iplen is the whole packet.s' \
+	    acl/aces/ace/matches/ipv6/length
+
+	# TCP.
+	acl_refused ipv4-acl-type '{"tcp":{"data-offset":6}}' \
+	    'acl f, ace r: tcp data-offset is not compiled into ipfw by this agent: ipfw has no TCP header length match' \
+	    acl/aces/ace/matches/tcp/data-offset
+	acl_refused ipv4-acl-type '{"tcp":{"reserved":1}}' \
+	    'acl f, ace r: tcp reserved is not compiled into ipfw by this agent: tcpflags names fin, syn, rst, psh, ack and urg alone' \
+	    acl/aces/ace/matches/tcp/reserved
+	acl_refused ipv4-acl-type '{"tcp":{"flags":"cwr"}}' \
+	    'acl f, ace r: tcp flags cwr and ece is not compiled into ipfw by this agent: tcpflags names' \
+	    acl/aces/ace/matches/tcp/flags
+	acl_refused ipv6-acl-type '{"tcp":{"flags":"ece syn"}}' \
+	    'acl f, ace r: tcp flags cwr and ece is not compiled' \
+	    acl/aces/ace/matches/tcp/flags
+	acl_refused ipv4-acl-type '{"tcp":{"urgent-pointer":1}}' \
+	    'acl f, ace r: tcp urgent-pointer is not compiled into ipfw by this agent: ipfw has no urgent pointer match' \
+	    acl/aces/ace/matches/tcp/urgent-pointer
+	acl_refused ipv4-acl-type '{"tcp":{"options":"AgQFtA=="}}' \
+	    'acl f, ace r: tcp options is not compiled into ipfw by this agent: tcpoptions tells which options are there, never their bytes' \
+	    acl/aces/ace/matches/tcp/options
+
+	# UDP and ICMP.
+	acl_refused ipv4-acl-type '{"udp":{"length":100}}' \
+	    'acl f, ace r: udp length is not compiled into ipfw by this agent: ipfw has no UDP length match' \
+	    acl/aces/ace/matches/udp/length
+	acl_refused ipv4-acl-type '{"icmp":{"type":3,"code":13}}' \
+	    'acl f, ace r: icmp code is not compiled into ipfw by this agent: icmptypes and icmp6types read the type alone' \
+	    acl/aces/ace/matches/icmp/code
+	acl_refused ipv6-acl-type '{"icmp":{"type":1,"rest-of-header":"AAAAAA=="}}' \
+	    'acl f, ace r: icmp rest-of-header is not compiled into ipfw by this agent: ipfw reads nothing of ICMP past its type' \
+	    acl/aces/ace/matches/icmp/rest-of-header
+
+	# Ethernet and the interfaces.
+	acl_refused eth-acl-type '{"eth":{"ethertype":"arp"}}' \
+	    'acl f, ace r: an ethertype other than IPv4.s or IPv6.s is not compiled into ipfw by this agent: other frames meet ipfw on the layer-2 pass alone' \
+	    acl/aces/ace/matches/eth/ethertype
+	acl_refused eth-acl-type \
+	    '{"eth":{"destination-mac-address":"00:00:5e:00:53:01"}}' \
+	    'acl f, ace r: an ACE of an ACL with an Ethernet match that matches frames other than IP' \
+	    acl/aces/ace
+	acl_refused - '{"acl":[{"name":"f","type":"ietf-access-control-list:eth-acl-type","aces":{"ace":[{"name":"r","matches":{"eth":{"ethertype":"ipv4"}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","egress":{"acl-sets":{"acl-set":[{"name":"f"}]}}}]}}' \
+	    'acl f: an Ethernet match in an ACL attached on an interface.s way out is not compiled into ipfw by this agent: ipfw sees the frame after the IP pass has decided' \
+	    attachment-points/interface/egress/acl-sets/acl-set
+	acl_refused - '{"acl":[{"name":"f","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"r","matches":{"egress-interface":"lo0"},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"f"}]}}}]}}' \
+	    'acl f, ace r: egress-interface in an ACL attached on an interface.s way in is not compiled into ipfw by this agent: routing has not chosen it yet' \
+	    acl/aces/ace/matches/egress-interface
+
+	# What does not hold together: named the same way.
+	acl_refused mixed-eth-ipv4-ipv6-acl-type \
+	    '{"eth":{"ethertype":"ipv6"},"ipv4":{"ttl":1}}' \
+	    'acl f, ace r: an IPv4 match in an IPv6 ACL' \
+	    acl/aces/ace/matches/ipv4
+	acl_refused ipv4-acl-type \
+	    '{"ipv4":{"protocol":17},"tcp":{"source-port":{"operator":"eq","port":1}}}' \
+	    'acl f, ace r: a TCP match with protocol 17' \
+	    acl/aces/ace/matches/tcp
+	atf_check -o match:'^61000 29 deny ip from any to any ipttl 7 ip4 ' \
+	    cat fw.state
+}
+acl_refusals_cleanup()
+{
+	stop_daemon
+}
+
+# An ACE's action (PLAN-SDN-YANG 6.1.4): an ACL of the type given ("-"
+# none) with one ACE of the matches and actions given; set, each rule
+# given loaded as it is at the band's number, and the actions read
+# back from the operational datastore.
+acl_act()
+{
+	local type="$1" matches="$2" actions="$3" back="$4" t r
+
+	shift 4
+	t=
+	[ "$type" != - ] && t="\"type\":\"ietf-access-control-list:$type\","
+	printf '{"acl":[{"name":"f",%s"aces":{"ace":[{"name":"r","matches":%s,"actions":%s}]}}]}\n' \
+	    "$t" "$matches" "$actions" > f.json
+	: > ipfw.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @f.json
+	for r in "$@"; do
+		atf_check -o ignore grep -Fx "add 61000 set 28 $r // acl:0.1 f/r" \
+		    ipfw.log
+	done
+	atf_check -o save:fg.json "$JGC" -c "$SOCK" get acls
+	grep -qF "$back" fg.json || atf_fail "not read back: $back in $(cat fg.json)"
+}
+
+atf_test_case acl_actions cleanup
+acl_actions_head()
+{
+	atf_set "descr" "RFC 8519's actions, logging and aggregate statistics" \
+	    "compiled to ipfw (PLAN-SDN-YANG 6.1.4), a stand-in ipfw that" \
+	    "keeps what it is given and counts as fw.counters says: accept," \
+	    "drop and reject of each family and of either, each rule as" \
+	    "loaded; log-syslog as the rule's log to syslogd(8) on each" \
+	    "family's rule and on the IP pass's alone where an Ethernet" \
+	    "match tags on the layer-2 pass; log-none no log; an ACE's" \
+	    "matched-packets and matched-octets its rules' counters, both" \
+	    "families' summed, the layer-2 pass's tagging rule's not; none" \
+	    "in running"
+	atf_set "timeout" "180"
+}
+acl_actions_body()
+{
+	acl_fake_ipfw
+	cat > fake-sysctl <<EOS
+#!/bin/sh
+[ "\$*" = "-n net.link.ether.ipfw" ] && echo 1 && exit 0
+exit 1
+EOS
+	chmod +x fake-sysctl
+	DAEMON_ARGS="-h $(pwd)/fake-ipfw -Q $(pwd)/fake-sysctl" start_daemon
+
+	# The forwarding actions.
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":17}}' \
+	    '{"forwarding":"ietf-access-control-list:accept"}' \
+	    '"forwarding":"ietf-access-control-list:accept"' \
+	    'allow udp from any to any ip4'
+	acl_act ipv6-acl-type '{"ipv6":{"protocol":17}}' \
+	    '{"forwarding":"ietf-access-control-list:drop"}' \
+	    '"forwarding":"ietf-access-control-list:drop"' \
+	    'deny udp from any to any ip6'
+	acl_act ipv4-acl-type '{"tcp":{"destination-port":{"operator":"eq","port":23}}}' \
+	    '{"forwarding":"ietf-access-control-list:reject"}' \
+	    '"forwarding":"ietf-access-control-list:reject"' \
+	    'unreach filter-prohib tcp from any to any dst-port 23 ip4'
+	acl_act ipv6-acl-type '{"tcp":{"destination-port":{"operator":"eq","port":23}}}' \
+	    '{"forwarding":"ietf-access-control-list:reject"}' \
+	    '"forwarding":"ietf-access-control-list:reject"' \
+	    'unreach6 admin-prohib tcp from any to any dst-port 23 ip6'
+	acl_act - '{"tcp":{"destination-port":{"operator":"eq","port":23}}}' \
+	    '{"forwarding":"ietf-access-control-list:reject"}' \
+	    '"forwarding":"ietf-access-control-list:reject"' \
+	    'unreach filter-prohib tcp from any to any dst-port 23 ip4' \
+	    'unreach6 admin-prohib tcp from any to any dst-port 23 ip6'
+
+	# Logging: to syslogd(8), the rule's own destination.
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:drop","logging":"ietf-access-control-list:log-syslog"}' \
+	    '"logging":"ietf-access-control-list:log-syslog"' \
+	    'deny log logdst syslog icmp from any to any ip4'
+	acl_act - '{"tcp":{"destination-port":{"operator":"eq","port":23}}}' \
+	    '{"forwarding":"ietf-access-control-list:reject","logging":"ietf-access-control-list:log-syslog"}' \
+	    '"logging":"ietf-access-control-list:log-syslog"' \
+	    'unreach filter-prohib log logdst syslog tcp from any to any dst-port 23 ip4' \
+	    'unreach6 admin-prohib log logdst syslog tcp from any to any dst-port 23 ip6'
+	acl_act mixed-eth-ipv4-acl-type \
+	    '{"eth":{"source-mac-address":"00:00:5e:00:53:02"}}' \
+	    '{"forwarding":"ietf-access-control-list:accept","logging":"ietf-access-control-list:log-syslog"}' \
+	    '"logging":"ietf-access-control-list:log-syslog"' \
+	    'count tag 61000 ip from any to any layer2 mac any 00:00:5e:00:53:02' \
+	    'allow log logdst syslog ip from any to any not layer2 tagged 61000 ip4'
+	acl_act ipv4-acl-type '{"ipv4":{"protocol":1}}' \
+	    '{"forwarding":"ietf-access-control-list:drop","logging":"ietf-access-control-list:log-none"}' \
+	    '"forwarding":"ietf-access-control-list:drop"' \
+	    'deny icmp from any to any ip4'
+	atf_check -o not-match:' log ' cat ipfw.log
+
+	# Statistics: each ACE's rules' counters.  Rule 61000 an Ethernet
+	# ACE's two (the tagging rule's counters not the ACE's), 61001 a
+	# reject of either family (two rules, summed), 61002 one counting
+	# nothing yet.
+	cat > st.json <<'EOF'
+{"acl":[{"name":"s","type":"ietf-access-control-list:mixed-eth-ipv4-ipv6-acl-type","aces":{"ace":[{"name":"mac","matches":{"eth":{"source-mac-address":"00:00:5e:00:53:02","ethertype":"ipv4"}},"actions":{"forwarding":"ietf-access-control-list:accept"}},{"name":"telnet","matches":{"tcp":{"destination-port":{"operator":"eq","port":23}}},"actions":{"forwarding":"ietf-access-control-list:reject"}},{"name":"udp","matches":{"ipv6":{"protocol":17}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"s"}]}}}]}}
+EOF
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @st.json
+	atf_check -o match:'^61000 29 count tag 61000 ' \
+	    -o match:'^61000 29 allow ip from any to any not layer2 tagged 61000 ip4 ' \
+	    -o match:'^61001 29 unreach filter-prohib .* ip4 ' \
+	    -o match:'^61001 29 unreach6 admin-prohib .* ip6 ' cat fw.state
+	printf '61000 5 420\n61001 3 180\n' > fw.counters
+	atf_check -o save:sg.json "$JGC" -c "$SOCK" get acls
+	atf_check \
+	    -o match:'"name":"mac","statistics":\{"matched-octets":"?420"?,"matched-packets":"?5"?\}' \
+	    -o match:'"name":"telnet","statistics":\{"matched-octets":"?360"?,"matched-packets":"?6"?\}' \
+	    -o match:'"name":"udp","statistics":\{"matched-octets":"?0"?,"matched-packets":"?0"?\}' \
+	    cat sg.json
+	atf_check -o match:'"name":"telnet"' -o not-match:'statistics' \
+	    "$JGC" -c "$SOCK" get -d running acls
+	# The kernel's counters as they go: read each time.
+	printf '61000 7 588\n61001 3 180\n61002 1 1280\n' > fw.counters
+	atf_check \
+	    -o match:'"name":"mac","statistics":\{"matched-octets":"?588"?,"matched-packets":"?7"?\}' \
+	    -o match:'"name":"udp","statistics":\{"matched-octets":"?1280"?,"matched-packets":"?1"?\}' \
+	    "$JGC" -c "$SOCK" get acls
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
+}
+acl_actions_cleanup()
 {
 	stop_daemon
 }
@@ -11859,7 +12121,7 @@ sdwan_ids_forms_body()
 	many=$(printf '%s' "$rs4" | sed "s|rule-files:|$(printf '# @PID@%.0s' $(seq 1 400))\\\\nrule-files:|")
 	atf_check -o match:'detects: started' "$JGC" -t -c "$SOCK" sdwan ids "$many"
 	atf_check -o match:'^# /.*/sdwan-ids-sw1\.pid# /.*/sdwan-ids-sw1\.pid# ' cat "$(dirname "$f")/sdwan-ids-sw1.yaml"
-	atf_check -s exit:1 -e match:'did not start: Error: suricata: this start fails$' \
+	atf_check -s exit:1 -e match:'did not start: Error: suricata: this start fails( \(at /[^)]*\))?$' \
 	    -e not-match:'an old one' -o ignore "$JGC" -c "$SOCK" sdwan ids "$rs5"
 	# Its pid file written, then stopped: not started, and why is the
 	# first error of the start, not the rules it left out.
@@ -19339,6 +19601,8 @@ atf_init_test_cases()
 	atf_add_test_case alarm_shelving
 	atf_add_test_case acl_rfc8519
 	atf_add_test_case acl_match_fields
+	atf_add_test_case acl_refusals
+	atf_add_test_case acl_actions
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key

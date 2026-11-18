@@ -93,6 +93,22 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### ACL refusals, logging and statistics; agent 0.297.0, console 0.448.1
+
+- **ACLs** (PLAN-SDN-YANG 6.1.3, 6.1.4): what ipfw cannot match is
+  refused with the node at fault as the error-path and the reason in
+  the message (operation-not-supported; invalid-value, in-use and
+  resource-denied for the rest); arcanactl says the node after a
+  refusal at commit, "(at /module:...)".  log-syslog compiles to the
+  rule's `log logdst syslog` (syslogd(8), LOG_SECURITY, capped by
+  net.inet.ip.fw.verbose_limit).  Feature acl-aggregate-stats: each
+  ACE's statistics in the operational datastore are its rules'
+  counters, counted from the last edit.  The console rebuilds for the
+  feature.
+- **libcblink 0.2.29**: the node a handler names is kept as the
+  error-path at commit (it was replaced by the handler's top node, so
+  every handler's error-path was lost).
+
 ### The archive's settings on the page, console 0.448.0
 
 - A host's Monitoring tab has an Archive form under Sampling

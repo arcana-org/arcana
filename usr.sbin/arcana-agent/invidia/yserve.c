@@ -1069,21 +1069,23 @@ ietf_access_control_list_acls_get(cbl_req *req,
 }
 
 /* The whole set compiled and swapped in at once, then kept; refused,
- * nothing loaded and running as it was. */
+ * nothing loaded and running as it was, the extended ack naming the
+ * node at fault (error-path) and the error-tag of the errno:
+ * operation-not-supported what ipfw cannot say, invalid-value what does
+ * not hold together, in-use an admin's rule in the way. */
 int
 ietf_access_control_list_acls_edit(cbl_req *req,
     const struct ietf_access_control_list *before,
     const struct ietf_access_control_list *after)
 {
-	char	err[256];
+	char		err[512];
+	uint64_t	sid;
+	int		error;
 
 	(void)before;
-	if (acl_edit(after, err, sizeof(err)) != 0) {
-		(void)cbl_req_set_yerr(req, err, 0);
-		return (strstr(err, "is not compiled") != NULL ? EOPNOTSUPP :
-		    EIO);
-	}
-	return (0);
+	if ((error = acl_edit(after, err, sizeof(err), &sid)) != 0)
+		(void)cbl_req_set_yerr(req, err, sid);
+	return (error);
 }
 
 /* RFC 8348's hardware: the chassis, CPUs and disks (superbia/yhw.c). */

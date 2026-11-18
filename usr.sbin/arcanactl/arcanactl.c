@@ -990,6 +990,35 @@ ds_named(const char *s)
 	    (enum cbl_yds_name)-1);
 }
 
+/*
+ * The node at fault of a refusal, the error-path the agent named (a
+ * SID), appended to err as its schema path: " (at /module:a/b)", the
+ * module said where it changes (an augment).
+ */
+static void
+at_fault(const cbl_msg *rep, char *err, size_t errlen)
+{
+	const struct cbl_ynode	*n, *v[32];
+	size_t			 k, off;
+
+	if (rep == NULL || cbl_msg_err_sid(rep) == 0 || (n =
+	    cbl_yschema_node(&ymodel_schema, cbl_msg_err_sid(rep))) == NULL)
+		return;
+	for (k = 0; n != NULL && k < nitems(v); n = n->parent)
+		v[k++] = n;
+	if ((off = strlen(err)) + 6 >= errlen)
+		return;
+	off += (size_t)snprintf(err + off, errlen - off, " (at ");
+	while (k-- > 0 && off < errlen)
+		off += (size_t)snprintf(err + off, errlen - off, "/%s%s%s",
+		    v[k]->parent == NULL || v[k]->module != v[k]->parent->module ?
+		    v[k]->module->name : "", v[k]->parent == NULL ||
+		    v[k]->module != v[k]->parent->module ? ":" : "",
+		    v[k]->name);
+	if (off + 1 < errlen)
+		(void)snprintf(err + off, errlen - off, ")");
+}
+
 /* A refusal, said with what may accept it; exits. */
 static void
 refused(const char *what, const char *msg, const char *tag)
@@ -1109,10 +1138,12 @@ netconf_try(cbl_conn *conn, const char *name, const void *in,
 	    accepts, naccepts)) != 0))
 		xo_errx(1, "%s: %s", txe(name), strerror(error));
 	if ((error = cbl_request(conn, m, &rep, -1)) != 0) {
-		if (err != NULL)
+		if (err != NULL) {
 			(void)snprintf(err, errlen, "%s", rep != NULL &&
 			    cbl_msg_err_str(rep) != NULL ? cbl_msg_err_str(rep) :
 			    strerror(error));
+			at_fault(rep, err, errlen);
+		}
 		if (tag != NULL)
 			(void)snprintf(tag, taglen, "%s", rep != NULL &&
 			    cbl_msg_err_apptag(rep) != NULL ?

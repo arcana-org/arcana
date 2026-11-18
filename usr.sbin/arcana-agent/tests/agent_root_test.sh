@@ -1655,7 +1655,7 @@ sctp_multihome_cleanup()
 atf_test_case acl_vnet cleanup
 acl_vnet_head()
 {
-	atf_set "descr" "RFC 8519's ACLs for real (PLAN-SDN-YANG 6.1.1, 6.1.2): the" \
+	atf_set "descr" "RFC 8519's ACLs for real (PLAN-SDN-YANG 6.1.1 to 6.1.4): the" \
 	    "agent in a vnet jail of its own, its ipfw the jail's: section" \
 	    "4.3's and 4.4's examples with Appendix A.2's attachment loaded" \
 	    "by ipfw, set 29 holding the bands, the attachment block and" \
@@ -1667,13 +1667,15 @@ acl_vnet_head()
 	    "from a second jail, with net.link.ether.ipfw=1 in the first," \
 	    "an ACE accepting the peer's MAC address ahead of one dropping" \
 	    "echoes lets its ping through, and drops it once the address" \
-	    "is another"
+	    "is another.  6.1.4: three echoes counted by an ACE's rule," \
+	    "its statistics those counters, its log-syslog in the message" \
+	    "buffer with net.inet.ip.fw.verbose 0"
 	atf_set "require.user" "root"
 	atf_set "timeout" "180"
 }
 acl_vnet_body()
 {
-	local d="$(pwd)" e i peer
+	local d="$(pwd)" e i peer logged n
 
 	programs
 	kldstat -q -m ipfw || atf_skip "ipfw(4) is not loaded"
@@ -1795,6 +1797,32 @@ EOS
 	atf_check -o not-match:' set 29 ' jexec arcw_acl ipfw -S list
 	atf_check -o match:'1 packets received' \
 	    jexec arcw_acl2 ping -c 1 -t 2 10.93.0.1
+	# 6.1.4: an ACE's statistics its rule's counters, three echoes over
+	# lo0 counted (84 bytes each); its log to syslogd(8), the rule's
+	# own destination, with net.inet.ip.fw.verbose 0, as the message
+	# buffer has it.
+	cat > count.json <<'EOF'
+{"acl":[{"name":"count","type":"ietf-access-control-list:ipv4-acl-type","aces":{"ace":[{"name":"echo","matches":{"ipv4":{"protocol":1},"icmp":{"type":8}},"actions":{"forwarding":"ietf-access-control-list:accept","logging":"ietf-access-control-list:log-syslog"}},{"name":"other","matches":{"ipv4":{"protocol":17}},"actions":{"forwarding":"ietf-access-control-list:drop"}}]}}],"attachment-points":{"interface":[{"interface-id":"lo0","ingress":{"acl-sets":{"acl-set":[{"name":"count"}]}}}]}}
+EOF
+	atf_check -o inline:'0\n' jexec arcw_acl sysctl -n net.inet.ip.fw.verbose
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-access-control-list:acls @count.json
+	atf_check -o match:'^61000 set 29 allow log .*syslog.*icmptypes 8.*// acl:0.1 count/echo$' \
+	    jexec arcw_acl ipfw -S list
+	logged='ipfw: 61000 Accept ICMP:8\.0 127\.0\.0\.1 127\.0\.0\.1 in via lo0'
+	n=$(dmesg -a | grep -c "$logged")
+	atf_check -o match:'3 packets received' \
+	    jexec arcw_acl ping -c 3 -i 0.2 -t 4 127.0.0.1
+	atf_check -o match:'^61000 +3 +252 allow log' \
+	    jexec arcw_acl ipfw -a list 61000
+	atf_check \
+	    -o match:'"name":"echo","statistics":\{"matched-octets":"?252"?,"matched-packets":"?3"?\}' \
+	    -o match:'"name":"other","statistics":\{"matched-octets":"?0"?,"matched-packets":"?0"?\}' \
+	    "$JGC" -c "$SOCK" get acls
+	[ $(($(dmesg -a | grep -c "$logged") - n)) -eq 3 ] ||
+	    atf_fail "not logged three times: $(dmesg -a | grep 'ipfw: 61000' | tail -5)"
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-access-control-list:acls
 }
 acl_vnet_cleanup()
 {

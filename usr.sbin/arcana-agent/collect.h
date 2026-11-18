@@ -73,13 +73,14 @@ int	ysap_network(const struct ietf_interfaces *ifs, const char *host,
 	    cbl_yarena *a, struct ietf_network *out);
 
 /* RFC 8519's ACLs compiled to ipfw (invidia/acl.c): running's kept, the
- * operational datastore's those the kernel has; an edit made the
- * kernel's at once, then kept, or refused (why in err) with nothing
- * changed. */
+ * operational datastore's those the kernel has, each ACE's statistics
+ * its rules' counters; an edit made the kernel's at once, then kept, or
+ * refused with nothing changed: an errno (EOPNOTSUPP what ipfw cannot
+ * say), why in err, the node at fault's SID in *sid (0: the acls). */
 int	acl_get(bool operational, cbl_yarena *a,
 	    struct ietf_access_control_list *data);
 int	acl_edit(const struct ietf_access_control_list *after, char *err,
-	    size_t errlen);
+	    size_t errlen, uint64_t *sid);
 
 /*
  * Arcana's rc.conf variables in a file of its own, named in

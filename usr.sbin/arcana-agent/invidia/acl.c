@@ -57,10 +57,25 @@
  * interface (recv, xmit); the MAC addresses with their masks and the
  * ethertype IPv4's or IPv6's (mac, mac-type, on the way in, above); the
  * forwarding actions (reject an ICMP unreachable, administratively
- * prohibited).  Bits leaves (IPv4's and TCP's flags) match the bits
- * named set, the others as they may be.  Every other match, and
- * logging other than log-none, is refused by name, nothing loaded: an
- * ACE is never installed matching more than it says.
+ * prohibited) and logging (6.1.4: log-syslog "log logdst syslog", to
+ * syslogd(8) as LOG_SECURITY whatever net.inet.ip.fw.verbose, at most
+ * net.inet.ip.fw.verbose_limit packets a rule).  Bits leaves (IPv4's
+ * and TCP's flags) match the bits named set, the others as they may be.
+ *
+ * Every other match is refused (6.1.3), nothing loaded: an ACE is never
+ * installed matching more than it says.  The refusal is an extended ack
+ * (cblink's error, RFC 8040's errors): error-path the node at fault (a
+ * SID, the ACL and ACE named in the message), error-tag
+ * operation-not-supported for what ipfw cannot say, invalid-value for
+ * what does not hold together, in-use for an admin's rule in the way,
+ * resource-denied for more than the numbers hold, and the message why.
+ *
+ * Statistics (6.1.4, acl-aggregate-stats): an ACE's matched-packets and
+ * matched-octets are its rules' counters (ipfw -a list), the rules of
+ * every family it has summed, the layer-2 pass's tagging rule not (the
+ * IP pass's decides); the band is one for every attachment, so the
+ * counters are the aggregate RFC 8519 asks for.  They count from the
+ * last edit: each loads the rules anew.
  */
 
 #include <sys/param.h>
@@ -111,11 +126,21 @@ typedef struct ietf_access_control_list_acls_attachment_points_interface
 
 static pthread_mutex_t	acl_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* A rule of the kernel's: its number, set and comment ("" none). */
+/* A rule of the kernel's: its number, set, counters and comment ("" none);
+ * count whether its action is count (a layer-2 pass's tagging). */
 struct krule {
 	long		 num;
 	int		 set;
+	bool		 count;
+	uintmax_t	 pkts, bytes;
 	const char	*comment;
+};
+
+/* Why an edit is refused: the message, the node at fault, the errno. */
+struct aclerr {
+	char		 msg[512];
+	uint64_t	 sid;		/* 0: the acls */
+	int		 error;
 };
 
 static const struct cbl_ynode *
@@ -123,6 +148,27 @@ acl_node(void)
 {
 
 	return (ynode_named("ietf-access-control-list", "acls"));
+}
+
+/*
+ * A refusal into ae: errno error, the node at fault by its path below
+ * acls ("acl/aces/ace/matches/ipv4/ihl"; NULL the acls), the message.
+ * -1, for the caller to return.
+ */
+static int __printflike(4, 5)
+fault(struct aclerr *ae, int error, const char *node, const char *fmt, ...)
+{
+	const struct cbl_ynode	*n;
+	va_list			 ap;
+
+	va_start(ap, fmt);
+	vsnprintf(ae->msg, sizeof(ae->msg), fmt, ap);
+	va_end(ap);
+	ae->error = error;
+	n = node != NULL ? ynet_node("ietf-access-control-list", "acls",
+	    node) : NULL;
+	ae->sid = n != NULL ? n->sid : 0;
+	return (-1);
 }
 
 /* An identity of ietf-access-control-list's, its SID; 0: none. */
@@ -198,7 +244,7 @@ comment_of(char *out, size_t outlen, const char *tag, const char *acl,
 /* The bands: the first number of each ACL's; -1 and why where they do
  * not fit. */
 static int
-bands_of(const yacls *c, int *band, char *err, size_t errlen)
+bands_of(const yacls *c, int *band, struct aclerr *ae)
 {
 	size_t	i, n;
 	int	next;
@@ -206,12 +252,11 @@ bands_of(const yacls *c, int *band, char *err, size_t errlen)
 	next = ACL_BANDS;
 	for (i = 0; i < c->acl.n; i++) {
 		n = c->acl.v[i].aces != NULL ? c->acl.v[i].aces->ace.n : 0;
-		if ((size_t)next + n > ACL_BANDS_END) {
-			snprintf(err, errlen, "acl %s: more ACEs than rules %d "
-			    "to %d hold, with the ACLs before it", c->acl.v[i].name,
-			    ACL_BANDS, ACL_BANDS_END);
-			return (-1);
-		}
+		if ((size_t)next + n > ACL_BANDS_END)
+			return (fault(ae, ENOBUFS, "acl/aces/ace", "acl %s: "
+			    "more ACEs than rules %d to %d hold, with the ACLs "
+			    "before it", c->acl.v[i].name, ACL_BANDS,
+			    ACL_BANDS_END));
 		band[i] = next;
 		next += (int)n + 1;
 		next = roundup(next, ACL_ALIGN);
@@ -276,11 +321,13 @@ struct pmatch {
 	}								\
 } while (0)
 
-/* A port match as ipfw's option, appended to b. */
+/* A port match as ipfw's option, appended to b; node its path below
+ * acls, for a refusal. */
 static int
 port_words(char *b, size_t len, const char *opt, const struct pmatch *m,
-    char *err, size_t errlen)
+    const char *acl, const char *ace, const char *node, struct aclerr *ae)
 {
+	char	path[96];
 	size_t	off = strlen(b);
 
 	switch (m->which) {
@@ -288,9 +335,10 @@ port_words(char *b, size_t len, const char *opt, const struct pmatch *m,
 		return (0);
 	case 1:
 		if (m->lower > m->upper) {
-			snprintf(err, errlen, "%s: lower-port %u is above "
-			    "upper-port %u", opt, m->lower, m->upper);
-			return (-1);
+			snprintf(path, sizeof(path), "%s/lower-port", node);
+			return (fault(ae, EINVAL, path, "acl %s, ace %s: %s: "
+			    "lower-port %u is above upper-port %u", acl, ace,
+			    opt, m->lower, m->upper));
 		}
 		snprintf(b + off, len - off, " %s %u-%u", opt, m->lower,
 		    m->upper);
@@ -362,15 +410,21 @@ mac_word(char *b, size_t len, const char *addr, const char *mask)
 	return (0);
 }
 
-/* What this agent does not compile, refused by name: nothing is
- * installed that matches more than the ACE says. */
-#define	REFUSE(cond, what) do {						\
-	if (cond) {							\
-		snprintf(err, errlen, "acl %s, ace %s: %s is not compiled "	\
-		    "into ipfw by this agent", acl, e->name, (what));	\
-		return (-1);						\
-	}								\
+/*
+ * What ipfw cannot say, refused (6.1.3): the node at fault by its path
+ * below the ACE's matches or actions, what of it, and why ipfw cannot;
+ * nothing is installed that matches more than the ACE says.
+ */
+#define	REFUSE(cond, node, what, why) do {				\
+	if (cond)							\
+		return (fault(ae, EOPNOTSUPP, "acl/aces/ace/" node,	\
+		    "acl %s, ace %s: %s is not compiled into ipfw by this "	\
+		    "agent: %s", acl, e->name, (what), (why)));		\
 } while (0)
+
+/* What does not hold together, refused: invalid-value. */
+#define	INVALID(node, ...)						\
+	return (fault(ae, EINVAL, "acl/aces/ace/" node, __VA_ARGS__))
 
 #define	ATT_IN	1		/* attached on an interface's way in */
 #define	ATT_OUT	2		/* on its way out */
@@ -388,13 +442,13 @@ mac_word(char *b, size_t len, const char *addr, const char *mask)
  */
 static int
 ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
-    const yace *e, const char *cm, char *err, size_t errlen)
+    const yace *e, const char *cm, struct aclerr *ae)
 {
 	const ymatch	*m = e->matches;
 	struct pmatch	 sp, dp;
 	char		 more[512], ethw[160], frag[32], tcpf[48], l2w[32];
-	char		 dmac[40], smac[40], proto[16];
-	const char	*src, *dst, *act;
+	char		 dmac[40], smac[40], proto[16], act[48];
+	const char	*src, *dst, *log;
 	uint64_t	 fwd;
 	unsigned	 et;
 	int		 p, fams[2], nf;
@@ -402,23 +456,31 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 	src = dst = "any";
 	more[0] = ethw[0] = frag[0] = tcpf[0] = l2w[0] = '\0';
 	p = -1;
-	if (e->actions == NULL || !e->actions->has_forwarding) {
-		snprintf(err, errlen, "acl %s, ace %s: no forwarding action",
-		    acl, e->name);
-		return (-1);
-	}
-	REFUSE(e->actions->has_logging && e->actions->logging !=
-	    acl_ident("log-none"), "logging");
+	if (e->actions == NULL || !e->actions->has_forwarding)
+		INVALID("actions/forwarding", "acl %s, ace %s: no forwarding "
+		    "action", acl, e->name);
+	/* Logging: to syslogd(8), the rule's own destination. */
+	log = "";
+	if (e->actions->has_logging && e->actions->logging ==
+	    acl_ident("log-syslog"))
+		log = " log logdst syslog";
+	else
+		REFUSE(e->actions->has_logging && e->actions->logging !=
+		    acl_ident("log-none"), "actions/logging", "a log action "
+		    "other than log-syslog and log-none", "ipfw logs to "
+		    "syslogd(8), bpf(4) or the routing socket");
 	if (m != NULL && m->eth != NULL) {
 		if (mac_word(dmac, sizeof(dmac),
 		    m->eth->destination_mac_address,
-		    m->eth->destination_mac_address_mask) != 0 ||
-		    mac_word(smac, sizeof(smac), m->eth->source_mac_address,
-		    m->eth->source_mac_address_mask) != 0) {
-			snprintf(err, errlen, "acl %s, ace %s: a MAC mask "
-			    "without its address", acl, e->name);
-			return (-1);
-		}
+		    m->eth->destination_mac_address_mask) != 0)
+			INVALID("matches/eth/destination-mac-address-mask",
+			    "acl %s, ace %s: a MAC mask without its address",
+			    acl, e->name);
+		if (mac_word(smac, sizeof(smac), m->eth->source_mac_address,
+		    m->eth->source_mac_address_mask) != 0)
+			INVALID("matches/eth/source-mac-address-mask",
+			    "acl %s, ace %s: a MAC mask without its address",
+			    acl, e->name);
 		if (strcmp(dmac, "any") != 0 || strcmp(smac, "any") != 0)
 			words_add(ethw, sizeof(ethw), " mac %s %s", dmac, smac);
 		if (m->eth->has_ethertype) {
@@ -426,34 +488,31 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			    m->eth->ethertype.v.m0 :
 			    (unsigned)m->eth->ethertype.v.m1;
 			REFUSE(et != 0x0800 && et != 0x86dd,
-			    "an ethertype other than IPv4's or IPv6's (other "
-			    "frames never reach the IP pass, where the ACL "
-			    "decides)");
-			if (fam == (et == 0x0800 ? 6 : 4)) {
-				snprintf(err, errlen, "acl %s, ace %s: "
-				    "ethertype 0x%04x in an IPv%d ACL", acl,
+			    "matches/eth/ethertype", "an ethertype other than "
+			    "IPv4's or IPv6's", "other frames meet ipfw on the "
+			    "layer-2 pass alone, and the ACL decides on the IP "
+			    "pass");
+			if (fam == (et == 0x0800 ? 6 : 4))
+				INVALID("matches/eth/ethertype", "acl %s, ace "
+				    "%s: ethertype 0x%04x in an IPv%d ACL", acl,
 				    e->name, et, fam);
-				return (-1);
-			}
 			fam = et == 0x0800 ? 4 : 6;
 			words_add(ethw, sizeof(ethw), " mac-type 0x%04x", et);
 		}
 	}
 	if (m != NULL) {
 		if (m->ipv4 != NULL) {
-			if (fam == 6) {
-				snprintf(err, errlen, "acl %s, ace %s: an IPv4 "
-				    "match in an IPv6 ACL", acl, e->name);
-				return (-1);
-			}
+			if (fam == 6)
+				INVALID("matches/ipv4", "acl %s, ace %s: an "
+				    "IPv4 match in an IPv6 ACL", acl, e->name);
 			fam = 4;
 			if (m->ipv4->has_dscp)
 				words_add(more, sizeof(more), " dscp %u",
 				    m->ipv4->dscp);
-			/* The two ECN bits: iptos reads both at once
-			 * (congestion is 0x03) and neither alone. */
 			REFUSE(m->ipv4->has_ecn && m->ipv4->ecn != 0 &&
-			    m->ipv4->ecn != 3, "ipv4 ecn 1 or 2 (ECT)");
+			    m->ipv4->ecn != 3, "matches/ipv4/ecn",
+			    "ipv4 ecn 1 or 2 (ECT)", "iptos reads ECN's two "
+			    "bits at once (congestion, 0x03), neither alone");
 			if (m->ipv4->has_ecn)
 				words_add(more, sizeof(more), " iptos %s",
 				    m->ipv4->ecn == 3 ? "congestion" :
@@ -464,7 +523,9 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv4->has_ttl)
 				words_add(more, sizeof(more), " ipttl %u",
 				    m->ipv4->ttl);
-			REFUSE(m->ipv4->has_ihl, "ipv4 ihl");
+			REFUSE(m->ipv4->has_ihl, "matches/ipv4/ihl", "ipv4 ihl",
+			    "ipfw has no header length match (ipoptions names "
+			    "options, not how long they are)");
 			/* The flags named set, the others as they may be. */
 			if (bit_set(&m->ipv4->flags, 0))
 				words_add(frag, sizeof(frag), ",rf");
@@ -472,10 +533,9 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				words_add(frag, sizeof(frag), ",df");
 			if (bit_set(&m->ipv4->flags, 2))
 				words_add(frag, sizeof(frag), ",mf");
-			/* An offset of the model's (20 up, never the first
-			 * fragment's 0) is no match of ipfw's: frag reads
-			 * whether it is 0, never its value. */
-			REFUSE(m->ipv4->has_offset, "ipv4 offset");
+			REFUSE(m->ipv4->has_offset, "matches/ipv4/offset",
+			    "ipv4 offset", "frag reads whether the offset is "
+			    "0, never its value, and the model's is 20 up");
 			if (frag[0] != '\0')
 				words_add(more, sizeof(more), " frag %s",
 				    frag + 1);
@@ -490,24 +550,28 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				dst = m->ipv4->destination_ipv4_network;
 		}
 		if (m->ipv6 != NULL) {
-			if (fam == 4) {
-				snprintf(err, errlen, "acl %s, ace %s: an IPv6 "
-				    "match in an IPv4 ACL", acl, e->name);
-				return (-1);
-			}
+			if (fam == 4)
+				INVALID("matches/ipv6", "acl %s, ace %s: an "
+				    "IPv6 match in an IPv4 ACL", acl, e->name);
 			fam = 6;
 			if (m->ipv6->has_dscp)
 				words_add(more, sizeof(more), " dscp %u",
 				    m->ipv6->dscp);
-			REFUSE(m->ipv6->has_ecn, "ipv6 ecn");
+			REFUSE(m->ipv6->has_ecn, "matches/ipv6/ecn", "ipv6 ecn",
+			    "iptos, ipfw's ECN match, reads IPv4's header "
+			    "alone");
 			/* iplen is IPv6's whole length, the payload's and
 			 * the 40 bytes of its header. */
 			REFUSE(m->ipv6->has_length && m->ipv6->length > 65535 -
-			    40, "ipv6 length above 65495");
+			    40, "matches/ipv6/length", "ipv6 length above "
+			    "65495", "iplen is the whole packet's, the 40 "
+			    "bytes of the header with it, and goes to 65535");
 			if (m->ipv6->has_length)
 				words_add(more, sizeof(more), " iplen %u",
 				    m->ipv6->length + 40u);
-			REFUSE(m->ipv6->has_ttl, "ipv6 ttl (the hop limit)");
+			REFUSE(m->ipv6->has_ttl, "matches/ipv6/ttl",
+			    "ipv6 ttl (the hop limit)", "ipfw has no hop limit "
+			    "match (ipttl reads IPv4's header alone)");
 			if (m->ipv6->has_flow_label)
 				words_add(more, sizeof(more), " flow-id %u",
 				    m->ipv6->flow_label);
@@ -518,32 +582,47 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 			if (m->ipv6->destination_ipv6_network != NULL)
 				dst = m->ipv6->destination_ipv6_network;
 		}
-		if ((src != NULL && strcmp(src, "any") != 0 &&
-		    !prefix_ok(src)) || (dst != NULL && strcmp(dst, "any") != 0 &&
-		    !prefix_ok(dst))) {
-			snprintf(err, errlen, "acl %s, ace %s: a network that "
-			    "is no prefix", acl, e->name);
-			return (-1);
-		}
+		if (strcmp(src, "any") != 0 && !prefix_ok(src))
+			return (fault(ae, EINVAL, fam == 4 ?
+			    "acl/aces/ace/matches/ipv4/source-ipv4-network" :
+			    "acl/aces/ace/matches/ipv6/source-ipv6-network",
+			    "acl %s, ace %s: a network that is no prefix", acl,
+			    e->name));
+		if (strcmp(dst, "any") != 0 && !prefix_ok(dst))
+			return (fault(ae, EINVAL, fam == 4 ?
+			    "acl/aces/ace/matches/ipv4/destination-ipv4-network" :
+			    "acl/aces/ace/matches/ipv6/destination-ipv6-network",
+			    "acl %s, ace %s: a network that is no prefix", acl,
+			    e->name));
 		if (m->tcp != NULL) {
-			REFUSE(m->tcp->has_data_offset, "tcp data-offset");
-			REFUSE(m->tcp->has_reserved, "tcp reserved");
+			REFUSE(m->tcp->has_data_offset,
+			    "matches/tcp/data-offset", "tcp data-offset",
+			    "ipfw has no TCP header length match");
+			REFUSE(m->tcp->has_reserved, "matches/tcp/reserved",
+			    "tcp reserved", "tcpflags names fin, syn, rst, psh, "
+			    "ack and urg alone");
 			REFUSE(bit_set(&m->tcp->flags, 1) ||
-			    bit_set(&m->tcp->flags, 2),
-			    "tcp flags cwr and ece");
-			REFUSE(m->tcp->has_urgent_pointer, "tcp urgent-pointer");
-			REFUSE(m->tcp->options.len > 0, "tcp options");
+			    bit_set(&m->tcp->flags, 2), "matches/tcp/flags",
+			    "tcp flags cwr and ece", "tcpflags names fin, syn, "
+			    "rst, psh, ack and urg alone");
+			REFUSE(m->tcp->has_urgent_pointer,
+			    "matches/tcp/urgent-pointer", "tcp urgent-pointer",
+			    "ipfw has no urgent pointer match");
+			REFUSE(m->tcp->options.len > 0, "matches/tcp/options",
+			    "tcp options", "tcpoptions tells which options are "
+			    "there, never their bytes");
 			PMATCH(m->tcp->source_port, sp);
 			PMATCH(m->tcp->destination_port, dp);
-			if (p != -1 && p != 6) {
-				snprintf(err, errlen, "acl %s, ace %s: a TCP "
+			if (p != -1 && p != 6)
+				INVALID("matches/tcp", "acl %s, ace %s: a TCP "
 				    "match with protocol %d", acl, e->name, p);
-				return (-1);
-			}
 			p = 6;
-			if (port_words(more, sizeof(more), "src-port", &sp, err,
-			    errlen) != 0 || port_words(more, sizeof(more),
-			    "dst-port", &dp, err, errlen) != 0)
+			if (port_words(more, sizeof(more), "src-port", &sp, acl,
+			    e->name, "acl/aces/ace/matches/tcp/source-port",
+			    ae) != 0 || port_words(more, sizeof(more),
+			    "dst-port", &dp, acl, e->name,
+			    "acl/aces/ace/matches/tcp/destination-port",
+			    ae) != 0)
 				return (-1);
 			if (m->tcp->has_sequence_number)
 				words_add(more, sizeof(more), " tcpseq %u",
@@ -573,35 +652,39 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				    m->tcp->window_size);
 		}
 		if (m->udp != NULL) {
-			REFUSE(m->udp->has_length, "udp length");
+			REFUSE(m->udp->has_length, "matches/udp/length",
+			    "udp length", "ipfw has no UDP length match (iplen "
+			    "is the IP packet's, its options and extension "
+			    "headers with it)");
 			PMATCH(m->udp->source_port, sp);
 			PMATCH(m->udp->destination_port, dp);
-			if (p != -1 && p != 17) {
-				snprintf(err, errlen, "acl %s, ace %s: a UDP "
+			if (p != -1 && p != 17)
+				INVALID("matches/udp", "acl %s, ace %s: a UDP "
 				    "match with protocol %d", acl, e->name, p);
-				return (-1);
-			}
 			p = 17;
-			if (port_words(more, sizeof(more), "src-port", &sp, err,
-			    errlen) != 0 || port_words(more, sizeof(more),
-			    "dst-port", &dp, err, errlen) != 0)
+			if (port_words(more, sizeof(more), "src-port", &sp, acl,
+			    e->name, "acl/aces/ace/matches/udp/source-port",
+			    ae) != 0 || port_words(more, sizeof(more),
+			    "dst-port", &dp, acl, e->name,
+			    "acl/aces/ace/matches/udp/destination-port",
+			    ae) != 0)
 				return (-1);
 		}
 		if (m->icmp != NULL) {
-			REFUSE(m->icmp->has_code, "icmp code");
+			REFUSE(m->icmp->has_code, "matches/icmp/code",
+			    "icmp code", "icmptypes and icmp6types read the "
+			    "type alone");
 			REFUSE(m->icmp->rest_of_header.len > 0,
-			    "icmp rest-of-header");
-			if (fam == 0) {
-				snprintf(err, errlen, "acl %s, ace %s: an ICMP "
+			    "matches/icmp/rest-of-header",
+			    "icmp rest-of-header", "ipfw reads nothing of ICMP "
+			    "past its type");
+			if (fam == 0)
+				INVALID("matches/icmp", "acl %s, ace %s: an ICMP "
 				    "match needs its family: an ipv4 or ipv6 "
 				    "match, or the ACL's type", acl, e->name);
-				return (-1);
-			}
-			if (p != -1 && p != (fam == 4 ? 1 : 58)) {
-				snprintf(err, errlen, "acl %s, ace %s: an ICMP "
+			if (p != -1 && p != (fam == 4 ? 1 : 58))
+				INVALID("matches/icmp", "acl %s, ace %s: an ICMP "
 				    "match with protocol %d", acl, e->name, p);
-				return (-1);
-			}
 			p = fam == 4 ? 1 : 58;
 			if (m->icmp->has_type)
 				words_add(more, sizeof(more), " %s %u",
@@ -609,41 +692,37 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 				    m->icmp->type);
 		}
 		if (m->ingress_interface != NULL) {
-			if (!ifname_ok(m->ingress_interface)) {
-				snprintf(err, errlen, "acl %s, ace %s: "
-				    "ingress-interface %s is no interface name "
-				    "ipfw reads", acl, e->name,
+			if (!ifname_ok(m->ingress_interface))
+				INVALID("matches/ingress-interface", "acl %s, "
+				    "ace %s: ingress-interface %s is no "
+				    "interface name ipfw reads", acl, e->name,
 				    m->ingress_interface);
-				return (-1);
-			}
 			words_add(more, sizeof(more), " recv %s",
 			    m->ingress_interface);
 		}
 		if (m->egress_interface != NULL) {
-			/* Not known on the way in: routing has not chosen. */
-			REFUSE(att & ATT_IN, "egress-interface in an ACL "
-			    "attached on an interface's way in");
-			if (!ifname_ok(m->egress_interface)) {
-				snprintf(err, errlen, "acl %s, ace %s: "
-				    "egress-interface %s is no interface name "
-				    "ipfw reads", acl, e->name,
+			REFUSE(att & ATT_IN, "matches/egress-interface",
+			    "egress-interface in an ACL attached on an "
+			    "interface's way in", "routing has not chosen it "
+			    "yet");
+			if (!ifname_ok(m->egress_interface))
+				INVALID("matches/egress-interface", "acl %s, "
+				    "ace %s: egress-interface %s is no interface "
+				    "name ipfw reads", acl, e->name,
 				    m->egress_interface);
-				return (-1);
-			}
 			words_add(more, sizeof(more), " xmit %s",
 			    m->egress_interface);
 		}
 	}
 	/* Where the ACL decides on the IP pass alone, an ACE matching
 	 * any frame would leave ARP and the rest to the layer-2 pass. */
-	if (l2 && fam == 0 && p == -1) {
-		snprintf(err, errlen, "acl %s, ace %s: an ACE of an ACL with "
-		    "an Ethernet match that matches frames other than IP's "
-		    "(they meet ipfw on the layer-2 pass alone): name the "
-		    "family, by the ACL's type, an ipv4 or ipv6 match, the "
-		    "protocol or the ethertype", acl, e->name);
-		return (-1);
-	}
+	if (l2 && fam == 0 && p == -1)
+		return (fault(ae, EOPNOTSUPP, "acl/aces/ace", "acl %s, ace %s: "
+		    "an ACE of an ACL with an Ethernet match that matches "
+		    "frames other than IP's (they meet ipfw on the layer-2 "
+		    "pass alone): name the family, by the ACL's type, an ipv4 "
+		    "or ipv6 match, the protocol or the ethertype", acl,
+		    e->name));
 	switch (p) {
 	case -1:
 		snprintf(proto, sizeof(proto), "ip");
@@ -679,17 +758,18 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 		fams[nf++] = fam;
 	for (int i = 0; i < nf; i++) {
 		if (fwd == acl_ident("accept"))
-			act = "allow";
+			snprintf(act, sizeof(act), "allow%s", log);
 		else if (fwd == acl_ident("drop"))
-			act = "deny";
+			snprintf(act, sizeof(act), "deny%s", log);
 		else if (fwd == acl_ident("reject"))
-			act = fams[i] == 6 ? "unreach6 admin-prohib" :
-			    "unreach filter-prohib";
-		else {
-			snprintf(err, errlen, "acl %s, ace %s: a forwarding "
-			    "action this agent does not know", acl, e->name);
-			return (-1);
-		}
+			snprintf(act, sizeof(act), "%s%s", fams[i] == 6 ?
+			    "unreach6 admin-prohib" : "unreach filter-prohib",
+			    log);
+		else
+			return (fault(ae, EOPNOTSUPP,
+			    "acl/aces/ace/actions/forwarding", "acl %s, ace %s: "
+			    "a forwarding action this agent does not know",
+			    acl, e->name));
 		fprintf(fp, "add %d set %d %s %s from %s to %s%s%s%s // %s\n",
 		    num, ACL_STAGE, act, proto, src, dst, more, l2w,
 		    fams[i] == 4 ? " ip4" : fams[i] == 6 ? " ip6" : "", cm);
@@ -697,6 +777,7 @@ ace_compile(FILE *fp, const char *acl, int fam, int att, bool l2, int num,
 	return (0);
 }
 
+#undef	INVALID
 #undef	REFUSE
 
 /* Whether an ACL has an Ethernet match. */
@@ -714,7 +795,7 @@ acl_l2(const yacl *l)
 /* How each ACL is attached, ATT_IN and ATT_OUT, into att; -1 and why
  * where an attachment names no ACL. */
 static int
-attached(const yacls *c, int *att, char *err, size_t errlen)
+attached(const yacls *c, int *att, struct aclerr *ae)
 {
 	const yattach	*ap;
 	const char	*name;
@@ -732,11 +813,13 @@ attached(const yacls *c, int *att, char *err, size_t errlen)
 			name = j < nin ?
 			    ap->ingress->acl_sets->acl_set.v[j].name :
 			    ap->egress->acl_sets->acl_set.v[j - nin].name;
-			if ((k = acl_index(c, name)) == -1) {
-				snprintf(err, errlen, "attachment point %s: no "
-				    "acl %s", ap->interface_id, name);
-				return (-1);
-			}
+			if ((k = acl_index(c, name)) == -1)
+				return (fault(ae, EINVAL, j < nin ?
+				    "attachment-points/interface/ingress/"
+				    "acl-sets/acl-set/name" :
+				    "attachment-points/interface/egress/"
+				    "acl-sets/acl-set/name", "attachment point "
+				    "%s: no acl %s", ap->interface_id, name));
 			att[k] |= j < nin ? ATT_IN : ATT_OUT;
 		}
 	}
@@ -750,7 +833,7 @@ attached(const yacls *c, int *att, char *err, size_t errlen)
  */
 static int
 acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
-    char *err, size_t errlen)
+    struct aclerr *ae)
 {
 	const yacl	*l;
 	const yattach	*ap;
@@ -764,13 +847,10 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 	if (c == NULL || (c->acl.n == 0 && (c->attachment_points == NULL ||
 	    c->attachment_points->interface.n == 0)))
 		return (0);
-	if ((band = calloc(2 * (c->acl.n + 1), sizeof(*band))) == NULL) {
-		snprintf(err, errlen, "%s", strerror(errno));
-		return (-1);
-	}
+	if ((band = calloc(2 * (c->acl.n + 1), sizeof(*band))) == NULL)
+		return (fault(ae, ENOMEM, NULL, "%s", strerror(errno)));
 	att = band + c->acl.n + 1;
-	if (bands_of(c, band, err, errlen) != 0 ||
-	    attached(c, att, err, errlen) != 0)
+	if (bands_of(c, band, ae) != 0 || attached(c, att, ae) != 0)
 		goto bad;
 	comment_of(cm, sizeof(cm), "guard", NULL, NULL);
 	fprintf(fp, "add %d set %d skipto %d ip from any to any // %s\n",
@@ -788,18 +868,22 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 				fam = 6;
 			else if (l->type != acl_ident("eth-acl-type") &&
 			    l->type != acl_ident("mixed-eth-ipv4-ipv6-acl-type")) {
-				snprintf(err, errlen, "acl %s: its type is not "
-				    "compiled into ipfw by this agent", l->name);
+				(void)fault(ae, EOPNOTSUPP, "acl/type", "acl %s: "
+				    "its type is not compiled into ipfw by this "
+				    "agent: it names no family ipfw matches",
+				    l->name);
 				goto bad;
 			}
 		}
 		if ((eth = acl_l2(l))) {
 			if (att[i] & ATT_OUT) {
-				snprintf(err, errlen, "acl %s: an Ethernet match "
-				    "in an ACL attached on an interface's way "
-				    "out (ipfw sees the frame after the IP pass "
-				    "has decided) is not compiled into ipfw by "
-				    "this agent", l->name);
+				(void)fault(ae, EOPNOTSUPP,
+				    "attachment-points/interface/egress/"
+				    "acl-sets/acl-set", "acl %s: an Ethernet "
+				    "match in an ACL attached on an interface's "
+				    "way out is not compiled into ipfw by this "
+				    "agent: ipfw sees the frame after the IP "
+				    "pass has decided", l->name);
 				goto bad;
 			}
 			if (*l2 == NULL)
@@ -810,8 +894,7 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 			comment_of(cm, sizeof(cm), tag, l->name,
 			    l->aces->ace.v[j].name);
 			if (ace_compile(fp, l->name, fam, att[i], eth,
-			    band[i] + (int)j, &l->aces->ace.v[j], cm, err,
-			    errlen) != 0)
+			    band[i] + (int)j, &l->aces->ace.v[j], cm, ae) != 0)
 				goto bad;
 			(*nrules)++;
 		}
@@ -827,7 +910,8 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 	    i < c->attachment_points->interface.n; i++) {
 		ap = &c->attachment_points->interface.v[i];
 		if (!ifname_ok(ap->interface_id)) {
-			snprintf(err, errlen, "attachment point %s: no interface "
+			(void)fault(ae, EINVAL, "attachment-points/interface/"
+			    "interface-id", "attachment point %s: no interface "
 			    "name ipfw reads", ap->interface_id);
 			goto bad;
 		}
@@ -846,15 +930,18 @@ acl_compile(const yacls *c, FILE *fp, int *nrules, const char **l2,
 				    in->acl_set.v[j].name : out->acl_set.v[j].name;
 
 				if ((k = acl_index(c, name)) == -1) {
-					snprintf(err, errlen, "attachment point "
-					    "%s: no acl %s", ap->interface_id,
-					    name);
+					(void)fault(ae, EINVAL,
+					    "attachment-points/interface",
+					    "attachment point %s: no acl %s",
+					    ap->interface_id, name);
 					goto bad;
 				}
 				if (num >= ACL_ATTACH_END) {
-					snprintf(err, errlen, "more attachments "
-					    "than rules %d to %d hold",
-					    ACL_ATTACH, ACL_ATTACH_END - 1);
+					(void)fault(ae, ENOBUFS,
+					    "attachment-points/interface",
+					    "more attachments than rules %d to "
+					    "%d hold", ACL_ATTACH,
+					    ACL_ATTACH_END - 1);
 					goto bad;
 				}
 				snprintf(tag, sizeof(tag), "%d.%s", k, dir == 0 ?
@@ -888,8 +975,9 @@ bad:
 /* ---- The kernel ------------------------------------------------------ */
 
 /*
- * The kernel's rules, ipfw -S list's: each number, set and comment.
- * -1 where ipfw cannot be read (not loaded, or not there).
+ * The kernel's rules, ipfw -a -S list's: each number, counters, set and
+ * comment (a disabled set's, "# DISABLED", left out).  -1 where ipfw
+ * cannot be read (not loaded, or not there).
  */
 static int
 kernel_rules(struct work *w, struct krule **out, size_t *np)
@@ -897,17 +985,19 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 	struct execres	 res;
 	struct krule	*v;
 	const char	*p, *nl, *c;
-	char		*argv[4], *line;
+	char		*argv[5], *line;
 	size_t		 n, cap;
+	uintmax_t	 pkts, bytes;
 	long		 num;
 	int		 set, off;
 
 	*out = NULL;
 	*np = 0;
 	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
-	argv[1] = (char *)(uintptr_t)"-S";
-	argv[2] = (char *)(uintptr_t)"list";
-	argv[3] = NULL;
+	argv[1] = (char *)(uintptr_t)"-a";
+	argv[2] = (char *)(uintptr_t)"-S";
+	argv[3] = (char *)(uintptr_t)"list";
+	argv[4] = NULL;
 	if (run_exec_max(w, argv, &res, ARC_MAX_JSON) != 0 || res.out == NULL)
 		return (-1);
 	n = cap = 0;
@@ -915,7 +1005,8 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 	for (p = res.out; *p != '\0'; p = *nl != '\0' ? nl + 1 : nl) {
 		nl = p + strcspn(p, "\n");
 		line = wstrndup(w, p, (size_t)(nl - p));
-		if (sscanf(line, "%ld set %d %n", &num, &set, &off) != 2)
+		if (sscanf(line, "%ld %ju %ju set %d %n", &num, &pkts, &bytes,
+		    &set, &off) != 4)
 			continue;
 		if (n == cap) {
 			struct krule	*nv;
@@ -928,6 +1019,9 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 		}
 		v[n].num = num;
 		v[n].set = set;
+		v[n].pkts = pkts;
+		v[n].bytes = bytes;
+		v[n].count = strncmp(line + off, "count ", 6) == 0;
 		c = strstr(line + off, "// ");
 		v[n].comment = c != NULL ? c + 3 : "";
 		n++;
@@ -939,29 +1033,25 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 
 /* Whether the kernel's rules leave the ACLs' numbers and sets to them. */
 static int
-kernel_free(const struct krule *k, size_t n, char *err, size_t errlen)
+kernel_free(const struct krule *k, size_t n, struct aclerr *ae)
 {
 
 	for (size_t i = 0; i < n; i++) {
 		if (k[i].set == ACL_SET || k[i].set == ACL_STAGE) {
 			if (strncmp(k[i].comment, ACL_PREFIX,
-			    strlen(ACL_PREFIX)) != 0) {
-				snprintf(err, errlen, "rule %ld is in set %d, "
-				    "which the ACLs keep, and is not an ACL's: "
-				    "move it to another set first", k[i].num,
-				    k[i].set);
-				return (-1);
-			}
+			    strlen(ACL_PREFIX)) != 0)
+				return (fault(ae, EBUSY, NULL, "rule %ld is in "
+				    "set %d, which the ACLs keep, and is not an "
+				    "ACL's: move it to another set first",
+				    k[i].num, k[i].set));
 			continue;
 		}
 		if (k[i].num == ACL_ENTRY || (k[i].num >= ACL_GUARD &&
-		    k[i].num < ACL_PAST)) {
-			snprintf(err, errlen, "rule %ld of set %d is at a number "
-			    "the ACLs keep (%d, %d to %d): renumber it first",
-			    k[i].num, k[i].set, ACL_ENTRY, ACL_GUARD,
-			    ACL_PAST - 1);
-			return (-1);
-		}
+		    k[i].num < ACL_PAST))
+			return (fault(ae, EBUSY, NULL, "rule %ld of set %d is at "
+			    "a number the ACLs keep (%d, %d to %d): renumber it "
+			    "first", k[i].num, k[i].set, ACL_ENTRY, ACL_GUARD,
+			    ACL_PAST - 1));
 	}
 	return (0);
 }
@@ -1018,11 +1108,13 @@ ether_ipfw(struct work *w)
 
 /*
  * The ACLs c made what the kernel has, all at once (above); none, set
- * 29 deleted.  -1 and why, the kernel as it was.
+ * 29 deleted.  -1 and why into ae, the kernel as it was.
  */
 static int
-acl_apply(struct work *w, const yacls *c, char *err, size_t errlen)
+acl_apply(struct work *w, const yacls *c, struct aclerr *ae)
 {
+	char		*err = ae->msg;
+	size_t		 errlen = sizeof(ae->msg);
 	struct krule	*k;
 	const char	*l2;
 	char		 path[MAXPATHLEN], *buf;
@@ -1033,35 +1125,33 @@ acl_apply(struct work *w, const yacls *c, char *err, size_t errlen)
 
 	buf = NULL;
 	blen = 0;
-	if ((fp = open_memstream(&buf, &blen)) == NULL) {
-		snprintf(err, errlen, "open_memstream: %s", strerror(errno));
-		return (-1);
-	}
-	rc = acl_compile(c, fp, &nrules, &l2, err, errlen);
-	if (fclose(fp) != 0 && rc == 0) {
-		snprintf(err, errlen, "the rules: %s", strerror(errno));
-		rc = -1;
-	}
+	if ((fp = open_memstream(&buf, &blen)) == NULL)
+		return (fault(ae, errno, NULL, "open_memstream: %s",
+		    strerror(errno)));
+	rc = acl_compile(c, fp, &nrules, &l2, ae);
+	if (fclose(fp) != 0 && rc == 0)
+		rc = fault(ae, errno, NULL, "the rules: %s", strerror(errno));
 	if (rc != 0) {
 		free(buf);
 		return (-1);
 	}
 	wadopt(w, buf);
-	if (l2 != NULL && !ether_ipfw(w)) {
-		snprintf(err, errlen, "acl %s: an Ethernet match needs the "
-		    "frames on ipfw's layer-2 pass, net.link.ether.ipfw=1, "
-		    "which is the admin's to set (this agent does not)", l2);
-		return (-1);
-	}
+	if (l2 != NULL && !ether_ipfw(w))
+		return (fault(ae, EIO, "acl/aces/ace/matches/eth", "acl %s: an "
+		    "Ethernet match needs the frames on ipfw's layer-2 pass, "
+		    "net.link.ether.ipfw=1, which is the admin's to set (this "
+		    "agent does not)", l2));
 	if (kernel_rules(w, &k, &nk) != 0) {
 		if (nrules == 0)
 			return (0);
-		snprintf(err, errlen, "ipfw cannot be read (ipfw(4) not "
-		    "loaded?): the ACLs would be kept and not enforced");
-		return (-1);
+		return (fault(ae, EIO, NULL, "ipfw cannot be read (ipfw(4) not "
+		    "loaded?): the ACLs would be kept and not enforced"));
 	}
-	if (kernel_free(k, nk, err, errlen) != 0)
+	if (kernel_free(k, nk, ae) != 0)
 		return (-1);
+	/* What fails from here is ipfw's, or the file's. */
+	ae->error = EIO;
+	ae->sid = 0;
 	if (nrules == 0) {
 		ours = false;
 		for (size_t i = 0; i < nk; i++)
@@ -1202,9 +1292,38 @@ has_rule(const struct krule *k, size_t nk, const char *tag, const char *acl,
 }
 
 /*
+ * An ACE's statistics (acl-aggregate-stats) into a's st: the counters
+ * of its rules in set 29, the name map's tag, every family's summed, the
+ * layer-2 pass's tagging rule left out (the IP pass's decides).
+ */
+static int
+ace_stats(const struct krule *k, size_t nk, const char *tag, const char *acl,
+    const char *ace, cbl_yarena *a,
+    const struct ietf_access_control_list_acls_acl_aces_ace_statistics **out)
+{
+	struct ietf_access_control_list_acls_acl_aces_ace_statistics *st;
+	char		 cm[ACL_COMMENT + 1];
+
+	if ((st = cbl_yarena_alloc(a, sizeof(*st))) == NULL)
+		return (ENOMEM);
+	memset(st, 0, sizeof(*st));
+	comment_of(cm, sizeof(cm), tag, acl, ace);
+	for (size_t i = 0; i < nk; i++)
+		if (k[i].set == ACL_SET && !k[i].count &&
+		    strcmp(k[i].comment, cm) == 0) {
+			st->matched_packets += k[i].pkts;
+			st->matched_octets += k[i].bytes;
+		}
+	st->has_matched_packets = st->has_matched_octets = true;
+	*out = st;
+	return (0);
+}
+
+/*
  * Running's acls as the kernel has them, into out: each ACL whose band
- * is whole (every ACE's rule and the return, by the name map), each
- * attachment whose call is there; nothing where ipfw cannot be read.
+ * is whole (every ACE's rule and the return, by the name map), its ACEs
+ * with their statistics, each attachment whose call is there; nothing
+ * where ipfw cannot be read.
  */
 static int
 acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
@@ -1224,12 +1343,15 @@ acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
 	    *outs;
 	struct ietf_access_control_list_acls_attachment_points_interface_egress_acl_sets_acl_set
 	    *outv;
+	struct ietf_access_control_list_acls_acl_aces	*as;
 	struct krule	*k;
 	yacls		*r;
 	yacl		*v;
+	yace		*ev;
 	char		 tag[32];
 	size_t		 nk, i, j, n, m, nin, nout;
 	bool		*whole, have;
+	int		 error;
 
 	*out = NULL;
 	if (kernel_rules(w, &k, &nk) != 0)
@@ -1250,8 +1372,26 @@ acl_installed(struct work *w, const yacls *c, cbl_yarena *a,
 			have = has_rule(k, nk, tag, c->acl.v[i].name,
 			    c->acl.v[i].aces->ace.v[j].name);
 		}
-		if ((whole[i] = have))
-			v[n++] = c->acl.v[i];
+		if (!(whole[i] = have))
+			continue;
+		v[n] = c->acl.v[i];
+		if (m > 0) {
+			if ((as = cbl_yarena_alloc(a, sizeof(*as))) == NULL ||
+			    (ev = cbl_yarena_alloc(a, m * sizeof(*ev))) == NULL)
+				return (ENOMEM);
+			for (j = 0; j < m; j++) {
+				ev[j] = c->acl.v[i].aces->ace.v[j];
+				snprintf(tag, sizeof(tag), "%zu.%zu", i, j + 1);
+				if ((error = ace_stats(k, nk, tag,
+				    c->acl.v[i].name, ev[j].name, a,
+				    &ev[j].statistics)) != 0)
+					return (error);
+			}
+			as->ace.n = m;
+			as->ace.v = ev;
+			v[n].aces = as;
+		}
+		n++;
 	}
 	r->acl.n = n;
 	r->acl.v = v;
@@ -1361,28 +1501,34 @@ acl_get(bool operational, cbl_yarena *a, struct ietf_access_control_list *data)
 }
 
 /*
- * after's acls compiled and made the kernel's, then kept; refused, -1
- * and why, the kernel and the file as they were.
+ * after's acls compiled and made the kernel's, then kept; refused, an
+ * errno, why in err and the node at fault in *sid (0: the acls), the
+ * kernel and the file as they were.
  */
 int
 acl_edit(const struct ietf_access_control_list *after, char *err,
-    size_t errlen)
+    size_t errlen, uint64_t *sid)
 {
+	struct aclerr	ae;
 	struct work	w;
 	int		rc;
 
-	err[0] = '\0';
+	memset(&ae, 0, sizeof(ae));
 	work_init(&w);
 	pthread_mutex_lock(&acl_lock);
-	rc = acl_apply(&w, after != NULL ? after->acls : NULL, err, errlen);
-	if (rc == 0)
-		rc = kept_write(after, err, errlen);
+	rc = acl_apply(&w, after != NULL ? after->acls : NULL, &ae);
+	if (rc == 0 && (rc = kept_write(after, ae.msg, sizeof(ae.msg))) != 0)
+		ae.error = EIO;
 	pthread_mutex_unlock(&acl_lock);
 	work_free(&w);
-	if (rc == 0)
+	snprintf(err, errlen, "%s", ae.msg);
+	*sid = ae.sid;
+	if (rc == 0) {
 		logmsg(LOG_NOTICE, "acls: %zu applied", after != NULL &&
 		    after->acls != NULL ? after->acls->acl.n : 0);
-	return (rc);
+		return (0);
+	}
+	return (ae.error != 0 ? ae.error : EIO);
 }
 
 /* At the start: the kept ACLs made the kernel's again. */
@@ -1391,8 +1537,8 @@ acl_start(void)
 {
 	struct ietf_access_control_list	 kept;
 	struct work			 w;
+	struct aclerr			 ae;
 	cbl_yarena			*a;
-	char				 err[256];
 
 	if ((a = cbl_yarena_new()) == NULL)
 		return;
@@ -1400,9 +1546,10 @@ acl_start(void)
 	if (kept_read(&kept, a) == 0 && kept.acls != NULL) {
 		work_init(&w);
 		pthread_mutex_lock(&acl_lock);
-		if (acl_apply(&w, kept.acls, err, sizeof(err)) != 0)
+		memset(&ae, 0, sizeof(ae));
+		if (acl_apply(&w, kept.acls, &ae) != 0)
 			logmsg(LOG_ERR, "acls: the kept ACLs not applied: %s",
-			    err);
+			    ae.msg);
 		pthread_mutex_unlock(&acl_lock);
 		work_free(&w);
 	}

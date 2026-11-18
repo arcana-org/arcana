@@ -3998,11 +3998,82 @@ whose first part is served.
   matched by packets), masks and the ethertype on a real frame, the
   egress interface on a forwarded packet; a VLAN's frames (mac-type
   sees the outer type).
-- 6.1.3 A: the refusals with extended acks (ICMP code, ECN, ihl,
-  offset, identification, TCP fields, ECE/CWR/AE, IPv6 ff/lf, the three
-  extension headers); check: one test per refusal.
+- 6.1.3 A: the refusals with extended acks (what ipfw still cannot
+  say of RFC 8519 after 6.1.2, which compiles IPv4's identification
+  and ECN 0 and 3: IPv4's ihl, ECN 1 and 2, offset; IPv6's ECN, hop
+  limit and a length past iplen's; TCP's data offset, reserved bits,
+  CWR/ECE, urgent pointer and options; UDP's length; ICMP's code and
+  rest of header; the plan's IPv6 ff/lf, AE and three extension
+  headers are RFC 9899's matches, 6.1.6's to compile or refuse when
+  that module is served); check: one test per refusal.
+  Design (decided here): the extended ack is cblink's error, RFC
+  8040's: error-path the node at fault (the leaf's SID, the ACL and
+  ACE named in error-message, cblink's handler error-path being a SID
+  and no keys), error-tag by the errno: operation-not-supported what
+  ipfw cannot say (each message "acl A, ace E: what is not compiled
+  into ipfw by this agent: why", why naming what ipfw has instead:
+  iptos reads both ECN bits at once, frag whether the offset is 0,
+  tcpflags six flags, icmptypes the type alone, ...), invalid-value
+  what does not hold together (an IPv4 match in an IPv6 ACL, a TCP
+  match with protocol 17, a port range upside down, a network or an
+  interface name ipfw cannot read, an attachment of no ACL), in-use an
+  admin's rule at the ACLs' numbers or in their sets, resource-denied
+  more ACEs or attachments than the numbers hold.  No error-app-tag:
+  arcanactl and the page read one as a warning to accept, and these
+  cannot be.  cblink kept the node a handler named only until the
+  commit's own failure path put the handler's top node over it
+  (cbl_yfailed()); it keeps the handler's now (a cblink change, with
+  yfamily_test:edit_rollback), and arcanactl says the node after a
+  refusal at the commit, "(at /module:a/b)" (the console's RESTCONF
+  already turned the SID into error-path).
+  Done.  Checked: agent_test:acl_refusals (the stand-in ipfw, an ACL
+  installed first and left as it was by each: IPv4's ihl, ECN 1, ECN
+  2, offset; IPv6's ECN, TTL, length 65500; TCP's data-offset,
+  reserved, CWR, ECE with SYN, urgent-pointer, options; UDP's length;
+  ICMP's code, rest-of-header; an ARP ethertype; an Ethernet ACL's ACE
+  of no family (the ACE); an Ethernet ACL on an egress (the egress
+  acl-set); egress-interface on an ingress; and two of invalid-value,
+  an IPv4 match in an IPv6 ACL and a TCP match with protocol 17: each
+  refused, nothing loaded, running as it was, the message what and
+  why, the node at fault its schema path), cblink's yfamily_test:
+  edit_rollback (a handler's node kept as the error-path),
+  acl_match_fields and acl_rfc8519 still passing.  Not checked: the
+  error-tag itself (arcanactl says the message and the node; the
+  errno's tag is cblink's mapping), the RESTCONF error-path through
+  the console.
 - 6.1.4 A: actions and logging; aggregate statistics from rule
   counters; check: `ipfw -a list`.
+  Design (decided here): the forwarding actions are 6.1.1's (accept
+  `allow`, drop `deny`, reject an unreachable administratively
+  prohibited, `unreach filter-prohib` and `unreach6 admin-prohib`, a
+  rule each where the ACE names no family).  Logging: log-syslog is
+  the rule's `log logdst syslog` (to syslogd(8) as LOG_SECURITY,
+  whatever net.inet.ip.fw.verbose, as many as
+  net.inet.ip.fw.verbose_limit lets, the admin's), on each family's
+  rule and on the IP pass's alone where an Ethernet match tags on the
+  layer-2 pass; log-none none; any other log action refused.
+  Statistics (feature acl-aggregate-stats now advertised): the
+  operational datastore's ACE has matched-packets and matched-octets,
+  its rules' counters as `ipfw -a -S list` gives them (the name map
+  reads that list now), every family's rule summed, the layer-2 pass's
+  tagging rule's not; the band is one for all its attachments, so this
+  is the aggregate RFC 8519 asks for.  They count from the last edit
+  (each loads the rules anew; RFC 8519 has no discontinuity time to
+  say so).  interface-stats stays unadvertised (a band per attachment).
+  Done.  Checked: agent_test:acl_actions (the stand-in ipfw, counting
+  as a file says: accept, drop, reject of IPv4, of IPv6 and of either,
+  each rule as loaded and read back; log-syslog on a drop, on a reject
+  of either family (both rules) and on an Ethernet ACE (the IP pass's
+  rule, not the tagging one); log-none no log; an ACE's statistics its
+  counters, a reject of either family's two rules summed, an Ethernet
+  ACE's tagging rule left out, an ACE counting nothing 0, read again as
+  the counters go, none in running), agent_root_test:acl_vnet (ipfw
+  for real: an echo ACE accepting with log-syslog, three pings over
+  lo0, `ipfw -a list 61000` 3 packets and 252 bytes and the ACE's
+  statistics the same, the other ACE's 0; three log lines in the
+  message buffer with net.inet.ip.fw.verbose 0).  Not checked: a
+  reject's unreachable on the wire, log-syslog's limit
+  (verbose_limit), counters across an edit (they start again).
 - 6.1.5 A: RFC 9899 defined sets: prefix sets as tables with shadow
   swap, port sets as lists or number tables, protocol sets as
   or-blocks, ICMP sets as lists, aliases decomposed; check: Appendix
