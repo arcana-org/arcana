@@ -10548,6 +10548,69 @@ ATF_TC_CLEANUP(pwa_follow, tc)
 }
 
 /*
+ * A service stopped on the host, which its agent tells on the fleet's
+ * stream (the event service-state, ira/services.c): the Services tab
+ * shows it stopped at once, the page not loaded again.  The host's
+ * events of processes, which read the tab too, are held back from the
+ * page here (their data read as nothing), so that service-state alone
+ * may; nothing is started for it (running.sshd taken away by
+ * unlink(2)).
+ */
+static void
+part_service_told(void)
+{
+	FILE	*fp;
+
+	ATF_REQUIRE((fp = fopen("running.sshd", "w")) != NULL);
+	fclose(fp);
+	host_open("lab");
+	click_when("button.tab[data-arg=services]", 10);
+	wait_js("document.querySelector('.svc[data-arg=sshd].s-running')", 20);
+	run("window.svcPage = 1; window.labIds = null; fetch('/restconf/data/"
+	    "arcana-console:hosts').then(r => r.json()).then(j => { const ids "
+	    "= {}; j['arcana-console:hosts'].host.forEach(v => ids[v.name] = "
+	    "v.id); window.labIds = ids; });");
+	wait_js("window.labIds && window.labIds.lab", 20);
+	wait_js("window.arcanaStream && window.arcanaStream.readyState === 1 "
+	    "&& window.arcanaStreams[1] === 'fleet'", 10);
+	run("const d = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "
+	    "'data'); Object.defineProperty(MessageEvent.prototype, 'data', { "
+	    "configurable: true, get() { const v = d.get.call(this); return "
+	    "typeof v === 'string' && v.includes('arcana-events:procs') ? '' : "
+	    "v; } });");
+	ATF_REQUIRE(unlink("running.sshd") == 0);
+	run("window.arcanaStream.dispatchEvent(new MessageEvent('fleet', { "
+	    "data: JSON.stringify({ 'ietf-restconf:notification': { eventTime: "
+	    "new Date().toISOString(), 'arcana-fleet:fleet': { host: [{ id: "
+	    "window.labIds.lab, 'arcana-events:event': { number: '900100', "
+	    "time: new Date().toISOString(), kind: 'arcana-events:"
+	    "service-state', 'service-state': { service: 'sshd', state: "
+	    "'stopped' } } }] } } }) }));");
+	wait_js("document.querySelector('.svc[data-arg=sshd].s-stopped') && "
+	    "window.svcPage === 1", 15);
+}
+
+ATF_TC_WITH_CLEANUP(pwa_service_told);
+ATF_TC_HEAD(pwa_service_told, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A service stopped on the host, its agent's event service-state on the fleet's stream: the Services tab shows it stopped, the page not loaded again");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_service_told, tc)
+{
+
+	prologue(tc, 1);
+	part_service_told();
+}
+ATF_TC_CLEANUP(pwa_service_told, tc)
+{
+
+	(void)unlink("running.sshd");
+	browser_stop();
+}
+
+/*
  * Keys typed as a hand types them, into what has the focus: "\r" is
  * Enter.
  */
@@ -15543,6 +15606,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_streams);
 	ATF_TP_ADD_TC(tp, pwa_page_stream);
 	ATF_TP_ADD_TC(tp, pwa_follow);
+	ATF_TP_ADD_TC(tp, pwa_service_told);
 	ATF_TP_ADD_TC(tp, pwa_terminal);
 	ATF_TP_ADD_TC(tp, pwa_tabs);
 	ATF_TP_ADD_TC(tp, pwa_unreached);

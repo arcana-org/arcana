@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-events",
     "module-revision": "2026-10-15",
-    "sid-file-version": 9,
+    "sid-file-version": 10,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -2577,6 +2577,71 @@
         "namespace": "data",
         "identifier": "/arcana-events:events/read/output/event/key/public",
         "sid": "94908"
+      },
+      {
+        "namespace": "identity",
+        "identifier": "service-state",
+        "sid": "94909"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/service-state",
+        "sid": "94910"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/service-state/pid",
+        "sid": "94911"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/service-state/service",
+        "sid": "94912"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/service-state/state",
+        "sid": "94913"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/service-state",
+        "sid": "94914"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/service-state/pid",
+        "sid": "94915"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/service-state/service",
+        "sid": "94916"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/service-state/state",
+        "sid": "94917"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/service-state",
+        "sid": "94918"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/service-state/pid",
+        "sid": "94919"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/service-state/service",
+        "sid": "94920"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/service-state/state",
+        "sid": "94921"
       }
     ]
   }

@@ -180,9 +180,14 @@ module: arcana-events
      |     |     +--ro action?     string
      |     |     +--ro detail?     string
      |     +--:(key)
-     |        +--ro key
-     |           +--ro interface?   string
-     |           +--ro public?      string
+     |     |  +--ro key
+     |     |     +--ro interface?   string
+     |     |     +--ro public?      string
+     |     +--:(service-state)
+     |        +--ro service-state
+     |           +--ro service?   string
+     |           +--ro state?     enumeration
+     |           +--ro pid?       uint32
      +---x read
         +---w input
         |  +---w after?   uint64
@@ -366,9 +371,14 @@ module: arcana-events
            |     |     +--ro action?     string
            |     |     +--ro detail?     string
            |     +--:(key)
-           |        +--ro key
-           |           +--ro interface?   string
-           |           +--ro public?      string
+           |     |  +--ro key
+           |     |     +--ro interface?   string
+           |     |     +--ro public?      string
+           |     +--:(service-state)
+           |        +--ro service-state
+           |           +--ro service?   string
+           |           +--ro state?     enumeration
+           |           +--ro pid?       uint32
            +--ro kept?    uint16
 
   notifications:
@@ -549,6 +559,11 @@ module: arcana-events
           |     +---- action?     string
           |     +---- detail?     string
           +--:(key)
-             +---- key
-                +---- interface?   string
-                +---- public?      string
+          |  +---- key
+          |     +---- interface?   string
+          |     +---- public?      string
+          +--:(service-state)
+             +---- service-state
+                +---- service?   string
+                +---- state?     enumeration
+                +---- pid?       uint32

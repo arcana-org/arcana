@@ -32,7 +32,8 @@ module arcana-events {
      logdst rtsock), a job ending, a jail made or removed (kqueue(2)'s
      EVFILT_JAIL), a process dying of a signal that dumps core
      (kern.logsigexit), a service's unbound, Squid or c-icap blocking
-     what a function policy names (their own logs).  Each is one of the kinds, with that kind's
+     what a function policy names (their own logs), a service
+     started or stopped.  Each is one of the kinds, with that kind's
      data.  The agent keeps the last 512; a read after a number
      misses none unless the oldest kept is beyond it.  The events and
      event operations of arcana.yaml converted (Y-3): the list is the
@@ -208,6 +209,14 @@ module arcana-events {
        back: its public half is not what it was (a plain tunnel's
        authenticated STAMP key, a uswe tunnel's SAs, are derived from
        it and the far end's).";
+  }
+  identity service-state {
+    base event-kind;
+    description
+      "A service of the host's rc.d started or stopped, by whoever
+       (service(8) by hand, a job, the daemon dying): its main
+       process's exit told by kqueue(2)'s EVFILT_PROC, a start by its
+       pidfile once processes start, rc(8)'s status read again.";
   }
 
   grouping event {
@@ -1055,6 +1064,35 @@ module arcana-events {
           type string;
           description
             "Its public half now, base64.";
+        }
+      }
+      container service-state {
+        description
+          "service-state: a service started or stopped.";
+        leaf service {
+          type string;
+          description
+            "Its rc.d script's name.";
+        }
+        leaf state {
+          type enumeration {
+            enum running {
+              description
+                "service(8) status says it runs.";
+            }
+            enum stopped {
+              description
+                "It says it does not.";
+            }
+          }
+          description
+            "Which, now.";
+        }
+        leaf pid {
+          type uint32;
+          description
+            "Its main process, where known: rc's status line's, or the
+             one process of its program while its pidfile is stale.";
         }
       }
     }

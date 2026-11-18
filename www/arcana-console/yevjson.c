@@ -254,6 +254,14 @@ data_of(const yevent *e)
 		PUT_NUM(d, "started", e->procs, started);
 		PUT_NUM(d, "exited", e->procs, exited);
 		break;
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_SERVICE_STATE:
+		put_str(d, "service", e->service_state->service);
+		if (e->service_state->has_state)
+			put_str(d, "state", e->service_state->state ==
+			    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_RUNNING ?
+			    "running" : "stopped");
+		PUT_NUM(d, "pid", e->service_state, pid);
+		break;
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_MONITOR:
 		put_str(d, "id", e->monitor->id);
 		put_str(d, "metric", e->monitor->metric);
@@ -391,6 +399,7 @@ yev_ntf_json(const struct arcana_events_event *n)
 	e.undo = (const void *)n->undo;
 	e.altmark = (const void *)n->altmark;
 	e.block = (const void *)n->block;
+	e.service_state = (const void *)n->service_state;
 	return (yev_json(&e));
 }
 

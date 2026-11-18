@@ -160,6 +160,13 @@ event(const struct arcana_events_event_entry *e)
 		printf("key %s public=%s", str(e->key->interface),
 		    str(e->key->public));
 		break;
+	case ARCANA_EVENTS_EVENT_ENTRY_DATA_SERVICE_STATE:
+		printf("service-state %s %s pid=%u",
+		    str(e->service_state->service), e->service_state->has_state ?
+		    (e->service_state->state ==
+		    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_RUNNING ?
+		    "running" : "stopped") : "-", e->service_state->pid);
+		break;
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_UNDO:
 		printf("undo %s errno=%d %s", str(e->undo->node),
 		    e->undo->errno_, str(e->undo->message));

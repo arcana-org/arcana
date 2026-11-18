@@ -244,10 +244,23 @@
   list of the agent's names them (nacm-allow names actions and the
   text leaves); the page and RESTCONF would have to be gone through
   for a viewer node by node first.
-- A viewer's service read is what the agent last saw (ira/services.c,
-  every five minutes and every operator's read): a service started or
-  stopped by hand shows so to a viewer within five minutes, not at
-  once.
+- Done (agent_test:services_watch, pwa_test:pwa_service_told): a
+  viewer's service read, what the agent last saw (ira/services.c), is
+  kept as services start and stop, by one thread on one kqueue(2): a
+  running service's main process (rc's status pid, or its pidfile's)
+  watched for its exit (EVFILT_PROC NOTE_EXIT); a stopped one's
+  pidfile read, and its process checked as rc checks it, when the
+  host's processes start (gula/hostwatch.c), each second for three
+  seconds after a start or an exit, and every 15 s; only a service
+  that changed has its status run.  An operator's action keeps what it
+  read too.  A change is the event service-state ({service, state,
+  pid}), which the page's Services tab reads again on, and a
+  workflow's trigger (a service starts, stops).  Left: a service that
+  says no pid while it runs and has no pidfile, or has no pidfile
+  while stopped, is seen within a minute (its status run every 60 s);
+  a start whose pidfile is written later than three seconds after,
+  or by a process the agent's own children made (hostwatch counts
+  none of those), within 15 s.
 - The kernel message buffer's end found by its contents
   (gula/kmsg.c): when the ring wrapped and the kernel said the last
   line read again, which of its places is the old one stays a guess (the

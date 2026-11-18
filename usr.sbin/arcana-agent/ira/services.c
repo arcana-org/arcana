@@ -25,6 +25,29 @@
  * and whether each is enabled are read as ever (the rc.d directories,
  * libvarconf, sysrc -A), which runs none.
  *
+ * Between those looks a service started or stopped by hand is noticed
+ * as it happens, by one thread on one kqueue(2) (svc_watcher()), and
+ * only that service's status is run again:
+ *
+ * - a running one's main process (rc's status line's pid, or else its
+ *   pidfile's) is watched for its exit (EVFILT_PROC, NOTE_EXIT);
+ * - a stopped one is looked at by its pidfile alone (a file read, and
+ *   the process it names checked as rc checks it, rc_proc_is()): when
+ *   the host's processes start (gula/hostwatch.c's tick says so,
+ *   services_procs_started()), each second for a few seconds after
+ *   that or after an exit (a daemon writes its pidfile a moment after
+ *   it forks), and every RECHECK_S seconds for a start nothing else
+ *   tells of (one the agent's own children made, which hostwatch
+ *   does not count);
+ * - one that says no pid while it runs, or has no pidfile while it is
+ *   stopped, has its status run every UNKNOWN_S seconds.
+ *
+ * Its pidfile and program (svc_rcproc(), which runs the script's top
+ * level) are read once a COLLECT_S, and only for a service that needs
+ * them.  Whatever look saw a service's state change (started, stopped,
+ * another pid) says so in the event service-state, which the console's
+ * stream carries to every page that shows the host.
+ *
  * An enabled service rc says does not run is looked at once more: its
  * pidfile and program as its script sets them, and the host's processes
  * (svc_stale()).  Its program running where rc looks for it while the
@@ -35,6 +58,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/event.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
@@ -58,6 +82,10 @@
 #include "varconf.h"
 
 #define	COLLECT_S	300	/* between the collector's looks */
+#define	FIRST_S		10	/* the collector's first look, after start */
+#define	RECHECK_S	15	/* the stopped ones' pidfiles looked at */
+#define	UNKNOWN_S	60	/* status of those no pid or pidfile tells of */
+#define	HOT_LOOKS	3	/* seconds of looks after a start or an exit */
 
 struct script {
 	const char	*name;
@@ -77,7 +105,21 @@ struct collected {
 	bool		 running;
 	bool		 has_pid;
 	bool		 has_pidfile_pid;
+	uint32_t	 quiet;		/* a look saw nothing new at it */
+	/* Its script's pidfile and program (svc_rcproc()), the watcher's:
+	 * RP_NONE when it has no pidfile, read at rp_at. */
+	int		 rp_state;
+	time_t		 rp_at;
+	char		 rp_pidfile[MAXPATHLEN];
+	char		 rp_procname[MAXPATHLEN];
+	char		 rp_interp[MAXPATHLEN];
+	int		 rp_jid;
 };
+
+enum { RP_UNREAD, RP_READ, RP_NONE };
+
+/* The watcher's kevents: its two pokes, its two timers. */
+enum { K_REARM = 1, K_STARTED, K_RECHECK, K_HOT };
 
 /*
  * A service's pidfile and program, as its script sets them for
@@ -94,6 +136,9 @@ static pthread_mutex_t	 coll_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct collected	*coll;
 static size_t		 ncoll;
 static time_t		 coll_at;
+/* The watcher's kqueue(2), -1 none: poked by collect_keep() and by
+ * services_procs_started(). */
+static int		 svc_kq = -1;
 
 static int	cmp_script(const void *, const void *);
 static bool	valid_name(const char *);
@@ -806,6 +851,9 @@ svc_current(struct work *w, const struct script *sc)
 		s->enabled = on;
 	}
 	svc_status(w, s);
+	/* What a viewer is told, and the watcher, at once. */
+	if (!w->dry)
+		collect_keep(s, 1, false);
 	return (s);
 }
 
@@ -1075,32 +1123,65 @@ service_read(struct work *w, const char *name, struct service_config_rsp *rsp)
 	return (0);
 }
 
+/* A service's state as a look saw it change: the event service-state. */
+static void
+svc_told(const char *name, bool running, bool has_pid, uint32_t pid)
+{
+	char	q[160];
+
+	if (has_pid)
+		event_add("service-state", "{\"service\":\"%s\",\"state\":"
+		    "\"%s\",\"pid\":%u}", json_quote(name, q, sizeof(q)),
+		    running ? "running" : "stopped", pid);
+	else
+		event_add("service-state", "{\"service\":\"%s\",\"state\":"
+		    "\"%s\"}", json_quote(name, q, sizeof(q)), running ?
+		    "running" : "stopped");
+}
+
+/* The watcher told to look at what is kept again. */
+static void
+svc_poke(void)
+{
+	struct kevent	ev;
+
+	if (svc_kq == -1)
+		return;
+	EV_SET(&ev, K_REARM, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+	(void)kevent(svc_kq, &ev, 1, NULL, 0, NULL);
+}
+
 /*
  * What a list or a read saw (v, n of them) kept for a viewer's
  * requests: each one's running, status line, pid and rcvar; with all,
  * v is every enabled service, and one not among them is forgotten.
+ * One seen before whose state is not what it was (started, stopped,
+ * another pid) is told (svc_told()); the watcher looks again.
  */
 static void
 collect_keep(const struct arc_service *v, size_t n, bool all)
 {
 	struct collected	*c, *nc;
 	size_t			 i, k, m;
+	bool			*tell;
 
+	if ((tell = calloc(n + 1, sizeof(*tell))) == NULL)
+		return;
 	pthread_mutex_lock(&coll_lock);
 	if (all) {
-		/* Kept: those of v, and their rcvars said before. */
+		/* Kept: those of v, and what was said of them before. */
 		if ((nc = calloc(n + 1, sizeof(*nc))) == NULL) {
 			pthread_mutex_unlock(&coll_lock);
+			free(tell);
 			return;
 		}
 		for (i = m = 0; i < n; i++) {
 			if (!v[i].has_enabled || !v[i].enabled)
 				continue;
-			(void)strlcpy(nc[m].name, v[i].name, sizeof(nc[m].name));
 			for (k = 0; k < ncoll; k++)
 				if (strcmp(coll[k].name, v[i].name) == 0)
-					(void)strlcpy(nc[m].rcvar, coll[k].rcvar,
-					    sizeof(nc[m].rcvar));
+					nc[m] = coll[k];
+			(void)strlcpy(nc[m].name, v[i].name, sizeof(nc[m].name));
 			m++;
 		}
 		free(coll);
@@ -1125,6 +1206,9 @@ collect_keep(const struct arc_service *v, size_t n, bool all)
 			ncoll++;
 		}
 		c = &coll[k];
+		tell[i] = c->has_running && v[i].has_running && (c->running !=
+		    v[i].running || (v[i].running && v[i].has_pid &&
+		    (!c->has_pid || c->pid != v[i].pid)));
 		c->has_running = v[i].has_running;
 		c->running = v[i].running;
 		c->has_pid = v[i].has_pid;
@@ -1141,6 +1225,12 @@ collect_keep(const struct arc_service *v, size_t n, bool all)
 			(void)strlcpy(c->rcvar, v[i].rcvar, sizeof(c->rcvar));
 	}
 	pthread_mutex_unlock(&coll_lock);
+	for (i = 0; i < n; i++)
+		if (tell[i])
+			svc_told(v[i].name, v[i].running, v[i].has_pid,
+			    v[i].pid);
+	free(tell);
+	svc_poke();
 }
 
 /* Service s as the collector saw it last, into s; true when it did.
@@ -1256,16 +1346,18 @@ service_read_collected(struct work *w, const char *name,
 	return (0);
 }
 
-/* The collector: every COLLECT_S, the list as an operator's read has
- * it, kept (collect_keep()). */
+/* The collector: FIRST_S after the start, then every COLLECT_S, the
+ * list as an operator's read has it, kept (collect_keep()). */
 static void *
 collector(void *arg __unused)
 {
 	struct services_rsp	 r;
 	struct work		 w;
+	unsigned		 s = FIRST_S;
 
 	for (;;) {
-		(void)sleep(COLLECT_S);
+		(void)sleep(s);
+		s = COLLECT_S;
 		work_init(&w);
 		w.nice = true;
 		memset(&r, 0, sizeof(r));
@@ -1275,15 +1367,361 @@ collector(void *arg __unused)
 	return (NULL);
 }
 
+/* A pid watched for its exit (NOTE_EXIT), and whose; the watcher's. */
+struct svc_watch {
+	pid_t	 pid;
+	char	 name[65];
+};
+
+static struct svc_watch	*watched;
+static size_t		 nwatched, capwatched;
+
+/* A service as the watcher takes it from what is kept. */
+struct look {
+	char		 name[65];
+	bool		 has_running;
+	bool		 running;
+	bool		 has_pid;
+	uint32_t	 pid;
+	uint32_t	 quiet;
+	int		 rp_state;
+	time_t		 rp_at;
+	struct rcproc	 rp;
+};
+
+/* The pid rp's pidfile names, when it is a process of rp's program
+ * where rc looks for it (rc_proc_is()); 0 otherwise. */
+static pid_t
+rp_pid(struct work *w, const struct rcproc *rp)
+{
+	FILE	*fp;
+	long	 v;
+	pid_t	 pid = 0;
+
+	if ((fp = fopen(rp->pidfile, "re")) == NULL)
+		return (0);
+	if (fscanf(fp, "%ld", &v) == 1 && v > 1 && v <= INT_MAX)
+		pid = (pid_t)v;
+	fclose(fp);
+	return (pid != 0 && rc_proc_is(w, pid, rp) ? pid : 0);
+}
+
+/* The scripts, read once a pass and only when one is needed. */
+static const struct script *
+pass_script(struct work *w, struct script **sc, size_t *n, bool *read,
+    const char *name)
+{
+
+	if (!*read) {
+		scan_scripts(w, sc, n);
+		*read = true;
+	}
+	return (script_find(*sc, *n, name));
+}
+
+/* l's pidfile and program read by its script, and kept with it. */
+static void
+pass_rp(struct work *w, const struct script *f, struct look *l)
+{
+	struct collected	*c;
+	size_t			 k;
+
+	l->rp_state = f != NULL && svc_rcproc(w, f->path, &l->rp) ? RP_READ :
+	    RP_NONE;
+	l->rp_at = time(NULL);
+	pthread_mutex_lock(&coll_lock);
+	for (k = 0; k < ncoll; k++) {
+		if (strcmp(coll[k].name, l->name) != 0)
+			continue;
+		c = &coll[k];
+		c->rp_state = l->rp_state;
+		c->rp_at = l->rp_at;
+		if (l->rp_state == RP_READ) {
+			(void)strlcpy(c->rp_pidfile, l->rp.pidfile,
+			    sizeof(c->rp_pidfile));
+			(void)strlcpy(c->rp_procname, l->rp.procname,
+			    sizeof(c->rp_procname));
+			(void)strlcpy(c->rp_interp, l->rp.interp,
+			    sizeof(c->rp_interp));
+			c->rp_jid = l->rp.jid;
+		}
+	}
+	pthread_mutex_unlock(&coll_lock);
+}
+
+/* A look that saw nothing new at pid: none again for the same pid. */
+static void
+pass_quiet(const char *name, uint32_t pid)
+{
+	size_t	k;
+
+	pthread_mutex_lock(&coll_lock);
+	for (k = 0; k < ncoll; k++)
+		if (strcmp(coll[k].name, name) == 0)
+			coll[k].quiet = pid;
+	pthread_mutex_unlock(&coll_lock);
+}
+
+/* pid watched for its exit, as name's; false when it is gone already. */
+static bool
+watch_pid(int kq, const char *name, pid_t pid)
+{
+	struct kevent	 ev;
+	struct svc_watch *nw;
+	size_t		 i;
+
+	for (i = 0; i < nwatched; i++)
+		if (watched[i].pid == pid && strcmp(watched[i].name, name) == 0)
+			return (true);
+	EV_SET(&ev, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
+	if (kevent(kq, &ev, 1, NULL, 0, NULL) == -1)
+		return (false);
+	if (nwatched == capwatched) {
+		if ((nw = reallocarray(watched, capwatched * 2 + 8,
+		    sizeof(*watched))) == NULL)
+			return (true);
+		watched = nw;
+		capwatched = capwatched * 2 + 8;
+	}
+	watched[nwatched].pid = pid;
+	(void)strlcpy(watched[nwatched].name, name,
+	    sizeof(watched[nwatched].name));
+	nwatched++;
+	return (true);
+}
+
+/* Was name's watched process among those gone (it is no longer
+ * watched then)? */
+static bool
+watch_gone(const char *name, const pid_t *gone, size_t ngone)
+{
+	size_t	i, j;
+	bool	was = false;
+
+	for (i = 0; i < nwatched; ) {
+		for (j = 0; j < ngone && watched[i].pid != gone[j]; j++)
+			;
+		if (j < ngone && strcmp(watched[i].name, name) == 0) {
+			watched[i] = watched[--nwatched];
+			was = true;
+		} else
+			i++;
+	}
+	return (was);
+}
+
+/*
+ * One look over what is kept: a service whose watched process is among
+ * gone, or whose pidfile (with pidfiles) names a process of its while
+ * it is stopped, or (with unknown) that tells neither, has its status
+ * run again and kept, which tells its change (collect_keep()); each
+ * running one's process watched.
+ */
+static void
+svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
+    bool unknown)
+{
+	struct work		 w;
+	struct look		*lv, *l;
+	struct arc_service	 s;
+	struct script		*sc = NULL;
+	const struct script	*f;
+	struct collected	*c;
+	size_t			 nl, i, nsc = 0;
+	time_t			 now;
+	pid_t			 pid;
+	bool			 full, read = false;
+
+	work_init(&w);
+	w.nice = true;
+	pthread_mutex_lock(&coll_lock);
+	lv = wcalloc(&w, ncoll + 1, sizeof(*lv));
+	for (i = 0; i < ncoll; i++) {
+		c = &coll[i];
+		l = &lv[i];
+		(void)strlcpy(l->name, c->name, sizeof(l->name));
+		l->has_running = c->has_running;
+		l->running = c->running;
+		l->has_pid = c->has_pid;
+		l->pid = c->pid;
+		l->quiet = c->quiet;
+		l->rp_state = c->rp_state;
+		l->rp_at = c->rp_at;
+		if (c->rp_state == RP_READ) {
+			l->rp.pidfile = wstrdup(&w, c->rp_pidfile);
+			l->rp.procname = wstrdup(&w, c->rp_procname);
+			l->rp.interp = wstrdup(&w, c->rp_interp);
+			l->rp.jid = c->rp_jid;
+		}
+	}
+	nl = ncoll;
+	pthread_mutex_unlock(&coll_lock);
+	now = time(NULL);
+	for (i = 0; i < nl; i++) {
+		l = &lv[i];
+		pid = 0;
+		full = ngone > 0 && watch_gone(l->name, gone, ngone);
+		if (full || !l->has_running)
+			;
+		else if (!l->running) {
+			if (!pidfiles && !unknown)
+				continue;
+			if (l->rp_state == RP_UNREAD || now - l->rp_at >=
+			    COLLECT_S)
+				pass_rp(&w, pass_script(&w, &sc, &nsc, &read,
+				    l->name), l);
+			if (l->rp_state != RP_READ)
+				full = unknown;
+			else if (pidfiles && (pid = rp_pid(&w, &l->rp)) != 0)
+				full = (uint32_t)pid != l->quiet;
+		} else {
+			pid = l->has_pid ? (pid_t)l->pid : 0;
+			if (pid == 0 && (l->rp_state == RP_UNREAD || now -
+			    l->rp_at >= COLLECT_S))
+				pass_rp(&w, pass_script(&w, &sc, &nsc, &read,
+				    l->name), l);
+			if (pid == 0 && l->rp_state == RP_READ)
+				pid = rp_pid(&w, &l->rp);
+			if (pid == 0)
+				full = unknown;
+			else if (!watch_pid(kq, l->name, pid))
+				full = (uint32_t)pid != l->quiet;
+		}
+		if (!full || (f = pass_script(&w, &sc, &nsc, &read,
+		    l->name)) == NULL)
+			continue;
+		memset(&s, 0, sizeof(s));
+		s.name = wtext(&w, f->name);
+		s.path = wtext(&w, f->path);
+		svc_status(&w, &s);
+		collect_keep(&s, 1, false);
+		/* Nothing new at that pid: not looked at again for it. */
+		if (s.running && s.has_pid && !watch_pid(kq, s.name,
+		    (pid_t)s.pid))
+			pass_quiet(s.name, s.pid);
+		else if (!s.running && pid != 0)
+			pass_quiet(s.name, (uint32_t)pid);
+		else
+			pass_quiet(s.name, 0);
+	}
+	work_free(&w);
+}
+
+/*
+ * The watcher (the comment at the top): one kqueue(2), the running
+ * services' processes on it, its pokes and its timers; a look over
+ * what is kept (svc_pass()) each time it wakes.
+ */
+static void *
+svc_watcher(void *arg)
+{
+	struct kevent	 ev[16];
+	pid_t		 gone[nitems(ev)];
+	time_t		 unknown_at = 0;
+	size_t		 ngone;
+	int		 kq = (int)(intptr_t)arg, n, i, hot = 0;
+	bool		 pidfiles, unknown, heat;
+
+	for (;;) {
+		if ((n = kevent(kq, NULL, 0, ev, nitems(ev), NULL)) == -1) {
+			if (errno == EINTR)
+				continue;
+			logmsg(LOG_NOTICE, "services: their starts and stops "
+			    "are no longer watched: kevent: %s",
+			    strerror(errno));
+			break;
+		}
+		ngone = 0;
+		pidfiles = unknown = heat = false;
+		for (i = 0; i < n; i++) {
+			switch (ev[i].filter) {
+			case EVFILT_PROC:
+				if ((ev[i].fflags & NOTE_EXIT) != 0) {
+					gone[ngone++] = (pid_t)ev[i].ident;
+					heat = true;
+				}
+				break;
+			case EVFILT_USER:
+				if (ev[i].ident == K_STARTED) {
+					pidfiles = true;
+					heat = true;
+				}
+				break;
+			case EVFILT_TIMER:
+				pidfiles = true;
+				if (ev[i].ident == K_HOT && hot > 0)
+					hot--;
+				if (ev[i].ident == K_RECHECK &&
+				    time(NULL) >= unknown_at) {
+					unknown = true;
+					unknown_at = time(NULL) + UNKNOWN_S;
+				}
+				break;
+			}
+		}
+		svc_pass(kq, gone, ngone, pidfiles, unknown);
+		/* A second's looks for a few seconds: a daemon's pidfile is
+		 * written a moment after it starts, and a restart's start
+		 * follows its stop. */
+		if (heat) {
+			if (hot == 0) {
+				EV_SET(&ev[0], K_HOT, EVFILT_TIMER, EV_ADD, 0,
+				    1000, NULL);
+				(void)kevent(kq, &ev[0], 1, NULL, 0, NULL);
+			}
+			hot = HOT_LOOKS;
+		} else if (hot == 0) {
+			EV_SET(&ev[0], K_HOT, EVFILT_TIMER, EV_DELETE, 0, 0,
+			    NULL);
+			(void)kevent(kq, &ev[0], 1, NULL, 0, NULL);
+		}
+	}
+	close(kq);
+	return (NULL);
+}
+
+/* The host's processes started (gula/hostwatch.c): the stopped
+ * services' pidfiles looked at. */
+void
+services_procs_started(void)
+{
+	struct kevent	ev;
+
+	if (svc_kq == -1)
+		return;
+	EV_SET(&ev, K_STARTED, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+	(void)kevent(svc_kq, &ev, 1, NULL, 0, NULL);
+}
+
 void
 services_collect_start(void)
 {
+	struct kevent	ev[3];
 	pthread_t	tid;
-	int		error;
+	int		kq, error;
 
 	if ((error = pthread_create(&tid, NULL, collector, NULL)) != 0)
 		logmsg(LOG_ERR, "services: no collector: %s", strerror(error));
 	else
 		(void)pthread_detach(tid);
+	if ((kq = kqueue()) == -1) {
+		logmsg(LOG_NOTICE, "services: their starts and stops are not "
+		    "watched: kqueue: %s", strerror(errno));
+		return;
+	}
+	EV_SET(&ev[0], K_REARM, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	EV_SET(&ev[1], K_STARTED, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	EV_SET(&ev[2], K_RECHECK, EVFILT_TIMER, EV_ADD, 0, RECHECK_S * 1000,
+	    NULL);
+	if (kevent(kq, ev, nitems(ev), NULL, 0, NULL) == -1 ||
+	    (error = pthread_create(&tid, NULL, svc_watcher,
+	    (void *)(intptr_t)kq)) != 0) {
+		logmsg(LOG_NOTICE, "services: their starts and stops are not "
+		    "watched");
+		close(kq);
+		return;
+	}
+	svc_kq = kq;
+	(void)pthread_detach(tid);
 }
 

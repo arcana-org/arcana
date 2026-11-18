@@ -2008,6 +2008,16 @@ EOT
 EOT
 	atf_check -o match:'^30 2026-10-14T16:25:30Z sdwan-block: block sw1 unbound dnf from 10.1.0.9: acme g-dnf block www.ads.example always_nxdomain \(ads.example\)$' \
 	    -o match:'^yang-cbor [0-9]+ bytes, the same back$' "$y" one one.json
+	# A service started (ira/services.c), the same, and back as the
+	# console makes the read's reply.
+	cat > one.json <<'EOT'
+{"n":32,"t":1791995132,"kind":"service-state","data":{"service":"sshd","state":"running","pid":812}}
+EOT
+	atf_check -o match:'^32 2026-10-14T16:25:32Z service-state: service-state sshd running pid=812$' \
+	    -o match:'^yang-cbor [0-9]+ bytes, the same back$' "$y" one one.json
+	printf '{"last":32,"first":32,"kept":512,"events":[%s]}\n' \
+	    "$(cat one.json)" > svc.json
+	atf_check -o file:svc.json "$y" back svc.json
 }
 
 atf_test_case yang_plugins
@@ -10706,6 +10716,121 @@ EOS
 }
 services_stale_pidfile_cleanup()
 {
+	[ -f procs ] && kill $(cat procs) 2>/dev/null
+	stop_daemon
+}
+
+# Wait until what "$@" prints matches $1, five seconds at most: what
+# the agent is told by the kernel, not what it looks at on a timer.
+soon_match()
+{
+	local re i
+
+	re=$1
+	shift
+	for i in $(seq 1 50); do
+		"$@" 2>/dev/null | grep -Eq -e "$re" && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
+atf_test_case services_watch cleanup
+services_watch_head()
+{
+	atf_set "descr" "A service started and killed by hand: a viewer's" \
+	    "read and the event service-state follow within seconds, no" \
+	    "collector's look between"
+	atf_set "timeout" "120"
+}
+services_watch_body()
+{
+	local sp sp2
+
+	mkdir -p root/etc/defaults
+	cp /etc/defaults/rc.conf root/etc/defaults/
+	printf 'standd_enable="YES"\n' > root/etc/rc.conf
+	printf '# rc.subr, stood in for\n' > rc.subr
+	DAEMON_ARGS="--root $(pwd)/root --rc-subr $(pwd)/rc.subr"
+	start_daemon
+	cat > rc.d/standd <<EOS
+#!/bin/sh
+name=standd
+pidfile=$(pwd)/standd.pid
+command=$(pwd)/standd
+run_rc_command "\$1"
+EOS
+	chmod +x rc.d/standd
+	cp /bin/sleep standd
+	# service(8)'s status for it as rc.subr's: its pidfile's process.
+	mv fake-service fake-service.std
+	cat > fake-service <<EOS
+#!/bin/sh
+if [ "\$1" = standd -a "\$2" = status ]; then
+	p=\$(cat $(pwd)/standd.pid 2>/dev/null)
+	[ -n "\$p" ] && kill -0 "\$p" 2>/dev/null &&
+	    { echo "standd is running as pid \$p."; exit 0; }
+	echo "standd is not running."; exit 1
+fi
+exec $(pwd)/fake-service.std "\$@"
+EOS
+	chmod +x fake-service
+	# Stopped, as an operator's read saw it (the recovery session's).
+	atf_check -o match:'^standd +enabled +stopped' "$JGC" -c "$SOCK" \
+	    services
+	atf_check -o match:'^standd +enabled +stopped' "$JGC" -c "$SOCK" \
+	    -u viewer services
+	"$JGC" -c "$SOCK" subscribe -n 2 \
+	    -x '/arcana-events:event/service-state' > stream.out 2>&1 &
+	echo $! > sub.pid
+	wait_match '"stream-xpath-filter":"/arcana-events:event/service-state"' \
+	    "$JGC" -c "$SOCK" get subscriptions
+	# Started by hand, its pidfile written as a daemon writes it.
+	"$(pwd)/standd" 300 &
+	sp=$!
+	echo "$sp" >> procs
+	echo "$sp" > standd.pid
+	soon_match "^standd +enabled +running +$sp" \
+	    "$JGC" -c "$SOCK" -u viewer services
+	atf_check -o match:"^standd +enabled +running +$sp" \
+	    "$JGC" -c "$SOCK" -u viewer services
+	atf_check -o match:"\"kind\":\"service-state\",\"data\":\{\"service\":\"standd\",\"state\":\"running\",\"pid\":$sp\}" \
+	    "$JGC" -c "$SOCK" events
+	# Killed by hand: its exit told by the kernel.
+	kill "$sp"
+	soon_match '^standd +enabled +stopped' \
+	    "$JGC" -c "$SOCK" -u viewer services
+	atf_check -o match:'^standd +enabled +stopped' \
+	    "$JGC" -c "$SOCK" -u viewer services
+	atf_check -o match:'"kind":"service-state","data":\{"service":"standd","state":"stopped"\}' \
+	    "$JGC" -c "$SOCK" events
+	# Both told on the stream, as the console hears them.
+	for i in $(seq 1 50); do
+		kill -0 "$(cat sub.pid)" 2>/dev/null || break
+		sleep 0.1
+	done
+	atf_check -o match:'^2$' sh -c 'wc -l < stream.out | tr -d " "'
+	atf_check -o match:"\"service-state\":\{\"pid\":$sp,\"service\":\"standd\",\"state\":\"running\"\}" \
+	    -o match:'"service-state":\{"service":"standd","state":"stopped"\}' \
+	    cat stream.out
+	# Started again under another pid, its pidfile a moment later: the
+	# looks of the seconds after a start see it.
+	"$(pwd)/standd" 300 &
+	sp2=$!
+	echo "$sp2" >> procs
+	sleep 1.5
+	echo "$sp2" > standd.pid
+	soon_match "^standd +enabled +running +$sp2" \
+	    "$JGC" -c "$SOCK" -u viewer services
+	atf_check -o match:"^standd +enabled +running +$sp2" \
+	    "$JGC" -c "$SOCK" -u viewer services
+	# Nothing of it run for a viewer's read: the agent's own looks.
+	atf_check -o match:'collected: [0-9]+ s ago' -o not-match:'\[exec\]' \
+	    "$JGC" -t -c "$SOCK" -u viewer services
+}
+services_watch_cleanup()
+{
+	[ -f sub.pid ] && kill "$(cat sub.pid)" 2>/dev/null
 	[ -f procs ] && kill $(cat procs) 2>/dev/null
 	stop_daemon
 }
@@ -21656,6 +21781,7 @@ atf_init_test_cases()
 	atf_add_test_case agent_restart_nopidfile
 	atf_add_test_case agent_pidfile
 	atf_add_test_case services_stale_pidfile
+	atf_add_test_case services_watch
 	atf_add_test_case storage_dev
 	atf_add_test_case agent_build
 	atf_add_test_case stop

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.314.0"
+#define	ARCANA_AGENT_VERSION	"0.315.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -785,6 +785,9 @@ int		 do_services_collected(struct work *, struct services_rsp *);
 int		 service_read_collected(struct work *, const char *,
 		    struct service_config_rsp *);
 void		 services_collect_start(void);
+/* The host's processes started (gula/hostwatch.c): a stopped service's
+ * pidfile looked at for its start. */
+void		 services_procs_started(void);
 /*
  * ira/ysvcedit.c: a job's service-action enable or disable, or its
  * service-config, written as a commit writes it, to Arcana's rc.conf

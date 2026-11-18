@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Service starts and stops told at once; agent 0.315.0, console 0.461.0
+
+- A service started or stopped by hand (or by anything else) is noticed
+  within a second or two: a running service's main process is watched
+  for its exit (kqueue EVFILT_PROC), and a stopped one's pidfile is
+  checked when the host's processes start and every 15 s; only the
+  service that changed has its status run again.  The change updates
+  what viewers read and is sent as the new arcana-events event
+  service-state ({service, state, pid}, SIDs 94909 to 94921); the
+  Services tab re-reads on it, and workflows can trigger on "a service
+  starts" or "a service stops".  The services collector's first look is
+  10 s after the agent starts.  Services with no pid in their status and
+  no pidfile are checked every 60 s.
+
 ### RFC 9899's ACL actions; agent 0.314.0
 
 - RFC 9899's ACL actions are compiled to ipfw (PLAN-SDN-YANG 6.1.7).  A

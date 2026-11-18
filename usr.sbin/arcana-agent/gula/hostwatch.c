@@ -20,7 +20,8 @@
  *   watches the same way; those the agent itself started, and theirs,
  *   are left out, as their jobs and reads say what they did.  What came
  *   and went in a second is the event procs, {"started": n, "exited":
- *   m};
+ *   m}, and processes started have the services' watcher look at the
+ *   stopped ones' pidfiles (ira/services.c);
  * - devd(8)'s notifications, on its seqpacket socket: ZFS's (a pool
  *   imported, exported, scrubbed, a vdev's state, the event zfs,
  *   {"type", "pool"}) and a disk's device node made or destroyed
@@ -395,6 +396,8 @@ tick(int kq)
 			files[i].changed = false;
 			event_add("conf", "{\"file\":\"%s\"}", files[i].path);
 		}
+	if (started > 0)
+		services_procs_started();
 	if (started > 0 || exited > 0) {
 		event_add("procs", "{\"started\":%u,\"exited\":%u}", started,
 		    exited);

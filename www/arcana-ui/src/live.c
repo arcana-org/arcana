@@ -283,7 +283,10 @@ live_event(const char *sid, const ucl_object_t *e)
 		hf_due(LT_PROCS);
 		/* A daemon gone or come: a service's state. */
 		hf_due(LT_SERVICES);
-	} else if (strcmp(kind, "zfs") == 0 || strcmp(kind, "device") == 0) {
+	} else if (strcmp(kind, "service-state") == 0)
+		/* The agent saw one start or stop (ira/services.c). */
+		hf_due(LT_SERVICES);
+	else if (strcmp(kind, "zfs") == 0 || strcmp(kind, "device") == 0) {
 		hf_due(LT_STORAGE);
 		/* Each kind of it, read again when shown. */
 		if (cur_server() != NULL && strcmp(cur_server()->id, hf.sid) ==

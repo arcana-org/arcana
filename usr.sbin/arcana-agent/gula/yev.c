@@ -358,6 +358,21 @@ data_of(cbl_yarena *a, const char *kind, const ucl_object_t *d, yevent *y)
 		YJ_NUM(d, "exited", c, exited);
 		y->procs = c;
 		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_PROCS;
+	} else if (strcmp(kind, "service-state") == 0) {
+		struct arcana_events_event_entry_service_state	*c;
+
+		if (!ALLOC(a, c))
+			return (ENOMEM);
+		c->service = yj_str(a, d, "service");
+		if ((v = yj_str(a, d, "state")) != NULL) {
+			c->has_state = true;
+			c->state = strcmp(v, "running") == 0 ?
+			    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_RUNNING :
+			    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_STOPPED;
+		}
+		YJ_NUM(d, "pid", c, pid);
+		y->service_state = c;
+		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_SERVICE_STATE;
 	} else if (strcmp(kind, "monitor-threshold") == 0) {
 		struct arcana_events_event_entry_monitor	*c;
 
@@ -568,5 +583,6 @@ yev_one_from_json(const char *json, cbl_yarena *a,
 	out->undo = (const void *)y.undo;
 	out->altmark = (const void *)y.altmark;
 	out->block = (const void *)y.block;
+	out->service_state = (const void *)y.service_state;
 	return (0);
 }

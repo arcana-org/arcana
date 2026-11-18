@@ -191,7 +191,7 @@ on the wire.
 | 93 400 | 200 | `ietf-access-control-list@2019-03-04`, RFC 8519 (no IETF range): the ACLs compiled to ipfw (PLAN-SDN-YANG 6.1); `ietf-packet-fields`' groupings numbered in it, the module itself having no items but its name | `share/yang/ietf-access-control-list@2019-03-04.sid` (127 used) |
 | 94 600 | 200 | `ietf-acl-enh@2025-12-22`, RFC 9899 (no IETF range): the defined sets compiled to ipfw with RFC 8519's ACLs (PLAN-SDN-YANG 6.1.5) | `share/yang/ietf-acl-enh@2025-12-22.sid` (133 used) |
 | 94 800 | 100 | `arcana-acl-deviations`, RFC 9899's ipv4-fragment must as its Section 3.5 means it | `share/yang/arcana-acl-deviations@2026-11-18.sid` (1 used) |
-| 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed | `share/yang/arcana-events@2026-10-15.sid` (9 used) |
+| 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed; service-state, a service started or stopped | `share/yang/arcana-events@2026-10-15.sid` (22 used) |
 | 95 200 | 200 | `ietf-i2nsf-ikeless@2021-07-14`, RFC 9061 (no IETF range): its notifications, the kernel's PF_KEY news (PLAN-SDN-YANG 6.2.3); `ietf-i2nsf-ikec`'s groupings numbered in it, that module having no items but its name | `share/yang/ietf-i2nsf-ikeless@2021-07-14.sid` (138 used) |
 | 95 400 | 100 | `arcana-ikeless-deviations`, RFC 9061's IKE-less lists not served yet, no sadb-bad-spi | `share/yang/arcana-ikeless-deviations@2026-11-18.sid` (1 used) |
 | 95 600 | 300 | `arcana-sdwan`, its fourth range: the rest of the BIRD, dnsmasq, unbound and Squid instances' forms (spec) | `share/yang/arcana-sdwan@2026-10-15.sid` (243 used) |
