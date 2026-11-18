@@ -47,7 +47,7 @@ char		 harness_webconf[1024];	/* appended to web.conf */
 char		 harness_server[1024];	/* and inside its server { } */
 static char	 console_path[MAXPATHLEN];
 /* The agent's command line and stand-ins, for agent_restart(). */
-static char	*agent_argv[152];
+static char	*agent_argv[160];
 static char	 agent_fjl[MAXPATHLEN], agent_fjf[MAXPATHLEN + 8];
 
 static void	 terminate(const char *);
@@ -452,7 +452,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	char	 sport[16], bport[16], fpk[MAXPATHLEN], pks[MAXPATHLEN + 16];
 	char	 pkl[MAXPATHLEN + 16], pkr[MAXPATHLEN + 16];
 	char	 login[MAXPATHLEN], devdir[MAXPATHLEN], devd[MAXPATHLEN];
-	char	*argv[152];
+	char	 ssld[MAXPATHLEN + 8], sslconf[MAXPATHLEN + 16];
+	char	*argv[160];
 	FILE	*fp;
 	pid_t	 pid;
 	int	 n;
@@ -1144,6 +1145,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	 * Arcana's plain relay, arcana_relay's tag. */
 	put("tools/speederv2", "#!/bin/sh\nexit 0\n");
 	ATF_REQUIRE(chmod("tools/speederv2", 0755) == 0);
+	/* SSLproxy, a plugin: its version, and a file checked (-Q). */
+	put("tools/sslproxy", "#!/bin/sh\necho \"sslproxy $*\" >> sslproxy.log\n"
+	    "[ \"$1\" = -V ] && echo 'SSLproxy 0.10.0' >&2\nexit 0\n");
+	ATF_REQUIRE(chmod("tools/sslproxy", 0755) == 0);
 	put("speeder.log", "Oct 23 14:22:39 h arcana_relay[7]: [2026-10-23 "
 	    "14:22:39][INFO]fec_inner_parameter=1:2,2:3\nOct 23 14:22:49 h "
 	    "arcana_relay[7]: [2026-10-23 14:22:49][INFO][report]client-->server:"
@@ -1742,7 +1747,14 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	argv[135] = devdir;
 	argv[136] = (char *)(uintptr_t)"--devd-pipe";
 	argv[137] = devd;
-	n = 138;
+	/* SSLproxy's configuration, CA and fwd rules, the test's. */
+	snprintf(sslconf, sizeof(sslconf), "%s/sslproxy.conf", cwd);
+	snprintf(ssld, sizeof(ssld), "%s/ssl.d", cwd);
+	argv[138] = (char *)(uintptr_t)"--sslproxy-conf";
+	argv[139] = sslconf;
+	argv[140] = (char *)(uintptr_t)"--sslproxy-dir";
+	argv[141] = ssld;
+	n = 142;
 	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
 	if (harness_stamp_port != 0) {
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);
@@ -1813,7 +1825,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
 	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", fjl, 1) == 0);
-	for (int i = 0; i < 151 && argv[i] != NULL; i++) {
+	for (int i = 0; i < 159 && argv[i] != NULL; i++) {
 		free(agent_argv[i]);
 		agent_argv[i] = strdup(argv[i]);
 		agent_argv[i + 1] = NULL;
@@ -1974,7 +1986,7 @@ agent_jailed(const char *jail, const char *dir)
 	    "--jobs-conf", "jobs.conf", "--subscriptions", "subscriptions.cbor",
 	    NULL };
 	static const char *const real[] = { "-I", "-Q", "-N", "-H", NULL };
-	char	 cwd[MAXPATHLEN], buf[3 * MAXPATHLEN], *argv[160], *v;
+	char	 cwd[MAXPATHLEN], buf[3 * MAXPATHLEN], *argv[168], *v;
 	FILE	*fp;
 	pid_t	 pid;
 	int	 i, k, n;
@@ -1992,7 +2004,7 @@ agent_jailed(const char *jail, const char *dir)
 	argv[n++] = (char *)(uintptr_t)"cd \"$0\" && exec \"$@\"";
 	argv[n++] = strdup(cwd);
 	argv[n++] = agent_argv[0];
-	for (i = 1; agent_argv[i] != NULL && n < 156; i++) {
+	for (i = 1; agent_argv[i] != NULL && n < 164; i++) {
 		/* A flag alone (-F) as it is. */
 		if (agent_argv[i][0] != '-' || agent_argv[i + 1] == NULL ||
 		    agent_argv[i + 1][0] == '-') {

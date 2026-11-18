@@ -1,0 +1,250 @@
+module arcana-sslproxy {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-sslproxy";
+  prefix arcsslp;
+
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "SSL inspection by SSLproxy (security/sslproxy, sslproxy(1)), a
+     plugin, on a FreeBSD host as the agent reads it: whether it is
+     installed, enabled and running under Arcana's rc script
+     (arcana_sslproxy), the configuration rendered from the form and
+     the form itself, the edge's CA (its key made on the host and
+     never read out, its certificate an intermediate of the tenant
+     fleet's root, which the console keeps), and the ipfw(8) fwd
+     rules that send the clients' traffic to it, set 27 at rule 7.
+     Changes are jobs of kind sslproxy; the CA's key and certificate
+     are this module's actions.";
+
+  revision 2026-11-18 {
+    description
+      "Initial revision.";
+  }
+
+  grouping cert {
+    description
+      "A certificate as read.";
+    leaf subject {
+      type string;
+      description
+        "Its subject, one line.";
+    }
+    leaf issuer {
+      type string;
+      description
+        "Its issuer, one line.";
+    }
+    leaf not-after {
+      type int64;
+      units "seconds";
+      description
+        "Until when it is valid, seconds since the epoch.";
+    }
+    leaf pem {
+      type string;
+      description
+        "The certificate, PEM.";
+    }
+  }
+
+  container sslproxy {
+    config false;
+    description
+      "SSLproxy, read when asked.";
+    action read {
+      description
+        "SSLproxy on the host: its service, configuration, CA and
+         rules.";
+      output {
+        leaf installed {
+          type boolean;
+          description
+            "sslproxy is there.";
+        }
+        leaf version {
+          type string;
+          description
+            "What sslproxy -V says first.";
+        }
+        leaf enabled {
+          type boolean;
+          description
+            "arcana_sslproxy_enable.";
+        }
+        leaf running {
+          type boolean;
+          description
+            "service arcana_sslproxy status says it runs.";
+        }
+        leaf conf-path {
+          type string;
+          description
+            "The configuration file.";
+        }
+        leaf ours {
+          type boolean;
+          description
+            "The configuration is the one the form wrote.";
+        }
+        leaf spec {
+          type string;
+          description
+            "The form it was rendered from, JSON.";
+        }
+        leaf conf {
+          type string;
+          description
+            "The configuration's text.";
+        }
+        container ca {
+          description
+            "The edge's CA: its key on the host, never read out.";
+          leaf key {
+            type boolean;
+            description
+              "The key is there (ca.key).";
+          }
+          leaf pending {
+            type boolean;
+            description
+              "A new key waits for its certificate (ca.key.next).";
+          }
+          leaf csr {
+            type string;
+            description
+              "The request of the key that waits, or of the key in use
+               while none waits, PEM.";
+          }
+          container certificate {
+            presence
+              "A certificate is installed.";
+            description
+              "The intermediate the edge forges with (CACert).";
+            uses cert;
+          }
+          container root {
+            presence
+              "The root it chains to is installed.";
+            description
+              "The tenant fleet's root (CAChain), what the clients
+               trust.";
+            uses cert;
+          }
+        }
+        list rule {
+          description
+            "The fwd rules loaded, set 27, as ipfw -S list says them.";
+          leaf number {
+            type int32;
+            description
+              "The rule's number.";
+          }
+          leaf set {
+            type int32;
+            description
+              "Its set.";
+          }
+          leaf text {
+            type string;
+            description
+              "The rule, as ipfw writes it.";
+          }
+        }
+        leaf rules-expected {
+          type int32;
+          description
+            "The rules the form makes (the fwd file's lines).";
+        }
+        leaf rules-file {
+          type string;
+          description
+            "The fwd rules' file, an ipfw(8) file.";
+        }
+        leaf rules-error {
+          type string;
+          description
+            "Why ipfw's rules could not be read, or why they are left
+             alone (another's rule in sets 26 and 27).";
+        }
+        leaf connect-log {
+          type string;
+          description
+            "The connect log's path, as the configuration has it.";
+        }
+        leaf connect-log-size {
+          type int64;
+          units "bytes";
+          description
+            "Its size.";
+        }
+      }
+    }
+    action csr {
+      nacm:default-deny-all;
+      description
+        "The edge's CA key: made (EC P-256, never sent) when there is
+         none, or a new one beside the one in use when renew is asked,
+         and a certificate request for it.";
+      input {
+        leaf renew {
+          type boolean;
+          description
+            "A new key, the one in use kept until the new one's
+             certificate is installed.";
+        }
+      }
+      output {
+        leaf csr {
+          type string;
+          description
+            "The request, PEM.";
+        }
+      }
+    }
+    action install-ca {
+      nacm:default-deny-all;
+      description
+        "The edge's CA certificate, an intermediate for the key that
+         waits (or the one in use), and the root it chains to: checked
+         to be a CA's and the key's, written as CACert and CAChain, the
+         waiting key made the one in use; SSLproxy restarted where it
+         runs.";
+      input {
+        leaf certificate {
+          type string;
+          mandatory true;
+          description
+            "The intermediate, PEM.";
+        }
+        leaf chain {
+          type string;
+          mandatory true;
+          description
+            "The CAs above it up to the root, PEM.";
+        }
+      }
+      output {
+        leaf subject {
+          type string;
+          description
+            "The installed certificate's subject.";
+        }
+        leaf not-after {
+          type int64;
+          units "seconds";
+          description
+            "Until when it is valid.";
+        }
+      }
+    }
+  }
+}

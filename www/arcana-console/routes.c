@@ -50,6 +50,8 @@ const struct route routes[] = {
 	    api_subscription_token, NULL, HTTP_METHOD_POST },
 	{ "^" CYANG_HOST "[0-9a-f]{1,16}/(tls|renew-tls)$", api_tls,
 	    api_call_free, HTTP_METHOD_GET | HTTP_METHOD_POST },
+	{ "^" CYANG_HOST "[0-9a-f]{1,16}/inspection-ca$", api_inspect_ca,
+	    api_call_free, HTTP_METHOD_POST },
 	{ "^" CYANG_HOST "[0-9a-f]{1,16}/(transport|listen)$", api_transport,
 	    api_call_free, HTTP_METHOD_GET | HTTP_METHOD_POST },
 	{ "^" CYANG_HOST "[0-9a-f]{1,16}/switch-transport$",

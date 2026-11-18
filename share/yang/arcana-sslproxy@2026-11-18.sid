@@ -1,0 +1,261 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-sslproxy",
+    "module-revision": "2026-11-18",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 96 500, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-netconf-acm",
+        "module-revision": "2018-02-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "96500",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-sslproxy",
+        "sid": "96500"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy",
+        "sid": "96501"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr",
+        "sid": "96502"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr/input",
+        "sid": "96503"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr/input/renew",
+        "sid": "96504"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr/output",
+        "sid": "96505"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr/output/csr",
+        "sid": "96506"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca",
+        "sid": "96507"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/input",
+        "sid": "96508"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/input/certificate",
+        "sid": "96509"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/input/chain",
+        "sid": "96510"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/output",
+        "sid": "96511"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/output/not-after",
+        "sid": "96512"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/output/subject",
+        "sid": "96513"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read",
+        "sid": "96514"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/input",
+        "sid": "96515"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output",
+        "sid": "96516"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca",
+        "sid": "96517"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/certificate",
+        "sid": "96518"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/certificate/issuer",
+        "sid": "96519"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/certificate/not-after",
+        "sid": "96520"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/certificate/pem",
+        "sid": "96521"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/certificate/subject",
+        "sid": "96522"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/csr",
+        "sid": "96523"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/key",
+        "sid": "96524"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/pending",
+        "sid": "96525"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/root",
+        "sid": "96526"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/root/issuer",
+        "sid": "96527"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/root/not-after",
+        "sid": "96528"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/root/pem",
+        "sid": "96529"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ca/root/subject",
+        "sid": "96530"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/conf",
+        "sid": "96531"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/conf-path",
+        "sid": "96532"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/connect-log",
+        "sid": "96533"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/connect-log-size",
+        "sid": "96534"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/enabled",
+        "sid": "96535"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/installed",
+        "sid": "96536"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ours",
+        "sid": "96537"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rule",
+        "sid": "96538"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rule/number",
+        "sid": "96539"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rule/set",
+        "sid": "96540"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rule/text",
+        "sid": "96541"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rules-error",
+        "sid": "96542"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rules-expected",
+        "sid": "96543"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/rules-file",
+        "sid": "96544"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/running",
+        "sid": "96545"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/spec",
+        "sid": "96546"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/version",
+        "sid": "96547"
+      }
+    ]
+  }
+}

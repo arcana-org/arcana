@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.458.0"
+#define	ARCW_VERSION		"0.459.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/arcana-org/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -478,6 +478,8 @@ bool		 servers_notif_token_check(const char *, const char *);
 /* pki.c: the console's CA and host enrolment. */
 int		 pki_init(void);
 char		*pki_sign_host(const char *, const char *, char *, size_t);
+char		*pki_inspect_issue(const char *, const char *, const char *,
+		    char **, char *, size_t);
 const char	*pki_sign_data(const uint8_t *, size_t, uint8_t **, size_t *);
 int		 api_ca(struct http_request *);
 
@@ -770,6 +772,7 @@ int		 api_nacm_sync(struct http_request *);
 int		 api_capture(struct http_request *);
 int		 api_zfs_key(struct http_request *);
 int		 api_tls(struct http_request *);
+int		 api_inspect_ca(struct http_request *);
 int		 api_transport(struct http_request *);
 int		 api_config_export(struct http_request *);
 char		*hosts_path_check(const char *, const char *, const char *,

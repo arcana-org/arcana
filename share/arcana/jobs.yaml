@@ -499,3 +499,8 @@ kinds:
     needs: verb
     uses: jail args safe
     values: verb=conf|fec|enable|disable|start|stop|restart|remove
+  - kind: sslproxy
+    title: SSL inspection by SSLproxy configured, its fwd rules loaded, started or stopped
+    needs: verb
+    uses: args text force
+    values: verb=conf|enable|disable|start|stop|restart

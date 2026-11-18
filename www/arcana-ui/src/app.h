@@ -1248,6 +1248,11 @@ void		 secpage_loc(char *, size_t);
 void		 secpage_open(const char *);
 void		 secpage_tick(double);
 void		 secpage_refresh(void);
+/* sslinspect.c: the Security page's SSL inspection tab (SSLproxy). */
+void		 view_sslinspect(struct html *, struct server *);
+bool		 sslinspect_form(const char *, const ucl_object_t *);
+bool		 sslinspect_action(const char *, const char *, const char *);
+void		 sslinspect_refresh(void);
 /* sysview.c: a host's own configuration, of the system read. */
 void		 refresh_system(struct server *, bool);
 

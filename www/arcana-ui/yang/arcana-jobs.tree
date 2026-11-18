@@ -402,10 +402,16 @@ module: arcana-jobs
     |  |     |  |     +---w args*   string
     |  |     |  |     +---w jail?   string
     |  |     |  +--:(speeder)
-    |  |     |     +---w speeder!
-    |  |     |        +---w verb    enumeration
-    |  |     |        +---w jail?   string
-    |  |     |        +---w args*   string
+    |  |     |  |  +---w speeder!
+    |  |     |  |     +---w verb    enumeration
+    |  |     |  |     +---w jail?   string
+    |  |     |  |     +---w args*   string
+    |  |     |  +--:(sslproxy)
+    |  |     |     +---w sslproxy!
+    |  |     |        +---w verb     enumeration
+    |  |     |        +---w args*    string
+    |  |     |        +---w text?    string
+    |  |     |        +---w force?   boolean
     |  |     +---w safe?        boolean
     |  |     +---w safe-wait?   uint32
     |  +--ro output
@@ -762,10 +768,16 @@ module: arcana-jobs
        |  |  |  |     +---w args*   string
        |  |  |  |     +---w jail?   string
        |  |  |  +--:(speeder)
-       |  |  |     +---w speeder!
-       |  |  |        +---w verb    enumeration
-       |  |  |        +---w jail?   string
-       |  |  |        +---w args*   string
+       |  |  |  |  +---w speeder!
+       |  |  |  |     +---w verb    enumeration
+       |  |  |  |     +---w jail?   string
+       |  |  |  |     +---w args*   string
+       |  |  |  +--:(sslproxy)
+       |  |  |     +---w sslproxy!
+       |  |  |        +---w verb     enumeration
+       |  |  |        +---w args*    string
+       |  |  |        +---w text?    string
+       |  |  |        +---w force?   boolean
        |  |  +---w safe?        boolean
        |  |  +---w safe-wait?   uint32
        |  +---w undo?     uint64

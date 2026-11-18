@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 12,
+    "sid-file-version": 13,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -26,6 +26,10 @@
       {
         "entry-point": "92300",
         "size": "300"
+      },
+      {
+        "entry-point": "95920",
+        "size": "20"
       }
     ],
     "item": [
@@ -3348,6 +3352,31 @@
         "namespace": "data",
         "identifier": "/arcana-console:workflows/workflow/step/when/value",
         "sid": "92463"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca",
+        "sid": "95920"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca/input",
+        "sid": "95921"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca/input/renew",
+        "sid": "95922"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca/output",
+        "sid": "95923"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca/output/result",
+        "sid": "95924"
       }
     ]
   }

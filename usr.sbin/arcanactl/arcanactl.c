@@ -289,6 +289,9 @@ usage(void)
 	    "    speeder conf name=value ... | fec x:y[,x:y...] |\n"
 	    "        enable | disable | start | stop | restart [profile=name] |\n"
 	    "        remove profile=name\n"
+	    "    sslproxy\n"
+	    "    sslproxy conf form.json [replace] | enable | disable | start | stop |\n"
+	    "        restart | csr [renew] | install-ca cert.pem chain.pem\n"
 	    "    sysfile file path | periodic name=YES|NO ... |\n"
 	    "        rc kern_securelevel_enable=YES|NO kern_securelevel=N |\n"
 	    "        dma smarthost=host [port=N] [tls=none|starttls|opportunistic|tls] [user=name]\n"	    "    geom class subcommand [word ...] [-P passfile]\n"
@@ -5766,6 +5769,60 @@ cmd_speeder(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
+/*
+ * sslproxy: SSL inspection by SSLproxy, read; with words, a job of it,
+ * or its CA's key and request made (csr), or its certificate installed
+ * (install-ca).
+ */
+static int
+cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
+{
+	struct arc_job_spec	 sp;
+	ucl_object_t		*data;
+	char			 ebuf[256], *csr;
+	int			 error;
+
+	if (argc == 1) {
+		/* arcana-sslproxy's read. */
+		ytold_begin(conn);
+		error = yr_sslproxy(conn, &data, ebuf, sizeof(ebuf));
+		return (ydata_out("sslproxy", error, data, ebuf));
+	}
+	if (strcmp(argv[1], "csr") == 0) {
+		if (argc > 3 || (argc == 3 && strcmp(argv[2], "renew") != 0))
+			usage();
+		ytold_begin(conn);
+		if ((error = yr_sslproxy_csr(conn, argc == 3, &csr, ebuf,
+		    sizeof(ebuf))) != 0)
+			return (ydata_out("sslproxy", error, NULL, ebuf));
+		fputs(csr, stdout);
+		free(csr);
+		return (0);
+	}
+	if (strcmp(argv[1], "install-ca") == 0) {
+		if (argc != 4)
+			usage();
+		ytold_begin(conn);
+		error = yr_sslproxy_install(conn, slurp(argv[2]), slurp(argv[3]),
+		    &data, ebuf, sizeof(ebuf));
+		return (ydata_out("sslproxy", error, data, ebuf));
+	}
+	memset(&sp, 0, sizeof(sp));
+	sp.has_kind = true;
+	sp.kind = ARC_JOB_KIND_SSLPROXY;
+	sp.verb = argv[1];
+	if (strcmp(argv[1], "conf") == 0) {
+		/* conf form.json [replace]: replace says the admin's own
+		 * sslproxy.conf is to be replaced by the form. */
+		if (argc != 3 && !(argc == 4 && strcmp(argv[3], "replace") == 0))
+			usage();
+		sp.text = slurp(argv[2]);
+		sp.force = argc == 4;
+	} else if (argc != 2)
+		usage();
+	return (submit(conn, &sp));
+}
+
 /* netstore [nfs | iscsi | hast]: the host's storage services. */
 static int
 cmd_netstore(cbl_conn *conn, int argc, char **argv)
@@ -8385,6 +8442,8 @@ main(int argc, char *argv[])
 		rc = cmd_smtpd(conn, argc, argv);
 	else if (strcmp(argv[0], "speeder") == 0)
 		rc = cmd_speeder(conn, argc, argv);
+	else if (strcmp(argv[0], "sslproxy") == 0)
+		rc = cmd_sslproxy(conn, argc, argv);
 	else if (strcmp(argv[0], "monitor") == 0)
 		rc = cmd_monitor(conn, argc, argv);
 	else if (strcmp(argv[0], "system") == 0)

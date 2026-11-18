@@ -39,5 +39,7 @@ static const char *const yfn_speeder[] = {
     "fec-group?[size,redundant]=fec_groups",
     "period[time,to-server,to-client,plain-to-server,plain-to-client]="
     "series", "profile?=profiles", NULL };
+/* arcana-sslproxy's read. */
+static const char *const yfn_sslproxy[] = { "rule=rules", NULL };
 
 #endif	/* !_ARCANA_YFLATNAMES_H_ */

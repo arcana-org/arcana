@@ -84,6 +84,7 @@ static const struct cnode	cnodes[] = {
 	{ CD "hosts", true, M, O, T_ANY, TK_WRITE },
 	{ CD "hosts/host=*/move", false, M, M, T_ANY, TK_WRITE },
 	{ CD "hosts/host=*/renew-tls", false, M, M, T_ANY, TK_WRITE },
+	{ CD "hosts/host=*/inspection-ca", false, M, M, T_ANY, TK_WRITE },
 	{ CD "hosts/host=*/listen", false, M, M, T_ANY, TK_WRITE },
 	{ CD "hosts/host=*/switch-transport", false, M, M, T_ANY, TK_WRITE },
 	{ CD "hosts/host=*/nacm-sync", false, M, M, T_ANY, TK_WRITE },

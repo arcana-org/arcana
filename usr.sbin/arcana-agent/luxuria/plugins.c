@@ -9,7 +9,7 @@
  * that has to be installed, and is there only where its program is:
  * BIRD through birdc(8), strongSwan's IPsec through swanctl(8),
  * Squid and dnsmasq for SD-WAN's proxy and DHCP, poudriere(8) to
- * build packages, Suricata to detect.  A host says which it
+ * build packages, Suricata to detect, SSLproxy to inspect TLS.  A host says which it
  * has, and so does a jail with a network of its own, where the program
  * is the jail's.  WireGuard's wg(8) is the base system's: Invidia's.
  *
@@ -55,6 +55,7 @@ static const struct {
 	{ "poudriere", &opts.poudriere_bin },
 	{ "smtpd", &opts.smtpd_bin },
 	{ "speederv2", &opts.speederv2_bin },
+	{ "sslproxy", &opts.sslproxy_bin },
 };
 
 /* A bit for each plugin's program: the helper prints them as a number. */

@@ -93,6 +93,24 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SSL inspection by SSLproxy, phase 1; agent 0.311.0, console 0.459.0
+
+- Security > SSL inspection (docs/notes/ssl-inspection.md).  SSLproxy
+  is a plugin (`pkg install sslproxy` from the tab's button); Arcana's
+  rc script `arcana_sslproxy` runs it (the port has none).  The form
+  renders /usr/local/etc/sslproxy.conf, checked by `sslproxy -Q`.  The
+  clients' traffic reaches it by ipfw `fwd` rules in set 27 at rule 7
+  (staged in set 26), loaded at start and removed at stop; a host whose
+  ipfw sets 26 or 27, or rule 7, hold rules of its own is refused until
+  they are moved.
+- The edge's CA key is made on the host; the console signs it with one
+  root per tenant fleet, kept in datadir/inspection/ (new action
+  hosts/host/inspection-ca); clients install that root once (download
+  on the tab).
+- New: job kind `sslproxy`, module arcana-sslproxy (SIDs 96 500+),
+  arcanactl `sslproxy`, agent options --sslproxy-conf and
+  --sslproxy-dir.  Update the agent and the console together.
+
 ### IPsec a part of Network's Base system; console 0.458.0
 
 - The base system's IPsec (manual SAs and policies by PF_KEY, setkey's

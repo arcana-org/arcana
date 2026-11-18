@@ -9,7 +9,9 @@
  * proxy the clients are told of.  Malware: c-icap with ClamAV's module
  * scanning what a URL filter fetches.  Signatures: ClamAV's databases as
  * freshclam keeps them.  IDS/IPS: Suricata, watching interfaces or
- * taking what an ipfw divert rule hands it.  A host at a time: its
+ * taking what an ipfw divert rule hands it.  SSL inspection: SSLproxy,
+ * the clients' TLS sent to it by ipfw fwd rules (sslinspect.c, its own
+ * read, arcana-sslproxy's).  A host at a time: its
  * SD-WAN state tells what runs and the forms it was given; a save makes
  * the kind's whole list the host's.  Both through the fleet mount
  * (sdread.c): arcana-sdwan's state and instances, arcana-probe's and
@@ -23,7 +25,7 @@
 
 #include "app.h"
 
-enum sectab { SEC_URL, SEC_AV, SEC_IDS };
+enum sectab { SEC_URL, SEC_AV, SEC_IDS, SEC_TLS };
 
 static void	ids_settings_form(struct html *, const ucl_object_t *);
 
@@ -41,7 +43,7 @@ static struct {
 	bool		 sources;	/* IDS/IPS: the rule sources shown */
 } sec = { .edit = -1 };
 
-static const char *const tabs[] = { "url", "antivirus", "ids" };
+static const char *const tabs[] = { "url", "antivirus", "ids", "tls" };
 
 /* What a read was asked for: by whom, and whether it ends a save. */
 struct sec_read {
@@ -1249,12 +1251,14 @@ void
 view_secpage(struct html *h)
 {
 	static const char *const names[] = { "URL filter", "Antivirus",
-	    "IDS/IPS" };
+	    "IDS/IPS", "SSL inspection" };
 	static const char *const titles[] = {
 	    "Squid: what the clients ask for, by name",
 	    ("ClamAV: what a URL filter fetches, scanned by c-icap; its "
 	    "signatures, by freshclam"),
-	    "Suricata: intrusion detection, and prevention" };
+	    "Suricata: intrusion detection, and prevention",
+	    ("SSLproxy: TLS opened transparently, the clients' traffic sent "
+	    "to it by ipfw fwd") };
 	size_t	i;
 
 	h_raw(h, "<section class=\"secpage\"><div class=\"sechead\">");
@@ -1269,8 +1273,8 @@ view_secpage(struct html *h)
 	if (sec.sid[0] == '\0') {
 		h_raw(h, "<div class=\"empty\"><p>Choose a host.</p><p class=\""
 		    "dim\">Each guards itself: its own URL filters, malware "
-		    "scanning and intrusion detection, by plugins it has "
-		    "installed (Arcana installs nothing).</p></div></section>");
+		    "scanning, intrusion detection and SSL inspection, by "
+		    "plugins it has installed (Arcana installs nothing).</p></div></section>");
 		return;
 	}
 	if (sec.error[0] != '\0') {
@@ -1287,6 +1291,11 @@ view_secpage(struct html *h)
 	switch (sec.tab) {
 	case SEC_URL:
 		view_url(h, false);
+		break;
+	case SEC_TLS:
+		/* Its own read, arcana-sslproxy's (sslinspect.c). */
+		if (sec_server() != NULL)
+			view_sslinspect(h, sec_server());
 		break;
 	case SEC_AV:
 		/* ClamAV: what it scans, then what it knows. */
@@ -1535,7 +1544,8 @@ secpage_form(const char *form, const ucl_object_t *f)
 	ucl_object_t	*list, *o;
 	bool		 ids;
 
-	if (idsown_form(form, f) || idsstats_form(form, f))
+	if (idsown_form(form, f) || idsstats_form(form, f) ||
+	    sslinspect_form(form, f))
 		return (true);
 	{
 		char		*json[1], title[96];
@@ -1810,7 +1820,7 @@ secpage_action(const char *act, const char *arg, const char *value)
 		return (true);
 	}
 	if (idsown_action(act, arg, value) || idsstats_action(act, arg,
-	    value))
+	    value) || sslinspect_action(act, arg, value))
 		return (true);
 	if (strncmp(act, "sur-", 4) == 0 || strncmp(act, "sus-", 4) == 0) {
 		char	*json[1], title[96];
@@ -1965,6 +1975,7 @@ secpage_action(const char *act, const char *arg, const char *value)
 		/* Only the packages the tabs name: nothing else is sent. */
 		if ((s = sec_server()) == NULL || (strcmp(arg, "squid") != 0 &&
 		    strcmp(arg, "clamav") != 0 && strcmp(arg, "suricata") != 0 &&
+		    strcmp(arg, "sslproxy") != 0 &&
 		    strcmp(arg, "c-icap c-icap-modules clamav") != 0))
 			return (true);
 		if ((json = strdup("{\"kind\":\"pkg-install\",\"packages\":["))
@@ -2045,6 +2056,7 @@ secpage_refresh(void)
 {
 
 	sec_load();
+	sslinspect_refresh();
 	if (sec.tab == SEC_IDS && sec.rules)
 		surules_load(sec.sid);
 	if (sec.tab == SEC_IDS && sec.sources)
@@ -2062,5 +2074,9 @@ secpage_tick(double now)
 	    sec.busy || sec.edit >= 0 || now - last < 10000)
 		return;
 	last = now;
+	/* SSL inspection's form is always open: its read is taken again
+	 * by its jobs and buttons alone. */
+	if (sec.tab == SEC_TLS)
+		return;
 	sec_load();
 }

@@ -552,6 +552,8 @@ check_spec(const struct arc_job_spec *sp)
 		return (smtpd_check(sp));
 	case ARC_JOB_KIND_SPEEDER:
 		return (speeder_check(sp));
+	case ARC_JOB_KIND_SSLPROXY:
+		return (sslproxy_check(sp));
 	case ARC_JOB_KIND_MONITOR:
 		return (monitor_check(sp));
 	case ARC_JOB_KIND_WIREGUARD:

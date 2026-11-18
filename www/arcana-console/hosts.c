@@ -105,6 +105,7 @@ enum op {
 	OP_CAPTURE,
 	OP_ZFS_KEY,
 	OP_TLS,
+	OP_INSPECT_CA,
 	OP_STORAGE,
 	OP_FSTAB,
 	OP_IPFW_RULES,
@@ -179,6 +180,7 @@ static const char *const op_names[] = {
 	[OP_CAPTURE] = "capture",
 	[OP_ZFS_KEY] = "zfs-key",
 	[OP_TLS] = "tls",
+	[OP_INSPECT_CA] = "inspection-ca",
 	[OP_STORAGE] = "storage",
 	[OP_FSTAB] = "fstab",
 	[OP_IPFW_RULES] = "ipfw-rules",
@@ -224,7 +226,10 @@ struct call {
 	bool			 dry_run;	/* pkg-upgrade */
 	bool			 from_rc;	/* ipfw-rules: the file rc.conf names */
 	bool			 anyos;		/* pkg-upgrade: IGNORE_OSVERSION */
-	bool			 renew;		/* tls: a new certificate */
+	bool			 renew;		/* tls: a new certificate;
+						 * inspection-ca: a new key */
+	char			 tenant[65];	/* inspection-ca: the host's
+						 * fleet, "" the whole one's */
 	bool			 installed;	/* packages: those installed */
 	uint8_t			 pkg_ip;	/* packages: pkg -4, -6, or 0 */
 	char			 pkg_repo[65];	/* pkg-upgrade: pkg -r, or "" */
@@ -3278,6 +3283,44 @@ connected:
 		if (e != NULL)
 			put(top, "data", e);
 		break;
+	case OP_INSPECT_CA:
+		/*
+		 * SSL inspection's CA: a key made on the host (or a new one)
+		 * and a request for it, signed here by the tenant fleet's
+		 * root as an intermediate, installed with the root as its
+		 * chain; the root said for the clients to trust (pki.c,
+		 * arcana-sslproxy's csr and install-ca, yreads.c).
+		 */
+		ysteps_begin(conn, c, &ys);
+		{
+			char	 why[300], *csr, *pem, *root;
+
+			csr = root = NULL;
+			e = NULL;
+			ok = yr_sslproxy_csr(conn, c->renew, &csr, ywhy,
+			    sizeof(ywhy)) == 0;
+			if (ok && (pem = pki_inspect_issue(c->tenant, csr,
+			    c->sname, &root, why, sizeof(why))) == NULL) {
+				ok = false;
+				snprintf(ywhy, sizeof(ywhy), "%s", why);
+			} else if (ok) {
+				ok = yr_sslproxy_install(conn, pem, root, &e,
+				    ywhy, sizeof(ywhy)) == 0;
+				if (ok && e != NULL) {
+					put_str(e, "certificate", pem);
+					put_str(e, "root", root);
+				}
+				free(pem);
+			}
+			free(root);
+			free(csr);
+		}
+		ysteps_end(conn, &ys, &steps, &nsteps);
+		if (!ok)
+			put_str(top, "error", ywhy);
+		if (e != NULL)
+			put(top, "data", e);
+		break;
 	case OP_ZFS_KEY:
 		/* arcana-storage's load-key, change-key. */
 		ok = ystore_key(conn, c->text, c->key, c->new_key, ywhy,
@@ -3614,7 +3657,7 @@ call_new(struct http_request *req, enum op op)
 	    op == OP_JOB_CANCEL || op == OP_CAPTURE ||
 	    op == OP_ZFS_KEY || op == OP_SDWAN_PROXY || op == OP_SDWAN_IDS ||
 	    (op == OP_TLS && req->method ==
-	    HTTP_METHOD_POST) ||
+	    HTTP_METHOD_POST) || op == OP_INSPECT_CA ||
 	    op == OP_AGENT_UPDATE || op == OP_AGENT_BUILD ||
 	    op == OP_CONSOLE_UPDATE || op == OP_NACM_SYNC ||
 	    op == OP_CONFIG_APPLY || (op == OP_CONFIG_EXPORT &&
@@ -4429,6 +4472,30 @@ api_tls(struct http_request *req)
 }
 
 /*
+ * POST hosts/host=<id>/inspection-ca {"renew": true}: SSL inspection's
+ * CA on the host, its intermediate from the root of its tenant fleet.
+ */
+int
+api_inspect_ca(struct http_request *req)
+{
+	const struct server	*s;
+	struct call		*c;
+	ucl_object_t		*body;
+
+	if (req->hdlr_extra != NULL)
+		return (call_finish(req));
+	if ((c = call_new(req, OP_INSPECT_CA)) == NULL)
+		return (WEB_OK);
+	if ((s = server_find(c->sid)) != NULL && s->tenant != NULL)
+		snprintf(c->tenant, sizeof(c->tenant), "%s", s->tenant);
+	if ((body = read_json(req)) != NULL) {
+		c->renew = ucl_flag(body, "renew");
+		ucl_object_unref(body);
+	}
+	return (call_start(req, c));
+}
+
+/*
  * POST hosts/host=<id>/nacm-sync: the console's roles synchronized to
  * the host's access rules (NACM): its owners in the host's group admin,
  * its other users out of it; those whose role on the host is an
@@ -4780,6 +4847,7 @@ spec_from_json(const ucl_object_t *o, struct arc_job_spec *sp)
 	case ARC_JOB_KIND_SMTPD:
 	case ARC_JOB_KIND_SPEEDER:
 	case ARC_JOB_KIND_MONITOR:
+	case ARC_JOB_KIND_SSLPROXY:
 		/* Storage's verbs take more words; the host checks each. */
 		names = ucl_object_lookup(o, "args");
 		if (sp->kind == ARC_JOB_KIND_SYSCTL) {

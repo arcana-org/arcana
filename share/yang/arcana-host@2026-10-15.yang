@@ -90,6 +90,11 @@ module arcana-host {
     description
       "UDPspeeder, the SD-WAN's FEC relay.";
   }
+  identity sslproxy {
+    base plugin;
+    description
+      "SSLproxy, SSL inspection (sslproxy(1)).";
+  }
 
   grouping certificate {
     description

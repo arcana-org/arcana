@@ -1392,6 +1392,44 @@ That relay stopped, its variables unset and its name taken out of
 undone with
 .Fl s
 as the others.
+.It Cm sslproxy
+SSL inspection by security/sslproxy's
+.Xr sslproxy 1 ,
+run by Arcana's own rc script,
+.Pa arcana_sslproxy ,
+as JSON: installed (with what
+.Fl V
+says), enabled
+.Pq Va arcana_sslproxy_enable
+and running; the configuration, whether the form wrote it, and the form;
+the edge's CA: whether its key is there (never read out) or a new one
+waits, the request, the certificate and the root it chains to; the
+.Xr ipfw 8
+fwd rules loaded in set 27, how many the form makes, and why they could
+not be read or are left alone; the connect log and its size.
+.It Cm sslproxy conf Ar form.json Op Cm replace
+The configuration rendered from the form, a JSON object (listeners,
+each a proto of https, http, smtps, pop3s or imaps, its port and the
+loopback port SSLproxy listens on; clients, prefixes; interfaces, where
+the clients' traffic comes in; ipv6, connect_log, content_log, ssh_log,
+passthrough), checked by
+.Ic sslproxy -Q
+and written, the form kept, the fwd rules written beside; started again
+where it runs.
+.Cm replace
+replaces a configuration the form did not write.
+.It Cm sslproxy enable | disable | start | stop | restart
+Started, the fwd rules then loaded into set 27 at rule 7 (by set 26);
+stopped, the rules taken away first.  Refused where a rule of another's
+is in those sets or at that number.
+.It Cm sslproxy csr Op Cm renew
+The edge's CA key made where there is none (or, with
+.Cm renew ,
+a new one beside the one in use), and its request printed.
+.It Cm sslproxy install-ca Ar cert.pem chain.pem
+The certificate for that key, a CA's, and the chain that issued it,
+installed; the console does both from its tenant fleet's root
+.Pq Li inspection-ca .
 .It Cm netstore Op Cm nfs | Cm iscsi | Cm hast
 The host's network storage services, as JSON: the NFS server, NFSv4 alone
 .Xr ( nfsd 8 ,

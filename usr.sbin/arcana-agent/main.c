@@ -85,6 +85,9 @@ struct opts opts = {
 	.smtpd_dir = "/usr/local/etc/mail/arcana",
 	.speederv2_bin = "/usr/local/bin/speederv2",
 	.speederv2_log = "/var/log/messages",
+	.sslproxy_bin = "/usr/local/bin/sslproxy",
+	.sslproxy_conf = "/usr/local/etc/sslproxy.conf",
+	.sslproxy_dir = "/usr/local/etc/sslproxy/arcana",
 	.log_dir = "/var/log",
 	.history_conf = "/usr/local/etc/arcana/history.conf",
 	.jobs_conf = "/usr/local/etc/arcana/jobs.conf",
@@ -145,7 +148,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_POUDRIERE, OPT_POUDRIERE_ETC, OPT_IFMCSTAT, OPT_FRESHCLAM_CONF,
     OPT_SURICATA_RULES, OPT_EXPORTS, OPT_CTL_CONF, OPT_HAST_CONF,
     OPT_SMTPD_CONF, OPT_SMTPD_DIR, OPT_PKG_IDLE, OPT_JOBS_CONF,
-    OPT_SPEEDER_LOG, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
+    OPT_SPEEDER_LOG, OPT_SSLPROXY_CONF, OPT_SSLPROXY_DIR, OPT_SMTPD_WATCH, OPT_NACM, OPT_SUBSCRIPTIONS,
     OPT_RTADVCTL, OPT_FEATURES, OPT_STAMP_PORT,
     OPT_STAMP_CLOCK, OPT_STAMPD_KEYS, OPT_ROUTES_CACHE, OPT_BUILD_USER,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
@@ -229,6 +232,10 @@ static const struct option longopts[] = {
 	/* A file naming the allocation of the next request or job that
 	 * fails as out of memory would (work.c): a test's. */
 	{ "alloc-fault", required_argument, NULL, OPT_ALLOC_FAULT },
+	/* SSLproxy's sslproxy.conf, and the directory of its CA, form and
+	 * fwd rules. */
+	{ "sslproxy-conf", required_argument, NULL, OPT_SSLPROXY_CONF },
+	{ "sslproxy-dir", required_argument, NULL, OPT_SSLPROXY_DIR },
 	{ NULL, 0, NULL, 0 },
 };
 
@@ -288,6 +295,7 @@ usage(void)
 	    "[--devd-pipe socket]\n"
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
+	    "                 [--sslproxy-conf file] [--sslproxy-dir directory]\n"
 	    "                 [--terminal-login login] [--terminal-idle seconds]\n"
 	    "                 [--jobs-conf file] [--nacm file] [--build-user user]\n"
 	    "                 [--subscriptions file] [--features list]\n");
@@ -646,6 +654,12 @@ main(int argc, char *argv[])
 			break;
 		case OPT_ALLOC_FAULT:
 			opts.alloc_fault = optarg;
+			break;
+		case OPT_SSLPROXY_CONF:
+			opts.sslproxy_conf = optarg;
+			break;
+		case OPT_SSLPROXY_DIR:
+			opts.sslproxy_dir = optarg;
 			break;
 		case OPT_JOBS_CONF:
 			opts.jobs_conf = optarg;

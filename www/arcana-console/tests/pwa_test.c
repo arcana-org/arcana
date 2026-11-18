@@ -12837,6 +12837,83 @@ part_forms_ownall(void)
 	    "== 1", 30);
 }
 
+/*
+ * The Security page's SSL inspection tab: the edge's CA issued from the
+ * fleet's root (made on the console, its key kept there; the edge's key
+ * made on the host), the form sent and the host's sslproxy.conf and fwd
+ * rules checked, then enabled: started, the rules loaded by ipfw into
+ * set 27 by set 26.
+ */
+static void
+part_sslinspect(void)
+{
+	int	i;
+
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("document.querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = [...s.options].find(o => o.textContent === 'lab').value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=tls]", 10);
+	wait_js("location.hash.startsWith('#/security/tls') && document."
+	    "querySelector('.sslview button[data-act=ssl-issue]') && document."
+	    "querySelector('form[data-form=ssl-conf]')", 20);
+	ATF_CHECK(js_true("document.querySelector('.sslview').textContent."
+	    "includes('ipfw fwd') && document.querySelector('.sslview')."
+	    "textContent.includes('sslproxy(1)')"));
+	/* The CA first: the key made on the host, signed by the root. */
+	click_when("button[data-act=ssl-issue]", 10);
+	for (i = 0; i < 300 && (access("ssl.d/ca.crt", F_OK) != 0 ||
+	    access("data/inspection/_fleet/root.pem", F_OK) != 0); i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the edge's CA is not issued");
+	ATF_CHECK(access("ssl.d/ca.key", F_OK) == 0 &&
+	    access("ssl.d/ca.key.next", F_OK) != 0);
+	ATF_CHECK(system("cmp -s ssl.d/chain.crt "
+	    "data/inspection/_fleet/root.pem") == 0);
+	ATF_CHECK(system("openssl verify -CAfile data/inspection/_fleet/root.pem "
+	    "ssl.d/ca.crt > /dev/null 2>&1") == 0);
+	wait_js("document.querySelector('.ssl-ca').textContent.includes("
+	    "'Arcana SSL inspection on') && document.querySelector("
+	    "'a.ssl-root[download]')", 20);
+	/* The form: https and smtps, the clients and the interface. */
+	run("const f = document.querySelector('form[data-form=ssl-conf]'); "
+	    "f.p_smtps.checked = true; f.interfaces.value = 'em1'; "
+	    "f.clients.value = '192.0.2.0/24, 2001:db8::/64'; "
+	    "f.ssh_log.checked = true; f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^ProxySpec smtps 127.0.0.1 8465 "
+	    "ipfw$' sslproxy.conf") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "sslproxy.conf is not written");
+	ATF_CHECK(system("grep -q '^ProxySpec https ::1 8443 ipfw$' sslproxy.conf "
+	    "&& grep -q '^ProxySpec tcp 127.0.0.1 8022 ipfw$' sslproxy.conf && "
+	    "grep -q '^Divert no$' sslproxy.conf && ! grep -q ContentLog "
+	    "sslproxy.conf") == 0);
+	ATF_CHECK(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8443 tcp from "
+	    "192.0.2.0/24 to not me 443 in recv em1 // sslproxy:https$' "
+	    "ssl.d/fwd.rules && grep -q '^add 7 set 26 fwd ::1,8465 tcp from "
+	    "2001:db8::/64 to not me6 465 in recv em1 // sslproxy:smtps$' "
+	    "ssl.d/fwd.rules") == 0);
+	dock_closed();
+	/* Enabled: started, the rules loaded and swapped in. */
+	wait_js("document.querySelector('.sslview button[data-act=ssl-job]"
+	    "[data-arg=enable]')", 20);
+	click_when(".sslview button[data-act=ssl-job][data-arg=enable]", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q 'ipfw -q set swap 26 27' "
+	    "ipfw.log") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the fwd rules are not loaded");
+	ATF_CHECK(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8022 tcp from "
+	    "192.0.2.0/24 to not me 22 in recv em1 // sslproxy:ssh$' ipfw.log "
+	    "&& grep -q '^arcana_sslproxy_enable=\"YES\"$' rc.conf") == 0);
+	ATF_CHECK(access("running.arcana_sslproxy", F_OK) == 0);
+	dock_closed();
+	wait_js("document.querySelector('.sslview .chip.st-up')", 20);
+	shot("9x-security-tls");
+}
+
 static void
 part_security(void)
 {
@@ -13449,6 +13526,25 @@ ATF_TC_BODY(pwa_flows_trouble, tc)
 	part_trouble();
 }
 ATF_TC_CLEANUP(pwa_flows_trouble, tc)
+{
+
+	browser_stop();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_security_tls);
+ATF_TC_HEAD(pwa_security_tls, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection: the edge's CA from the fleet's root, the form sent, sslproxy.conf and the fwd rules on the host, enabled and the rules loaded");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_security_tls, tc)
+{
+
+	prologue(tc, 2);
+	part_sslinspect();
+}
+ATF_TC_CLEANUP(pwa_security_tls, tc)
 {
 
 	browser_stop();
@@ -15398,6 +15494,7 @@ ATF_TP_ADD_TCS(tp)
 
 	ATF_TP_ADD_TC(tp, pwa_map_fleet);
 	ATF_TP_ADD_TC(tp, pwa_flows_security);
+	ATF_TP_ADD_TC(tp, pwa_security_tls);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netpaths);
 	ATF_TP_ADD_TC(tp, pwa_plugins_wg);
 	ATF_TP_ADD_TC(tp, pwa_storage_relay);

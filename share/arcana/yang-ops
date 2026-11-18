@@ -111,6 +111,7 @@ netstore	arcana-netstore@2026-10-29
 suricata-rules	arcana-suricata@2026-10-29
 smtpd	arcana-smtpd@2026-10-29
 speeder	arcana-speeder@2026-10-29
+sslproxy	arcana-sslproxy@2026-11-18
 # suricata-pcap-put and -get, as zfs-send and zfs-receive: streams of
 # arcana-stream, Arcana's own family, its structures their bodies.
 suricata-pcap-put	arcana-stream@2026-10-29

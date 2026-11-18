@@ -1,0 +1,47 @@
+module: arcana-sslproxy
+  +--ro sslproxy
+     +---x read
+     |  +--ro output
+     |     +--ro installed?          boolean
+     |     +--ro version?            string
+     |     +--ro enabled?            boolean
+     |     +--ro running?            boolean
+     |     +--ro conf-path?          string
+     |     +--ro ours?               boolean
+     |     +--ro spec?               string
+     |     +--ro conf?               string
+     |     +--ro ca
+     |     |  +--ro key?           boolean
+     |     |  +--ro pending?       boolean
+     |     |  +--ro csr?           string
+     |     |  +--ro certificate!
+     |     |  |  +--ro subject?     string
+     |     |  |  +--ro issuer?      string
+     |     |  |  +--ro not-after?   int64
+     |     |  |  +--ro pem?         string
+     |     |  +--ro root!
+     |     |     +--ro subject?     string
+     |     |     +--ro issuer?      string
+     |     |     +--ro not-after?   int64
+     |     |     +--ro pem?         string
+     |     +--ro rule*
+     |     |  +--ro number?   int32
+     |     |  +--ro set?      int32
+     |     |  +--ro text?     string
+     |     +--ro rules-expected?     int32
+     |     +--ro rules-file?         string
+     |     +--ro rules-error?        string
+     |     +--ro connect-log?        string
+     |     +--ro connect-log-size?   int64
+     +---x csr
+     |  +---w input
+     |  |  +---w renew?   boolean
+     |  +--ro output
+     |     +--ro csr?   string
+     +---x install-ca
+        +---w input
+        |  +---w certificate    string
+        |  +---w chain          string
+        +--ro output
+           +--ro subject?     string
+           +--ro not-after?   int64

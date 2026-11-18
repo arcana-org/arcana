@@ -9,13 +9,16 @@ ATF_TESTS_SH=	agent_test \
 # file of the case's, through libjail's jail_getv(3) preloaded.
 SUBDIR+=	libfakejail
 
-# Arcana's rc script for the FEC relays, as agent_test.sh's relay_rc
-# runs it under the real rc.subr(8).
-${PACKAGE}FILES+=	arcana_relay
-CLEANFILES+=	arcana_relay
+# Arcana's rc scripts for the FEC relays and for SSLproxy, as
+# agent_test.sh's relay_rc and sslproxy_rc run them under the real
+# rc.subr(8).
+${PACKAGE}FILES+=	arcana_relay arcana_sslproxy
+CLEANFILES+=	arcana_relay arcana_sslproxy
 # bsd.progs.mk's all builds the programs alone.
-all: arcana_relay
+all: arcana_relay arcana_sslproxy
 arcana_relay: ${.CURDIR}/../../../share/rc.d/arcana_relay
+	cp -f ${.ALLSRC} ${.TARGET}
+arcana_sslproxy: ${.CURDIR}/../../../share/rc.d/arcana_sslproxy
 	cp -f ${.ALLSRC} ${.TARGET}
 
 # The collectors of the standard models (invidia/y*.c), run alone over

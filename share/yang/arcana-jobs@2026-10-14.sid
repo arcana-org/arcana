@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 22,
+    "sid-file-version": 24,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -22,6 +22,10 @@
       {
         "entry-point": "83200",
         "size": "100"
+      },
+      {
+        "entry-point": "95900",
+        "size": "20"
       }
     ],
     "item": [
@@ -3641,6 +3645,16 @@
       },
       {
         "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/args",
+        "sid": "95908"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy/args",
+        "sid": "95909"
+      },
+      {
+        "namespace": "data",
         "identifier": "/arcana-jobs:steps",
         "sid": "83200"
       },
@@ -3703,6 +3717,46 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:steps/step/status",
         "sid": "83212"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy",
+        "sid": "95900"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/force",
+        "sid": "95901"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/text",
+        "sid": "95902"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/verb",
+        "sid": "95903"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy",
+        "sid": "95904"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy/force",
+        "sid": "95905"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy/text",
+        "sid": "95906"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy/verb",
+        "sid": "95907"
       }
     ]
   }

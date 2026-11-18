@@ -708,6 +708,212 @@ pki_sign_host(const char *csrpem, const char *host, char *err, size_t errlen)
 }
 
 /*
+ * SSL inspection's CAs (docs/notes/ssl-inspection.md), apart from the
+ * console's own, which the agents trust and no browser ever should:
+ * one root a tenant fleet (the fleet's own, "_fleet", for the hosts of
+ * no tenant), made here at its first use and kept in
+ * datadir/inspection/<tenant>/, its key never sent; each edge's
+ * intermediate signed from a request whose key the edge made and
+ * keeps, a CA of path length 0 for its SSLproxy to forge with.  An
+ * edge lost gives away its own intermediate alone.
+ */
+#define	INSPECT_DIR		"inspection"
+#define	INSPECT_ROOT_DAYS	3650
+#define	INSPECT_EDGE_DAYS	825
+
+static pthread_mutex_t	inspect_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A tenant's name as a directory's: users.c's names, never a path. */
+static bool
+inspect_tenant_ok(const char *t)
+{
+	size_t	i, n;
+
+	n = strlen(t);
+	if (n == 0 || n > 64 || t[0] == '.')
+		return (false);
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)t[i]) && strchr("_.@-", t[i]) ==
+		    NULL)
+			return (false);
+	return (true);
+}
+
+/* A certificate of the inspection CAs: the root (issuer NULL, path
+ * length 1) or an edge's intermediate (path length 0). */
+static X509 *
+inspect_cert(EVP_PKEY *key, const char *cn, X509 *issuer, EVP_PKEY *ikey,
+    int days)
+{
+	X509		*x;
+	X509_NAME	*name;
+	BIGNUM		*bn;
+	ASN1_INTEGER	*serial;
+	int		 ok;
+
+	if ((x = X509_new()) == NULL)
+		return (NULL);
+	ok = X509_set_version(x, X509_VERSION_3) == 1;
+	if ((bn = BN_new()) != NULL && BN_rand(bn, 127, BN_RAND_TOP_ANY,
+	    BN_RAND_BOTTOM_ANY) == 1 && (serial = BN_to_ASN1_INTEGER(bn,
+	    NULL)) != NULL) {
+		ok = ok && X509_set_serialNumber(x, serial) == 1;
+		ASN1_INTEGER_free(serial);
+	} else
+		ok = 0;
+	BN_free(bn);
+	ok = ok && X509_gmtime_adj(X509_getm_notBefore(x), -300) != NULL &&
+	    X509_gmtime_adj(X509_getm_notAfter(x), (long)days * 86400) != NULL;
+	/* Never past the root's own end. */
+	if (ok && issuer != NULL && ASN1_TIME_compare(X509_get0_notAfter(x),
+	    X509_get0_notAfter(issuer)) > 0)
+		ok = X509_set1_notAfter(x, X509_get0_notAfter(issuer)) == 1;
+	name = X509_get_subject_name(x);
+	ok = ok && X509_NAME_add_entry_by_txt(name, "O", MBSTRING_UTF8,
+	    (const unsigned char *)"Arcana", -1, -1, 0) == 1 &&
+	    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8,
+	    (const unsigned char *)cn, -1, -1, 0) == 1;
+	ok = ok && X509_set_issuer_name(x, issuer != NULL ?
+	    X509_get_subject_name(issuer) : name) == 1;
+	ok = ok && X509_set_pubkey(x, key) == 1;
+	ok = ok && add_ext(x, issuer, NID_basic_constraints, issuer == NULL ?
+	    "critical,CA:TRUE,pathlen:1" : "critical,CA:TRUE,pathlen:0") == 0 &&
+	    add_ext(x, issuer, NID_key_usage,
+	    "critical,keyCertSign,cRLSign,digitalSignature") == 0 &&
+	    add_ext(x, issuer, NID_subject_key_identifier, "hash") == 0;
+	if (issuer != NULL)
+		ok = ok && add_ext(x, issuer, NID_authority_key_identifier,
+		    "keyid:always") == 0;
+	ok = ok && X509_sign(x, issuer != NULL ? ikey : key, EVP_sha256()) > 0;
+	if (!ok) {
+		X509_free(x);
+		return (NULL);
+	}
+	return (x);
+}
+
+/* The tenant's root and its key, made when there is none; under
+ * inspect_lock.  0, or -1 with why. */
+static int
+inspect_root(const char *tenant, X509 **xp, EVP_PKEY **kp, char *err,
+    size_t errlen)
+{
+	X509		*v[1];
+	char		 dir[MAXPATHLEN], cpath[MAXPATHLEN], kpath[MAXPATHLEN];
+	char		 cn[128];
+
+	*xp = NULL;
+	*kp = NULL;
+	snprintf(dir, sizeof(dir), "%s/" INSPECT_DIR, cfg.datadir);
+	(void)mkdir(dir, 0700);
+	snprintf(dir, sizeof(dir), "%s/" INSPECT_DIR "/%s", cfg.datadir,
+	    tenant[0] != '\0' ? tenant : "_fleet");
+	snprintf(cpath, sizeof(cpath), "%s/root.pem", dir);
+	snprintf(kpath, sizeof(kpath), "%s/root.key", dir);
+	if (certs_read(cpath, v, 1) == 1) {
+		if ((*kp = read_key(kpath)) == NULL) {
+			X509_free(v[0]);
+			snprintf(err, errlen, "%s cannot be read", kpath);
+			return (-1);
+		}
+		*xp = v[0];
+		return (0);
+	}
+	if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+		snprintf(err, errlen, "%s: %s", dir, strerror(errno));
+		return (-1);
+	}
+	snprintf(cn, sizeof(cn), "Arcana SSL inspection root for %s",
+	    tenant[0] != '\0' ? tenant : "the fleet");
+	if ((*kp = key_new()) == NULL || (*xp = inspect_cert(*kp, cn, NULL,
+	    NULL, INSPECT_ROOT_DAYS)) == NULL) {
+		snprintf(err, errlen, "cannot make the root: %s", ssl_err());
+		goto fail;
+	}
+	/* The key first: a root without its key is never left. */
+	if (write_pem(kpath, NULL, *kp, 0600) != 0 || write_pem(cpath, *xp,
+	    NULL, 0644) != 0) {
+		snprintf(err, errlen, "cannot write the root in %s", dir);
+		(void)unlink(cpath);
+		(void)unlink(kpath);
+		goto fail;
+	}
+	log_msg(LOG_NOTICE, "SSL inspection: a root made for %s",
+	    tenant[0] != '\0' ? tenant : "the fleet");
+	return (0);
+fail:
+	X509_free(*xp);
+	EVP_PKEY_free(*kp);
+	*xp = NULL;
+	*kp = NULL;
+	return (-1);
+}
+
+/*
+ * An edge's intermediate for its request (csrpem, PEM), host its name:
+ * the certificate as PEM, and the tenant's root as PEM into *rootp, both
+ * to free; NULL with why in err.  Any thread.
+ */
+char *
+pki_inspect_issue(const char *tenant, const char *csrpem, const char *host,
+    char **rootp, char *err, size_t errlen)
+{
+	X509_REQ	*csr;
+	X509		*root, *cert;
+	EVP_PKEY	*rkey, *key;
+	BIO		*b;
+	char		 cn[128], *s;
+
+	*rootp = NULL;
+	if (tenant == NULL)
+		tenant = "";
+	if (tenant[0] != '\0' && !inspect_tenant_ok(tenant)) {
+		snprintf(err, errlen, "the host's tenant cannot name a root");
+		return (NULL);
+	}
+	if (csrpem == NULL || (b = BIO_new_mem_buf(csrpem, -1)) == NULL) {
+		snprintf(err, errlen, "no certificate request");
+		return (NULL);
+	}
+	csr = PEM_read_bio_X509_REQ(b, NULL, NULL, NULL);
+	BIO_free(b);
+	key = csr != NULL ? X509_REQ_get_pubkey(csr) : NULL;
+	if (key == NULL || X509_REQ_verify(csr, key) != 1 ||
+	    EVP_PKEY_get_base_id(key) != EVP_PKEY_EC) {
+		snprintf(err, errlen, "the host's request does not check out");
+		X509_REQ_free(csr);
+		EVP_PKEY_free(key);
+		return (NULL);
+	}
+	X509_REQ_free(csr);
+	s = NULL;
+	cert = NULL;
+	pthread_mutex_lock(&inspect_lock);
+	if (inspect_root(tenant, &root, &rkey, err, errlen) != 0) {
+		pthread_mutex_unlock(&inspect_lock);
+		EVP_PKEY_free(key);
+		return (NULL);
+	}
+	pthread_mutex_unlock(&inspect_lock);
+	snprintf(cn, sizeof(cn), "Arcana SSL inspection on %.64s", host != NULL ?
+	    host : "an edge");
+	if ((cert = inspect_cert(key, cn, root, rkey, INSPECT_EDGE_DAYS)) ==
+	    NULL)
+		snprintf(err, errlen, "cannot sign for %s: %s", host, ssl_err());
+	else if ((s = certs_pem(&cert, 1)) == NULL || (*rootp =
+	    certs_pem(&root, 1)) == NULL) {
+		free(s);
+		s = NULL;
+		snprintf(err, errlen, "out of memory");
+	}
+	X509_free(cert);
+	X509_free(root);
+	EVP_PKEY_free(rkey);
+	EVP_PKEY_free(key);
+	return (s);
+}
+
+/*
  * The roots of the console's CA file as arcana-enrol(8) pins them: the
  * SHA-256 of each, max of them, into pins; how many.
  */

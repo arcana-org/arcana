@@ -135,6 +135,7 @@ static const struct bridge {
 	{ H "configuration", NULL, NULL, false },
 	{ H "move", "result", NULL, true },
 	{ H "renew-tls", "result", NULL, true },
+	{ H "inspection-ca", "result", NULL, true },
 	{ H "listen", "result", NULL, true },
 	{ H "switch-transport", "result", NULL, true },
 	{ H "nacm-sync", "result", NULL, true },

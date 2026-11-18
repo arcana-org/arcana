@@ -2,6 +2,7 @@
 %%CONSOLE%%etc/rc.d/arcana_console
 etc/rc.d/arcana_agent
 etc/rc.d/arcana_relay
+etc/rc.d/arcana_sslproxy
 etc/rc.d/stampd
 bin/stamp
 include/stamp.h

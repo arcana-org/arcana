@@ -551,6 +551,17 @@ definitions:
           Probed by ICMP echo from the host, or with jail from that
           vnet jail's network; kept in monitors.json beside
           history.conf for the next start; never touched by SD-WAN.
+      - name: sslproxy
+        doc: |
+          SSL inspection by SSLproxy, a plugin (security/sslproxy), run
+          by Arcana's own rc service, arcana_sslproxy: conf (text: the
+          form as JSON, rendered into sslproxy.conf and checked by
+          sslproxy -Q, the fwd rules beside it; force to replace a
+          file the form did not write), enable, disable, start, stop,
+          restart.  Started, its ipfw fwd rules are loaded into set 27
+          at rule 7 (staged in set 26), stopped they are taken away;
+          refused where a rule of the admin's is in those sets or at
+          that number.  The host's alone; never in safe mode.
   - name: job-state
     type: enum
     entries:

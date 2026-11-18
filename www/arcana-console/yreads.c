@@ -10,8 +10,9 @@
  * port-options, arcana-notify's notify, made the JSON the operations
  * gave (the agent's ssh.c, poudriere.c, telegram.c), each key in the
  * place the agent put it; and arcana-crashes', arcana-system's,
- * arcana-netstore's, arcana-suricata's, arcana-smtpd's and
- * arcana-speeder's actions, whose nodes are named as the JSON's keys,
+ * arcana-netstore's, arcana-suricata's, arcana-smtpd's,
+ * arcana-speeder's and arcana-sslproxy's actions, whose nodes are named
+ * as the JSON's keys,
  * by yflat.c; so that the pages keep reading what they read.
  */
 
@@ -947,4 +948,56 @@ yr_speeder(cbl_conn *conn, const char *jail, ucl_object_t **data, char *err,
 	return (flat_call(conn, "arcana-speeder", "speeder", "read", &in,
 	    sizeof(struct arcana_speeder_speeder_read_output), yfn_speeder,
 	    data, err, errlen));
+}
+
+int
+yr_sslproxy(cbl_conn *conn, ucl_object_t **data, char *err, size_t errlen)
+{
+	struct arcana_sslproxy_sslproxy_read_input	in;
+
+	memset(&in, 0, sizeof(in));
+	return (flat_call(conn, "arcana-sslproxy", "sslproxy", "read", &in,
+	    sizeof(struct arcana_sslproxy_sslproxy_read_output), yfn_sslproxy,
+	    data, err, errlen));
+}
+
+int
+yr_sslproxy_csr(cbl_conn *conn, bool renew, char **csr, char *err,
+    size_t errlen)
+{
+	struct arcana_sslproxy_sslproxy_csr_input	 in;
+	ucl_object_t					*o;
+	const char					*s;
+	int						 error;
+
+	*csr = NULL;
+	memset(&in, 0, sizeof(in));
+	in.has_renew = renew;
+	in.renew = renew;
+	if ((error = flat_call(conn, "arcana-sslproxy", "sslproxy", "csr", &in,
+	    sizeof(struct arcana_sslproxy_sslproxy_csr_output), NULL, &o, err,
+	    errlen)) != 0)
+		return (error);
+	if ((s = ucl_object_tostring(ucl_object_lookup(o, "csr"))) == NULL ||
+	    (*csr = strdup(s)) == NULL) {
+		ucl_object_unref(o);
+		snprintf(err, errlen, "the host made no request");
+		return (EIO);
+	}
+	ucl_object_unref(o);
+	return (0);
+}
+
+int
+yr_sslproxy_install(cbl_conn *conn, const char *cert, const char *chain,
+    ucl_object_t **data, char *err, size_t errlen)
+{
+	struct arcana_sslproxy_sslproxy_install_ca_input	in;
+
+	memset(&in, 0, sizeof(in));
+	in.certificate = cert;
+	in.chain = chain;
+	return (flat_call(conn, "arcana-sslproxy", "sslproxy", "install-ca",
+	    &in, sizeof(struct arcana_sslproxy_sslproxy_install_ca_output),
+	    NULL, data, err, errlen));
 }

@@ -1,0 +1,108 @@
+#!/bin/sh
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# PROVIDE: arcana_sslproxy
+# REQUIRE: NETWORKING ipfw
+# KEYWORD: shutdown
+#
+# Arcana's SSL inspection: security/sslproxy's sslproxy(1), whose port
+# has no rc script, with the configuration the agent renders from the
+# Security page's form, and the ipfw(8) fwd rules that send the
+# clients' traffic to it.  The rules are an ipfw file of set 26 at rule
+# 7; started, they are loaded there, swapped into set 27 and set 26
+# emptied; stopped, set 27 is taken away.  A rule of set 26 or 27 that
+# is not SSL inspection's (its comment says "sslproxy:") leaves both
+# sets alone, said and nothing loaded or deleted.
+#
+# Add these lines to /etc/rc.conf to enable it:
+#
+# arcana_sslproxy_enable (bool):	Set to "YES" to run it.
+# arcana_sslproxy_config (str):	sslproxy.conf(5).
+#				Default: /usr/local/etc/sslproxy.conf
+# arcana_sslproxy_fwd (str):	The fwd rules, an ipfw(8) file; empty or
+#				not there, none.
+#				Default: /usr/local/etc/sslproxy/arcana/fwd.rules
+# arcana_sslproxy_pidfile (str):	Default: /var/run/arcana_sslproxy.pid
+# arcana_sslproxy_logdir (str):	Where its logs go, made at start.
+#				Default: /var/log/sslproxy
+# arcana_sslproxy_ipfw (str):	ipfw(8).  Default: /sbin/ipfw
+#
+# The configuration is checked (sslproxy -Q) before each start, and by
+# "service arcana_sslproxy configtest".
+
+. /etc/rc.subr
+
+name=arcana_sslproxy
+rcvar=arcana_sslproxy_enable
+desc="SSL inspection by SSLproxy"
+
+load_rc_config $name
+
+: ${arcana_sslproxy_enable:=NO}
+: ${arcana_sslproxy_config:=/usr/local/etc/sslproxy.conf}
+: ${arcana_sslproxy_fwd:=/usr/local/etc/sslproxy/arcana/fwd.rules}
+: ${arcana_sslproxy_pidfile:=/var/run/arcana_sslproxy.pid}
+: ${arcana_sslproxy_logdir:=/var/log/sslproxy}
+: ${arcana_sslproxy_ipfw:=/sbin/ipfw}
+
+command=/usr/local/bin/sslproxy
+pidfile=${arcana_sslproxy_pidfile}
+required_files=${arcana_sslproxy_config}
+command_args="-d -f ${arcana_sslproxy_config} -p ${pidfile}"
+extra_commands="configtest"
+configtest_cmd=arcana_sslproxy_configtest
+start_precmd=arcana_sslproxy_precmd
+start_postcmd=arcana_sslproxy_fwd_load
+stop_postcmd=arcana_sslproxy_fwd_unload
+
+ipfw=${arcana_sslproxy_ipfw}
+
+arcana_sslproxy_configtest()
+{
+	${command} -Q -f "${arcana_sslproxy_config}"
+}
+
+arcana_sslproxy_precmd()
+{
+	arcana_sslproxy_configtest || err 1 "${arcana_sslproxy_config} is refused"
+	install -d -m 0750 "${arcana_sslproxy_logdir}" \
+	    "${arcana_sslproxy_logdir}/content"
+}
+
+# True when set 26 or 27 holds a rule that is not SSL inspection's.
+arcana_sslproxy_fwd_theirs()
+{
+	${ipfw} -a -S list 2>/dev/null | awk '$4 == "set" && ($5 == 26 ||
+	    $5 == 27) && !/\/\/ sslproxy:/ { f = 1 } END { exit !f }'
+}
+
+arcana_sslproxy_fwd_load()
+{
+	[ -s "${arcana_sslproxy_fwd}" ] || return 0
+	if arcana_sslproxy_fwd_theirs; then
+		warn "ipfw sets 26 and 27 hold rules that are not SSL inspection's: no fwd rule loaded"
+		return 0
+	fi
+	${ipfw} -q -f delete set 26
+	${ipfw} -q set disable 26
+	if ${ipfw} -q "${arcana_sslproxy_fwd}" &&
+	    ${ipfw} -q set swap 26 27; then
+		${ipfw} -q set enable 27
+	else
+		warn "${arcana_sslproxy_fwd}: not loaded"
+	fi
+	${ipfw} -q -f delete set 26
+}
+
+arcana_sslproxy_fwd_unload()
+{
+	if arcana_sslproxy_fwd_theirs; then
+		warn "ipfw sets 26 and 27 hold rules that are not SSL inspection's: left alone"
+		return 0
+	fi
+	${ipfw} -q -f delete set 27
+	${ipfw} -q -f delete set 26
+}
+
+run_rc_command "$1"

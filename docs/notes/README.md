@@ -9,4 +9,5 @@ remains to do in [../TODO.md](../TODO.md) too.
 | [config-files.md](config-files.md) | The files a commit writes, Arcana's own or the system's: the merge of the admin's variables, the ledger, the switch |
 | [console-cluster.md](console-cluster.md) | The console clustered active/active |
 | [inspection.md](inspection.md) | SSL/TLS inspection by SSLproxy, and SSH |
+| [ssl-inspection.md](ssl-inspection.md) | SSL inspection built in phases: the plugin, its CA and rules first |
 | [webgl-map.md](webgl-map.md) | The network map's canvas under its SVG: what a pointer move costs, WebGPU beside WebGL 2, and what each buys |

@@ -175,6 +175,9 @@ submodule arcana-jobs-kinds {
       enum monitor {
         value 50;
       }
+      enum sslproxy {
+        value 51;
+      }
     }
     description
       "A kind of job, by its number in arcana.yaml's job-kind.";
@@ -2128,6 +2131,43 @@ submodule arcana-jobs-kinds {
             ordered-by user;
             description
               "Arguments";
+          }
+        }
+      }
+      case sslproxy {
+        container sslproxy {
+          presence
+            "This kind of job.";
+          description
+            "SSL inspection by SSLproxy configured, its fwd rules loaded, started or stopped";
+          leaf verb {
+            type enumeration {
+              enum conf;
+              enum enable;
+              enum disable;
+              enum start;
+              enum stop;
+              enum restart;
+            }
+            mandatory true;
+            description
+              "Verb";
+          }
+          leaf-list args {
+            type string;
+            ordered-by user;
+            description
+              "Arguments";
+          }
+          leaf text {
+            type string;
+            description
+              "The file";
+          }
+          leaf force {
+            type boolean;
+            description
+              "Force";
           }
         }
       }

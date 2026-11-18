@@ -7,9 +7,10 @@
 /*
  * Superbia: the host's daemons and files read through their modules
  * (PLAN-SDN-YANG 3.8): arcana-crashes, arcana-system, arcana-netstore,
- * arcana-suricata, arcana-smtpd and arcana-speeder, each an action that
- * runs the read the operation of arcana.yaml ran (crashes.c,
- * sysfiles.c, netstore.c, surules.c, idsfiles.c, smtpd.c, speeder.c)
+ * arcana-suricata, arcana-smtpd, arcana-speeder and arcana-sslproxy, each
+ * an action that runs the read the operation of arcana.yaml ran
+ * (crashes.c, sysfiles.c, netstore.c, surules.c, idsfiles.c, smtpd.c,
+ * speeder.c; sslproxy.c's, and its CA's key and certificate, new)
  * and gives its JSON as the module's output, by yflat.c and the names
  * of yflatnames.h.  Their containers hold no state: an empty GET.
  */
@@ -17,6 +18,7 @@
 #include <sys/param.h>
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -492,4 +494,141 @@ arcana_speeder_speeder_read_action(cbl_req *req,
 	return (answer(req, w, root, &r, "arcana-speeder",
 	    "speeder/read/output", out, a, yfn_speeder, clearance(req) <
 	    CLEAR_OPERATOR));
+}
+
+int
+arcana_sslproxy_sslproxy_get(cbl_req *req, struct arcana_sslproxy *data,
+    cbl_yarena *a)
+{
+
+	(void)req;
+	(void)data;
+	(void)a;
+	return (0);
+}
+
+int
+arcana_sslproxy_sslproxy_read_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_sslproxy_sslproxy_read_input *in,
+    struct arcana_sslproxy_sslproxy_read_output *out, cbl_yarena *a)
+{
+	struct json_rsp	 r;
+	struct work	*w;
+	int		 root;
+
+	(void)target;
+	(void)in;
+	if ((w = ywork_told(req, a, "SSLproxy read", &root)) == NULL)
+		return (ENOMEM);
+	memset(&r, 0, sizeof(r));
+	do_sslproxy(w, &r);
+	return (answer(req, w, root, &r, "arcana-sslproxy",
+	    "sslproxy/read/output", out, a, yfn_sslproxy, false));
+}
+
+/* A string of the work's, copied into the answer's arena. */
+static const char *
+ystrdup(cbl_yarena *a, const char *s)
+{
+	char	*p;
+	size_t	 len;
+
+	len = strlen(s) + 1;
+	if ((p = cbl_yarena_alloc(a, len)) != NULL)
+		memcpy(p, s, len);
+	return (p);
+}
+
+/*
+ * The CA's key and certificate: changes, one at a time as the agent's
+ * own (change_lock), as yarcana.c's tls csr and install are.
+ */
+static bool	ssl_change_begin(const char *) __trylocks_exclusive(true,
+		    change_lock);
+static void	ssl_change_end(void) __unlocks(change_lock);
+
+static bool
+ssl_change_begin(const char *what)
+{
+
+	pthread_mutex_lock(&change_lock);
+	if (change_note("%s", what))
+		return (true);
+	(void)change_note(NULL);
+	pthread_mutex_unlock(&change_lock);
+	return (false);
+}
+
+static void
+ssl_change_end(void)
+{
+
+	(void)change_note(NULL);
+	pthread_mutex_unlock(&change_lock);
+}
+
+int
+arcana_sslproxy_sslproxy_csr_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_sslproxy_sslproxy_csr_input *in,
+    struct arcana_sslproxy_sslproxy_csr_output *out, cbl_yarena *a)
+{
+	struct work	*w;
+	const char	*csr, *e;
+	int		 root, rc;
+
+	(void)target;
+	if ((w = ywork_told(req, a, "SSLproxy csr", &root)) == NULL)
+		return (ENOMEM);
+	w->nice = false;
+	if (!ssl_change_begin("SSLproxy csr")) {
+		step_end(w, root, false, NULL);
+		return (said(req, "not done: arcana-agent is stopping"));
+	}
+	e = NULL;
+	csr = NULL;
+	rc = sslproxy_csr(w, in->has_renew && in->renew, &csr, &e);
+	ssl_change_end();
+	step_end(w, root, rc == 0, NULL);
+	if (rc != 0)
+		return (said(req, e));
+	if ((out->csr = ystrdup(a, csr)) == NULL)
+		return (ENOMEM);
+	return (0);
+}
+
+int
+arcana_sslproxy_sslproxy_install_ca_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_sslproxy_sslproxy_install_ca_input *in,
+    struct arcana_sslproxy_sslproxy_install_ca_output *out, cbl_yarena *a)
+{
+	struct work	*w;
+	const char	*subject, *e;
+	int64_t		 until;
+	int		 root, rc;
+
+	(void)target;
+	if ((w = ywork_told(req, a, "SSLproxy install-ca", &root)) == NULL)
+		return (ENOMEM);
+	w->nice = false;
+	if (!ssl_change_begin("SSLproxy install-ca")) {
+		step_end(w, root, false, NULL);
+		return (said(req, "not done: arcana-agent is stopping"));
+	}
+	e = NULL;
+	subject = NULL;
+	until = 0;
+	rc = sslproxy_install(w, in->certificate, in->chain, &subject, &until,
+	    &e);
+	ssl_change_end();
+	step_end(w, root, rc == 0, NULL);
+	if (rc != 0)
+		return (said(req, e));
+	if ((out->subject = ystrdup(a, subject)) == NULL)
+		return (ENOMEM);
+	out->has_not_after = true;
+	out->not_after = until;
+	return (0);
 }

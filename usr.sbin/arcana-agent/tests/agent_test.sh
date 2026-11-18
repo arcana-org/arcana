@@ -14299,6 +14299,245 @@ relay_rc_cleanup()
 	:
 }
 
+atf_test_case sslproxy cleanup
+sslproxy_head()
+{
+	atf_set "descr" "SSL inspection by SSLproxy, a plugin run by Arcana's rc script: read (installed, its version, the CA, ipfw's set 27); the edge's CA key made on the host and its request, a certificate of another key or of no CA refused, the intermediate installed with its root; the form rendered into sslproxy.conf, checked by sslproxy -Q, the fwd rules written; started, the rules loaded into set 27 at rule 7 by set 26 on a stand-in ipfw keeping its sets, stopped, taken away, the admin's rules as they were; an admin's rule in set 27 or at rule 7 refusing; an admin's own sslproxy.conf replaced only on purpose"
+	atf_set "timeout" "120"
+}
+sslproxy_body()
+{
+	local d="$(pwd)"
+
+	mkdir -p tools ssl
+	# sslproxy(1): -V says a version, -Q refuses while refuse is there.
+	cat > tools/sslproxy <<EOF
+#!/bin/sh
+echo "sslproxy \$*" >> $d/sslproxy.log
+case "\$1" in
+-V)	echo 'SSLproxy 0.10.0 (built 2026-11-16)' >&2 ;;
+-Q)	[ -f $d/refuse ] && { echo "sslproxy: \$3: bad option" >&2; exit 1; } ;;
+esac
+exit 0
+EOF
+	chmod +x tools/sslproxy
+	acl_fake_ipfw
+	DAEMON_ARGS="-h $d/fake-ipfw -2 $d/tools --sslproxy-conf $d/sslproxy.conf --sslproxy-dir $d/ssl/arcana"
+	start_daemon
+	printf '#!/bin/sh\n' > rc.d/arcana_sslproxy
+	chmod +x rc.d/arcana_sslproxy
+	atf_check -o match:'Plugins: .*sslproxy' "$JGC" -c "$SOCK" hello
+	atf_check -o match:'"installed":true' -o match:'"version":"SSLproxy 0.10.0' \
+	    -o match:'"running":false' -o match:'"ca":\{"key":false,"pending":false' \
+	    -o match:'"rules_expected":0' \
+	    "$JGC" -c "$SOCK" sslproxy
+
+	cat > form.json <<'EOF'
+{"listeners":[{"proto":"https","port":443,"listen":8443},{"proto":"smtps","listen":8465}],
+ "clients":"192.0.2.0/24, 2001:db8::/64","interfaces":["em1"],"ssh_log":true}
+EOF
+	# No CA yet: nothing written.
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy conf form.json
+	atf_check -o ignore grep -q "the edge's CA is not installed" o e
+	atf_check test ! -e sslproxy.conf
+
+	# The edge's key, made here, never read out; its request.
+	atf_check -o save:ca.csr "$JGC" -c "$SOCK" sslproxy csr
+	atf_check -o match:'BEGIN CERTIFICATE REQUEST' cat ca.csr
+	atf_check -o match:'^-rw-------' ls -l ssl/arcana/ca.key.next
+	atf_check -o match:'"pending":true' -o match:'"csr":"-----BEGIN CERTIFICATE REQUEST' \
+	    -o not-match:'PRIVATE KEY' "$JGC" -c "$SOCK" sslproxy
+	atf_check -o match:'Arcana SSL inspection on ' \
+	    openssl req -in ca.csr -noout -subject
+	# A root of the test's, the intermediate for the edge's key.
+	atf_check -o ignore -e ignore openssl req -x509 -newkey ec -pkeyopt \
+	    ec_paramgen_curve:P-256 -nodes -keyout root.key -out root.pem \
+	    -subj /CN=test-root -days 30 -addext basicConstraints=critical,CA:TRUE
+	printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n' \
+	    > ca.ext
+	printf 'basicConstraints=critical,CA:FALSE\n' > leaf.ext
+	atf_check -o ignore -e ignore openssl x509 -req -in ca.csr -CA root.pem \
+	    -CAkey root.key -CAcreateserial -out int.pem -days 10 -extfile ca.ext
+	atf_check -o ignore -e ignore openssl x509 -req -in ca.csr -CA root.pem \
+	    -CAkey root.key -CAcreateserial -out leaf.pem -days 10 -extfile leaf.ext
+	# Another key's, refused; no CA's, refused.
+	atf_check -o ignore -e ignore openssl req -newkey ec -pkeyopt \
+	    ec_paramgen_curve:P-256 -nodes -keyout other.key -out other.csr \
+	    -subj /CN=other
+	atf_check -o ignore -e ignore openssl x509 -req -in other.csr -CA root.pem \
+	    -CAkey root.key -CAcreateserial -out other.pem -days 10 -extfile ca.ext
+	atf_check -s exit:1 -o ignore -e match:"not of the edge's key" \
+	    "$JGC" -c "$SOCK" sslproxy install-ca other.pem root.pem
+	atf_check -s exit:1 -o ignore -e match:"not a CA's" \
+	    "$JGC" -c "$SOCK" sslproxy install-ca leaf.pem root.pem
+	atf_check -s exit:1 -o ignore -e match:"did not issue it" \
+	    "$JGC" -c "$SOCK" sslproxy install-ca int.pem int.pem
+	atf_check -o ignore "$JGC" -c "$SOCK" sslproxy install-ca int.pem root.pem
+	atf_check test -f ssl/arcana/ca.key -a ! -e ssl/arcana/ca.key.next
+	atf_check -o match:'"key":true,"pending":false' \
+	    -o match:'"certificate":\{"subject":"CN=Arcana SSL inspection on [^"]*","issuer":"CN=test-root"' \
+	    -o match:'"root":\{"subject":"CN=test-root"' "$JGC" -c "$SOCK" sslproxy
+
+	# What is wrong with a form, refused before it runs.
+	printf '{"listeners":[{"proto":"https","listen":8443}],"clients":"192.0.2.0/33","interfaces":["em1"]}' > bad1.json
+	atf_check -s exit:1 -o ignore -e match:'not an address or a prefix' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad1.json
+	printf '{"listeners":[{"proto":"https","listen":8443}]}' > bad2.json
+	atf_check -s exit:1 -o ignore -e match:'interfaces: one at least' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad2.json
+	printf '{"listeners":[{"proto":"gopher","listen":8443}],"interfaces":["em1"]}' > bad3.json
+	atf_check -s exit:1 -o ignore -e match:'is not one of https' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad3.json
+	printf '{"listeners":[{"proto":"https","listen":80}],"interfaces":["em1; reboot"]}' > bad4.json
+	atf_check -s exit:1 -o ignore -e match:'listen port' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad4.json
+
+	# Rendered, checked by sslproxy -Q (refused: nothing written).
+	touch refuse
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy conf form.json
+	atf_check -o ignore grep -q 'sslproxy does not take it' o e
+	atf_check test ! -e sslproxy.conf
+	rm refuse
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf form.json
+	atf_check -o match:"^# Written by arcana-agent" \
+	    -o match:"^CACert $d/ssl/arcana/ca.crt\$" -o match:"^CAKey $d/ssl/arcana/ca.key\$" \
+	    -o match:"^CAChain $d/ssl/arcana/chain.crt\$" -o match:'^Divert no$' \
+	    -o match:'^Passthrough yes$' -o match:'^ConnectLog /var/log/sslproxy/connect.log$' \
+	    -o not-match:'ContentLog' \
+	    -o match:'^ProxySpec https 127.0.0.1 8443 ipfw$' -o match:'^ProxySpec https ::1 8443 ipfw$' \
+	    -o match:'^ProxySpec smtps 127.0.0.1 8465 ipfw$' \
+	    -o match:'^ProxySpec tcp 127.0.0.1 8022 ipfw$' cat sslproxy.conf
+	atf_check -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 192.0.2.0/24 to not me 443 in recv em1 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 fwd ::1,8443 tcp from 2001:db8::/64 to not me6 443 in recv em1 // sslproxy:https$' \
+	    -o match:'^add 7 set 26 fwd 127.0.0.1,8465 tcp from 192.0.2.0/24 to not me 465 in recv em1 // sslproxy:smtps$' \
+	    -o match:'^add 7 set 26 fwd 127.0.0.1,8022 tcp from 192.0.2.0/24 to not me 22 in recv em1 // sslproxy:ssh$' \
+	    cat ssl/arcana/fwd.rules
+	atf_check -o inline:'6\n' sh -c 'wc -l < ssl/arcana/fwd.rules | tr -d " "'
+	atf_check -o match:"^arcana_sslproxy_config=\"$d/sslproxy.conf\"\$" \
+	    -o match:"^arcana_sslproxy_fwd=\"$d/ssl/arcana/fwd.rules\"\$" cat rc.conf
+	# Not running: nothing loaded yet.
+	atf_check -o not-match:'set 27' cat fw.state
+
+	# Enabled: started, then the rules loaded by set 26, swapped in.
+	: > ipfw.log
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy enable
+	atf_check -o match:'^arcana_sslproxy_enable="YES"$' cat rc.conf
+	atf_check test -f running.arcana_sslproxy
+	atf_check -o match:'ipfw -q -f delete set 26' -o match:'ipfw -q set disable 26' \
+	    -o match:'ipfw -q set swap 26 27' -o match:'ipfw -q set enable 27' cat ipfw.log
+	atf_check -o inline:'6\n' sh -c 'grep -c "^7 27 fwd .* // sslproxy:" fw.state'
+	atf_check -o match:'^100 0 allow ip from any to any via lo0$' cat fw.state
+	atf_check -o match:'"running":true' -o match:'"enabled":true' \
+	    -o match:'\{"number":7,"set":27,"text":"fwd 127.0.0.1,8443 tcp from 192.0.2.0/24' \
+	    -o match:'"rules_expected":6' -o not-match:'rules_error' "$JGC" -c "$SOCK" sslproxy
+
+	# An admin's rule in set 27: told, and a restart refused, the
+	# admin's rule left; one at rule 7 of set 0 the same.
+	echo '500 27 allow ip from any to any' >> fw.state
+	atf_check -o match:'"rules_error":"rule 500 is in ipfw set 27' "$JGC" -c "$SOCK" sslproxy
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy restart
+	atf_check -o ignore grep -q 'move it to another set first' o e
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy stop
+	atf_check -o ignore grep -q 'is left alone' o e
+	atf_check -o match:'^500 27 allow ip from any to any$' cat fw.state
+	sed -i '' '/^500 27 /d' fw.state
+	echo '7 0 count ip from any to any' >> fw.state
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy restart
+	atf_check -o ignore grep -q 'renumber it first' o e
+	sed -i '' '/^7 0 /d' fw.state
+
+	# Stopped: the rules taken away first, the admin's as they were.
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy stop
+	atf_check test ! -f running.arcana_sslproxy
+	atf_check -o inline:'100 0 allow ip from any to any via lo0\n65535 31 deny ip from any to any\n' \
+	    sort -n fw.state
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy start
+	atf_check -o inline:'6\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy disable
+	atf_check -o match:'^arcana_sslproxy_enable="NO"$' cat rc.conf
+	atf_check -o not-match:' 27 ' cat fw.state
+
+	# The admin's own sslproxy.conf: not replaced unless asked, the old
+	# one kept beside.
+	printf 'CACert /etc/mine.crt\n' > sslproxy.conf
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" sslproxy conf form.json
+	atf_check -o ignore grep -q "is not Arcana's" o e
+	atf_check -o inline:'CACert /etc/mine.crt\n' cat sslproxy.conf
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf form.json replace
+	atf_check -o match:'^# Written by arcana-agent' cat sslproxy.conf
+	atf_check -o inline:'CACert /etc/mine.crt\n' cat sslproxy.conf.arcana-old
+	# A renewal: a new key waits beside the one in use.
+	atf_check -o match:'BEGIN CERTIFICATE REQUEST' "$JGC" -c "$SOCK" sslproxy csr renew
+	atf_check test -f ssl/arcana/ca.key -a -f ssl/arcana/ca.key.next
+	# Never in safe mode, never a jail's.
+	atf_check -s exit:1 -o ignore -e match:'not in safe mode' \
+	    "$JGC" -s -c "$SOCK" sslproxy start
+}
+sslproxy_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case sslproxy_rc cleanup
+sslproxy_rc_head()
+{
+	atf_set "descr" "Arcana's rc script for SSLproxy under the real rc.subr(8), a stand-in sslproxy and ipfw: the configuration checked before a start, the fwd rules loaded into set 27 at the start and taken away at the stop; rules of another's in set 27 left alone and nothing loaded"
+}
+sslproxy_rc_body()
+{
+	local d="$(pwd)"
+
+	script="$(atf_get_srcdir)/arcana_sslproxy"
+	atf_check /bin/sh -n "$script"
+	cat > fake-sslproxy <<EOF
+#!/bin/sh
+echo "\$*" >> $d/argv
+case "\$1" in
+-Q)	grep -q BROKEN "\$3" && exit 1; exit 0 ;;
+esac
+( trap 'exit 0' TERM; while :; do sleep 0.2; done ) &
+echo \$! > "\$5"
+EOF
+	chmod +x fake-sslproxy
+	acl_fake_ipfw
+	echo 'Divert no' > sslproxy.conf
+	printf 'add 7 set 26 fwd 127.0.0.1,8443 tcp from any to not me 443 in recv em1 ip4 // sslproxy:https\n' > fwd.rules
+	lim="-d $(ulimit -H -d)k"
+	export _rc_conf_loaded=true rc_debug=yes command_interpreter=/bin/sh
+	export arcana_sslproxy_enable=YES arcana_sslproxy_limits="$lim"
+	export arcana_sslproxy_program="$d/fake-sslproxy"
+	export arcana_sslproxy_config="$d/sslproxy.conf"
+	export arcana_sslproxy_fwd="$d/fwd.rules"
+	export arcana_sslproxy_pidfile="$d/run/sslproxy.pid"
+	export arcana_sslproxy_logdir="$d/log"
+	export arcana_sslproxy_ipfw="$d/fake-ipfw"
+	mkdir -p run
+	atf_check -o match:'Starting arcana_sslproxy' -e ignore /bin/sh "$script" start
+	atf_check -o match:"^-Q -f $d/sslproxy.conf\$" -o match:"^-d -f $d/sslproxy.conf -p $d/run/sslproxy.pid\$" cat argv
+	atf_check test -d log/content
+	atf_check -o match:'^7 27 fwd 127.0.0.1,8443 .* // sslproxy:https$' cat fw.state
+	atf_check -o match:'arcana_sslproxy is running' -e ignore /bin/sh "$script" status
+	atf_check -o match:'Stopping arcana_sslproxy' -e ignore /bin/sh "$script" stop
+	atf_check -o not-match:' 27 ' cat fw.state
+	atf_check -o match:'^100 0 ' cat fw.state
+	# Refused configuration: not started.
+	echo BROKEN >> sslproxy.conf
+	atf_check -s exit:1 -o ignore -e match:'is refused' /bin/sh "$script" start
+	sed -i '' '/BROKEN/d' sslproxy.conf
+	# Another's rule in set 27: left alone, nothing loaded, nothing
+	# deleted at the stop.
+	echo '500 27 allow ip from any to any' >> fw.state
+	atf_check -o match:'Starting' -e match:'not SSL inspection' /bin/sh "$script" start
+	atf_check -o not-match:'sslproxy:' cat fw.state
+	atf_check -o match:'Stopping' -e match:'left alone' /bin/sh "$script" stop
+	atf_check -o match:'^500 27 allow' cat fw.state
+}
+sslproxy_rc_cleanup()
+{
+	[ -f run/sslproxy.pid ] && kill "$(cat run/sslproxy.pid)" 2>/dev/null
+	:
+}
+
 atf_test_case monitors cleanup
 monitors_head()
 {
@@ -21145,6 +21384,8 @@ atf_init_test_cases()
 	atf_add_test_case smtpd
 	atf_add_test_case speeder
 	atf_add_test_case relay_rc
+	atf_add_test_case sslproxy
+	atf_add_test_case sslproxy_rc
 	atf_add_test_case monitors
 	atf_add_test_case sysfiles
 	atf_add_test_case sdwan_jail
