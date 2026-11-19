@@ -356,6 +356,7 @@ module: arcana-jobs
     |  |     |  +--:(poudriere)
     |  |     |  |  +---w poudriere!
     |  |     |  |     +---w verb    enumeration
+    |  |     |  |     +---w jail?   string
     |  |     |  |     +---w args*   string
     |  |     |  |     +---w text?   string
     |  |     |  +--:(clamav)
@@ -744,6 +745,7 @@ module: arcana-jobs
        |  |  |  +--:(poudriere)
        |  |  |  |  +---w poudriere!
        |  |  |  |     +---w verb    enumeration
+       |  |  |  |     +---w jail?   string
        |  |  |  |     +---w args*   string
        |  |  |  |     +---w text?   string
        |  |  |  +--:(clamav)

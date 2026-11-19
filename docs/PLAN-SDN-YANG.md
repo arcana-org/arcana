@@ -2050,7 +2050,7 @@ whose first part is served.
   | servers/<id>/net/* | `H/arcana-network:network/<kind>` (lookup too), `ietf-interfaces:interfaces`, `arcana-troubleshoot:troubleshoot/traceroute`, `arcana-netgraph:netgraph/read`, `arcana-wireguard:wireguard/read`, `arcana-bird:bird/{read,routes,ospf}`, `arcana-firewall:firewall` (state) |
   | servers/<id>/bird/config | `H/arcana-bird:bird/configuration` (edited, committed; `bird/check`) |
   | servers/<id>/storage/*, fstab, zfs/key | `H/arcana-storage:storage` and `storage/read`, `storage/fstab` (`fstab/replace`), `create-encrypted`; a dataset's key `C hosts/host=<id>/dataset-key` (its name's / no path below the mount carries) |
-  | servers/<id>/builder, builder/options | `H/arcana-builder:builder`, `builder/port-options` |
+  | servers/<id>/builder, builder/options | `H/arcana-builder:builder/read` (host-jail: a jail's own), `builder/port-options` |
   | servers/<id>/suricata/rules, netstore, system, smtpd, speeder, monitors, ssh | `H/arcana-suricata:suricata/read-rules`, `arcana-netstore:netstore/read`, `arcana-system:system/read`, `arcana-smtpd:smtpd/read`, `arcana-speeder:speeder/read`, `arcana-probe:probes/read`, `arcana-sshd:sshd/read` |
   | servers/<id>/kernel, sysctl, processes, log, events | `H/arcana-kernel:kernel`, `arcana-sysctl:sysctl/read`, `arcana-processes:processes`, `arcana-log:logs/read`, `arcana-events:events/read` |
   | servers/<id>/ipfw/rules, ipfw/trace, ipfw/path | `H/arcana-firewall:firewall/kept` (edited, committed; `firewall/check`), `firewall/trace`, `arcana-troubleshoot:troubleshoot/path-check` |

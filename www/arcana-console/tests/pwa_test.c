@@ -16535,6 +16535,136 @@ ATF_TC_CLEANUP(pwa_forms_builder, tc)
 }
 
 /*
+ * The Builder in a jail of the host's: gw (a stand-in, jroot) picked in
+ * Runs in, its own poudriere beneath its root.  Not made for it at
+ * first (no children.max, its mounts not allowed): the page says what to
+ * set in its jail.conf.  With them, a build jail made from the form and
+ * net/bird3 built from the build form: the jail's poudriere run there
+ * (jexec), its log and poudriere.d beneath the jail's root, the host's
+ * untouched.
+ */
+static void
+part_builder_jail(void)
+{
+	char	dir[MAXPATHLEN], buf[4096];
+	int	i;
+
+	ATF_REQUIRE(getcwd(dir, sizeof(dir)) != NULL);
+	/* jexec, in the jail as far as a stand-in goes: a path the jail has
+	 * (./ from its root) is its own, its root the working directory. */
+	snprintf(buf, sizeof(buf), "#!/bin/sh\necho \"jexec $*\" >> "
+	    "%s/jexec.log\nr=$(awk -v j=\"$1\" '$2 == j { print $4 }' "
+	    "%s/jails)\n[ -n \"$r\" ] || exit 1\nshift\nn=0\nfor a; do case "
+	    "\"$a\" in /*) [ -e \"$r$a\" ] && a=$r$a ;; ./*) [ -e "
+	    "\"$r/${a#./}\" ] && a=$r/${a#./} ;; esac; set -- \"$@\" \"$a\"; "
+	    "n=$((n+1)); done\nshift $n\ncd \"$r\" || exit 1\nexec \"$@\"\n",
+	    dir, dir);
+	put("fake-jexec", buf);
+	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+	/* The jail's poudriere and what it keeps, as jset writes it. */
+	snprintf(buf, sizeof(buf), "mkdir -p jroot%s/pe/poudriere.d && "
+	    "printf 'NO_ZFS=yes\\n' > jroot%s/pe/poudriere.conf", dir, dir);
+	ATF_REQUIRE(system(buf) == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\necho \"poudriere $*\" >> "
+	    "%s/jroot/poudriere.log\ne=%s/jroot%s/pe/poudriere.d\ncmd=$1; "
+	    "shift\ncase $cmd in\njail) verb=$1; shift; n=; v=\n\twhile "
+	    "getopts yj:v:a:m:K:bBt: o; do case $o in j) n=$OPTARG;; v) "
+	    "v=$OPTARG;; esac; done\n\tcase $verb in\n\t-c) mkdir -p "
+	    "$e/jails/$n; echo $v > $e/jails/$n/version; echo 1792200000 > "
+	    "$e/jails/$n/timestamp; echo \"[00:00:01] Created $n in the "
+	    "jail\" ;;\n\tesac ;;\nbulk) echo \"[00:00:00] Building: $*\"; "
+	    "echo '[00:00:01] Built 1 packages' ;;\nesac\nexit 0\n", dir, dir,
+	    dir);
+	put("jroot/fake-poudriere", buf);
+	ATF_REQUIRE(chmod("jroot/fake-poudriere", 0755) == 0);
+	click_when("li.bldnode[data-act=select-builder]", 10);
+	wait_js("document.querySelector('select[data-input=bld-host]')", 10);
+	run("const s = document.querySelector('select[data-input=bld-host]'); "
+	    "s.value = s.options[s.options.length - 1].value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	wait_js("document.querySelector('select[data-input=bld-where] "
+	    "option[value=gw]')", 20);
+	run("const s = document.querySelector('select[data-input=bld-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	/* Not made for it: what to set, shown. */
+	wait_js("document.querySelector('.bld-unfit') && document."
+	    "querySelector('.bld-unfit').textContent.includes('children.max') "
+	    "&& document.querySelector('.bld-unfit').textContent.includes("
+	    "'allow.mount.nullfs') && document.querySelector('.bldwhere')."
+	    "textContent.includes('in jail gw')", 20);
+	shot("9w-builder-jail-unfit");
+	/* Set in its jail.conf, the jail started again: read anew. */
+	snprintf(buf, sizeof(buf), "gw 4 new %s/jroot 16.0-CURRENT "
+	    "children.max=20 enforce_statfs=1 allow.mount=1 allow.mount.devfs=1 "
+	    "allow.mount.nullfs=1 allow.mount.procfs=1 allow.mount.fdescfs=1 "
+	    "allow.chflags=1 allow.raw_sockets=1 allow.socket_af=1 "
+	    "allow.sysvipc=1\n", dir);
+	put("jails", buf);
+	run("const s = document.querySelector('select[data-input=bld-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("!document.querySelector('.bld-unfit') && document."
+	    "querySelector('.bldwhere') && document.querySelector("
+	    "'button[data-act=bld-new][data-arg=jail]')", 20);
+	/* A build jail, made by the jail's poudriere. */
+	click_when("button[data-act=bld-new][data-arg=jail]", 10);
+	wait_js("document.querySelector('form[data-form=bld-jail]')", 10);
+	run("const f = document.querySelector('form[data-form=bld-jail]'); "
+	    "f.name.value = '150amd64'; f.version.value = '15.1-RELEASE'; "
+	    "f.requestSubmit();");
+	queued_run();
+	wait_js("document.querySelector('table.bldjails tr[data-jail="
+	    "\"150amd64\"]') && [...document.querySelectorAll('li.bldrun')]."
+	    "some(l => l.textContent.includes('jail -c -j 150amd64 -v "
+	    "15.1-RELEASE') && l.textContent.includes('done'))", 30);
+	dock_closed();
+	/* net/bird3 built there, from the build form. */
+	click_when("button[data-act=bld-tab][data-arg=bulk]", 10);
+	wait_js("document.querySelector('form[data-form=bld-bulk] "
+	    "select[name=jail] option[value=\"150amd64\"]')", 10);
+	run("const f = document.querySelector('form[data-form=bld-bulk]'); "
+	    "f.jail.value = '150amd64'; f.origins.value = 'net/bird3'; "
+	    "f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^poudriere bulk -j 150amd64 "
+	    "net/bird3$' jroot/poudriere.log 2>/dev/null") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's poudriere did not build");
+	wait_js("[...document.querySelectorAll('li.bldrun')].some(l => l."
+	    "textContent.includes('bulk -j 150amd64 net/bird3') && l."
+	    "textContent.includes('done'))", 30);
+	snprintf(buf, sizeof(buf), "test -f jroot%s/pe/poudriere.d/jails/"
+	    "150amd64/version && ! test -e pe/poudriere.d/jails/150amd64 && "
+	    "grep -q '^jexec 4 ./fake-poudriere bulk -j 150amd64 net/bird3$' "
+	    "jexec.log && ! grep -qs 'bulk -j 150amd64 net/bird3$' "
+	    "poudriere.log", dir);
+	ATF_CHECK_MSG(system(buf) == 0, "not built by the jail's poudriere, "
+	    "beneath its root alone");
+	dock_closed();
+	shot("9x-builder-jail");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_builder_jail);
+ATF_TC_HEAD(pwa_builder_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The Builder in a jail picked in Runs in: a jail not made for poudriere shown with what to set in its jail.conf; with the parameters, a build jail and a build of net/bird3 from the forms, run by the jail's own poudriere, its files beneath the jail's root");
+	atf_tc_set_md_var(tc, "timeout", "150");
+}
+ATF_TC_BODY(pwa_builder_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_builder_jail();
+}
+ATF_TC_CLEANUP(pwa_builder_jail, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A jail made from a base snapshot by its form: its dataset cloned from
  * it, beside the base's, mounted at its path; then taken away with its
  * dataset named.
@@ -17134,6 +17264,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_forms_ca);
 	ATF_TP_ADD_TC(tp, pwa_forms_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_forms_builder);
+	ATF_TP_ADD_TC(tp, pwa_builder_jail);
 	ATF_TP_ADD_TC(tp, pwa_forms_jails);
 	ATF_TP_ADD_TC(tp, pwa_forms_lanes);
 	ATF_TP_ADD_TC(tp, pwa_yform_jail);

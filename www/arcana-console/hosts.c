@@ -3122,8 +3122,10 @@ connected:
 			put(top, "data", e);
 		break;
 	case OP_BUILDER:
-		/* arcana-builder's builder (yreads.c). */
-		ok = yr_builder(conn, &e, ywhy, sizeof(ywhy)) == 0;
+		/* arcana-builder's read (yreads.c): the host's, or the
+		 * jail's poudriere the scope names. */
+		ok = yr_builder(conn, c->scope[0] != '\0' ? c->scope : NULL, &e,
+		    ywhy, sizeof(ywhy)) == 0;
 		if (!ok)
 			put_str(top, "error", ywhy);
 		if (e != NULL)
@@ -3146,8 +3148,8 @@ connected:
 					nv[n++] = line;
 			}
 			ysteps_begin(conn, c, &ys);
-			ok = yr_port_options(conn, nv, n, &e, ywhy,
-			    sizeof(ywhy)) == 0;
+			ok = yr_port_options(conn, c->scope[0] != '\0' ?
+			    c->scope : NULL, nv, n, &e, ywhy, sizeof(ywhy)) == 0;
 			ysteps_end(conn, &ys, &steps, &nsteps);
 			free(copy);
 		}

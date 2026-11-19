@@ -123,6 +123,10 @@ a change is kept in the jail's own
 For
 .Cm sslproxy ,
 any running jail, vnet or not: the jail's own SSLproxy.
+For
+.Cm poudriere ,
+any running jail, vnet or not: the jail's own poudriere, which makes
+its build jails there.
 .It Fl p
 Keep a change to an interface or a route in
 .Xr rc.conf 5
@@ -818,7 +822,7 @@ to be loaded at boot, and with
 taken out of it: neither loads nor unloads it now.
 .It Cm poudriere Oo Cm list | Cm show-options Ar key Ns = Ns Ar value ... | Cm make-conf Ar name Ns | Ns Cm - Ar file Ns | Ns Cm - | Ar verb Oo Ar key Ns = Ns Ar value ... Oc Oc
 .Xr poudriere 8 ,
-the host's package builder, a plugin:
+the package builder of the host or of a jail, a plugin:
 .Cm list
 reads its build jails, ports trees, make.conf files, package
 repositories, the latest builds and the runs the agent started.
@@ -903,13 +907,29 @@ for a
 .Li src=
 tree built here or a git or svn checkout.
 Each is a job.
-The list is a GET of arcana-builder's
-.Ic builder ,
+The list is arcana-builder's
+.Ic read
+action,
 .Cm show-options
 its
 .Ic port-options
 action; each printed as the JSON the builder and builder-options
 operations gave.
+With
+.Fl j ,
+a jail's own poudriere
+.Pq its jail= words still poudriere's build jails :
+read and run in that jail of the host's, its
+.Pa poudriere.conf ,
+.Pa poudriere.d ,
+logs and packages beneath the jail's root, its runs kept on the host.
+A jail without what poudriere needs to make jails and mount their file
+systems there is refused, with the
+.Xr jail.conf 5
+parameters to set
+.Pq children.max, enforce_statfs below 2, allow.mount and its devfs, nullfs, procfs and fdescfs, tmpfs or zfs where poudriere.conf uses them, allow.chflags, allow.raw_sockets, allow.socket_af, allow.sysvipc ;
+the list says it as
+.Li jail_unfit .
 .It Cm crashes Op Cm backtrace Ar core Op Ar program
 The cores the kernel dumped where
 .Va kern.corefile

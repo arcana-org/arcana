@@ -447,7 +447,7 @@ kinds:
   - kind: poudriere
     title: poudriere's build jails, ports trees and builds
     needs: verb
-    uses: args text
+    uses: jail args text
     values: verb=jail-create|jail-update|jail-delete|ports-create|ports-update|ports-delete|bulk|stop|make-conf|conf|options
     destroys: verb=jail-delete|ports-delete
   - kind: clamav

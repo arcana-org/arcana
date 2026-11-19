@@ -741,7 +741,7 @@ int	ysshd_from_json(const char *json, cbl_yarena *a,
 /* arcana-builder (luxuria/ybuilder.c): the builder and builder-options
  * operations' JSON. */
 int	ybuilder_from_json(const char *json, cbl_yarena *a,
-	    struct arcana_builder_builder *out);
+	    struct arcana_builder_builder_read_output *out);
 int	ybuilder_options_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_builder_builder_port_options_output *out);
 

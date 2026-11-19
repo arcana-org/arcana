@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 33,
+    "sid-file-version": 34,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3842,6 +3842,16 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/crash/verb",
         "sid": "63155"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/poudriere/jail",
+        "sid": "63156"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/poudriere/jail",
+        "sid": "63157"
       },
       {
         "namespace": "data",

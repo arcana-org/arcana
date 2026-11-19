@@ -5,8 +5,9 @@
  */
 
 /*
- * Luxuria: poudriere(8), the ports' package builder, a plugin of the
- * host's (it is not looked for in a jail, as it makes jails itself).
+ * Luxuria: poudriere(8), the ports' package builder, a plugin: the
+ * host's, or a jail's own (the host's jail it runs in, which it makes
+ * its build jails in; not one of those).
  *
  * What it has is read where poudriere keeps it, not parsed from its
  * tables: each build jail is a directory of poudriere.d/jails, each
@@ -34,9 +35,30 @@
  * The rest is done in the job: a jail or ports tree deleted (-y, as
  * nothing answers poudriere's question), a make.conf written or taken
  * away, poudriere.conf's variables set by sysrc -f.
+ *
+ * In a jail of the host's (the job's jail, the read's host-jail):
+ * poudriere is the jail's own, run there (jexec(8)), and makes its
+ * build jails as the jail's children; its poudriere.conf, poudriere.d
+ * and the logs and packages under its data directory are read and
+ * written beneath the jail's root, never through a link out of it
+ * (invidia/scope.c); poudriere status and the ports' make are the
+ * jail's, sysrc -f the jail's (-j).  The runs stay the host's, kept
+ * under the runs' directory by the jail's name (jails/<jail>): the
+ * waiter is on the host, and execs jexec, whose process becomes
+ * poudriere's, signalled from the host as the host's is.  A jail made
+ * without what poudriere does there is refused, with what to set in its
+ * jail.conf (jail_unfit()): children for its build jails
+ * (children.max), the mounts it makes for them (allow.mount and
+ * devfs, nullfs, procfs, fdescfs; tmpfs where USE_TMPFS says, zfs with
+ * ZPOOL and its dataset jailed: zfs jail), the mount points it sees
+ * (enforce_statfs below 2), and what each build jail is given and so
+ * the parent must have (allow.chflags, allow.raw_sockets,
+ * allow.socket_af, allow.sysvipc: a child has no more than its
+ * parent).
  */
 
 #include <sys/param.h>
+#include <sys/jail.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -44,6 +66,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jail.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -103,6 +126,174 @@ pd_dir(struct work *w)
 {
 
 	return (wfmt(w, "%s/poudriere.d", opts.poudriere_etc));
+}
+
+/* ---- Where it runs ---------------------------------------------------- */
+
+/* The work's scope, kept while w works on the host's own files. */
+struct was {
+	const char	*jail, *jroot;
+	int		 jid;
+};
+
+static void
+to_host(struct work *w, struct was *s)
+{
+
+	s->jail = w->jail;
+	s->jroot = w->jroot;
+	s->jid = w->jid;
+	w->jail = NULL;
+	w->jroot = NULL;
+	w->jid = 0;
+}
+
+static void
+back_to(struct work *w, const struct was *s)
+{
+
+	w->jail = s->jail;
+	w->jroot = s->jroot;
+	w->jid = s->jid;
+}
+
+/* A directory of poudriere's, of the host or beneath w's jail's root;
+ * NULL with errno. */
+static DIR *
+pd_opendir(struct work *w, const char *dir)
+{
+	DIR	*d;
+	int	 fd;
+
+	if ((fd = scope_dirfd(w, dir)) == -1)
+		return (NULL);
+	if ((d = fdopendir(fd)) == NULL)
+		close(fd);
+	return (d);
+}
+
+/* stat(2) of a file of poudriere's: beneath w's jail's root, a link
+ * not followed; the host's as stat(2) has it. */
+static int
+pd_stat(struct work *w, const char *path, struct stat *st)
+{
+	const char	*base;
+	int		 dfd, rc, e;
+
+	if (w->jail == NULL)
+		return (stat(path, st));
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (-1);
+	rc = fstatat(dfd, base, st, AT_SYMLINK_NOFOLLOW);
+	e = errno;
+	close(dfd);
+	errno = e;
+	return (rc);
+}
+
+/* Is a file of poudriere's there? */
+static bool
+pd_there(struct work *w, const char *path)
+{
+	struct stat	st;
+
+	return (pd_stat(w, path, &st) == 0);
+}
+
+/* A file of the host's, whole, while w may work in a jail: the runs'. */
+static char *
+host_slurp(struct work *w, const char *path, size_t *lenp)
+{
+	struct was	 s;
+	char		*text;
+
+	to_host(w, &s);
+	text = scope_slurp(w, path, lenp);
+	back_to(w, &s);
+	return (text);
+}
+
+/* A parameter of w's jail as jailparam_export(3) says it; NULL where
+ * the kernel has none of that name (allow.mount.zfs without ZFS). */
+static const char *
+jparam(struct work *w, const char *name)
+{
+	struct jailparam	 jp[2];
+	const char		*v;
+	char			*s;
+
+	memset(jp, 0, sizeof(jp));
+	v = NULL;
+	if (jailparam_init(&jp[0], "jid") == 0 && jailparam_import(&jp[0],
+	    wfmt(w, "%d", w->jid)) == 0 && jailparam_init(&jp[1], name) ==
+	    0 && jailparam_get(jp, 2, 0) >= 0 && (s =
+	    jailparam_export(&jp[1])) != NULL) {
+		v = wstrdup(w, s);
+		free(s);
+	}
+	jailparam_free(jp, 2);
+	return (v);
+}
+
+static bool
+jparam_on(struct work *w, const char *name)
+{
+	const char	*v;
+
+	return ((v = jparam(w, name)) != NULL && (strcmp(v, "1") == 0 ||
+	    strcmp(v, "true") == 0));
+}
+
+static void	pd_conf_read(struct work *, const char *, ucl_object_t *);
+
+/*
+ * Why poudriere cannot build in w's jail, with what to set there: NULL
+ * on the host, or where it can.  The mounts tmpfs and zfs are asked
+ * where poudriere.conf uses them (USE_TMPFS, ZPOOL without NO_ZFS).
+ */
+static const char *
+jail_unfit(struct work *w)
+{
+	static const char *const allow[] = { "allow.mount",
+	    "allow.mount.devfs", "allow.mount.nullfs", "allow.mount.procfs",
+	    "allow.mount.fdescfs", "allow.chflags", "allow.raw_sockets",
+	    "allow.socket_af", "allow.sysvipc" };
+	ucl_object_t		*conf;
+	const ucl_object_t	*v;
+	const char		*s, *miss;
+	bool			 tmpfs, zfs;
+	size_t			 i;
+
+	if (w->jail == NULL)
+		return (NULL);
+	conf = ucl_object_typed_new(UCL_OBJECT);
+	pd_conf_read(w, wfmt(w, "%s/poudriere.conf", opts.poudriere_etc),
+	    conf);
+	pd_conf_read(w, wfmt(w, "%s/poudriere.conf", pd_dir(w)), conf);
+	tmpfs = (v = ucl_object_lookup(conf, "USE_TMPFS")) != NULL &&
+	    (s = ucl_object_tostring(v))[0] != '\0' && strcmp(s, "no") != 0;
+	zfs = ucl_object_lookup(conf, "ZPOOL") != NULL && ((v =
+	    ucl_object_lookup(conf, "NO_ZFS")) == NULL || strcmp(
+	    ucl_object_tostring(v), "yes") != 0);
+	ucl_object_unref(conf);
+	miss = "";
+	if ((s = jparam(w, "children.max")) == NULL || atoi(s) < 1)
+		miss = wfmt(w, "%s children.max = 64;", miss);
+	if ((s = jparam(w, "enforce_statfs")) == NULL || atoi(s) >= 2)
+		miss = wfmt(w, "%s enforce_statfs = 1;", miss);
+	for (i = 0; i < nitems(allow); i++)
+		if (!jparam_on(w, allow[i]))
+			miss = wfmt(w, "%s %s;", miss, allow[i]);
+	if (tmpfs && !jparam_on(w, "allow.mount.tmpfs"))
+		miss = wfmt(w, "%s allow.mount.tmpfs;", miss);
+	if (zfs && !jparam_on(w, "allow.mount.zfs"))
+		miss = wfmt(w, "%s allow.mount.zfs; (and its dataset jailed "
+		    "to it: zfs jail)", miss);
+	if (miss[0] == '\0')
+		return (NULL);
+	return (wfmt(w, "the jail %s cannot run poudriere, which makes jails "
+	    "of its own there and mounts their file systems: set%s in its "
+	    "jail.conf (jail -m on the running jail)", w->jail, miss));
 }
 
 /* ---- Names and words ---------------------------------------------- */
@@ -249,8 +440,10 @@ poudriere_check(const struct arc_job_spec *sp)
 	const char	*v, *verb;
 	size_t		 i;
 
-	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("poudriere is the host's: it makes jails of its own");
+	/* sp->jail: the host's jail it runs in (the job's scope), not a
+	 * build jail, which is a word (jail=). */
+	if (sp->jail != NULL && sp->jail[0] != '\0' && !valid_jail(sp->jail))
+		return ("invalid jail name");
 	if (sp->safe)
 		return ("what poudriere builds or removes is not taken back by "
 		    "itself: not in safe mode");
@@ -422,12 +615,17 @@ poudriere_check(const struct arc_job_spec *sp)
 
 /* ---- Runs ------------------------------------------------------------ */
 
+/* The runs' directory: the host's, and a jail's beneath it, by its
+ * name; the host's files either way. */
 static const char *
 runs_dir(struct work *w)
 {
 	char	buf[MAXPATHLEN];
 
-	return (wstrdup(w, sdwan_conf_path(RUNS_DIR, buf, sizeof(buf))));
+	(void)sdwan_conf_path(RUNS_DIR, buf, sizeof(buf));
+	if (w->jail != NULL)
+		return (wfmt(w, "%s/jails/%s", buf, w->jail));
+	return (wstrdup(w, buf));
 }
 
 /* The runs' numbers, newest first. */
@@ -473,15 +671,17 @@ runs_list(struct work *w, long **idsp)
 	return (n);
 }
 
-/* A small file's first line, or NULL. */
+/* A small file's first line, or NULL: the host's (a run's), or with
+ * scoped one of poudriere's, beneath w's jail's root. */
 static char *
-first_line(struct work *w, const char *path)
+line_of(struct work *w, const char *path, bool scoped)
 {
 	char	buf[VALUE_MAX];
 	ssize_t	n;
 	int	fd;
 
-	if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1)
+	if ((fd = scoped ? scope_open_read(w, path) : open(path, O_RDONLY |
+	    O_CLOEXEC)) == -1)
 		return (NULL);
 	n = read(fd, buf, sizeof(buf) - 1);
 	close(fd);
@@ -490,6 +690,20 @@ first_line(struct work *w, const char *path)
 	buf[n] = '\0';
 	buf[strcspn(buf, "\n")] = '\0';
 	return (wstrdup(w, buf));
+}
+
+static char *
+first_line(struct work *w, const char *path)
+{
+
+	return (line_of(w, path, false));
+}
+
+static char *
+pd_line(struct work *w, const char *path)
+{
+
+	return (line_of(w, path, true));
 }
 
 /* A run's pid, when it has one and it still runs; 0 otherwise. */
@@ -514,9 +728,10 @@ run_pid(struct work *w, long id, int *exitp)
 	    pid : 0);
 }
 
-/* The last bytes of a run's log, from a line's start. */
+/* The last bytes of a log, from a line's start: a run's (the host's),
+ * or with scoped a build's, beneath w's jail's root. */
 static char *
-log_tail(struct work *w, const char *path)
+log_tail(struct work *w, const char *path, bool scoped)
 {
 	char		*buf, *p;
 	struct stat	 st;
@@ -525,10 +740,11 @@ log_tail(struct work *w, const char *path)
 	size_t		 i;
 	int		 fd;
 
-	if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1)
+	if ((fd = scoped ? scope_open_read(w, path) : open(path, O_RDONLY |
+	    O_CLOEXEC)) == -1)
 		return (NULL);
-	if (fstat(fd, &st) == -1 || (buf = wmalloc(w, TAIL_BYTES + 1)) ==
-	    NULL) {
+	if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode) || (buf = wmalloc(w,
+	    TAIL_BYTES + 1)) == NULL) {
 		close(fd);
 		return (NULL);
 	}
@@ -670,12 +886,19 @@ run_start(struct work *w, char *const argv[], const char *title, long *idp,
 	ucl_object_t			*meta, *words;
 	sigset_t			 none, all;
 	const char			*dir;
-	char				*json, **hv;
+	char				*json, **hv, *const *pv;
 	long				*ids, id;
 	pid_t				 a;
 	int				 logfd, fd, st, step, i, n, rc;
 
 	dir = runs_dir(w);
+	if (w->jail != NULL) {
+		/* builder/jails/<jail>: the host's, made as far as it. */
+		(void)mkdir_mode(wstrndup(w, dir, strlen(dir) -
+		    strlen(w->jail) - strlen("/jails/")), 0750);
+		(void)mkdir_mode(wstrndup(w, dir, strlen(dir) -
+		    strlen(w->jail) - 1), 0750);
+	}
 	(void)mkdir_mode(dir, 0750);
 	id = runs_list(w, &ids) > 0 ? ids[0] + 1 : 1;
 	meta = ucl_object_typed_new(UCL_OBJECT);
@@ -704,7 +927,10 @@ run_start(struct work *w, char *const argv[], const char *title, long *idp,
 		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
 		return (-1);
 	}
-	for (n = 0; argv[n] != NULL; n++)
+	/* In a jail, jexec(8) there: its process is poudriere's once it
+	 * has attached, the waiter the host's. */
+	pv = scope_jexec(w, argv);
+	for (n = 0; pv[n] != NULL; n++)
 		;
 	hv = wcalloc(w, (size_t)n + 7, sizeof(*hv));
 	hv[0] = (char *)(uintptr_t)opts.own_bin;
@@ -714,7 +940,7 @@ run_start(struct work *w, char *const argv[], const char *title, long *idp,
 	hv[4] = wfmt(w, "%s/%ld.pid", dir, id);
 	hv[5] = wfmt(w, "%s/%ld.exit", dir, id);
 	for (i = 0; i < n; i++)
-		hv[6 + i] = argv[i];
+		hv[6 + i] = pv[i];
 	hv[6 + n] = NULL;
 	step = step_begin(w, STEP_EXEC, argv[0], "run %ld: %s", id,
 	    title);
@@ -781,8 +1007,7 @@ run_stop(struct work *w, const char *ids, const char **errp)
 static int
 make_conf(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
-	const char	*name, *path, *tmp;
-	FILE		*fp;
+	const char	*name, *path, *text;
 	int		 step;
 	bool		 ok;
 
@@ -792,7 +1017,7 @@ make_conf(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	if (sp->text == NULL || sp->text[strspn(sp->text, " \t\r\n")] ==
 	    '\0') {
 		step = step_begin(w, STEP_FILE, path, "taken away");
-		ok = unlink(path) == 0 || errno == ENOENT;
+		ok = scope_unlink(w, path) == 0 || errno == ENOENT;
 		if (!ok)
 			*errp = wfmt(w, "%s: %s", path, strerror(errno));
 		step_end(w, step, ok, ok ? NULL : "%s", *errp);
@@ -800,19 +1025,14 @@ make_conf(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	}
 	step = step_begin(w, STEP_FILE, path, "written, %zu bytes",
 	    strlen(sp->text));
-	(void)mkdir_mode(pd_dir(w), 0755);
-	tmp = wfmt(w, "%s.arcana-new", path);
-	ok = (fp = fopen(tmp, "w")) != NULL;
-	if (ok) {
-		ok = fputs(sp->text, fp) != EOF && (sp->text[strlen(sp->text) -
-		    1] == '\n' || fputc('\n', fp) != EOF);
-		ok = fclose(fp) == 0 && ok;
-	}
-	ok = ok && chmod(tmp, 0644) == 0 && rename(tmp, path) == 0;
-	if (!ok) {
+	/* Whole or as it was, beneath w's jail's root where it is one's;
+	 * a last line ended. */
+	(void)scope_mkdirs(w, pd_dir(w));
+	text = sp->text[strlen(sp->text) - 1] == '\n' ? sp->text :
+	    wfmt(w, "%s\n", sp->text);
+	ok = scope_replace(w, path, text, strlen(text), 0644, NULL) == 0;
+	if (!ok)
 		*errp = wfmt(w, "%s: %s", path, strerror(errno));
-		(void)unlink(tmp);
-	}
 	step_end(w, step, ok, ok ? NULL : "%s", *errp);
 	return (ok ? 0 : -1);
 }
@@ -854,7 +1074,7 @@ pd_now(struct work *w, char *const argv[], const char **errp)
 {
 	struct execres	res;
 
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		*errp = exec_error(w, &res, "poudriere");
 		return (-1);
 	}
@@ -882,11 +1102,18 @@ do_poudriere_job(struct work *w, const struct arc_job_spec *sp,
 		return (run_stop(w, arg(sp, "run", 0), errp));
 	if (strcmp(verb, "options") == 0)
 		return (options_set(w, sp, errp));
-	if (access(pd_bin(w), X_OK) != 0) {
-		*errp = wfmt(w, "%s: not installed: poudriere is a plugin, "
+	if (!scope_access(w, pd_bin(w), true)) {
+		*errp = w->jail != NULL ? wfmt(w, "%s: not installed in the "
+		    "jail %s: poudriere is a plugin, the jail's own (pkg -j %s "
+		    "install poudriere)", pd_bin(w), w->jail, w->jail) :
+		    wfmt(w, "%s: not installed: poudriere is a plugin, "
 		    "installed by hand (pkg install poudriere)", pd_bin(w));
 		return (-1);
 	}
+	/* What it does there makes jails and mounts: refused, with what
+	 * to set, in a jail not made for it. */
+	if ((*errp = jail_unfit(w)) != NULL)
+		return (-1);
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)pd_bin(w);
 #define	ADD(s)	(argv[n++] = (char *)(uintptr_t)(s))
@@ -929,7 +1156,7 @@ do_poudriere_job(struct work *w, const struct arc_job_spec *sp,
 			if (yes(sp, "build")) {
 				/* -b builds a src= tree; git and svn always
 				 * do; the others have no source. */
-				m = first_line(w, wfmt(w, "%s/jails/%s/method",
+				m = pd_line(w, wfmt(w, "%s/jails/%s/method",
 				    pd_dir(w), arg(sp, "name", 0)));
 				if (m == NULL || !(strncmp(m, "src=", 4) == 0 ||
 				    strncmp(m, "git", 3) == 0 || strncmp(m,
@@ -1008,7 +1235,7 @@ char *
 poudriere_title(const struct arc_job_spec *sp)
 {
 	const char	*verb, *ports, *set, *name;
-	char		*t;
+	char		*t, *in;
 	int		 rc;
 
 	verb = sp->verb != NULL ? sp->verb : "";
@@ -1041,6 +1268,14 @@ poudriere_title(const struct arc_job_spec *sp)
 	else
 		rc = asprintf(&t, "poudriere %s %s", verb, name != NULL ? name :
 		    "");
+	if (rc == -1)
+		return (NULL);
+	/* Where it runs: a jail of the host's, not a build jail. */
+	if (sp->jail != NULL && sp->jail[0] != '\0') {
+		in = t;
+		rc = asprintf(&t, "%s, in the jail %s", in, sp->jail);
+		free(in);
+	}
 	return (rc == -1 ? NULL : t);
 }
 
@@ -1058,14 +1293,14 @@ dir_values(struct work *w, const char *dir, ucl_object_t *o)
 	char		*v, *end;
 	long long	 num;
 
-	if ((d = opendir(dir)) == NULL)
+	if ((d = pd_opendir(w, dir)) == NULL)
 		return;
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
 		p = wfmt(w, "%s/%s", dir, de->d_name);
-		if (stat(p, &st) == -1 || !S_ISREG(st.st_mode) ||
-		    st.st_size > VALUE_MAX || (v = first_line(w, p)) == NULL)
+		if (pd_stat(w, p, &st) == -1 || !S_ISREG(st.st_mode) ||
+		    st.st_size > VALUE_MAX || (v = pd_line(w, p)) == NULL)
 			continue;
 		num = strtoll(v, &end, 10);
 		if (strcmp(de->d_name, "timestamp") == 0 && end != v &&
@@ -1091,7 +1326,7 @@ entries(struct work *w, const char *kind)
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	dir = wfmt(w, "%s/%s", pd_dir(w), kind);
-	if ((d = opendir(dir)) == NULL)
+	if ((d = pd_opendir(w, dir)) == NULL)
 		return (arr);
 	n = 0;
 	while ((de = readdir(d)) != NULL && n < LIST_MAX) {
@@ -1183,7 +1418,7 @@ makeconfs(struct work *w)
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	dir = pd_dir(w);
-	if ((d = opendir(dir)) == NULL)
+	if ((d = pd_opendir(w, dir)) == NULL)
 		return (arr);
 	n = 0;
 	while ((de = readdir(d)) != NULL && n < LIST_MAX) {
@@ -1225,15 +1460,15 @@ repos(struct work *w, const char *data)
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	dir = wfmt(w, "%s/packages", data);
-	if ((d = opendir(dir)) == NULL)
+	if ((d = pd_opendir(w, dir)) == NULL)
 		return (arr);
 	n = 0;
 	while ((de = readdir(d)) != NULL && n < LIST_MAX) {
 		if (de->d_name[0] == '.')
 			continue;
 		count = 0;
-		if ((pd = opendir(wfmt(w, "%s/%s/All", dir, de->d_name))) !=
-		    NULL) {
+		if ((pd = pd_opendir(w, wfmt(w, "%s/%s/All", dir,
+		    de->d_name))) != NULL) {
 			while ((pe = readdir(pd)) != NULL)
 				if ((nl = strlen(pe->d_name)) > 4 &&
 				    strcmp(pe->d_name + nl - 4, ".pkg") == 0)
@@ -1304,7 +1539,7 @@ build_ports(struct work *w, ucl_object_t *o, const char *logs)
 			    "%s/logs/errors/%s.log", logs, f[1])), "log_file", 0,
 			    false);
 			if ((tail = log_tail(w, wfmt(w, "%s/logs/errors/%s.log",
-			    logs, f[1]))) != NULL)
+			    logs, f[1]), true)) != NULL)
 				ucl_object_insert_key(e, ucl_object_fromstring(
 				    tail), "log", 0, false);
 			ucl_array_append(arr, e);
@@ -1359,7 +1594,7 @@ builds(struct work *w, const char **errp)
 	argv[3] = (char *)(uintptr_t)"-H";
 	argv[4] = (char *)(uintptr_t)"-l";
 	argv[5] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		/* None yet is said as a failure. */
 		if (res.err == NULL || (strstr(res.err, "No ") == NULL &&
 		    strstr(res.err, "no ") == NULL))
@@ -1405,7 +1640,7 @@ runs(struct work *w)
 	n = runs_list(w, &ids);
 	dir = runs_dir(w);
 	for (i = 0; i < n && i < RUNS_KEPT; i++) {
-		if ((meta = scope_slurp(w, wfmt(w, "%s/%ld.json", dir, ids[i]),
+		if ((meta = host_slurp(w, wfmt(w, "%s/%ld.json", dir, ids[i]),
 		    &len)) == NULL)
 			continue;
 		p = ucl_parser_new(UCL_PARSER_NO_IMPLICIT_ARRAYS |
@@ -1431,7 +1666,7 @@ runs(struct work *w)
 		ucl_object_insert_key(o, ucl_object_fromstring(wfmt(w,
 		    "%s/%ld.log", dir, ids[i])), "log_file", 0, true);
 		if ((i < RUNS_TAILED || pid != 0) && (tail = log_tail(w, wfmt(w,
-		    "%s/%ld.log", dir, ids[i]))) != NULL)
+		    "%s/%ld.log", dir, ids[i]), false)) != NULL)
 			ucl_object_insert_key(o, ucl_object_fromstring(tail),
 			    "log", 0, true);
 		ucl_array_append(arr, o);
@@ -1444,12 +1679,19 @@ do_builder(struct work *w, struct json_rsp *rsp)
 {
 	ucl_object_t		*top, *conf;
 	const ucl_object_t	*v;
-	const char		*basefs, *data, *berr;
+	const char		*basefs, *data, *berr, *unfit;
 	char			*json;
 	bool			 have;
 
-	have = access(pd_bin(w), X_OK) == 0;
+	have = scope_access(w, pd_bin(w), true);
 	top = ucl_object_typed_new(UCL_OBJECT);
+	if (w->jail != NULL) {
+		ucl_object_insert_key(top, ucl_object_fromstring(w->jail),
+		    "host_jail", 0, false);
+		if ((unfit = jail_unfit(w)) != NULL)
+			ucl_object_insert_key(top, ucl_object_fromstring(unfit),
+			    "jail_unfit", 0, false);
+	}
 	ucl_object_insert_key(top, ucl_object_frombool(have), "installed", 0,
 	    false);
 	ucl_object_insert_key(top, ucl_object_fromstring(pd_bin(w)), "program",
@@ -1467,8 +1709,8 @@ do_builder(struct work *w, struct json_rsp *rsp)
 	    false);
 	ucl_object_insert_key(top, ucl_object_fromstring(data), "data", 0,
 	    false);
-	ucl_object_insert_key(top, ucl_object_frombool(access(pd_conf(w),
-	    F_OK) == 0), "configured", 0, false);
+	ucl_object_insert_key(top, ucl_object_frombool(pd_there(w,
+	    pd_conf(w))), "configured", 0, false);
 	ucl_object_insert_key(top, conf, "conf", 0, false);
 	ucl_object_insert_key(top, entries(w, "jails"), "jails", 0, false);
 	ucl_object_insert_key(top, entries(w, "ports"), "ports", 0, false);
@@ -1525,7 +1767,7 @@ options_dir(struct work *w, const char *jail, const char *tree,
 	for (i = 0; i <= n; i++) {
 		p = i == n ? wfmt(w, "%s/options", pd_dir(w)) :
 		    wfmt(w, "%s/%s-options", pd_dir(w), cand[i]);
-		if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (pd_stat(w, p, &st) == 0 && S_ISDIR(st.st_mode)) {
 			*existsp = true;
 			return (p);
 		}
@@ -1541,10 +1783,11 @@ tree_dir(struct work *w, const char *tree)
 	struct stat	 st;
 	const char	*mnt;
 
-	if ((mnt = first_line(w, wfmt(w, "%s/ports/%s/mnt", pd_dir(w),
+	if ((mnt = pd_line(w, wfmt(w, "%s/ports/%s/mnt", pd_dir(w),
 	    tree))) == NULL || mnt[0] != '/')
 		return (NULL);
-	if (stat(wfmt(w, "%s/ports", mnt), &st) == 0 && S_ISDIR(st.st_mode))
+	if (pd_stat(w, wfmt(w, "%s/ports", mnt), &st) == 0 &&
+	    S_ISDIR(st.st_mode))
 		return (wfmt(w, "%s/ports", mnt));
 	return (mnt);
 }
@@ -1593,7 +1836,7 @@ port_where(struct work *w, const struct arc_job_spec *sp, const char **jail,
 	o = wstrdup(w, *origin);
 	o[strcspn(o, "@")] = '\0';
 	*portdir = wfmt(w, "%s/%s", *treedir, o);
-	if (access(*portdir, F_OK) != 0) {
+	if (!pd_there(w, *portdir)) {
 		*errp = wfmt(w, "%s has no port %s", *tree, o);
 		return (-1);
 	}
@@ -1624,7 +1867,7 @@ port_make(struct work *w, const char *portdir, const char *treedir,
 	for (i = 0; what[i] != NULL && n < 15; i++)
 		argv[n++] = (char *)(uintptr_t)what[i];
 	argv[n] = NULL;
-	return (run_exec(w, argv, res));
+	return (run_exec(w, scope_jexec(w, argv), res));
 }
 
 /* PKGNAME, OPTIONS_FILE and COMPLETE_OPTIONS_LIST, a line each. */
@@ -1706,8 +1949,8 @@ do_builder_options(struct work *w, const struct arc_job_spec *sp,
 	    "options_dir_exists", 0, false);
 	ucl_object_insert_key(top, ucl_object_fromstring(file), "options_file",
 	    0, false);
-	ucl_object_insert_key(top, ucl_object_frombool(access(file, F_OK) ==
-	    0), "configured", 0, false);
+	ucl_object_insert_key(top, ucl_object_frombool(pd_there(w, file)),
+	    "configured", 0, false);
 	/*
 	 * showconfig: "====> A group's or a single's words" begins a part,
 	 * "     NAME=on: what it is" is an option; those before any part
@@ -1778,11 +2021,10 @@ static int
 options_set(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
 	const char	*jail, *tree, *set, *origin, *portdir, *treedir, *optdir;
-	const char	*v, *tmp;
+	const char	*v, *text, *base;
 	char		*pkgname, *file, *all, *dir;
-	FILE		*fp;
 	size_t		 i;
-	int		 step;
+	int		 step, dfd;
 	bool		 exists, ok;
 
 	if (port_where(w, sp, &jail, &tree, &set, &origin, &portdir, &treedir,
@@ -1792,13 +2034,16 @@ options_set(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	if ((v = arg(sp, "reset", 0)) != NULL && strcmp(v, "yes") == 0) {
 		step = step_begin(w, STEP_FILE, file, "taken away: "
 		    "the port's defaults");
-		ok = unlink(file) == 0 || errno == ENOENT;
+		ok = scope_unlink(w, file) == 0 || errno == ENOENT;
 		if (!ok)
 			*errp = wfmt(w, "%s: %s", file, strerror(errno));
 		else if ((dir = wstrdup(w, file)) != NULL &&
 		    strrchr(dir, '/') != NULL) {
 			*strrchr(dir, '/') = '\0';
-			(void)rmdir(dir);
+			if ((dfd = scope_open_dir(w, dir, &base)) != -1) {
+				(void)unlinkat(dfd, base, AT_REMOVEDIR);
+				close(dfd);
+			}
 		}
 		step_end(w, step, ok, ok ? NULL : "%s", *errp);
 		return (ok ? 0 : -1);
@@ -1817,25 +2062,19 @@ options_set(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	    pkgname, exists ? "" : wfmt(w, ", in %s, made", optdir));
 	dir = wstrdup(w, file);
 	*strrchr(dir, '/') = '\0';
-	(void)mkdir_mode(optdir, 0755);
-	(void)mkdir_mode(dir, 0755);
-	tmp = wfmt(w, "%s.arcana-new", file);
-	ok = (fp = fopen(tmp, "w")) != NULL;
-	if (ok) {
-		fprintf(fp, "# This file is auto-generated by 'make config'.\n"
-		    "# Options for %s, set by Arcana\n_OPTIONS_READ=%s\n"
-		    "_FILE_COMPLETE_OPTIONS_LIST=%s\n", pkgname, pkgname, all);
-		for (i = 0; (v = arg(sp, "on", i)) != NULL; i++)
-			fprintf(fp, "OPTIONS_FILE_SET+=%s\n", v);
-		for (i = 0; (v = arg(sp, "off", i)) != NULL; i++)
-			fprintf(fp, "OPTIONS_FILE_UNSET+=%s\n", v);
-		ok = fclose(fp) == 0;
-	}
-	ok = ok && chmod(tmp, 0644) == 0 && rename(tmp, file) == 0;
-	if (!ok) {
+	(void)scope_mkdirs(w, optdir);
+	(void)scope_mkdirs(w, dir);
+	text = wfmt(w, "# This file is auto-generated by 'make config'.\n"
+	    "# Options for %s, set by Arcana\n_OPTIONS_READ=%s\n"
+	    "_FILE_COMPLETE_OPTIONS_LIST=%s\n", pkgname, pkgname, all);
+	for (i = 0; (v = arg(sp, "on", i)) != NULL; i++)
+		text = wfmt(w, "%sOPTIONS_FILE_SET+=%s\n", text, v);
+	for (i = 0; (v = arg(sp, "off", i)) != NULL; i++)
+		text = wfmt(w, "%sOPTIONS_FILE_UNSET+=%s\n", text, v);
+	/* Whole or as it was, beneath w's jail's root where it is one's. */
+	ok = scope_replace(w, file, text, strlen(text), 0644, NULL) == 0;
+	if (!ok)
 		*errp = wfmt(w, "%s: %s", file, strerror(errno));
-		(void)unlink(tmp);
-	}
 	step_end(w, step, ok, ok ? NULL : "%s", *errp);
 	return (ok ? 0 : -1);
 }
@@ -1857,7 +2096,7 @@ options_dirs(struct work *w)
 	int		 n;
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
-	if ((d = opendir(pd_dir(w))) == NULL)
+	if ((d = pd_opendir(w, pd_dir(w))) == NULL)
 		return (arr);
 	n = 0;
 	while ((de = readdir(d)) != NULL && n < LIST_MAX) {
@@ -1866,7 +2105,7 @@ options_dirs(struct work *w)
 		    strcmp(de->d_name + nl - 8, "-options") != 0))
 			continue;
 		dir = wfmt(w, "%s/%s", pd_dir(w), de->d_name);
-		if ((pd = opendir(dir)) == NULL)
+		if ((pd = pd_opendir(w, dir)) == NULL)
 			continue;
 		ports = ucl_object_typed_new(UCL_ARRAY);
 		while ((pe = readdir(pd)) != NULL) {

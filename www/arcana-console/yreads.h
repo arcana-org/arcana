@@ -23,12 +23,14 @@
  * ssh.c wrote it: {"config", "settings_from_file", "before_kept",
  * "banner_text", "host_keys", "users", "user_cas", "user_cas_text",
  * "settings"}.
- * yr_builder(): poudriere, a GET of arcana-builder, as poudriere.c
- * wrote it: {"installed", "program", "conf_file", "basefs", "data",
+ * yr_builder(): poudriere, the host's or jail's own where it is not NULL,
+ * arcana-builder's read, as poudriere.c wrote it: {"host_jail",
+ * "jail_unfit", "installed", "program", "conf_file", "basefs", "data",
  * "configured", "conf", "jails", "ports", "makeconf", "options",
  * "repos", "builds", "builds_error", "runs"}.
  * yr_port_options(): a port's options, its port-options action of the
- * words (jail=, ports=, set=, origin=), n of them: {"jail", "ports",
+ * words (jail=, ports=, set=, origin=), n of them, in jail (the host's,
+ * poudriere's there) where it is not NULL: {"jail", "ports",
  * "set", "origin", "pkgname", "options_dir", "options_dir_exists",
  * "options_file", "configured", "sections"}.
  * yr_notify(): text sent to chat by the bot of token, arcana-notify's
@@ -56,10 +58,11 @@
  */
 int	yr_sshd(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
-int	yr_builder(cbl_conn *conn, ucl_object_t **data, char *err,
-	    size_t errlen);
-int	yr_port_options(cbl_conn *conn, const char *const *words, size_t n,
-	    ucl_object_t **data, char *err, size_t errlen);
+int	yr_builder(cbl_conn *conn, const char *jail, ucl_object_t **data,
+	    char *err, size_t errlen);
+int	yr_port_options(cbl_conn *conn, const char *jail,
+	    const char *const *words, size_t n, ucl_object_t **data,
+	    char *err, size_t errlen);
 int	yr_notify(cbl_conn *conn, const char *token, const char *chat,
 	    const char *text, char *err, size_t errlen);
 int	yr_crashes(cbl_conn *conn, const char *const *words, size_t n,

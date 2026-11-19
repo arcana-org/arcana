@@ -93,6 +93,21 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### poudriere in a jail; agent 0.340.0, console 0.483.0
+
+- The poudriere job and arcana-builder's read take a jail (job SIDs
+  63156-63157; arcana-builder's read is now an action, its SIDs
+  reassigned): a running jail's own poudriere, vnet or not, its
+  poudriere.conf, poudriere.d, logs and packages beneath the jail's
+  root, its build jails made there, its runs kept on the host.
+- A jail without what poudriere needs is refused and listed as
+  jail_unfit, naming the jail.conf(5) parameters to set (children.max,
+  enforce_statfs below 2, allow.mount with devfs, nullfs, procfs,
+  fdescfs, tmpfs or zfs as poudriere.conf uses them, allow.chflags,
+  allow.raw_sockets, allow.socket_af, allow.sysvipc).
+- The Builder tab has a Runs in picker; `arcanactl -j jail poudriere`.
+- Update the agent and the console together.
+
 ### Jail loose ends, a Crashes view; agent 0.339.0, console 0.482.0
 
 - A new job kind, crash (53): verb delete takes away a core the kernel

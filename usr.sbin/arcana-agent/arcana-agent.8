@@ -109,10 +109,10 @@ actions of their modules by cblink's YANG family:
 .Xr sshd 8 ,
 of the host or of a jail (arcana-sshd's
 .Ic read ) ;
-.Xr poudriere 8
-(arcana-builder's
-.Ic builder
-and its
+.Xr poudriere 8 ,
+of the host or of a jail (arcana-builder's
+.Ic read
+and
 .Ic port-options ) ;
 the cores dumped (arcana-crashes); the system's own files and settings
 (arcana-system); the NFS server, iSCSI's target and HAST
@@ -800,10 +800,10 @@ Default
 a test's own server otherwise.
 .It Fl -poudriere Ar poudriere
 .Xr poudriere 8 ,
-the package builder, a plugin of the host's.
+the package builder, a plugin of the host's or of a jail's.
 Default
 .Pa /usr/local/bin/poudriere .
-The builder operation reads its build jails, ports trees, make.conf
+The builder's read reads its build jails, ports trees, make.conf
 files, options directories, package repositories and latest builds
 (each with its failed ports and the end of their logs) where poudriere
 keeps them; builder-options reads a port's options with
@@ -825,12 +825,43 @@ and
 beside the history configuration, the last 20 runs.
 A run is stopped as a terminal would stop it, SIGINT to its process
 group.
+In a jail
+.Pq the job's jail, the read's host-jail
+poudriere is the jail's own, run there by
+.Xr jexec 8 ,
+its build jails the jail's children: its files are read and written
+beneath the jail's root, never through a link out of it, its runs kept
+on the host as
+.Pa builder/jails/ Ns Ar jail Ns Pa / Ns Ar n .
+A jail without what poudriere needs there is refused with what to set
+in its
+.Xr jail.conf 5 :
+.Va children.max
+above 0,
+.Va enforce_statfs
+below 2,
+.Va allow.mount ,
+.Va allow.mount.devfs ,
+.Va allow.mount.nullfs ,
+.Va allow.mount.procfs ,
+.Va allow.mount.fdescfs ,
+.Va allow.mount.tmpfs
+where USE_TMPFS is set,
+.Va allow.mount.zfs
+where ZPOOL is
+.Pq and the dataset jailed to it, Ql zfs jail ,
+and what poudriere gives each build jail, which the parent must have:
+.Va allow.chflags ,
+.Va allow.raw_sockets ,
+.Va allow.socket_af
+and
+.Va allow.sysvipc .
 .It Fl -poudriere-etc Ar directory
 Where
 .Pa poudriere.conf
 and
 .Pa poudriere.d
-are.
+are, on the host and, as the jail sees it, in a jail.
 Default
 .Pa /usr/local/etc .
 .It Fl -rtadvctl Ar rtadvctl

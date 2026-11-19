@@ -340,7 +340,7 @@ main(int argc, char **argv)
 		same((void *)arcana_sshd_sshd_encode, (void *)
 		    arcana_sshd_sshd_decode, &d, &back, a);
 	} else if (strcmp(argv[1], "builder") == 0) {
-		struct arcana_builder_builder d, back;
+		struct arcana_builder_builder_read_output d, back;
 
 		if ((error = ybuilder_from_json(slurp(argv[2]), a, &d)) != 0)
 			errc(1, error, "ybuilder_from_json");
@@ -360,7 +360,7 @@ main(int argc, char **argv)
 				    d.options.v[i].port.v[k].set.n,
 				    d.options.v[i].port.v[k].unset.n);
 		for (size_t i = 0; i < d.build.n; i++) {
-			const struct arcana_builder_builder_build *b =
+			const struct arcana_builder_builder_read_output_build *b =
 			    &d.build.v[i];
 
 			printf("build %s/%s/%s %s built=%u failed=%u\n", b->jail,
@@ -382,8 +382,8 @@ main(int argc, char **argv)
 			    d.run.v[i].id, d.run.v[i].has_state ?
 			    (int)d.run.v[i].state : -1, d.run.v[i].has_exit ? "" :
 			    "-", d.run.v[i].exit, d.run.v[i].argv.n);
-		same((void *)arcana_builder_builder_encode, (void *)
-		    arcana_builder_builder_decode, &d, &back, a);
+		same((void *)arcana_builder_builder_read_output_encode, (void *)
+		    arcana_builder_builder_read_output_decode, &d, &back, a);
 	} else if (strcmp(argv[1], "builder-options") == 0) {
 		struct arcana_builder_builder_port_options_output d, back;
 

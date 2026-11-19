@@ -18,6 +18,12 @@
  * built unstripped, with -g (bsd.port.mk), into the set's own
  * repository, apart from the others'.  The build form writes it before
  * the build, the two jobs one batch.
+ *
+ * Runs in: the host, or a running jail of it with poudriere of its own
+ * (picked here; by default where the host says the plugin is), which
+ * makes its build jails as that jail's children: the read's host-jail,
+ * each job's jail, Install by pkg -j.  A jail not made for it (no
+ * children.max, its mounts not allowed) is shown with what to set.
  */
 
 #include <ctype.h>
@@ -49,9 +55,37 @@ static struct {
 	char		 optq[512];	/* their input, to read them again */
 	bool		 optloading;
 	char		 opterr[256];
+	bool		 picked;	/* where it runs, chosen by hand */
+	char		 where[64];	/* the host's jail it runs in; "" the host */
 } bld;
 
 static const char *const tabs[] = { "jails", "ports", "bulk" };
+
+static struct server	*bld_server(void);
+
+/* Where poudriere runs: the jail picked, else the host where it has
+ * poudriere, else a running jail that has, else the host. */
+static const char *
+bld_where(void)
+{
+	const struct server	*s;
+	const char		*at;
+
+	if (bld.picked || (s = bld_server()) == NULL)
+		return (bld.where);
+	at = plugin_anywhere(s, "poudriere");
+	return (at != NULL ? at : "");
+}
+
+/* A job's title, with the jail it runs in. */
+static const char *
+bld_title(char *buf, size_t len, const char *what)
+{
+
+	snprintf(buf, len, "%s%s%s", what, bld_where()[0] != '\0' ?
+	    " in jail " : "", bld_where());
+	return (buf);
+}
 
 static void
 bld_cb(int status, const ucl_object_t *o, const char *err, void *arg)
@@ -155,6 +189,10 @@ builder_of(const ucl_object_t *d)
 	ucl_object_t		*o, *arr, *e, *c;
 
 	o = jmap(d, top);
+	if (jstr(d, "host-jail") != NULL)
+		put_text(o, "host_jail", d, "host-jail");
+	if (jstr(d, "jail-unfit") != NULL)
+		put_text(o, "jail_unfit", d, "jail-unfit");
 	put(o, "installed", ucl_object_frombool(jbool(d, "installed")));
 	put(o, "configured", ucl_object_frombool(jbool(d, "configured")));
 	c = ucl_object_typed_new(UCL_OBJECT);
@@ -257,7 +295,7 @@ static void
 bld_load(void)
 {
 	const struct server	*s = NULL;
-	char			*sid;
+	char			*sid, in[160], *q;
 
 	if (bld.sid[0] == '\0' || bld.loading)
 		return;
@@ -269,7 +307,14 @@ bld_load(void)
 	if ((sid = strdup(bld.sid)) == NULL)
 		abort();
 	bld.loading = true;
-	host_yread(s, "arcana-builder:builder", NULL, NULL, false, bld_ycb,
+	/* The host's, or the jail's poudriere it runs in. */
+	snprintf(in, sizeof(in), "{}");
+	if (bld_where()[0] != '\0') {
+		q = json_quote(bld_where());
+		snprintf(in, sizeof(in), "{\"host-jail\":%s}", q);
+		free(q);
+	}
+	host_yread(s, "arcana-builder:builder/read", in, NULL, false, bld_ycb,
 	    sid);
 }
 
@@ -398,6 +443,10 @@ pd_job(const char *verb, ucl_object_t *args, const char *text)
 	    0, false);
 	ucl_object_insert_key(o, ucl_object_fromstring(verb), "verb", 0,
 	    false);
+	/* Done in the jail poudriere runs in. */
+	if (bld_where()[0] != '\0')
+		ucl_object_insert_key(o, ucl_object_fromstring(bld_where()),
+		    "jail", 0, false);
 	ucl_object_insert_key(o, args != NULL ? args :
 	    ucl_object_typed_new(UCL_ARRAY), "args", 0, false);
 	if (text != NULL)
@@ -426,6 +475,7 @@ bld_send(const char *verb, ucl_object_t *args, const char *text,
     const char *title)
 {
 	struct server	*s;
+	char		 t[200];
 
 	if ((s = bld_server()) == NULL) {
 		if (args != NULL)
@@ -434,7 +484,8 @@ bld_send(const char *verb, ucl_object_t *args, const char *text,
 	}
 	/* Held in the queue, it is not under way yet. */
 	bld.busy = !app.queue_on;
-	job_send_host(s, pd_job(verb, args, text), title, JOB_BUILDER, "");
+	job_send_host(s, pd_job(verb, args, text), bld_title(t, sizeof(t),
+	    title), JOB_BUILDER, bld_where());
 }
 
 /* ---- Pieces -------------------------------------------------------- */
@@ -454,6 +505,40 @@ host_pick(struct html *h)
 			h_raw(h, " selected");
 		h_raw(h, ">");
 		h_txt(h, app.servers[i].name);
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label>");
+}
+
+/* Where it runs: the host, or any running jail of it. */
+static void
+where_pick(struct html *h)
+{
+	const struct server	*s;
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	if ((s = bld_server()) == NULL)
+		return;
+	h_raw(h, "<label class=\"secpick\" title=\"poudriere on the host, or "
+	    "a jail's own, which makes its build jails as that jail's "
+	    "children\">Runs in <select data-input=\"bld-where\"><option "
+	    "value=\"\"");
+	if (bld_where()[0] == '\0')
+		h_raw(h, " selected");
+	h_raw(h, ">the host</option>");
+	it = NULL;
+	while (s->list != NULL && (e = ucl_object_iterate(jget(s->list,
+	    "jails"), &it, true)) != NULL) {
+		if (jstr(e, "name") == NULL || jstr(e, "state") == NULL ||
+		    strcmp(jstr(e, "state"), "running") != 0)
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", jstr(e, "name"));
+		if (strcmp(bld_where(), jstr(e, "name")) == 0)
+			h_raw(h, " selected");
+		h_raw(h, ">jail ");
+		h_txt(h, jstr(e, "name"));
 		h_raw(h, "</option>");
 	}
 	h_raw(h, "</select></label>");
@@ -1313,6 +1398,7 @@ view_builder(struct html *h)
 
 	h_raw(h, "<section class=\"secpage bldpage\"><div class=\"sechead\">");
 	host_pick(h);
+	where_pick(h);
 	if (bld.state != NULL && jbool(bld.state, "installed"))
 		h_raw(h, "<span class=\"chip st-up\" title=\"poudriere(8), a "
 		    "plugin\">poudriere</span>");
@@ -1340,11 +1426,31 @@ view_builder(struct html *h)
 		h_raw(h, "</section>");
 		return;
 	}
+	/* A jail's: what it lacks to make jails of its own, to be set in
+	 * its jail.conf. */
+	if (jstr(bld.state, "host_jail") != NULL) {
+		h_raw(h, "<p class=\"bldwhere\"><span class=\"chip\">in jail ");
+		h_txt(h, jstr(bld.state, "host_jail"));
+		h_raw(h, "</span> <span class=\"dim\">poudriere is the jail's "
+		    "own, its build jails the jail's children, its files beneath "
+		    "the jail's root</span></p>");
+	}
+	if (jstr(bld.state, "jail_unfit") != NULL) {
+		h_raw(h, "<div class=\"notice bad bld-unfit\">");
+		h_txt(h, jstr(bld.state, "jail_unfit"));
+		h_raw(h, "</div>");
+	}
 	if (!jbool(bld.state, "installed")) {
-		h_raw(h, "<div class=\"empty\"><p>poudriere is not installed "
-		    "here.</p><p class=\"dim\">It is a plugin: Arcana installs "
+		h_raw(h, "<div class=\"empty\"><p>poudriere is not installed ");
+		if (jstr(bld.state, "host_jail") != NULL) {
+			h_raw(h, "in jail ");
+			h_txt(h, jstr(bld.state, "host_jail"));
+		} else
+			h_raw(h, "here");
+		h_raw(h, ".</p><p class=\"dim\">It is a plugin: Arcana installs "
 		    "nothing by itself. This installs the package poudriere "
-		    "(pkg install -y poudriere); poudriere-devel is the newer "
+		    "(pkg install -y poudriere, pkg -j in a jail); "
+		    "poudriere-devel is the newer "
 		    "one.</p><button class=\"primary\" data-act=\"bld-install\" "
 		    "data-arg=\"poudriere\">Install poudriere</button> <button "
 		    "class=\"ghost\" data-act=\"bld-install\" "
@@ -1475,8 +1581,9 @@ bulk_submit(const ucl_object_t *f)
 			q[nq].json = pd_job("make-conf", ma, text);
 		}
 		free(text);
-		snprintf(q[nq].title, sizeof(q[nq].title), "poudriere %s-make.conf: "
-		    "debug symbols for %s", set, add + 19);
+		snprintf(title, sizeof(title), "poudriere %s-make.conf: debug "
+		    "symbols for %s", set, add + 19);
+		bld_title(q[nq].title, sizeof(q[nq].title), title);
 		nq++;
 	}
 	free(add);
@@ -1484,7 +1591,7 @@ bulk_submit(const ucl_object_t *f)
 	    jstr(f, "jail") != NULL ? jstr(f, "jail") : "", set[0] != '\0' ?
 	    ", set " : "", set);
 	q[nq].json = pd_job("bulk", args, NULL);
-	snprintf(q[nq].title, sizeof(q[nq].title), "%s", title);
+	bld_title(q[nq].title, sizeof(q[nq].title), title);
 	nq++;
 	bld.busy = !app.queue_on;
 	job_send_many(s, q, nq, JOB_BUILDER);
@@ -1606,6 +1713,12 @@ builder_form(const char *form, const ucl_object_t *f)
 		}
 		memset(&in, 0, sizeof(in));
 		h_raw(&in, "{");
+		/* In the jail poudriere runs in: its tree, its make. */
+		if (bld_where()[0] != '\0') {
+			q = json_quote(bld_where());
+			h_strf(&in, "\"host-jail\":%s", q);
+			free(q);
+		}
 		for (i = 0; i < nitems(k); i++) {
 			v = jstr(f, k[i]);
 			if (i == 1 && (v == NULL || v[0] == '\0'))
@@ -1687,7 +1800,7 @@ builder_action(const char *act, const char *arg, const char *value)
 {
 	ucl_object_t	*args;
 	struct server	*s;
-	char		*json, title[160], body[256];
+	char		*json, *q, title[160], body[256];
 	size_t		 i;
 
 	if (strcmp(act, "select-builder") == 0) {
@@ -1700,8 +1813,27 @@ builder_action(const char *act, const char *arg, const char *value)
 		bld_load();
 		return (true);
 	}
-	if (strncmp(act, "bld-", 4) != 0 && strcmp(act, "input:bld-host") != 0)
+	if (strncmp(act, "bld-", 4) != 0 && strcmp(act, "input:bld-host") != 0 &&
+	    strcmp(act, "input:bld-where") != 0)
 		return (false);
+	if (strcmp(act, "input:bld-where") == 0) {
+		/* Another place: its own read, no form or options of the
+		 * last. */
+		bld.picked = true;
+		snprintf(bld.where, sizeof(bld.where), "%s", value != NULL ?
+		    value : "");
+		if (bld.state != NULL)
+			ucl_object_unref(bld.state);
+		bld.state = NULL;
+		if (bld.opts != NULL)
+			ucl_object_unref(bld.opts);
+		bld.opts = NULL;
+		bld.optq[0] = '\0';
+		bld.loading = false;
+		bld.form = BF_NONE;
+		bld_load();
+		return (true);
+	}
 	if (strcmp(act, "bld-tab") == 0) {
 		for (i = 0; i < nitems(tabs); i++)
 			if (strcmp(arg, tabs[i]) == 0)
@@ -1714,6 +1846,9 @@ builder_action(const char *act, const char *arg, const char *value)
 		if (value == NULL || strcmp(value, bld.sid) == 0)
 			return (true);
 		snprintf(bld.sid, sizeof(bld.sid), "%s", value);
+		/* Another host: its own place. */
+		bld.picked = false;
+		bld.where[0] = '\0';
 		if (bld.state != NULL)
 			ucl_object_unref(bld.state);
 		bld.state = NULL;
@@ -1815,13 +1950,18 @@ builder_action(const char *act, const char *arg, const char *value)
 	if (strcmp(act, "bld-install") == 0) {
 		if ((s = bld_server()) == NULL)
 			return (true);
+		/* Where it runs: the host, or the jail by pkg -j. */
+		q = json_quote(bld_where());
 		if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"
-		    "[\"%s\"]}", strcmp(arg, "poudriere-devel") == 0 ?
-		    "poudriere-devel" : "poudriere") == -1)
+		    "[\"%s\"]%s%s}", strcmp(arg, "poudriere-devel") == 0 ?
+		    "poudriere-devel" : "poudriere", bld_where()[0] != '\0' ?
+		    ",\"jail\":" : "", bld_where()[0] != '\0' ? q : "") == -1)
 			abort();
-		snprintf(title, sizeof(title), "pkg install %s", arg);
+		free(q);
+		snprintf(body, sizeof(body), "pkg install %s", arg);
 		bld.busy = !app.queue_on;
-		job_send_host(s, json, title, JOB_BUILDER, "");
+		job_send_host(s, json, bld_title(title, sizeof(title), body),
+		    JOB_BUILDER, bld_where());
 		return (true);
 	}
 	return (false);

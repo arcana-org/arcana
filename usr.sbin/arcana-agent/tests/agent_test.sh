@@ -22677,7 +22677,7 @@ poudriere_head()
 	    "make.conf files, repositories and builds read; a jail, a" \
 	    "tree and a build started as runs that go on after the job," \
 	    "one stopped; a make.conf for debug symbols; poudriere.conf's" \
-	    "variables; what is refused"
+	    "variables; what is refused; a jail that is not running"
 }
 poudriere_body()
 {
@@ -22957,7 +22957,7 @@ EOF
 	    "$JGC" -c "$SOCK" poudriere jail-update name=src15 method=http
 	atf_check -s exit:1 -e match:'key=value' -o ignore \
 	    "$JGC" -c "$SOCK" poudriere bulk net/bird3
-	atf_check -s exit:1 -e match:'poudriere takes no jail' -o ignore \
+	atf_check -s exit:1 -o match:'the jail web is not running' -e ignore \
 	    "$JGC" -c "$SOCK" -j web poudriere jail-update name=x
 	atf_check -s exit:1 -e match:'URL is one word' -o ignore \
 	    "$JGC" -c "$SOCK" poudriere ports-create name=p 'url=http://x/ y'
@@ -22978,6 +22978,196 @@ EOF
 poudriere_cleanup()
 {
 	[ -f builder/5.pid ] && kill -INT -"$(cat builder/5.pid)" 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case poudriere_jail cleanup
+poudriere_jail_head()
+{
+	atf_set "descr" "poudriere in a jail of the host's: stand-in jails, one made for it (web: children.max, its mounts and allow parameters) and one not (bare); the jail's own poudriere run there by jexec, its poudriere.conf, poudriere.d, logs and packages read beneath the jail's root (a link out of it not followed), the host's apart; a jail made, a build and a stopped one as runs kept on the host under the jail's name; poudriere.conf by sysrc -j -f and a make.conf written in the jail; the jail without the parameters refused with what to set in its jail.conf"
+	atf_set "timeout" "120"
+}
+poudriere_jail_body()
+{
+	local d="$(pwd)" R R2 i n
+
+	R=$d/web
+	R2=$d/bare
+	for r in "$R" "$R2"; do
+		mkdir -p "$r$d/pe/poudriere.d" "$r/etc"
+		: > "$r/etc/rc.conf"
+		# The jail's own poudriere: what it keeps, beneath its root.
+		cat > "$r$d/fake-poudriere" <<EOF
+#!/bin/sh
+echo "poudriere \$*" >> $r/poudriere.log
+e=$r$d/pe/poudriere.d
+cmd=\$1; shift
+case "\$cmd" in
+jail)	verb=\$1; shift; n=; v=
+	while getopts yj:v:a:m:K:bBt: o; do case \$o in j) n=\$OPTARG;; v) v=\$OPTARG;; esac; done
+	case "\$verb" in
+	-c)	mkdir -p \$e/jails/\$n; echo \$v > \$e/jails/\$n/version
+		echo 1792200000 > \$e/jails/\$n/timestamp
+		echo "[00:00:01] Creating \$n in the jail" ;;
+	-d)	rm -rf \$e/jails/\$n ;;
+	esac ;;
+bulk)	echo "[00:00:00] Building: \$*"
+	case " \$* " in *" test/sleepy "*) sleep 60 ;; esac
+	echo "[00:00:03] Built 1 packages" ;;
+status)	printf 'debug\tdefault\t150amd64\t2026-10-17_09h00m00s\tdone:\t2\t0\t0\t1\t1\t0\t0\t0\t00:03:10\t$d/bl\n' ;;
+esac
+EOF
+		chmod +x "$r$d/fake-poudriere"
+		printf 'ZPOOL=tank\nUSE_TMPFS=yes\n' > "$r$d/pe/poudriere.conf"
+	done
+	# The build's log directory, as the jail sees it: beneath its root.
+	mkdir -p "$R$d/bl/logs/errors" "$R$d/data/packages/150amd64-default/All"
+	echo 'POUDRIERE_DATA='"$d"'/data' >> "$R$d/pe/poudriere.conf"
+	printf 'devel/broken broken-1.0 build  42\n' > "$R$d/bl/.poudriere.ports.failed"
+	printf 'cc: error: in the jail\n' > "$R$d/bl/logs/errors/broken-1.0.log"
+	touch "$R$d/data/packages/150amd64-default/All/bird3-3.4.0.pkg"
+	# A link the jail's root put among its make.conf files, out of it.
+	echo 'SECRET=host' > secret
+	ln -s "$d/secret" "$R$d/pe/poudriere.d/evil-make.conf"
+	cat > jails <<EOF
+web 7 inherit $R 16.0-CURRENT children.max=20 enforce_statfs=1 allow.mount=1 allow.mount.devfs=1 allow.mount.nullfs=1 allow.mount.procfs=1 allow.mount.fdescfs=1 allow.mount.tmpfs=1 allow.mount.zfs=1 allow.chflags=1 allow.raw_sockets=1 allow.socket_af=1 allow.sysvipc=1
+bare 8 inherit $R2
+EOF
+	# jexec: in the jail, as far as a stand-in goes: a path the jail
+	# has is its own, its root the working directory.
+	cat > fake-jexec <<EOF
+#!/bin/sh
+echo "jexec \$*" >> $d/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $d/jails)
+[ -n "\$r" ] || { echo "jexec: jail \$1 not found" >&2; exit 1; }
+shift
+n=0
+for a; do
+	case "\$a" in /*) [ -e "\$r\$a" ] && a=\$r\$a ;; esac
+	set -- "\$@" "\$a"
+	n=\$((n + 1))
+done
+shift \$n
+cd "\$r" || exit 1
+exec "\$@"
+EOF
+	chmod +x fake-jexec
+	DAEMON_ARGS="--poudriere $d/fake-poudriere --poudriere-etc $d/pe"
+	start_daemon
+
+	# Not the host's, which has none: the jail's own, beneath its root.
+	atf_check -o match:'"installed":false' -o not-match:'host_jail' \
+	    "$JGC" -c "$SOCK" poudriere
+	atf_check -o match:'"host_jail":"web"' -o match:'"installed":true' \
+	    -o match:'"configured":true' -o not-match:'jail_unfit' \
+	    -o match:'"conf":\{"ZPOOL":"tank","USE_TMPFS":"yes","POUDRIERE_DATA":"' \
+	    -o match:'"repos":\[\{"name":"150amd64-default","path":"[^"]*","packages":1\}\]' \
+	    -o match:'"failed_ports":\[\{"origin":"devel/broken","package":"broken-1.0","phase":"build","elapsed":42,"log_file":"[^"]*","log":"cc: error: in the jail\\n"\}\]' \
+	    -o match:'"makeconf":\[\]' -o not-match:'SECRET' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+	atf_check -o match:"^jexec 7 $d/fake-poudriere status -f -H -l\$" \
+	    cat jexec.log
+
+	# A jail not made for it: told, and its jobs refused, with what to
+	# set in its jail.conf.
+	atf_check -o match:'"host_jail":"bare"' \
+	    -o match:'"jail_unfit":"the jail bare cannot run poudriere[^"]*: set children.max = 64; allow.mount; allow.mount.devfs; allow.mount.nullfs; allow.mount.procfs; allow.mount.fdescfs; allow.chflags; allow.raw_sockets; allow.socket_af; allow.sysvipc; allow.mount.tmpfs; allow.mount.zfs; \(and its dataset jailed to it: zfs jail\) in its jail.conf' \
+	    "$JGC" -c "$SOCK" -j bare poudriere
+	atf_check -s exit:1 -e ignore \
+	    -o match:'failed +poudriere bulk net/bird3 in 150amd64, in the jail bare: the jail bare cannot run poudriere.*set children.max = 64;.*allow.mount.tmpfs;' \
+	    "$JGC" -c "$SOCK" -j bare poudriere bulk jail=150amd64 origin=net/bird3
+	atf_check -o inline:'poudriere status -f -H -l\n' cat "$R2/poudriere.log"
+
+	# A build jail made in web: a run, kept on the host under the
+	# jail's name; poudriere the jail's, by jexec.
+	atf_check -o match:'done +poudriere jail-create 150amd64, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere jail-create name=150amd64 \
+	    version=15.1-RELEASE
+	for i in $(seq 1 50); do
+		"$JGC" -c "$SOCK" -j web poudriere | grep -q '"state":"done"' && break
+		sleep 0.1
+	done
+	atf_check -o match:'"jails":\[\{"name":"150amd64",[^]]*"version":"15.1-RELEASE"' \
+	    -o match:'"id":1,"title":"poudriere jail-create 150amd64, in the jail web","started":[0-9]+,"argv":\["[^"]*fake-poudriere","jail","-c","-j","150amd64","-v","15.1-RELEASE"\],"state":"done","exit":0' \
+	    -o match:'"log":"\[00:00:01\] Creating 150amd64 in the jail\\n"' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+	atf_check -o match:'^poudriere jail -c -j 150amd64 -v 15.1-RELEASE$' \
+	    cat "$R/poudriere.log"
+	atf_check -o match:"^jexec 7 $d/fake-poudriere jail -c -j 150amd64" \
+	    cat jexec.log
+	atf_check test -f builder/jails/web/1.json -a -f builder/jails/web/1.log
+	atf_check test ! -e builder/1.json -a ! -e "$R/builder"
+	# The host's runs are its own.
+	atf_check -o match:'"runs":\[\]' "$JGC" -c "$SOCK" poudriere
+
+	# poudriere.conf by the jail's sysrc -f, a make.conf beneath its
+	# root; the host's untouched.
+	atf_check -o match:'done +poudriere.conf: PARALLEL_JOBS=4, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere conf PARALLEL_JOBS=4
+	atf_check -o match:"^-j 7 -f $d/pe/poudriere.conf PARALLEL_JOBS=4\$" \
+	    cat sysrc.log
+	atf_check -o match:'^PARALLEL_JOBS="4"$' cat "$R$d/pe/poudriere.conf"
+	atf_check test ! -e pe/poudriere.conf
+	printf 'WITH_DEBUG_PORTS+= net/bird3\n' > debug.conf
+	atf_check -o match:'done +poudriere debug-make.conf written, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere make-conf debug debug.conf
+	atf_check -o inline:'WITH_DEBUG_PORTS+= net/bird3\n' \
+	    cat "$R$d/pe/poudriere.d/debug-make.conf"
+	atf_check test ! -e pe/poudriere.d/debug-make.conf
+	# Written beneath the root: a link there to the host's is replaced,
+	# never followed.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j web poudriere \
+	    make-conf evil debug.conf
+	atf_check -o inline:'SECRET=host\n' cat secret
+	atf_check -o match:'"makeconf":\[[^]]*\{"name":"debug",[^]]*"text":"WITH_DEBUG_PORTS\+= net/bird3\\n"\}' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+
+	# A build in web, then one stopped from the host: SIGINT to its
+	# process group, the jail's poudriere's.
+	atf_check -o match:'done +poudriere bulk net/bird3 in 150amd64, set debug, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere bulk jail=150amd64 set=debug \
+	    origin=net/bird3
+	for i in $(seq 1 50); do
+		[ $("$JGC" -c "$SOCK" -j web poudriere | grep -o '"state":"done"' |
+		    wc -l) -ge 2 ] && break
+		sleep 0.1
+	done
+	atf_check -o match:'^poudriere bulk -j 150amd64 -z debug net/bird3$' \
+	    sh -c "grep bulk $R/poudriere.log"
+	atf_check -o match:'"id":2,[^}]*"state":"done","exit":0' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+	atf_check -o match:done "$JGC" -c "$SOCK" -j web poudriere bulk \
+	    jail=150amd64 origin=test/sleepy
+	for i in $(seq 1 50); do
+		"$JGC" -c "$SOCK" -j web poudriere | grep -q '"id":3,[^}]*"state":"running"' &&
+		    break
+		sleep 0.1
+	done
+	atf_check -o match:'"id":3,[^}]*"state":"running","pid":[0-9]+' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+	atf_check -o match:'done +poudriere run 3 stopped, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere stop run=3
+	for i in $(seq 1 50); do
+		"$JGC" -c "$SOCK" -j web poudriere | grep -q '"id":3,[^}]*"state":"failed","exit":130' &&
+		    break
+		sleep 0.1
+	done
+	atf_check -o match:'"id":3,[^}]*"state":"failed","exit":130' \
+	    "$JGC" -c "$SOCK" -j web poudriere
+
+	# A build jail deleted, in the job; a jail that is not running.
+	atf_check -o match:'done +poudriere jail-delete 150amd64, in the jail web$' \
+	    "$JGC" -c "$SOCK" -j web poudriere jail-delete name=150amd64
+	atf_check -o match:'"jails":\[\]' "$JGC" -c "$SOCK" -j web poudriere
+	atf_check -s exit:1 -o match:'the jail nosuch is not running' -e ignore \
+	    "$JGC" -c "$SOCK" -j nosuch poudriere jail-delete name=x
+	atf_check -s exit:1 -o ignore -e match:'not running' \
+	    "$JGC" -c "$SOCK" -j nosuch poudriere
+}
+poudriere_jail_cleanup()
+{
+	[ -f builder/jails/web/3.pid ] &&
+	    kill -INT -"$(cat builder/jails/web/3.pid)" 2>/dev/null
 	stop_daemon
 }
 
@@ -24759,6 +24949,7 @@ atf_init_test_cases()
 	atf_add_test_case jail_boot
 	atf_add_test_case bird_watch
 	atf_add_test_case poudriere
+	atf_add_test_case poudriere_jail
 	atf_add_test_case host_watch
 	atf_add_test_case fw_walk
 	atf_add_test_case crash_fault

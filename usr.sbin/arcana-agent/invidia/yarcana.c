@@ -1406,32 +1406,72 @@ arcana_bird_bird_check_action(cbl_req *req, const struct cbl_bytes *target,
 	return (bird_check_text(req, in->jail, in->path, in->text, a));
 }
 
+/*
+ * A jail of the host's poudriere runs in, given by an action's input
+ * (NULL or "": the host), with or without a network of its own: the
+ * work in its scope.  What runs there (poudriere status, make) is the
+ * jail's own program, an operator's.  0, or the error said.
+ */
+static int
+ybuilder_jail(cbl_req *req, const char *jail, struct work *w)
+{
+	const char	*e;
+	char		 why[160];
+
+	if (jail == NULL || jail[0] == '\0')
+		return (0);
+	if (!valid_jail(jail))
+		return (said(req, "invalid jail name"));
+	if (jail_prog_refused(req, jail, "poudriere", why, sizeof(why)) !=
+	    NULL)
+		return (said(req, why));
+	e = NULL;
+	if (scope_enter_jail(w, jail, &e, false) != 0)
+		return (said(req, e));
+	return (0);
+}
+
+/* The builder is its actions: nothing to GET. */
 int
 arcana_builder_builder_get(cbl_req *req, struct arcana_builder *data,
     cbl_yarena *a)
 {
-	struct json_rsp			 r;
-	struct arcana_builder_builder	*o;
-	struct work			*w;
-	int				 error;
 
-	if ((w = ywork(a)) == NULL)
+	(void)req;
+	(void)data;
+	(void)a;
+	return (0);
+}
+
+/* poudriere, the host's or a jail's own (poudriere.c). */
+int
+arcana_builder_builder_read_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_builder_builder_read_input *in,
+    struct arcana_builder_builder_read_output *out, cbl_yarena *a)
+{
+	struct json_rsp	 r;
+	struct work	*w;
+	int		 root, error;
+
+	(void)target;
+	if ((w = ywork_told(req, a, "poudriere read", &root)) == NULL)
 		return (ENOMEM);
+	if ((error = ybuilder_jail(req, in->host_jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (error);
+	}
 	memset(&r, 0, sizeof(r));
 	(void)do_builder(w, &r);
+	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
-		return (failed("builder", r.error));
+		return (said(req, r.error));
 	/* A make.conf's site with its password, a run's argv: masked
 	 * for a viewer; state alone. */
 	if (clearance(req) < CLEAR_OPERATOR && (r.json = wjson_mask(w,
 	    r.json)) == NULL)
 		return (EIO);
-	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
-		return (ENOMEM);
-	if ((error = ybuilder_from_json(r.json, a, o)) != 0)
-		return (error);
-	data->builder = o;
-	return (0);
+	return (ybuilder_from_json(r.json, a, out));
 }
 
 int
@@ -4857,12 +4897,18 @@ arcana_builder_builder_port_options_action(cbl_req *req,
 	const char		*names[8];
 	struct work		*w;
 	size_t			 n = 0;
-	int			 root;
+	int			 root, error;
 
 	(void)target;
 	if ((w = ywork_told(req, a, "a port's options for poudriere",
 	    &root)) == NULL)
 		return (ENOMEM);
+	/* In the jail of the host's poudriere runs in: its tree, its
+	 * make. */
+	if ((error = ybuilder_jail(req, in->host_jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (error);
+	}
 	/* As poudriere.c's port_where() takes them: jail=, ports=, set=,
 	 * origin=. */
 	if (in->jail != NULL)

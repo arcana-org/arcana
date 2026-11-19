@@ -1801,8 +1801,11 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		    do_ssh_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_POUDRIERE:
+		/* The host's, or a jail's own, which makes its build jails
+		 * as its children. */
 		error = NULL;
-		ok = do_poudriere_job(w, sp, &error) == 0;
+		ok = scope_enter_jail(w, sp->jail, &error, false) == 0 &&
+		    do_poudriere_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_CLAMAV:
 		error = NULL;

@@ -6,7 +6,7 @@
 
 /*
  * The host's daemons and files (PLAN-SDN-YANG 3.8), for the console and
- * arcanactl: arcana-sshd's read, arcana-builder's builder and its
+ * arcanactl: arcana-sshd's read, arcana-builder's read and its
  * port-options, arcana-notify's notify, made the JSON the operations
  * gave (the agent's ssh.c, poudriere.c, telegram.c), each key in the
  * place the agent put it; and arcana-crashes', arcana-system's,
@@ -243,7 +243,7 @@ put_dir_value(ucl_object_t *o, const char *key, const char *v)
 }
 
 static ucl_object_t *
-build_json(const struct arcana_builder_builder_build *b)
+build_json(const struct arcana_builder_builder_read_output_build *b)
 {
 	ucl_object_t	*o, *arr, *e;
 
@@ -275,7 +275,7 @@ build_json(const struct arcana_builder_builder_build *b)
 		return (o);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < b->failed_port.n; i++) {
-		const struct arcana_builder_builder_build_failed_port *f =
+		const struct arcana_builder_builder_read_output_build_failed_port *f =
 		    &b->failed_port.v[i];
 
 		e = ucl_object_typed_new(UCL_OBJECT);
@@ -302,13 +302,15 @@ build_json(const struct arcana_builder_builder_build *b)
 }
 
 static ucl_object_t *
-builder_json(const struct arcana_builder_builder *d)
+builder_json(const struct arcana_builder_builder_read_output *d)
 {
 	static const char *const states[] = { "running", "done", "failed",
 	    "lost" };
 	ucl_object_t	*top, *o, *arr, *e, *ps;
 
 	top = ucl_object_typed_new(UCL_OBJECT);
+	put_str(top, "host_jail", d->host_jail);
+	put_str(top, "jail_unfit", d->jail_unfit);
 	put_bool(top, "installed", d->has_installed && d->installed);
 	put_str(top, "program", d->program);
 	put_str(top, "conf_file", d->conf_file);
@@ -321,7 +323,7 @@ builder_json(const struct arcana_builder_builder *d)
 	put(top, "conf", o);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < d->jail.n; i++) {
-		const struct arcana_builder_builder_jail *j = &d->jail.v[i];
+		const struct arcana_builder_builder_read_output_jail *j = &d->jail.v[i];
 
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put_str(e, "name", j->name);
@@ -338,7 +340,7 @@ builder_json(const struct arcana_builder_builder *d)
 	put(top, "jails", arr);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < d->ports.n; i++) {
-		const struct arcana_builder_builder_ports *p = &d->ports.v[i];
+		const struct arcana_builder_builder_read_output_ports *p = &d->ports.v[i];
 
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put_str(e, "name", p->name);
@@ -362,7 +364,7 @@ builder_json(const struct arcana_builder_builder *d)
 	put(top, "makeconf", arr);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < d->options.n; i++) {
-		const struct arcana_builder_builder_options *od =
+		const struct arcana_builder_builder_read_output_options *od =
 		    &d->options.v[i];
 
 		ps = ucl_object_typed_new(UCL_ARRAY);
@@ -399,7 +401,7 @@ builder_json(const struct arcana_builder_builder *d)
 	put_str(top, "builds_error", d->builds_error);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < d->run.n; i++) {
-		const struct arcana_builder_builder_run *r = &d->run.v[i];
+		const struct arcana_builder_builder_read_output_run *r = &d->run.v[i];
 
 		e = ucl_object_typed_new(UCL_OBJECT);
 		put(e, "id", ucl_object_fromint(r->id));
@@ -419,37 +421,35 @@ builder_json(const struct arcana_builder_builder *d)
 }
 
 int
-yr_builder(cbl_conn *conn, ucl_object_t **data, char *err, size_t errlen)
+yr_builder(cbl_conn *conn, const char *jail, ucl_object_t **data, char *err,
+    size_t errlen)
 {
-	struct arcana_builder	 d;
-	const struct cbl_ynode	*n;
-	cbl_yarena		*a;
-	int			 error;
+	struct arcana_builder_builder_read_input	 in;
+	struct arcana_builder_builder_read_output	 out;
+	const struct cbl_ynode				*b, *act;
+	cbl_yarena					*a;
+	int						 error;
 
 	*data = NULL;
 	err[0] = '\0';
-	if ((n = yq_top("arcana-builder", "builder")) == NULL) {
-		snprintf(err, errlen, "arcana-builder has no builder");
+	if ((act = action_of("arcana-builder", "builder", "read", &b, err,
+	    errlen)) == NULL)
 		return (ENOENT);
-	}
+	memset(&in, 0, sizeof(in));
+	in.host_jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	if ((a = cbl_yarena_new()) == NULL)
 		return (ENOMEM);
-	memset(&d, 0, sizeof(d));
-	if ((error = yq_get(conn, n, CBL_YDS_OPERATIONAL, &d, a, err,
-	    errlen)) == 0) {
-		if (d.builder == NULL) {
-			snprintf(err, errlen, "poudriere was not read");
-			error = EIO;
-		} else
-			*data = builder_json(d.builder);
-	}
+	memset(&out, 0, sizeof(out));
+	if ((error = yq_call(conn, b, NULL, act, &in, &out, a, err,
+	    errlen)) == 0)
+		*data = builder_json(&out);
 	cbl_yarena_free(a);
 	return (error);
 }
 
 int
-yr_port_options(cbl_conn *conn, const char *const *words, size_t n,
-    ucl_object_t **data, char *err, size_t errlen)
+yr_port_options(cbl_conn *conn, const char *jail, const char *const *words,
+    size_t n, ucl_object_t **data, char *err, size_t errlen)
 {
 	struct arcana_builder_builder_port_options_input	 in;
 	struct arcana_builder_builder_port_options_output	 out;
@@ -465,8 +465,10 @@ yr_port_options(cbl_conn *conn, const char *const *words, size_t n,
 	if ((act = action_of("arcana-builder", "builder", "port-options", &b,
 	    err, errlen)) == NULL)
 		return (ENOENT);
-	/* The words as the builder-options operation took them. */
+	/* The words as the builder-options operation took them; jail, the
+	 * host's jail poudriere runs in. */
 	memset(&in, 0, sizeof(in));
+	in.host_jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	for (size_t i = 0; i < n; i++) {
 		if ((eq = strchr(words[i], '=')) == NULL) {
 			snprintf(err, errlen, "a port's options are asked with "

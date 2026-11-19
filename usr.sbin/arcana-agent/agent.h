@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.339.0"
+#define	ARCANA_AGENT_VERSION	"0.340.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10

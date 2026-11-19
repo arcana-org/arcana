@@ -5,9 +5,8 @@
  */
 
 /*
- * Luxuria: poudriere as YANG, arcana-builder: the builder and
- * builder-options operations' JSON (poudriere.c) read back into the
- * module's structs.
+ * Luxuria: poudriere as YANG, arcana-builder: the builder's read and
+ * port-options JSON (poudriere.c) read back into the module's structs.
  */
 
 #include <sys/param.h>
@@ -55,10 +54,10 @@ dup(cbl_yarena *a, const char *s)
 
 static int
 build_ports(cbl_yarena *a, const ucl_object_t *b,
-    struct arcana_builder_builder_build *y)
+    struct arcana_builder_builder_read_output_build *y)
 {
-	struct arcana_builder_builder_build_failed_port		*fp;
-	struct arcana_builder_builder_build_skipped_port	*sp;
+	struct arcana_builder_builder_read_output_build_failed_port		*fp;
+	struct arcana_builder_builder_read_output_build_skipped_port	*sp;
 	const ucl_object_t					*e;
 	ucl_object_iter_t					 it;
 	size_t							 k;
@@ -98,10 +97,10 @@ build_ports(cbl_yarena *a, const ucl_object_t *b,
 
 static int
 options_dirs(cbl_yarena *a, const ucl_object_t *top,
-    struct arcana_builder_builder *out)
+    struct arcana_builder_builder_read_output *out)
 {
-	struct arcana_builder_builder_options		*od;
-	struct arcana_builder_builder_options_port	*op;
+	struct arcana_builder_builder_read_output_options		*od;
+	struct arcana_builder_builder_read_output_options_port	*op;
 	const ucl_object_t				*e, *p;
 	ucl_object_iter_t				 it, pit;
 	size_t						 k, m;
@@ -141,11 +140,11 @@ options_dirs(cbl_yarena *a, const ucl_object_t *top,
 
 static int
 runs(cbl_yarena *a, const ucl_object_t *top,
-    struct arcana_builder_builder *out)
+    struct arcana_builder_builder_read_output *out)
 {
 	static const char *const states[] = { "running", "done", "failed",
 	    "lost" };
-	struct arcana_builder_builder_run	*r;
+	struct arcana_builder_builder_read_output_run	*r;
 	const ucl_object_t			*e;
 	ucl_object_iter_t			 it;
 	const char				*st;
@@ -171,7 +170,7 @@ runs(cbl_yarena *a, const ucl_object_t *top,
 				if (strcmp(st, states[i]) == 0) {
 					r[k].has_state = true;
 					r[k].state = (enum
-					    arcana_builder_builder_run_state)i;
+					    arcana_builder_builder_read_output_run_state)i;
 				}
 		YJ_NUM(e, "pid", &r[k], pid);
 		YJ_NUM(e, "exit", &r[k], exit);
@@ -186,14 +185,14 @@ runs(cbl_yarena *a, const ucl_object_t *top,
 
 int
 ybuilder_from_json(const char *json, cbl_yarena *a,
-    struct arcana_builder_builder *out)
+    struct arcana_builder_builder_read_output *out)
 {
-	struct arcana_builder_builder_conf	*cf;
-	struct arcana_builder_builder_jail	*jl;
-	struct arcana_builder_builder_ports	*pt;
-	struct arcana_builder_builder_make_conf	*mc;
-	struct arcana_builder_builder_repo	*rp;
-	struct arcana_builder_builder_build	*bd;
+	struct arcana_builder_builder_read_output_conf	*cf;
+	struct arcana_builder_builder_read_output_jail	*jl;
+	struct arcana_builder_builder_read_output_ports	*pt;
+	struct arcana_builder_builder_read_output_make_conf	*mc;
+	struct arcana_builder_builder_read_output_repo	*rp;
+	struct arcana_builder_builder_read_output_build	*bd;
 	const ucl_object_t			*e, *o;
 	ucl_object_iter_t			 it;
 	ucl_object_t				*top;
@@ -203,6 +202,9 @@ ybuilder_from_json(const char *json, cbl_yarena *a,
 	memset(out, 0, sizeof(*out));
 	if ((top = yj_parse(json)) == NULL)
 		return (EINVAL);
+	/* The jail of the host's read, and what it lacks for poudriere. */
+	out->host_jail = yj_str(a, top, "host_jail");
+	out->jail_unfit = yj_str(a, top, "jail_unfit");
 	out->installed = yj_yes(top, "installed", &out->has_installed);
 	out->program = yj_str(a, top, "program");
 	out->conf_file = yj_str(a, top, "conf_file");

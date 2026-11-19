@@ -5754,10 +5754,11 @@ cmd_sshd(cbl_conn *conn, int argc, char **argv)
 
 /*
  * poudriere [list] | show-options key=value ... | make-conf name|- file|- |
- * verb [key=value ...]: poudriere(8), the host's package builder;
- * show-options reads a port's (jail= ports= set= origin=); a verb is a
- * job, which for a build, a jail or a ports tree made or updated starts
- * a run and ends (see list's runs).
+ * verb [key=value ...]: poudriere(8), the host's package builder, or with
+ * -j a jail's own (the host's jail it runs in, not a build jail: those
+ * are jail= words); show-options reads a port's (jail= ports= set=
+ * origin=); a verb is a job, which for a build, a jail or a ports tree
+ * made or updated starts a run and ends (see list's runs).
  */
 static int
 cmd_poudriere(cbl_conn *conn, int argc, char **argv)
@@ -5769,15 +5770,16 @@ cmd_poudriere(cbl_conn *conn, int argc, char **argv)
 	int			 error;
 
 	if (argc == 1 || (argc == 2 && strcmp(argv[1], "list") == 0)) {
-		/* A GET of arcana-builder. */
-		error = yr_builder(conn, &data, ebuf, sizeof(ebuf));
+		/* arcana-builder's read. */
+		ytold_begin(conn);
+		error = yr_builder(conn, netjail, &data, ebuf, sizeof(ebuf));
 		return (ydata_out("poudriere", error, data, ebuf));
 	}
 	if (strcmp(argv[1], "show-options") == 0) {
 		/* arcana-builder's port-options. */
 		ytold_begin(conn);
-		error = yr_port_options(conn, (const char *const *)&argv[2],
-		    (size_t)argc - 2, &data, ebuf, sizeof(ebuf));
+		error = yr_port_options(conn, netjail, (const char *const *)
+		    &argv[2], (size_t)argc - 2, &data, ebuf, sizeof(ebuf));
 		return (ydata_out("show-options", error, data, ebuf));
 	}
 	memset(&sp, 0, sizeof(sp));
@@ -5798,7 +5800,7 @@ cmd_poudriere(cbl_conn *conn, int argc, char **argv)
 		sp.names.v = (const char **)(uintptr_t)&argv[2];
 		sp.names.n = (size_t)argc - 2;
 	}
-	/* The host's alone: -j is passed on to be refused, not dropped. */
+	/* -j: the jail it runs in. */
 	sp.jail = netjail;
 	return (submit(conn, &sp));
 }
