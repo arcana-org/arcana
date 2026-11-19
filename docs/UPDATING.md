@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SSL inspection: wildcard names; agent 0.337.0, console 0.480.0
+
+- SSLproxy zones (the SSL inspection tab's never-opened hosts and an
+  SD-WAN MBSF's pass-through) take *.example.org.  It is written as
+  `Pass to sni example.org` and `Pass to sni .example.org*` (and the
+  `Pass to cn` pair under VerifyPeer yes).  SSLproxy matches it as a
+  substring: example.org and its subdomains pass, and so would a name
+  such as www.example.org.attacker.example.  The form, the bound view,
+  the SD-WAN plan (a note, no longer a refusal) and sslproxy.conf say
+  so; a zone opened by Squid has an exact wildcard.  A * alone, or a *
+  anywhere but a leading *., is still refused.
+- Re-save the tab or apply SD-WAN again to use wildcards; exact names
+  are unchanged.
+
 ### cron; agent 0.336.0, console 0.479.0
 
 - A new module, arcana-cron (SIDs 98 600), reads cron(8)'s entries, the

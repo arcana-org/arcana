@@ -16183,7 +16183,7 @@ relay_rc_cleanup()
 atf_test_case sslproxy cleanup
 sslproxy_head()
 {
-	atf_set "descr" "SSL inspection by SSLproxy, a plugin run by Arcana's rc script: read (installed, its version, the CA, ipfw's set 27); the edge's CA key made on the host and its request, a certificate of another key or of no CA refused, the intermediate installed with its root; the form rendered into sslproxy.conf, checked by sslproxy -Q, the fwd rules written; started, the rules loaded into set 27 at rule 7 by set 26 on a stand-in ipfw keeping its sets, stopped, taken away, the admin's rules as they were; an admin's rule in set 27 or at rule 7 refusing; an admin's own sslproxy.conf replaced only on purpose; what is never opened (phase 3): no category unless named, the form's exact hosts as Pass filter rules by SNI and CN (a name containing one opened), one category, none, a *. name refused, its destinations, ports and clients skipped before the fwd rules, what is wrong refused"
+	atf_set "descr" "SSL inspection by SSLproxy, a plugin run by Arcana's rc script: read (installed, its version, the CA, ipfw's set 27); the edge's CA key made on the host and its request, a certificate of another key or of no CA refused, the intermediate installed with its root; the form rendered into sslproxy.conf, checked by sslproxy -Q, the fwd rules written; started, the rules loaded into set 27 at rule 7 by set 26 on a stand-in ipfw keeping its sets, stopped, taken away, the admin's rules as they were; an admin's rule in set 27 or at rule 7 refusing; an admin's own sslproxy.conf replaced only on purpose; what is never opened (phase 3): no category unless named, the form's hosts as Pass filter rules by SNI and CN (a name containing an exact one opened; a *. one its apex and a substring, a name made to contain it passed, said), one category, none, a * alone refused, its destinations, ports and clients skipped before the fwd rules, what is wrong refused"
 	atf_set "timeout" "120"
 }
 sslproxy_body()
@@ -16354,20 +16354,25 @@ EOF
 	cat > pass.json <<'EOF'
 {"listeners":[{"proto":"https","port":443,"listen":8443},{"proto":"smtps","listen":8465}],
  "clients":"192.0.2.0/24, 2001:db8::/64","interfaces":["em1"],"ssh_log":true,
- "pass":"bank.example, www.bank.example","pass_destinations":["198.51.100.0/24","2001:db8:5::/48"],
+ "pass":"bank.example, www.bank.example, *.health.example","pass_destinations":["198.51.100.0/24","2001:db8:5::/48"],
  "pass_ports":[8443,"993"],"pass_clients":"192.0.2.7/32, 2001:db8::7","pass_categories":["os-updates"]}
 EOF
 	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf pass.json
-	# Exact names alone, by SNI and (VerifyPeer yes) by CN; never a
-	# trailing *, which SSLproxy matches as a substring.
+	# Names exactly, by SNI and (VerifyPeer yes) by CN; a *. one its apex
+	# exactly and .name*, which SSLproxy matches as a substring, said.
 	atf_check -o match:"^# Arcana's category os-updates: " -o not-match:'mtalk' \
 	    -o match:'^Pass to sni pkg\.FreeBSD\.org$' -o match:'^Pass to sni pkg\.freebsd\.org$' \
 	    -o match:"^# The form's$" -o match:'^VerifyPeer yes$' \
 	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to cn bank\.example$' \
-	    -o match:'^Pass to sni www\.bank\.example$' -o not-match:'^Pass .*\*' \
-	    cat sslproxy.conf
+	    -o match:'^Pass to sni www\.bank\.example$' -o not-match:'^Pass .*bank.*\*' \
+	    -o match:'^Pass to sni health\.example$' -o match:'^Pass to sni \.health\.example\*$' \
+	    -o match:'^Pass to cn health\.example$' -o match:'^Pass to cn \.health\.example\*$' \
+	    -o match:'^# \*\.health\.example: SSLproxy matches it as a substring: health\.example and its subdomains pass, and so would a name such as www\.health\.example\.attacker\.example; ' \
+	    -o not-match:'^Pass .*sni \*' cat sslproxy.conf
 	# Looked up as SSLproxy matches (exact, or a trailing * a substring):
-	# a name containing a passed one is opened.
+	# a name containing an exact one is opened; the *. one passes its
+	# apex and the names beneath it, and (SSLproxy's limit, said) a name
+	# made to contain it, though not one ending in its apex alone.
 	cat > passed.sh <<'EOF'
 awk -v n="$1" '$1 == "Pass" && $3 == "sni" { p = $4; if (p ~ /\*$/) { if (index(n, substr(p, 1, length(p) - 1))) f = 1 } else if (n == p) f = 1 } END { print f ? "passed" : "opened" }' "$2"
 EOF
@@ -16375,6 +16380,11 @@ EOF
 	atf_check -o inline:'opened\n' sh passed.sh www.bank.evil.example sslproxy.conf
 	atf_check -o inline:'opened\n' sh passed.sh bank.example.evil.example sslproxy.conf
 	atf_check -o inline:'opened\n' sh passed.sh pkg.FreeBSD.org.evil.example sslproxy.conf
+	atf_check -o inline:'passed\n' sh passed.sh health.example sslproxy.conf
+	atf_check -o inline:'passed\n' sh passed.sh www.health.example sslproxy.conf
+	atf_check -o inline:'passed\n' sh passed.sh a.b.health.example sslproxy.conf
+	atf_check -o inline:'opened\n' sh passed.sh evilhealth.example sslproxy.conf
+	atf_check -o inline:'passed\n' sh passed.sh www.health.example.attacker.example sslproxy.conf
 	atf_check \
 	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.7/32 to not me 443,465 in recv em1 // sslproxy:pass$' \
 	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.0/24 to 198\.51\.100\.0/24 443,465 in recv em1 // sslproxy:pass$' \
@@ -16397,16 +16407,22 @@ EOF
 	atf_check -o not-match:"Arcana's category" -o match:'^Pass to sni bank\.example$' \
 	    cat sslproxy.conf
 	# What is wrong, refused.
-	sed 's/bank\.example,/bank example!,/' pass.json > bad5.json
+	sed 's/bank\.example, www/bank example!, www/' pass.json > bad5.json
 	atf_check -s exit:1 -o ignore -e match:'pass: bank is not a host|pass: example! is not a host' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad5.json
 	sed 's/"os-updates"/"banking"/' pass.json > bad6.json
 	atf_check -s exit:1 -o ignore -e match:'pass_categories: of os-updates and pinned' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad6.json
-	# A *. name: refused, SSLproxy has no anchored suffix match.
-	sed 's/www\.bank\.example/*.bank.example/' pass.json > bad9.json
-	atf_check -s exit:1 -o ignore -e match:'pass: \*\.bank\.example: SSLproxy matches a name exactly' \
+	# A * alone (every site), or anywhere but a leading *.: refused.
+	sed 's/www\.bank\.example/*/' pass.json > bad9.json
+	atf_check -s exit:1 -o ignore -e match:'pass: a \* alone would pass every site' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad9.json
+	sed 's/www\.bank\.example/www.*.example/' pass.json > bad10.json
+	atf_check -s exit:1 -o ignore -e match:'pass: www\.\*\.example is not a host' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad10.json
+	sed 's/\*\.health\.example/health.example*/' pass.json > bad11.json
+	atf_check -s exit:1 -o ignore -e match:'pass: health\.example\* is not a host' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad11.json
 	sed 's/\[8443,/[0,/' pass.json > bad7.json
 	atf_check -s exit:1 -o ignore -e match:'pass_ports: 0 is not a port' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad7.json
@@ -16428,7 +16444,7 @@ sslproxy_cleanup()
 atf_test_case sslproxy_bound cleanup
 sslproxy_bound_head()
 {
-	atf_set "descr" "SSL inspection bound to an SD-WAN service's MBSF (MEF 138), the form the console compiles: the zones' fwd rules by their clients and interfaces, Default's other zones skipped first, cleartext HTTP reset and logged with the SEN's comment; the MBSF's pass-through, oldest version and certificates in sslproxy.conf; SSLproxy in the service's table (arcana_sslproxy_fib); the MBSF's do-not-decrypt list (exact hosts by SNI alone under VerifyPeer no, a category, its destinations and clients skipped; a *. host refused); the binding read back; what is wrong refused; set 27 emptied under a running SSLproxy (ipfw restarted) loaded again by the watch, and not while an admin's rule is in the way"
+	atf_set "descr" "SSL inspection bound to an SD-WAN service's MBSF (MEF 138), the form the console compiles: the zones' fwd rules by their clients and interfaces, Default's other zones skipped first, cleartext HTTP reset and logged with the SEN's comment; the MBSF's pass-through, oldest version and certificates in sslproxy.conf; SSLproxy in the service's table (arcana_sslproxy_fib); the MBSF's do-not-decrypt list (hosts by SNI alone under VerifyPeer no, a *. one its apex and a substring, a category, its destinations and clients skipped; a * alone refused); the binding read back; what is wrong refused; set 27 emptied under a running SSLproxy (ipfw restarted) loaded again by the watch, and not while an admin's rule is in the way"
 	atf_set "timeout" "120"
 }
 sslproxy_bound_body()
@@ -16459,7 +16475,7 @@ EOF
  "zones":[{"name":"staff","clients":["10.1.0.0/24","2001:db8:1::/64"],"interfaces":["em1","em2"]},
   {"name":"Default","clients":["0.0.0.0/0","::/0"],"except":["10.1.0.0/24","10.2.0.0/24","2001:db8:1::/64"],"interfaces":["em1"]}],
  "mbsf":{"no-match":"allow","block":["ssl3","tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],
-  "pass-through":["bank.example","www.health.example"],"pass-destinations":["203.0.113.0/24"],
+  "pass-through":["bank.example","www.health.example","*.clinic.example"],"pass-destinations":["203.0.113.0/24"],
   "pass-clients":["10.1.0.9/32"],"pass-categories":["pinned"],"invalid-server-certificate":"allow",
   "unencrypted":"block","id":"mb-1"}}
 EOF
@@ -16476,8 +16492,8 @@ EOF
 	printf '{"bound":{"service":"office; reboot","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"zones":[{"name":"z","clients":["10.1.0.0/24"],"interfaces":["em1"]}],"mbsf":{}}' > bad4.json
 	atf_check -s exit:1 -o ignore -e match:'bound: the service' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad4.json
-	sed 's/"www\.health\.example"/"*.health.example"/' bound.json > bad6.json
-	atf_check -s exit:1 -o ignore -e match:'pass-through: \*\.health\.example: SSLproxy matches a name exactly' \
+	sed 's/"www\.health\.example"/"*"/' bound.json > bad6.json
+	atf_check -s exit:1 -o ignore -e match:'pass-through: a \* alone would pass every site' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad6.json
 	printf '{"listeners":[{"proto":"https","listen":8443}],"interfaces":["em1"],"mbsf":{}}' > bad5.json
 	atf_check -s exit:1 -o ignore -e match:"zones and mbsf are a bound form's" \
@@ -16488,7 +16504,8 @@ EOF
 	atf_check -o match:"^# SD-WAN service office's MBSF mb-1 \(MEF 138\), in routing table 3\.\$" \
 	    -o match:'^VerifyPeer no$' -o match:'^MinSSLProto tls12$' \
 	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to sni www\.health\.example$' \
-	    -o match:"^# The MBSF's pass-through$" -o not-match:'^Pass .*\*' \
+	    -o match:"^# The MBSF's pass-through$" \
+	    -o match:'^Pass to sni clinic\.example$' -o match:'^Pass to sni \.clinic\.example\*$' \
 	    -o match:"^# Arcana's category pinned: " -o match:'^Pass to sni mtalk\.google\.com$' \
 	    -o not-match:"Arcana's category os-updates" \
 	    -o not-match:'^Pass to cn ' -o match:'alone \(VerifyPeer no' \

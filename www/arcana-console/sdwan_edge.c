@@ -3450,7 +3450,7 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
 	}
 }
 
-/* An MBSF's first pass-through host that is a *. pattern, or NULL. */
+/* An MBSF's first pass-through host that is a *. name, or NULL. */
 static const char *
 mbsf_star(const ucl_object_t *f)
 {
@@ -3476,13 +3476,14 @@ mbsf_star(const ucl_object_t *f)
  * clients its prefixes here and its interfaces the service's UNIs here,
  * a Default zone's except the other zones' prefixes; "mbsf" the policy.
  * One SSLproxy an edge, so one service and one MBSF an edge: another
- * fails the plan, said.  A vnet jail's edge has its own, run in the
- * jail (its rules its own ipfw's, its CA an intermediate of its own),
- * beside the host's and other jails'.  The edge's CA first, from its
- * tenant fleet's root where it has none (inspection-ca, the console's
- * own); then the form, and enabled; taken away, disabled.  SSLproxy is
- * a plugin the edge has installed (a jail's in the jail), which the
- * apply tells when it has not.
+ * fails the plan, said; a *. pass-through host, which SSLproxy matches
+ * as a substring, a note of the plan's.  A vnet jail's edge has its
+ * own, run in the jail (its rules its own ipfw's, its CA an
+ * intermediate of its own), beside the host's and other jails'.  The
+ * edge's CA first, from its tenant fleet's root where it has none
+ * (inspection-ca, the console's own); then the form, and enabled;
+ * taken away, disabled.  SSLproxy is a plugin the edge has installed
+ * (a jail's in the jail), which the apply tells when it has not.
  */
 static bool
 inspect_build(struct plan *pl, const ucl_object_t *doc)
@@ -3491,7 +3492,7 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 	ucl_object_iter_t	 it, sit, zit, z2it, eit;
 	ucl_object_t		*spec, *zones, *z, *pfx, *ifs, *x, *ls, *l, *b;
 	ucl_object_t		*o;
-	char			 ifn[64], *json;
+	char			 ifn[64], note[600], *json;
 	const char		*sid, *un, *star;
 	int64_t			 fib;
 
@@ -3531,20 +3532,6 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 					    "as one: bind one", server_name_of(sid),
 					    str(sw, "id"), str(mb, "id"), str(f,
 					    "id"));
-					ucl_object_unref(zones);
-					return (false);
-				}
-				/* SSLproxy matches a name exactly or by
-				 * substring: a *. host would pass any name
-				 * containing it (Squid's zones take it). */
-				if ((star = mbsf_star(f)) != NULL) {
-					snprintf(pl->why, sizeof(pl->why), "service "
-					    "%s, MBSF %s: pass-through %s: zone %s's "
-					    "TLS is SSLproxy's, which matches a name "
-					    "exactly or by substring, never as a "
-					    "domain and the names beneath it: name "
-					    "each host", str(sw, "id"), str(f, "id"),
-					    star, str(zone, "name"));
 					ucl_object_unref(zones);
 					return (false);
 				}
@@ -3591,6 +3578,17 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 		if (ucl_array_size(zones) == 0) {
 			ucl_object_unref(zones);
 			continue;
+		}
+		/* SSLproxy matches a *. host as a substring (Squid's zones
+		 * anchor it): applied, and said. */
+		if ((star = mbsf_star(mb)) != NULL) {
+			snprintf(note, sizeof(note), "edge %s: service %s, MBSF %s: "
+			    "pass-through %s: SSLproxy matches %s as a substring: "
+			    "%s and its subdomains pass, and so would a name such as "
+			    "www.%s.attacker.example; use a zone opened by Squid for "
+			    "an exact wildcard", server_name_of(sid), str(bsw, "id"),
+			    str(mb, "id"), star, star, star + 2, star + 2);
+			ucl_array_append(pl->notes, S(note));
 		}
 		fib = efib(pl, bsw, sid);
 		spec = ucl_object_typed_new(UCL_OBJECT);

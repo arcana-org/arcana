@@ -13746,15 +13746,23 @@ part_sslinspect(void)
 	    "'Arcana SSL inspection on') && document.querySelector("
 	    "'a.ssl-root[download]')", 20);
 	/* The form: https and smtps, the clients (and the office list's)
-	 * and the interface; never opened (phase 3): a host, a destination,
-	 * a port, a client and the guests list's, one category. */
+	 * and the interface; never opened (phase 3): hosts and a *. one, a
+	 * destination, a port, a client and the guests list's, one
+	 * category.  SSLproxy's limit of a *. host said beside the field. */
 	wait_js("document.querySelector('form[data-form=ssl-conf] "
 	    "select[name=pass_pfx] option[value=guests]')", 20);
+	wait_js("(() => { const h = document.querySelector("
+	    "'form[data-form=ssl-conf] input[name=pass]').parentElement."
+	    "querySelector('.ssl-wild'); return h && h.textContent.includes("
+	    "'SSLproxy matches *.example.org as a substring') && "
+	    "h.textContent.includes('www.example.org.attacker.example') && "
+	    "h.textContent.includes('a zone opened by Squid'); })()", 10);
 	run("const f = document.querySelector('form[data-form=ssl-conf]'); "
 	    "f.p_smtps.checked = true; f.interfaces.value = 'em1'; "
 	    "f.clients.value = '192.0.2.0/24, 2001:db8::/64'; "
 	    "f.clients_pfx.querySelector('option[value=office]').selected = "
-	    "true; f.pass.value = 'bank.example, www.bank.example'; "
+	    "true; f.pass.value = 'bank.example, www.bank.example, "
+	    "*.health.example'; "
 	    "f.pass_destinations.value = '203.0.113.0/24'; "
 	    "f.pass_ports.value = '8443'; f.pass_clients.value = "
 	    "'192.0.2.7/32'; f.pass_pfx.querySelector('option[value=guests]')"
@@ -13774,15 +13782,21 @@ part_sslinspect(void)
 	    "sslproxy:https$' ssl.d/fwd.rules && grep -q '^add 7 set 26 fwd "
 	    "::1,8465 tcp from 2001:db8::/64 to not me6 465 in recv em1 // "
 	    "sslproxy:smtps$' ssl.d/fwd.rules") == 0);
-	/* What is never opened: the exact hosts by SNI and CN, the one
-	 * category ticked; the rest skipped before the fwd. */
+	/* What is never opened: the hosts by SNI and CN, the *. one its
+	 * apex and a substring (said in a comment), the one category
+	 * ticked; the rest skipped before the fwd. */
 	ATF_CHECK_MSG(system("grep -q '^Pass to sni bank.example$' sslproxy.conf "
 	    "&& grep -q '^Pass to cn www.bank.example$' sslproxy.conf && "
 	    "grep -q \"^# Arcana's category pinned: \" sslproxy.conf && grep "
 	    "-q '^Pass to sni mtalk.google.com$' sslproxy.conf && ! grep -q "
-	    "pkg.FreeBSD sslproxy.conf && ! grep -q '^Pass .*[*]' "
-	    "sslproxy.conf") == 0, "sslproxy.conf's Pass rules are not the "
-	    "form's");
+	    "pkg.FreeBSD sslproxy.conf && ! grep -q '^Pass .*bank.*[*]' "
+	    "sslproxy.conf && grep -q '^Pass to sni health[.]example$' "
+	    "sslproxy.conf && grep -q '^Pass to sni [.]health[.]example[*]$' "
+	    "sslproxy.conf && grep -q '^Pass to cn [.]health[.]example[*]$' "
+	    "sslproxy.conf && grep -q '^# [*].health.example: SSLproxy "
+	    "matches it as a substring' sslproxy.conf && ! grep -q "
+	    "'^Pass .* [*]' sslproxy.conf") == 0, "sslproxy.conf's Pass rules "
+	    "are not the form's");
 	ATF_CHECK_MSG(system("grep -q '^add 7 set 26 skipto 8 tcp from "
 	    "192.0.2.7/32,192.0.2.128/25 to not me 443,465 in recv em1 // "
 	    "sslproxy:pass$' ssl.d/fwd.rules && grep -q '^add 7 set 26 skipto 8 "
@@ -13795,7 +13809,8 @@ part_sslinspect(void)
 	/* Shown again as saved. */
 	wait_js("(() => { const f = document.querySelector('form[data-form="
 	    "ssl-conf]'); return f && f.pass.value === 'bank.example, "
-	    "www.bank.example' && f.pass_clients.value.includes('192.0.2.128/25')"
+	    "www.bank.example, *.health.example' && "
+	    "f.pass_clients.value.includes('192.0.2.128/25')"
 	    " && f.cat_pinned.checked && !f['cat_os-updates'].checked; })()",
 	    20);
 	/* Enabled: started, the rules loaded and swapped in. */
@@ -14756,7 +14771,7 @@ ATF_TC_WITH_CLEANUP(pwa_security_tls);
 ATF_TC_HEAD(pwa_security_tls, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection: the edge's CA from the fleet's root, the form sent with what is never opened (a host, a destination, a port, clients typed and from a prefix list, one category ticked), sslproxy.conf and the fwd rules on the host, enabled and the rules loaded");
+	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection: the edge's CA from the fleet's root, the form sent with what is never opened (hosts and a *. one, its substring limit said beside the field, a destination, a port, clients typed and from a prefix list, one category ticked), sslproxy.conf and the fwd rules on the host, enabled and the rules loaded");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_security_tls, tc)

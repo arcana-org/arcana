@@ -102,8 +102,8 @@ maps; one MBSF a zone).
   away, `disable`. The tab shows the binding in place of the form.
 - **On the edge** (luxuria/sslproxy.c): the zones' fwd rules in set 27
   at rule 7, as phase 1's; the MBSF as SSLproxy has it: its
-  pass-through hosts as `Pass` rules by exact name (phase 3: a `*.`
-  host, once rendered as a substring, is refused), the oldest version
+  pass-through hosts as `Pass` rules (phase 3: a name exactly, a `*.`
+  host its apex and a substring, said), the oldest version
   let through as
   `MinSSLProto` (above every one blocked, and those on no list where
   its No-match blocks), `VerifyPeer no` where a server's certificate
@@ -235,16 +235,29 @@ by the agent (luxuria/sslproxy.c) two ways: what SSLproxy must see to
 tell (a name) as its filter rules, what ipfw can tell (an address, a
 port) by rules that never send it to SSLproxy.
 
-- **Hosts, exact names alone**: SSLproxy 0.10's filter rules in
-  their one-line form, `Pass to sni <name>`, what `PassSite` was in the
-  syntax that replaced it. Its matcher takes a name exactly or, with a
-  trailing `*`, any name that *contains* the rest: no anchored suffix,
-  no regex. A pattern is therefore a way past inspection
-  (`Pass to sni .bank*` passes `www.bank.evil.example`), so none is
-  rendered: a `*.` host is refused, by the agent (the tab's form and an
-  MBSF's pass-through alike) and by the console's plan for a zone
-  SSLproxy opens, with a message to name each host. Squid's zones keep
-  `*.` (its `ssl::server_name .example.org` is anchored). 64 at most.
+- **Hosts, names and `*.` wildcards**: SSLproxy 0.10's filter rules
+  in their one-line form, `Pass to sni <name>`, what `PassSite` was in
+  the syntax that replaced it. Its matcher (src/filter.c) takes a name
+  exactly or, with a trailing `*`, any name that *contains* the rest
+  (an Aho-Corasick keyword, the first found returned, so no guard rule
+  can fence one): a leading `*` is no pattern (a literal
+  `*.example.org` matches nothing), no anchored suffix, no regex.
+  A `*.example.org` host is therefore rendered as two rules,
+  `Pass to sni example.org` (the apex, exactly) and
+  `Pass to sni .example.org*` (any name containing `.example.org`, the
+  leading dot keeping `evilexample.org` out). It passes the domain and
+  every name beneath it, and also any name made to contain it
+  (`www.example.org.attacker.example`): a way past inspection the
+  admin is told of where they see the list, not a refusal (the user
+  wants wildcards: 2026-11-20). The form's help beside the field (the
+  tab's and the SD-WAN MBSF's), a note on the tab's binding, the
+  console's plan note for a zone SSLproxy opens, and a comment in
+  sslproxy.conf say: SSLproxy matches `*.example.org` as a substring,
+  `example.org` and its subdomains pass, and so would
+  `www.example.org.attacker.example`; a zone opened by Squid has an
+  exact wildcard (its `ssl::server_name .example.org` is anchored,
+  unchanged). A `*` alone (every site) and a `*` anywhere but a
+  leading `*.` are refused, by the agent and the console. 64 at most.
 - **The CN only where verified**: `Pass to cn <name>` (the server
   certificate's CN, for a client without SNI) is written only where
   `VerifyPeer yes` (the tab's form, an MBSF whose
@@ -299,12 +312,16 @@ port) by rules that never send it to SSLproxy.
   function policy's form has the same for an MBSF.
 - **Tests**: agent_test `sslproxy` (no category unless named, the
   form's list, a name containing a passed one looked up and opened, a
-  `*.` host refused, what is wrong), `sslproxy_bound` (the MBSF's, no CN rule under
-  `VerifyPeer no`), `sslproxy_jail` (a
+  `*.` host's two rules by SNI and CN, the model passing the apex, a
+  subdomain and, as documented, `www.example.org.attacker.example`,
+  `evilexample.org` opened, a `*` alone refused, what is wrong),
+  `sslproxy_bound` (the MBSF's, no CN rule under `VerifyPeer no`, a
+  `*.` host's two SNI rules), `sslproxy_jail` (a
   vnet jail's and a shared jail's), `sdwan_forms` (Squid's splices);
   console_test `sdwan_inspect` (the list compiled, a prefix list
-  written out, what is wrong refused, a `*.` pass-through refused by
-  the plan); pwa_test `pwa_security_tls`,
+  written out, what is wrong refused, a `*.` pass-through sent with
+  the plan's note, a `*` alone refused); pwa_test `pwa_security_tls`
+  (a `*.` host saved, the help shown, the conf's two rules),
   `pwa_security_tls_jail`, `pwa_sdwan_inspect` (the forms submitted,
   the host's and the jail's files checked).
 - **Not tried on a real SSLproxy**: the tests' sslproxy is a stand-in

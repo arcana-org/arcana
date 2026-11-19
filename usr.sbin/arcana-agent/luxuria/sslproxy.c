@@ -48,15 +48,16 @@
  * (arcana_sslproxy_fib, rc.subr's setfib); the form is not the tab's.
  *
  * What is never opened (phase 3), the tab's form's or the MBSF's: hosts
- * by exact name as SSLproxy's filter rules (Pass to sni; Pass to cn
- * where VerifyPeer checks the certificate), never a *. pattern, which
- * SSLproxy would match as a substring; Arcana's categories where the
- * form names them (cats[], opt-in: the operating systems' updates,
+ * as SSLproxy's filter rules (Pass to sni; Pass to cn where VerifyPeer
+ * checks the certificate), a name exactly and a *.name as its apex
+ * exactly and .name* (pass_lines()), which SSLproxy matches as a
+ * substring, said where the admin sees it; Arcana's categories where
+ * the form names them (cats[], opt-in: the operating systems' updates,
  * services that pin their certificate; no third party's feed), then
- * the admin's; the
- * destinations (prefixes), ports and clients (prefixes, the console's
- * prefix lists among them, written out before they come) by "skipto 8"
- * rules ahead of each zone's fwd, so that SSLproxy never sees them.
+ * the admin's; the destinations (prefixes), ports and clients
+ * (prefixes, the console's prefix lists among them, written out before
+ * they come) by "skipto 8" rules ahead of each zone's fwd, so that
+ * SSLproxy never sees them.
  *
  * A restart of ipfw(8) empties set 27 under a running SSLproxy: the
  * agent looks every --sslproxy-watch seconds and loads the rules again
@@ -751,11 +752,10 @@ port_of(const ucl_object_t *e)
  * form's MBSF (o): hosts by the TLS name and the certificate's CN,
  * destinations (prefixes) and ports, clients by prefix (the console's
  * prefix lists among them, written out by the console or the page),
- * and Arcana's categories (opt-in).  Hosts are exact names: SSLproxy's
- * filter rules have no anchored suffix match (a trailing * matches any
- * name containing the rest), so a *. name is refused rather than
- * rendered as a pattern a name made to contain it would pass.  NULL,
- * or what is wrong.
+ * and Arcana's categories (opt-in).  Hosts are names, or *.name for a
+ * domain and the names beneath it, which SSLproxy can only match as a
+ * substring (pass_lines()); a * alone (every site) or anywhere else is
+ * refused.  NULL, or what is wrong.
  */
 static const char *
 pass_of(struct work *w, const ucl_object_t *o, struct form *f,
@@ -775,11 +775,9 @@ pass_of(struct work *w, const ucl_object_t *o, struct form *f,
 	if (n > PASSES_MAX)
 		return (wfmt(w, "%s%s: 64 hosts at most", what, k[0]));
 	for (i = 0; i < n; i++) {
-		if (strncmp(hs[i], "*.", 2) == 0)
-			return (wfmt(w, "%s%s: %s: SSLproxy matches a name exactly "
-			    "or by substring, never as a domain and the names beneath "
-			    "it, so name each host (www.example.org, example.org)",
-			    what, k[0], wvis(w, hs[i])));
+		if (strcmp(hs[i], "*") == 0)
+			return (wfmt(w, "%s%s: a * alone would pass every site: "
+			    "turn inspection off instead", what, k[0]));
 		if (!host_ok(hs[i]))
 			return (wfmt(w, "%s%s: %s is not a host", what, k[0],
 			    wvis(w, hs[i])));
@@ -970,17 +968,31 @@ place_refuses(struct work *w, const struct place *pl, const struct form *f)
 	return (NULL);
 }
 
-/* A host never opened, its exact name: SSLproxy's filter rules
- * (FilterRule's one-line form), by SNI, and by the certificate's CN
- * where the peer's certificate is verified (cn): else the CN is the
- * server's to choose, a way past inspection. */
+/*
+ * A host never opened: SSLproxy's filter rules (FilterRule's one-line
+ * form), by SNI, and by the certificate's CN where the peer's
+ * certificate is verified (cn): else the CN is the server's to choose,
+ * a way past inspection.  A name exactly; a *.name as its apex exactly
+ * and .name*, which SSLproxy 0.10 matches as a substring (a trailing *;
+ * a leading one is no pattern, and there is no suffix match): the
+ * names beneath it, and any name containing .name too
+ * (www.example.org.attacker.example), the leading dot keeping
+ * evilexample.org out.
+ */
 static void
 pass_lines(FILE *fp, const char *h, bool cn)
 {
+	const char	*apex;
 
-	fprintf(fp, "Pass to sni %s\n", h);
-	if (cn)
-		fprintf(fp, "Pass to cn %s\n", h);
+	apex = strncmp(h, "*.", 2) == 0 ? h + 2 : NULL;
+	fprintf(fp, "Pass to sni %s\n", apex != NULL ? apex : h);
+	if (apex != NULL)
+		fprintf(fp, "Pass to sni .%s*\n", apex);
+	if (!cn)
+		return;
+	fprintf(fp, "Pass to cn %s\n", apex != NULL ? apex : h);
+	if (apex != NULL)
+		fprintf(fp, "Pass to cn .%s*\n", apex);
 }
 
 /* sslproxy.conf(5), from the form. */
@@ -1017,15 +1029,15 @@ conf_render(struct work *w, const struct form *f, const struct place *pl)
 	    f->verify ? "yes" : "no");
 	if (f->tlsmin > 0)
 		fprintf(fp, "MinSSLProto %s\n", tls_names[f->tlsmin]);
-	/* Never opened, by exact name: the TLS name, and the server
+	/* Never opened, by name: the TLS name, and the server
 	 * certificate's CN (a client without SNI) where VerifyPeer checks
-	 * it; Arcana's categories named, then the admin's hosts; the
-	 * destinations, ports and clients by the fwd rules, which skip
-	 * them. */
+	 * it; Arcana's categories named, then the admin's hosts, a *.name
+	 * one said to be a substring; the destinations, ports and clients
+	 * by the fwd rules, which skip them. */
 	cn = !f->bound || f->verify;
 	if (f->cats != 0 || f->npass > 0)
-		fprintf(fp, "# Never opened (filter rules, Pass): exact names, by "
-		    "the TLS name%s.\n", cn ? " and the verified certificate's "
+		fprintf(fp, "# Never opened (filter rules, Pass): by the TLS "
+		    "name%s.\n", cn ? " and the verified certificate's "
 		    "CN" : " alone (VerifyPeer no: a CN is the server's to say)");
 	for (i = 0; i < nitems(cats); i++) {
 		if ((f->cats & (1u << i)) == 0)
@@ -1038,8 +1050,15 @@ conf_render(struct work *w, const struct form *f, const struct place *pl)
 	if (f->npass > 0)
 		fprintf(fp, "# %s\n", f->bound ? "The MBSF's pass-through" :
 		    "The form's");
-	for (i = 0; i < f->npass; i++)
+	for (i = 0; i < f->npass; i++) {
+		if (strncmp(f->pass[i], "*.", 2) == 0)
+			fprintf(fp, "# %s: SSLproxy matches it as a substring: %s "
+			    "and its subdomains pass, and so would a name such as "
+			    "www.%s.attacker.example; a zone opened by Squid has "
+			    "an exact wildcard.\n", f->pass[i], f->pass[i] + 2,
+			    f->pass[i] + 2);
 		pass_lines(fp, f->pass[i], cn);
+	}
 	fprintf(fp, "ConnIdleTimeout 120\nExpiredConnCheckPeriod 10\n");
 	if (f->connect_log)
 		fprintf(fp, "ConnectLog " LOG_DIR "/connect.log\n");

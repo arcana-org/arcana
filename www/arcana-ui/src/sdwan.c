@@ -7768,10 +7768,14 @@ sdwan_modal_service(struct html *h)
 		    jstr(o, "unencrypted"), "block") == 0 ? " selected" : "");
 		v = jget(o, "pass-through");
 		text_field(h, "Never opened", "pass", v != NULL ? csv(v, buf,
-		    sizeof(buf)) : "", "bank.example, www.bank.example", "Hosts "
-		    "let through as they are (Arcana's): a bank, a doctor. Exact "
-		    "names where SSLproxy opens the zone (*. alone in a zone "
-		    "Squid opens, a URLF's).");
+		    sizeof(buf)) : "", "bank.example, *.health.example", "Hosts "
+		    "let through as they are (Arcana's): a bank, a doctor; "
+		    "*.example.org the domain and the names beneath it. Where "
+		    "SSLproxy opens the zone (no URLF), SSLproxy matches "
+		    "*.example.org as a substring: example.org and its subdomains "
+		    "pass, and so would a name such as "
+		    "www.example.org.attacker.example; use a zone opened by Squid "
+		    "for an exact wildcard.");
 		/* The rest of the do-not-decrypt list (phase 3, Arcana's). */
 		v = jget(o, "pass-destinations");
 		text_field(h, "Destinations never opened", "pass_dst", v != NULL ?

@@ -14778,7 +14778,9 @@ plan_make_text(struct resp *r, const char *key, int n)
  * the module says it, the service's table), the edge's CA first; Squid
  * has none of it; what the MBSF never opens (phase 3) compiled with it,
  * the console's prefix list of clients written out, a wrong one refused;
- * a second MBSF bound at one edge fails the plan.
+ * a second MBSF bound at one edge fails the plan; a *. host sent with
+ * the plan's note that SSLproxy matches it as a substring, a * alone
+ * refused.
  */
 CONSOLE_TC(sdwan_inspect, "SD-WAN's MBSF bound to a zone: SSLproxy's form "
     "with its never-opened list (a prefix list written out) "
@@ -14921,16 +14923,32 @@ ATF_TC_BODY(sdwan_inspect, tc)
 	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "binds MBSFs") !=
 	    NULL, "%s", r.body);
 	resp_free(&r);
-	/* A *. pass-through host where SSLproxy opens the zone: refused,
-	 * SSLproxy would match it as a substring (Squid's zones take it). */
+	/* A *. pass-through host where SSLproxy opens the zone: sent as it
+	 * is, the plan's note saying SSLproxy matches it as a substring
+	 * (Squid's zones anchor it). */
 	ATF_REQUIRE(swap_in(first, "\"pass-through\":[\"bank.example\"]",
 	    "\"pass-through\":[\"*.bank.example\"]", t1, sizeof(t1)));
 	ATF_REQUIRE(swap_in(t1, "{\"version\":0,", "{\"version\":2,", doc,
 	    sizeof(doc)));
 	r3_keep(doc);
 	r3_sdwan("plan", &r);
-	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "pass-through "
-	    "*.bank.example: zone office's TLS is SSLproxy's") != NULL, "%s",
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "service acme, MBSF g-mbsf: pass-through "
+	    "*.bank.example: SSLproxy matches *.bank.example as a substring: "
+	    "bank.example and its subdomains pass, and so would a name such as "
+	    "www.bank.example.attacker.example; use a zone opened by Squid for "
+	    "an exact wildcard") != NULL, "%s", r.body);
+	ATF_REQUIRE_MSG((c = plan_make_text(&r, "inspect", 1)) != NULL, "%s",
+	    r.body);
+	ATF_CHECK_MSG(strstr(c, "\"pass-through\":[\"*.bank.example\"]") !=
+	    NULL, "%s", c);
+	resp_free(&r);
+	/* A * alone, every site: refused. */
+	ATF_REQUIRE(swap_in(first, "\"pass-through\":[\"bank.example\"]",
+	    "\"pass-through\":[\"*\"]", t1, sizeof(t1)));
+	r3_check(t1, &r);
+	ATF_CHECK_MSG(r.status == 400 && strstr(r.body, "pass-through is hosts "
+	    "never opened, * is not one") != NULL, "HTTP %d, %s", r.status,
 	    r.body);
 	resp_free(&r);
 }

@@ -283,11 +283,19 @@ si_cat_on(const ucl_object_t *v, const char *name)
 	return (false);
 }
 
+/* SSLproxy's limit of a *.name host, said where it is entered and
+ * where a bound MBSF has one (the agent's sslproxy.conf says it too). */
+#define	SI_WILD	"SSLproxy matches *.example.org as a substring: " \
+	"example.org and its subdomains pass, and so would a name such as " \
+	"www.example.org.attacker.example; use a zone opened by Squid for an " \
+	"exact wildcard"
+
 /*
  * What is never opened (docs/notes/ssl-inspection.md, phase 3), the
- * tab's form's: Arcana's categories (opt-in), hosts by exact name
- * (SSLproxy's Pass filter rules, by SNI and CN), destinations, ports and clients (skipped by
- * the fwd rules), the console's prefix lists' clients added.
+ * tab's form's: Arcana's categories (opt-in), hosts by name or *.name
+ * (SSLproxy's Pass filter rules, by SNI and CN, *.name a substring),
+ * destinations, ports and clients (skipped by the fwd rules), the
+ * console's prefix lists' clients added.
  */
 static void
 si_pass_fields(struct html *h, const ucl_object_t *spec)
@@ -297,9 +305,9 @@ si_pass_fields(struct html *h, const ucl_object_t *spec)
 	h_raw(h, "<fieldset class=\"ssl-pass\"><legend>Never opened</legend>"
 	    "<p class=\"dim\">Passed through as it is: Arcana's categories "
 	    "ticked (exact names, no third party's feed), then your own. "
-	    "Hosts by exact name, the TLS name and the verified certificate's "
-	    "CN (SSLproxy's <code>Pass</code> filter rules: no "
-	    "<code>*.</code>, which SSLproxy would match as a substring); "
+	    "Hosts by the TLS name and the verified certificate's CN "
+	    "(SSLproxy's <code>Pass</code> filter rules), a name exactly, "
+	    "<code>*.example.org</code> the domain and the names beneath it; "
 	    "destinations, ports and clients skipped by the <code>ipfw</code> "
 	    "rules before the fwd, never reaching SSLproxy.</p>");
 	for (i = 0; i < nitems(si_cats); i++) {
@@ -310,10 +318,11 @@ si_pass_fields(struct html *h, const ucl_object_t *spec)
 		    si_cats[i].name), si_cats[i].what, NULL);
 	}
 	h_raw(h, "<label>Hosts <input name=\"pass\" spellcheck=\"false\" "
-	    "placeholder=\"bank.example, www.bank.example\"");
+	    "placeholder=\"bank.example, *.health.example\"");
 	joined_value(h, jget(spec, "pass"));
 	h_raw(h, "><small class=\"help\">a bank, a doctor, an app that pins its "
-	    "certificate: 64 at most</small></label><label>Destinations <input "
+	    "certificate: 64 at most</small><small class=\"help ssl-wild\">"
+	    SI_WILD "</small></label><label>Destinations <input "
 	    "name=\"pass_destinations\" spellcheck=\"false\" placeholder=\""
 	    "198.51.100.0/24, 2001:db8:5::/48\"");
 	joined_value(h, jget(spec, "pass_destinations"));
@@ -432,8 +441,23 @@ pass_row(struct html *h, const ucl_object_t *m, const char *key,
 	h_raw(h, "</dd>");
 }
 
+/* Whether a list of hosts has a *.name one. */
+static bool
+si_wild(const ucl_object_t *v)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL)
+		if (strncmp(ucl_object_tostring_forced(e), "*.", 2) == 0)
+			return (true);
+	return (false);
+}
+
 /* What the bound MBSF never opens (phase 3), as the console compiled
- * it: Arcana's categories, its hosts, destinations, ports, clients. */
+ * it: Arcana's categories, its hosts, destinations, ports, clients; a
+ * *.name host's limit under SSLproxy said. */
 static void
 si_bound_pass(struct html *h, const char *text)
 {
@@ -469,6 +493,8 @@ si_bound_pass(struct html *h, const char *text)
 	pass_row(h, m, "pass-ports", "Ports");
 	pass_row(h, m, "pass-clients", "Clients");
 	h_raw(h, "</dl>");
+	if (si_wild(jget(m, "pass-through")))
+		h_raw(h, "<p class=\"dim ssl-wild\">" SI_WILD ".</p>");
 	ucl_object_unref(spec);
 }
 
