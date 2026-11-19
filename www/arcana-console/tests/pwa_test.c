@@ -14981,7 +14981,11 @@ part_archive(const atf_tc_t *tc)
 	if (access(arch, X_OK) != 0)
 		atf_tc_skip("no arch harness at %s", arch);
 	now = time(NULL);
+	/* Fed up to a UTC midnight at least two hours past, so that the
+	 * last hour holds none of it at any time of day. */
 	day0 = now - now % 86400;
+	if (now - day0 < 2 * 3600)
+		day0 -= 86400;
 	gap0 = day0 - 2 * 86400 + 6 * 3600;
 	gap1 = gap0 + 6 * 3600;
 	ATF_REQUIRE((fp = fopen("feed.txt", "w")) != NULL);
