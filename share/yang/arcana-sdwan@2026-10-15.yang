@@ -544,6 +544,28 @@ module arcana-sdwan {
       description
         "The hosts never opened.";
     }
+    leaf-list pass-destinations {
+      type string;
+      description
+        "The destinations never opened, prefixes.";
+    }
+    leaf-list pass-ports {
+      type uint16;
+      description
+        "The destination ports never opened.";
+    }
+    leaf-list pass-clients {
+      type string;
+      description
+        "The clients never opened, prefixes (the console's prefix
+         lists written out).";
+    }
+    leaf-list pass-categories {
+      type string;
+      description
+        "Arcana's do-not-decrypt categories: os-updates, pinned;
+         none unless named.";
+    }
     leaf invalid-server-certificate {
       type allow-block;
       description

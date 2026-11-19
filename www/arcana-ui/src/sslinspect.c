@@ -20,10 +20,14 @@
  * one of its own: picked here (the host, or a running jail), its read,
  * jobs, CA and Install (pkg -j) the jail's; a vnet jail's rules are its
  * own ipfw's, a jail of the host's network's the host's, sent to the
- * jail's address.
+ * jail's address.  What is never opened (phase 3): Arcana's categories
+ * ticked, the admin's hosts, destinations, ports and clients, the
+ * console's prefix lists' clients written into the form when saved;
+ * the binding shows the MBSF's.
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -244,13 +248,89 @@ joined_value(struct html *h, const ucl_object_t *arr)
 	first = true;
 	it = NULL;
 	while ((e = ucl_object_iterate(arr, &it, true)) != NULL)
-		if (ucl_object_type(e) == UCL_STRING) {
+		if (ucl_object_type(e) == UCL_STRING || ucl_object_type(e) ==
+		    UCL_INT) {
 			h_strf(&b, "%s%s", first ? "" : ", ",
-			    ucl_object_tostring(e));
+			    ucl_object_tostring_forced(e));
 			first = false;
 		}
 	h_attr(h, "value", b.s != NULL ? b.s : "");
 	free(b.s);
+}
+
+/* Arcana's do-not-decrypt categories, as the agent has them (luxuria/
+ * sslproxy.c's cats[]): the form's name, what it is. */
+static const struct {
+	const char	*name, *what;
+} si_cats[] = {
+	{ "os-updates", "The operating systems' updates (FreeBSD, Windows, "
+	    "Apple)" },
+	{ "pinned", "Services that pin their certificate (Apple push, "
+	    "Google's FCM, Signal, WhatsApp)" },
+};
+
+/* Whether a list of categories has one; absent, none (opt-in). */
+static bool
+si_cat_on(const ucl_object_t *v, const char *name)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL)
+		if (strcmp(ucl_object_tostring_forced(e), name) == 0)
+			return (true);
+	return (false);
+}
+
+/*
+ * What is never opened (docs/notes/ssl-inspection.md, phase 3), the
+ * tab's form's: Arcana's categories (opt-in), hosts by exact name
+ * (SSLproxy's Pass filter rules, by SNI and CN), destinations, ports and clients (skipped by
+ * the fwd rules), the console's prefix lists' clients added.
+ */
+static void
+si_pass_fields(struct html *h, const ucl_object_t *spec)
+{
+	size_t	i;
+
+	h_raw(h, "<fieldset class=\"ssl-pass\"><legend>Never opened</legend>"
+	    "<p class=\"dim\">Passed through as it is: Arcana's categories "
+	    "ticked (exact names, no third party's feed), then your own. "
+	    "Hosts by exact name, the TLS name and the verified certificate's "
+	    "CN (SSLproxy's <code>Pass</code> filter rules: no "
+	    "<code>*.</code>, which SSLproxy would match as a substring); "
+	    "destinations, ports and clients skipped by the <code>ipfw</code> "
+	    "rules before the fwd, never reaching SSLproxy.</p>");
+	for (i = 0; i < nitems(si_cats); i++) {
+		char	name[32];
+
+		snprintf(name, sizeof(name), "cat_%s", si_cats[i].name);
+		check(h, name, si_cat_on(jget(spec, "pass_categories"),
+		    si_cats[i].name), si_cats[i].what, NULL);
+	}
+	h_raw(h, "<label>Hosts <input name=\"pass\" spellcheck=\"false\" "
+	    "placeholder=\"bank.example, www.bank.example\"");
+	joined_value(h, jget(spec, "pass"));
+	h_raw(h, "><small class=\"help\">a bank, a doctor, an app that pins its "
+	    "certificate: 64 at most</small></label><label>Destinations <input "
+	    "name=\"pass_destinations\" spellcheck=\"false\" placeholder=\""
+	    "198.51.100.0/24, 2001:db8:5::/48\"");
+	joined_value(h, jget(spec, "pass_destinations"));
+	h_raw(h, "><small class=\"help\">prefixes whose TLS is never opened"
+	    "</small></label><label>Ports <input name=\"pass_ports\" "
+	    "spellcheck=\"false\" placeholder=\"8443\"");
+	joined_value(h, jget(spec, "pass_ports"));
+	h_raw(h, "><small class=\"help\">destination ports never opened"
+	    "</small></label><label>Clients <input name=\"pass_clients\" "
+	    "spellcheck=\"false\" placeholder=\"192.0.2.7/32\"");
+	joined_value(h, jget(spec, "pass_clients"));
+	h_raw(h, "><small class=\"help\">clients whose TLS is never opened"
+	    "</small></label>");
+	pfxlist_select(h, "And the clients of the console's lists", "pass_pfx",
+	    "their prefixes added to the clients never opened when saved",
+	    true);
+	h_raw(h, "</fieldset>");
 }
 
 static void
@@ -294,6 +374,9 @@ si_form(struct html *h, const ucl_object_t *o)
 	joined_value(h, jget(spec, "clients"));
 	h_raw(h, "><small class=\"help\">the prefixes inspected; empty, "
 	    "every client on those interfaces</small></label>");
+	pfxlist_select(h, "And the clients of the console's lists", "clients_pfx",
+	    "their prefixes added to the clients when saved", true);
+	si_pass_fields(h, spec);
 	check(h, "ipv6", spec == NULL || jbool(spec, "ipv6") ||
 	    jget(spec, "ipv6") == NULL, "IPv6 too", "fwd ::1 beside 127.0.0.1");
 	check(h, "connect_log", spec == NULL || jbool(spec, "connect_log") ||
@@ -334,9 +417,64 @@ joined_text(struct html *h, const ucl_object_t *arr)
 	}
 }
 
+/* A row of the MBSF's never-opened list, where it has the key. */
+static void
+pass_row(struct html *h, const ucl_object_t *m, const char *key,
+    const char *what)
+{
+
+	if (jget(m, key) == NULL)
+		return;
+	h_raw(h, "<dt>");
+	h_txt(h, what);
+	h_raw(h, "</dt><dd>");
+	joined_text(h, jget(m, key));
+	h_raw(h, "</dd>");
+}
+
+/* What the bound MBSF never opens (phase 3), as the console compiled
+ * it: Arcana's categories, its hosts, destinations, ports, clients. */
+static void
+si_bound_pass(struct html *h, const char *text)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*spec;
+	const ucl_object_t	*m;
+	size_t			 i;
+	bool			 first;
+
+	if (text == NULL)
+		return;
+	p = ucl_parser_new(UCL_PARSER_NO_TIME);
+	spec = ucl_parser_add_string(p, text, 0) ? ucl_parser_get_object(p) :
+	    NULL;
+	ucl_parser_free(p);
+	if (spec == NULL)
+		return;
+	m = jget(spec, "mbsf");
+	h_raw(h, "<dl class=\"kv ssl-bound-pass\"><dt>Never opened</dt><dd>");
+	first = true;
+	for (i = 0; i < nitems(si_cats); i++)
+		if (si_cat_on(jget(m, "pass-categories"), si_cats[i].name)) {
+			if (!first)
+				h_raw(h, "; ");
+			h_txt(h, si_cats[i].what);
+			first = false;
+		}
+	if (first)
+		h_raw(h, "none of Arcana's categories");
+	h_raw(h, "</dd>");
+	pass_row(h, m, "pass-through", "Hosts");
+	pass_row(h, m, "pass-destinations", "Destinations");
+	pass_row(h, m, "pass-ports", "Ports");
+	pass_row(h, m, "pass-clients", "Clients");
+	h_raw(h, "</dl>");
+	ucl_object_unref(spec);
+}
+
 /* An SD-WAN service's MBSF the form was compiled from: its zones. */
 static void
-si_bound(struct html *h, const ucl_object_t *b)
+si_bound(struct html *h, const ucl_object_t *b, const char *spec)
 {
 	const ucl_object_t	*z;
 	ucl_object_iter_t	 it;
@@ -361,7 +499,9 @@ si_bound(struct html *h, const ucl_object_t *b)
 		joined_text(h, jget(z, "interfaces"));
 		h_raw(h, "</td></tr>");
 	}
-	h_raw(h, "</tbody></table></div>");
+	h_raw(h, "</tbody></table>");
+	si_bound_pass(h, spec);
+	h_raw(h, "</div>");
 }
 
 void
@@ -477,7 +617,7 @@ view_sslinspect(struct html *h, struct server *s)
 	/* The form, or the SD-WAN's binding the console compiled it from. */
 	h_raw(h, "<h3 class=\"secsub\">Configuration</h3>");
 	if (jget(o, "bound") != NULL)
-		si_bound(h, jget(o, "bound"));
+		si_bound(h, jget(o, "bound"), jstr(o, "spec"));
 	else
 		si_form(h, o);
 
@@ -563,6 +703,40 @@ put_words(ucl_object_t *o, const char *key, const char *s)
 	ucl_object_insert_key(o, arr, key, 0, false);
 }
 
+/* The words of a field and the prefixes of the console's lists picked
+ * beside it (a select of several, by commas), each once, under key. */
+static void
+put_listed(ucl_object_t *o, const char *key, const char *s,
+    const char *lists)
+{
+	const ucl_object_t	*e, *had;
+	ucl_object_iter_t	 it, hit;
+	ucl_object_t		*more;
+	char			*joined;
+	bool			 seen;
+
+	put_words(o, key, s);
+	if ((joined = pfxlist_joined(lists, ", ")) == NULL)
+		return;
+	more = ucl_object_typed_new(UCL_OBJECT);
+	put_words(more, key, joined);
+	free(joined);
+	it = NULL;
+	while ((e = ucl_object_iterate(jget(more, key), &it, true)) != NULL) {
+		seen = false;
+		hit = NULL;
+		while ((had = ucl_object_iterate(jget(o, key), &hit, true)) !=
+		    NULL)
+			if (strcmp(ucl_object_tostring(had),
+			    ucl_object_tostring(e)) == 0)
+				seen = true;
+		if (!seen)
+			ucl_array_append((ucl_object_t *)(uintptr_t)jget(o, key),
+			    ucl_object_copy(e));
+	}
+	ucl_object_unref(more);
+}
+
 bool
 sslinspect_form(const char *form, const ucl_object_t *f)
 {
@@ -595,8 +769,43 @@ sslinspect_form(const char *form, const ucl_object_t *f)
 		ucl_array_append(ls, l);
 	}
 	ucl_object_insert_key(spec, ls, "listeners", 0, false);
-	put_words(spec, "clients", jstr(f, "clients"));
+	put_listed(spec, "clients", jstr(f, "clients"), jstr(f, "clients_pfx"));
 	put_words(spec, "interfaces", jstr(f, "interfaces"));
+	/* Never opened: the words given, ports as numbers, the categories
+	 * ticked (none: unsaid). */
+	put_words(spec, "pass", jstr(f, "pass"));
+	put_words(spec, "pass_destinations", jstr(f, "pass_destinations"));
+	put_listed(spec, "pass_clients", jstr(f, "pass_clients"), jstr(f,
+	    "pass_pfx"));
+	put_words(spec, "pass_ports", jstr(f, "pass_ports"));
+	{
+		ucl_object_t		*ports, *cats;
+		const ucl_object_t	*e;
+		ucl_object_iter_t	 it;
+
+		ports = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((e = ucl_object_iterate(jget(spec, "pass_ports"), &it,
+		    true)) != NULL)
+			ucl_array_append(ports, strspn(ucl_object_tostring(e),
+			    "0123456789") == strlen(ucl_object_tostring(e)) ?
+			    ucl_object_fromint(strtol(ucl_object_tostring(e),
+			    NULL, 10)) : ucl_object_fromstring(
+			    ucl_object_tostring(e)));
+		ucl_object_replace_key(spec, ports, "pass_ports", 0, false);
+		cats = ucl_object_typed_new(UCL_ARRAY);
+		for (i = 0; i < nitems(si_cats); i++) {
+			snprintf(k, sizeof(k), "cat_%s", si_cats[i].name);
+			if (jbool(f, k))
+				ucl_array_append(cats, ucl_object_fromstring(
+				    si_cats[i].name));
+		}
+		if (ucl_array_size(cats) == 0)
+			ucl_object_unref(cats);
+		else
+			ucl_object_insert_key(spec, cats, "pass_categories", 0,
+			    false);
+	}
 	ucl_object_insert_key(spec, ucl_object_frombool(jbool(f, "ipv6")),
 	    "ipv6", 0, false);
 	ucl_object_insert_key(spec, ucl_object_frombool(jbool(f,

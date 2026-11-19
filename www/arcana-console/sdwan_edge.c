@@ -3041,10 +3041,47 @@ sfp_notifies(const ucl_object_t *f, const char *list)
  * "listed". */
 static const char *const sfp_keys[] = { "no-match", "notify", "block",
     "quarantine", "allow", NULL };
-/* And of an MBSF, the versions, the hosts never opened, what of the
+/* And of an MBSF, the versions, what is never opened (phase 3: hosts,
+ * destinations, ports, clients, Arcana's categories), what of the
  * server's certificate and of HTTP. */
 static const char *const mbsf_keys[] = { "no-match", "block", "allow",
-    "pass-through", "invalid-server-certificate", "unencrypted", NULL };
+    "pass-through", "pass-destinations", "pass-ports", "pass-clients",
+    "pass-categories", "invalid-server-certificate", "unencrypted", NULL };
+
+/*
+ * An MBSF's clients never opened from the console's prefix lists it
+ * names (prefixlists.c), written out into o's pass-clients beside its
+ * own at each apply: a list changed reaches the edges at the next.
+ */
+static void
+mbsf_client_lists(const ucl_object_t *f, ucl_object_t *o)
+{
+	const ucl_object_t	*n, *e;
+	ucl_object_iter_t	 it, eit;
+	ucl_object_t		*arr, *got;
+
+	if (ucl_object_lookup(f, "pass-client-lists") == NULL)
+		return;
+	arr = ucl_object_lookup(o, "pass-clients") != NULL ? ucl_object_copy(
+	    ucl_object_lookup(o, "pass-clients")) : ucl_object_typed_new(
+	    UCL_ARRAY);
+	it = NULL;
+	while ((n = ucl_object_iterate(ucl_object_lookup(f,
+	    "pass-client-lists"), &it, true)) != NULL) {
+		if ((got = prefix_list_get(ucl_object_tostring_forced(n))) ==
+		    NULL)
+			continue;
+		eit = NULL;
+		while ((e = ucl_object_iterate(got, &eit, true)) != NULL)
+			if (!in_list(arr, ucl_object_tostring_forced(e)))
+				ucl_array_append(arr, ucl_object_copy(e));
+		ucl_object_unref(got);
+	}
+	if (ucl_array_size(arr) > 0)
+		put(o, "pass-clients", arr);
+	else
+		ucl_object_unref(arr);
+}
 
 /*
  * A function policy as the agent renders it: its keys, and with lists
@@ -3063,6 +3100,8 @@ sfp_spec(struct plan *pl, const ucl_object_t *f, const char *const *keys,
 	o = pick(f, keys);
 	if (lists)
 		sfp_listed(pl, f, prefixes, o);
+	if (keys == mbsf_keys)
+		mbsf_client_lists(f, o);
 	/* Its ID, last, which the agent names in what the daemon blocked
 	 * (sdblock.c) and ClamAV's signatures by. */
 	if (str(f, "id") != NULL)
@@ -3411,6 +3450,21 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
 	}
 }
 
+/* An MBSF's first pass-through host that is a *. pattern, or NULL. */
+static const char *
+mbsf_star(const ucl_object_t *f)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(f, "pass-through"),
+	    &it, true)) != NULL)
+		if (strncmp(ucl_object_tostring_forced(e), "*.", 2) == 0)
+			return (ucl_object_tostring_forced(e));
+	return (NULL);
+}
+
 /* Where SSLproxy listens for TLS on the loopback (the tab's too). */
 #define	INSPECT_LISTEN	8443
 
@@ -3438,7 +3492,7 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 	ucl_object_t		*spec, *zones, *z, *pfx, *ifs, *x, *ls, *l, *b;
 	ucl_object_t		*o;
 	char			 ifn[64], *json;
-	const char		*sid, *un;
+	const char		*sid, *un, *star;
 	int64_t			 fib;
 
 	it = NULL;
@@ -3477,6 +3531,20 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 					    "as one: bind one", server_name_of(sid),
 					    str(sw, "id"), str(mb, "id"), str(f,
 					    "id"));
+					ucl_object_unref(zones);
+					return (false);
+				}
+				/* SSLproxy matches a name exactly or by
+				 * substring: a *. host would pass any name
+				 * containing it (Squid's zones take it). */
+				if ((star = mbsf_star(f)) != NULL) {
+					snprintf(pl->why, sizeof(pl->why), "service "
+					    "%s, MBSF %s: pass-through %s: zone %s's "
+					    "TLS is SSLproxy's, which matches a name "
+					    "exactly or by substring, never as a "
+					    "domain and the names beneath it: name "
+					    "each host", str(sw, "id"), str(f, "id"),
+					    star, str(zone, "name"));
 					ucl_object_unref(zones);
 					return (false);
 				}

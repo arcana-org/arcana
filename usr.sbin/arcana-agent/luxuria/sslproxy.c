@@ -39,13 +39,24 @@
  * its routing table, "zones" each a zone's clients (its prefixes at this
  * edge) and interfaces (the service's UNIs here), "except" the other
  * zones' prefixes where the zone is Default (a skipto past the rest),
- * "mbsf" the policy: its pass-through hosts as Pass rules (by SNI), the
+ * "mbsf" the policy: its pass-through hosts as Pass rules (below), the
  * oldest TLS version let through (MinSSLProto), a server's certificate
  * not trusted refused or not (VerifyPeer), and cleartext HTTP blocked by
  * an ipfw reset rule that logs (logdst rtsock), its comment the one the
  * console makes a Security Event Notification of (security <service>
  * <policy> unencrypted).  SSLproxy is then run in the service's table
  * (arcana_sslproxy_fib, rc.subr's setfib); the form is not the tab's.
+ *
+ * What is never opened (phase 3), the tab's form's or the MBSF's: hosts
+ * by exact name as SSLproxy's filter rules (Pass to sni; Pass to cn
+ * where VerifyPeer checks the certificate), never a *. pattern, which
+ * SSLproxy would match as a substring; Arcana's categories where the
+ * form names them (cats[], opt-in: the operating systems' updates,
+ * services that pin their certificate; no third party's feed), then
+ * the admin's; the
+ * destinations (prefixes), ports and clients (prefixes, the console's
+ * prefix lists among them, written out before they come) by "skipto 8"
+ * rules ahead of each zone's fwd, so that SSLproxy never sees them.
  *
  * A restart of ipfw(8) empties set 27 under a running SSLproxy: the
  * agent looks every --sslproxy-watch seconds and loads the rules again
@@ -135,6 +146,7 @@ static pthread_mutex_t	fw_lock = PTHREAD_MUTEX_INITIALIZER;
 #define	SSH_LISTEN	8022
 #define	ZONES_MAX	16
 #define	PASSES_MAX	64
+#define	PORTS_MAX	16
 #define	COMMENT_MAX	80		/* ipfw(8)'s, for a rule's comment */
 #define	JAILS		"jails"		/* the host's: jails' rules */
 #define	JAIL_RC		"/usr/local/etc/rc.d/" SERVICE	/* in a jail */
@@ -184,11 +196,96 @@ struct form {
 	bool		 bound;
 	const char	*service, *policy;
 	int		 fib;
-	const char	*pass[PASSES_MAX];	/* hosts never opened */
-	size_t		 npass;
 	int		 tlsmin;		/* tls_names' index, -1 none */
 	bool		 verify, plain_block;
+	/* Never opened (phase 3): by name, destination, port or client. */
+	const char	*pass[PASSES_MAX];	/* the admin's hosts */
+	size_t		 npass;
+	struct clients	 pdst, pcli;	/* destinations, clients */
+	int		 pports[PORTS_MAX];
+	size_t		 npports;
+	unsigned	 cats;		/* categories', a bit each */
 };
+
+/*
+ * Arcana's do-not-decrypt categories (docs/notes/ssl-inspection.md,
+ * phase 3), opt-in: off unless the form names them, small and fixed,
+ * no third party's feed, exact names alone.  SSLproxy 0.10's filter
+ * rules match a name exactly or, with a trailing *, any name that
+ * contains the rest: no anchored suffix, no regex, so a pattern would
+ * pass a name made to contain it (www.bank.evil.example for .bank*)
+ * and inspection with it.  The operating systems' update hosts (their
+ * payloads signed, their clients often pinning; FreeBSD's in both
+ * cases, as a client may send the URL's), and the endpoints of
+ * services known to pin their certificate, which inspection breaks
+ * rather than sees.  Banks and clinics are no category: an edge cannot
+ * name them, the admin does.
+ */
+static const char *const cat_updates[] = { "pkg.FreeBSD.org",
+    "pkg.freebsd.org", "update.FreeBSD.org", "update.freebsd.org",
+    "download.FreeBSD.org", "download.freebsd.org",
+    "update.microsoft.com", "download.windowsupdate.com",
+    "fe3.delivery.mp.microsoft.com", "swscan.apple.com",
+    "swdist.apple.com", "swcdn.apple.com", "mesu.apple.com",
+    "updates.cdn-apple.com", NULL };
+static const char *const cat_pinned[] = { "api.push.apple.com",
+    "mtalk.google.com", "chat.signal.org", "storage.signal.org",
+    "g.whatsapp.net", NULL };
+static const struct {
+	const char		*name, *what;
+	const char *const	*hosts;
+} cats[] = {
+	{ "os-updates", "the operating systems' updates", cat_updates },
+	{ "pinned", "services that pin their certificate", cat_pinned },
+};
+
+/* The categories a list names, a bit each (absent or empty: none);
+ * -1 for a word that is not one. */
+static int
+cats_of(const ucl_object_t *v)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	const char		*s;
+	unsigned		 bits;
+	size_t			 i;
+
+	bits = 0;
+	it = NULL;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL) {
+		if ((s = ucl_object_tostring(e)) == NULL)
+			return (-1);
+		for (i = 0; i < nitems(cats); i++)
+			if (strcmp(s, cats[i].name) == 0)
+				break;
+		if (i == nitems(cats))
+			return (-1);
+		bits |= 1u << i;
+	}
+	return ((int)bits);
+}
+
+/*
+ * The hosts of the categories a list names (cats_of()), each once, into
+ * out (max of them); how many, or -1 for a word that is no category.
+ * Squid's MBSF (sdconf.c) splices them as SSLproxy passes them.
+ */
+int
+sslproxy_category_hosts(const ucl_object_t *v, const char **out, size_t max)
+{
+	size_t	i, j, n;
+	int	bits;
+
+	if ((bits = cats_of(v)) < 0)
+		return (-1);
+	n = 0;
+	for (i = 0; i < nitems(cats); i++)
+		for (j = 0; (bits & (1 << i)) != 0 && cats[i].hosts[j] != NULL;
+		    j++)
+			if (n < max)
+				out[n++] = cats[i].hosts[j];
+	return ((int)n);
+}
 
 /* SSLproxy's names of the versions, MEF 138's order (Table 9). */
 static const char *const tls_mef[] = { "ssl3", "tls1.0", "tls1.1",
@@ -627,17 +724,100 @@ allow_block(const ucl_object_t *m, const char *key, int dflt)
 	    -1);
 }
 
+/* The names of what is never opened, the tab's and an MBSF's. */
+static const char *const pass_tab[] = { "pass", "pass_destinations",
+    "pass_ports", "pass_clients", "pass_categories" };
+static const char *const pass_mbsf[] = { "pass-through", "pass-destinations",
+    "pass-ports", "pass-clients", "pass-categories" };
+
+/* A port, a number or its digits; -1 for anything else. */
+static int
+port_of(const ucl_object_t *e)
+{
+	const char	*s;
+
+	if (ucl_object_type(e) == UCL_INT)
+		return (ucl_object_toint(e) > 0 && ucl_object_toint(e) < 65536 ?
+		    (int)ucl_object_toint(e) : -1);
+	if (ucl_object_type(e) != UCL_STRING || (s = ucl_object_tostring(e))[0]
+	    == '\0' || strlen(s) > 5 || strspn(s, "0123456789") != strlen(s) ||
+	    strtol(s, NULL, 10) < 1 || strtol(s, NULL, 10) > 65535)
+		return (-1);
+	return ((int)strtol(s, NULL, 10));
+}
+
+/*
+ * What is never opened (phase 3), of the tab's form or of a bound
+ * form's MBSF (o): hosts by the TLS name and the certificate's CN,
+ * destinations (prefixes) and ports, clients by prefix (the console's
+ * prefix lists among them, written out by the console or the page),
+ * and Arcana's categories (opt-in).  Hosts are exact names: SSLproxy's
+ * filter rules have no anchored suffix match (a trailing * matches any
+ * name containing the rest), so a *. name is refused rather than
+ * rendered as a pattern a name made to contain it would pass.  NULL,
+ * or what is wrong.
+ */
+static const char *
+pass_of(struct work *w, const ucl_object_t *o, struct form *f,
+    const char *what, bool mbsf)
+{
+	const char *const	*k = mbsf ? pass_mbsf : pass_tab;
+	const ucl_object_t	*v, *e;
+	ucl_object_iter_t	 it;
+	const char		**hs, *err;
+	size_t			 i, n;
+	int			 c, p;
+
+	v = ucl_object_lookup(o, k[0]);
+	if (ucl_object_type(v) == UCL_ARRAY && ucl_array_size(v) > PASSES_MAX)
+		return (wfmt(w, "%s%s: 64 hosts at most", what, k[0]));
+	hs = words_of(w, o, k[0], &n);
+	if (n > PASSES_MAX)
+		return (wfmt(w, "%s%s: 64 hosts at most", what, k[0]));
+	for (i = 0; i < n; i++) {
+		if (strncmp(hs[i], "*.", 2) == 0)
+			return (wfmt(w, "%s%s: %s: SSLproxy matches a name exactly "
+			    "or by substring, never as a domain and the names beneath "
+			    "it, so name each host (www.example.org, example.org)",
+			    what, k[0], wvis(w, hs[i])));
+		if (!host_ok(hs[i]))
+			return (wfmt(w, "%s%s: %s is not a host", what, k[0],
+			    wvis(w, hs[i])));
+		f->pass[f->npass++] = hs[i];
+	}
+	if ((err = clients_of(w, o, k[1], f, &f->pdst, what)) != NULL ||
+	    (err = clients_of(w, o, k[3], f, &f->pcli, what)) != NULL)
+		return (err);
+	v = ucl_object_lookup(o, k[2]);
+	if (v != NULL && ucl_object_type(v) != UCL_ARRAY)
+		return (wfmt(w, "%s%s: a list of ports", what, k[2]));
+	it = NULL;
+	while ((e = ucl_object_iterate(v, &it, true)) != NULL) {
+		if (f->npports == PORTS_MAX)
+			return (wfmt(w, "%s%s: 16 ports at most", what, k[2]));
+		if ((p = port_of(e)) < 1)
+			return (wfmt(w, "%s%s: %s is not a port", what, k[2],
+			    wvis(w, ucl_object_tostring_forced(e))));
+		f->pports[f->npports++] = p;
+	}
+	v = ucl_object_lookup(o, k[4]);
+	if ((v != NULL && ucl_object_type(v) != UCL_ARRAY) || (c = cats_of(v))
+	    < 0)
+		return (wfmt(w, "%s%s: of os-updates and pinned", what,
+		    k[4]));
+	f->cats = (unsigned)c;
+	return (NULL);
+}
+
 /*
  * The MBSF of a bound form (MEF 138 Table 9): the oldest version let
  * through, above every one blocked and those on no list where its
- * No-match blocks; its pass-through hosts; a server's certificate not
- * trusted, and cleartext HTTP, each allowed or blocked.
+ * No-match blocks; a server's certificate not trusted, and cleartext
+ * HTTP, each allowed or blocked; what it never opens (pass_of()).
  */
 static const char *
 mbsf_of(struct work *w, const ucl_object_t *m, struct form *f)
 {
-	const ucl_object_t	*e;
-	ucl_object_iter_t	 it;
 	int			 i, min, nm, isc, un;
 
 	if (m == NULL || ucl_object_type(m) != UCL_OBJECT)
@@ -660,18 +840,7 @@ mbsf_of(struct work *w, const ucl_object_t *m, struct form *f)
 	f->tlsmin = min > 0 ? min : -1;
 	f->verify = isc == 0;
 	f->plain_block = un == 0;
-	it = NULL;
-	while ((e = ucl_object_iterate(ucl_object_lookup(m, "pass-through"),
-	    &it, true)) != NULL) {
-		if (f->npass == PASSES_MAX)
-			return ("mbsf: pass-through, 64 hosts at most");
-		if (ucl_object_type(e) != UCL_STRING || !host_ok(
-		    ucl_object_tostring(e)))
-			return (wfmt(w, "mbsf: pass-through: %s is not a host",
-			    wvis(w, ucl_object_tostring_forced(e))));
-		f->pass[f->npass++] = ucl_object_tostring(e);
-	}
-	return (NULL);
+	return (pass_of(w, m, f, "mbsf: ", true));
 }
 
 /* The form o into f; NULL, or what is wrong with it. */
@@ -746,7 +915,9 @@ form_of(struct work *w, const ucl_object_t *o, struct form *f)
 			return ("zones and mbsf are a bound form's (an SD-WAN "
 			    "service's MBSF, from the console)");
 		f->nz = 1;
-		return (zone_of(w, o, f, &f->z[0], "", false));
+		if ((err = zone_of(w, o, f, &f->z[0], "", false)) != NULL)
+			return (err);
+		return (pass_of(w, o, f, "", false));
 	}
 	if (ucl_object_type(b) != UCL_OBJECT || (f->service = ucl_object_tostring(
 	    ucl_object_lookup(b, "service"))) == NULL || (f->policy =
@@ -759,6 +930,11 @@ form_of(struct work *w, const ucl_object_t *o, struct form *f)
 	if (ucl_object_lookup(o, "clients") != NULL ||
 	    ucl_object_lookup(o, "interfaces") != NULL)
 		return ("a bound form's clients and interfaces are its zones'");
+	for (i = 0; i < nitems(pass_tab); i++)
+		if (ucl_object_lookup(o, pass_tab[i]) != NULL)
+			return ("a bound form's do-not-decrypt list is its MBSF's "
+			    "(pass-through, pass-destinations, pass-ports, "
+			    "pass-clients, pass-categories)");
 	if ((zs = ucl_object_lookup(o, "zones")) == NULL || ucl_object_type(zs)
 	    != UCL_ARRAY || ucl_array_size(zs) == 0)
 		return ("zones: one at least, each {name, clients, interfaces}");
@@ -794,12 +970,26 @@ place_refuses(struct work *w, const struct place *pl, const struct form *f)
 	return (NULL);
 }
 
+/* A host never opened, its exact name: SSLproxy's filter rules
+ * (FilterRule's one-line form), by SNI, and by the certificate's CN
+ * where the peer's certificate is verified (cn): else the CN is the
+ * server's to choose, a way past inspection. */
+static void
+pass_lines(FILE *fp, const char *h, bool cn)
+{
+
+	fprintf(fp, "Pass to sni %s\n", h);
+	if (cn)
+		fprintf(fp, "Pass to cn %s\n", h);
+}
+
 /* sslproxy.conf(5), from the form. */
 static char *
 conf_render(struct work *w, const struct form *f, const struct place *pl)
 {
 	char	*out;
-	size_t	 len, i;
+	size_t	 len, i, j;
+	bool	 cn;
 	FILE	*fp;
 
 	out = NULL;
@@ -827,13 +1017,29 @@ conf_render(struct work *w, const struct form *f, const struct place *pl)
 	    f->verify ? "yes" : "no");
 	if (f->tlsmin > 0)
 		fprintf(fp, "MinSSLProto %s\n", tls_names[f->tlsmin]);
-	/* Never opened: by the TLS name, a *. one's names beneath it as a
-	 * substring (SSLproxy has no suffix match). */
+	/* Never opened, by exact name: the TLS name, and the server
+	 * certificate's CN (a client without SNI) where VerifyPeer checks
+	 * it; Arcana's categories named, then the admin's hosts; the
+	 * destinations, ports and clients by the fwd rules, which skip
+	 * them. */
+	cn = !f->bound || f->verify;
+	if (f->cats != 0 || f->npass > 0)
+		fprintf(fp, "# Never opened (filter rules, Pass): exact names, by "
+		    "the TLS name%s.\n", cn ? " and the verified certificate's "
+		    "CN" : " alone (VerifyPeer no: a CN is the server's to say)");
+	for (i = 0; i < nitems(cats); i++) {
+		if ((f->cats & (1u << i)) == 0)
+			continue;
+		fprintf(fp, "# Arcana's category %s: %s\n", cats[i].name,
+		    cats[i].what);
+		for (j = 0; cats[i].hosts[j] != NULL; j++)
+			pass_lines(fp, cats[i].hosts[j], cn);
+	}
+	if (f->npass > 0)
+		fprintf(fp, "# %s\n", f->bound ? "The MBSF's pass-through" :
+		    "The form's");
 	for (i = 0; i < f->npass; i++)
-		if (strncmp(f->pass[i], "*.", 2) == 0)
-			fprintf(fp, "Pass to sni %s*\n", f->pass[i] + 1);
-		else
-			fprintf(fp, "Pass to sni %s\n", f->pass[i]);
+		pass_lines(fp, f->pass[i], cn);
 	fprintf(fp, "ConnIdleTimeout 120\nExpiredConnCheckPeriod 10\n");
 	if (f->connect_log)
 		fprintf(fp, "ConnectLog " LOG_DIR "/connect.log\n");
@@ -897,15 +1103,24 @@ rules_render(struct work *w, const struct form *f, const struct place *pl,
     int *np)
 {
 	const struct zone	*z;
-	const char		*src, *cm, *sfx, *to;
+	const char		*src, *cm, *sfx, *to, *lports, *pports;
 	char			*out;
-	size_t			 len, i, k, zi, nx;
+	size_t			 len, i, k, zi, nx, pc, pd;
 	int			 fam, n;
 	bool			 any, famq;
 	FILE			*fp;
 
 	out = NULL;
 	n = 0;
+	/* The ports opened (SSH's relay is not), and those never. */
+	lports = pports = "";
+	for (i = 0; i < f->nl; i++)
+		if (strcmp(f->l[i].type, "tcp") != 0)
+			lports = wfmt(w, "%s%s%d", lports, *lports != '\0' ? "," :
+			    "", f->l[i].port);
+	for (i = 0; i < f->npports; i++)
+		pports = wfmt(w, "%s%s%d", pports, i > 0 ? "," : "",
+		    f->pports[i]);
 	if ((fp = open_memstream(&out, &len)) == NULL)
 		return (NULL);
 	sfx = pl->jailed && !pl->vnet ? wfmt(w, "@%s", w->jail) : "";
@@ -930,6 +1145,38 @@ rules_render(struct work *w, const struct form *f, const struct place *pl,
 			nx = fam == 4 ? z->x.n4 : z->x.n6;
 			to = fam == 4 ? pl->a4 : pl->a6;
 			for (k = 0; k < z->nifs; k++) {
+				/* Never opened: those clients, destinations
+				 * and ports skip the fwd (and the reset of
+				 * cleartext HTTP where they are its). */
+				pc = fam == 4 ? f->pcli.n4 : f->pcli.n6;
+				pd = fam == 4 ? f->pdst.n4 : f->pdst.n6;
+				if (pc > 0) {
+					fprintf(fp, "add %d set %d skipto %d tcp from "
+					    "%s to not %s %s in recv %s // " TAG
+					    "pass%s\n", FW_RULE, FW_STAGE, FW_RULE +
+					    1, sources(w, fam == 4 ? f->pcli.v4 :
+					    f->pcli.v6, pc), fam == 4 ? "me" : "me6",
+					    lports, z->ifs[k], sfx);
+					n++;
+				}
+				if (pd > 0) {
+					fprintf(fp, "add %d set %d skipto %d tcp from "
+					    "%s to %s %s in recv %s // " TAG
+					    "pass%s\n", FW_RULE, FW_STAGE, FW_RULE +
+					    1, src, sources(w, fam == 4 ?
+					    f->pdst.v4 : f->pdst.v6, pd), lports,
+					    z->ifs[k], sfx);
+					n++;
+				}
+				if (f->npports > 0) {
+					fprintf(fp, "add %d set %d skipto %d tcp from "
+					    "%s to not %s %s in recv %s%s // " TAG
+					    "pass%s\n", FW_RULE, FW_STAGE, FW_RULE +
+					    1, src, fam == 4 ? "me" : "me6", pports,
+					    z->ifs[k], famq ? (fam == 4 ? " ip4" :
+					    " ip6") : "", sfx);
+					n++;
+				}
 				if (nx > 0) {
 					fprintf(fp, "add %d set %d skipto %d tcp from "
 					    "%s to not %s in recv %s // " TAG

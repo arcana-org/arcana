@@ -1689,6 +1689,48 @@ module arcana-l3nm {
           description
             "MBSF's names not opened.";
         }
+        leaf-list pass-destinations {
+          type inet:ip-prefix;
+          ordered-by user;
+          description
+            "MBSF's destinations not opened (Arcana's).";
+        }
+        leaf-list pass-ports {
+          type inet:port-number;
+          ordered-by user;
+          description
+            "MBSF's destination ports not opened (Arcana's).";
+        }
+        leaf-list pass-clients {
+          type inet:ip-prefix;
+          ordered-by user;
+          description
+            "MBSF's clients not opened (Arcana's).";
+        }
+        leaf-list pass-client-lists {
+          type string {
+            length "1..64";
+          }
+          ordered-by user;
+          description
+            "MBSF's clients not opened: the console's prefix lists,
+             written out at each apply (Arcana's).";
+        }
+        leaf-list pass-categories {
+          type enumeration {
+            enum os-updates {
+              description
+                "The operating systems' updates.";
+            }
+            enum pinned {
+              description
+                "Services that pin their certificate.";
+            }
+          }
+          description
+            "MBSF's categories not opened, Arcana's own, exact names
+             each; none unless named.";
+        }
         leaf redirect {
           type boolean;
           description

@@ -13612,6 +13612,10 @@ part_sslinspect(void)
 {
 	int	i;
 
+	/* The console's prefix lists the form takes clients from. */
+	put("data/prefix-lists.json", "{\"lists\":{\"guests\":{\"description\":"
+	    "\"\",\"prefixes\":[\"192.0.2.128/25\"]},\"office\":{\"description\":"
+	    "\"\",\"prefixes\":[\"198.51.100.64/26\"]}}}");
 	click_when("li.secnode[data-act=select-security]", 10);
 	wait_js("document.querySelector('select[data-input=sec-host]')", 10);
 	run("const s = document.querySelector('select[data-input=sec-host]'); "
@@ -13644,10 +13648,20 @@ part_sslinspect(void)
 	wait_js("document.querySelector('.ssl-ca').textContent.includes("
 	    "'Arcana SSL inspection on') && document.querySelector("
 	    "'a.ssl-root[download]')", 20);
-	/* The form: https and smtps, the clients and the interface. */
+	/* The form: https and smtps, the clients (and the office list's)
+	 * and the interface; never opened (phase 3): a host, a destination,
+	 * a port, a client and the guests list's, one category. */
+	wait_js("document.querySelector('form[data-form=ssl-conf] "
+	    "select[name=pass_pfx] option[value=guests]')", 20);
 	run("const f = document.querySelector('form[data-form=ssl-conf]'); "
 	    "f.p_smtps.checked = true; f.interfaces.value = 'em1'; "
 	    "f.clients.value = '192.0.2.0/24, 2001:db8::/64'; "
+	    "f.clients_pfx.querySelector('option[value=office]').selected = "
+	    "true; f.pass.value = 'bank.example, www.bank.example'; "
+	    "f.pass_destinations.value = '203.0.113.0/24'; "
+	    "f.pass_ports.value = '8443'; f.pass_clients.value = "
+	    "'192.0.2.7/32'; f.pass_pfx.querySelector('option[value=guests]')"
+	    ".selected = true; f.cat_pinned.checked = true; "
 	    "f.ssh_log.checked = true; f.requestSubmit();");
 	queued_run();
 	for (i = 0; i < 300 && system("grep -q '^ProxySpec smtps 127.0.0.1 8465 "
@@ -13659,11 +13673,34 @@ part_sslinspect(void)
 	    "grep -q '^Divert no$' sslproxy.conf && ! grep -q ContentLog "
 	    "sslproxy.conf") == 0);
 	ATF_CHECK(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8443 tcp from "
-	    "192.0.2.0/24 to not me 443 in recv em1 // sslproxy:https$' "
-	    "ssl.d/fwd.rules && grep -q '^add 7 set 26 fwd ::1,8465 tcp from "
-	    "2001:db8::/64 to not me6 465 in recv em1 // sslproxy:smtps$' "
-	    "ssl.d/fwd.rules") == 0);
+	    "192.0.2.0/24,198.51.100.64/26 to not me 443 in recv em1 // "
+	    "sslproxy:https$' ssl.d/fwd.rules && grep -q '^add 7 set 26 fwd "
+	    "::1,8465 tcp from 2001:db8::/64 to not me6 465 in recv em1 // "
+	    "sslproxy:smtps$' ssl.d/fwd.rules") == 0);
+	/* What is never opened: the exact hosts by SNI and CN, the one
+	 * category ticked; the rest skipped before the fwd. */
+	ATF_CHECK_MSG(system("grep -q '^Pass to sni bank.example$' sslproxy.conf "
+	    "&& grep -q '^Pass to cn www.bank.example$' sslproxy.conf && "
+	    "grep -q \"^# Arcana's category pinned: \" sslproxy.conf && grep "
+	    "-q '^Pass to sni mtalk.google.com$' sslproxy.conf && ! grep -q "
+	    "pkg.FreeBSD sslproxy.conf && ! grep -q '^Pass .*[*]' "
+	    "sslproxy.conf") == 0, "sslproxy.conf's Pass rules are not the "
+	    "form's");
+	ATF_CHECK_MSG(system("grep -q '^add 7 set 26 skipto 8 tcp from "
+	    "192.0.2.7/32,192.0.2.128/25 to not me 443,465 in recv em1 // "
+	    "sslproxy:pass$' ssl.d/fwd.rules && grep -q '^add 7 set 26 skipto 8 "
+	    "tcp from 192.0.2.0/24,198.51.100.64/26 to 203.0.113.0/24 443,465 "
+	    "in recv em1 // sslproxy:pass$' ssl.d/fwd.rules && grep -q '^add 7 "
+	    "set 26 skipto 8 tcp from 2001:db8::/64 to not me6 8443 in recv em1 "
+	    "// sslproxy:pass$' ssl.d/fwd.rules") == 0, "the fwd rules do not "
+	    "skip what is never opened");
 	dock_closed();
+	/* Shown again as saved. */
+	wait_js("(() => { const f = document.querySelector('form[data-form="
+	    "ssl-conf]'); return f && f.pass.value === 'bank.example, "
+	    "www.bank.example' && f.pass_clients.value.includes('192.0.2.128/25')"
+	    " && f.cat_pinned.checked && !f['cat_os-updates'].checked; })()",
+	    20);
 	/* Enabled: started, the rules loaded and swapped in. */
 	wait_js("document.querySelector('.sslview button[data-act=ssl-job]"
 	    "[data-arg=enable]')", 20);
@@ -13674,7 +13711,9 @@ part_sslinspect(void)
 		usleep(100000);
 	ATF_CHECK_MSG(i < 300, "the fwd rules are not loaded");
 	ATF_CHECK(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8022 tcp from "
-	    "192.0.2.0/24 to not me 22 in recv em1 // sslproxy:ssh$' ipfw.log "
+	    "192.0.2.0/24,198.51.100.64/26 to not me 22 in recv em1 // "
+	    "sslproxy:ssh$' ipfw.log && grep -q '^add 7 set 26 skipto 8 tcp "
+	    "from 192.0.2.7/32,192.0.2.128/25 to not me 443,465' ipfw.log "
 	    "&& grep -q '^arcana_sslproxy_enable=\"YES\"$' rc.conf") == 0);
 	ATF_CHECK(access("running.arcana_sslproxy", F_OK) == 0);
 	dock_closed();
@@ -13769,7 +13808,9 @@ part_sslinspect_jail(void)
 	/* The form: https, its clients and the jail's interface. */
 	run("const f = document.querySelector('form[data-form=ssl-conf]'); "
 	    "f.interfaces.value = 'epair1b'; f.clients.value = "
-	    "'192.0.2.0/24'; f.ipv6.checked = false; f.requestSubmit();");
+	    "'192.0.2.0/24'; f.ipv6.checked = false; f.pass.value = "
+	    "'bank.example'; f.pass_clients.value = '192.0.2.9/32'; "
+	    "f.requestSubmit();");
 	queued_run();
 	snprintf(cmd, sizeof(cmd), "grep -q '^ProxySpec https 127.0.0.1 8443 "
 	    "ipfw$' jroot%s/sslproxy.conf", dir);
@@ -13785,6 +13826,16 @@ part_sslinspect_jail(void)
 	    dir, dir);
 	ATF_CHECK_MSG(system(cmd) == 0, "the jail's rules, rc script or "
 	    "rc.conf are not there");
+	/* Never opened, in the jail: its Pass rules and skips beneath its
+	 * root. */
+	snprintf(cmd, sizeof(cmd), "grep -q '^Pass to sni bank.example$' "
+	    "jroot%s/sslproxy.conf && grep -q '^Pass to cn bank.example$' "
+	    "jroot%s/sslproxy.conf && ! grep -q mtalk jroot%s/sslproxy.conf && "
+	    "grep -q '^add 7 set 26 skipto 8 tcp from 192.0.2.9/32 to not me "
+	    "443 in recv epair1b // sslproxy:pass$' jroot%s/ssl.d/fwd.rules",
+	    dir, dir, dir, dir);
+	ATF_CHECK_MSG(system(cmd) == 0, "the jail's Pass rules or skips are "
+	    "not there");
 	dock_closed();
 	/* Enabled: started in the jail, its own ipfw loading the rules. */
 	wait_js("document.querySelector('.sslview button[data-act=ssl-job]"
@@ -14512,7 +14563,7 @@ ATF_TC_WITH_CLEANUP(pwa_security_tls);
 ATF_TC_HEAD(pwa_security_tls, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection: the edge's CA from the fleet's root, the form sent, sslproxy.conf and the fwd rules on the host, enabled and the rules loaded");
+	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection: the edge's CA from the fleet's root, the form sent with what is never opened (a host, a destination, a port, clients typed and from a prefix list, one category ticked), sslproxy.conf and the fwd rules on the host, enabled and the rules loaded");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_security_tls, tc)
@@ -14531,7 +14582,7 @@ ATF_TC_WITH_CLEANUP(pwa_security_tls_jail);
 ATF_TC_HEAD(pwa_security_tls_jail, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection in a vnet jail picked on the tab: sslproxy offered there by pkg -j, the jail's CA from the fleet's root, the form sent, sslproxy.conf and the fwd rules beneath the jail's root, enabled and the rules loaded by the jail's own ipfw");
+	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection in a vnet jail picked on the tab: sslproxy offered there by pkg -j, the jail's CA from the fleet's root, the form sent with what is never opened, sslproxy.conf (its Pass rules) and the fwd rules beneath the jail's root, enabled and the rules loaded by the jail's own ipfw");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_security_tls_jail, tc)
@@ -15529,6 +15580,9 @@ part_sdwan_inspect(void)
 	char	doc[2048];
 	int	i;
 
+	/* The console's prefix list of clients never opened. */
+	put("data/prefix-lists.json", "{\"lists\":{\"guests\":{\"description\":"
+	    "\"\",\"prefixes\":[\"192.0.2.128/25\"]}}}");
 	run("document.querySelector('li[data-act=select-sdwan]').click()");
 	click_when("button[data-act=sd-tab][data-arg=document]", 20);
 	wait_js("document.querySelector('form[data-form=sd-doc] textarea')", 10);
@@ -15547,13 +15601,17 @@ part_sdwan_inspect(void)
 	click_when("button[data-act=sd-tab][data-arg=security]", 10);
 	click_when("button[data-act=sd-sfp-add]", 20);
 	wait_js("document.querySelector('form[data-form=sd-sfp] "
-	    "select[name=function]')", 5);
+	    "select[name=function]') && document.querySelector('form[data-form="
+	    "sd-sfp] select[name=pass_lists] option[value=guests]')", 10);
 	run("const f = document.querySelector('form[data-form=sd-sfp]'); "
 	    "f.id.value = 'guard-mbsf'; f.function.value = 'mbsf'; "
 	    "f.function.dispatchEvent(new Event('input', { bubbles: true })); "
 	    "f.block.value = 'tls1.0\\ntls1.1'; f.nomatch.value = 'allow'; "
 	    "f.plain.value = 'block'; f.pass.value = 'bank.example'; "
-	    "f.requestSubmit();");
+	    "f.pass_dst.value = '203.0.113.0/24'; f.pass_ports.value = "
+	    "'8443'; f.pass_clients.value = '10.1.0.9/32'; f.pass_lists."
+	    "querySelector('option[value=guests]').selected = true; "
+	    "f.cat_pinned.checked = true; f.requestSubmit();");
 	wait_js("!document.querySelector('form[data-form=sd-sfp]')", 20);
 	/* Bound: guard names it, the staff zone's standard policy guard. */
 	click_when("button[data-act=sd-secpol-edit]", 20);
@@ -15567,6 +15625,13 @@ part_sdwan_inspect(void)
 	js_str(doc, sizeof(doc), "JSON.stringify(window.sdDoc).slice(0, 2000)");
 	ATF_REQUIRE_MSG(js_true("JSON.stringify(window.sdDoc).includes("
 	    "'guard-mbsf')"), "the MBSF is not kept: %s", doc);
+	ATF_CHECK_MSG(js_true("(() => { const f = (window.sdDoc["
+	    "'arcana-console:document'] || window.sdDoc).swvcs[0]."
+	    "security_function_policies.find(p => p.id === 'guard-mbsf'); "
+	    "return JSON.stringify(f['pass-client-lists']) === '[\"guests\"]' "
+	    "&& JSON.stringify(f['pass-categories']) === '[\"pinned\"]' "
+	    "&& f['pass-ports'][0] === 8443; })()"),
+	    "the MBSF's never-opened list is not kept: %s", doc);
 	/* Deployed. */
 	click_when("button[data-act=sd-tab][data-arg=edges]", 10);
 	deploy_wait(NULL, 60);
@@ -15589,6 +15654,18 @@ part_sdwan_inspect(void)
 	    "'^VerifyPeer yes$' sslproxy.conf && grep -q '^Pass to sni "
 	    "bank.example$' sslproxy.conf") == 0, "sslproxy.conf is not the "
 	    "MBSF's");
+	/* What it never opens (phase 3): the category ticked, not the
+	 * updates; the destination, port and clients (the guests list's
+	 * written out by the console) skipped before the fwd. */
+	ATF_CHECK_MSG(system("grep -q '^Pass to sni mtalk.google.com$' sslproxy.conf "
+	    "&& ! grep -q os-updates sslproxy.conf && grep -q '^add 7 set 26 "
+	    "skipto 8 tcp from 10.1.0.9/32,192.0.2.128/25 to not me 443 in recv "
+	    "lo0 // sslproxy:pass$' ssl.d/fwd.rules && grep -q '^add 7 set 26 "
+	    "skipto 8 tcp from 0.0.0.0/0 to 203.0.113.0/24 443 in recv lo0 // "
+	    "sslproxy:pass$' ssl.d/fwd.rules && grep -q '^add 7 set 26 skipto 8 "
+	    "tcp from 0.0.0.0/0 to not me 8443 in recv lo0 ip4 // "
+	    "sslproxy:pass$' ssl.d/fwd.rules") == 0, "the MBSF's never-opened "
+	    "list is not on the host");
 	ATF_CHECK_MSG(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8443 tcp from "
 	    "0.0.0.0/0 to not me 443 in recv lo0 ip4 // sslproxy:https$' "
 	    "ssl.d/fwd.rules && grep -q '^add 7 set 26 reset log logdst rtsock "
@@ -15610,7 +15687,10 @@ part_sdwan_inspect(void)
 	click_when("button[data-act=sec-tab][data-arg=tls]", 10);
 	wait_js("document.querySelector('.ssl-bound') && document.querySelector("
 	    "'.ssl-bound').textContent.includes('guard-mbsf') && document."
-	    "querySelector('.ssl-zones').textContent.includes('staff') && "
+	    "querySelector('.ssl-zones').textContent.includes('staff') && document."
+	    "querySelector('.ssl-bound-pass').textContent.includes("
+	    "'203.0.113.0/24') && !document.querySelector('.ssl-bound-pass')"
+	    ".textContent.includes('updates') && "
 	    "!document.querySelector('form[data-form=ssl-conf]')", 30);
 	ATF_CHECK(js_true("document.querySelector('a.help').getAttribute('href')"
 	    ".endsWith('sections/security.html#ssl-inspection')"));
@@ -15621,7 +15701,7 @@ ATF_TC_WITH_CLEANUP(pwa_sdwan_inspect);
 ATF_TC_HEAD(pwa_sdwan_inspect, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "SD-WAN's MBSF bound to a zone by the function and security policies' forms, deployed: the edge's CA, SSLproxy's form for the zone, sslproxy.conf and the fwd rules on the host, the binding on the SSL inspection tab");
+	atf_tc_set_md_var(tc, "descr", "SD-WAN's MBSF bound to a zone by the function and security policies' forms, its never-opened list with a prefix list of clients, deployed: the edge's CA, SSLproxy's form for the zone and its Pass and skipto rules, sslproxy.conf and the fwd rules on the host, the binding on the SSL inspection tab");
 	atf_tc_set_md_var(tc, "timeout", "300");
 }
 ATF_TC_BODY(pwa_sdwan_inspect, tc)

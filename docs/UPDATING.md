@@ -93,6 +93,21 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SSL inspection's do-not-decrypt list; agent 0.334.0, console 0.477.0
+
+- SSL inspection gains a do-not-decrypt list, on the Security tab and in
+  SD-WAN MBSFs (SSLproxy's and Squid's zones): hosts by exact name,
+  destinations, ports, clients, clients from the console's prefix lists
+  (in an MBSF, by name, written out at each apply), and two optional
+  categories of Arcana's, os-updates and pinned, off unless ticked.
+- Where SSLproxy opens a zone, an MBSF's pass-through takes exact host
+  names only: a `*.example.org` entry now fails the plan (and the tab's
+  form), since SSLproxy can only match it as a substring and a name
+  made to contain it would escape inspection.  List each host, or keep
+  the pattern only in a zone Squid opens.  Where the server's
+  certificate is not verified, hosts pass by SNI alone.
+- Update the agent and the console together.
+
 ### SD-WAN URL filter and IPS in a jail edge; agent 0.333.0, console 0.476.0
 
 - An SD-WAN edge that is a vnet jail has its own URL filters (Squid,

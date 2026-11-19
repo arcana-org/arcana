@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-l3nm",
     "module-revision": "2026-11-05",
-    "sid-file-version": 3,
+    "sid-file-version": 4,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -1901,6 +1901,31 @@
         "namespace": "data",
         "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/route-monitoring/updates-kept",
         "sid": "87772"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/security-function-policy/pass-categories",
+        "sid": "87773"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/security-function-policy/pass-client-lists",
+        "sid": "87774"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/security-function-policy/pass-clients",
+        "sid": "87775"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/security-function-policy/pass-destinations",
+        "sid": "87776"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service/arcana-l3nm:sdwan/security-function-policy/pass-ports",
+        "sid": "87777"
       }
     ]
   }

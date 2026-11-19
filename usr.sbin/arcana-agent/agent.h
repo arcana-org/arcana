@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.333.0"
+#define	ARCANA_AGENT_VERSION	"0.334.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1357,6 +1357,8 @@ size_t		 speeder_rates(struct speeder_rate *, size_t, unsigned int);
 void		 do_sslproxy(struct work *, struct json_rsp *);
 void		 sslproxy_watch_start(void);
 const char	*sslproxy_check(const struct arc_job_spec *);
+int		 sslproxy_category_hosts(const struct ucl_object_s *,
+		    const char **, size_t);
 char		*sslproxy_title(const struct arc_job_spec *);
 int		 do_sslproxy_job(struct work *, const struct arc_job_spec *,
 		    const char **);

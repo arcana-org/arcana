@@ -1161,6 +1161,91 @@ squid_host(FILE *b, const char *h, size_t n)
 		fprintf(b, " %.*s", (int)n, h);
 }
 
+/* A prefix as Squid's src and dst take it: an address, a / and its
+ * length, nothing else. */
+static bool
+squid_prefix_ok(const char *s)
+{
+	char		 a[INET6_ADDRSTRLEN + 8], *slash;
+	struct in6_addr	 a6;
+
+	if (strlen(s) >= sizeof(a))
+		return (false);
+	snprintf(a, sizeof(a), "%s", s);
+	if ((slash = strchr(a, '/')) != NULL) {
+		*slash++ = '\0';
+		if (*slash == '\0' || strlen(slash) > 3 || strspn(slash,
+		    "0123456789") != strlen(slash))
+			return (false);
+	}
+	return (inet_pton(AF_INET, a, &a6) == 1 || inet_pton(AF_INET6, a,
+	    &a6) == 1);
+}
+
+/*
+ * An MBSF's do-not-decrypt list (docs/notes/ssl-inspection.md, phase
+ * 3) as Squid splices it, the zone's TLS opened but this: its hosts and
+ * Arcana's categories' by the TLS name (each once: Squid's acl takes no
+ * name twice), its destinations, ports and clients by acl.
+ */
+static void
+squid_pass(FILE *b, FILE *sb, const char *zn, const ucl_object_t *mb)
+{
+	static const char *const keys[] = { "pass-destinations", "dst",
+	    "pass-ports", "port", "pass-clients", "src" };
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	const char		*h[160], *s;
+	size_t			 i, j, n, k;
+	int			 nc;
+	bool			 any;
+
+	n = 0;
+	it = NULL;
+	while ((e = ucl_object_iterate(ucl_object_lookup(mb, "pass-through"),
+	    &it, true)) != NULL && n < nitems(h))
+		h[n++] = ucl_object_tostring_forced(e);
+	if ((nc = sslproxy_category_hosts(ucl_object_lookup(mb,
+	    "pass-categories"), h + n, nitems(h) - n)) > 0)
+		n += (size_t)nc;
+	any = false;
+	for (i = 0; i < n; i++) {
+		for (j = 0; j < i && strcasecmp(h[i], h[j]) != 0; j++)
+			;
+		if (j < i || !squid_host_ok(h[i], strlen(h[i])))
+			continue;
+		if (!any)
+			fprintf(b, "acl %s_pass ssl::server_name", zn);
+		squid_host(b, h[i], strlen(h[i]));
+		any = true;
+	}
+	if (any) {
+		fprintf(b, "\n");
+		fprintf(sb, "ssl_bump splice %s %s_pass\n", zn, zn);
+	}
+	for (k = 0; k < nitems(keys); k += 2) {
+		any = false;
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(mb, keys[k]),
+		    &it, true)) != NULL) {
+			s = ucl_object_tostring_forced(e);
+			if (k == 2 ? strspn(s, "0123456789") != strlen(s) ||
+			    strlen(s) > 5 || s[0] == '\0' : !squid_prefix_ok(s))
+				continue;
+			if (!any)
+				fprintf(b, "acl %s_p%s %s", zn, keys[k + 1],
+				    keys[k + 1]);
+			fprintf(b, " %s", s);
+			any = true;
+		}
+		if (any) {
+			fprintf(b, "\n");
+			fprintf(sb, "ssl_bump splice %s %s_p%s\n", zn, zn,
+			    keys[k + 1]);
+		}
+	}
+}
+
 /* A name with a * inside as a regex of Squid's: each * a whole label,
  * the names beneath it too, anchored. */
 static void
@@ -1570,22 +1655,7 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 		/* MBSF: hosts never opened (Arcana's), the server's
 		 * certificate not trusted let through or not, HTTP. */
 		if (mb != NULL) {
-			tb = NULL;
-			if ((t = open_memstream(&tb, &tl)) != NULL) {
-				it = NULL;
-				while ((e = ucl_object_iterate(ucl_object_lookup(mb,
-				    "pass-through"), &it, true)) != NULL)
-					squid_host(t, ucl_object_tostring_forced(e),
-					    strlen(ucl_object_tostring_forced(e)));
-				fclose(t);
-				if (tb != NULL && tb[0] != '\0') {
-					fprintf(b.fp, "acl %s_pass ssl::server_name"
-					    "%s\n", zn, tb);
-					fprintf(sb.fp, "ssl_bump splice %s %s_pass\n",
-					    zn, zn);
-				}
-				free(tb);
-			}
+			squid_pass(b.fp, sb.fp, zn, mb);
 			if (strcmp(sval(mb, "invalid-server-certificate"),
 			    "allow") == 0)
 				fprintf(b.fp, "sslproxy_cert_error allow %s\n", zn);

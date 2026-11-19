@@ -264,6 +264,10 @@ module: arcana-sdwan
      |  |  |  |  +--rw block*                        string
      |  |  |  |  +--rw allow*                        string
      |  |  |  |  +--rw pass-through*                 string
+     |  |  |  |  +--rw pass-destinations*            string
+     |  |  |  |  +--rw pass-ports*                   uint16
+     |  |  |  |  +--rw pass-clients*                 string
+     |  |  |  |  +--rw pass-categories*              string
      |  |  |  |  +--rw invalid-server-certificate?   allow-block
      |  |  |  |  +--rw unencrypted?                  allow-block
      |  |  |  |  +--rw id?                           string
@@ -610,6 +614,10 @@ module: arcana-sdwan
      |  |  |  |  |  +--rw block*                        string
      |  |  |  |  |  +--rw allow*                        string
      |  |  |  |  |  +--rw pass-through*                 string
+     |  |  |  |  |  +--rw pass-destinations*            string
+     |  |  |  |  |  +--rw pass-ports*                   uint16
+     |  |  |  |  |  +--rw pass-clients*                 string
+     |  |  |  |  |  +--rw pass-categories*              string
      |  |  |  |  |  +--rw invalid-server-certificate?   allow-block
      |  |  |  |  |  +--rw unencrypted?                  allow-block
      |  |  |  |  |  +--rw id?                           string

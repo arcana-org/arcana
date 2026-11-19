@@ -15339,12 +15339,18 @@ EOS
 	# the more specific Allow before the Block of its host; No-match
 	# block, the requests deciding: no name ends a connection.
 	cat > proxy.json <<'EOS'
-{"instances":[{"name":"sw1","fib":1,"mode":"inspect","host":"a","spec":{"flavor":"sdwan","service":"acme","fib":1,"listen":[{"end_point":"hq","address":"10.1.0.1"},{"end_point":"road","address":"10.30.0.1"}],"resolver":true,"icap":true,"zones":[{"name":"z0","prefixes":["10.1.0.0/16","10.30.0.2/32","10.30.0.64/32"],"urlf":{"no-match":"block","block":["bad.example","*.worse.example/ads/*"],"allow":["bad.example/ok"]},"mbsf":{"no-match":"block","block":["tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],"pass-through":["bank.example"],"invalid-server-certificate":"block","unencrypted":"block"},"mdr":true},{"name":"z1","default":true,"urlf":{"no-match":"block","block":["bad.example","*.worse.example/ads/*"],"allow":["bad.example/ok"]},"mbsf":{"no-match":"block","block":["tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],"pass-through":["bank.example"],"invalid-server-certificate":"block","unencrypted":"block"},"mdr":true}]},"lists":{}}]}
+{"instances":[{"name":"sw1","fib":1,"mode":"inspect","host":"a","spec":{"flavor":"sdwan","service":"acme","fib":1,"listen":[{"end_point":"hq","address":"10.1.0.1"},{"end_point":"road","address":"10.30.0.1"}],"resolver":true,"icap":true,"zones":[{"name":"z0","prefixes":["10.1.0.0/16","10.30.0.2/32","10.30.0.64/32"],"urlf":{"no-match":"block","block":["bad.example","*.worse.example/ads/*"],"allow":["bad.example/ok"]},"mbsf":{"no-match":"block","block":["tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],"pass-through":["bank.example"],"invalid-server-certificate":"block","unencrypted":"block"},"mdr":true},{"name":"z1","default":true,"urlf":{"no-match":"block","block":["bad.example","*.worse.example/ads/*"],"allow":["bad.example/ok"]},"mbsf":{"no-match":"block","block":["tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],"pass-through":["bank.example"],"pass-destinations":["203.0.113.0/24","2001:db8:9::/48"],"pass-ports":[8443],"pass-clients":["10.9.0.0/24"],"pass-categories":["os-updates"],"invalid-server-certificate":"block","unencrypted":"block"},"mdr":true}]},"lists":{}}]}
 EOS
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "$(cat proxy.json)"
 	c=$(kept sdwan-proxy-sw1.conf)
 	atf_check -o match:' tls-min-version=1\.2$' -o match:'^tls_outgoing_options min-version=1\.2$' \
-	    -o match:'^acl z1 src all$' -o match:'^acl z0_pass ssl::server_name bank\.example$' \
+	    -o match:'^acl z1 src all$' \
+	    -o match:'^acl z0_pass ssl::server_name bank\.example$' \
+	    -o match:'^acl z1_pass ssl::server_name bank\.example pkg\.FreeBSD\.org update\.FreeBSD\.org download\.FreeBSD\.org update\.microsoft\.com ' \
+	    -o not-match:'pkg\.freebsd\.org' \
+	    -o match:'^acl z1_pdst dst 203\.0\.113\.0/24 2001:db8:9::/48$' -o match:'^acl z1_pport port 8443$' \
+	    -o match:'^acl z1_psrc src 10\.9\.0\.0/24$' -o match:'^ssl_bump splice z1 z1_pdst$' \
+	    -o match:'^ssl_bump splice z1 z1_pport$' -o match:'^ssl_bump splice z1 z1_psrc$' \
 	    -o match:'^ssl_bump splice z0 z0_pass$' -o match:'^http_access deny z0 plain$' \
 	    -o match:'url_regex -i \^https\?://bad\\\.example/ok\$$' \
 	    -o match:'url_regex -i \^https\?://\(\[\^/\]\*\\\.\)\?worse\\\.example/ads/\.\*$' \
@@ -16056,7 +16062,7 @@ relay_rc_cleanup()
 atf_test_case sslproxy cleanup
 sslproxy_head()
 {
-	atf_set "descr" "SSL inspection by SSLproxy, a plugin run by Arcana's rc script: read (installed, its version, the CA, ipfw's set 27); the edge's CA key made on the host and its request, a certificate of another key or of no CA refused, the intermediate installed with its root; the form rendered into sslproxy.conf, checked by sslproxy -Q, the fwd rules written; started, the rules loaded into set 27 at rule 7 by set 26 on a stand-in ipfw keeping its sets, stopped, taken away, the admin's rules as they were; an admin's rule in set 27 or at rule 7 refusing; an admin's own sslproxy.conf replaced only on purpose"
+	atf_set "descr" "SSL inspection by SSLproxy, a plugin run by Arcana's rc script: read (installed, its version, the CA, ipfw's set 27); the edge's CA key made on the host and its request, a certificate of another key or of no CA refused, the intermediate installed with its root; the form rendered into sslproxy.conf, checked by sslproxy -Q, the fwd rules written; started, the rules loaded into set 27 at rule 7 by set 26 on a stand-in ipfw keeping its sets, stopped, taken away, the admin's rules as they were; an admin's rule in set 27 or at rule 7 refusing; an admin's own sslproxy.conf replaced only on purpose; what is never opened (phase 3): no category unless named, the form's exact hosts as Pass filter rules by SNI and CN (a name containing one opened), one category, none, a *. name refused, its destinations, ports and clients skipped before the fwd rules, what is wrong refused"
 	atf_set "timeout" "120"
 }
 sslproxy_body()
@@ -16220,6 +16226,72 @@ EOF
 	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf form.json replace
 	atf_check -o match:'^# Written by arcana-agent' cat sslproxy.conf
 	atf_check -o inline:'CACert /etc/mine.crt\n' cat sslproxy.conf.arcana-old
+# What is never opened (phase 3): Arcana's categories are opt-in,
+	# none where the form names none.
+	atf_check -o not-match:"Arcana's category" -o not-match:'^Pass ' cat sslproxy.conf
+	# The form's own: hosts, destinations, ports, clients, one category.
+	cat > pass.json <<'EOF'
+{"listeners":[{"proto":"https","port":443,"listen":8443},{"proto":"smtps","listen":8465}],
+ "clients":"192.0.2.0/24, 2001:db8::/64","interfaces":["em1"],"ssh_log":true,
+ "pass":"bank.example, www.bank.example","pass_destinations":["198.51.100.0/24","2001:db8:5::/48"],
+ "pass_ports":[8443,"993"],"pass_clients":"192.0.2.7/32, 2001:db8::7","pass_categories":["os-updates"]}
+EOF
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf pass.json
+	# Exact names alone, by SNI and (VerifyPeer yes) by CN; never a
+	# trailing *, which SSLproxy matches as a substring.
+	atf_check -o match:"^# Arcana's category os-updates: " -o not-match:'mtalk' \
+	    -o match:'^Pass to sni pkg\.FreeBSD\.org$' -o match:'^Pass to sni pkg\.freebsd\.org$' \
+	    -o match:"^# The form's$" -o match:'^VerifyPeer yes$' \
+	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to cn bank\.example$' \
+	    -o match:'^Pass to sni www\.bank\.example$' -o not-match:'^Pass .*\*' \
+	    cat sslproxy.conf
+	# Looked up as SSLproxy matches (exact, or a trailing * a substring):
+	# a name containing a passed one is opened.
+	cat > passed.sh <<'EOF'
+awk -v n="$1" '$1 == "Pass" && $3 == "sni" { p = $4; if (p ~ /\*$/) { if (index(n, substr(p, 1, length(p) - 1))) f = 1 } else if (n == p) f = 1 } END { print f ? "passed" : "opened" }' "$2"
+EOF
+	atf_check -o inline:'passed\n' sh passed.sh bank.example sslproxy.conf
+	atf_check -o inline:'opened\n' sh passed.sh www.bank.evil.example sslproxy.conf
+	atf_check -o inline:'opened\n' sh passed.sh bank.example.evil.example sslproxy.conf
+	atf_check -o inline:'opened\n' sh passed.sh pkg.FreeBSD.org.evil.example sslproxy.conf
+	atf_check \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.7/32 to not me 443,465 in recv em1 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.0/24 to 198\.51\.100\.0/24 443,465 in recv em1 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.0/24 to not me 8443,993 in recv em1 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 2001:db8::7 to not me6 443,465 in recv em1 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 2001:db8::/64 to 2001:db8:5::/48 443,465 in recv em1 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 2001:db8::/64 to not me6 8443,993 in recv em1 // sslproxy:pass$' \
+	    cat ssl/arcana/fwd.rules
+	atf_check -o inline:'12\n' sh -c 'wc -l < ssl/arcana/fwd.rules | tr -d " "'
+	# Each family's skips before its fwd rules.
+	atf_check -o match:'fwd 127\.0\.0\.1,8443' \
+	    sh -c "grep -A1 'to not me 8443,993' ssl/arcana/fwd.rules | tail -1"
+	atf_check -o match:'fwd ::1,8443' \
+	    sh -c "grep -A1 'to not me6 8443,993' ssl/arcana/fwd.rules | tail -1"
+	# Kept as sent: the tab shows it again.
+	atf_check -o match:'pass_categories' "$JGC" -c "$SOCK" sslproxy
+	# None of Arcana's.
+	sed 's/"os-updates"//' pass.json > none.json
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf none.json
+	atf_check -o not-match:"Arcana's category" -o match:'^Pass to sni bank\.example$' \
+	    cat sslproxy.conf
+	# What is wrong, refused.
+	sed 's/bank\.example,/bank example!,/' pass.json > bad5.json
+	atf_check -s exit:1 -o ignore -e match:'pass: bank is not a host|pass: example! is not a host' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad5.json
+	sed 's/"os-updates"/"banking"/' pass.json > bad6.json
+	atf_check -s exit:1 -o ignore -e match:'pass_categories: of os-updates and pinned' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad6.json
+	# A *. name: refused, SSLproxy has no anchored suffix match.
+	sed 's/www\.bank\.example/*.bank.example/' pass.json > bad9.json
+	atf_check -s exit:1 -o ignore -e match:'pass: \*\.bank\.example: SSLproxy matches a name exactly' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad9.json
+	sed 's/\[8443,/[0,/' pass.json > bad7.json
+	atf_check -s exit:1 -o ignore -e match:'pass_ports: 0 is not a port' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad7.json
+	sed 's|198\.51\.100\.0/24|198.51.100.0/40|' pass.json > bad8.json
+	atf_check -s exit:1 -o ignore -e match:'pass_destinations: 198\.51\.100\.0/40 is not an address' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad8.json
 	# A renewal: a new key waits beside the one in use.
 	atf_check -o match:'BEGIN CERTIFICATE REQUEST' "$JGC" -c "$SOCK" sslproxy csr renew
 	atf_check test -f ssl/arcana/ca.key -a -f ssl/arcana/ca.key.next
@@ -16235,7 +16307,7 @@ sslproxy_cleanup()
 atf_test_case sslproxy_bound cleanup
 sslproxy_bound_head()
 {
-	atf_set "descr" "SSL inspection bound to an SD-WAN service's MBSF (MEF 138), the form the console compiles: the zones' fwd rules by their clients and interfaces, Default's other zones skipped first, cleartext HTTP reset and logged with the SEN's comment; the MBSF's pass-through, oldest version and certificates in sslproxy.conf; SSLproxy in the service's table (arcana_sslproxy_fib); the binding read back; what is wrong refused; set 27 emptied under a running SSLproxy (ipfw restarted) loaded again by the watch, and not while an admin's rule is in the way"
+	atf_set "descr" "SSL inspection bound to an SD-WAN service's MBSF (MEF 138), the form the console compiles: the zones' fwd rules by their clients and interfaces, Default's other zones skipped first, cleartext HTTP reset and logged with the SEN's comment; the MBSF's pass-through, oldest version and certificates in sslproxy.conf; SSLproxy in the service's table (arcana_sslproxy_fib); the MBSF's do-not-decrypt list (exact hosts by SNI alone under VerifyPeer no, a category, its destinations and clients skipped; a *. host refused); the binding read back; what is wrong refused; set 27 emptied under a running SSLproxy (ipfw restarted) loaded again by the watch, and not while an admin's rule is in the way"
 	atf_set "timeout" "120"
 }
 sslproxy_bound_body()
@@ -16266,7 +16338,8 @@ EOF
  "zones":[{"name":"staff","clients":["10.1.0.0/24","2001:db8:1::/64"],"interfaces":["em1","em2"]},
   {"name":"Default","clients":["0.0.0.0/0","::/0"],"except":["10.1.0.0/24","10.2.0.0/24","2001:db8:1::/64"],"interfaces":["em1"]}],
  "mbsf":{"no-match":"allow","block":["ssl3","tls1.0","tls1.1"],"allow":["tls1.2","tls1.3"],
-  "pass-through":["bank.example","*.health.example"],"invalid-server-certificate":"allow",
+  "pass-through":["bank.example","www.health.example"],"pass-destinations":["203.0.113.0/24"],
+  "pass-clients":["10.1.0.9/32"],"pass-categories":["pinned"],"invalid-server-certificate":"allow",
   "unencrypted":"block","id":"mb-1"}}
 EOF
 	# What is wrong with a bound form, refused before it runs.
@@ -16282,6 +16355,9 @@ EOF
 	printf '{"bound":{"service":"office; reboot","policy":"mb-1","fib":3},"listeners":[{"proto":"https","listen":8443}],"zones":[{"name":"z","clients":["10.1.0.0/24"],"interfaces":["em1"]}],"mbsf":{}}' > bad4.json
 	atf_check -s exit:1 -o ignore -e match:'bound: the service' \
 	    "$JGC" -c "$SOCK" sslproxy conf bad4.json
+	sed 's/"www\.health\.example"/"*.health.example"/' bound.json > bad6.json
+	atf_check -s exit:1 -o ignore -e match:'pass-through: \*\.health\.example: SSLproxy matches a name exactly' \
+	    "$JGC" -c "$SOCK" sslproxy conf bad6.json
 	printf '{"listeners":[{"proto":"https","listen":8443}],"interfaces":["em1"],"mbsf":{}}' > bad5.json
 	atf_check -s exit:1 -o ignore -e match:"zones and mbsf are a bound form's" \
 	    "$JGC" -c "$SOCK" sslproxy conf bad5.json
@@ -16290,7 +16366,11 @@ EOF
 	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf bound.json
 	atf_check -o match:"^# SD-WAN service office's MBSF mb-1 \(MEF 138\), in routing table 3\.\$" \
 	    -o match:'^VerifyPeer no$' -o match:'^MinSSLProto tls12$' \
-	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to sni \.health\.example\*$' \
+	    -o match:'^Pass to sni bank\.example$' -o match:'^Pass to sni www\.health\.example$' \
+	    -o match:"^# The MBSF's pass-through$" -o not-match:'^Pass .*\*' \
+	    -o match:"^# Arcana's category pinned: " -o match:'^Pass to sni mtalk\.google\.com$' \
+	    -o not-match:"Arcana's category os-updates" \
+	    -o not-match:'^Pass to cn ' -o match:'alone \(VerifyPeer no' \
 	    -o match:'^ProxySpec https 127.0.0.1 8443 ipfw$' cat sslproxy.conf
 	atf_check \
 	    -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 10.1.0.0/24 to not me 443 in recv em1 // sslproxy:https$' \
@@ -16303,8 +16383,12 @@ EOF
 	    -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 0.0.0.0/0 to not me 443 in recv em1 ip4 // sslproxy:https$' \
 	    -o match:'^add 7 set 26 fwd ::1,8443 tcp from ::/0 to not me6 443 in recv em1 ip6 // sslproxy:https$' \
 	    -o match:'^add 7 set 26 reset log logdst rtsock logamount 1000 tcp from 0.0.0.0/0 to not me 80 in recv em1 ip4 // security office mb-1 unencrypted sslproxy:http$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 10\.1\.0\.9/32 to not me 443 in recv em2 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 10\.1\.0\.0/24 to 203\.0\.113\.0/24 443 in recv em2 // sslproxy:pass$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 0\.0\.0\.0/0 to 203\.0\.113\.0/24 443 in recv em1 // sslproxy:pass$' \
+	    -o not-match:'skipto 8 tcp from 10\.1\.0\.9/32 to not me6' \
 	    cat ssl/arcana/fwd.rules
-	atf_check -o inline:'14\n' sh -c 'wc -l < ssl/arcana/fwd.rules | tr -d " "'
+	atf_check -o inline:'20\n' sh -c 'wc -l < ssl/arcana/fwd.rules | tr -d " "'
 	# Default's other zones skipped before its own rules, each family.
 	atf_check -o match:'from 0\.0\.0\.0/0 to not me 443' \
 	    sh -c "grep -A1 'skipto 8 tcp from 10.1.0.0/24' ssl/arcana/fwd.rules | tail -1"
@@ -16317,17 +16401,17 @@ EOF
 
 	# Enabled: started and loaded once.
 	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy enable
-	atf_check -o inline:'14\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o inline:'20\n' sh -c 'grep -c "^7 27 " fw.state'
 	# The record's comments are SSL inspection's too: not an admin's.
 	atf_check -o not-match:'rules_error' "$JGC" -c "$SOCK" sslproxy
 	# ipfw restarted: set 27 emptied under a running SSLproxy, loaded
 	# again by the watch.
 	sed -i '' '/^7 27 /d' fw.state
 	for i in $(jot 50); do
-		[ "$(grep -c '^7 27 ' fw.state)" = 14 ] && break
+		[ "$(grep -c '^7 27 ' fw.state)" = 20 ] && break
 		sleep 0.2
 	done
-	atf_check -o inline:'14\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o inline:'20\n' sh -c 'grep -c "^7 27 " fw.state'
 	atf_check -o match:'sslproxy: ipfw set 27 held none of its fwd rules' cat daemon.out
 	# Not while an admin's rule is at 7 of another set: the admin's left.
 	sed -i '' '/^7 27 /d' fw.state
@@ -16355,7 +16439,7 @@ sslproxy_bound_cleanup()
 atf_test_case sslproxy_jail cleanup
 sslproxy_jail_head()
 {
-	atf_set "descr" "SSL inspection by a jail's own SSLproxy beside the host's: stand-in jails, a vnet one (gw) and one of the host's network (web); installed and read in the jail (pkg -j's sslproxy, beneath its root); the CA's key made for the jail and written there alone, its request named for the jail; the form rendered into the jail's sslproxy.conf, checked by the jail's sslproxy -Q, Arcana's rc script copied into the jail, its rc.conf the jail's; the vnet jail's fwd rules in its own ipfw's set 27 (a stand-in apart from the host's), the jail admin's rules untouched, the same refusals; the shared-network jail's in the host's set 27 beside the host's, sent to its address and tagged, its listen ports denied but by the fwd, the host's file never the jail's; a jail without an address of a family refused; the watch loading the vnet jail's again and taking a stopped jail's out of the host's set"
+	atf_set "descr" "SSL inspection by a jail's own SSLproxy beside the host's: stand-in jails, a vnet one (gw) and one of the host's network (web); installed and read in the jail (pkg -j's sslproxy, beneath its root); the CA's key made for the jail and written there alone, its request named for the jail; the form rendered into the jail's sslproxy.conf, checked by the jail's sslproxy -Q, Arcana's rc script copied into the jail, its rc.conf the jail's; the vnet jail's fwd rules in its own ipfw's set 27 (a stand-in apart from the host's), the jail admin's rules untouched, the same refusals; the shared-network jail's in the host's set 27 beside the host's, sent to its address and tagged, its listen ports denied but by the fwd, the host's file never the jail's; a jail without an address of a family refused; the watch loading the vnet jail's again and taking a stopped jail's out of the host's set; what is never opened in each jail: its Pass rules beneath its root, the vnet jail's skips in its own ipfw, the shared jail's in the host's file tagged"
 	atf_set "timeout" "180"
 }
 sslproxy_jail_body()
@@ -16571,6 +16655,28 @@ EOF
 	atf_check test ! -e ssl/arcana/jails/web.rules -a -f ssl/arcana/jails/web.fwd
 	atf_check -o inline:'1\n' sh -c 'grep -c "^7 27 " fw.state'
 	atf_check -o match:'^arcana_sslproxy_enable="NO"$' cat "$R2/etc/rc.conf"
+
+	# What is never opened, in a jail too (phase 3): no category unless
+	# named; the jail's Pass rules in its sslproxy.conf, the vnet jail's
+	# skips in its own ipfw, the shared jail's in the host's file,
+	# tagged with it.
+	atf_check -o not-match:'^Pass ' cat "$R1$d/sslproxy.conf"
+	sed 's|"interfaces"|"pass":["bank.example"],"pass_clients":["192.0.2.9/32"],"pass_destinations":["198.51.100.0/24"],"pass_categories":["pinned"],"interfaces"|' \
+	    web.json > webpass.json
+	atf_check -o match:done "$JGC" -c "$SOCK" -j web sslproxy conf webpass.json
+	atf_check -o match:'^Pass to sni bank\.example$' -o match:'^Pass to cn bank\.example$' \
+	    -o match:"^# Arcana's category pinned: " -o match:'^Pass to sni g\.whatsapp\.net$' \
+	    -o not-match:'^Pass .*\*' cat "$R2$d/sslproxy.conf"
+	atf_check -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.9/32 to not me 443 in recv em1 // sslproxy:pass@web$' \
+	    -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.0/24 to 198\.51\.100\.0/24 443 in recv em1 // sslproxy:pass@web$' \
+	    cat ssl/arcana/jails/web.fwd
+	atf_check test ! -e "$R2$d/ssl/arcana/fwd.rules"
+	sed 's|"interfaces"|"pass_clients":["192.0.2.9/32"],"interfaces"|' form.json > gwpass.json
+	atf_check -o match:done "$JGC" -c "$SOCK" -j gw sslproxy conf gwpass.json
+	atf_check -o match:'^add 7 set 26 skipto 8 tcp from 192\.0\.2\.9/32 to not me 443 in recv epair1b // sslproxy:pass$' \
+	    cat "$R1$d/ssl/arcana/fwd.rules"
+	atf_check -o inline:'1\n' sh -c "grep -c '^7 27 skipto 8 tcp from 192.0.2.9/32 .* // sslproxy:pass\$' $R1/fw.state"
+	atf_check -o not-match:'192\.0\.2\.9' cat fw.state
 
 	# A jail without an IPv6 address of its own: refused with IPv6 on.
 	echo 'db 9 inherit '"$R2"' 16.0-CURRENT ip4.addr=10.0.0.20' >> jails

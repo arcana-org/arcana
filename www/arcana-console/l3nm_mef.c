@@ -808,7 +808,11 @@ static const struct fm sfp_m[] = {
 	F("invalid-client-certificate", "invalid-client-certificate", C),
 	F("unencrypted", "unencrypted", C),
 	F("trusted-cas", "trusted-cas", C),
-	F("pass-through", "pass-through", C), F("redirect", "redirect", C),
+	F("pass-through", "pass-through", C),
+	F("pass-destinations", "pass-destinations", C),
+	F("pass-ports", "pass-ports", C), F("pass-clients", "pass-clients", C),
+	F("pass-client-lists", "pass-client-lists", C),
+	F("pass-categories", "pass-categories", C), F("redirect", "redirect", C),
 	F("northbound", "northbound", C), F("upstream", "upstream", C),
 	FEND
 };

@@ -102,9 +102,9 @@ maps; one MBSF a zone).
   away, `disable`. The tab shows the binding in place of the form.
 - **On the edge** (luxuria/sslproxy.c): the zones' fwd rules in set 27
   at rule 7, as phase 1's; the MBSF as SSLproxy has it: its
-  pass-through hosts as `Pass to sni` rules (a `*.` host's names
-  beneath as a substring: SSLproxy has no suffix match, so a name that
-  merely contains it passes too), the oldest version let through as
+  pass-through hosts as `Pass` rules by exact name (phase 3: a `*.`
+  host, once rendered as a substring, is refused), the oldest version
+  let through as
   `MinSSLProto` (above every one blocked, and those on no list where
   its No-match blocks), `VerifyPeer no` where a server's certificate
   not trusted is allowed, and cleartext HTTP blocked by an ipfw `reset`
@@ -228,17 +228,97 @@ every zone's TLS is SSLproxy's:
    removed; Squid keeps cleartext HTTP alone, or goes when url_check
    takes HTTP too (SSLproxy's `http` proxyspec).
 
-## Phase 3: what is not opened (planned)
+## Phase 3: what is not opened (built)
 
-- A do-not-decrypt list: SSLproxy `Pass` rules (`PassSite`, by SNI and
-  certificate CN), Arcana's small default (the FreeBSD update and
-  package servers, the console) and the admin's own; destination
-  prefixes from the console's prefix lists. No category feed (a third
-  party's) by default; categories only from a list the admin names.
-- Per-site exceptions from the tab and from a connect-log line ("never
-  open this one").
-- The clients by source class: the console's prefix lists as the
-  `fwd` rules' sources.
+A do-not-decrypt list, the tab's form's and an MBSF's alike, rendered
+by the agent (luxuria/sslproxy.c) two ways: what SSLproxy must see to
+tell (a name) as its filter rules, what ipfw can tell (an address, a
+port) by rules that never send it to SSLproxy.
+
+- **Hosts, exact names alone**: SSLproxy 0.10's filter rules in
+  their one-line form, `Pass to sni <name>`, what `PassSite` was in the
+  syntax that replaced it. Its matcher takes a name exactly or, with a
+  trailing `*`, any name that *contains* the rest: no anchored suffix,
+  no regex. A pattern is therefore a way past inspection
+  (`Pass to sni .bank*` passes `www.bank.evil.example`), so none is
+  rendered: a `*.` host is refused, by the agent (the tab's form and an
+  MBSF's pass-through alike) and by the console's plan for a zone
+  SSLproxy opens, with a message to name each host. Squid's zones keep
+  `*.` (its `ssl::server_name .example.org` is anchored). 64 at most.
+- **The CN only where verified**: `Pass to cn <name>` (the server
+  certificate's CN, for a client without SNI) is written only where
+  `VerifyPeer yes` (the tab's form, an MBSF whose
+  invalid-server-certificate blocks); under `VerifyPeer no` the CN is
+  whatever the server says, so the hosts pass by SNI alone.
+- **Arcana's categories** (`cats[]` in sslproxy.c), opt-in: off unless
+  the form names them, exact names each, no third party's feed:
+  - `os-updates`: FreeBSD's pkg, update and download hosts (both
+    cases: SSLproxy is not known to fold case, and a client may send
+    the URL's), Windows Update's and Apple's software update hosts:
+    signed payloads, often pinned clients;
+  - `pinned`: Apple's push (`api.push.apple.com`), Google's FCM
+    (`mtalk.google.com`), Signal's and WhatsApp's endpoints, which pin
+    their certificate and break rather than be seen.
+
+  Banks and clinics are no category: no exact list of them is an
+  edge's to ship (the registry-verified top-level domains were tried,
+  but only as a substring pattern), so they are the admin's own names,
+  or a feed the admin chooses later (not built). An update or pinned
+  service on a name not listed is opened; the lists are short on
+  purpose. The console is not in them: its rp_id may be a parent
+  domain of its name; the admin adds its name.
+- **Destinations, ports, clients**: `skipto 8` rules ahead of each
+  zone's fwd, per family and interface, tagged `sslproxy:pass`
+  (`@<jail>` for a jail of the host's network): the clients never
+  opened (`from <prefixes> to not me <the inspected ports>`), the
+  destinations (`from <the zone's clients> to <prefixes> <ports>`), the
+  ports (`to not me <ports>`). SSH's relay port is not among the
+  inspected ports: it is logged, not opened. 32 prefixes of a family
+  each (one ipfw rule takes them).
+- **The console's prefix lists** (prefixlists.c): on the tab, picked
+  beside the clients inspected and beside the clients never opened,
+  their prefixes written into the form when saved (as the other pages
+  take them); in an MBSF, `pass-client-lists` names them and the console
+  writes their prefixes into the edge's `pass-clients` at each apply, so
+  a list changed reaches the edges at the next.
+- **The model**: MEF 138's MBSF has its pass-through hosts (Arcana's
+  leaf already, phase 2); beside it, Arcana's own: `pass-destinations`,
+  `pass-ports`, `pass-clients`, `pass-client-lists`, `pass-categories`
+  (`os-updates`, `pinned`; absent: none), in arcana-l3nm's
+  security-function-policy and the document. One MBSF a zone, so a
+  zone's exceptions are its MBSF's; the tab's form has the same as
+  `pass`, `pass_destinations`, `pass_ports`, `pass_clients`,
+  `pass_categories`.
+- **Squid's zones** (an MBSF beside a URLF or MD+R): the same list
+  spliced (`ssl_bump splice`): hosts and categories by
+  `ssl::server_name` (each once, case aside), destinations by `dst`,
+  ports by `port`, clients by `src` (arcana-sdwan's mbsf-form).
+- **The page**: the tab's form has a "Never opened" fieldset (the
+  categories, hosts, destinations, ports, clients and the console's
+  lists); the binding shows what the MBSF never opens; the SD-WAN
+  function policy's form has the same for an MBSF.
+- **Tests**: agent_test `sslproxy` (no category unless named, the
+  form's list, a name containing a passed one looked up and opened, a
+  `*.` host refused, what is wrong), `sslproxy_bound` (the MBSF's, no CN rule under
+  `VerifyPeer no`), `sslproxy_jail` (a
+  vnet jail's and a shared jail's), `sdwan_forms` (Squid's splices);
+  console_test `sdwan_inspect` (the list compiled, a prefix list
+  written out, what is wrong refused, a `*.` pass-through refused by
+  the plan); pwa_test `pwa_security_tls`,
+  `pwa_security_tls_jail`, `pwa_sdwan_inspect` (the forms submitted,
+  the host's and the jail's files checked).
+- **Not tried on a real SSLproxy**: the tests' sslproxy is a stand-in
+  that takes any file, and the lookup in the agent's case is a model
+  of SSLproxy's matcher (exact, or a trailing `*` a substring, case
+  kept), as upstream's documentation has it (no sslproxy on the build
+  host to read); that 0.10 takes `Pass to sni`/`Pass to cn` as
+  written, and has no anchored matcher this missed, wants `sslproxy -Q -f` of the rendered file on a host with
+  security/sslproxy installed.
+
+Left for later: per-site exceptions from a connect-log line ("never
+open this one", phase 4 reads the log first); a category feed the
+admin names (one of the console's lists, by name); ipfw tables for
+client and destination lists longer than one rule takes.
 
 ## Phase 4: what happened, told (planned)
 
@@ -246,3 +326,7 @@ The connect log read as eve.json is: each connection opened, passed,
 blocked or failed counted, a failure an event (`tls-inspect`); the
 mirror to Suricata (`MirrorIf` over an epair(4)) for plaintext IDS;
 SSH sessions from Suricata's records and sshd's `LogLevel VERBOSE`.
+With it, phase 3's leftovers: a connect-log line's "never open this
+one" (its SNI into the tab's hosts, or the MBSF's pass-through), and
+the passed connections counted by the rule that passed them (the
+category, the admin's host, a skipto's counters).

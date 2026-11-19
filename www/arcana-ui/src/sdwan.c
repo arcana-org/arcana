@@ -5414,6 +5414,12 @@ static const char *const sfp_fns[][2] = {
 	{ "pdns", "Protective DNS (PDNS)" },
 };
 
+/* Arcana's do-not-decrypt categories of an MBSF (the agent's cats[]). */
+static const char *const mbsf_cats[][2] = {
+	{ "os-updates", "The operating systems' updates" },
+	{ "pinned", "Services that pin their certificate" },
+};
+
 static const char *
 sfp_function_name(const char *fn)
 {
@@ -7762,8 +7768,42 @@ sdwan_modal_service(struct html *h)
 		    jstr(o, "unencrypted"), "block") == 0 ? " selected" : "");
 		v = jget(o, "pass-through");
 		text_field(h, "Never opened", "pass", v != NULL ? csv(v, buf,
-		    sizeof(buf)) : "", "bank.example, *.health.example", "Hosts "
-		    "let through as they are (Arcana's): a bank, a doctor.");
+		    sizeof(buf)) : "", "bank.example, www.bank.example", "Hosts "
+		    "let through as they are (Arcana's): a bank, a doctor. Exact "
+		    "names where SSLproxy opens the zone (*. alone in a zone "
+		    "Squid opens, a URLF's).");
+		/* The rest of the do-not-decrypt list (phase 3, Arcana's). */
+		v = jget(o, "pass-destinations");
+		text_field(h, "Destinations never opened", "pass_dst", v != NULL ?
+		    csv(v, buf, sizeof(buf)) : "", "198.51.100.0/24", "Prefixes, "
+		    "by commas.");
+		v = jget(o, "pass-ports");
+		text_field(h, "Ports never opened", "pass_ports", v != NULL ?
+		    csv(v, buf, sizeof(buf)) : "", "8443", "Destination ports.");
+		v = jget(o, "pass-clients");
+		text_field(h, "Clients never opened", "pass_clients", v != NULL ?
+		    csv(v, buf, sizeof(buf)) : "", "10.1.0.9/32", "Prefixes, by "
+		    "commas.");
+		pfxlist_select_in(h, "And the clients of the console's lists",
+		    "pass_lists", "Kept by name: a list changed reaches the edges "
+		    "at the next apply.", true, jget(o, "pass-client-lists"));
+		h_raw(h, "<p class=\"dim\">Arcana's categories, never opened "
+		    "where ticked (exact names, no third party's feed):</p>");
+		for (i = 0; i < nitems(mbsf_cats); i++) {
+			const ucl_object_t	*e, *cs = jget(o, "pass-categories");
+			ucl_object_iter_t	 eit = NULL;
+			bool			 on = false;
+
+			while ((e = ucl_object_iterate(cs, &eit, true)) != NULL)
+				if (strcmp(ucl_object_tostring_forced(e),
+				    mbsf_cats[i][0]) == 0)
+					on = true;
+			h_fmt(h, "<label class=\"toggle\"><input type=\"checkbox\" "
+			    "name=\"cat_%s\" value=\"1\"%s> ", mbsf_cats[i][0], on ?
+			    " checked" : "");
+			h_txt(h, mbsf_cats[i][1]);
+			h_raw(h, "</label>");
+		}
 		h_raw(h, "</fieldset><fieldset><legend>DNS protocol filtering's "
 		    "(DPF)</legend>");
 		h_fmt(h, "<label class=\"toggle\"><input type=\"checkbox\" name=\""
@@ -9763,8 +9803,10 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 		static const char *const keys[] = { "id", "function", "block",
 		    "allow", "quarantine", "lists", "no-match", "duration", "notify",
 		    "detection-type", "removal", "invalid-server-certificate",
-		    "unencrypted", "pass-through", "redirect", "southbound",
-		    "northbound", "upstream", NULL };
+		    "unencrypted", "pass-through", "pass-destinations",
+		    "pass-ports", "pass-clients", "pass-client-lists",
+		    "pass-categories", "redirect", "southbound", "northbound",
+		    "upstream", NULL };
 		ucl_object_t	*ls, *nt;
 		const char	*fn = jstr(f, "function"), *t;
 		char		 key[16];
@@ -9820,6 +9862,30 @@ sd_service_forms(const char *form, const ucl_object_t *f)
 			put_str(o, "unencrypted", jstr(f, "plain"));
 			if (jstr(f, "pass") != NULL && jstr(f, "pass")[0] != '\0')
 				put_list(o, "pass-through", jstr(f, "pass"));
+			put_list(o, "pass-destinations", jstr(f, "pass_dst"));
+			put_list(o, "pass-ports", jstr(f, "pass_ports"));
+			put_list(o, "pass-clients", jstr(f, "pass_clients"));
+			put_list(o, "pass-client-lists", jstr(f, "pass_lists"));
+			/* Arcana's categories ticked (opt-in). */
+			{
+				ucl_object_t	*cs;
+				size_t		 ci;
+
+				cs = ucl_object_typed_new(UCL_ARRAY);
+				for (ci = 0; ci < nitems(mbsf_cats); ci++) {
+					snprintf(key, sizeof(key), "cat_%s",
+					    mbsf_cats[ci][0]);
+					if (checked(f, key))
+						ucl_array_append(cs,
+						    ucl_object_fromstring(
+						    mbsf_cats[ci][0]));
+				}
+				if (ucl_array_size(cs) == 0)
+					ucl_object_unref(cs);
+				else
+					ucl_object_insert_key(o, cs,
+					    "pass-categories", 0, false);
+			}
 		}
 		if (strcmp(fn, "dpf") == 0 && checked(f, "redirect"))
 			ucl_object_insert_key(o, ucl_object_frombool(true),

@@ -2970,6 +2970,75 @@ pdns_dns(struct ck *c, const ucl_object_t *v)
 }
 
 /*
+ * An MBSF's do-not-decrypt list beside its pass-through hosts
+ * (docs/notes/ssl-inspection.md, phase 3, Arcana's): destinations and
+ * clients by prefix, the console's prefix lists of clients by name
+ * (written out at each apply), destination ports, and Arcana's
+ * categories named (opt-in).  64 of each at most: the edge's fwd rules
+ * take them whole.
+ */
+static bool
+mbsf_pass(struct ck *c, const ucl_object_t *v)
+{
+	static const char *const pfx_keys[] = { "pass-destinations",
+	    "pass-clients", NULL };
+	static const char *const cats[] = { "os-updates", "pinned", NULL };
+	const ucl_object_t	*l, *e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*got;
+	struct pfx		 p;
+	int			 i;
+
+	for (i = 0; pfx_keys[i] != NULL; i++) {
+		if ((l = ucl_object_lookup(v, pfx_keys[i])) == NULL)
+			continue;
+		if (ucl_object_type(l) != UCL_ARRAY || ucl_array_size(l) > 64)
+			return (fail(c, "mbsf: %s is a list of prefixes, 64 at "
+			    "most", pfx_keys[i]));
+		it = NULL;
+		while ((e = ucl_object_iterate(l, &it, true)) != NULL)
+			if (!prefix(ucl_object_tostring_forced(e), &p, false))
+				return (fail(c, "mbsf: %s: %s is not a prefix",
+				    pfx_keys[i], ucl_object_tostring_forced(e)));
+	}
+	if ((l = ucl_object_lookup(v, "pass-ports")) != NULL) {
+		if (ucl_object_type(l) != UCL_ARRAY || ucl_array_size(l) > 16)
+			return (fail(c, "mbsf: pass-ports is a list of ports, 16 "
+			    "at most"));
+		it = NULL;
+		while ((e = ucl_object_iterate(l, &it, true)) != NULL)
+			if (!is_int(e, 1, 65535, NULL))
+				return (fail(c, "mbsf: pass-ports: %s is not a "
+				    "port", ucl_object_tostring_forced(e)));
+	}
+	if ((l = ucl_object_lookup(v, "pass-client-lists")) != NULL) {
+		if (ucl_object_type(l) != UCL_ARRAY)
+			return (fail(c, "mbsf: pass-client-lists names the "
+			    "console's prefix lists (Lists)"));
+		it = NULL;
+		while ((e = ucl_object_iterate(l, &it, true)) != NULL) {
+			if (ucl_object_type(e) != UCL_STRING || (got =
+			    prefix_list_get(ucl_object_tostring(e))) == NULL)
+				return (fail(c, "mbsf: pass-client-lists: the "
+				    "console has no prefix list %s (Lists)",
+				    ucl_object_tostring_forced(e)));
+			ucl_object_unref(got);
+		}
+	}
+	if ((l = ucl_object_lookup(v, "pass-categories")) != NULL) {
+		if (ucl_object_type(l) != UCL_ARRAY)
+			return (fail(c, "mbsf: pass-categories is a list"));
+		it = NULL;
+		while ((e = ucl_object_iterate(l, &it, true)) != NULL)
+			if (!one_of(ucl_object_tostring_forced(e), cats))
+				return (fail(c, "mbsf: pass-categories: %s is not "
+				    "one of os-updates, pinned",
+				    ucl_object_tostring_forced(e)));
+	}
+	return (true);
+}
+
+/*
  * A Security Function Policy (MEF 138 §9, Tables 9-16): its Policy ID
  * (id, R119), a function, Block, Allow and Quarantine lists of entries
  * as the function takes them and lists by name of the console's (feeds
@@ -2984,8 +3053,9 @@ function_policy(struct ck *c, const ucl_object_t *v)
 	    "allow", "quarantine", "lists", "no-match", "duration", "notify",
 	    "detection-type", "removal", "invalid-server-certificate",
 	    "invalid-client-certificate", "unencrypted", "trusted-cas",
-	    "pass-through", "redirect", "southbound", "northbound",
-	    "upstream", NULL };
+	    "pass-through", "pass-destinations", "pass-ports", "pass-clients",
+	    "pass-client-lists", "pass-categories", "redirect", "southbound",
+	    "northbound", "upstream", NULL };
 	static const char *const allow_block[] = { "allow", "block", NULL };
 	const ucl_object_t	*k, *e, *l;
 	ucl_object_iter_t	 it, eit;
@@ -3109,7 +3179,14 @@ function_policy(struct ck *c, const ucl_object_t *v)
 				return (fail(c, "mbsf: pass-through is hosts never "
 				    "opened, %s is not one",
 				    ucl_object_tostring_forced(e)));
+		if (!mbsf_pass(c, v))
+			return (false);
 	} else if (ucl_object_lookup(v, "pass-through") != NULL ||
+	    ucl_object_lookup(v, "pass-destinations") != NULL ||
+	    ucl_object_lookup(v, "pass-ports") != NULL ||
+	    ucl_object_lookup(v, "pass-clients") != NULL ||
+	    ucl_object_lookup(v, "pass-client-lists") != NULL ||
+	    ucl_object_lookup(v, "pass-categories") != NULL ||
 	    ucl_object_lookup(v, "invalid-server-certificate") != NULL ||
 	    ucl_object_lookup(v, "unencrypted") != NULL ||
 	    ucl_object_lookup(v, "trusted-cas") != NULL ||

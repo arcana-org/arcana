@@ -152,8 +152,18 @@ void
 pfxlist_select(struct html *h, const char *label, const char *field,
     const char *hint, bool multi)
 {
-	const ucl_object_t	*l;
-	ucl_object_iter_t	 it;
+
+	pfxlist_select_in(h, label, field, hint, multi, NULL);
+}
+
+/* As pfxlist_select(), the lists cur names (strings) picked: where the
+ * form keeps the names, not their prefixes. */
+void
+pfxlist_select_in(struct html *h, const char *label, const char *field,
+    const char *hint, bool multi, const ucl_object_t *cur)
+{
+	const ucl_object_t	*l, *c;
+	ucl_object_iter_t	 it, cit;
 
 	if (!px.loaded && !px.loading)
 		pfxlists_load();
@@ -176,6 +186,11 @@ pfxlist_select(struct html *h, const char *label, const char *field,
 	while ((l = ucl_object_iterate(px.all, &it, true)) != NULL) {
 		h_raw(h, "<option");
 		h_attr(h, "value", ucl_object_key(l));
+		cit = NULL;
+		while ((c = ucl_object_iterate(cur, &cit, true)) != NULL)
+			if (strcmp(ucl_object_tostring_forced(c),
+			    ucl_object_key(l)) == 0)
+				h_raw(h, " selected");
 		h_raw(h, ">");
 		h_txt(h, ucl_object_key(l));
 		h_fmt(h, " (%u)</option>", ucl_array_size(jget(l, "prefixes")));

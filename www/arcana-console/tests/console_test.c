@@ -14776,21 +14776,30 @@ plan_make_text(struct resp *r, const char *key, int n)
  * SSLproxy's, compiled into the edge's form (its clients the zone's
  * prefixes here, its interfaces the service's UNIs here, the MBSF as
  * the module says it, the service's table), the edge's CA first; Squid
- * has none of it; a second MBSF bound at one edge fails the plan.
+ * has none of it; what the MBSF never opens (phase 3) compiled with it,
+ * the console's prefix list of clients written out, a wrong one refused;
+ * a second MBSF bound at one edge fails the plan.
  */
 CONSOLE_TC(sdwan_inspect, "SD-WAN's MBSF bound to a zone: SSLproxy's form "
+    "with its never-opened list (a prefix list written out) "
     "for the edge, not Squid's")
 ATF_TC_BODY(sdwan_inspect, tc)
 {
 	struct authn	a;
 	struct resp	r;
 	char		sa[16], sb[16];
-	char		doc[12288], t1[12288];
+	char		doc[12288], t1[12288], first[12288];
 	const char	*c;
 	size_t		i;
 
 	start(tc, 0, NULL);
 	enrol(&a);
+	/* The console's prefix list of clients never opened (phase 3). */
+	http("PUT", CC "prefix-lists/prefix-list=guests", "{\"arcana-console:"
+	    "prefix-list\":[{\"name\":\"guests\",\"prefix\":[\"10.1.7.0/24\","
+	    "\"10.1.0.9/32\"]}]}", &r);
+	EXPECT(&r, 201);
+	resp_free(&r);
 	r3_ab(sa, sb, sizeof(sa));
 	snprintf(doc, sizeof(doc), "%s", sdwan_good);
 	static const char *const edits[][2] = {
@@ -14798,7 +14807,11 @@ ATF_TC_BODY(sdwan_inspect, tc)
 		    "{\"id\":\"g-mbsf\",\"function\":\"mbsf\",\"block\":[\"tls1.0\","
 		    "\"tls1.1\"],\"allow\":[\"tls1.2\",\"tls1.3\"],\"no-match\":"
 		    "\"block\",\"invalid-server-certificate\":\"block\","
-		    "\"unencrypted\":\"block\",\"pass-through\":[\"bank.example\"]},"
+		    "\"unencrypted\":\"block\",\"pass-through\":[\"bank.example\"],"
+		    "\"pass-destinations\":[\"203.0.113.0/24\"],\"pass-ports\":"
+		    "[8443],\"pass-clients\":[\"10.1.0.9/32\"],"
+		    "\"pass-client-lists\":[\"guests\"],\"pass-categories\":"
+		    "[\"os-updates\",\"pinned\"]},"
 		    "{\"id\":\"g-urlf\",\"function\":\"urlf\"," },
 		{ "\"g-urlf\",\"g-mdr\"]", "\"g-mbsf\"]" },
 		{ "\"id\":\"a-inet\",\"ucs\":\"inet\",\"interface\":\"vtnet0\"",
@@ -14819,6 +14832,15 @@ ATF_TC_BODY(sdwan_inspect, tc)
 		    "\"id\":\"uni-br\",\"interface\":\"lo0\"" },
 		{ "\"kind\":\"geneve\"", "\"kind\":\"gif\"" },
 	};
+	static const char *const bad[][3] = {
+		{ "\"pass-client-lists\":[\"guests\"]",
+		    "\"pass-client-lists\":[\"nosuch\"]",
+		    "the console has no prefix list nosuch" },
+		{ "[\"os-updates\",\"pinned\"]", "[\"banking\"]",
+		    "banking is not one of os-updates, pinned" },
+		{ "\"203.0.113.0/24\"", "\"203.0.113.7/24\"",
+		    "203.0.113.7/24 is not a prefix" },
+	};
 	for (i = 0; i < nitems(edits); i++) {
 		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
 		    sizeof(t1)), "%s is not in the document", edits[i][0]);
@@ -14828,6 +14850,7 @@ ATF_TC_BODY(sdwan_inspect, tc)
 		snprintf(doc, sizeof(doc), "%s", t1);
 	while (swap_in(doc, "@B", sb, t1, sizeof(t1)))
 		snprintf(doc, sizeof(doc), "%s", t1);
+	snprintf(first, sizeof(first), "%s", doc);
 	r3_keep(doc);
 	r3_sdwan("plan", &r);
 	EXPECT(&r, 200);
@@ -14852,9 +14875,24 @@ ATF_TC_BODY(sdwan_inspect, tc)
 	ATF_CHECK_MSG(strstr(c, "\"interfaces\":[\"lo0") != NULL && strstr(c,
 	    "\"mbsf\":{\"no-match\":\"block\",\"block\":[\"tls1.0\",\"tls1.1\"],"
 	    "\"allow\":[\"tls1.2\",\"tls1.3\"],\"pass-through\":["
-	    "\"bank.example\"],\"invalid-server-certificate\":\"block\","
-	    "\"unencrypted\":\"block\",\"id\":\"g-mbsf\"}") != NULL, "%s", c);
+	    "\"bank.example\"],\"pass-destinations\":[\"203.0.113.0/24\"],"
+	    "\"pass-ports\":[8443],\"pass-categories\":[\"os-updates\","
+	    "\"pinned\"],"
+	    "\"invalid-server-certificate\":\"block\",\"unencrypted\":"
+	    "\"block\",\"pass-clients\":[\"10.1.0.9/32\",\"10.1.7.0/24\"],"
+	    "\"id\":\"g-mbsf\"}") != NULL, "%s", c);
+	/* The prefix list's names written out, not sent. */
+	ATF_CHECK_MSG(strstr(c, "pass-client-lists") == NULL, "%s", c);
 	resp_free(&r);
+	/* A prefix list the console has not, a category not Arcana's, none
+	 * beside another, a prefix with host bits: refused. */
+	for (i = 0; i < nitems(bad); i++) {
+		ATF_REQUIRE(swap_in(doc, bad[i][0], bad[i][1], t1, sizeof(t1)));
+		r3_check(t1, &r);
+		ATF_CHECK_MSG(r.status == 400 && strstr(r.body, bad[i][2]) !=
+		    NULL, "%s: HTTP %d, %s", bad[i][2], r.status, r.body);
+		resp_free(&r);
+	}
 	/* A second MBSF bound to another zone at the same edges: one
 	 * SSLproxy an edge, refused. */
 	ATF_REQUIRE(swap_in(doc, "{\"id\":\"g-mbsf\",", "{\"id\":\"g-mbsf2\","
@@ -14882,6 +14920,18 @@ ATF_TC_BODY(sdwan_inspect, tc)
 	r3_sdwan("plan", &r);
 	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "binds MBSFs") !=
 	    NULL, "%s", r.body);
+	resp_free(&r);
+	/* A *. pass-through host where SSLproxy opens the zone: refused,
+	 * SSLproxy would match it as a substring (Squid's zones take it). */
+	ATF_REQUIRE(swap_in(first, "\"pass-through\":[\"bank.example\"]",
+	    "\"pass-through\":[\"*.bank.example\"]", t1, sizeof(t1)));
+	ATF_REQUIRE(swap_in(t1, "{\"version\":0,", "{\"version\":2,", doc,
+	    sizeof(doc)));
+	r3_keep(doc);
+	r3_sdwan("plan", &r);
+	ATF_CHECK_MSG(r.status >= 400 && strstr(r.body, "pass-through "
+	    "*.bank.example: zone office's TLS is SSLproxy's") != NULL, "%s",
+	    r.body);
 	resp_free(&r);
 }
 
