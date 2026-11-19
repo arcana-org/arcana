@@ -3193,12 +3193,12 @@ sd_kept(struct work *w, const char *base, const char *jail)
 	return (sdwan_kept_read(sd_file(w, base, jail)));
 }
 
-/* The jails with an edge kept: sdwan-{rules,steer,bird}@jail.json. */
+/* The jails with an edge kept: sdwan-{rules,steer,bird,dhcp,dns}@jail.json. */
 static size_t
 sd_jails(struct work *w, const char **v, size_t max)
 {
 	static const char *const bases[] = { "sdwan-rules@", "sdwan-steer@",
-	    "sdwan-bird@" };
+	    "sdwan-bird@", "sdwan-dhcp@", "sdwan-dns@" };
 	struct dirent	*de;
 	DIR		*d;
 	char		 dir[MAXPATHLEN], *slash, *name;
@@ -3232,7 +3232,8 @@ sd_jails(struct work *w, const char **v, size_t max)
 	return (n);
 }
 
-/* An edge's rules, steer and BIRD instances, as their files keep them. */
+/* An edge's rules, steer, and BIRD, dnsmasq and unbound instances, as
+ * their files keep them. */
 static int
 sd_edge_conf(struct work *w, const char *jail, cbl_yarena *a,
     struct arcana_sdwan_sdwan_jail *e)
@@ -3263,6 +3264,18 @@ sd_edge_conf(struct work *w, const char *jail, cbl_yarena *a,
 		if ((error = ysd_instances_from_json(json, YSD_BIRD, a,
 		    &e->bird_instance.n, &v)) == 0)
 			e->bird_instance.v = v;
+		free(json);
+	}
+	if (error == 0 && (json = sd_kept(w, "sdwan-dhcp", jail)) != NULL) {
+		if ((error = ysd_instances_from_json(json, YSD_DHCP, a,
+		    &e->dhcp_instance.n, &v)) == 0)
+			e->dhcp_instance.v = v;
+		free(json);
+	}
+	if (error == 0 && (json = sd_kept(w, "sdwan-dns", jail)) != NULL) {
+		if ((error = ysd_instances_from_json(json, YSD_DNS, a,
+		    &e->dns_instance.n, &v)) == 0)
+			e->dns_instance.v = v;
 		free(json);
 	}
 	return (error == EINVAL ? 0 : error);
@@ -3314,8 +3327,6 @@ sd_instances(struct work *w, int kind, const char *const *files,
 static int
 sd_conf(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 {
-	static const char *const dhcp[] = { "sdwan-dhcp.json", NULL };
-	static const char *const dns[] = { "sdwan-dns.json", NULL };
 	static const char *const proxy[] = { "sdwan-proxy.json",
 	    "security-proxy.json" };
 	static const char *const ids[] = { "sdwan-ids.json",
@@ -3333,16 +3344,10 @@ sd_conf(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	o->steer = host.steer;
 	o->bird_instance.n = host.bird_instance.n;
 	o->bird_instance.v = host.bird_instance.v;
-	if ((error = sd_instances(w, YSD_DHCP, dhcp, a,
-	    sizeof(struct arcana_sdwan_sdwan_dhcp_instance), &o->dhcp_instance.n,
-	    &v)) != 0)
-		return (error);
-	o->dhcp_instance.v = v;
-	if ((error = sd_instances(w, YSD_DNS, dns, a,
-	    sizeof(struct arcana_sdwan_sdwan_dns_instance), &o->dns_instance.n,
-	    &v)) != 0)
-		return (error);
-	o->dns_instance.v = v;
+	o->dhcp_instance.n = host.dhcp_instance.n;
+	o->dhcp_instance.v = host.dhcp_instance.v;
+	o->dns_instance.n = host.dns_instance.n;
+	o->dns_instance.v = host.dns_instance.v;
 	if ((error = sd_instances(w, YSD_PROXY, proxy, a,
 	    sizeof(struct arcana_sdwan_sdwan_proxy_instance),
 	    &o->proxy_instance.n, &v)) != 0)
@@ -3394,8 +3399,8 @@ sd_rendered(struct work *w, cbl_yarena *a, const char *kind,
 
 /*
  * The host's instances' files as the agent rendered them from their
- * forms, the conf leaves (config false); a jail's BIRD files are the
- * jail's own.
+ * forms, the conf leaves (config false); a jail's BIRD, dnsmasq and
+ * unbound files are the jail's own.
  */
 #define	SD_RENDERED(w, a, o, list, type, kind, ext) do {		\
 	for (size_t i_ = 0; i_ < (o)->list.n; i_++) {			\
@@ -3412,9 +3417,9 @@ sd_conf_rendered(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 
 	SD_RENDERED(w, a, o, bird_instance, arcana_sdwan_bird_instance, "bird",
 	    "conf");
-	SD_RENDERED(w, a, o, dhcp_instance, arcana_sdwan_sdwan_dhcp_instance,
+	SD_RENDERED(w, a, o, dhcp_instance, arcana_sdwan_dhcp_instance,
 	    "dhcp", "conf");
-	SD_RENDERED(w, a, o, dns_instance, arcana_sdwan_sdwan_dns_instance,
+	SD_RENDERED(w, a, o, dns_instance, arcana_sdwan_dns_instance,
 	    "dns", "conf");
 	SD_RENDERED(w, a, o, proxy_instance, arcana_sdwan_sdwan_proxy_instance,
 	    "proxy", "conf");
@@ -3470,6 +3475,10 @@ sd_edge(const struct arcana_sdwan_sdwan *s, const char *jail,
 		out->steer = s->steer;
 		out->bird_instance.n = s->bird_instance.n;
 		out->bird_instance.v = s->bird_instance.v;
+		out->dhcp_instance.n = s->dhcp_instance.n;
+		out->dhcp_instance.v = s->dhcp_instance.v;
+		out->dns_instance.n = s->dns_instance.n;
+		out->dns_instance.v = s->dns_instance.v;
 		return;
 	}
 	for (size_t i = 0; i < s->jail.n; i++)
@@ -3488,7 +3497,7 @@ struct sd_step {
 };
 
 struct sd_plan {
-	struct sd_step	 v[3 * (SD_JAILS + 1) + 6];
+	struct sd_step	 v[5 * (SD_JAILS + 1) + 4];
 	size_t		 n;
 	const char	*why;
 };
@@ -3520,7 +3529,8 @@ sd_plan(struct sd_plan *p, int kind, const char *jail, char *was, char *now)
 	return (true);
 }
 
-/* An edge's rules, steering and BIRD as they were and are to be. */
+/* An edge's rules, steering, BIRD, DHCP and DNS as they were and are to
+ * be. */
 static bool
 sd_plan_edge(struct sd_plan *p, const char *jail,
     const struct arcana_sdwan_sdwan_jail *b,
@@ -3546,6 +3556,16 @@ sd_plan_edge(struct sd_plan *p, const char *jail,
 	    SD_BIRD, jail, ysd_instances_json(YSD_BIRD, jail, -1,
 	    b->bird_instance.n, b->bird_instance.v, &e), ysd_instances_json(
 	    YSD_BIRD, jail, -1, f->bird_instance.n, f->bird_instance.v, &e)))
+		return (false);
+	if ((b->dhcp_instance.n > 0 || f->dhcp_instance.n > 0) && !sd_plan(p,
+	    SD_DHCP, jail, ysd_instances_json(YSD_DHCP, jail, -1,
+	    b->dhcp_instance.n, b->dhcp_instance.v, &e), ysd_instances_json(
+	    YSD_DHCP, jail, -1, f->dhcp_instance.n, f->dhcp_instance.v, &e)))
+		return (false);
+	if ((b->dns_instance.n > 0 || f->dns_instance.n > 0) && !sd_plan(p,
+	    SD_DNS, jail, ysd_instances_json(YSD_DNS, jail, -1,
+	    b->dns_instance.n, b->dns_instance.v, &e), ysd_instances_json(
+	    YSD_DNS, jail, -1, f->dns_instance.n, f->dns_instance.v, &e)))
 		return (false);
 	return (true);
 }
@@ -3630,12 +3650,6 @@ arcana_sdwan_sdwan_edit(cbl_req *req, const struct arcana_sdwan *before,
 		sd_edge(NULL, jail, &now);
 		rc = sd_plan_edge(p, jail, &was, &now) ? 0 : -1;
 	}
-	if (rc == 0 && (!sd_plan_kind(p, SD_DHCP, YSD_DHCP, -1,
-	    b->dhcp_instance.n, b->dhcp_instance.v, f->dhcp_instance.n,
-	    f->dhcp_instance.v) || !sd_plan_kind(p, SD_DNS, YSD_DNS, -1,
-	    b->dns_instance.n, b->dns_instance.v, f->dns_instance.n,
-	    f->dns_instance.v)))
-		rc = -1;
 	/* The proxies and the IDS, SD-WAN's and the Security section's
 	 * apart, as their setters keep them. */
 	for (int g = 0; rc == 0 && g < 2; g++)
@@ -3731,9 +3745,9 @@ arcana_sdwan_sdwan_apply_action(cbl_req *req, const struct cbl_bytes *target,
 	jail = in->jail != NULL && in->jail[0] != '\0' ? in->jail : NULL;
 	if (jail != NULL && !valid_jail(jail))
 		return (said(req, "invalid jail name"));
-	if (jail != NULL && kind > SD_BIRD)
+	if (jail != NULL && kind > SD_DNS)
 		return (said(req, "an edge that is a vnet jail has its rules, "
-		    "steering and BIRD alone"));
+		    "steering, BIRD, DHCP and DNS alone"));
 	group = kind < SD_PROXY ? -1 : in->has_security && in->security ?
 	    1 : 0;
 	work_init(&w);
@@ -3758,12 +3772,12 @@ arcana_sdwan_sdwan_apply_action(cbl_req *req, const struct cbl_bytes *target,
 		    e.bird_instance.n, e.bird_instance.v, &why);
 		break;
 	case SD_DHCP:
-		json = ysd_instances_json(YSD_DHCP, NULL, -1,
-		    conf.dhcp_instance.n, conf.dhcp_instance.v, &why);
+		json = ysd_instances_json(YSD_DHCP, jail, -1,
+		    e.dhcp_instance.n, e.dhcp_instance.v, &why);
 		break;
 	case SD_DNS:
-		json = ysd_instances_json(YSD_DNS, NULL, -1,
-		    conf.dns_instance.n, conf.dns_instance.v, &why);
+		json = ysd_instances_json(YSD_DNS, jail, -1,
+		    e.dns_instance.n, e.dns_instance.v, &why);
 		break;
 	case SD_PROXY:
 		json = ysd_instances_json(YSD_PROXY, NULL, group,

@@ -21,10 +21,13 @@
  *		/bin/sh by chroot(8), as the host's root, when no running
  *		jail has that path, which the jail's root can see to; -j
  *		has jexec(8) alone, and fails when the jail is gone.
- *   birdc, bird, wg
+ *   birdc, bird, wg, dnsmasq, local-unbound, openssl
  *		the jail's own programs, through jexec(8): the daemon in
  *		the jail is the jail's version, and so must be what
  *		parses its configuration and speaks to it.
+ *   pgrep, kill
+ *		the jail's own too, for a daemon's pid file there: they
+ *		see the jail's processes alone.
  *
  * What the daemon reads in its own process, the interfaces with their
  * counters, is read for a jail by this same program run again as a
@@ -175,6 +178,71 @@ scope_jexec(struct work *w, char *const argv[])
 		v[2 + i] = argv[i];
 	v[2 + n] = NULL;
 	return (v);
+}
+
+/*
+ * The pid in a pid file of the host's, or of w's jail, while prog's
+ * process is there; 0 for none.  A jail's is asked of the jail's own
+ * pgrep(1), by jexec(8): it reads the file as the jail sees it, through
+ * no link out of it, and finds the jail's processes alone, so that a
+ * number the jail's root wrote there names none of the host's.
+ */
+pid_t
+scope_pidfile(struct work *w, const char *path, const char *prog)
+{
+	struct execres	 res;
+	char		*argv[6];
+	long		 pid;
+
+	if (w->jail == NULL)
+		return (pidfile_of(path, prog));
+	argv[0] = (char *)(uintptr_t)"/bin/pgrep";
+	argv[1] = (char *)(uintptr_t)"-F";
+	argv[2] = (char *)(uintptr_t)path;
+	argv[3] = (char *)(uintptr_t)"-f";
+	argv[4] = (char *)(uintptr_t)prog;
+	argv[5] = NULL;
+	exec_set_limit(JAIL_READ_SEC);
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0 || res.out == NULL)
+		return (0);
+	pid = strtol(res.out, NULL, 10);
+	return (pid > 1 ? (pid_t)pid : 0);
+}
+
+/*
+ * prog's process of a pid file stopped, as pid_stop() stops it: the
+ * host's from here, a jail's by the jail's own kill(1) (jexec), which
+ * signals none but the jail's processes.
+ */
+void
+scope_pid_stop(struct work *w, const char *path, const char *prog,
+    int wait_ms)
+{
+	struct execres	 res;
+	char		*argv[4];
+	pid_t		 pid;
+	int		 i;
+
+	if ((pid = scope_pidfile(w, path, prog)) == 0)
+		return;
+	if (w->jail == NULL) {
+		pid_stop(pid, prog, wait_ms);
+		return;
+	}
+	argv[0] = (char *)(uintptr_t)"/bin/kill";
+	argv[1] = (char *)(uintptr_t)"-TERM";
+	argv[2] = wfmt(w, "%d", (int)pid);
+	argv[3] = NULL;
+	exec_set_limit(JAIL_READ_SEC);
+	(void)run_exec(w, scope_jexec(w, argv), &res);
+	for (i = 0; i < wait_ms / 100 && scope_pidfile(w, path, prog) == pid;
+	    i++)
+		usleep(100000);
+	if (scope_pidfile(w, path, prog) != pid)
+		return;
+	argv[1] = (char *)(uintptr_t)"-KILL";
+	exec_set_limit(JAIL_READ_SEC);
+	(void)run_exec(w, scope_jexec(w, argv), &res);
 }
 
 /*

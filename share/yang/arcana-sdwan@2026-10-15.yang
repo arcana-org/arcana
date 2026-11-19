@@ -1883,7 +1883,8 @@ module arcana-sdwan {
   grouping edge-config {
     description
       "What the console writes to an edge, the host's or a vnet
-       jail's: its rules, its steering and its BIRD instances.";
+       jail's: its rules, its steering, and its BIRD, dnsmasq and
+       unbound instances.";
     container rules {
       cg:struct "rules-config";
       description
@@ -2243,6 +2244,34 @@ module arcana-sdwan {
         uses bird-form;
       }
     }
+    list dhcp-instance {
+      cg:struct "dhcp-instance";
+      key "name";
+      description
+        "The dnsmasq instances: each checked by dnsmasq --test before
+         it is the instance's, one running started again on it; a
+         jail's run in it (jexec), its files beneath its root.";
+      uses instance;
+      container spec {
+        description
+          "The form dnsmasq's file is rendered from.";
+        uses dhcp-form;
+      }
+    }
+    list dns-instance {
+      cg:struct "dns-instance";
+      key "name";
+      description
+        "The unbound instances: each checked by
+         local-unbound-checkconf, one running started again on it; a
+         jail's run in it (jexec), its files beneath its root.";
+      uses instance;
+      container spec {
+        description
+          "The form unbound's file is rendered from.";
+        uses dns-form;
+      }
+    }
   }
 
   grouping running {
@@ -2290,30 +2319,6 @@ module arcana-sdwan {
     description
       "The edge.";
     uses edge-config;
-    list dhcp-instance {
-      key "name";
-      description
-        "The dnsmasq instances: each checked by dnsmasq --test before
-         it is the instance's, one running started again on it.";
-      uses instance;
-      container spec {
-        description
-          "The form dnsmasq's file is rendered from.";
-        uses dhcp-form;
-      }
-    }
-    list dns-instance {
-      key "name";
-      description
-        "The unbound instances: each checked by
-         local-unbound-checkconf, one running started again on it.";
-      uses instance;
-      container spec {
-        description
-          "The form unbound's file is rendered from.";
-        uses dns-form;
-      }
-    }
     list proxy-instance {
       key "name";
       description
@@ -2460,7 +2465,7 @@ module arcana-sdwan {
       key "name";
       description
         "Each edge that is a vnet jail on this host: its rules,
-         steering and BIRD, run in it.";
+         steering, BIRD, dnsmasq and unbound, run in it.";
       leaf name {
         type string;
         description
@@ -2801,6 +2806,12 @@ module arcana-sdwan {
         description
           "Each dnsmasq instance, and the leases it gave.";
         uses running;
+        leaf jail {
+          type string;
+          description
+            "The edge that is a vnet jail it runs in; none, the
+             host's.";
+        }
         list lease {
           description
             "A lease.";
@@ -2831,6 +2842,12 @@ module arcana-sdwan {
         description
           "Each unbound instance.";
         uses running;
+        leaf jail {
+          type string;
+          description
+            "The edge that is a vnet jail it runs in; none, the
+             host's.";
+        }
         leaf tls-cert {
           type string;
           description

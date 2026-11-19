@@ -826,7 +826,7 @@ running(cbl_conn *conn, const struct cbl_ynode *n, char *err, size_t errlen,
 }
 
 /* Whether an edge that is a jail has anything left: rules (more than
- * their set), steering or BIRD. */
+ * their set), steering, or BIRD, dnsmasq or unbound instances. */
 static bool
 edge_empty(const ucl_object_t *e)
 {
@@ -838,7 +838,9 @@ edge_empty(const ucl_object_t *e)
 	    ucl_object_lookup(r, "object") == NULL && ucl_object_lookup(r,
 	    "rule") == NULL)) && (s == NULL || (ucl_object_lookup(s, "entry") ==
 	    NULL && ucl_object_lookup(s, "route") == NULL)) &&
-	    ucl_object_lookup(e, "bird-instance") == NULL);
+	    ucl_object_lookup(e, "bird-instance") == NULL &&
+	    ucl_object_lookup(e, "dhcp-instance") == NULL &&
+	    ucl_object_lookup(e, "dns-instance") == NULL);
 }
 
 static const char *const kinds[] = { "rules", "steer", "bird", "dhcp", "dns",
@@ -881,7 +883,7 @@ ysdwan_edit(cbl_conn *conn, const char *kind, const char *json, bool *same,
 		snprintf(err, errlen, "invalid jail name");
 		return (EINVAL);
 	}
-	if (jail != NULL && k > 2) {
+	if (jail != NULL && k > 4) {
 		ucl_object_unref(in);
 		snprintf(err, errlen, "an edge that is a vnet jail has no %s: "
 		    "the host's own edge has", kind);
@@ -1905,6 +1907,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put_str(o, "name", d->name);
 		put(o, "fib", ucl_object_fromint(d->fib));
+		put_str(o, "jail", d->jail);
 		put(o, "running", ucl_object_frombool(d->running));
 		ls = ucl_object_typed_new(UCL_ARRAY);
 		for (size_t k = 0; k < d->lease.n; k++) {
@@ -1925,6 +1928,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put_str(o, "name", st->dns.v[i].name);
 		put(o, "fib", ucl_object_fromint(st->dns.v[i].fib));
+		put_str(o, "jail", st->dns.v[i].jail);
 		put(o, "running", ucl_object_frombool(st->dns.v[i].running));
 		put_str(o, "tls_cert", st->dns.v[i].tls_cert);
 		ucl_array_append(arr, o);

@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sdwan",
     "module-revision": "2026-10-15",
-    "sid-file-version": 11,
+    "sid-file-version": 12,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, 95 600, 300, and 96 600, 100.",
     "dependency-revision": [
       {
@@ -3766,6 +3766,291 @@
       },
       {
         "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance",
+        "sid": "95843"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/conf",
+        "sid": "95844"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/fib",
+        "sid": "95845"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/host",
+        "sid": "95846"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/name",
+        "sid": "95847"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec",
+        "sid": "95848"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/fib",
+        "sid": "95849"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/service",
+        "sid": "95850"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis",
+        "sid": "95851"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/id",
+        "sid": "95852"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/interface",
+        "sid": "95853"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4",
+        "sid": "95854"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/dns",
+        "sid": "95855"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/lease",
+        "sid": "95856"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/mode",
+        "sid": "95857"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/prefix",
+        "sid": "95858"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/provider",
+        "sid": "95859"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv4/reserved",
+        "sid": "95860"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6",
+        "sid": "95861"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/dns",
+        "sid": "95862"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/lease",
+        "sid": "95863"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/mode",
+        "sid": "95864"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/prefix",
+        "sid": "95865"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/provider",
+        "sid": "95866"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dhcp-instance/spec/unis/ipv6/reserved",
+        "sid": "95867"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance",
+        "sid": "95868"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/conf",
+        "sid": "95869"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/fib",
+        "sid": "95870"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/host",
+        "sid": "95871"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/name",
+        "sid": "95872"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec",
+        "sid": "95873"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/dot",
+        "sid": "95874"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/fib",
+        "sid": "95875"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/service",
+        "sid": "95876"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/unis",
+        "sid": "95877"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/unis/address",
+        "sid": "95878"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/unis/id",
+        "sid": "95879"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/unis/prefix",
+        "sid": "95880"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/upstream",
+        "sid": "95881"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/upstream-tls",
+        "sid": "95882"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones",
+        "sid": "95883"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf",
+        "sid": "95884"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/allow",
+        "sid": "95885"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/block",
+        "sid": "95886"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/id",
+        "sid": "95887"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/listed",
+        "sid": "95888"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/listed/allow",
+        "sid": "95889"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/listed/block",
+        "sid": "95890"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/listed/quarantine",
+        "sid": "95891"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/no-match",
+        "sid": "95892"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/notify",
+        "sid": "95893"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/dnf/quarantine",
+        "sid": "95894"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/name",
+        "sid": "95895"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns",
+        "sid": "95896"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/allow",
+        "sid": "95897"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/allow/type",
+        "sid": "95898"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/allow/value",
+        "sid": "95899"
+      },
+      {
+        "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/autofp-scheduler",
         "sid": "96600"
       },
@@ -3958,6 +4243,86 @@
         "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/ids-instance/spec/yaml",
         "sid": "96638"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/block",
+        "sid": "96639"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/block/type",
+        "sid": "96640"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/block/value",
+        "sid": "96641"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/id",
+        "sid": "96642"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/listed",
+        "sid": "96643"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/listed/allow",
+        "sid": "96644"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/listed/block",
+        "sid": "96645"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/listed/quarantine",
+        "sid": "96646"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/no-match",
+        "sid": "96647"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/notify",
+        "sid": "96648"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/quarantine",
+        "sid": "96649"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/quarantine/type",
+        "sid": "96650"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/pdns/quarantine/value",
+        "sid": "96651"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/jail/dns-instance/spec/zones/prefixes",
+        "sid": "96652"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/dhcp/jail",
+        "sid": "96653"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/dns/jail",
+        "sid": "96654"
       }
     ]
   }

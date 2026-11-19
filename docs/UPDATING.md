@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN DHCP and DNS in a jail edge; agent 0.326.0, console 0.470.0
+
+- An SD-WAN edge that is a vnet jail has its own DHCP (dnsmasq) and DNS
+  (local-unbound) instances, run in the jail by jexec(8): the console no
+  longer refuses sdwan-dhcp and sdwan-dns at a jail edge, and names
+  those instances sw<fib>-<jail> like BIRD's.  arcana-sdwan's jail list
+  gains dhcp-instance and dns-instance, and state/dhcp and state/dns a
+  jail leaf (SIDs in the 95 600 and 96 600 ranges).
+- The agent keeps a jail's lists in sdwan-dhcp@<jail>.json and
+  sdwan-dns@<jail>.json, and the instances' files in the jail's
+  /var/run, /var/db (leases, the DoT key and certificate) and /var/log
+  (unbound's log, read for blocks).  A jail edge's dnsmasq must be
+  installed in the jail (pkg -j <jail> install dnsmasq).
+- A host edge's sdwan read no longer lists its jails' BIRD instances;
+  each edge's read lists its own BIRD, dnsmasq and unbound instances.
+- Update the agent and the console together.
+
 ### Jails: cores, relays, manual SAs, signals; agent 0.325.0, console 0.469.0
 
 - crashes lists each running jail's cores, found beneath its root where

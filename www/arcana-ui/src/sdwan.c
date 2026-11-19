@@ -959,16 +959,18 @@ of_jail(const char *object, const char *jail)
 
 /*
  * The server's sdwan read made the edge's own: a jail's (server/jail)
- * targets, faults, BIRD instances, rules and steering, the host's
- * without its jails'.
+ * targets, faults, BIRD, dnsmasq and unbound instances, rules and
+ * steering, the host's without its jails'.
  */
 static void
 edge_view(ucl_object_t *data, const char *edge)
 {
+	static const char *const own[] = { "bird", "dhcp", "dns" };
 	const ucl_object_t	*t, *e;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*keep;
 	const char		*jail;
+	size_t			 i;
 
 	jail = strchr(edge, '/') != NULL ? strchr(edge, '/') + 1 : "";
 	keep = ucl_object_typed_new(UCL_ARRAY);
@@ -986,16 +988,18 @@ edge_view(ucl_object_t *data, const char *edge)
 		if (of_jail(jstr(t, "object"), jail))
 			ucl_array_append(keep, ucl_object_copy(t));
 	ucl_object_replace_key(data, keep, "faults", 0, false);
-	/* Its BIRD instances, their BMP stations with them: the host's
-	 * read has every jail's too. */
-	keep = ucl_object_typed_new(UCL_ARRAY);
-	it = NULL;
-	while ((t = ucl_object_iterate(jget(data, "bird"), &it, true)) !=
-	    NULL)
-		if (strcmp(jstr(t, "jail") != NULL ? jstr(t, "jail") : "",
-		    jail) == 0)
-			ucl_array_append(keep, ucl_object_copy(t));
-	ucl_object_replace_key(data, keep, "bird", 0, false);
+	/* Its BIRD instances, their BMP stations with them, its dnsmasq
+	 * and unbound instances: the host's read has every jail's too. */
+	for (i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+		keep = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((t = ucl_object_iterate(jget(data, own[i]), &it, true)) !=
+		    NULL)
+			if (strcmp(jstr(t, "jail") != NULL ? jstr(t, "jail") : "",
+			    jail) == 0)
+				ucl_array_append(keep, ucl_object_copy(t));
+		ucl_object_replace_key(data, keep, own[i], 0, false);
+	}
 	if (jail[0] != '\0') {
 		e = NULL;
 		it = NULL;
@@ -4412,6 +4416,19 @@ form_fields(struct html *h, const ucl_object_t *o, int depth)
 	h_raw(h, "</dl>");
 }
 
+/* The vnet jail an instance runs in, when it is a jail's edge's: the
+ * host's agent runs it there (jexec). */
+static void
+inst_jail(struct html *h, const ucl_object_t *e)
+{
+
+	if (jstr(e, "jail") == NULL || jstr(e, "jail")[0] == '\0')
+		return;
+	h_raw(h, " <span class=\"dim sd-jail\">in jail ");
+	h_txt(h, jstr(e, "jail"));
+	h_raw(h, "</span>");
+}
+
 /*
  * An instance's form (spec, as arcana-sdwan says it) and the file the
  * agent rendered of it (conf), a row of cols below its own, folded.
@@ -4799,13 +4816,16 @@ view_paths(struct html *h)
 			n++;
 			h_raw(h, "<tr><td><b>");
 			h_txt(h, host_name(ucl_object_key(f)));
-			h_fmt(h, "</b></td><td class=\"mono\">%s <span class=\"dim\">"
-			    "fib %lld</span></td><td><span class=\"chip st-%s\">%s"
-			    "</span></td><td class=\"dim\" colspan=\"4\">%u lease%s"
-			    "</td></tr>", jstr(di, "name"), (long long)jint(di,
-			    "fib", 0), jbool(di, "running") ? "up" : "down", jbool(
-			    di, "running") ? "running" : "not running", nl, nl == 1
-			    ? "" : "s");
+			h_raw(h, "</b></td><td class=\"mono\">");
+			h_txt(h, jstr(di, "name") != NULL ? jstr(di, "name") : "");
+			h_fmt(h, " <span class=\"dim\">fib %lld</span>", (long
+			    long)jint(di, "fib", 0));
+			inst_jail(h, di);
+			h_fmt(h, "</td><td><span class=\"chip st-%s\">%s</span></td>"
+			    "<td class=\"dim\" colspan=\"4\">%u lease%s</td></tr>",
+			    jbool(di, "running") ? "up" : "down", jbool(di,
+			    "running") ? "running" : "not running", nl, nl == 1 ?
+			    "" : "s");
 			lit = NULL;
 			while ((ls = ucl_object_iterate(jget(di, "leases"), &lit,
 			    true)) != NULL) {
@@ -4868,6 +4888,7 @@ view_paths(struct html *h)
 					h_fmt(h, " <small class=\"dim\">fib %lld%s"
 					    "</small>", jint(e, "fib", 0), jbool(e,
 					    "running") ? "" : ", not running");
+					inst_jail(h, e);
 				}
 				h_raw(h, "</td><td class=\"mono\">");
 				if (pr != NULL) {
@@ -5948,11 +5969,14 @@ view_security(struct html *h)
 			n++;
 			h_raw(h, "<tr><td><b>");
 			h_txt(h, host_name(ucl_object_key(v)));
-			h_fmt(h, "</b></td><td class=\"mono\">%s <span class=\"dim\">"
-			    "fib %lld</span></td><td><span class=\"chip st-%s\">%s"
-			    "</span></td><td>", jstr(di, "name"), (long long)jint(di,
-			    "fib", 0), jbool(di, "running") ? "up" : "down", jbool(
-			    di, "running") ? "running" : "not running");
+			h_raw(h, "</b></td><td class=\"mono\">");
+			h_txt(h, jstr(di, "name") != NULL ? jstr(di, "name") : "");
+			h_fmt(h, " <span class=\"dim\">fib %lld</span>", (long
+			    long)jint(di, "fib", 0));
+			inst_jail(h, di);
+			h_fmt(h, "</td><td><span class=\"chip st-%s\">%s</span></td>"
+			    "<td>", jbool(di, "running") ? "up" : "down", jbool(di,
+			    "running") ? "running" : "not running");
 			if (jstr(di, "tls_cert") != NULL)
 				pem_link(h, host_name(ucl_object_key(v)), jstr(di,
 				    "name"), "dot", jstr(di, "tls_cert"), "The "

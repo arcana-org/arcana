@@ -391,115 +391,186 @@ module: arcana-sdwan
      |  |        +--rw id     string
      |  |        +--rw via?   inet:ip-address-no-zone
      |  +--rw bird-instance* [name]
+     |  |  +--rw name    string
+     |  |  +--rw fib?    uint16
+     |  |  +--ro conf?   string
+     |  |  +--rw host?   string
+     |  |  +--rw spec
+     |  |     +--rw flavor?             enumeration
+     |  |     +--rw service?            string
+     |  |     +--rw end-point?          string
+     |  |     +--rw fib?                uint32
+     |  |     +--rw table?              uint32
+     |  |     +--rw as?                 uint32
+     |  |     +--rw router-id?          inet:ipv4-address-no-zone
+     |  |     +--rw interface?          string
+     |  |     +--rw bgp* [index]
+     |  |     |  +--rw index          uint8
+     |  |     |  +--rw family?        family
+     |  |     |  +--rw as?            uint32
+     |  |     |  +--rw neighbors*     inet:ip-address-no-zone
+     |  |     |  +--rw source?        inet:ip-address-no-zone
+     |  |     |  +--rw multihop?      boolean
+     |  |     |  +--rw bfd?           boolean
+     |  |     |  +--rw distance?      uint8
+     |  |     |  +--rw hold-time?     uint16
+     |  |     |  +--rw password?      string
+     |  |     |  +--rw communities*   community
+     |  |     +--rw ospf* [index]
+     |  |     |  +--rw index       uint8
+     |  |     |  +--rw family?     family
+     |  |     |  +--rw area?       uint32
+     |  |     |  +--rw cost?       uint16
+     |  |     |  +--rw hello?      uint16
+     |  |     |  +--rw dead?       uint16
+     |  |     |  +--rw bfd?        boolean
+     |  |     |  +--rw distance?   uint8
+     |  |     |  +--rw password?   string
+     |  |     +--rw direct*             string
+     |  |     +--rw loopback?           boolean
+     |  |     +--rw route-monitoring!
+     |  |     |  +--rw kept?   uint16
+     |  |     +--rw bfd!
+     |  |     |  +--rw interfaces*   string
+     |  |     |  +--rw interval?     uint16
+     |  |     |  +--rw multiplier?   uint8
+     |  |     |  +--rw multihop?     boolean
+     |  |     |  +--rw sessions?     boolean
+     |  |     +--rw reject*             string
+     |  |     +--rw md5?                string
+     |  |     +--rw sets!
+     |  |     |  +--rw only?   boolean
+     |  |     |  +--rw sets* [name]
+     |  |     |     +--rw name           string
+     |  |     |     +--rw via?           string
+     |  |     |     +--rw gateway?       inet:ip-address-no-zone
+     |  |     |     +--rw as-path*       uint32
+     |  |     |     +--rw communities*   community
+     |  |     +--rw loop!
+     |  |     |  +--rw local4?    inet:ipv4-address-no-zone
+     |  |     |  +--rw local6?    inet:ipv6-address-no-zone
+     |  |     |  +--rw transit?   boolean
+     |  |     |  +--rw edges* [name]
+     |  |     |  |  +--rw name       string
+     |  |     |  |  +--rw ipv4?      inet:ipv4-address-no-zone
+     |  |     |  |  +--rw ipv6?      inet:ipv6-address-no-zone
+     |  |     |  |  +--rw paths4*    inet:ip-address-no-zone
+     |  |     |  |  +--rw backup4*   inet:ip-address-no-zone
+     |  |     |  |  +--rw paths6*    inet:ip-address-no-zone
+     |  |     |  |  +--rw backup6*   inet:ip-address-no-zone
+     |  |     |  +--rw origins* [id]
+     |  |     |     +--rw id           string
+     |  |     |     +--rw interface?   string
+     |  |     |     +--rw ipv4* [prefix]
+     |  |     |     |  +--rw prefix      string
+     |  |     |     |  +--rw next-hop?   inet:ip-address-no-zone
+     |  |     |     +--rw ipv6* [prefix]
+     |  |     |        +--rw prefix      string
+     |  |     |        +--rw next-hop?   inet:ip-address-no-zone
+     |  |     +--rw peers* [tunnel]
+     |  |     |  +--rw tunnel        string
+     |  |     |  +--rw to?           string
+     |  |     |  +--rw local?        inet:ip-address-no-zone
+     |  |     |  +--rw neighbor?     inet:ip-address-no-zone
+     |  |     |  +--rw role?         enumeration
+     |  |     |  +--rw cluster-id?   string
+     |  |     +--rw unis* [id]
+     |  |        +--rw id           string
+     |  |        +--rw end-point?   string
+     |  |        +--rw interface?   string
+     |  |        +--rw bgp* [index]
+     |  |        |  +--rw index          uint8
+     |  |        |  +--rw family?        family
+     |  |        |  +--rw as?            uint32
+     |  |        |  +--rw neighbors*     inet:ip-address-no-zone
+     |  |        |  +--rw source?        inet:ip-address-no-zone
+     |  |        |  +--rw multihop?      boolean
+     |  |        |  +--rw bfd?           boolean
+     |  |        |  +--rw distance?      uint8
+     |  |        |  +--rw hold-time?     uint16
+     |  |        |  +--rw password?      string
+     |  |        |  +--rw communities*   community
+     |  |        +--rw ospf* [index]
+     |  |           +--rw index       uint8
+     |  |           +--rw family?     family
+     |  |           +--rw area?       uint32
+     |  |           +--rw cost?       uint16
+     |  |           +--rw hello?      uint16
+     |  |           +--rw dead?       uint16
+     |  |           +--rw bfd?        boolean
+     |  |           +--rw distance?   uint8
+     |  |           +--rw password?   string
+     |  +--rw dhcp-instance* [name]
+     |  |  +--rw name    string
+     |  |  +--rw fib?    uint16
+     |  |  +--ro conf?   string
+     |  |  +--rw host?   string
+     |  |  +--rw spec
+     |  |     +--rw service?   string
+     |  |     +--rw fib?       uint32
+     |  |     +--rw unis* [id]
+     |  |        +--rw id           string
+     |  |        +--rw interface?   string
+     |  |        +--rw ipv4
+     |  |        |  +--rw mode?       string
+     |  |        |  +--rw prefix?     string
+     |  |        |  +--rw provider*   inet:ip-address-no-zone
+     |  |        |  +--rw reserved*   string
+     |  |        |  +--rw lease?      string
+     |  |        |  +--rw dns*        inet:ip-address-no-zone
+     |  |        +--rw ipv6
+     |  |           +--rw mode?       string
+     |  |           +--rw prefix?     string
+     |  |           +--rw provider*   inet:ip-address-no-zone
+     |  |           +--rw reserved*   string
+     |  |           +--rw lease?      string
+     |  |           +--rw dns*        inet:ip-address-no-zone
+     |  +--rw dns-instance* [name]
      |     +--rw name    string
      |     +--rw fib?    uint16
      |     +--ro conf?   string
      |     +--rw host?   string
      |     +--rw spec
-     |        +--rw flavor?             enumeration
-     |        +--rw service?            string
-     |        +--rw end-point?          string
-     |        +--rw fib?                uint32
-     |        +--rw table?              uint32
-     |        +--rw as?                 uint32
-     |        +--rw router-id?          inet:ipv4-address-no-zone
-     |        +--rw interface?          string
-     |        +--rw bgp* [index]
-     |        |  +--rw index          uint8
-     |        |  +--rw family?        family
-     |        |  +--rw as?            uint32
-     |        |  +--rw neighbors*     inet:ip-address-no-zone
-     |        |  +--rw source?        inet:ip-address-no-zone
-     |        |  +--rw multihop?      boolean
-     |        |  +--rw bfd?           boolean
-     |        |  +--rw distance?      uint8
-     |        |  +--rw hold-time?     uint16
-     |        |  +--rw password?      string
-     |        |  +--rw communities*   community
-     |        +--rw ospf* [index]
-     |        |  +--rw index       uint8
-     |        |  +--rw family?     family
-     |        |  +--rw area?       uint32
-     |        |  +--rw cost?       uint16
-     |        |  +--rw hello?      uint16
-     |        |  +--rw dead?       uint16
-     |        |  +--rw bfd?        boolean
-     |        |  +--rw distance?   uint8
-     |        |  +--rw password?   string
-     |        +--rw direct*             string
-     |        +--rw loopback?           boolean
-     |        +--rw route-monitoring!
-     |        |  +--rw kept?   uint16
-     |        +--rw bfd!
-     |        |  +--rw interfaces*   string
-     |        |  +--rw interval?     uint16
-     |        |  +--rw multiplier?   uint8
-     |        |  +--rw multihop?     boolean
-     |        |  +--rw sessions?     boolean
-     |        +--rw reject*             string
-     |        +--rw md5?                string
-     |        +--rw sets!
-     |        |  +--rw only?   boolean
-     |        |  +--rw sets* [name]
-     |        |     +--rw name           string
-     |        |     +--rw via?           string
-     |        |     +--rw gateway?       inet:ip-address-no-zone
-     |        |     +--rw as-path*       uint32
-     |        |     +--rw communities*   community
-     |        +--rw loop!
-     |        |  +--rw local4?    inet:ipv4-address-no-zone
-     |        |  +--rw local6?    inet:ipv6-address-no-zone
-     |        |  +--rw transit?   boolean
-     |        |  +--rw edges* [name]
-     |        |  |  +--rw name       string
-     |        |  |  +--rw ipv4?      inet:ipv4-address-no-zone
-     |        |  |  +--rw ipv6?      inet:ipv6-address-no-zone
-     |        |  |  +--rw paths4*    inet:ip-address-no-zone
-     |        |  |  +--rw backup4*   inet:ip-address-no-zone
-     |        |  |  +--rw paths6*    inet:ip-address-no-zone
-     |        |  |  +--rw backup6*   inet:ip-address-no-zone
-     |        |  +--rw origins* [id]
-     |        |     +--rw id           string
-     |        |     +--rw interface?   string
-     |        |     +--rw ipv4* [prefix]
-     |        |     |  +--rw prefix      string
-     |        |     |  +--rw next-hop?   inet:ip-address-no-zone
-     |        |     +--rw ipv6* [prefix]
-     |        |        +--rw prefix      string
-     |        |        +--rw next-hop?   inet:ip-address-no-zone
-     |        +--rw peers* [tunnel]
-     |        |  +--rw tunnel        string
-     |        |  +--rw to?           string
-     |        |  +--rw local?        inet:ip-address-no-zone
-     |        |  +--rw neighbor?     inet:ip-address-no-zone
-     |        |  +--rw role?         enumeration
-     |        |  +--rw cluster-id?   string
-     |        +--rw unis* [id]
-     |           +--rw id           string
-     |           +--rw end-point?   string
-     |           +--rw interface?   string
-     |           +--rw bgp* [index]
-     |           |  +--rw index          uint8
-     |           |  +--rw family?        family
-     |           |  +--rw as?            uint32
-     |           |  +--rw neighbors*     inet:ip-address-no-zone
-     |           |  +--rw source?        inet:ip-address-no-zone
-     |           |  +--rw multihop?      boolean
-     |           |  +--rw bfd?           boolean
-     |           |  +--rw distance?      uint8
-     |           |  +--rw hold-time?     uint16
-     |           |  +--rw password?      string
-     |           |  +--rw communities*   community
-     |           +--rw ospf* [index]
-     |              +--rw index       uint8
-     |              +--rw family?     family
-     |              +--rw area?       uint32
-     |              +--rw cost?       uint16
-     |              +--rw hello?      uint16
-     |              +--rw dead?       uint16
-     |              +--rw bfd?        boolean
-     |              +--rw distance?   uint8
-     |              +--rw password?   string
+     |        +--rw service?        string
+     |        +--rw fib?            uint32
+     |        +--rw dot?            boolean
+     |        +--rw upstream*       string
+     |        +--rw upstream-tls?   boolean
+     |        +--rw unis* [id address]
+     |        |  +--rw id         string
+     |        |  +--rw address    inet:ip-address-no-zone
+     |        |  +--rw prefix?    string
+     |        +--rw zones* [name]
+     |           +--rw name        string
+     |           +--rw prefixes*   string
+     |           +--rw dnf!
+     |           |  +--rw no-match?     allow-block
+     |           |  +--rw notify*       sfp-list
+     |           |  +--rw id?           string
+     |           |  +--rw block*        string
+     |           |  +--rw quarantine*   string
+     |           |  +--rw allow*        string
+     |           |  +--rw listed
+     |           |     +--rw block*        string
+     |           |     +--rw quarantine*   string
+     |           |     +--rw allow*        string
+     |           +--rw pdns!
+     |              +--rw no-match?   allow-block
+     |              +--rw notify*     sfp-list
+     |              +--rw id?         string
+     |              +--rw block* [type value]
+     |              |  +--rw type     enumeration
+     |              |  +--rw value    string
+     |              +--rw quarantine* [type value]
+     |              |  +--rw type     enumeration
+     |              |  +--rw value    string
+     |              +--rw allow* [type value]
+     |              |  +--rw type     enumeration
+     |              |  +--rw value    string
+     |              +--rw listed
+     |                 +--rw block*        string
+     |                 +--rw quarantine*   string
+     |                 +--rw allow*        string
      +--ro state
      |  +--ro rules
      |  |  +--ro set?       uint8
@@ -650,6 +721,7 @@ module: arcana-sdwan
      |  |  +--ro name       string
      |  |  +--ro fib?       uint16
      |  |  +--ro running?   boolean
+     |  |  +--ro jail?      string
      |  |  +--ro lease*
      |  |     +--ro expires?    yang:date-and-time
      |  |     +--ro id?         string
@@ -659,6 +731,7 @@ module: arcana-sdwan
      |  |  +--ro name        string
      |  |  +--ro fib?        uint16
      |  |  +--ro running?    boolean
+     |  |  +--ro jail?       string
      |  |  +--ro tls-cert?   string
      |  +--ro proxy* [name]
      |  |  +--ro name       string

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.325.0"
+#define	ARCANA_AGENT_VERSION	"0.326.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1293,6 +1293,9 @@ bool		 sdwan_mdr_sig(const struct ucl_object_s *, const char *,
 enum { SDB_UNBOUND, SDB_SQUID, SDB_ICAP };
 void		 sdblock_watch(int, int, const char *const *,
 		    const char *const *, const struct ucl_object_s *const *);
+void		 sdblock_watch_jail(int, const char *, const char *, int,
+		    const char *const *, const char *const *,
+		    const struct ucl_object_s *const *);
 /* luxuria/idsconf.c: Suricata's YAML from an instance's settings. */
 char		*ids_conf_render(struct work *, const struct ucl_object_s *,
 		    const struct ucl_object_s *, const char *, const char *,
@@ -1754,6 +1757,8 @@ int		 do_if_vnet(struct work *, const char *, const char *, bool,
 		    bool, const char **);
 char *const	*scope_argv(struct work *, char *const []);
 char *const	*scope_jexec(struct work *, char *const []);
+pid_t		 scope_pidfile(struct work *, const char *, const char *);
+void		 scope_pid_stop(struct work *, const char *, const char *, int);
 int		 scope_dirfd(struct work *, const char *);
 int		 scope_open_dir(struct work *, const char *, const char **);
 char		*scope_slurp(struct work *, const char *, size_t *);

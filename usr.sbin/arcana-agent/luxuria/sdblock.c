@@ -9,7 +9,9 @@
  * console makes a Security Event Notification of (MEF 138 R24), as it
  * does of ipfw's denies (record.c) and of Suricata's alerts (sdids.c).
  *
- *	unbound	its log file beside the agent's kept files (sddns.c), each
+ *	unbound	its log file beside the agent's kept files (sddns.c), a
+ *		jail edge's beneath the jail's root, opened through no
+ *		link out of it; each
  *		local zone it answered (log-local-actions: DNF) and each
  *		RPZ trigger it applied (rpz-log, named by the zone: PDNS's
  *		CNAME and NS entries); both written where a zone's DNF or
@@ -42,6 +44,8 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,7 +65,9 @@
 struct watched {
 	int		 kind;		/* SDB_* */
 	char		 name[40];	/* the instance */
-	char		 path[MAXPATHLEN];
+	char		 jail[64];	/* its edge's, "" the host's */
+	char		 jroot[256];
+	char		 path[MAXPATHLEN];	/* a jail's as it sees it */
 	off_t		 off;		/* how far it is read */
 	ucl_object_t	*spec;		/* the form it was rendered from */
 };
@@ -429,6 +435,38 @@ icap_line(const struct watched *w, char *line)
 	return (true);
 }
 
+/*
+ * A log opened to read, and to be cut: the host's by its path, a jail's
+ * beneath the jail's root, through no link (its root user may put one
+ * anywhere), a regular file only.  -1 with errno for none.
+ */
+static int
+log_open(const struct watched *w)
+{
+	struct stat	 st;
+	const char	*rel;
+	int		 root, fd, e, rw;
+
+	/* unbound's is cut once read (read_log()); the others only read. */
+	rw = w->kind == SDB_UNBOUND ? O_RDWR : O_RDONLY;
+	if (w->jail[0] == '\0')
+		return (open(w->path, rw | O_NONBLOCK | O_CLOEXEC));
+	if ((root = open(w->jroot, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+		return (-1);
+	rel = w->path + strspn(w->path, "/");
+	fd = openat(root, rel, rw | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC |
+	    O_RESOLVE_BENEATH);
+	e = errno;
+	close(root);
+	if (fd != -1 && (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))) {
+		close(fd);
+		fd = -1;
+		e = EINVAL;
+	}
+	errno = e;
+	return (fd);
+}
+
 /* What a log has had written since it was last read. */
 static void
 read_log(struct watched *w)
@@ -438,10 +476,14 @@ read_log(struct watched *w)
 	char		*line;
 	size_t		 cap;
 	ssize_t		 n;
-	int		 told;
+	int		 told, fd;
 
-	if ((fp = fopen(w->path, "r")) == NULL)
+	if ((fd = log_open(w)) == -1)
 		return;
+	if ((fp = fdopen(fd, "r")) == NULL) {
+		close(fd);
+		return;
+	}
 	if (fstat(fileno(fp), &st) != 0) {
 		fclose(fp);
 		return;
@@ -474,11 +516,11 @@ read_log(struct watched *w)
 		}
 	}
 	free(line);
-	fclose(fp);
 	/* unbound's own, which nothing turns over: cut, all of it read. */
 	if (w->kind == SDB_UNBOUND && w->off > LOG_CUT && w->off == st.st_size &&
-	    truncate(w->path, 0) == 0)
+	    ftruncate(fileno(fp), 0) == 0)
 		w->off = 0;
+	fclose(fp);
 }
 
 static void *
@@ -500,39 +542,64 @@ reader(void *arg __unused)
  * The logs of a kind read from now on: those of the n instances, each
  * its name, its log and its form; those of the kind before not any
  * more.  One read before goes on from where it was; a new one from its
- * end.
+ * end.  The host's: those of a jail's edge are left as they are.
  */
 void
 sdblock_watch(int kind, int n, const char *const *names,
     const char *const *paths, const ucl_object_t *const *specs)
 {
-	struct watched	 nl[LOGS_MAX];
-	struct stat	 st;
-	int		 i, k, m;
 
+	sdblock_watch_jail(kind, NULL, NULL, n, names, paths, specs);
+}
+
+/* The same of an edge, the jail's (jail NULL or "": the host's), its
+ * logs' paths as the jail sees them, beneath jroot. */
+void
+sdblock_watch_jail(int kind, const char *jail, const char *jroot, int n,
+    const char *const *names, const char *const *paths,
+    const ucl_object_t *const *specs)
+{
+	struct watched	*nl;
+	struct stat	 st;
+	int		 i, k, m, fd;
+
+	if (jail == NULL)
+		jail = "";
+	/* Not on the stack: a request's thread has little of it. */
+	if ((nl = calloc(LOGS_MAX, sizeof(*nl))) == NULL)
+		return;
 	pthread_mutex_lock(&lock);
 	m = 0;
 	for (i = 0; i < nlogs; i++)
-		if (logs[i].kind != kind)
+		if (logs[i].kind != kind || strcmp(logs[i].jail, jail) != 0)
 			nl[m++] = logs[i];
 	for (k = 0; k < n && m < LOGS_MAX; k++) {
 		memset(&nl[m], 0, sizeof(nl[m]));
 		nl[m].kind = kind;
 		snprintf(nl[m].name, sizeof(nl[m].name), "%s", names[k]);
+		snprintf(nl[m].jail, sizeof(nl[m].jail), "%s", jail);
+		snprintf(nl[m].jroot, sizeof(nl[m].jroot), "%s", jail[0] != '\0' &&
+		    jroot != NULL ? jroot : "");
 		snprintf(nl[m].path, sizeof(nl[m].path), "%s", paths[k]);
 		nl[m].spec = ucl_object_copy(specs[k]);
-		nl[m].off = stat(paths[k], &st) == 0 ? st.st_size : 0;
+		nl[m].off = 0;
+		if ((fd = log_open(&nl[m])) != -1) {
+			if (fstat(fd, &st) == 0)
+				nl[m].off = st.st_size;
+			close(fd);
+		}
 		for (i = 0; i < nlogs; i++)
-			if (logs[i].kind == kind && strcmp(logs[i].path,
-			    paths[k]) == 0)
+			if (logs[i].kind == kind && strcmp(logs[i].jail, jail) ==
+			    0 && strcmp(logs[i].path, paths[k]) == 0)
 				nl[m].off = logs[i].off;
 		m++;
 	}
 	for (i = 0; i < nlogs; i++)
-		if (logs[i].kind == kind)
+		if (logs[i].kind == kind && strcmp(logs[i].jail, jail) == 0)
 			ucl_object_unref(logs[i].spec);
 	memcpy(logs, nl, sizeof(*nl) * (size_t)m);
 	nlogs = m;
+	free(nl);
 	if (!reading && nlogs > 0) {
 		pthread_t	tid;
 

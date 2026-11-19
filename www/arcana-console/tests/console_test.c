@@ -15108,9 +15108,14 @@ static const char sdwan_jail_doc[] =
     "\"bfd\":{\"interval\":200,\"multiplier\":3},"
     "\"zones\":[{\"name\":\"rest\",\"prefixes\":\"Default\"}],"
     "\"intervals\":{\"eval\":1000,\"arrival\":100,\"ir\":500},"
+    "\"security_function_policies\":[{\"id\":\"g-dnf\",\"function\":"
+    "\"dnf\",\"block\":[\"ads.example\"],\"no-match\":\"allow\","
+    "\"duration\":6}],"
+    "\"security_policies\":[{\"name\":\"guard\",\"function-policies\":["
+    "\"g-dnf\"]}],"
     "\"flows\":[{\"name\":\"all\",\"criteria\":{\"any\":true}}],"
     "\"policies\":[{\"name\":\"open\",\"direction\":\"ingress\","
-    "\"criteria\":{}}],"
+    "\"criteria\":{\"af-security-ingress\":\"guard\"}}],"
     "\"end_points\":[{\"id\":\"hq\",\"edge\":\"@A\",\"uni\":{\"id\":"
     "\"uni-hq\",\"interface\":\"lo0\",\"ipv4\":{\"mode\":\"static\","
     "\"prefix\":\"10.1.0.0/24\",\"provider\":[\"10.1.0.1\"]}},\"policy_map\":[{\"zone\":\"rest\","
@@ -15122,7 +15127,7 @@ static const char sdwan_jail_doc[] =
     "\"open\"}]}]}]}";
 
 CONSOLE_TC(sdwan_jail, "SD-WAN at an edge that is a vnet jail: checked, "
-    "planned and applied there, its probes and steering its own")
+    "planned and applied there, its probes, steering and resolver its own")
 ATF_TC_BODY(sdwan_jail, tc)
 {
 	struct authn	a;
@@ -15180,6 +15185,13 @@ ATF_TC_BODY(sdwan_jail, tc)
 	 * run in it by the host's agent. */
 	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"sdwan-bird\",\"instances\":[{"
 	    "\"name\":\"sw1-gw\",\"fib\":1,") != NULL, "%s", r.body);
+	/* Its resolver for the zone's DNF the same: an unbound instance of
+	 * the jail's, on its UNI's address; the host's its own. */
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"sdwan-dns\",\"instances\":[{"
+	    "\"name\":\"sw1-gw\",\"fib\":1,") != NULL && strstr(r.body,
+	    "\"kind\":\"sdwan-dns\",\"instances\":[{\"name\":\"sw1\",\"fib\":1,")
+	    != NULL && strstr(r.body, "\"unis\":[{\"id\":\"uni-br\",\"address\":"
+	    "\"10.2.0.1\"") != NULL, "%s", r.body);
 	resp_free(&r);
 	/* The jail runs no BIRD here (jls lists none in a test): the
 	 * service without BFD from here on. */
@@ -15243,12 +15255,23 @@ ATF_TC_BODY(sdwan_jail, tc)
 	ATF_CHECK_MSG(system("test -f sdwan-probes@gw.json && test -f "
 	    "sdwan-rules@gw.json && test -f sdwan-probes.json") == 0,
 	    "the jail's probes and rules are not its own");
+	/* Its unbound checked and run in it by the jail's own, its file
+	 * beneath the jail's root, kept apart from the host's. */
+	ATF_CHECK_MSG(system("grep -q '^jexec 4 .*fake-local-unbound-checkconf "
+	    "/var/run/arcana-sdwan-dns-sw1-gw.conf$' jexec.log && grep -q "
+	    "'^jexec 4 .*fake-setfib -F 1 .*fake-local-unbound -c /var/run/"
+	    "arcana-sdwan-dns-sw1-gw.conf$' jexec.log") == 0, "the jail's "
+	    "unbound was not run in it");
+	ATF_CHECK_MSG(system("grep -q 'logfile: \"/var/log/arcana-sdwan-dns-"
+	    "sw1-gw.log\"' jroot/var/run/arcana-sdwan-dns-sw1-gw.conf && test -f "
+	    "sdwan-dns@gw.json && test -f sdwan-dns-sw1.conf") == 0,
+	    "the jail's unbound file is not beneath its root");
 	r3_read(sa, "/arcana-sdwan:sdwan", &r);
 	EXPECT(&r, 200);
 	{
 		const ucl_object_t	*e;
 		ucl_object_iter_t	 it = NULL;
-		bool			 rules = false;
+		bool			 rules = false, dns = false, sdns = false;
 
 		while ((e = ucl_object_iterate(ucl_object_lookup_path(r.json,
 		    "state.edge"), &it, true)) != NULL)
@@ -15257,6 +15280,30 @@ ATF_TC_BODY(sdwan_jail, tc)
 				rules = ucl_object_lookup_path(e,
 				    "rules.set") != NULL;
 		ATF_CHECK_MSG(rules, "%s", r.body);
+		/* The jail's resolver in its entry of the jail list, and as
+		 * it runs, with its jail. */
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup(r.json,
+		    "jail"), &it, true)) != NULL)
+			if (strcmp(ucl_object_tostring_forced(ucl_object_lookup(
+			    e, "name")), "gw") == 0) {
+				char	*js = (char *)ucl_object_emit(
+				    ucl_object_lookup(e, "dns-instance"),
+				    UCL_EMIT_JSON_COMPACT);
+
+				dns = js != NULL && strstr(js,
+				    "\"name\":\"sw1-gw\"") != NULL;
+				free(js);
+			}
+		it = NULL;
+		while ((e = ucl_object_iterate(ucl_object_lookup_path(r.json,
+		    "state.dns"), &it, true)) != NULL)
+			if (strcmp(ucl_object_tostring_forced(ucl_object_lookup(
+			    e, "name")), "sw1-gw") == 0)
+				sdns = ucl_object_lookup(e, "jail") != NULL &&
+				    strcmp(ucl_object_tostring_forced(
+				    ucl_object_lookup(e, "jail")), "gw") == 0;
+		ATF_CHECK_MSG(dns && sdns, "%s", r.body);
 	}
 	resp_free(&r);
 	/* Its probes the jail's, its tunnel's in the service's table, its

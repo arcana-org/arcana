@@ -2601,6 +2601,28 @@ uni_obj(struct plan *pl, const ucl_object_t *sw, const ucl_object_t *ep)
 	return (true);
 }
 
+/*
+ * A service's instance's name at an edge (BIRD's, dnsmasq's, unbound's):
+ * sw<fib>; at an edge that is a vnet jail named by the jail too, which
+ * the host's agent runs it in, so that it is none of the host's.
+ */
+static void
+inst_name(char *name, size_t len, const ucl_object_t *sw, const char *sid)
+{
+	char	esid[80], ejail[64], *q;
+
+	if (sdwan_edge_split(sid, esid, sizeof(esid), ejail, sizeof(ejail)) &&
+	    ejail[0] != '\0') {
+		snprintf(name, len, "sw%jd-%.26s", (intmax_t)ucl_object_toint(
+		    ucl_object_lookup(sw, "fib")), ejail);
+		for (q = name; *q != '\0'; q++)
+			if (*q == '.')
+				*q = '_';
+	} else
+		snprintf(name, len, "sw%jd", (intmax_t)ucl_object_toint(
+		    ucl_object_lookup(sw, "fib")));
+}
+
 /* ---- DHCP at the UNIs (§11.4, §11.5): dnsmasq, a service an instance -- */
 
 
@@ -2661,7 +2683,7 @@ dhcp_spec(struct plan *pl, const ucl_object_t *sw, const char *sid)
 /*
  * Each edge's DHCP servers: dnsmasq from packages (the base system has
  * no DHCP server), an instance per service with a DHCP UNI at the edge,
- * in the service's table.
+ * in the service's table; an edge that is a vnet jail's in the jail.
  */
 static void
 dhcp_build(struct plan *pl, const ucl_object_t *doc)
@@ -2700,8 +2722,7 @@ dhcp_build(struct plan *pl, const ucl_object_t *doc)
 			}
 			if (!here)
 				continue;
-			snprintf(name, sizeof(name), "sw%jd", (intmax_t)
-			    ucl_object_toint(ucl_object_lookup(sw, "fib")));
+			inst_name(name, sizeof(name), sw, sid);
 			inst = ucl_object_typed_new(UCL_OBJECT);
 			put(inst, "name", S(name));
 			put(inst, "fib", I(efib(pl, sw, sid)));
@@ -3885,8 +3906,7 @@ dns_build(struct plan *pl, const ucl_object_t *doc)
 					here = true;
 			if (!here)
 				continue;
-			snprintf(name, sizeof(name), "sw%jd", (intmax_t)
-			    ucl_object_toint(ucl_object_lookup(sw, "fib")));
+			inst_name(name, sizeof(name), sw, sid);
 			inst = ucl_object_typed_new(UCL_OBJECT);
 			put(inst, "name", S(name));
 			put(inst, "fib", I(efib(pl, sw, sid)));
@@ -7314,7 +7334,6 @@ bird_build(struct plan *pl, const ucl_object_t *doc)
 	ucl_object_iter_t	 it, eit, pit;
 	ucl_object_t		*o, *inst, *list, *j;
 	char			 name[32];
-	char			 esid[80], ejail[64], *q;
 	const char		*sid;
 	bool			 here;
 
@@ -7338,17 +7357,7 @@ bird_build(struct plan *pl, const ucl_object_t *doc)
 				continue;
 			/* An edge that is a vnet jail: the instance named by the
 			 * jail too, run in it by the host's agent. */
-			if (sdwan_edge_split(sid, esid, sizeof(esid), ejail,
-			    sizeof(ejail)) && ejail[0] != '\0') {
-				snprintf(name, sizeof(name), "sw%jd-%.26s", (intmax_t)
-				    ucl_object_toint(ucl_object_lookup(sw, "fib")),
-				    ejail);
-				for (q = name; *q != '\0'; q++)
-					if (*q == '.')
-						*q = '_';
-			} else
-				snprintf(name, sizeof(name), "sw%jd", (intmax_t)
-				    ucl_object_toint(ucl_object_lookup(sw, "fib")));
+			inst_name(name, sizeof(name), sw, sid);
 			inst = ucl_object_typed_new(UCL_OBJECT);
 			put(inst, "name", S(name));
 			put(inst, "fib", I(efib(pl, sw, sid)));
@@ -11801,9 +11810,9 @@ of_jail(const char *object, const char *jail)
 
 /*
  * An edge's sdwan read, parsed, as if the edge were the whole host: of
- * the targets and faults, its own; a jail's rules, steer and steered
- * its edge's, in the host's places, and none of the host's services,
- * keys or record.  NULL when its server is unknown; the host's name in
+ * the targets, faults and BIRD, dnsmasq and unbound instances, its own;
+ * a jail's rules, steer and steered its edge's, in the host's places,
+ * and none of the host's other services, keys or record.  NULL when its server is unknown; the host's name in
  * name when asked.
  */
 static ucl_object_t *
@@ -11813,8 +11822,8 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 	const ucl_object_t	*t, *e;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*ans, *data, *keep;
-	static const char *const none[] = { "keys", "bird", "dhcp", "dns",
-	    "proxy", "ids" };
+	static const char *const none[] = { "keys", "proxy", "ids" };
+	static const char *const own[] = { "bird", "dhcp", "dns" };
 	size_t			 i;
 
 	if (!edge_ref(edge, uri, sizeof(uri), peer, sizeof(peer), hname,
@@ -11843,6 +11852,18 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 		if (of_jail(str(t, "object"), jail))
 			ucl_array_append(keep, ucl_object_copy(t));
 	ucl_object_replace_key(data, keep, "faults", 0, false);
+	/* The instances the host's agent runs for the edge: those of its
+	 * jail, or the host's own. */
+	for (i = 0; i < nitems(own); i++) {
+		keep = ucl_object_typed_new(UCL_ARRAY);
+		it = NULL;
+		while ((t = ucl_object_iterate(ucl_object_lookup(data, own[i]),
+		    &it, true)) != NULL)
+			if (strcmp(str(t, "jail") != NULL ? str(t, "jail") : "",
+			    jail) == 0)
+				ucl_array_append(keep, ucl_object_copy(t));
+		ucl_object_replace_key(data, keep, own[i], 0, false);
+	}
 	if (jail[0] != '\0') {
 		e = NULL;
 		it = NULL;
@@ -11880,16 +11901,15 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
  * What an edge that is a vnet jail is not given yet, said: the jail's
  * own network takes its interfaces, routes, tunnels (gre, gif, GENEVE,
  * WireGuard, IKEv2), BIRD (run in the jail by the host's agent, with
- * BFD), ipfw rules and steering, probes and net.* sysctls; the services
- * the host runs for an SD-WAN service (dnsmasq, unbound, Squid,
- * Suricata), NTP, rtadvd and manual SAs (a uswe tunnel) are the host's
- * only.
+ * BFD), dnsmasq and unbound (run there the same way), ipfw rules and
+ * steering, probes and net.* sysctls; Squid, Suricata, NTP, rtadvd and
+ * manual SAs (a uswe tunnel) are the host's only.
  */
 static bool
 jail_kind_ok(const char *kind, char *why, size_t wlen)
 {
-	static const char *const not[] = { "sdwan-dns", "sdwan-dhcp",
-	    "sdwan-proxy", "sdwan-ids", "ntp", "rtadvd", "ipsec-sa" };
+	static const char *const not[] = { "sdwan-proxy", "sdwan-ids", "ntp",
+	    "rtadvd", "ipsec-sa" };
 	size_t	i;
 
 	for (i = 0; kind != NULL && i < nitems(not); i++)

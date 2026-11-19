@@ -709,8 +709,9 @@ main(int argc, char **argv)
 			}
 		}
 		for (size_t i = 0; i < s.dhcp.n; i++) {
-			printf("dhcp %s fib=%u running=%s\n", s.dhcp.v[i].name,
-			    s.dhcp.v[i].fib, s.dhcp.v[i].running ? "yes" : "no");
+			printf("dhcp %s fib=%u running=%s jail=%s\n",
+			    s.dhcp.v[i].name, s.dhcp.v[i].fib, s.dhcp.v[i].running ?
+			    "yes" : "no", str(s.dhcp.v[i].jail));
 			for (size_t k = 0; k < s.dhcp.v[i].lease.n; k++)
 				printf("  lease %s %s %s %s\n", str(
 				    s.dhcp.v[i].lease.v[k].expires), str(
@@ -720,9 +721,10 @@ main(int argc, char **argv)
 				    s.dhcp.v[i].lease.v[k].hostname));
 		}
 		for (size_t i = 0; i < s.dns.n; i++)
-			printf("dns %s fib=%u running=%s tls-cert=%zu\n",
+			printf("dns %s fib=%u running=%s jail=%s tls-cert=%zu\n",
 			    s.dns.v[i].name, s.dns.v[i].fib, s.dns.v[i].running ?
-			    "yes" : "no", s.dns.v[i].tls_cert != NULL ?
+			    "yes" : "no", str(s.dns.v[i].jail),
+			    s.dns.v[i].tls_cert != NULL ?
 			    strlen(s.dns.v[i].tls_cert) : 0);
 		for (size_t i = 0; i < s.proxy.n; i++)
 			printf("proxy %s fib=%u running=%s mode=%s icap=%s ca=%zu\n",

@@ -612,6 +612,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		o = ucl_object_typed_new(UCL_OBJECT);
 		cp(o, "name", v, "name");
 		put(o, "fib", ucl_object_fromint(jint(v, "fib", 0)));
+		cp(o, "jail", v, "jail");
 		put(o, "running", ucl_object_frombool(jbool(v, "running")));
 		ps = ucl_object_typed_new(UCL_ARRAY);
 		wit = NULL;
@@ -635,6 +636,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 		o = ucl_object_typed_new(UCL_OBJECT);
 		cp(o, "name", v, "name");
 		put(o, "fib", ucl_object_fromint(jint(v, "fib", 0)));
+		cp(o, "jail", v, "jail");
 		put(o, "running", ucl_object_frombool(jbool(v, "running")));
 		cp(o, "tls_cert", v, "tls-cert");
 		inst_form(o, sd, "dns-instance", v);

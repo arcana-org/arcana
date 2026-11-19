@@ -1620,6 +1620,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 		memset(&dh[k].lease, 0, sizeof(dh[k].lease));
 		if (dh[k].name == NULL)
 			continue;
+		dh[k].jail = yj_str(a, e, "jail");
 		if (!ALLOC_N(a, dl, yj_count(ucl_object_lookup(e, "leases"))))
 			goto nomem;
 		m = 0;
@@ -1645,6 +1646,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 	k = 0;
 	YJ_EACH(ucl_object_lookup(top, "dns"), it, e) {
 		running_of(a, e, &dn[k]);
+		dn[k].jail = yj_str(a, e, "jail");
 		dn[k].tls_cert = yj_str(a, e, "tls_cert");
 		if (dn[k].name != NULL)
 			k++;

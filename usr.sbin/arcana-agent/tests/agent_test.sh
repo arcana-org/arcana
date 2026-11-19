@@ -2452,6 +2452,9 @@ set {"instances":[{"name":"sw1","fib":1,"host":"a","spec":{"fib":1,"service":"ac
 yang-cbor 107 bytes, the same back
 EOT
 	atf_check -o file:want "$y" dhcp dhcp.json
+	# An edge that is a vnet jail's, in its entry of the jail list.
+	sed -e 's/^set {/set {"jail":"gateway",/' want > want.jail
+	atf_check -o file:want.jail "$y" dhcp dhcp.json gateway
 	cat > dns.json <<'EOT'
 {"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"dot":true,"upstream":["192.0.2.53#dns.example"],"upstream_tls":true,"unis":[{"id":"uni-hq","address":"10.1.0.1","prefix":"10.1.0.0/24"},{"id":"uni-hq","address":"fd00:1::1","prefix":"fd00:1::/64"}],"zones":[{"name":"z0","prefixes":["10.1.0.0/24"],"dnf":{"id":"g-dnf","no-match":"allow","block":["bad.example"],"listed":{"block":["worse.example"]}},"pdns":{"no-match":"allow","block":[{"type":"A","value":"192.0.2.66/32"}],"notify":["block"]}}]}}]}
 EOT
@@ -2505,7 +2508,7 @@ EOT
 	atf_check -o file:want "$y" ids ids.json
 	# The state, all of it.
 	cat > state.json <<'EOT'
-{"targets":[],"probing":false,"time":1791995110,"rules":{"set":30,"rules":3,"tables":[{"name":"sw1_zone","count":2}],"objects":2,"counters":[{"rule":100,"pkts":12,"bytes":900,"text":"skipto 999 ip from any to any not recv vtnet1"}]},"steer":[{"table":"sw1_p1","prefix":"10.3.0.0/24","chosen":0,"candidates":[{"id":"tvc-1","via":"10.202.0.2","state":"up","bfd":"up"},{"id":"tvc-2","via":"10.203.0.2","state":"not probed"}]}],"steered":true,"routes":[{"fib":2,"destination":"0.0.0.0/0","chosen":0,"candidates":[{"id":"bo:a-inet","via":"192.0.2.254","state":"down"}]}],"bird":[{"name":"svc1","fib":1,"jail":"gateway","running":true,"protocols":[{"name":"peer1","proto":"BGP","state":"up","info":"Established"}],"bfd":[{"address":"10.202.0.2","interface":"wg0","state":"up","since":"2026-10-15 19:00:06"}],"bmp":{"port":1791,"listening":true,"connected":true,"since":1791995100,"sys_name":"edge-a","sys_descr":"BIRD 3.4.0","messages":9,"peers":[{"address":"10.202.0.2","as":65000,"bgp_id":"10.0.0.2","local":"10.202.0.1","up":true,"since":1791995101,"announced":3,"withdrawn":1,"announced_post":2,"withdrawn_post":0,"last":1791995105},{"address":"2001:db8::2","distinguisher":4294967297,"as":65001,"up":false,"since":1791995106,"down_reason":4,"announced":0,"withdrawn":0,"announced_post":0,"withdrawn_post":0}],"updates":[{"t":1791995105,"peer":"10.202.0.2","policy":"post","action":"announce","prefix":"10.3.0.0/24","next_hop":"10.202.0.2","as_path":"65000 {65010,65011}"},{"t":1791995104,"peer":"10.202.0.2","policy":"pre","action":"withdraw","prefix":"2001:db8:3::/48"}]}}],"dhcp":[{"name":"svc1","fib":1,"running":true,"leases":[{"expires":1792081510,"id":"02:00:00:00:00:09","address":"10.1.0.50","name":"laptop"}]}],"dns":[{"name":"svc1","fib":1,"running":false,"tls_cert":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"proxy":[{"name":"svc1","fib":1,"mode":"inspect","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"clamav":{"databases":[{"name":"main","file":"/var/db/clamav/main.cvd","built":"16 Sep 2021","version":62,"signatures":6647427}],"freshclam":true,"conf":true,"mirrors":["database.clamav.net"],"log":["ClamAV update process started"]},"ids":[{"name":"svc1","interfaces":["vtnet1"],"mode":"prevent","divert":8000,"running":true,"alerts_seen":4,"alerts":[{"name":"svc1","time":"2026-10-15T19:30:00.123456+0000","src":"10.1.0.50","sport":4000,"dst":"10.3.0.2","dport":23,"proto":"TCP","iface":"vtnet1","sid":1,"rev":2,"signature":"telnet","category":"","severity":2,"action":"blocked"}],"stats":{"fields":["t","pkts"],"series":[[1791995100,10],[1791995110,20]],"flows":{"http":7}},"capture":"divert","pcaps":[{"path":"/x/log.pcap.1791995000","size":24,"at":1791995000,"from":1791995000}],"captures":[],"replay":{"file":"a.pcap","alerts":1},"offload":{"vtnet1":["rxcsum","tso4"]}}],"ids_build":{"version":"8.0.7","lua":true,"ipfw":true},"ids_host":{"ncpu":4,"ndomains":1,"irqs":[{"irq":20,"name":"vtnet1:rxq0","cpus":"0-3"}]},"ids_ruleset":{"path":"/var/lib/suricata/rules/suricata.rules","at":1791990000,"size":1024},"record":{"count":7,"seq":7,"untold":1,"last":[{"t":1791995119,"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"vtnet1","comment":"deny-ssh"}]},"keys":[{"interface":"ipsec0","public":"AAAA","next":"BBBB","keyed_at":1791990000,"lifetime":86400,"spi_in":1001,"spi_out":1002,"pending":true}],"faults":[{"t":1791995118,"type":"tunnel","severity":"Major","object":"tvc-2","by":"probe","description":"no reply","cleared":false,"compressed":true}]}
+{"targets":[],"probing":false,"time":1791995110,"rules":{"set":30,"rules":3,"tables":[{"name":"sw1_zone","count":2}],"objects":2,"counters":[{"rule":100,"pkts":12,"bytes":900,"text":"skipto 999 ip from any to any not recv vtnet1"}]},"steer":[{"table":"sw1_p1","prefix":"10.3.0.0/24","chosen":0,"candidates":[{"id":"tvc-1","via":"10.202.0.2","state":"up","bfd":"up"},{"id":"tvc-2","via":"10.203.0.2","state":"not probed"}]}],"steered":true,"routes":[{"fib":2,"destination":"0.0.0.0/0","chosen":0,"candidates":[{"id":"bo:a-inet","via":"192.0.2.254","state":"down"}]}],"bird":[{"name":"svc1","fib":1,"jail":"gateway","running":true,"protocols":[{"name":"peer1","proto":"BGP","state":"up","info":"Established"}],"bfd":[{"address":"10.202.0.2","interface":"wg0","state":"up","since":"2026-10-15 19:00:06"}],"bmp":{"port":1791,"listening":true,"connected":true,"since":1791995100,"sys_name":"edge-a","sys_descr":"BIRD 3.4.0","messages":9,"peers":[{"address":"10.202.0.2","as":65000,"bgp_id":"10.0.0.2","local":"10.202.0.1","up":true,"since":1791995101,"announced":3,"withdrawn":1,"announced_post":2,"withdrawn_post":0,"last":1791995105},{"address":"2001:db8::2","distinguisher":4294967297,"as":65001,"up":false,"since":1791995106,"down_reason":4,"announced":0,"withdrawn":0,"announced_post":0,"withdrawn_post":0}],"updates":[{"t":1791995105,"peer":"10.202.0.2","policy":"post","action":"announce","prefix":"10.3.0.0/24","next_hop":"10.202.0.2","as_path":"65000 {65010,65011}"},{"t":1791995104,"peer":"10.202.0.2","policy":"pre","action":"withdraw","prefix":"2001:db8:3::/48"}]}}],"dhcp":[{"name":"svc1","fib":1,"running":true,"leases":[{"expires":1792081510,"id":"02:00:00:00:00:09","address":"10.1.0.50","name":"laptop"}]},{"name":"svc1-gateway","fib":1,"jail":"gateway","running":false,"leases":[]}],"dns":[{"name":"svc1","fib":1,"jail":"gateway","running":false,"tls_cert":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"proxy":[{"name":"svc1","fib":1,"mode":"inspect","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"}],"clamav":{"databases":[{"name":"main","file":"/var/db/clamav/main.cvd","built":"16 Sep 2021","version":62,"signatures":6647427}],"freshclam":true,"conf":true,"mirrors":["database.clamav.net"],"log":["ClamAV update process started"]},"ids":[{"name":"svc1","interfaces":["vtnet1"],"mode":"prevent","divert":8000,"running":true,"alerts_seen":4,"alerts":[{"name":"svc1","time":"2026-10-15T19:30:00.123456+0000","src":"10.1.0.50","sport":4000,"dst":"10.3.0.2","dport":23,"proto":"TCP","iface":"vtnet1","sid":1,"rev":2,"signature":"telnet","category":"","severity":2,"action":"blocked"}],"stats":{"fields":["t","pkts"],"series":[[1791995100,10],[1791995110,20]],"flows":{"http":7}},"capture":"divert","pcaps":[{"path":"/x/log.pcap.1791995000","size":24,"at":1791995000,"from":1791995000}],"captures":[],"replay":{"file":"a.pcap","alerts":1},"offload":{"vtnet1":["rxcsum","tso4"]}}],"ids_build":{"version":"8.0.7","lua":true,"ipfw":true},"ids_host":{"ncpu":4,"ndomains":1,"irqs":[{"irq":20,"name":"vtnet1:rxq0","cpus":"0-3"}]},"ids_ruleset":{"path":"/var/lib/suricata/rules/suricata.rules","at":1791990000,"size":1024},"record":{"count":7,"seq":7,"untold":1,"last":[{"t":1791995119,"seq":7,"rule":30010,"action":"Deny","src":"10.1.0.2:4000","dst":"10.3.0.2:22","iface":"vtnet1","comment":"deny-ssh"}]},"keys":[{"interface":"ipsec0","public":"AAAA","next":"BBBB","keyed_at":1791990000,"lifetime":86400,"spi_in":1001,"spi_out":1002,"pending":true}],"faults":[{"t":1791995118,"type":"tunnel","severity":"Major","object":"tvc-2","by":"probe","description":"no reply","cleared":false,"compressed":true}]}
 EOT
 	cat > want <<'EOT'
 rules set=30 rules=3 objects=2
@@ -2522,9 +2525,10 @@ bird svc1 fib=1 running=yes jail=gateway
     peer 2001:db8::2 rd=4294967297 as=65001 id=- local=- up=no since=2026-10-14T16:25:06Z reason=set 0/0 0/0 last=-
     update 2026-10-14T16:25:05Z 10.202.0.2 post announce 10.3.0.0/24 nh=10.202.0.2 path=65000 {65010,65011}
     update 2026-10-14T16:25:04Z 10.202.0.2 pre withdraw 2001:db8:3::/48 nh=- path=-
-dhcp svc1 fib=1 running=yes
+dhcp svc1 fib=1 running=yes jail=-
   lease 2026-10-15T16:25:10Z 02:00:00:00:00:09 10.1.0.50 laptop
-dns svc1 fib=1 running=no tls-cert=59
+dhcp svc1-gateway fib=1 running=no jail=gateway
+dns svc1 fib=1 running=no jail=gateway tls-cert=59
 proxy svc1 fib=1 running=yes mode=inspect icap=yes ca=59
 ids svc1 prevent divert=8000 running=yes seen=4
   alert 2026-10-15T19:30:00.123456+0000 telnet 10.1.0.50:4000 -> 10.3.0.2:23 TCP
@@ -2540,7 +2544,7 @@ record count=7 seq=7
   2026-10-14T16:25:19Z 7 rule=30010 Deny 10.1.0.2:4000 -> 10.3.0.2:22 vtnet1 (deny-ssh)
 key ipsec0 public=AAAA next=BBBB at=2026-10-14T15:00:00Z lifetime=86400 spi=1001/1002 next-spi=0 pending=yes
 fault 2026-10-14T16:25:18Z tunnel Major was=- tvc-2 by=probe cleared=no at=-: no reply
-yang-cbor 1689 bytes, the same back
+yang-cbor 1730 bytes, the same back
 EOT
 	atf_check -o file:want "$y" state state.json
 }
@@ -11699,8 +11703,9 @@ shift 2
 case "\$1" in
 # dnsmasq -C conf -x pid: started, says the pid file, this agent's pid.
 *dnsmasq) "\$1" --hold "\$5" & ;;
-# local-unbound -c conf: started, says the pid file named in the conf.
-*local-unbound) p=\$(sed -n 's/.*pidfile: "\(.*\)"/\1/p' "\$3"); "\$1" --hold "\$p" & ;;
+# local-unbound -c conf: started, says the pid file named in the conf
+# (a jail's beneath the root fake-jexec says, JROOT).
+*local-unbound) p=\$(sed -n 's/.*pidfile: "\(.*\)"/\1/p' "\$3"); "\$1" --hold "\${JROOT-}\$p" & ;;
 # squid -f conf: started, says the pid file named in the conf.
 *squid) echo "squid \$*" >> $(pwd)/squid.log; p=\$(sed -n 's/^pid_filename //p' "\$3"); "\$1" --hold "\$p" & ;;
 # c-icap -f conf: started, says the pid file named in the conf.
@@ -13698,8 +13703,8 @@ sdwan_bmp_cleanup()
 atf_test_case sdwan_dhcp_dns cleanup
 sdwan_dhcp_dns_head()
 {
-	atf_set "descr" "The SD-WAN's DHCP (dnsmasq) and DNS filters (local-unbound): checked, rendered, started in their table, listed, stopped"
-	atf_set "timeout" "60"
+	atf_set "descr" "The SD-WAN's DHCP (dnsmasq) and DNS filters (local-unbound): checked, rendered, started in their table, listed, stopped; an edge that is a vnet jail's run in it, their files beneath its root through no link, its leases and log read there"
+	atf_set "timeout" "120"
 }
 sdwan_dhcp_dns_body()
 {
@@ -13777,6 +13782,106 @@ sdwan_dhcp_dns_body()
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns '{"instances":[]}'
 	test ! -f "$(dirname "$f")/sdwan-dns-sw1.conf" || atf_fail "the dns instance's file stayed"
 	atf_check -o match:'"dns":\[\]' "$JGC" -c "$SOCK" sdwan
+
+	# An edge that is a vnet jail: its dnsmasq and unbound run in it by
+	# jexec (the jail's own, its pgrep and kill for their pid files),
+	# their files beneath its root, the host's instances beside them
+	# untouched.  jexec runs here what it is given, the jail's /var
+	# beneath its root.
+	d=$(dirname "$f")
+	R=$(pwd)/jroot
+	mkdir -p "$R/var/run" "$R/var/db" "$R/var/log"
+	echo "gw 7 new $R" > jails
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+shift
+n=0; for a; do case "\$a" in /var/*) a="$R\$a" ;; esac; set -- "\$@" "\$a"; n=\$((n+1)); done
+shift \$n
+JROOT=$R exec "\$@"
+EOS
+	chmod +x fake-jexec
+	rm -f "$d/sdwan-dhcp-sw1.leases"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"instances":[{"name":"sw1","fib":1,"host":"edge-a","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","interface":"lo1","ipv4":{"mode":"dhcp","prefix":"10.1.0.0/24","provider":["10.1.0.1"]}}]}}]}'
+	# The jail's root has put a link where the file goes, to a file
+	# of the host's: replaced, not followed.
+	echo "the host's own" > host.file
+	ln -s "$(pwd)/host.file" "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf"
+	atf_check -s exit:1 -e match:'not running' -o ignore "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"jail":"nope","instances":[{"name":"sw1-nope","fib":1,"spec":{"service":"acme","unis":[]}}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"jail":"gw","instances":[{"name":"sw1-gw","fib":1,"host":"edge-a/gw","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","interface":"lo2","ipv4":{"mode":"dhcp","prefix":"10.2.0.0/24","provider":["10.2.0.1"]}}]}}]}'
+	atf_check -o inline:"the host's own\n" cat host.file
+	test -L "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf" && atf_fail "the link stayed"
+	atf_check -o match:'^interface=lo2$' -o match:'^pid-file=/var/run/arcana-sdwan-dhcp-sw1-gw.pid$' \
+	    -o match:'^dhcp-leasefile=/var/db/arcana-sdwan-dhcp-sw1-gw.leases$' \
+	    cat "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf"
+	atf_check -o match:'^-rw------- ' ls -l "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf"
+	atf_check -o match:'^jexec 7 .*fake-dnsmasq --test -C /var/run/arcana-sdwan-dhcp-sw1-gw.conf$' \
+	    -o match:'^jexec 7 .*fake-setfib -F 1 .*fake-dnsmasq -C /var/run/arcana-sdwan-dhcp-sw1-gw.conf -x /var/run/arcana-sdwan-dhcp-sw1-gw.pid$' \
+	    -o match:'^jexec 7 /bin/pgrep -F /var/run/arcana-sdwan-dhcp-sw1-gw.pid -f .*fake-dnsmasq$' \
+	    cat jexec.log
+	test -f "$d/sdwan-dhcp@gw.json" || atf_fail "the jail's instances are not kept"
+	# Its leases read beneath its root; a link there is not followed.
+	printf '1791716017 00:11:22:33:44:66 10.2.0.50 host3 01:00:11:22:33:44:66\n' \
+	    > "$R/var/db/arcana-sdwan-dhcp-sw1-gw.leases"
+	atf_check -o match:'"dhcp":\[\{"name":"sw1","fib":1,"running":true,"leases":\[\]\},\{"name":"sw1-gw","fib":1,"jail":"gw","running":true,"leases":\[\{"expires":1791716017,"id":"00:11:22:33:44:66","address":"10.2.0.50","name":"host3"\}\]\}\]' \
+	    "$JGC" -c "$SOCK" sdwan
+	printf '1791716017 00:11:22:33:44:77 10.9.9.9 secret 01\n' > host.leases
+	rm "$R/var/db/arcana-sdwan-dhcp-sw1-gw.leases"
+	ln -s "$(pwd)/host.leases" "$R/var/db/arcana-sdwan-dhcp-sw1-gw.leases"
+	atf_check -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":true,"leases":\[\]' \
+	    -o not-match:'10.9.9.9' "$JGC" -c "$SOCK" sdwan
+	# Applied again: stopped by the jail's kill, started again.
+	: > jexec.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp \
+	    '{"jail":"gw","instances":[{"name":"sw1-gw","fib":1,"host":"edge-a/gw","spec":{"service":"acme","fib":1,"unis":[{"id":"uni-hq","interface":"lo3","ipv4":{"mode":"dhcp","prefix":"10.2.0.0/24","provider":["10.2.0.1"]}}]}}]}'
+	atf_check -o match:'^jexec 7 /bin/kill -TERM [0-9]+$' cat jexec.log
+	atf_check -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":true' "$JGC" -c "$SOCK" sdwan
+	# The jail's DNS: its file, response policy zones and log beneath
+	# its root, checked by the jail's checkconf, its certificate for
+	# DNS over TLS made there and told in the read.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns \
+	    '{"jail":"gw","instances":[{"name":"sw1-gw","fib":1,"host":"edge-a/gw","spec":{"service":"acme","fib":1,"dot":true,"unis":[{"id":"uni-hq","address":"10.2.0.1","prefix":"10.2.0.0/24"}],"zones":[{"name":"z0","prefixes":["10.2.0.0/24"],"dnf":{"id":"g-dnf","no-match":"allow","block":["ads.example"]},"pdns":{"no-match":"allow","block":[{"type":"CNAME","value":"bad.example"}]}}]}}]}'
+	atf_check -o match:'^	pidfile: "/var/run/arcana-sdwan-dns-sw1-gw.pid"$' \
+	    -o match:'^	logfile: "/var/log/arcana-sdwan-dns-sw1-gw.log"$' \
+	    -o match:'zonefile: "/var/run/arcana-sdwan-dns-sw1-gw.rpz-z0"$' \
+	    -o match:'tls-service-key: "/var/db/arcana-sdwan-dns-sw1-gw.tls.key"$' \
+	    cat "$R/var/run/arcana-sdwan-dns-sw1-gw.conf"
+	atf_check -o match:'^bad.example CNAME \.$' cat "$R/var/run/arcana-sdwan-dns-sw1-gw.rpz-z0"
+	atf_check -o match:'^jexec 7 .*fake-local-unbound-checkconf /var/run/arcana-sdwan-dns-sw1-gw.conf$' \
+	    -o match:'^jexec 7 /usr/bin/openssl req ' \
+	    -o match:'^jexec 7 .*fake-setfib -F 1 .*fake-local-unbound -c /var/run/arcana-sdwan-dns-sw1-gw.conf$' \
+	    cat jexec.log
+	atf_check -o match:'IP Address:10.2.0.1' openssl x509 -noout -text -in "$R/var/db/arcana-sdwan-dns-sw1-gw.tls.pem"
+	atf_check -o match:'"dns":\[\{"name":"sw1-gw","fib":1,"jail":"gw","running":true,"tls_cert":"-----BEGIN CERTIFICATE-----' \
+	    "$JGC" -c "$SOCK" sdwan
+	test -f "$d/sdwan-dns@gw.json" || atf_fail "the jail's DNS is not kept"
+	# What it blocked, from its log beneath the jail's root.
+	echo '[1792000000] unbound[123:0] info: ads.example. always_nxdomain 10.2.0.9@5353 www.ads.example. A IN' \
+	    >> "$R/var/log/arcana-sdwan-dns-sw1-gw.log"
+	wait_match '"kind":"sdwan-block","data":\{"name":"sw1-gw","daemon":"unbound","time":"1792000000","src":"10.2.0.9","function":"dnf"' \
+	    "$JGC" -c "$SOCK" events || atf_fail "$("$JGC" -c "$SOCK" events)"
+	# A restart: the jail's applied again from its own kept files.
+	stop_daemon
+	: > jexec.log
+	start_daemon
+	atf_check -o match:'^jexec 7 .*fake-dnsmasq --test -C /var/run/arcana-sdwan-dhcp-sw1-gw.conf$' \
+	    -o match:'^jexec 7 .*fake-local-unbound-checkconf /var/run/arcana-sdwan-dns-sw1-gw.conf$' \
+	    cat jexec.log
+	atf_check -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":true' "$JGC" -c "$SOCK" sdwan
+	# Emptied: stopped, their files and kept files gone, the leases and
+	# the key kept; the host's dnsmasq as it was.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp '{"jail":"gw","instances":[]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns '{"jail":"gw","instances":[]}'
+	test -e "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf" -o -e "$R/var/run/arcana-sdwan-dns-sw1-gw.conf" -o \
+	    -e "$R/var/run/arcana-sdwan-dns-sw1-gw.rpz-z0" && atf_fail "the jail's files stayed"
+	test -f "$d/sdwan-dhcp@gw.json" -o -f "$d/sdwan-dns@gw.json" && atf_fail "the jail's kept files stayed"
+	test -f "$R/var/db/arcana-sdwan-dns-sw1-gw.tls.key" || atf_fail "the jail's key went"
+	atf_check -o match:'"dhcp":\[\{"name":"sw1","fib":1,"running":true' -o not-match:'"sw1-gw"' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp '{"instances":[]}'
 }
 sdwan_dhcp_dns_cleanup()
 {
