@@ -13,6 +13,14 @@
     getsockname(2) there, were read from the kernel's path, not tried on
     a real one: the root suite's next round (a jail with an address of
     its own, a client in a vnet jail before it).
+- From FreeBSD main (2026-11-19, a8fd8a5a): IPv6 `ipfw fwd` was
+  dropped on the fast-forwarding path whenever net.inet6.ip6.redirect
+  is 0, which Arcana's sysctl hardening sets (fixed in fb9969ca61ca):
+  SSL inspection's IPv6 fwd rules and any IPv6 policy routing by fwd
+  went wrong on kernels before it.  To test on a kernel after it, and
+  to say in the SSL inspection tab when the host's kernel is older.
+  pkg(7) now takes -j and -r (cad99ff75342): an Install button for a
+  jail with no pkg yet can bootstrap it there.
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
   - Done (agent_test:services_jail, pwa_test:pwa_service_jail): a
