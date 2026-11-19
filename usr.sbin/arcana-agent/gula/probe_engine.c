@@ -122,7 +122,7 @@ struct job {
 	char			 ifname[IFNAMSIZ];
 	char			 peer[PUB_B64 + 1];
 	int			 cls;
-	bool			 ok;
+	bool			 ok, lacks;
 	struct stamp_key	 key;
 	char			 err[160];
 };
@@ -190,7 +190,7 @@ job_do(struct job *j)
 		    j->err, sizeof(j->err)) == 0;
 	else
 		j->fd = jail_socket(j->jail, j->af, j->fib, j->err,
-		    sizeof(j->err));
+		    sizeof(j->err), &j->lacks);
 }
 
 static void
@@ -349,7 +349,7 @@ jail_answer(struct job *j, double now)
 		if (waits_for(&targets[i], j->jail, j->fib, j->af))
 			waiting++;
 	if ((fd = jsock_made(j->jail, j->fib, j->af, j->gen, j->fd,
-	    waiting > 0, now, j->err)) == -2)
+	    j->lacks, waiting > 0, now, j->err)) == -2)
 		return;
 	for (i = 0; i < ntargets; i++) {
 		t = &targets[i];
@@ -594,7 +594,7 @@ prober(void *arg __unused)
 		while (jsock_ask(now, jail, sizeof(jail), &fib, &af, &gen))
 			if (!engine_jail(jail, fib, af, gen))
 				(void)jsock_made(jail, fib, af, gen, -1, false,
-				    now, strerror(errno));
+				    false, now, strerror(errno));
 		wait = 0.2;
 		n = 0;
 		for (i = 0; i < ntargets; i++) {
@@ -624,8 +624,8 @@ prober(void *arg __unused)
 							    errno));
 							(void)jsock_made(t->jail,
 							    t->fib, t->af, gen,
-							    -1, false, now,
-							    NULL);
+							    -1, false, false,
+							    now, NULL);
 							open_later(t, now);
 							state_set(t, ST_ERROR);
 							continue;

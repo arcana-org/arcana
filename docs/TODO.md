@@ -29,17 +29,21 @@
     and service-config take a jail: the jail's own service(8) runs the
     script (`service -j <jid>`), enable, disable and the variables are
     the jail's rc.conf by `sysrc -j`, put back as they were in safe
-    mode; a jail not running, a script it has not, and a jail's
-    pidfile are refused.  A running jail's services are read by
+    mode; a jail not running and a script it has not are refused.
+    A running jail's services are read by
     arcana-services' read action on arcana-jails' jail (the scripts
     and whether each is enabled read by the helper attached to the
     jail, never through a link out of its root), kept by the
     collector and the watcher as the host's, the event service-state
     saying the jail; the Services tab picks the host or a running
     jail, and a jail's page links to its services; `arcanactl
-    services -j`, `service -j`.  Left: a jail's stale pidfile is not
-    looked for, and a stopped one's start is seen by its status every
-    60 s, not by its pidfile.
+    services -j`, `service -j`.  A jail's stale pidfile is looked for
+    in the jail: the probe run by the jail's own sh and rc.subr
+    (jexec), the jail's processes and its pidfile by the helper
+    attached to it (rc-stale), and Mend pidfile writes it beneath the
+    jail's root through no link, refused as on the host.  Left: a
+    stopped one's start is seen by its status every 60 s, not by its
+    pidfile.
   - Upgrading every jail of the fleet by the panel's jobs (2026-11-18),
     all done (agent_test:pkg_watch, packages; pwa_test's Packages):
     - Done: the read of what is pending after an upgrade (ira/packages.c
@@ -270,11 +274,10 @@
   targets share one socket a jail, FIB and family, made by the helper
   in the jail with its FIB set there, and while one is in another
   table than 0 the jail has every FIB's socket of its family kept for
-  the replies, as the host does (gula/probe_icmp.c).  Left: a vnet
-  jail's net.fibs may be fewer than the host's, which counts the FIBs;
-  the sockets of FIBs the jail lacks are asked of the helper again and
-  again (the wait doubling to a minute): to read the jail's own
-  net.fibs.
+  the replies, as the host does (gula/probe_icmp.c).  Those FIBs are
+  the jail's own net.fibs (a vnet jail may have fewer than the host),
+  read in the jail by the helper once a jail started (kept by its jid);
+  a FIB it lacks is not asked for, nor asked again.
 - Done (agent_test:out_of_memory): a request or a job that runs out of
   memory fails alone, "out of memory", and the daemon goes on.
   wmalloc() and the rest serve a malloc(3) that fails from a reserve

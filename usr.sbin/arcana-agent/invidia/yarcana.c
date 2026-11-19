@@ -4163,6 +4163,10 @@ arcana_services_jail_services_read_action(cbl_req *req,
 		if ((y[i].has_pid = v[i].has_pid))
 			y[i].pid = v[i].pid;
 		y[i].status = v[i].status;
+		y[i].pidfile_stale = v[i].pidfile_stale;
+		y[i].pidfile = v[i].pidfile;
+		if ((y[i].has_pidfile_pid = v[i].has_pidfile_pid))
+			y[i].pidfile_pid = v[i].pidfile_pid;
 	}
 	if (in->name != NULL) {
 		y[0].description = one.description;

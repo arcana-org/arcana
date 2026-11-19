@@ -73,7 +73,8 @@ module arcana-services {
          restart).  rc's stop and restart then miss the daemon and
          its start makes a second one.  What is wrong with it, and the
          process found: its program's processes where rc looks for
-         them (outside jails, or in its service jail), their command
+         them (outside jails, or in its service jail; a jail's
+         service's, the jail's or its service jail's), their command
          line matched as rc.subr(8) matches it.  pid is that process,
          when it is the only one; the service-action job pidfile
          writes it in the pidfile.";
@@ -430,9 +431,10 @@ module arcana-services {
     uses now {
       description
         "As the jail's service(8) says it (service -j <jail> <name>
-         status).  pidfile-stale and its two leaves are not looked
-         for in a jail: its pidfile and program are paths of the jail,
-         and the script that sets them would run outside it.";
+         status).  pidfile-stale and its two leaves as the jail has
+         them: the script read by the jail's own sh and rc.subr, the
+         jail's processes alone looked at, its pidfile read as the
+         jail sees it; the paths are the jail's.";
     }
   }
 

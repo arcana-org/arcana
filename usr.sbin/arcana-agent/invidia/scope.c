@@ -365,6 +365,68 @@ helper_socket(int jid, const char *verb, const char *word)
 	return (fd);
 }
 
+/*
+ * A number of a jail's own network (net.*), as the helper attached to
+ * it reads it (its sysctl-int): for a caller with no work, the probes'
+ * worker.  0, or -1 when it could not be read.
+ */
+int
+helper_sysctl_int(int jid, const char *name, int *vp)
+{
+	static char *const		 noenv[] = { NULL };
+	posix_spawn_file_actions_t	 fa;
+	struct pollfd			 pfd;
+	char				 js[16], buf[32], *argv[6], *end;
+	pid_t				 pid;
+	ssize_t				 n;
+	size_t				 len;
+	long				 v;
+	int				 pp[2], rc, status;
+
+	if (pipe2(pp, O_CLOEXEC) == -1)
+		return (-1);
+	snprintf(js, sizeof(js), "%d", jid);
+	argv[0] = (char *)(uintptr_t)opts.helper_bin;
+	argv[1] = (char *)(uintptr_t)"--scope-helper";
+	argv[2] = js;
+	argv[3] = (char *)(uintptr_t)"sysctl-int";
+	argv[4] = (char *)(uintptr_t)name;
+	argv[5] = NULL;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null",
+	    O_RDONLY, 0);
+	posix_spawn_file_actions_adddup2(&fa, pp[1], STDOUT_FILENO);
+	rc = agent_spawn(&pid, argv[0], &fa, NULL, argv, noenv);
+	posix_spawn_file_actions_destroy(&fa);
+	close(pp[1]);
+	if (rc != 0) {
+		close(pp[0]);
+		return (-1);
+	}
+	len = 0;
+	n = -1;
+	pfd.fd = pp[0];
+	pfd.events = POLLIN;
+	while (len < sizeof(buf) - 1 && poll(&pfd, 1, 5000) == 1 && (n =
+	    read(pp[0], buf + len, sizeof(buf) - 1 - len)) > 0)
+		len += (size_t)n;
+	buf[len] = '\0';
+	close(pp[0]);
+	/* Not ended within 5 s, or more than a number: not waited for. */
+	if (n != 0)
+		(void)kill(pid, SIGKILL);
+	while (waitpid(pid, &status, 0) == -1 && errno == EINTR)
+		;
+	errno = 0;
+	v = strtol(buf, &end, 10);
+	if (len == 0 || errno != 0 || (*end != '\n' && *end != '\0') ||
+	    v < INT_MIN || v > INT_MAX || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != 0)
+		return (-1);
+	*vp = (int)v;
+	return (0);
+}
+
 /* A netlink(4) socket in a jail's own network, told of what is
  * watched. */
 int
@@ -996,6 +1058,9 @@ scope_helper(int argc, char **argv)
 	/* The jail's rc.d scripts, each enabled or not (services.c). */
 	if (strcmp(argv[1], "rc-scripts") == 0)
 		return (rc_scripts_helper(argc - 1, argv + 1));
+	/* A service's processes and pidfile, the jail's (services.c). */
+	if (strcmp(argv[1], "rc-stale") == 0)
+		return (rc_stale_helper(jid, argc - 1, argv + 1));
 	/* Whether pkg's repository answers from the jail (packages.c). */
 	if (strcmp(argv[1], "repo-reach") == 0)
 		return (repo_reach_helper(argc - 1, argv + 1));

@@ -74,10 +74,13 @@
  * What the collector saw is kept by the jail and the name, the jails
  * that run looked at with the host each COLLECT_S; the watcher watches
  * a running one's process as the host's (its pid is the host's too),
- * and the event service-state says the jail.  A jail's stale pidfile is
- * not looked for: its pidfile and program are paths of the jail, and
- * the probe that reads them runs the script outside it; a stopped one
- * is looked at by its status every UNKNOWN_S.
+ * and the event service-state says the jail; a stopped one is looked at
+ * by its status every UNKNOWN_S.  A jail's stale pidfile is looked for
+ * in the jail: its script's pidfile and program read by the probe run
+ * there by the jail's own sh and rc.subr (jexec(8)), its processes and
+ * its pidfile by the helper attached to it (rc_stale_helper()), which
+ * sees the jail's processes alone and its files as the jail has them;
+ * the pidfile is written beneath the jail's root, never through a link.
  */
 
 #include <sys/param.h>
@@ -155,6 +158,7 @@ struct rcproc {
 	const char	*pidfile;
 	const char	*procname;
 	const char	*interp;	/* command_interpreter, or "" */
+	const char	*svcj;		/* its service jail's name, or "" */
 	int		 jid;		/* 0, or its service jail's */
 };
 
@@ -177,6 +181,10 @@ static int	svc_run(struct work *, const char *, const char *,
 static void	svc_status(struct work *, struct arc_service *);
 static pid_t	svc_stale(struct work *, struct arc_service *,
 		    struct rcproc *);
+static pid_t	stale_find(struct work *, const struct rcproc *,
+		    struct arc_service *);
+static pid_t	jail_stale(struct work *, const struct rcproc *,
+		    struct arc_service *);
 static void	svc_pidfile(struct work *, const struct script *,
 		    struct service_action_rsp *);
 static const char *svc_rcvar(struct work *, const char *, const char **);
@@ -590,10 +598,8 @@ svc_status(struct work *w, struct arc_service *s)
 		s->pid = (uint32_t)strtoul(p + 4, NULL, 10);
 	}
 	/* Not running to rc: is its program running all the same?  Not in
-	 * a dry run: what it read follows a change it did not make; nor in
-	 * a jail (the comment at the top). */
-	if (s->has_running && !s->running && s->path != NULL && !w->dry &&
-	    w->jail == NULL)
+	 * a dry run: what it read follows a change it did not make. */
+	if (s->has_running && !s->running && s->path != NULL && !w->dry)
 		(void)svc_stale(w, s, NULL);
 }
 
@@ -618,7 +624,8 @@ static const char rc_probe[] =
 /*
  * A service's pidfile and program, as its script sets them: its top
  * level runs, as service(8) status runs it, so never for a viewer
- * (clearance()).  False when it has no pidfile.
+ * (clearance()).  A jail's runs in the jail, by its own sh and rc.subr
+ * (jexec(8)): its paths are the jail's.  False when it has no pidfile.
  */
 static bool
 svc_rcproc(struct work *w, const char *path, struct rcproc *rp)
@@ -632,9 +639,10 @@ svc_rcproc(struct work *w, const char *path, struct rcproc *rp)
 	argv[2] = (char *)(uintptr_t)rc_probe;
 	argv[3] = (char *)(uintptr_t)"sh";
 	argv[4] = (char *)(uintptr_t)path;
-	argv[5] = (char *)(uintptr_t)opts.rc_subr;
+	argv[5] = (char *)(uintptr_t)(w->jail != NULL ? "/etc/rc.subr" :
+	    opts.rc_subr);
 	argv[6] = NULL;
-	if (run_read(w, argv, &res) != 0 || res.outlen == 0)
+	if (run_read(w, scope_jexec(w, argv), &res) != 0 || res.outlen == 0)
 		return (false);
 	out = wstrndup(w, res.out, res.outlen);
 	for (i = 0; i < 4; i++)
@@ -644,9 +652,12 @@ svc_rcproc(struct work *w, const char *path, struct rcproc *rp)
 	rp->pidfile = f[0];
 	rp->procname = f[1];
 	rp->interp = f[2];
-	rp->jid = 0;
+	rp->svcj = f[3];
+	/* A jail's service jail is looked for in the jail, by the helper. */
+	rp->jid = w->jail != NULL ? w->jid : 0;
 	/* rc.subr's own fallback: no such jail, the host. */
-	if (f[3][0] != '\0' && (rp->jid = jail_getid(f[3])) < 0)
+	if (w->jail == NULL && f[3][0] != '\0' && (rp->jid =
+	    jail_getid(f[3])) < 0)
 		rp->jid = 0;
 	return (true);
 }
@@ -739,10 +750,27 @@ rc_proc_is(struct work *w, pid_t pid, const struct rcproc *rp)
  * pid that is gone or another program's?  Its pidfile is then stale,
  * said in s (pidfile, pidfile_pid, pidfile_stale; pid, the process,
  * when there is one alone).  The process found alone, or 0; rpp, the
- * script's pidfile and program.
+ * script's pidfile and program.  A jail's is looked at in the jail.
  */
 static pid_t
 svc_stale(struct work *w, struct arc_service *s, struct rcproc *rpp)
+{
+	struct rcproc	rp;
+
+	if (!svc_rcproc(w, s->path, &rp))
+		return (0);
+	if (rpp != NULL)
+		*rpp = rp;
+	return (w->jail != NULL ? jail_stale(w, &rp, s) : stale_find(w, &rp,
+	    s));
+}
+
+/*
+ * svc_stale()'s look, at rp's processes and pidfile as this process
+ * sees them: the host's, or the jail's in the helper attached to it.
+ */
+static pid_t
+stale_find(struct work *w, const struct rcproc *rpp, struct arc_service *s)
 {
 	struct kinfo_proc	*kp, *other;
 	struct rcproc		 rp;
@@ -754,10 +782,7 @@ svc_stale(struct work *w, struct arc_service *s, struct rcproc *rpp)
 	int			 mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_PROC };
 	const char		*bn;
 
-	if (!svc_rcproc(w, s->path, &rp))
-		return (0);
-	if (rpp != NULL)
-		*rpp = rp;
+	rp = *rpp;
 	bn = strrchr(rp.procname, '/') != NULL ? strrchr(rp.procname, '/') +
 	    1 : rp.procname;
 	/* The processes of its program, where rc looks for them. */
@@ -832,12 +857,120 @@ svc_stale(struct work *w, struct arc_service *s, struct rcproc *rpp)
 }
 
 /*
+ * stale_find() in the jail w works in, by the helper attached to it
+ * (rc_stale_helper()): the jail's processes alone, its service jail
+ * looked for there, its pidfile read as the jail has it.
+ */
+static pid_t
+jail_stale(struct work *w, const struct rcproc *rp, struct arc_service *s)
+{
+	struct execres	 res;
+	const char	*words[4], *stale;
+	char		*out, *line, *v, *end;
+	unsigned long	 n, fpid, pid;
+
+	words[0] = rp->pidfile;
+	words[1] = rp->procname;
+	words[2] = rp->interp[0] != '\0' ? rp->interp : "-";
+	words[3] = rp->svcj[0] != '\0' ? rp->svcj : "-";
+	if (run_read(w, helper_argv(w, "rc-stale", 4, words), &res) != 0 ||
+	    res.out == NULL)
+		return (0);
+	stale = NULL;
+	fpid = pid = 0;
+	out = wstrndup(w, res.out, res.outlen);
+	while ((line = strsep(&out, "\n")) != NULL) {
+		if ((v = strchr(line, ' ')) == NULL)
+			continue;
+		*v++ = '\0';
+		if (strcmp(line, "stale") == 0) {
+			stale = v;
+			continue;
+		}
+		errno = 0;
+		n = strtoul(v, &end, 10);
+		if (errno != 0 || *end != '\0' || n <= 1 || n > INT_MAX)
+			continue;
+		if (strcmp(line, "pidfile-pid") == 0)
+			fpid = n;
+		else if (strcmp(line, "pid") == 0)
+			pid = n;
+	}
+	if (stale == NULL)
+		return (0);
+	s->pidfile = wtext(w, rp->pidfile);
+	if (fpid != 0) {
+		s->has_pidfile_pid = true;
+		s->pidfile_pid = (uint32_t)fpid;
+	}
+	s->has_pid = pid != 0;
+	s->pid = (uint32_t)pid;
+	s->pidfile_stale = wtext(w, stale);
+	return ((pid_t)pid);
+}
+
+/*
+ * The helper's rc-stale (scope_helper(), attached to the jail jid):
+ * stale_find() for a service of the jail's, its pidfile, program,
+ * interpreter and service jail ("-" for none) as the probe run there
+ * read them.  Its lines "pidfile-pid N", "pid N" (the one process),
+ * "stale why", when stale; none otherwise.
+ */
+int
+rc_stale_helper(int jid, int argc, char **argv)
+{
+	struct work		w;
+	struct arc_service	s;
+	struct rcproc		rp;
+	pid_t			found;
+	int			rc;
+
+	if (argc != 5 || argv[1][0] != '/' || argv[2][0] == '\0')
+		return (2);
+	work_init(&w);
+	memset(&s, 0, sizeof(s));
+	rp.pidfile = argv[1];
+	rp.procname = argv[2];
+	rp.interp = strcmp(argv[3], "-") == 0 ? "" : argv[3];
+	rp.svcj = strcmp(argv[4], "-") == 0 ? "" : argv[4];
+	/* rc.subr's own fallback: no such jail, this one. */
+	rp.jid = jid;
+	if (rp.svcj[0] != '\0' && (rp.jid = jail_getid(rp.svcj)) < 0)
+		rp.jid = jid;
+	found = stale_find(&w, &rp, &s);
+	if (s.pidfile_stale != NULL) {
+		if (s.has_pidfile_pid)
+			printf("pidfile-pid %u\n", s.pidfile_pid);
+		if (found != 0)
+			printf("pid %d\n", (int)found);
+		printf("stale %s\n", s.pidfile_stale);
+	}
+	rc = fflush(stdout) == 0 ? 0 : 1;
+	work_free(&w);
+	return (rc);
+}
+
+/* Is pid still the one process of rp's program, where rc looks for it?
+ * A jail's, asked of the helper attached to it again. */
+static bool
+rc_proc_still(struct work *w, pid_t pid, const struct rcproc *rp)
+{
+	struct arc_service	s;
+
+	if (w->jail == NULL)
+		return (rc_proc_is(w, pid, rp));
+	memset(&s, 0, sizeof(s));
+	return (jail_stale(w, rp, &s) == pid);
+}
+
+/*
  * The service's stale pidfile written again with the pid of its
  * program's process, the one svc_stale() found alone, checked again
  * just before (where rc looks for it, its command line rc's match):
- * a file of the same mode next to it, renamed over it.  Refused when
- * rc says it runs, when nothing of it runs or more than one process
- * does, and when the pidfile is not a plain file.
+ * a file of the same mode next to it, renamed over it; a jail's
+ * beneath the jail's root, through no link.  Refused when rc says it
+ * runs, when nothing of it runs or more than one process does, and
+ * when the pidfile is not a plain file.
  */
 static void
 svc_pidfile(struct work *w, const struct script *sc,
@@ -846,12 +979,11 @@ svc_pidfile(struct work *w, const struct script *sc,
 	struct arc_service	 s;
 	struct rcproc		 rp;
 	struct stat		 st;
-	const char		*tmp;
+	const char		*base;
 	char			 line[32];
 	pid_t			 pid;
 	mode_t			 mode;
-	int			 fd, step;
-	ssize_t			 n;
+	int			 dfd, step, there;
 
 	memset(&s, 0, sizeof(s));
 	s.name = sc->name;
@@ -883,7 +1015,15 @@ svc_pidfile(struct work *w, const struct script *sc,
 		return;
 	}
 	mode = 0644;
-	if (lstat(rp.pidfile, &st) == 0) {
+	/* Its directory, a jail's opened beneath the jail's root. */
+	if ((dfd = scope_open_dir(w, rp.pidfile, &base)) == -1) {
+		step_end(w, step, false, "%s", strerror(errno));
+		rsp->error = wfmt(w, "%s: %s", rp.pidfile, strerror(errno));
+		return;
+	}
+	there = fstatat(dfd, base, &st, AT_SYMLINK_NOFOLLOW);
+	close(dfd);
+	if (there == 0) {
 		if (!S_ISREG(st.st_mode)) {
 			step_end(w, step, false, "not a plain file");
 			rsp->error = wfmt(w, "%s is not a plain file: not "
@@ -893,28 +1033,17 @@ svc_pidfile(struct work *w, const struct script *sc,
 		mode = st.st_mode & 0777;
 	}
 	/* The process checked again, now: still its program's. */
-	if (!rc_proc_is(w, pid, &rp)) {
+	if (!rc_proc_still(w, pid, &rp)) {
 		step_end(w, step, false, "pid %d is gone", (int)pid);
 		rsp->error = wfmt(w, "pid %d is no longer %s's: not written",
 		    (int)pid, rp.procname);
 		return;
 	}
-	tmp = wfmt(w, "%s.arcana", rp.pidfile);
 	snprintf(line, sizeof(line), "%d\n", (int)pid);
-	(void)unlink(tmp);
-	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
-	    O_CLOEXEC, mode)) == -1) {
-		step_end(w, step, false, "%s: %s", tmp, strerror(errno));
-		rsp->error = wfmt(w, "%s: %s", tmp, strerror(errno));
-		return;
-	}
-	n = write(fd, line, strlen(line));
-	(void)fchmod(fd, mode);
-	if (n != (ssize_t)strlen(line) || fsync(fd) == -1 || close(fd) == -1 ||
-	    rename(tmp, rp.pidfile) == -1) {
+	if (scope_replace(w, rp.pidfile, line, strlen(line), mode, NULL) ==
+	    -1) {
 		step_end(w, step, false, "%s", strerror(errno));
 		rsp->error = wfmt(w, "%s: %s", rp.pidfile, strerror(errno));
-		(void)unlink(tmp);
 		return;
 	}
 	step_end(w, step, true, "%s's pid, %d", rp.procname, (int)pid);
@@ -1092,13 +1221,6 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 			rsp->error = wtext(w, exec_error(w, &res, "sysrc"));
 		break;
 	case ARC_SERVICE_ACTION_PIDFILE:
-		if (w->jail != NULL) {
-			rsp->error = wfmt(w, "a jail's pidfile is not looked "
-			    "at: its paths are the jail's (service -j %s %s "
-			    "status says what the jail's rc says)", w->jail,
-			    name);
-			goto out;
-		}
 		svc_pidfile(w, sc, rsp);
 		break;
 	default:
@@ -1721,7 +1843,8 @@ pass_rp(struct work *w, const struct script *f, struct look *l)
 	struct collected	*c;
 	size_t			 k;
 
-	/* A jail's: none read (the comment at the top). */
+	/* A jail's: none read, its status looked at (the comment at the
+	 * top). */
 	l->rp_state = l->jail[0] == '\0' && f != NULL && svc_rcproc(w,
 	    f->path, &l->rp) ? RP_READ : RP_NONE;
 	l->rp_at = time(NULL);
@@ -1826,11 +1949,12 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 	struct work		 w;
 	struct look		*lv, *l;
 	struct arc_service	 s;
-	struct script		*sc = NULL;
+	struct script		*sc = NULL, *jsc = NULL;
 	const struct script	*f;
 	struct collected	*c;
 	const char		*e;
-	size_t			 nl, i, nsc = 0;
+	char			 jread[MAXHOSTNAMELEN] = "";
+	size_t			 nl, i, nsc = 0, njsc = 0;
 	time_t			 now;
 	pid_t			 pid;
 	bool			 full, read = false;
@@ -1897,12 +2021,18 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 			continue;
 		memset(&s, 0, sizeof(s));
 		if (l->jail[0] != '\0') {
-			/* A jail's, by its own service(8): its script's path
-			 * is not needed there.  A jail gone is the
-			 * collector's to forget. */
+			/* A jail's, by its own service(8); its scripts read
+			 * there once a pass a jail, for its stale pidfile.  A
+			 * jail gone is the collector's to forget. */
 			if (scope_enter_jail(&w, l->jail, &e, false) != 0)
 				continue;
+			if (strcmp(jread, l->jail) != 0) {
+				scan_scripts(&w, &jsc, &njsc);
+				(void)strlcpy(jread, l->jail, sizeof(jread));
+			}
 			s.name = wtext(&w, l->name);
+			if ((f = script_find(jsc, njsc, l->name)) != NULL)
+				s.path = wtext(&w, f->path);
 			svc_status(&w, &s);
 			w.jail = NULL;
 			w.jid = 0;

@@ -11093,18 +11093,105 @@ part_service_jail(void)
 	    ".click()");
 }
 
+/*
+ * A stale pidfile in the jail: its program runs while its pidfile names
+ * this test's own process.  The script is read by the jail's sh and
+ * rc.subr (jexec, the jail's paths beneath its root here), its
+ * processes and pidfile by the helper attached to it (the agent's own,
+ * on this host's processes, the pidfile beneath the jail's root); the
+ * row says it, and Mend pidfile writes the one process's pid beneath
+ * the jail's root.
+ */
+static void
+part_service_jail_stale(const char *agent)
+{
+	char	buf[2048], prog[MAXPATHLEN], *argv[3];
+	pid_t	sp;
+	int	i;
+
+	snprintf(buf, sizeof(buf), "#!/bin/sh\necho \"jexec $*\" >> "
+	    "%s/jexec.log\nr=$(awk -v j=\"$1\" '$2 == j { print $4 }' "
+	    "%s/jails)\nshift\n[ \"$1\" = /bin/sh -a \"$2\" = -c ] && exec "
+	    "/bin/sh -c \"$3\" \"$4\" \"$r$5\" \"$r$6\"\nexit 1\n", cwd, cwd);
+	put("fake-jexec", buf);
+	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+	ATF_REQUIRE(rename("fake-helper", "fake-helper.real") == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nif [ \"$3\" = rc-stale ]; then "
+	    "r=$(awk -v j=\"$2\" '$2 == j { print $4 }' %s/jails); \"%s\" "
+	    "--scope-helper 0 rc-stale \"$r$4\" \"$5\" \"$6\" \"$7\" | sed "
+	    "\"s|$r||g\"; exit 0; fi\nexec %s/fake-helper.real \"$@\"\n", cwd,
+	    agent, cwd);
+	put("fake-helper", buf);
+	ATF_REQUIRE(chmod("fake-helper", 0755) == 0);
+	snprintf(prog, sizeof(prog), "%s/staled", cwd);
+	snprintf(buf, sizeof(buf), "cp /bin/sleep '%s' && mkdir -p "
+	    "jroot/etc/rc.d jroot/var/run && printf '# rc.subr, stood in "
+	    "for\\n' > jroot/etc/rc.subr && echo 'staled_enable=\"YES\"' >> "
+	    "jroot/etc/rc.conf", prog);
+	ATF_REQUIRE(system(buf) == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nname=staled\npidfile=/var/run/"
+	    "staled.pid\ncommand=%s\nrun_rc_command \"$1\"\n", prog);
+	put("jroot/etc/rc.d/staled", buf);
+	ATF_REQUIRE(chmod("jroot/etc/rc.d/staled", 0755) == 0);
+	argv[0] = prog;
+	argv[1] = (char *)(uintptr_t)"300";
+	argv[2] = NULL;
+	sp = spawn(argv, "staled.out");
+	snprintf(buf, sizeof(buf), "%d\n", (int)getpid());
+	put("jroot/var/run/staled.pid", buf);
+	run("document.querySelector('button[data-act=refresh]').click()");
+	snprintf(buf, sizeof(buf), "document.querySelector('select[data-input="
+	    "svc-jail]')?.value === 'gw' && document.querySelector('.svc"
+	    "[data-arg=staled].stale b.warn')?.textContent.includes('pid %d, "
+	    "its pidfile is stale') && document.querySelector('.svc[data-arg="
+	    "staled] button[data-act=svc][data-value=pidfile]') && !document."
+	    "querySelector('.svc[data-arg=staled] button[data-value=start]')",
+	    (int)sp);
+	wait_js(buf, 30);
+	run("document.querySelector('.svc[data-arg=staled]').click()");
+	snprintf(buf, sizeof(buf), "document.querySelector('.drawer "
+	    ".svc-stale')?.textContent.includes('/var/run/staled.pid names pid "
+	    "%d, another program') && document.querySelector('.drawer "
+	    ".svc-stale').textContent.includes('service -j gw staled status') "
+	    "&& document.querySelector('.drawer .svc-stale').textContent."
+	    "includes('writes pid %d')", (int)getpid(), (int)sp);
+	wait_js(buf, 20);
+	shot("6f-service-jail-stale");
+	run("document.querySelector('.drawer .svc-stale button[data-act=svc]"
+	    "[data-value=pidfile]').click()");
+	wait_js("document.querySelector('button[data-act=queue-run]') || "
+	    "[...document.querySelectorAll('.dock .o-ok, .dock .o-running')]."
+	    "some(t => t.textContent.includes('service staled pidfile'))", 10);
+	run("document.querySelector('button[data-act=queue-run]')?.click()");
+	wait_js("[...document.querySelectorAll('.dock .o-ok')].some(t => "
+	    "t.textContent.includes('service staled pidfile'))", 30);
+	/* The host's effect: the one process's pid, beneath the jail's
+	 * root. */
+	snprintf(buf, sizeof(buf), "test \"$(cat jroot/var/run/staled.pid)\" "
+	    "= %d", (int)sp);
+	for (i = 0; i < 100 && system(buf) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(system(buf) == 0, "the jail's pidfile was not mended");
+	wait_js("document.querySelector('.svc[data-arg=staled].s-stopped') && "
+	    "!document.querySelector('.svc[data-arg=staled].stale')", 20);
+	(void)kill(sp, SIGTERM);
+}
+
 ATF_TC_WITH_CLEANUP(pwa_service_jail);
 ATF_TC_HEAD(pwa_service_jail, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "A running jail picked on the Services tab: its own scripts listed, one started there by the job with the jail (service -j, its marker in the jail's root), its drawer the jail's");
-	atf_tc_set_md_var(tc, "timeout", "180");
+	atf_tc_set_md_var(tc, "descr", "A running jail picked on the Services tab: its own scripts listed, one started there by the job with the jail (service -j, its marker in the jail's root), its drawer the jail's; a stale pidfile in the jail said on its row and in its drawer, mended by the job beneath the jail's root");
+	atf_tc_set_md_var(tc, "timeout", "240");
 }
 ATF_TC_BODY(pwa_service_jail, tc)
 {
 
 	prologue(tc, 1);
 	part_service_jail();
+	part_service_jail_stale(locate(tc,
+	    "../../../usr.sbin/arcana-agent/arcana-agent", "arcana-agent",
+	    "/usr/local/sbin/arcana-agent"));
 }
 ATF_TC_CLEANUP(pwa_service_jail, tc)
 {

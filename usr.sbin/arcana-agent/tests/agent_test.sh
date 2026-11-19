@@ -276,6 +276,14 @@ rc-scripts)
 		[ -f "\$r/unread" ] && e="?"
 		echo "\$n \${f#\$r} \$e"
 	done ;;
+rc-stale)
+	# A jail's service's processes and pidfile: the agent's own helper
+	# on the host's processes, its pidfile the one beneath ./jails'
+	# root, what it says told as the jail's paths.
+	r=\$(awk -v j="\$jid" '\$2 == j { print \$4 }' $(pwd)/jails 2>/dev/null)
+	[ -n "\$r" ] || { echo "jail_attach(\$jid): no such jail" >&2; exit 1; }
+	"$JGD" --scope-helper 0 rc-stale "\$r\$1" "\$2" "\$3" "\$4" |
+	    sed "s|\$r||g" ;;
 carp-set)
 	echo "carp-set \$* key=\$(cat)" >> $(pwd)/carp.log ;;
 repo-reach)
@@ -4652,7 +4660,9 @@ probe_jail_sockets_head()
 	    "and handed over: three of a family in one jail, one of the" \
 	    "other, one in another jail, three sockets asked for; a target" \
 	    "added to them takes the one there; two FIBs in one jail, a" \
-	    "socket each, and every FIB's kept for the replies"
+	    "socket each, and every FIB's kept for the replies, the jail's" \
+	    "own net.fibs' (a jail with 2 while the host has 8: two a" \
+	    "family, none asked again)"
 	atf_set "timeout" "60"
 }
 probe_jail_sockets_body()
@@ -4660,16 +4670,23 @@ probe_jail_sockets_body()
 	local d="$(pwd)"
 
 	command -v python3 >/dev/null || atf_skip "no python3 to hand a socket over"
-	mkdir -p jroot jroot2 jroot3
-	printf 'gw 4 new %s/jroot\ngw2 5 new %s/jroot2\ngw3 6 new %s/jroot3\n' \
-	    "$d" "$d" "$d" > jails
+	mkdir -p jroot jroot2 jroot3 jroot4
+	printf 'gw 4 new %s/jroot\ngw2 5 new %s/jroot2\ngw3 6 new %s/jroot3\ngw4 7 new %s/jroot4\n' \
+	    "$d" "$d" "$d" "$d" > jails
+	# The host's 8 FIBs, raw sockets hearing their own table's alone.
+	export FAKESYSCTL="net.fibs=8 net.inet.raw.bind_all_fibs=0"
 	DAEMON_ARGS="-d" start_daemon
 	# The helper's icmp-socket family:fib: a datagram socket of the
 	# family (one a user may make), handed over as the helper hands its
-	# raw one; each asked for logged.
+	# raw one; each asked for logged.  The jail's net.fibs: gw4's 2,
+	# the others' not told (the host's taken); each read logged.
 	mv fake-helper fake-helper.real
 	cat > fake-helper <<EOS
 #!/bin/sh
+if [ "\$3" = sysctl-int ]; then
+	echo "\$2 sysctl-int \$4" >> $d/sysctl.log
+	[ "\$2" = 7 -a "\$4" = net.fibs ] && { echo 2; exit 0; }
+fi
 if [ "\$3" = icmp-socket ]; then
 	echo "\$2 icmp-socket \$4" >> $d/sockets.log
 	exec python3 -I -c 'import socket, sys
@@ -4716,13 +4733,10 @@ EOS
 	    atf_fail "not asked again: $(cat sockets.log)"
 	# Two FIBs in one jail: a socket each, the helper asked for each
 	# FIB; and as on the host, while one is in another table than 0,
-	# every FIB's of the family in the jail (net.fibs, 16 at most) kept
-	# for the replies, which come in on whichever FIB's interface they
-	# do: only the two where raw sockets hear every table's.
-	nf=$(/sbin/sysctl -n net.fibs)
-	[ "$nf" -gt 16 ] && nf=16
-	[ "$(/sbin/sysctl -n net.inet.raw.bind_all_fibs 2>/dev/null)" = 1 ] && nf=2
-	[ "$nf" -lt 2 ] && nf=2
+	# every FIB's of the family in the jail (net.fibs, 16 at most; the
+	# host's 8, the jail's not told) kept for the replies, which come in
+	# on whichever FIB's interface they do.
+	nf=8
 	: > sockets.log
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
 	    '{"jail":"gw3","targets":[{"id":"t8","address":"127.0.0.1"},{"id":"t9","address":"127.0.0.1","fib":1}]}'
@@ -4746,6 +4760,24 @@ EOS
 	atf_check -o inline:"$nf\n" sh -c 'wc -l < sockets.log | tr -d " "'
 	atf_check -o match:'"id":"t8","address":"127.0.0.1","family":"inet","jail":"gw3","fib":0,"state":"(unknown|up|down)"' \
 	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'probe: jail gw3 has 8 FIBs' cat daemon.out
+	# A vnet jail with fewer FIBs than the host: its net.fibs 2, read
+	# there once; a socket of FIB 0 and 1 a family, the six FIBs it
+	# lacks never asked for, nor anything asked again.
+	: > sockets.log
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
+	    '{"jail":"gw4","targets":[{"id":"u1","address":"127.0.0.1","fib":1},{"id":"u2","address":"::1","fib":1}]}'
+	wait_match '^4$' sh -c 'wc -l < sockets.log | tr -d " "' ||
+	    atf_fail "not each FIB's: $(cat sockets.log)"
+	sleep 4
+	atf_check -o inline:'7 icmp-socket inet6:0\n7 icmp-socket inet6:1\n7 icmp-socket inet:0\n7 icmp-socket inet:1\n' \
+	    sort sockets.log
+	atf_check -o inline:'7 sysctl-int net.fibs\n' grep '^7 ' sysctl.log
+	atf_check -o match:'probe: jail gw4 has 2 FIBs' cat daemon.out
+	atf_check -o save:sd.json "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"id":"u1","address":"127.0.0.1","family":"inet","jail":"gw4","fib":1,"state":"(unknown|up|down)"' \
+	    -o match:'"id":"u2","address":"::1","family":"inet6","jail":"gw4","fib":1,"state":"(unknown|up|down)"' \
+	    cat sd.json
 }
 probe_jail_sockets_cleanup()
 {
@@ -11550,11 +11582,77 @@ services_jail_body()
 	    "$JGC" -c "$SOCK" services -j gone
 	atf_check -s exit:1 -o match:"the jail svcj has no rc.d script 'nope'" \
 	    "$JGC" -c "$SOCK" service -j svcj nope start
-	atf_check -s exit:1 -o match:"a jail's pidfile is not looked at" \
-	    "$JGC" -c "$SOCK" service -j svcj crowdsec pidfile
 	atf_check -s exit:1 -e match:"the jail svcj has no rc.d script 'nope'" \
 	    "$JGC" -c "$SOCK" service -j svcj nope config
 	atf_check -o not-match:'nope' cat jail-service.log
+	# A stale pidfile in the jail: its script read by the jail's sh and
+	# rc.subr (jexec, the paths beneath its root here), its processes
+	# and pidfile by the helper attached to it.
+	mkdir -p jroot/var/run
+	printf '# rc.subr, stood in for\n' > jroot/etc/rc.subr
+	cat > jroot/etc/rc.d/staled <<EOS
+#!/bin/sh
+name=staled
+pidfile=/var/run/staled.pid
+command=$(pwd)/staled
+run_rc_command "\$1"
+EOS
+	chmod +x jroot/etc/rc.d/staled
+	echo 'staled_enable="YES"' >> jroot/etc/rc.conf
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+shift
+[ "\$1" = /bin/sh -a "\$2" = -c ] && exec /bin/sh -c "\$3" "\$4" "\$r\$5" "\$r\$6"
+exit 1
+EOS
+	chmod +x fake-jexec
+	cp /bin/sleep staled
+	"$(pwd)/staled" 300 &
+	sp=$!
+	echo "$sp" >> procs
+	echo $$ > jroot/var/run/staled.pid
+	atf_check -o match:"^staled +enabled +stale +$sp" \
+	    -o match:'fake-jexec 7 /bin/sh -c .* sh /etc/rc.d/staled /etc/rc.subr' \
+	    -o match:"fake-helper --scope-helper 7 rc-stale /var/run/staled.pid $(pwd)/staled - -" \
+	    "$JGC" -t -c "$SOCK" services -j svcj
+	atf_check -o match:"Pidfile stale: /var/run/staled.pid names pid $$, another program.s \([a-z-]+\), while .*/staled runs as pid $sp" \
+	    "$JGC" -c "$SOCK" service -j svcj staled config
+	# Mended beneath the jail's root, its mode kept.
+	chmod 640 jroot/var/run/staled.pid
+	atf_check -o match:'done +svcj: service staled pidfile' \
+	    -o match:"write: .*/staled.s pid, $sp" \
+	    "$JGC" -c "$SOCK" service -j svcj staled pidfile
+	atf_check -o inline:"$sp\n" cat jroot/var/run/staled.pid
+	atf_check -o match:'640' stat -f %Lp jroot/var/run/staled.pid
+	atf_check -o match:'^staled +enabled +stopped' \
+	    "$JGC" -c "$SOCK" services -j svcj
+	atf_check -s exit:1 -o match:'nothing to write' \
+	    "$JGC" -c "$SOCK" service -j svcj staled pidfile
+	# Refused as on the host: two of its program, a link in its place,
+	# a directory that leads out of the jail.
+	"$(pwd)/staled" 300 &
+	echo "$!" >> procs
+	echo $$ > jroot/var/run/staled.pid
+	atf_check -s exit:1 -o match:"2 processes of .*/staled run \(pids [0-9, ]+\): which is the service.s is not known" \
+	    "$JGC" -c "$SOCK" service -j svcj staled pidfile
+	atf_check -o inline:"$$\n" cat jroot/var/run/staled.pid
+	kill "$!"
+	rm jroot/var/run/staled.pid
+	ln -s "$(pwd)/outside" jroot/var/run/staled.pid
+	atf_check -s exit:1 -o match:'is not a plain file' \
+	    "$JGC" -c "$SOCK" service -j svcj staled pidfile
+	atf_check test ! -e outside
+	rm -r jroot/var/run
+	mkdir hostrun
+	echo $$ > hostrun/staled.pid
+	ln -s "$(pwd)/hostrun" jroot/var/run
+	atf_check -s exit:1 -o match:'/var/run/staled.pid: ' \
+	    "$JGC" -c "$SOCK" service -j svcj staled pidfile
+	atf_check -o inline:"$$\n" cat hostrun/staled.pid
+	rm jroot/var/run
+	kill "$sp"
 	# Its process, the host's pid, watched: killed by hand, told by the
 	# kernel, the event saying the jail.
 	sleep 300 &

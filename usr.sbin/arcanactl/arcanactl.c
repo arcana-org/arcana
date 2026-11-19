@@ -3106,6 +3106,10 @@ jservice_of(const yjservice *y)
 	s.has_pid = y->has_pid;
 	s.pid = y->pid;
 	s.status = y->status;
+	s.pidfile = y->pidfile;
+	s.has_pidfile_pid = y->has_pidfile_pid;
+	s.pidfile_pid = y->pidfile_pid;
+	s.pidfile_stale = y->pidfile_stale;
 	return (s);
 }
 

@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A jail's stale pidfile, a jail's own net.fibs; agent 0.332.0, console 0.475.0
+
+- A jail's stale pidfile is looked for in the jail (its script read by
+  the jail's own sh and rc.subr through jexec, its processes and
+  pidfile by the helper attached to the jail, verb rc-stale), and the
+  Services tab shows it with a jail picked; Mend pidfile
+  (service-action pidfile) works for a jail, writing beneath the jail's
+  root through no link, refused as on the host.  The jail services read
+  carries pidfile-stale, pidfile and pidfile-pid.
+- A jail's echo sockets kept for every FIB's replies are as many as the
+  jail's own net.fibs (read in the jail once per jail start), not the
+  host's: a vnet jail with fewer FIBs is no longer asked again and
+  again for sockets of FIBs it lacks.
+
 ### BMP's loopback route looked up first; agent 0.331.0
 
 - The loopback route agent 0.323.0 puts in a BMP station's FIB is now
