@@ -93,6 +93,13 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### BMP's loopback route looked up first; agent 0.331.0
+
+- The loopback route agent 0.323.0 puts in a BMP station's FIB is now
+  looked up first (RTM_GETROUTE, no privilege needed) and added only
+  where it is missing: an agent without route privilege refused even a
+  route that was there, and its BMP station had no listener.
+
 ### The Security section's filters and detections in jails; agent 0.330.0, console 0.474.0
 
 - The Security section's URL filters (Squid, with c-icap and ClamAV)

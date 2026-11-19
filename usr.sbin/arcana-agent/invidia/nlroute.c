@@ -642,6 +642,32 @@ route_lookup(FILE *out, const char *address, uint32_t fib)
 	return (rc);
 }
 
+/* Whether table fib has a host route of sin's address already. */
+static bool
+loopback_routed(struct snl_state *ss, const struct sockaddr_in *sin,
+    uint32_t fib)
+{
+	struct snl_parsed_route	 r = { .rtax_weight = RT_DEFAULT_WEIGHT };
+	struct snl_writer	 nw;
+	struct nlmsghdr		*hdr;
+	struct rtmsg		*rtm;
+
+	snl_init_writer(ss, &nw);
+	hdr = snl_create_msg_request(&nw, RTM_GETROUTE);
+	rtm = snl_reserve_msg_object(&nw, struct rtmsg);
+	rtm->rtm_family = AF_INET;
+	rtm->rtm_dst_len = 32;
+	snl_add_msg_attr_ip(&nw, RTA_DST, (const struct sockaddr *)sin);
+	snl_add_msg_attr_u32(&nw, RTA_TABLE, fib);
+	return ((hdr = snl_finalize_msg(&nw)) != NULL && snl_send_message(ss,
+	    hdr) && (hdr = snl_read_reply(ss, hdr->nlmsg_seq)) != NULL &&
+	    hdr->nlmsg_type == NL_RTM_NEWROUTE && snl_parse_nlmsg(ss, hdr,
+	    &snl_rtm_route_parser, &r) && r.rtm_dst_len == 32 && r.rta_dst !=
+	    NULL && r.rta_dst->sa_family == AF_INET && ((const struct
+	    sockaddr_in *)(const void *)r.rta_dst)->sin_addr.s_addr ==
+	    sin->sin_addr.s_addr);
+}
+
 /*
  * 127.0.0.1 by lo0 in table fib, of the network the caller is in, when
  * the table has no route of that address: rc.d/routing's _loopback
@@ -670,6 +696,13 @@ route_loopback(int fib)
 	sin.sin_len = sizeof(sin);
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	/* Asked first, which needs no privilege: the kernel refuses an
+	 * agent without PRIV_NET_ROUTE the add (EPERM) before it would say
+	 * the route is there (EEXIST). */
+	if (loopback_routed(&ss, &sin, (uint32_t)fib)) {
+		snl_free(&ss);
+		return (0);
+	}
 	snl_init_writer(&ss, &nw);
 	hdr = snl_create_msg_request(&nw, RTM_NEWROUTE);
 	hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL;
