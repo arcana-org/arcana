@@ -642,6 +642,59 @@ route_lookup(FILE *out, const char *address, uint32_t fib)
 	return (rc);
 }
 
+/*
+ * 127.0.0.1 by lo0 in table fib, of the network the caller is in, when
+ * the table has no route of that address: rc.d/routing's _loopback
+ * route ("-inet 127.0.0.1 -iface lo0"), which a table made after boot,
+ * or one of a vnet whose rc does not run, lacks with
+ * net.add_addr_allfibs 0.  A route of the address already there is left
+ * as it is.  0 when the route is there, -1 with errno.
+ */
+int
+route_loopback(int fib)
+{
+	struct sockaddr_in	 sin;
+	struct snl_errmsg_data	 e = { 0 };
+	struct snl_state	 ss;
+	struct snl_writer	 nw;
+	struct nlmsghdr		*hdr;
+	struct rtmsg		*rtm;
+	uint32_t		 oif;
+	int			 error;
+
+	if ((oif = if_nametoindex("lo0")) == 0)
+		return (-1);
+	if (!snl_init(&ss, NETLINK_ROUTE))
+		return (-1);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_len = sizeof(sin);
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	snl_init_writer(&ss, &nw);
+	hdr = snl_create_msg_request(&nw, RTM_NEWROUTE);
+	hdr->nlmsg_flags |= NLM_F_CREATE | NLM_F_EXCL;
+	rtm = snl_reserve_msg_object(&nw, struct rtmsg);
+	rtm->rtm_family = AF_INET;
+	rtm->rtm_protocol = RTPROT_STATIC;
+	rtm->rtm_type = RTN_UNICAST;
+	rtm->rtm_dst_len = 32;
+	snl_add_msg_attr_ip(&nw, RTA_DST, (struct sockaddr *)&sin);
+	snl_add_msg_attr_u32(&nw, RTA_TABLE, (uint32_t)fib);
+	snl_add_msg_attr_u32(&nw, RTA_OIF, oif);
+	snl_add_msg_attr_u32(&nw, NL_RTA_RTFLAGS, RTF_UP | RTF_HOST |
+	    RTF_STATIC);
+	errno = 0;
+	error = 0;
+	if ((hdr = snl_finalize_msg(&nw)) == NULL || !snl_send_message(&ss,
+	    hdr) || !snl_read_reply_code(&ss, hdr->nlmsg_seq, &e))
+		error = e.error != 0 ? e.error : errno != 0 ? errno : EINVAL;
+	snl_free(&ss);
+	if (error == EEXIST)
+		error = 0;
+	errno = error;
+	return (error == 0 ? 0 : -1);
+}
+
 /* A link-level address as it is written: aa:bb:cc:dd:ee:ff. */
 static void
 lladdr_text(const struct nlattr *nla, char *buf, size_t len)

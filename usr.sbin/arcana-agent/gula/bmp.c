@@ -15,7 +15,13 @@
  * The listener is the FIB's (SO_SETFIB) and wildcard: lo0 is FIB 0's,
  * and with net.inet.tcp.bind_all_fibs 0 a socket of another FIB binds
  * none of its addresses, while a connection from FIB N to 127.0.0.1
- * reaches a wildcard listener of FIB N and no other.  Wildcard, it is
+ * reaches a wildcard listener of FIB N and no other.  That connection
+ * needs FIB N to route 127.0.0.1 by lo0: rc.d/routing puts the route in
+ * each FIB there is at boot, and lo0's address in each with
+ * net.add_addr_allfibs 1, but a FIB made later, or a vnet jail whose rc
+ * does not run, with net.add_addr_allfibs 0 (a new vnet takes the
+ * host's), has none.  The listener puts it there, as rc.d/routing
+ * would, when the table has no route of that address.  Wildcard, it is
  * open on the FIB's other addresses too: a far end that is not the
  * loopback is closed at once (a packet from 127/8 that came in on
  * another interface is dropped by the kernel).  A vnet jail's edge has
@@ -131,7 +137,8 @@ bmp_port(int fib)
 	return (opts.bmp_port + fib);
 }
 
-/* A listener of FIB fib, wildcard, on port: -1 with errno. */
+/* A listener of FIB fib, wildcard, on port, and FIB fib's route of
+ * 127.0.0.1 by lo0, in the network the caller is in: -1 with errno. */
 int
 bmp_listen(int fib, int port)
 {
@@ -151,7 +158,7 @@ bmp_listen(int fib, int port)
 	sin.sin_family = AF_INET;
 	sin.sin_port = htons((uint16_t)port);
 	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == -1 ||
-	    listen(fd, 4) == -1)
+	    listen(fd, 4) == -1 || (fib > 0 && route_loopback(fib) == -1))
 		goto bad;
 	return (fd);
 bad:

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.322.0"
+#define	ARCANA_AGENT_VERSION	"0.323.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1776,6 +1776,7 @@ char		**helper_argv(struct work *, const char *, size_t,
 int		 route_helper(int, char **);
 int		 route_list(FILE *, int, uint32_t, const char *, const char *);
 int		 route_lookup(FILE *, const char *, uint32_t);
+int		 route_loopback(int);
 int		 neigh_list(FILE *, int, const char *);
 int		 addr_lines(FILE *);
 int		 route_socket(void);

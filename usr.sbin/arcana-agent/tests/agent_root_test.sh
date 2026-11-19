@@ -2857,8 +2857,10 @@ sdwan_bmp_jail_lab_body()
 	atf_check ifconfig ${e%a}b vnet arcw_mjb
 	# The edge: the epair's end in FIB 2 of the jail's own (a vnet's
 	# net.fibs is its own, 1 when it is made), the loopback (FIB 0's)
-	# where BIRD sends its BMP.
-	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3
+	# where BIRD sends its BMP.  Its address in FIB 0 alone
+	# (net.add_addr_allfibs 0, the vnet's own too): FIB 2's route of
+	# 127.0.0.1 is the station's to put there.
+	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3 net.add_addr_allfibs=0
 	atf_check jexec arcw_mja ifconfig lo0 inet 127.0.0.1/8 up
 	atf_check jexec arcw_mja ifconfig $e fib 2
 	atf_check jexec arcw_mja ifconfig $e inet 10.95.0.1/24 up
@@ -2892,10 +2894,12 @@ sdwan_bmp_jail_lab_body()
 	    -o match:'"policy":"pre","action":"announce","prefix":"198.51.100.0/24","next_hop":"10.95.0.2","as_path":"65002"' \
 	    -o match:'"policy":"post","action":"announce","prefix":"192.0.2.0/24","next_hop":"10.95.0.2","as_path":"65002"' \
 	    cat sdwan.out
-	# The listener is the edge jail's network's, not the host's.
+	# The listener is the edge jail's network's, not the host's; FIB 2
+	# routes 127.0.0.1 by lo0, the station's route.
 	atf_check -o match:"\*:$((P + 2)) " jexec arcw_mja sockstat -4 -l -q \
 	    -P tcp -p $((P + 2))
 	atf_check -o empty sockstat -4 -l -q -P tcp -p $((P + 2))
+	atf_check -o match:'^127\.0\.0\.1 .* lo0' jexec arcw_mja netstat -rn -4 -F 2
 	# A far end not the loopback: the other jail, by the epair, reaches
 	# the wildcard listener of the edge's FIB 2 and is closed at once;
 	# BIRD's connection kept.
@@ -2944,7 +2948,7 @@ print('closed' if s.recv(1) == b'' else 'open')"
 	# Started again (another jid): BIRD started in it again on its file,
 	# the station listening in its new network and hearing the peer.
 	atf_check -o ignore jail -c name=arcw_mja vnet persist path=/
-	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3
+	atf_check -o ignore jexec arcw_mja sysctl net.fibs=3 net.add_addr_allfibs=0
 	atf_check jexec arcw_mja ifconfig lo0 inet 127.0.0.1/8 up
 	atf_check ifconfig $e vnet arcw_mja
 	atf_check jexec arcw_mja ifconfig $e fib 2

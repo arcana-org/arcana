@@ -93,6 +93,14 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### BMP's station reached in any FIB; agent 0.323.0
+
+- A BIRD instance's BMP station in a FIB other than 0 (on the host, or
+  in a vnet jail) now has 127.0.0.1 by lo0 in that FIB: the agent puts
+  rc.d/routing's loopback route there when the FIB has none (one made
+  after boot, or a vnet jail's when net.add_addr_allfibs is 0), where
+  BIRD's BMP session could not connect before.
+
 ### Running reads no state (cblink 0.2.30); agent 0.322.0, console 0.467.0
 
 - A read of running or the candidate no longer runs the handlers of
