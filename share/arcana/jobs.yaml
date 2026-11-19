@@ -7,7 +7,9 @@
 # new kind is one more entry.  A line is "key: words", the words with
 # spaces between them.  Every kind is one of arcana.yaml's job-kind and
 # every field an attribute of its job-spec, by the same name with - for
-# _ or the one its attribute says: the build stops otherwise.
+# _ or the one its attribute says: the build stops otherwise.  host:
+# says why a kind takes no jail, where that is its nature, for the
+# refusal of one.
 
 fields:
   - field: jail
@@ -334,7 +336,7 @@ kinds:
   - kind: rtadvd
     title: Router advertisements on an interface, for SLAAC
     needs: interface args
-    uses: remove persist
+    uses: jail remove persist
     destroys: remove
   - kind: ipsec-sa
     title: Manually keyed IPsec security associations and policies
@@ -461,17 +463,19 @@ kinds:
   - kind: nfs
     title: The NFS server's exports, ZFS shares and settings
     needs: verb
-    uses: args text
+    uses: jail args text
     values: verb=exports|share|server
   - kind: iscsi
     title: The iSCSI target's ctl.conf, on or off
     needs: verb
     uses: args text
+    host: ctld(8) serves the kernel's CAM target layer (ctl(4)), which no jail has; set the iSCSI target on the host
     values: verb=conf|enable
   - kind: hast
     title: HAST's resources, roles and hast.conf
     needs: verb
     uses: args text
+    host: hastd(8) replicates GEOM providers and makes /dev/hast/*, which no jail has; set HAST on the host
     values: verb=conf|enable|create|role
     destroys: verb=create
   - kind: sysfile

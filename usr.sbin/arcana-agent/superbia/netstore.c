@@ -17,6 +17,18 @@
  * where a write gives the marker back.  A HAST resource whose local
  * provider is the system's (storage_protected()) is neither created nor
  * given a role.
+ *
+ * The NFS server of a vnet jail too, jail(8)'s allow.nfsd: nfsd(8),
+ * mountd(8) and nfsuserd(8) run in the jail, by its own rc.conf (sysrc
+ * -j) and rc.d (service(8) by jexec(8)), serving its own exports(5),
+ * written beneath its root and never through a link out of it.  There
+ * nfsd serves over TCP alone and without pNFS (nfsd(8)), and a dataset's
+ * sharenfs is the host's (zfs writes the host's /etc/zfs/exports, for
+ * the host's mountd): a jail exports by its exports(5) alone, its V4:
+ * root a directory on ZFS as the jail sees it.  A jail without a
+ * network of its own, without allow.nfsd or with enforce_statfs 0 is
+ * refused, saying what to set.  The iSCSI target and HAST are the
+ * host's alone: ctl(4) and GEOM are not a jail's.
  */
 
 #include <sys/param.h>
@@ -27,6 +39,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jail.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +50,12 @@
 #include "agent.h"
 
 #define	TEXT_MAX	(256 * 1024)
+
+/* Why the iSCSI target and HAST are never a jail's. */
+#define	ISCSI_HOSTS	"ctld(8) serves the kernel's CAM target layer " \
+	"(ctl(4)), which no jail has; set the iSCSI target on the host"
+#define	HAST_HOSTS	"hastd(8) replicates GEOM providers and makes " \
+	"/dev/hast/*, which no jail has; set HAST on the host"
 
 static void
 put_s(ucl_object_t *o, const char *k, const char *v)
@@ -568,17 +587,114 @@ v4_root(struct work *w, const char *text, bool *any)
 	return (NULL);
 }
 
-/* Is the directory on ZFS?  NULL, or why it is not. */
+/*
+ * Is the directory on ZFS, the host's or the jail's w works in (opened
+ * beneath its root)?  NULL, or why it is not.
+ */
 static const char *
 not_on_zfs(struct work *w, const char *path)
 {
 	struct statfs	sf;
+	int		fd;
 
-	if (statfs(path, &sf) == -1)
+	if ((fd = scope_dirfd(w, path)) == -1)
 		return (wfmt(w, "%s: %s", path, strerror(errno)));
+	if (fstatfs(fd, &sf) == -1) {
+		(void)close(fd);
+		return (wfmt(w, "%s: %s", path, strerror(errno)));
+	}
+	(void)close(fd);
 	if (strcmp(sf.f_fstypename, "zfs") != 0)
 		return (wfmt(w, "%s is not on ZFS (%s)", path, sf.f_fstypename));
 	return (NULL);
+}
+
+/*
+ * Why nfsd(8) may not serve from the jail w works in, as jail(8) has
+ * allow.nfsd: it needs a network of its own (vnet), allow.nfsd, and
+ * enforce_statfs not 0.  NULL when it may.
+ */
+static const char *
+nfs_jail_unfit(struct work *w)
+{
+	char	vnet[16], allow[16], statfs_[16];
+
+	if (jail_getv(0, "name", w->jail, "vnet", vnet, "allow.nfsd", allow,
+	    "enforce_statfs", statfs_, NULL) < 0)
+		return (wfmt(w, "the jail %s: %s: nfsd runs in a jail by "
+		    "allow.nfsd (jail(8))", w->jail, jail_errmsg));
+	if (strcmp(vnet, "new") != 0 && strcmp(vnet, "1") != 0)
+		return (wfmt(w, "the jail %s has no network of its own: nfsd "
+		    "serves from a vnet jail alone; set vnet (vnet = new in "
+		    "its jail.conf) and give it an interface", w->jail));
+	if (strcmp(allow, "1") != 0 && strcmp(allow, "true") != 0)
+		return (wfmt(w, "the jail %s may not run nfsd: set allow.nfsd "
+		    "(jail(8)) in its jail.conf, or on the running jail", w->jail));
+	if (strcmp(statfs_, "0") == 0)
+		return (wfmt(w, "the jail %s has enforce_statfs 0: mountd "
+		    "exports what the jail sees of its file systems; set "
+		    "enforce_statfs to 1, or 2 to export its root's alone",
+		    w->jail));
+	return (NULL);
+}
+
+/*
+ * What jail(8) asks of a jail's root for mountd to export from it: a
+ * file system's mount point.  NULL, or how it is not.
+ */
+static const char *
+nfs_jail_root(struct work *w)
+{
+	struct statfs	sf;
+	char		real[MAXPATHLEN];
+
+	if (realpath(w->jroot, real) == NULL || statfs(real, &sf) == -1)
+		return (wfmt(w, "%s: %s", w->jroot, strerror(errno)));
+	if (strcmp(sf.f_mntonname, real) != 0)
+		return (wfmt(w, "the jail's root %s is no file system's mount "
+		    "point (it is in %s): mountd cannot export from the jail "
+		    "until it is (jail(8), allow.nfsd)", real, sf.f_mntonname));
+	return (NULL);
+}
+
+/* Is a daemon of the jail w works in running, and enabled in its
+ * rc.conf by var?  service(8) there by jexec(8), rc.conf by sysrc -j. */
+static void
+jail_svc_state(struct work *w, const char *name, const char *var,
+    bool *running, bool *enabled)
+{
+	struct execres	 res;
+	const char	*v;
+	char		*argv[4];
+
+	v = rc_get(w, var);
+	*enabled = v != NULL && strcasecmp(v, "yes") == 0;
+	argv[0] = (char *)(uintptr_t)opts.service_bin;
+	argv[1] = (char *)(uintptr_t)name;
+	argv[2] = (char *)(uintptr_t)"onestatus";
+	argv[3] = NULL;
+	*running = run_exec(w, scope_jexec(w, argv), &res) == 0;
+}
+
+/* A daemon of the jail w works in told verb ("one" before it, as its
+ * rc.conf may not enable it yet); 0, or -1 with why. */
+static int
+jail_svc(struct work *w, const char *name, const char *verb,
+    const char **errp)
+{
+	struct execres	 res;
+	char		*argv[4];
+
+	argv[0] = (char *)(uintptr_t)opts.service_bin;
+	argv[1] = (char *)(uintptr_t)name;
+	argv[2] = wfmt(w, "one%s", verb);
+	argv[3] = NULL;
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
+		*errp = wtext(w, exec_error(w, &res, wfmt(w, "service %s one%s "
+		    "in %s", name, verb, w->jail)));
+		return (-1);
+	}
+	return (0);
 }
 
 /* A ZFS filesystem's name: pool/path, no leading slash, no dots up. */
@@ -609,20 +725,54 @@ nfs_json(struct work *w)
 	bool		 any;
 
 	o = ucl_object_typed_new(UCL_OBJECT);
-	service_json(w, o, "nfsd");
-	service_json(w, o, "mountd");
+	if (w->jail != NULL) {
+		bool	enabled, running;
+
+		/* What keeps nfsd from serving there, and what jail(8)
+		 * asks of the jail's root. */
+		put_s(o, "jail_error", nfs_jail_unfit(w));
+		put_s(o, "jail_warning", nfs_jail_root(w));
+		jail_svc_state(w, "nfsd", "nfs_server_enable", &running,
+		    &enabled);
+		put_b(o, "nfsd_enabled", enabled);
+		put_b(o, "nfsd_running", running);
+		jail_svc_state(w, "mountd", "mountd_enable", &running,
+		    &enabled);
+		put_b(o, "mountd_enabled", enabled);
+		put_b(o, "mountd_running", running);
+	} else {
+		service_json(w, o, "nfsd");
+		service_json(w, o, "mountd");
+	}
 	put_s(o, "nfs_server_enable", rc_get(w, "nfs_server_enable"));
 	put_s(o, "nfsv4_server_enable", rc_get(w, "nfsv4_server_enable"));
 	put_s(o, "nfsv4_server_only", rc_get(w, "nfsv4_server_only"));
 	put_s(o, "nfsuserd_enable", rc_get(w, "nfsuserd_enable"));
 	nfs_flags_json(w, o, rc_get(w, "nfs_server_flags"));
 	len = sizeof(minor);
-	if (sysctlbyname("vfs.nfsd.server_max_minorversion", &minor, &len,
-	    NULL, 0) == 0)
+	if (w->jail != NULL) {
+		/* The jail's own network's, as sysctl(8) there says. */
+		struct execres	 res;
+		char		*argv[4];
+		const char	*errstr;
+
+		argv[0] = (char *)(uintptr_t)opts.sysctl_bin;
+		argv[1] = (char *)(uintptr_t)"-n";
+		argv[2] = (char *)(uintptr_t)"vfs.nfsd.server_max_minorversion";
+		argv[3] = NULL;
+		if (run_exec(w, argv, &res) == 0 && res.out != NULL) {
+			minor = (int)strtonum(wstrndup(w, res.out, strcspn(
+			    res.out, "\n")), 0, 9, &errstr);
+			if (errstr == NULL)
+				ucl_object_insert_key(o, ucl_object_fromint(
+				    minor), "max_minorversion", 0, false);
+		}
+	} else if (sysctlbyname("vfs.nfsd.server_max_minorversion", &minor,
+	    &len, NULL, 0) == 0)
 		ucl_object_insert_key(o, ucl_object_fromint(minor),
 		    "max_minorversion", 0, false);
 	put_s(o, "exports_path", opts.exports_file);
-	if ((v = slurp(w, opts.exports_file)) != NULL) {
+	if ((v = scope_slurp(w, opts.exports_file, &len)) != NULL) {
 		put_s(o, "exports", wtext(w, v));
 		/* NFSv4's root, and whether it is on ZFS. */
 		if ((root = v4_root(w, v, &any)) != NULL) {
@@ -634,6 +784,10 @@ nfs_json(struct work *w)
 				put_s(o, "v4root_error", why);
 		}
 	}
+	/* A jail's mountd exports its exports(5) alone: sharenfs is the
+	 * host's. */
+	if (w->jail != NULL)
+		goto exported;
 	/* What zfs wrote for mountd, from the datasets' sharenfs. */
 	if ((v = slurp(w, "/etc/zfs/exports")) != NULL)
 		put_s(o, "zfs_exports", wtext(w, v));
@@ -670,8 +824,21 @@ nfs_json(struct work *w)
 		}
 		ucl_object_insert_key(o, arr, "shares", 0, false);
 	}
-	/* What mountd exports now, as showmount(8) asks it. */
-	{
+exported:
+	/* What mountd exports now, as showmount(8) asks it: the jail's
+	 * own, there. */
+	if (w->jail != NULL) {
+		struct execres	 res;
+		char		*argv[4];
+
+		argv[0] = (char *)(uintptr_t)"showmount";
+		argv[1] = (char *)(uintptr_t)"-e";
+		argv[2] = (char *)(uintptr_t)"localhost";
+		argv[3] = NULL;
+		if (run_exec(w, scope_jexec(w, argv), &res) == 0 && res.out !=
+		    NULL)
+			put_s(o, "exported", wtext(w, res.out));
+	} else {
 		static const char *const e[] = { "-e", "localhost" };
 
 		if ((v = tool_out(w, "showmount", e, 2)) != NULL)
@@ -744,11 +911,19 @@ do_netstore(struct work *w, const char *const *names, size_t n,
 			rsp->error = "netstore reads nfs, iscsi and hast, or all "
 			    "of them";
 			return;
+		} else if (w->jail != NULL && strcmp(names[i], "nfs") != 0) {
+			rsp->error = wfmt(w, "%s is the host's alone, not a "
+			    "jail's: %s", names[i], strcmp(names[i], "iscsi") ==
+			    0 ? ISCSI_HOSTS : HAST_HOSTS);
+			return;
 		}
 	top = ucl_object_typed_new(UCL_OBJECT);
 	for (i = 0; i < n || (all && i == 0); i++) {
 		if (all || strcmp(names[i], "nfs") == 0)
 			ucl_object_insert_key(top, nfs_json(w), "nfs", 0, false);
+		/* A jail's: its NFS server alone. */
+		if (w->jail != NULL)
+			continue;
 		if (all || strcmp(names[i], "iscsi") == 0)
 			ucl_object_insert_key(top, iscsi_json(w), "iscsi", 0,
 			    false);
@@ -832,9 +1007,13 @@ netstore_check(const struct arc_job_spec *sp)
 	static const char *const role[] = { "resource", "role", NULL };
 	static const char *const create[] = { "resource", NULL };
 	const char	*v;
+	bool		 jailed;
 
-	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("the host's storage services are the host's");
+	jailed = sp->jail != NULL && sp->jail[0] != '\0';
+	if (jailed && sp->kind == ARC_JOB_KIND_ISCSI)
+		return ("the iSCSI target is the host's alone: " ISCSI_HOSTS);
+	if (jailed && sp->kind == ARC_JOB_KIND_HAST)
+		return ("HAST is the host's alone: " HAST_HOSTS);
 	if (sp->safe)
 		return ("a storage service is not undone: not in safe mode");
 	if (sp->verb == NULL)
@@ -845,6 +1024,11 @@ netstore_check(const struct arc_job_spec *sp)
 			return (text_ok(sp->text) ? NULL : "exports is the text "
 			    "of exports(5)");
 		if (strcmp(sp->verb, "share") == 0) {
+			if (jailed)
+				return ("a dataset's sharenfs is the host's: zfs "
+				    "writes the host's /etc/zfs/exports, for the "
+				    "host's mountd; a jail exports by its own "
+				    "exports(5) (verb exports)");
 			if (!words_known(sp, share) || (v = word(sp, "dataset")) ==
 			    NULL || !dataset_ok(v))
 				return ("share takes dataset= (a ZFS filesystem's "
@@ -869,6 +1053,11 @@ netstore_check(const struct arc_job_spec *sp)
 		    strspn(v, "0123456789") != strlen(v) || atoi(v) < 1 ||
 		    atoi(v) > 256))
 			return ("threads is 1 to 256");
+		/* nfsd(8) in a jail: TCP, and no pNFS. */
+		if (jailed && (((v = word(sp, "pnfs")) != NULL && v[0] != '\0') ||
+		    ((v = word(sp, "mirror")) != NULL && v[0] != '\0')))
+			return ("nfsd in a jail serves without pNFS (nfsd(8)): "
+			    "pnfs and mirror are the host's");
 		if ((v = word(sp, "pnfs")) != NULL && v[0] != '\0' && !ds_ok(v))
 			return ("pnfs is the data servers, host:/path joined by "
 			    "commas");
@@ -930,12 +1119,19 @@ netstore_title(const struct arc_job_spec *sp)
 	return (t);
 }
 
-/* A service enabled or disabled in rc.conf, and started or stopped. */
+/*
+ * A service enabled or disabled in rc.conf, and started or stopped; a
+ * jail's (nfsd alone) in the jail's rc.conf, by its rc.d.
+ */
 static int
 service_onoff(struct work *w, const char *name, bool on, const char **errp)
 {
 	struct service_action_rsp	 r;
 
+	if (w->jail != NULL)
+		return (rc_set(w, "nfs_server_enable", "=", on ? "YES" : "NO",
+		    errp) != 0 || jail_svc(w, name, on ? "restart" : "stop",
+		    errp) != 0 ? -1 : 0);
 	memset(&r, 0, sizeof(r));
 	if (do_service_action(w, name, on ? ARC_SERVICE_ACTION_ENABLE :
 	    ARC_SERVICE_ACTION_DISABLE, &r) != 0 || !r.ok) {
@@ -960,8 +1156,20 @@ service_reload(struct work *w, const char *name, const char **errp)
 {
 	struct service_action_rsp	 r;
 	bool				 enabled, running;
+	const char			*e;
 
 	enabled = running = false;
+	if (w->jail != NULL) {
+		/* A jail's mountd, there. */
+		jail_svc_state(w, name, "mountd_enable", &running, &enabled);
+		e = NULL;
+		if (running && jail_svc(w, name, "reload", &e) != 0) {
+			*errp = wfmt(w, "written, but %s did not take it: %s",
+			    name, e);
+			return (-1);
+		}
+		return (0);
+	}
 	service_state(w, name, &running, &enabled);
 	if (!running)
 		return (0);
@@ -1003,12 +1211,15 @@ nfs_server(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		off += (size_t)snprintf(out + off, sizeof(out) - off,	\
 		    __VA_ARGS__);					\
 } while (0)
-		copy = wstrdup(w, was != NULL ? was : "-u -t -n 4");
+		/* In a jail TCP alone (nfsd(8)): no -u. */
+		copy = wstrdup(w, was != NULL ? was : w->jail != NULL ? "-t -n 4" :
+		    "-u -t -n 4");
 		out[0] = '\0';
 		off = 0;
 		has_p = pnfs;
 		for (it = copy; (tok = strsep(&it, " \t")) != NULL;) {
-			if (tok[0] == '\0')
+			if (tok[0] == '\0' || (w->jail != NULL && strcmp(tok,
+			    "-u") == 0))
 				continue;
 			if ((strcmp(tok, "-n") == 0 && threads != NULL) ||
 			    (strcmp(tok, "-p") == 0 && pnfs != NULL) ||
@@ -1055,8 +1266,16 @@ nfs_server(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	}
 	/* Running: started again, as it reads its flags at its start. */
 	{
-		bool	enabled = false, running = false;
+		bool		 enabled = false, running = false;
+		const char	*e;
 
+		if (w->jail != NULL) {
+			jail_svc_state(w, "nfsd", "nfs_server_enable", &running,
+			    &enabled);
+			if (running)
+				(void)jail_svc(w, "nfsd", "restart", &e);
+			return (0);
+		}
 		service_state(w, "nfsd", &running, &enabled);
 		if (running) {
 			struct service_action_rsp	r;
@@ -1127,6 +1346,24 @@ hast_protected(struct work *w, const char *name)
 	return (NULL);
 }
 
+/*
+ * w in the jail named, when one is, where nfsd may serve (allow.nfsd):
+ * refused, saying what to set, where it may not.
+ */
+static int
+nfs_jail_enter(struct work *w, const char *jail, const char **errp)
+{
+	const char	*why;
+
+	if (scope_enter_jail(w, jail, errp, false) != 0)
+		return (-1);
+	if (w->jail != NULL && (why = nfs_jail_unfit(w)) != NULL) {
+		*errp = why;
+		return (-1);
+	}
+	return (0);
+}
+
 int
 do_netstore_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
@@ -1141,6 +1378,9 @@ do_netstore_job(struct work *w, const struct arc_job_spec *sp,
 		return (-1);
 	switch (sp->kind) {
 	case ARC_JOB_KIND_NFS:
+		/* A vnet jail's own server, where one is named. */
+		if (nfs_jail_enter(w, sp->jail, errp) != 0)
+			return (-1);
 		if (strcmp(sp->verb, "share") == 0) {
 			/* zfs writes /etc/zfs/exports and tells mountd itself. */
 			argv[0] = (char *)(uintptr_t)opts.zfs_bin;
@@ -1171,8 +1411,20 @@ do_netstore_job(struct work *w, const struct arc_job_spec *sp,
 				*errp = wfmt(w, "V4: root %s", why);
 				return (-1);
 			}
-			if (put_file(w, opts.exports_file, sp->text, 0644, errp) !=
-			    0)
+			/* A jail's beneath its root, through no link. */
+			if (w->jail != NULL) {
+				step = step_begin(w, STEP_FILE, "write", "%s's %s",
+				    w->jail, opts.exports_file);
+				if (scope_replace(w, opts.exports_file, sp->text,
+				    strlen(sp->text), 0644, NULL) != 0) {
+					*errp = wfmt(w, "%s's %s: %s", w->jail,
+					    opts.exports_file, strerror(errno));
+					step_end(w, step, false, "%s", *errp);
+					return (-1);
+				}
+				step_end(w, step, true, NULL);
+			} else if (put_file(w, opts.exports_file, sp->text, 0644,
+			    errp) != 0)
 				return (-1);
 			/* mountd reads exports(5) again on SIGHUP. */
 			return (service_reload(w, "mountd", errp));

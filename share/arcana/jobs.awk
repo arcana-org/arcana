@@ -132,8 +132,8 @@ function flush_kind() {
 		return
 	nk++
 	kk[nk] = kname; kt[nk] = ktitle; kn[nk] = kneeds; ku[nk] = kuses
-	kv[nk] = kvalues; kd[nk] = kdestroys
-	kname = ktitle = kneeds = kuses = kvalues = kdestroys = ""
+	kv[nk] = kvalues; kd[nk] = kdestroys; kh[nk] = khost
+	kname = ktitle = kneeds = kuses = kvalues = kdestroys = khost = ""
 }
 
 # arcana.yaml: the entries of the job-kind enum, the attributes of the
@@ -187,6 +187,7 @@ section == "k" && /^    needs:/ { kneeds = value($0); next }
 section == "k" && /^    uses:/ { kuses = value($0); next }
 section == "k" && /^    values:/ { kvalues = value($0); next }
 section == "k" && /^    destroys:/ { kdestroys = value($0); next }
+section == "k" && /^    host:/ { khost = value($0); next }
 
 END {
 	flush_field()
@@ -227,6 +228,7 @@ END {
 		print "};"
 		print "struct jobkind {"
 		print "\tconst char\t*kind, *title, *needs, *uses, *values, *destroys;"
+		print "\tconst char\t*host;\t/* why it takes no jail, by its nature */"
 		print "};"
 		print "static const struct jobfield jobfields[] = {"
 		for (i = 1; i <= nf; i++)
@@ -234,7 +236,7 @@ END {
 		print "};"
 		print "static const struct jobkind jobkinds[] = {"
 		for (i = 1; i <= nk; i++)
-			printf "\t{ %s, %s, %s, %s, %s, %s },\n", cstr(kk[i]), cstr(kt[i]), cstr(kn[i]), cstr(ku[i]), cstr(kv[i]), cstr(kd[i])
+			printf "\t{ %s, %s, %s, %s, %s, %s, %s },\n", cstr(kk[i]), cstr(kt[i]), cstr(kn[i]), cstr(ku[i]), cstr(kv[i]), cstr(kd[i]), (kh[i] != "" ? cstr(kh[i]) : "NULL")
 		print "};"
 		exit
 	}
@@ -754,7 +756,11 @@ function ychange_rest(k, fields,    n, a, j, i, m, mine, done) {
 			printf "\t\tif (sp->%s) {\n", m
 		else
 			printf "\t\tif (sp->%s != NULL) {\n", m
-		printf "\t\t\t*bad = %s;\n", cstr(kk[k] " takes no " ff[i])
+		# A kind that is the host's by its nature says why.
+		if (ff[i] == "jail" && kh[k] != "")
+			printf "\t\t\t*bad = %s;\n", cstr(kk[k] " is the host's alone, no jail's: " kh[k])
+		else
+			printf "\t\t\t*bad = %s;\n", cstr(kk[k] " takes no " ff[i])
 		print "\t\t\treturn (EINVAL);"
 		print "\t\t}"
 	}

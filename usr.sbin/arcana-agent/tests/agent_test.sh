@@ -16149,11 +16149,184 @@ netstore_body()
 	atf_check -s exit:1 -o match:'failed.*hast create other: its local provider /dev/hasttest9p2' \
 	    "$JGC" -c "$SOCK" hast create other
 	atf_check -o not-match:'sys|other' cat hastctl.log
-	# The host's alone.
-	atf_check -s exit:1 -e match:'iscsi takes no jail' \
+	# The host's alone, by their nature: why said.
+	atf_check -s exit:2 -e match:"iscsi is the host's alone, no jail's: ctld\\(8\\) serves the kernel's CAM target layer" \
 	    "$JGC" -j web -c "$SOCK" iscsi enable yes
+	atf_check -s exit:2 -e match:"hast is the host's alone, no jail's: hastd\\(8\\) replicates GEOM providers" \
+	    "$JGC" -j web -c "$SOCK" hast enable yes
 }
 netstore_cleanup()
+{
+	stop_daemon
+}
+
+# A stand-in for jexec(8): what it runs noted, run here, in the test's
+# directory (the jail's root is ./jroot, where the agent writes).
+nfsj_jexec()
+{
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+shift
+exec "\$@"
+EOS
+	chmod +x fake-jexec
+}
+
+atf_test_case netstore_jail cleanup
+netstore_jail_head()
+{
+	atf_set "descr" "a vnet jail's NFS server (allow.nfsd): read of the jail, its exports(5) beneath its root, its rc.conf and daemons; TCP alone, no pNFS, no sharenfs; a jail without vnet, allow.nfsd or enforce_statfs refused, saying what to set"
+}
+netstore_jail_body()
+{
+	local R fs
+
+	mkdir -p tools
+	printf '#!/bin/sh\necho "sysctl $*" >> %s/sysctl.log\n[ "$1" = -n ] && echo 1\nexit 0\n' "$(pwd)" > fake-sysctl
+	printf '#!/bin/sh\necho "zfs $*" >> %s/zfs.log\n' "$(pwd)" > fake-zfs
+	chmod +x fake-sysctl fake-zfs
+	printf '/host -network 10.0.0.0/24\n' > exports
+	DAEMON_ARGS="-2 $(pwd)/tools -z $(pwd)/fake-zfs --exports $(pwd)/exports -Q $(pwd)/fake-sysctl -O $(pwd)/sysctl.conf"
+	start_daemon
+	for d in nfsd mountd; do
+		printf '#!/bin/sh\n' > rc.d/$d
+		chmod +x rc.d/$d
+	done
+	nfsj_jexec
+	# Stand-in jails: gw may serve NFS; the others lack allow.nfsd,
+	# have enforce_statfs 0, or share the host's network.
+	R=$(pwd)/jroot
+	mkdir -p "$R/etc" "$R$(pwd)"
+	: > "$R/etc/rc.conf"
+	printf 'gw 4 new %s 16.0-CURRENT allow.nfsd=1 enforce_statfs=2\nnonfs 5 new %s 16.0-CURRENT enforce_statfs=2\nstat0 6 new %s 16.0-CURRENT allow.nfsd=1\nweb 7 inherit %s 16.0-CURRENT allow.nfsd=1 enforce_statfs=2\n' \
+	    "$R" "$R" "$R" "$R" > jails
+	printf '/jail -network 10.1.0.0/24\n' > "$R$(pwd)/exports"
+	# The jail's read: its own exports and minor version, its NFS
+	# alone; its root no mount point, said; nothing of sharenfs.
+	atf_check -o match:'"nfs":\{.*"exports":"/jail -network 10.1.0.0/24\\n"' \
+	    -o match:'"jail_warning":"the jail.s root [^"]* is no file system.s mount point' \
+	    -o match:'"max_minorversion":1' \
+	    -o not-match:'"jail_error"' -o not-match:'"iscsi"' -o not-match:'"hast"' \
+	    -o not-match:'"shares":\[\{' "$JGC" -j gw -c "$SOCK" netstore
+	atf_check -o match:'^jexec 4 .*fake-sysctl -n vfs.nfsd.server_max_minorversion$' cat jexec.log
+	atf_check -o match:'"jail_error":"the jail nonfs may not run nfsd: set allow.nfsd' \
+	    "$JGC" -j nonfs -c "$SOCK" netstore nfs
+	atf_check -s exit:1 -e match:"iscsi is the host's alone, not a jail's: ctld" \
+	    "$JGC" -j gw -c "$SOCK" netstore iscsi
+	# Refused where nfsd may not serve, saying what to set.
+	printf '# nothing yet\n' > exports.empty
+	atf_check -s exit:1 -o match:'failed.*the jail nonfs may not run nfsd: set allow.nfsd \(jail\(8\)\)' \
+	    "$JGC" -j nonfs -c "$SOCK" nfs exports exports.empty
+	atf_check -s exit:1 -o match:'failed.*the jail stat0 has enforce_statfs 0: .*set enforce_statfs to 1' \
+	    "$JGC" -j stat0 -c "$SOCK" nfs exports exports.empty
+	atf_check -s exit:1 -o match:'failed.*the jail web has no network of its own: nfsd serves from a vnet jail alone; set vnet' \
+	    "$JGC" -j web -c "$SOCK" nfs exports exports.empty
+	atf_check -s exit:1 -o match:'failed.*the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" nfs exports exports.empty
+	atf_check -s exit:1 -e match:"a dataset's sharenfs is the host's" \
+	    "$JGC" -j gw -c "$SOCK" nfs share dataset=zroot/export sharenfs=on
+	atf_check -s exit:1 -e match:'nfsd in a jail serves without pNFS' \
+	    "$JGC" -j gw -c "$SOCK" nfs server pnfs=ds1.example.org:/ds0
+	test ! -f zfs.log || atf_fail "zfs was run for a jail"
+	# exports(5) written beneath the jail's root, the host's untouched;
+	# mountd told there, where it runs.
+	atf_check -o match:'done +gw: nfs exports' "$JGC" -j gw -c "$SOCK" nfs exports exports.empty
+	atf_check -o inline:'# nothing yet\n' cat "$R$(pwd)/exports"
+	atf_check -o inline:'/host -network 10.0.0.0/24\n' cat exports
+	touch running.mountd
+	atf_check -o match:'done +gw: nfs exports' "$JGC" -j gw -c "$SOCK" nfs exports exports.empty
+	atf_check -o match:'^jexec 4 .*fake-service mountd onestatus$' \
+	    -o match:'^jexec 4 .*fake-service mountd onereload$' cat jexec.log
+	# Its V4: root a directory on ZFS as the jail sees it: / is the
+	# jail's root.
+	mkdir -p "$R/export"
+	printf 'V4: /export -sec=sys\n' > exports.v4
+	fs=$(df -T "$R/export" | awk 'NR==2{print $2}')
+	if [ "$fs" = zfs ]; then
+		atf_check -o match:'done +gw: nfs exports' "$JGC" -j gw -c "$SOCK" nfs exports exports.v4
+	else
+		atf_check -s exit:1 -o match:"failed.*V4: root /export is not on ZFS \\($fs\\)" \
+		    "$JGC" -j gw -c "$SOCK" nfs exports exports.v4
+	fi
+	printf 'V4: /nonesuch\n' > exports.none
+	atf_check -s exit:1 -o match:'failed.*V4: root /nonesuch: No such file' \
+	    "$JGC" -j gw -c "$SOCK" nfs exports exports.none
+	# Never through a link out of the jail: the jail's exports a link
+	# to a file of the host's, which stays as it was.
+	printf 'the host'"'"'s\n' > outside
+	rm "$R$(pwd)/exports"
+	ln -s "$(pwd)/outside" "$R$(pwd)/exports"
+	atf_check -s ignore -o ignore -e ignore "$JGC" -j gw -c "$SOCK" nfs exports exports.empty
+	atf_check -o inline:"the host's\n" cat outside
+	# The server: the jail's rc.conf, TCP alone (no -u), nfsd started
+	# there; its sysctl.conf; the host's rc.conf untouched.
+	atf_check -o match:'done +gw: nfs server' "$JGC" -j gw -c "$SOCK" nfs server enable=yes minor=2 threads=8
+	atf_check -o match:'^nfs_server_flags="-t -n 8"$' -o match:'^nfsv4_server_enable="YES"$' \
+	    -o match:'^nfsv4_server_only="YES"$' -o match:'^mountd_enable="YES"$' \
+	    -o match:'^nfs_server_enable="YES"$' cat "$R/etc/rc.conf"
+	atf_check -o not-match:'nfs|mountd' cat rc.conf
+	atf_check -o match:'^vfs.nfsd.server_max_minorversion=2$' cat "$R/etc/sysctl.conf"
+	test ! -f sysctl.conf || atf_fail "the host's sysctl.conf was written"
+	atf_check -o match:'^jexec 4 .*fake-sysctl vfs.nfsd.server_max_minorversion=2$' \
+	    -o match:'^jexec 4 .*fake-service nfsd onerestart$' cat jexec.log
+	# Flags kept from the host's spelling lose -u in the jail.
+	sed -i '' -e 's/^nfs_server_flags=.*/nfs_server_flags="-u -t -n 4"/' "$R/etc/rc.conf"
+	atf_check -o match:'done' "$JGC" -j gw -c "$SOCK" nfs server threads=6
+	atf_check -o match:'^nfs_server_flags="-t -n 6"$' cat "$R/etc/rc.conf"
+	atf_check -o match:'done' "$JGC" -j gw -c "$SOCK" nfs server enable=no
+	atf_check -o match:'^nfs_server_enable="NO"$' cat "$R/etc/rc.conf"
+	atf_check -o match:'^jexec 4 .*fake-service nfsd onestop$' cat jexec.log
+}
+netstore_jail_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case rtadvd_jail cleanup
+rtadvd_jail_head()
+{
+	atf_set "descr" "Router advertisements in a vnet jail: its rtadvd.conf beneath its root, its rc.conf, its rtadvd told there; a jail without a network of its own, or not running, refused; no link followed out of the jail"
+}
+rtadvd_jail_body()
+{
+	local R
+
+	write_rc
+	start_daemon
+	nfsj_jexec
+	R=$(pwd)/jroot
+	mkdir -p "$R/etc" "$R$(pwd)"
+	: > "$R/etc/rc.conf"
+	printf 'gw 4 new %s\nweb 5 inherit %s\n' "$R" "$R" > jails
+	atf_check -o match:'gw: rtadvd on epair0b 2001:db8:7::/64' \
+	    "$JGC" -j gw -c "$SOCK" -p rtadvd epair0b 2001:db8:7::/64 2001:db8::53
+	atf_check -o match:'^epair0b:\\$' \
+	    -o match:'^	:addr="2001:db8:7::":prefixlen#64:rdnss="2001:db8::53":$' \
+	    -o match:'^# arcana: end$' cat "$R$(pwd)/rtadvd.conf"
+	test ! -f rtadvd.conf || atf_fail "the host's rtadvd.conf was written"
+	atf_check -o match:'^rtadvd_enable="YES"$' -o match:'^rtadvd_interfaces="epair0b"$' \
+	    cat "$R/etc/rc.conf"
+	atf_check -o not-match:'rtadvd' cat rc.conf
+	atf_check -o match:'^jexec 4 .*fake-service rtadvd restart$' cat jexec.log
+	# Taken away: the jail's block empty, its rtadvd stopped there.
+	atf_check -o match:'gw: rtadvd off epair0b' "$JGC" -j gw -c "$SOCK" -p rtadvd epair0b remove
+	atf_check -o not-match:'epair0b' cat "$R$(pwd)/rtadvd.conf"
+	atf_check -o match:'^rtadvd_enable="NO"$' cat "$R/etc/rc.conf"
+	atf_check -o match:'^jexec 4 .*fake-service rtadvd onestop$' cat jexec.log
+	# Refused: a jail with the host's network, one not running.
+	atf_check -s exit:1 -o match:"failed.*the jail web has no network of its own: rtadvd advertises on a vnet jail's own interfaces; set vnet" \
+	    "$JGC" -j web -c "$SOCK" rtadvd epair0b 2001:db8:7::/64
+	atf_check -s exit:1 -o match:'failed.*the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" rtadvd epair0b 2001:db8:7::/64
+	# Never through a link out of the jail.
+	printf 'the host'"'"'s\n' > outside
+	rm "$R$(pwd)/rtadvd.conf"
+	ln -s "$(pwd)/outside" "$R$(pwd)/rtadvd.conf"
+	atf_check -s ignore -o ignore -e ignore "$JGC" -j gw -c "$SOCK" rtadvd epair0b 2001:db8:7::/64
+	atf_check -o inline:"the host's\n" cat outside
+}
+rtadvd_jail_cleanup()
 {
 	stop_daemon
 }
@@ -23212,6 +23385,7 @@ atf_init_test_cases()
 	atf_add_test_case config_bundle
 	atf_add_test_case ntp
 	atf_add_test_case rtadvd
+	atf_add_test_case rtadvd_jail
 	atf_add_test_case ipsec_sa
 	atf_add_test_case ipsec_sp
 	atf_add_test_case sadb_news
@@ -23220,6 +23394,7 @@ atf_init_test_cases()
 	atf_add_test_case network_more
 	atf_add_test_case sdwan_forms
 	atf_add_test_case netstore
+	atf_add_test_case netstore_jail
 	atf_add_test_case smtpd
 	atf_add_test_case speeder
 	atf_add_test_case relay_rc

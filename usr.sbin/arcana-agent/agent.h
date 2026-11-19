@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.327.0"
+#define	ARCANA_AGENT_VERSION	"0.328.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1402,6 +1402,7 @@ void		 suricata_profiling(struct work *, const char *,
 		    struct json_rsp *);
 int		 do_rtadvd(struct work *, const char *, const char *const *,
 		    size_t, bool, bool, const char **);
+int		 rtadvd_enter(struct work *, const char *, const char **);
 /* invidia/pfkey.c: PF_KEYv2 in the agent's own process.  An SA as it is
  * put in or read back: the keys raw, put in only, never read back.  A
  * lifetime (RFC 2367's soft or hard; 0 none): seconds since added,

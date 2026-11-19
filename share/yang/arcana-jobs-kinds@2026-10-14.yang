@@ -903,6 +903,11 @@ submodule arcana-jobs-kinds {
             description
               "Arguments";
           }
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
           leaf remove {
             type boolean;
             description
@@ -1887,6 +1892,11 @@ submodule arcana-jobs-kinds {
             mandatory true;
             description
               "Verb";
+          }
+          leaf jail {
+            type string;
+            description
+              "Jail";
           }
           leaf-list args {
             type string;

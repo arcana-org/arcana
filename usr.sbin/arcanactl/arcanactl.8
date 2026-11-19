@@ -68,7 +68,9 @@ On the network of a jail that has one of its own
 .Cm carp ,
 .Cm capture ,
 .Cm path-check ,
-.Cm monitor
+.Cm monitor ,
+.Cm rtadvd ,
+.Cm nfs
 and
 .Cm sysctl
 (its
@@ -1574,6 +1576,11 @@ and HAST
 .Xr ( hastd 8 ,
 .Xr hast.conf 5 ,
 .Xr hastctl 8 ) .
+With
+.Fl j ,
+a running jail's NFS server alone: its own rc.conf,
+.Xr exports 5
+and daemons, and why nfsd may not serve from it.
 Nothing is changed.
 arcana-netstore's
 .Ic read
@@ -1616,6 +1623,26 @@ and pNFS's data servers
 and
 .Cm mirror
 .Pq nfsd's Fl n , Fl p No and Fl m .
+With
+.Fl j ,
+a vnet jail's own server
+.Pq Xr jail 8 Ns 's Va allow.nfsd :
+its
+.Pa /etc/exports ,
+.Xr rc.conf 5 ,
+.Xr sysctl.conf 5
+and daemons, in the jail; there nfsd serves over TCP alone, without
+pNFS, and
+.Cm share
+is refused
+.Pq Cm sharenfs No is the host's .
+A jail without a network of its own
+.Pq Va vnet ,
+without
+.Va allow.nfsd
+or with
+.Va enforce_statfs
+0 is refused, saying what to set.
 A job.
 .It Cm iscsi Cm conf Ar file | Cm enable Cm yes | no
 .Cm conf
@@ -1628,6 +1655,11 @@ root's alone, and has
 read it again;
 .Cm enable
 enables and starts ctld, or stops it.
+The host's alone: with
+.Fl j
+it is refused, as
+.Xr ctl 4
+is no jail's.
 A job.
 .It Cm hast Cm conf Ar file | Cm enable Cm yes | no | Cm create Ar resource | Cm role Ar role resource
 .Cm conf
@@ -1650,6 +1682,9 @@ sets a resource's role:
 .Cm primary
 or
 .Cm secondary .
+The host's alone: with
+.Fl j
+it is refused, as GEOM's providers are no jail's.
 A job.
 .It Cm cert Oo Cm list | Cm add Ar name file | Cm remove Ar name | Cm trust Ar file | Cm untrust Ar file | Cm rehash Oc
 The certificates OpenSSL trusts, of the host or of
@@ -1995,6 +2030,12 @@ restarted; with
 enabled and the interface on rtadvd_interfaces in
 .Xr rc.conf 5
 too.
+With
+.Fl j ,
+a vnet jail's, on its own interface: the jail's
+.Pa /etc/rtadvd.conf ,
+.Xr rc.conf 5
+and rtadvd; a jail without a network of its own is refused.
 .It Cm rtadvd Ar interface Cm remove
 The interface's entry taken out; rtadvd stopped when none is left.
 .Pp

@@ -2,9 +2,13 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-netstore",
     "module-revision": "2026-10-29",
-    "sid-file-version": 0,
+    "sid-file-version": 1,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "assignment-range": [
+      {
+        "entry-point": "97800",
+        "size": "10"
+      },
       {
         "entry-point": "85400",
         "size": "100"
@@ -250,6 +254,21 @@
         "namespace": "data",
         "identifier": "/arcana-netstore:netstore/read/output/nfs/zfs-exports",
         "sid": "85447"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-netstore:netstore/read/input/jail",
+        "sid": "97800"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-netstore:netstore/read/output/nfs/jail-error",
+        "sid": "97801"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-netstore:netstore/read/output/nfs/jail-warning",
+        "sid": "97802"
       }
     ]
   }

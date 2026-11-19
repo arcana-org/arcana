@@ -82,7 +82,7 @@ on the wire.
 | 62 100 | 100 | `arcana-jails` | `share/yang/arcana-jails@2026-10-14.sid` (56 used) |
 | 62 200 | 100 | `arcana-services` | `share/yang/arcana-services@2026-10-14.sid` (79 used) |
 | 62 300 | 100 | `arcana-packages` | `share/yang/arcana-packages@2026-10-14.sid` (100 used; its rest at 79 500) |
-| 62 400 | 1 000 | `arcana-jobs`, its submodule `arcana-jobs-kinds` | `share/yang/arcana-jobs@2026-10-14.sid` (716 used, 34 obsolete: a job's steps in the state, now its read action's, and each kind's safe, now the change's; the dry-run rpc, its changes submit's again; a job's user; room for the kinds to come; its rest at 83 200) |
+| 62 400 | 1 000 | `arcana-jobs`, its submodule `arcana-jobs-kinds` | `share/yang/arcana-jobs@2026-10-14.sid` (720 used, 34 obsolete: a job's steps in the state, now its read action's, and each kind's safe, now the change's; the dry-run rpc, its changes submit's again; a job's user; room for the kinds to come; its rest at 83 200) |
 | 63 400 | 200 | `arcana-storage` | `share/yang/arcana-storage@2026-10-14.sid` (200 used, 9 obsolete: a snapshot's send action and the receive rpc, arcana-stream's now; its rest at 79 600) |
 | 63 600 | 100 | `arcana-sysctl` | `share/yang/arcana-sysctl@2026-10-14.sid` (12 used) |
 | 63 700 | 100 | `arcana-kernel` | `share/yang/arcana-kernel@2026-10-14.sid` (37 used) |
@@ -207,6 +207,7 @@ on the wire.
 | 97 100 | 100 | `arcana-services`, its second range (listed first in its file, so that new items go there): a running jail's services, on arcana-jails' jail | `share/yang/arcana-services@2026-10-14.sid` (32 used) |
 | 98 000 | 20 | `arcana-system`, its second range (listed first in its file, so that new items go there): the read's jail, in and out | `share/yang/arcana-system@2026-10-29.sid` (2 used) |
 | 98 020 | 30 | `arcana-syslog`, each running jail's syslogd, its root a mount point of `ietf-syslog` | `share/yang/arcana-syslog@2026-11-19.sid` (5 used) |
+| 97 800 | 10 | `arcana-netstore`, its second range (listed first in its file): a jail's NFS server read, why it may not serve | `share/yang/arcana-netstore@2026-10-29.sid` (3 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

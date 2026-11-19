@@ -15,6 +15,12 @@
  * own, confirmed at once.  A warning the host stops at (its
  * error-app-tag, rc-conf-files for one) is shown with a way to accept
  * it and commit again.
+ *
+ * An interface of a vnet jail, the Network tab's jail picked: rtadvd(8)
+ * in the jail, on its own interface, by a job of the rtadvd kind (the
+ * prefix and the DNS servers advertised, into the jail's rtadvd.conf
+ * between Arcana's marks, its rc.conf and its rtadvd); the whole
+ * record is the host's own interfaces' datastore's.
  */
 
 #include <stdbool.h>
@@ -32,6 +38,7 @@
 static struct {
 	char		 sid[16];	/* the host */
 	char		 ifname[32];	/* its interface shown */
+	char		 jail[64];	/* the vnet jail it is of; "" the host */
 	bool		 open;
 	ucl_object_t	*read;		/* running's node; NULL: none yet */
 	ucl_object_t	*oper;		/* operational's rtadvd; NULL: none */
@@ -126,15 +133,19 @@ static void
 ra_open(const char *sid, const char *ifname)
 {
 
-	if (strcmp(sid, ra.sid) != 0 || strcmp(ifname, ra.ifname) != 0) {
+	if (strcmp(sid, ra.sid) != 0 || strcmp(ifname, ra.ifname) != 0 ||
+	    strcmp(net_scope(), ra.jail) != 0) {
 		drop_all();
+		snprintf(ra.jail, sizeof(ra.jail), "%s", net_scope());
 		ra.error[0] = ra.yc.note[0] = ra.yc.token[0] =
 		    ra.yc.tag[0] = '\0';
 		snprintf(ra.sid, sizeof(ra.sid), "%s", sid);
 		snprintf(ra.ifname, sizeof(ra.ifname), "%s", ifname);
 	}
 	ra.open = true;
-	ra_load();
+	/* A jail's: its job's form, nothing read of the host's datastore. */
+	if (ra.jail[0] == '\0')
+		ra_load();
 }
 
 /* The node as configuration: the read's, what rtadvd reports left out. */
@@ -419,6 +430,77 @@ view_state(struct html *h)
 	h_raw(h, "</div>");
 }
 
+/*
+ * A vnet jail's interface: the prefix and the DNS servers rtadvd(8)
+ * advertises there, a job of the rtadvd kind in the jail.
+ */
+static void
+view_ra_jail(struct html *h)
+{
+
+	h_raw(h, "<section class=\"ra\" id=\"ra\"><h3 class=\"secsub\">Router "
+	    "advertisements on ");
+	h_txt(h, ra.ifname);
+	h_raw(h, " in jail ");
+	h_txt(h, ra.jail);
+	h_raw(h, " <button class=\"icon\" data-act=\"ra-close\" title=\""
+	    "Close\">×</button></h3><p class=\"dim\">rtadvd(8) in the jail, "
+	    "on its own interface: an entry in the jail's rtadvd.conf(5) "
+	    "between Arcana's marks, the prefix the hosts behind it address "
+	    "themselves in (SLAAC) and the DNS servers advertised (RDNSS); "
+	    "rtadvd enabled in the jail's rc.conf and restarted there. Every "
+	    "other capability of the file is edited on the host's own "
+	    "interfaces.</p><form class=\"secform\" data-form=\"ra-jail\">"
+	    "<div class=\"rowform\"><label>Prefix <input name=\"prefix\" "
+	    "required spellcheck=\"false\" placeholder=\"2001:db8:1::/64\">"
+	    "<small class=\"help\">a /64</small></label><label>DNS servers "
+	    "<input name=\"dns\" spellcheck=\"false\" placeholder=\""
+	    "2001:db8::53\"><small class=\"help\">IPv6 addresses, by spaces "
+	    "or commas; at most 8</small></label></div><label class=\"check\">"
+	    "<input type=\"checkbox\" name=\"persist\" checked> Kept at the "
+	    "jail's start <small class=\"help\">rtadvd_enable and "
+	    "rtadvd_interfaces in its rc.conf</small></label><div class=\""
+	    "actions\"><button type=\"button\" class=\"ghost danger\" "
+	    "data-act=\"ra-jail-off\">Stop advertising</button><button "
+	    "type=\"submit\" class=\"primary\">Advertise</button></div>"
+	    "</form></section>");
+}
+
+/* The rtadvd job on the jail's interface: on with its words, or off. */
+static void
+ra_jail_job(const char *const *words, size_t n, bool persist)
+{
+	struct server	*s;
+	char		*json, *t, *q;
+	char		 title[128];
+	size_t		 i;
+
+	if ((s = cur_server()) == NULL || strcmp(s->id, ra.sid) != 0 ||
+	    strcmp(net_scope(), ra.jail) != 0 || ra.jail[0] == '\0')
+		return;
+	/* job_send() names the jail, the Network tab's (JOB_IFACE). */
+	q = json_quote(ra.ifname);
+	if (asprintf(&json, "{\"kind\":\"rtadvd\",\"interface\":%s%s",
+	    q, n == 0 ? ",\"remove\":true" : ",\"args\":[") == -1)
+		abort();
+	free(q);
+	for (i = 0; i < n; i++) {
+		q = json_quote(words[i]);
+		if (asprintf(&t, "%s%s%s", json, i > 0 ? "," : "", q) == -1)
+			abort();
+		free(json);
+		free(q);
+		json = t;
+	}
+	if (asprintf(&t, "%s%s%s}", json, n > 0 ? "]" : "", persist ?
+	    ",\"persist\":true" : "") == -1)
+		abort();
+	free(json);
+	snprintf(title, sizeof(title), "rtadvd %s %s", n > 0 ? "on" : "off",
+	    ra.ifname);
+	job_send(s, t, title, JOB_IFACE, ra.jail);
+}
+
 void
 view_ra(struct html *h, struct server *s)
 {
@@ -445,8 +527,13 @@ view_ra(struct html *h, struct server *s)
 	const ucl_object_t	*x;
 	int64_t			 i;
 
-	if (!ra.open || strcmp(ra.sid, s->id) != 0)
+	if (!ra.open || strcmp(ra.sid, s->id) != 0 || strcmp(ra.jail,
+	    net_scope()) != 0)
 		return;
+	if (ra.jail[0] != '\0') {
+		view_ra_jail(h);
+		return;
+	}
 	o = ra.edit != NULL ? ra.edit : ra.read;
 	h_raw(h, "<section class=\"ra\" id=\"ra\"><h3 class=\"secsub\">Router "
 	    "advertisements on ");
@@ -675,6 +762,25 @@ ra_action(const char *act, const char *arg, const char *value)
 		ra.open = false;
 		return (true);
 	}
+	if (strcmp(act, "ra-jail-off") == 0) {
+		char	body[300];
+
+		snprintf(body, sizeof(body), "%s's entry is taken out of the "
+		    "jail %s's rtadvd.conf: the hosts behind it stop hearing "
+		    "this router; rtadvd is stopped there when no entry is left.",
+		    ra.ifname, ra.jail);
+		confirm("Stop advertising?", body, "Stop", true, NULL,
+		    "ra-jail-off-yes", ra.ifname, ra.jail);
+		return (true);
+	}
+	if (strcmp(act, "ra-jail-off-yes") == 0) {
+		/* On the interface and jail it was asked of. */
+		if (arg == NULL || value == NULL || strcmp(arg, ra.ifname) != 0 ||
+		    strcmp(value, ra.jail) != 0)
+			return (true);
+		ra_jail_job(NULL, 0, true);
+		return (true);
+	}
 	if (strcmp(act, "ra-retry") == 0) {
 		ra.error[0] = '\0';
 		ra_load();
@@ -751,6 +857,26 @@ ra_form(const char *form, const ucl_object_t *f)
 
 	if (strncmp(form, "ra-", 3) != 0)
 		return (false);
+	if (strcmp(form, "ra-jail") == 0) {
+		const char	*words[9];
+		char		*dns, *p, *w;
+		size_t		 n;
+
+		if ((v = jstr(f, "prefix")) == NULL || v[0] == '\0')
+			return (true);
+		n = 0;
+		words[n++] = v;
+		dns = strdup(jstr(f, "dns") != NULL ? jstr(f, "dns") : "");
+		if (dns == NULL)
+			abort();
+		for (p = dns; (w = strsep(&p, " ,\t")) != NULL && n <
+		    nitems(words);)
+			if (w[0] != '\0')
+				words[n++] = w;
+		ra_jail_job(words, n, checked(f, "persist"));
+		free(dns);
+		return (true);
+	}
 	o = editing();
 	if (strcmp(form, "ra-main") == 0) {
 		set_bool(o, "send-advertisements", f, "send", false);

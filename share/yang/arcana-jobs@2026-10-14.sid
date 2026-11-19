@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 27,
+    "sid-file-version": 28,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3682,6 +3682,26 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/sysfile/jail",
         "sid": "63123"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/nfs/jail",
+        "sid": "63124"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/rtadvd/jail",
+        "sid": "63125"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/nfs/jail",
+        "sid": "63126"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/rtadvd/jail",
+        "sid": "63127"
       },
       {
         "namespace": "data",

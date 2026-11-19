@@ -40,7 +40,8 @@
  * backtrace too;
  * yr_system(), the system's files by name and host (none: all), of jail
  * (its own daemons') where it is not NULL;
- * yr_netstore(), nfs, iscsi and hast (none: all); yr_suricata(), the
+ * yr_netstore(), nfs, iscsi and hast (none: all), a jail's nfs where
+ * jail is not NULL; yr_suricata(), the
  * suricata-rules operation's words: a page of the rules (q=, sid=,
  * only=, classtype=, offset=, limit=), sources=1, Suricata's answer
  * (instance=, command=, iface=; where raw is not NULL, *raw its text
@@ -63,8 +64,9 @@ int	yr_crashes(cbl_conn *conn, const char *const *words, size_t n,
 	    ucl_object_t **data, char *err, size_t errlen);
 int	yr_system(cbl_conn *conn, const char *jail, const char *const *words,
 	    size_t n, ucl_object_t **data, char *err, size_t errlen);
-int	yr_netstore(cbl_conn *conn, const char *const *words, size_t n,
-	    ucl_object_t **data, char *err, size_t errlen);
+int	yr_netstore(cbl_conn *conn, const char *jail,
+	    const char *const *words, size_t n, ucl_object_t **data,
+	    char *err, size_t errlen);
 int	yr_suricata(cbl_conn *conn, const char *const *words, size_t n,
 	    ucl_object_t **data, char **raw, char *err, size_t errlen);
 int	yr_smtpd(cbl_conn *conn, const char *jail, ucl_object_t **data,

@@ -5398,6 +5398,8 @@ cmd_rtadvd(cbl_conn *conn, int argc, char **argv)
 	sp.has_kind = true;
 	sp.kind = ARC_JOB_KIND_RTADVD;
 	sp.persist = persist;
+	/* -j: a vnet jail's, on its own interface. */
+	sp.jail = netjail;
 	sp.interface = argv[1];
 	if (argc == 3 && strcmp(argv[2], "remove") == 0)
 		sp.remove = true;
@@ -6083,7 +6085,8 @@ cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
-/* netstore [nfs | iscsi | hast]: the host's storage services. */
+/* netstore [nfs | iscsi | hast]: the host's storage services; with -j,
+ * a jail's NFS server. */
 static int
 cmd_netstore(cbl_conn *conn, int argc, char **argv)
 {
@@ -6095,7 +6098,7 @@ cmd_netstore(cbl_conn *conn, int argc, char **argv)
 		usage();
 	/* arcana-netstore's read. */
 	ytold_begin(conn);
-	error = yr_netstore(conn, (const char *const *)&argv[1],
+	error = yr_netstore(conn, netjail, (const char *const *)&argv[1],
 	    (size_t)argc - 1, &data, ebuf, sizeof(ebuf));
 	return (ydata_out("netstore", error, data, ebuf));
 }
@@ -6113,11 +6116,16 @@ cmd_netstore_job(cbl_conn *conn, int argc, char **argv, int kind)
 
 	if (argc < 3)
 		usage();
-	/* iSCSI's target and HAST serve the host's disks. */
-	if (netjail != NULL && (kind == ARC_JOB_KIND_ISCSI || kind ==
-	    ARC_JOB_KIND_HAST))
-		xo_errx(2, "%s has no jail: it serves the host's disks",
-		    kind == ARC_JOB_KIND_ISCSI ? "iscsi" : "hast");
+	/* iSCSI's target and HAST serve the host's disks: why, as the
+	 * agent says it (jobs.yaml's host:). */
+	if (netjail != NULL && kind == ARC_JOB_KIND_ISCSI)
+		xo_errx(2, "iscsi is the host's alone, no jail's: ctld(8) "
+		    "serves the kernel's CAM target layer (ctl(4)), which no "
+		    "jail has; set the iSCSI target on the host");
+	if (netjail != NULL && kind == ARC_JOB_KIND_HAST)
+		xo_errx(2, "hast is the host's alone, no jail's: hastd(8) "
+		    "replicates GEOM providers and makes /dev/hast/*, which no "
+		    "jail has; set HAST on the host");
 	memset(&sp, 0, sizeof(sp));
 	sp.has_kind = true;
 	sp.kind = (uint32_t)kind;

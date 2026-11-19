@@ -219,7 +219,7 @@ arcana_netstore_netstore_read_action(cbl_req *req,
 	struct work	*w;
 	const char	*names[3];
 	size_t		 n;
-	int		 root;
+	int		 root, error;
 
 	(void)target;
 	if (in->name.n > nitems(names))
@@ -232,6 +232,11 @@ arcana_netstore_netstore_read_action(cbl_req *req,
 	if ((w = ywork_told(req, a, "the storage services read", &root)) ==
 	    NULL)
 		return (ENOMEM);
+	/* A jail's NFS server, there. */
+	if ((error = jail_in(req, in->jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (error);
+	}
 	memset(&r, 0, sizeof(r));
 	do_netstore(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-netstore",

@@ -10255,6 +10255,146 @@ part_netstore_forms(void)
 }
 
 /*
+ * The Storage page's NFS tab of a vnet jail with allow.nfsd: the jail
+ * picked, its own exports(5) read; its exports and its server's
+ * settings submitted, found beneath the jail's root and in its rc.conf,
+ * the host's untouched; no pNFS and no sharenfs offered there, and the
+ * iSCSI and HAST tabs offer no jail.
+ */
+ATF_TC_WITH_CLEANUP(pwa_nas_jail);
+ATF_TC_HEAD(pwa_nas_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The Storage page's NFS server of a vnet jail: its exports and settings saved in the jail's root and rc.conf");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_nas_jail, tc)
+{
+	char	wd[MAXPATHLEN], line[MAXPATHLEN + 128];
+
+	prologue(tc, 1);
+	ATF_REQUIRE(getcwd(wd, sizeof(wd)) != NULL);
+	/* gw may serve NFS (jail(8)'s allow.nfsd), its exports its own. */
+	snprintf(line, sizeof(line), "gw 4 new %s/jroot 16.0-CURRENT "
+	    "allow.nfsd=1 enforce_statfs=2\n", wd);
+	put("jails", line);
+	put("jroot/exports", "/jail -network 10.1.0.0/24\n");
+	click_when("li.nasnode[data-act=select-storage]", 10);
+	wait_js("document.querySelector('select[data-input=nas-jail] "
+	    "option[value=gw]') && document.querySelector('form[data-form="
+	    "nas-nfs]')", 30);
+	run("const s = document.querySelector('select[data-input=nas-jail]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', {bubbles: "
+	    "true}));");
+	wait_js("location.hash.endsWith('/gw') && document.querySelector("
+	    "'form[data-form=nas-exports] textarea')?.value.includes('/jail "
+	    "-network')", 20);
+	/* TCP alone there, no pNFS; sharenfs the host's; the jail's root
+	 * no mount point, said. */
+	ATF_CHECK(js_true("!document.querySelector('form[data-form=nas-nfs] "
+	    "input[name=pnfs]') && !document.querySelector('form[data-form="
+	    "nas-share]') && !document.querySelector('.nas-jail-error') && "
+	    "document.querySelector('.nas-jail-warning')"));
+	shot("8n1-nas-jail");
+	run("const f = document.querySelector('form[data-form=nas-exports]'); "
+	    "f.text.value = '# from the page\\n'; f.requestSubmit();");
+	queued_run();
+	ATF_CHECK_MSG(host_has("grep -q '^# from the page$' jroot/exports"),
+	    "the jail's exports are not written");
+	ATF_CHECK_MSG(system("grep -q 'from the page' exports") != 0,
+	    "the host's exports were written");
+	dock_closed();
+	wait_js("document.querySelector('form[data-form=nas-nfs]')", 20);
+	run("const f = document.querySelector('form[data-form=nas-nfs]'); "
+	    "f.enable.checked = true; f.threads.value = '6'; "
+	    "f.requestSubmit();");
+	queued_run();
+	ATF_CHECK_MSG(host_has("grep -q '^nfs_server_flags=\"-t -n 6\"$' "
+	    "jroot/etc/rc.conf && grep -q '^nfs_server_enable=\"YES\"$' "
+	    "jroot/etc/rc.conf && grep -q '^nfsv4_server_only=\"YES\"$' "
+	    "jroot/etc/rc.conf"), "the jail's rc.conf is not set");
+	ATF_CHECK_MSG(host_has("grep -q '^vfs.nfsd.server_max_minorversion=2$' "
+	    "jroot/etc/sysctl.conf"), "the jail's minor version is not kept");
+	ATF_CHECK_MSG(host_has("grep -q '^jexec 4 .*fake-service nfsd "
+	    "onerestart$' jexec.log"), "nfsd is not started in the jail");
+	ATF_CHECK_MSG(system("grep -q nfs_server rc.conf") != 0,
+	    "the host's rc.conf was set");
+	dock_closed();
+	/* The iSCSI target is the host's alone: no jail offered. */
+	click_when("button[data-act=nas-tab][data-arg=iscsi]", 10);
+	wait_js("document.querySelector('form[data-form=nas-ctl]')", 20);
+	ATF_CHECK(js_true("!document.querySelector('select[data-input="
+	    "nas-jail]')"));
+}
+ATF_TC_CLEANUP(pwa_nas_jail, tc)
+{
+
+	browser_stop();
+}
+
+/*
+ * Router advertisements on a vnet jail's interface, from its row on the
+ * Network tab with the jail picked: the prefix and a DNS server
+ * submitted, found in the jail's rtadvd.conf and rc.conf, rtadvd
+ * restarted in the jail; the host's rtadvd.conf untouched.
+ */
+ATF_TC_WITH_CLEANUP(pwa_ra_jail);
+ATF_TC_HEAD(pwa_ra_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Router advertisements on a vnet jail's interface: rtadvd in the jail by an rtadvd job, its rtadvd.conf and rc.conf");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_ra_jail, tc)
+{
+	char	wd[MAXPATHLEN], cmd[2 * MAXPATHLEN + 128];
+
+	prologue(tc, 1);
+	ATF_REQUIRE(getcwd(wd, sizeof(wd)) != NULL);
+	/* rtadvd.conf's path, as the jail has it beneath its root. */
+	snprintf(cmd, sizeof(cmd), "mkdir -p 'jroot%s'", wd);
+	ATF_REQUIRE(system(cmd) == 0);
+	run("document.querySelector('button.tab[data-arg=network]').click()");
+	wait_js("document.querySelector('button[data-act=net-kind]"
+	    "[data-arg=interfaces]')", 10);
+	run("document.querySelector('button[data-act=net-kind]"
+	    "[data-arg=interfaces]').click()");
+	wait_js("document.querySelector('select[data-input=net-jail] "
+	    "option[value=gw]')", 30);
+	run("const p = document.querySelector('select[data-input=net-jail]'); "
+	    "p.value = 'gw'; p.dispatchEvent(new Event('input', {bubbles: "
+	    "true}));");
+	wait_js("document.querySelector('table.ifaces tr[data-if=epair1b] "
+	    "button[data-act=ra-open]')", 20);
+	run("document.querySelector('table.ifaces tr[data-if=epair1b] "
+	    "button[data-act=ra-open]').click()");
+	wait_js("document.querySelector('#ra form[data-form=ra-jail]')", 10);
+	ATF_CHECK(js_true("document.querySelector('#ra h3').textContent"
+	    ".includes('in jail gw')"));
+	shot("8r4-ra-jail");
+	run("const f = document.querySelector('#ra form[data-form=ra-jail]'); "
+	    "f.prefix.value = '2001:db8:7::/64'; f.dns.value = "
+	    "'2001:db8::53, 2001:db8::54'; f.requestSubmit();");
+	queued_run();
+	snprintf(cmd, sizeof(cmd), "grep -q 'addr=\"2001:db8:7::\":prefixlen"
+	    "#64:rdnss=\"2001:db8::53,2001:db8::54\":' 'jroot%s/rtadvd.conf'",
+	    wd);
+	ATF_CHECK_MSG(host_has(cmd), "the jail's rtadvd.conf has no entry");
+	ATF_CHECK_MSG(host_has("grep -q '^rtadvd_enable=\"YES\"$' "
+	    "jroot/etc/rc.conf && grep -q '^rtadvd_interfaces=\"epair1b\"$' "
+	    "jroot/etc/rc.conf"), "the jail's rc.conf is not set");
+	ATF_CHECK_MSG(host_has("grep -q '^jexec 4 .*fake-service rtadvd "
+	    "restart$' jexec.log"), "rtadvd is not restarted in the jail");
+	ATF_CHECK_MSG(system("grep -qs epair1b rtadvd.conf rc.conf") != 0,
+	    "the host's rtadvd.conf or rc.conf was written");
+}
+ATF_TC_CLEANUP(pwa_ra_jail, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A bridge's forms on the Network tab, each submitted and found in
  * what ifconfig was told: a member taken in and kept, its own options
  * (only the one changed sent), an address set behind a member; then a
@@ -16234,6 +16374,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_mesh);
 	ATF_TP_ADD_TC(tp, pwa_scale);
 	ATF_TP_ADD_TC(tp, pwa_ra_lists);
+	ATF_TP_ADD_TC(tp, pwa_ra_jail);
+	ATF_TP_ADD_TC(tp, pwa_nas_jail);
 	ATF_TP_ADD_TC(tp, pwa_netstore_forms);
 	ATF_TP_ADD_TC(tp, pwa_l2_forms);
 	ATF_TP_ADD_TC(tp, pwa_aaa_forms);

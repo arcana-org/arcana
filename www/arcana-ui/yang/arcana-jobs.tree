@@ -190,6 +190,7 @@ module: arcana-jobs
     |  |     |  |  +---w rtadvd!
     |  |     |  |     +---w interface    string
     |  |     |  |     +---w args*        string
+    |  |     |  |     +---w jail?        string
     |  |     |  |     +---w remove?      boolean
     |  |     |  |     +---w persist?     boolean
     |  |     |  +--:(ipsec-sa)
@@ -370,6 +371,7 @@ module: arcana-jobs
     |  |     |  +--:(nfs)
     |  |     |  |  +---w nfs!
     |  |     |  |     +---w verb    enumeration
+    |  |     |  |     +---w jail?   string
     |  |     |  |     +---w args*   string
     |  |     |  |     +---w text?   string
     |  |     |  +--:(iscsi)
@@ -560,6 +562,7 @@ module: arcana-jobs
        |  |  |  |  +---w rtadvd!
        |  |  |  |     +---w interface    string
        |  |  |  |     +---w args*        string
+       |  |  |  |     +---w jail?        string
        |  |  |  |     +---w remove?      boolean
        |  |  |  |     +---w persist?     boolean
        |  |  |  +--:(ipsec-sa)
@@ -740,6 +743,7 @@ module: arcana-jobs
        |  |  |  +--:(nfs)
        |  |  |  |  +---w nfs!
        |  |  |  |     +---w verb    enumeration
+       |  |  |  |     +---w jail?   string
        |  |  |  |     +---w args*   string
        |  |  |  |     +---w text?   string
        |  |  |  +--:(iscsi)

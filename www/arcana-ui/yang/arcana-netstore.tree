@@ -3,8 +3,11 @@ module: arcana-netstore
      +---x read
         +---w input
         |  +---w name*   enumeration
+        |  +---w jail?   string
         +--ro output
            +--ro nfs
+           |  +--ro jail-error?            string
+           |  +--ro jail-warning?          string
            |  +--ro nfsd-enabled?          boolean
            |  +--ro nfsd-running?          boolean
            |  +--ro mountd-enabled?        boolean

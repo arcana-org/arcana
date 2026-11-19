@@ -93,6 +93,21 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### NFS and router advertisements in a vnet jail; agent 0.328.0, console 0.472.0
+
+- The nfs and rtadvd jobs take a jail: a vnet jail's own NFS server
+  (jail(8)'s allow.nfsd; its exports(5), rc.conf, sysctl.conf and
+  daemons; TCP alone, no pNFS, no sharenfs) and its router
+  advertisements on its own interfaces (its rtadvd.conf, rc.conf and
+  rtadvd).  arcana-netstore's read takes a jail and says why nfsd may
+  not serve from it (jail-error, jail-warning).  A jail without vnet,
+  without allow.nfsd or with enforce_statfs 0 is refused with what to
+  set.  iSCSI and HAST stay the host's, and a jail given to them is
+  refused with why.  The Storage page's NFS tab and the Network tab's
+  RA view work on a jail.
+- Update the agent and the console together (arcana-netstore
+  97800-97802, arcana-jobs 63124-63127).
+
 ### A jail's own syslogd, periodic, dma and krb5; agent 0.327.0, console 0.471.0
 
 - sysfile jobs and arcana-system's read take a jail (arcanactl -j

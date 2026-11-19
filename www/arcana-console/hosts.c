@@ -3203,7 +3203,8 @@ connected:
 			ysteps_begin(conn, c, &ys);
 			ok = (c->op == OP_SYSTEM ? yr_system(conn, c->scope[0] !=
 			    '\0' ? c->scope : NULL, one, n, &e, ywhy,
-			    sizeof(ywhy)) : yr_netstore(conn, one, n, &e, ywhy,
+			    sizeof(ywhy)) : yr_netstore(conn, c->scope[0] !=
+			    '\0' ? c->scope : NULL, one, n, &e, ywhy,
 			    sizeof(ywhy))) == 0;
 			ysteps_end(conn, &ys, &steps, &nsteps);
 		}

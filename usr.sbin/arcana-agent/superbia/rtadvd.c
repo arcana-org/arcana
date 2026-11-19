@@ -8,7 +8,10 @@
  * Router advertisements on an interface, by the base system's rtadvd(8),
  * for the hosts behind it to address themselves (SLAAC, MEF 70.2 §11.5):
  * an entry per interface in rtadvd.conf between arcana's marks, the
- * interface on rtadvd_interfaces, rtadvd enabled and restarted.
+ * interface on rtadvd_interfaces, rtadvd enabled and restarted.  Of a
+ * vnet jail too, on its own interfaces: its rtadvd.conf beneath its
+ * root (scope.c), its rc.conf by sysrc -j, its rtadvd by service(8) in
+ * it (jexec(8)); a jail without a network of its own is refused.
  */
 
 #include <sys/param.h>
@@ -83,6 +86,26 @@ entries_keep(const char *block, const char *ifname, char *out, size_t len)
 		kept++;
 	}
 	return (kept);
+}
+
+/*
+ * w in the jail named, when one is: one with a network of its own,
+ * whose interfaces rtadvd(8) advertises on there.
+ */
+int
+rtadvd_enter(struct work *w, const char *jail, const char **errp)
+{
+	struct jinfo	ji;
+
+	if (jail != NULL && jail[0] != '\0' && jail_named(w, jail, &ji) >= 0 &&
+	    !ji.vnet) {
+		*errp = wfmt(w, "the jail %s has no network of its own: rtadvd "
+		    "advertises on a vnet jail's own interfaces; set vnet "
+		    "(vnet = new in its jail.conf) and give it the interface",
+		    jail);
+		return (-1);
+	}
+	return (scope_enter(w, jail, errp));
 }
 
 /*
@@ -180,7 +203,8 @@ do_rtadvd(struct work *w, const char *ifname, const char *const *names,
 	argv[2] = (char *)(uintptr_t)(remove && left == 0 ? "onestop" :
 	    enabled ? "restart" : "onerestart");
 	argv[3] = NULL;
-	if (run_exec(w, argv, &res) != 0 && !remove) {
+	/* A jail's rtadvd, there. */
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0 && !remove) {
 		*errp = wtext(w, exec_error(w, &res, "service rtadvd"));
 		return (-1);
 	}

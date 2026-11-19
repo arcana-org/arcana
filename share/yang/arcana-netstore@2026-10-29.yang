@@ -12,9 +12,11 @@ module arcana-netstore {
      them: the NFS server, NFSv4 alone (nfsd(8), mountd(8),
      exports(5) with its V4: root, the datasets that share themselves
      by sharenfs), iSCSI's target (ctld(8), ctl.conf(5), ctladm(8))
-     and HAST (hastd(8), hast.conf(5), hastctl(8)).  Changes are jobs
-     of kind netstore.  The netstore operation of arcana.yaml
-     converted (Y-3).";
+     and HAST (hastd(8), hast.conf(5), hastctl(8)).  The NFS server
+     of a vnet jail too (jail(8)'s allow.nfsd): its own nfsd, mountd
+     and exports(5); the iSCSI target and HAST are the host's alone.
+     Changes are jobs of kind nfs, iscsi and hast.  The netstore
+     operation of arcana.yaml converted (Y-3).";
 
   revision 2026-10-29 {
     description
@@ -47,11 +49,32 @@ module arcana-netstore {
           description
             "The services to read; none, all.";
         }
+        leaf jail {
+          type string {
+            length "1..255";
+          }
+          description
+            "A running jail's NFS server, not the host's: its own
+             rc.conf, exports(5) and daemons.  The iSCSI target and
+             HAST are not read of a jail.";
+        }
       }
       output {
         container nfs {
           description
             "The NFS server.";
+          leaf jail-error {
+            type string;
+            description
+              "Of a jail: why nfsd may not serve from it (no vnet, no
+               allow.nfsd, enforce_statfs 0), what to set.";
+          }
+          leaf jail-warning {
+            type string;
+            description
+              "Of a jail: its root is no file system's mount point,
+               which mountd needs to export from it (jail(8)).";
+          }
           leaf nfsd-enabled {
             type boolean;
             description

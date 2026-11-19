@@ -667,8 +667,8 @@ yr_system(cbl_conn *conn, const char *jail, const char *const *words,
 }
 
 int
-yr_netstore(cbl_conn *conn, const char *const *words, size_t n,
-    ucl_object_t **data, char *err, size_t errlen)
+yr_netstore(cbl_conn *conn, const char *jail, const char *const *words,
+    size_t n, ucl_object_t **data, char *err, size_t errlen)
 {
 	static const char *const services[] = { "nfs", "iscsi", "hast" };
 	struct arcana_netstore_netstore_read_input	 in;
@@ -694,6 +694,7 @@ yr_netstore(cbl_conn *conn, const char *const *words, size_t n,
 	memset(&in, 0, sizeof(in));
 	in.name.v = v;
 	in.name.n = n;
+	in.jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	return (flat_call(conn, "arcana-netstore", "netstore", "read", &in,
 	    sizeof(struct arcana_netstore_netstore_read_output), yfn_netstore,
 	    data, err, errlen));

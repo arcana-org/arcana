@@ -431,7 +431,8 @@ title_words(const struct arc_job_spec *sp)
 		return (NULL);
 	/* A change to a jail's network says whose it is. */
 	if ((scoped(sp) || jailed(sp) || sp->kind == ARC_JOB_KIND_CERT ||
-	    sp->kind == ARC_JOB_KIND_SSH) && sp->jail != NULL &&
+	    sp->kind == ARC_JOB_KIND_SSH || sp->kind == ARC_JOB_KIND_RTADVD ||
+	    sp->kind == ARC_JOB_KIND_NFS) && sp->jail != NULL &&
 	    sp->jail[0] != '\0') {
 		in = t;
 		rc = asprintf(&t, "%s: %s", sp->jail, in);
@@ -1847,8 +1848,10 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		    sp->persist, &error) == 0;
 		break;
 	case ARC_JOB_KIND_RTADVD:
+		/* A vnet jail's, on its own interfaces. */
 		error = NULL;
-		ok = do_rtadvd(w, sp->interface, sp->names.v, sp->names.n,
+		ok = rtadvd_enter(w, sp->jail, &error) == 0 &&
+		    do_rtadvd(w, sp->interface, sp->names.v, sp->names.n,
 		    sp->remove, sp->persist, &error) == 0;
 		break;
 	case ARC_JOB_KIND_SYSCTL:

@@ -370,8 +370,14 @@ job_check(const ucl_object_t *job, bool *destroysp)
 			continue;
 		if (!word_in(k->needs, key, strlen(key)) && !word_in(k->uses,
 		    key, strlen(key))) {
-			snprintf(why, sizeof(why), "a %s job has no %s",
-			    k->kind, key);
+			/* The host's by its nature: why. */
+			if (strcmp(key, "jail") == 0 && k->host != NULL)
+				snprintf(why, sizeof(why), "a %s job has no "
+				    "jail, the host's alone: %s", k->kind,
+				    k->host);
+			else
+				snprintf(why, sizeof(why), "a %s job has no %s",
+				    k->kind, key);
 			return (why);
 		}
 		/* A value of a few is one of them, unless it is made later. */

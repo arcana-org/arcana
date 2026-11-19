@@ -253,7 +253,9 @@ definitions:
           taken out; with persist, rtadvd enabled and the interface on
           rtadvd_interfaces in rc.conf; rtadvd restarted.  With remove,
           the interface's entry taken out, and rtadvd stopped when the
-          block is empty.
+          block is empty.  With jail, a vnet jail's, on its own
+          interfaces: its rtadvd.conf, rc.conf and rtadvd; a jail
+          without a network of its own is refused.
       - name: ipsec-sa
         doc: |
           Manually keyed security associations for an ipsec(4)
@@ -429,7 +431,11 @@ definitions:
           vfs.nfsd.server_max_minorversion, kept in sysctl.conf),
           threads= and pNFS's data servers pnfs= (host:/path joined by
           commas) and mirror= (nfsd's -n, -p and -m, pnfsserver(4)).
-          The host's only; never in safe mode.
+          With jail, a vnet jail's own server (jail(8)'s allow.nfsd):
+          its exports(5), rc.conf, sysctl.conf and daemons; TCP alone,
+          no pNFS, no share (sharenfs is the host's); a jail without
+          vnet, without allow.nfsd or with enforce_statfs 0 is refused.
+          Never in safe mode.
       - name: iscsi
         doc: |
           The iSCSI target (ctld(8)): verb conf writes ctl.conf(5) from

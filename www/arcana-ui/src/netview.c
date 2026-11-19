@@ -621,13 +621,12 @@ interfaces(struct html *h, const struct server *s, const ucl_object_t *arr)
 		    "description") : "");
 		h_attr(h, "data-value", buf);
 		h_raw(h, ">Edit</button>");
-		if (net_scope()[0] == '\0') {
-			h_raw(h, "<button class=\"ghost small\" data-act=\""
-			    "ra-open\" title=\"Router advertisements on it: its "
-			    "record in rtadvd.conf(5), what rtadvd(8) sends\"");
-			h_attr(h, "data-arg", name);
-			h_raw(h, ">RA</button>");
-		}
+		/* A vnet jail's too: rtadvd there, on its interface. */
+		h_raw(h, "<button class=\"ghost small\" data-act=\"ra-open\" "
+		    "title=\"Router advertisements on it: its record in "
+		    "rtadvd.conf(5), what rtadvd(8) sends\"");
+		h_attr(h, "data-arg", name);
+		h_raw(h, ">RA</button>");
 		if (net_scope()[0] != '\0' && strncmp(name, "lo", 2) != 0) {
 			h_raw(h, "<button class=\"ghost small\" data-act=\""
 			    "if-vnet-back\" title=\"Take this interface out "

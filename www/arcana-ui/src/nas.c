@@ -11,7 +11,10 @@
  * ctl.conf(5), its LUNs and sessions by ctladm(8).  HAST: hastd(8) and
  * hast.conf(5), its resources' roles by hastctl(8).  A host at a time
  * (arcana-netstore's read); each change a job of the nfs, iscsi
- * or hast kind.
+ * or hast kind.  NFS of a jail of it too, picked on the NFS tab (a vnet
+ * jail with allow.nfsd: its own exports(5), nfsd and mountd; no pNFS,
+ * no sharenfs there); the iSCSI target and HAST are the host's alone,
+ * and their tabs offer no jail.
  */
 
 #include <stdbool.h>
@@ -31,6 +34,7 @@ static struct {
 	enum nastab	 tab;
 	struct res	 r;		/* the netstore read */
 	bool		 target;	/* the iSCSI target form open */
+	char		 jail[64];	/* NFS of: "" the host, or a jail */
 } nas;
 
 /* arcana-netstore's read as the tab draws it: by its names. */
@@ -43,19 +47,41 @@ nas_conv(const ucl_object_t *o)
 	return (jflat(o, names));
 }
 
+/* The host's services, or a jail's NFS server alone. */
 static void
 nas_load_of(const char *sid)
 {
+	char	in[160], *q;
 
-	res_yread(&nas.r, sid, "arcana-netstore:netstore/read", "{}",
-	    nas_conv);
+	if (nas.jail[0] == '\0' || nas.tab != NAS_NFS) {
+		res_yread(&nas.r, sid, "arcana-netstore:netstore/read", "{}",
+		    nas_conv);
+		return;
+	}
+	q = json_quote(nas.jail);
+	snprintf(in, sizeof(in), "{\"name\":[\"nfs\"],\"jail\":%s}", q);
+	free(q);
+	res_yread(&nas.r, sid, "arcana-netstore:netstore/read", in, nas_conv);
 }
+
 
 static void
 nas_load(void)
 {
 
 	nas_load_of(nas.r.sid);
+}
+
+/* Read again from scratch: another host, jail or tab's scope. */
+static void
+nas_reload(void)
+{
+
+	if (nas.r.o != NULL)
+		ucl_object_unref(nas.r.o);
+	nas.r.o = NULL;
+	nas.r.error[0] = '\0';
+	nas_load();
 }
 
 static struct server *
@@ -82,8 +108,15 @@ nas_job(const char *kind, const char *verb, const char *const *words,
 
 	if ((s = nas_server()) == NULL)
 		return;
-	if (asprintf(&json, "{\"kind\":\"%s\",\"verb\":\"%s\",\"args\":[",
-	    kind, verb) == -1)
+	/* A jail's NFS server, where one is picked. */
+	if (strcmp(kind, "nfs") == 0 && nas.jail[0] != '\0') {
+		qw = json_quote(nas.jail);
+		if (asprintf(&json, "{\"kind\":\"%s\",\"jail\":%s,\"verb\":"
+		    "\"%s\",\"args\":[", kind, qw, verb) == -1)
+			abort();
+		free(qw);
+	} else if (asprintf(&json, "{\"kind\":\"%s\",\"verb\":\"%s\","
+	    "\"args\":[", kind, verb) == -1)
 		abort();
 	for (i = 0; i < n; i++) {
 		qw = json_quote(words[i]);
@@ -103,7 +136,10 @@ nas_job(const char *kind, const char *verb, const char *const *words,
 	free(json);
 	memset(&q, 0, sizeof(q));
 	q.json = t;
-	snprintf(q.title, sizeof(q.title), "%s", title);
+	if (strcmp(kind, "nfs") == 0 && nas.jail[0] != '\0')
+		snprintf(q.title, sizeof(q.title), "%s in %s", title, nas.jail);
+	else
+		snprintf(q.title, sizeof(q.title), "%s", title);
 	snprintf(q.sid, sizeof(q.sid), "%s", s->id);
 	snprintf(q.host, sizeof(q.host), "%s", s->name);
 	q.what = JOB_NETSTORE;
@@ -156,7 +192,20 @@ view_nfs(struct html *h, const ucl_object_t *o)
 	const ucl_object_t	**rows, *r;
 	const char		*minor;
 	int			 i, k;
+	bool			 jailed;
 
+	jailed = nas.jail[0] != '\0';
+	/* What keeps a jail's nfsd from serving, and what to set. */
+	if (jailed && jstr(o, "jail_error") != NULL) {
+		h_raw(h, "<div class=\"notice bad nas-jail-error\">");
+		h_txt(h, jstr(o, "jail_error"));
+		h_raw(h, "</div>");
+	}
+	if (jailed && jstr(o, "jail_warning") != NULL) {
+		h_raw(h, "<div class=\"notice warn nas-jail-warning\">");
+		h_txt(h, jstr(o, "jail_warning"));
+		h_raw(h, "</div>");
+	}
 	h_raw(h, "<p>");
 	state_chips(h, o, "nfsd", "nfsd");
 	state_chips(h, o, "mountd", "mountd");
@@ -180,20 +229,30 @@ view_nfs(struct html *h, const ucl_object_t *o)
 	    "threads\" type=\"number\" min=\"1\" max=\"256\"");
 	h_attr(h, "value", jstr(o, "threads") != NULL ? jstr(o, "threads") :
 	    "");
-	h_raw(h, " placeholder=\"4\"></label></div><div class=\"rowform\">"
-	    "<label>pNFS data servers <input name=\"pnfs\" spellcheck=\"false\" "
-	    "placeholder=\"ds1:/DSstore0,ds2:/DSstore1\"");
-	h_attr(h, "value", jstr(o, "pnfs") != NULL ? jstr(o, "pnfs") : "");
-	h_raw(h, "><small class=\"help\">this host the metadata server "
-	    "(pnfsserver(4)): each data server an NFSv4.1+ server exporting "
-	    "its directory to it; the clients read and write files there "
-	    "directly</small></label><label>Mirrors <input name=\"mirror\" "
-	    "type=\"number\" min=\"2\" max=\"8\"");
-	h_attr(h, "value", jstr(o, "mirror") != NULL ? jstr(o, "mirror") : "");
-	h_raw(h, " placeholder=\"none\"><small class=\"help\">each file on so "
-	    "many data servers</small></label></div><div class=\"actions\">"
-	    "<button type=\"submit\" class=\"primary\">Save</button></div>"
-	    "</form><form class=\"secform\" data-form=\"nas-exports\"><h4>");
+	h_raw(h, " placeholder=\"4\"></label></div>");
+	/* In a jail nfsd serves over TCP alone, without pNFS (nfsd(8)). */
+	if (jailed)
+		h_raw(h, "<p class=\"help\">In the jail nfsd serves over TCP "
+		    "alone, without pNFS (nfsd(8)).</p>");
+	else {
+		h_raw(h, "<div class=\"rowform\"><label>pNFS data servers "
+		    "<input name=\"pnfs\" spellcheck=\"false\" placeholder=\""
+		    "ds1:/DSstore0,ds2:/DSstore1\"");
+		h_attr(h, "value", jstr(o, "pnfs") != NULL ? jstr(o, "pnfs") :
+		    "");
+		h_raw(h, "><small class=\"help\">this host the metadata server "
+		    "(pnfsserver(4)): each data server an NFSv4.1+ server "
+		    "exporting its directory to it; the clients read and write "
+		    "files there directly</small></label><label>Mirrors <input "
+		    "name=\"mirror\" type=\"number\" min=\"2\" max=\"8\"");
+		h_attr(h, "value", jstr(o, "mirror") != NULL ? jstr(o,
+		    "mirror") : "");
+		h_raw(h, " placeholder=\"none\"><small class=\"help\">each file "
+		    "on so many data servers</small></label></div>");
+	}
+	h_raw(h, "<div class=\"actions\"><button type=\"submit\" class=\""
+	    "primary\">Save</button></div></form><form class=\"secform\" "
+	    "data-form=\"nas-exports\"><h4>");
 	h_txt(h, jstr(o, "exports_path") != NULL ? jstr(o, "exports_path") :
 	    "exports");
 	h_raw(h, "</h4>");
@@ -215,10 +274,20 @@ view_nfs(struct html *h, const ucl_object_t *o)
 	h_txt(h, jstr(o, "exports"));
 	h_raw(h, "</textarea><small class=\"help\">exports(5): first the "
 	    "V4: line, NFSv4's root, a directory on ZFS (the agent refuses "
-	    "any other); then a line a directory and who may mount it. "
-	    "Datasets share themselves below instead.</small>"
-	    "</label><div class=\"actions\"><button type=\"submit\" class=\""
-	    "primary\">Save and tell mountd</button></div></form>");
+	    "any other); then a line a directory and who may mount it. ");
+	h_raw(h, jailed ? "The jail's own file, as the jail sees its paths."
+	    : "Datasets share themselves below instead.");
+	h_raw(h, "</small></label><div class=\"actions\"><button type=\""
+	    "submit\" class=\"primary\">Save and tell mountd</button></div>"
+	    "</form>");
+	/* A jail exports by its exports(5) alone: sharenfs is the host's. */
+	if (jailed) {
+		h_raw(h, "<p class=\"help\">A dataset's sharenfs is the host's "
+		    "(zfs writes the host's /etc/zfs/exports, for the host's "
+		    "mountd): the jail exports by its own file above.</p>");
+		pre(h, "Exported now (showmount -e)", jstr(o, "exported"));
+		return;
+	}
 	/* The datasets that share themselves: sharenfs, which zfs writes
 	 * to /etc/zfs/exports for mountd. */
 	h_raw(h, "<h4>ZFS shares</h4>");
@@ -376,6 +445,41 @@ view_hast(struct html *h, const ucl_object_t *o)
 	pre(h, "Resources (hastctl list)", jstr(o, "list"));
 }
 
+/* The NFS tab's jails: those of the host that run, and the one picked
+ * even if it stopped; one without a network of its own said so. */
+static void
+jail_pick(struct html *h, const struct server *s)
+{
+	const ucl_object_t	*j;
+	ucl_object_iter_t	 it;
+	const char		*name;
+
+	h_raw(h, "<label class=\"secpick\" title=\"Whose NFS server: the "
+	    "host's, or a vnet jail's with allow.nfsd (jail(8))\">NFS of "
+	    "<select data-input=\"nas-jail\"><option value=\"\"");
+	if (nas.jail[0] == '\0')
+		h_raw(h, " selected");
+	h_raw(h, ">the host</option>");
+	it = NULL;
+	while (s->list != NULL && (j = ucl_object_iterate(jget(s->list,
+	    "jails"), &it, true)) != NULL) {
+		if ((name = jstr(j, "name")) == NULL || !url_word(name) ||
+		    (strcmp(name, nas.jail) != 0 && (jstr(j, "state") == NULL ||
+		    strcmp(jstr(j, "state"), "running") != 0)))
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", name);
+		if (strcmp(name, nas.jail) == 0)
+			h_raw(h, " selected");
+		h_raw(h, ">jail ");
+		h_txt(h, name);
+		if (!jbool(j, "vnet"))
+			h_raw(h, " (no vnet)");
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label>");
+}
+
 void
 view_naspage(struct html *h)
 {
@@ -384,8 +488,9 @@ view_naspage(struct html *h)
 	    "nfsd(8): exports, NFSv4.2 and pNFS",
 	    "ctld(8): an iSCSI target and its LUNs",
 	    "hastd(8): a disk replicated to another host" };
-	size_t	i;
-	int	k;
+	struct server	*s;
+	size_t		 i;
+	int		 k;
 
 	h_raw(h, "<section class=\"secpage naspage\"><div class=\"sechead\">"
 	    "<label class=\"secpick\">Host <select data-input=\"nas-host\">");
@@ -400,7 +505,12 @@ view_naspage(struct html *h)
 		h_txt(h, app.servers[k].name);
 		h_raw(h, "</option>");
 	}
-	h_raw(h, "</select></label></div><nav class=\"tabs\">");
+	h_raw(h, "</select></label>");
+	/* Whose NFS server: the host's, or a running jail's of it; the
+	 * iSCSI target and HAST are the host's alone. */
+	if (nas.tab == NAS_NFS && (s = nas_server()) != NULL)
+		jail_pick(h, s);
+	h_raw(h, "</div><nav class=\"tabs\">");
 	for (i = 0; i < nitems(names); i++)
 		h_fmt(h, "<button class=\"tab%s\" data-act=\"nas-tab\" data-arg="
 		    "\"%s\" title=\"%s\">%s</button>", (size_t)nas.tab == i ?
@@ -568,12 +678,17 @@ naspage_action(const char *act, const char *arg, const char *value)
 	if (strcmp(act, "input:nas-host") == 0) {
 		snprintf(nas.r.sid, sizeof(nas.r.sid), "%s", value != NULL ? value :
 		    "");
-		if (nas.r.o != NULL)
-			ucl_object_unref(nas.r.o);
-		nas.r.o = NULL;
-		nas.r.error[0] = '\0';
+		/* Another host's jails are others. */
+		nas.jail[0] = '\0';
 		nas.target = false;
-		nas_load();
+		nas_reload();
+		render();
+		return (true);
+	}
+	if (strcmp(act, "input:nas-jail") == 0) {
+		snprintf(nas.jail, sizeof(nas.jail), "%s", value != NULL &&
+		    url_word(value) ? value : "");
+		nas_reload();
 		render();
 		return (true);
 	}
@@ -581,8 +696,13 @@ naspage_action(const char *act, const char *arg, const char *value)
 		return (false);
 	if (strcmp(act, "nas-tab") == 0) {
 		for (i = 0; i < nitems(tabs); i++)
-			if (strcmp(arg, tabs[i]) == 0)
+			if (strcmp(arg, tabs[i]) == 0 && nas.tab != (enum nastab)i) {
 				nas.tab = (enum nastab)i;
+				/* A jail's read is its NFS alone: the host's
+				 * iSCSI and HAST read again. */
+				if (nas.jail[0] != '\0')
+					nas_reload();
+			}
 	} else if (strcmp(act, "nas-retry") == 0) {
 		if (nas.r.o != NULL)
 			ucl_object_unref(nas.r.o);
@@ -679,19 +799,23 @@ naspage_action(const char *act, const char *arg, const char *value)
 	return (true);
 }
 
-/* "#/storage[/tab[/host]]" */
+/* "#/storage[/tab[/host[/jail]]]", a jail on the NFS tab alone */
 void
 naspage_loc(char *buf, size_t len)
 {
+	bool	jailed;
 
-	snprintf(buf, len, "#/storage/%s%s%s", tabs[nas.tab], nas.r.sid[0] !=
-	    '\0' ? "/" : "", nas.r.sid);
+	jailed = nas.tab == NAS_NFS && nas.jail[0] != '\0' && nas.r.sid[0] !=
+	    '\0';
+	snprintf(buf, len, "#/storage/%s%s%s%s%s", tabs[nas.tab], nas.r.sid[0] !=
+	    '\0' ? "/" : "", nas.r.sid, jailed ? "/" : "", jailed ? nas.jail :
+	    "");
 }
 
 void
 naspage_open(const char *rest)
 {
-	char	tab[16];
+	char	tab[16], sid[16], jail[64];
 	size_t	i;
 
 	snprintf(tab, sizeof(tab), "%.*s", (int)strcspn(rest, "/"), rest);
@@ -699,12 +823,17 @@ naspage_open(const char *rest)
 		if (strcmp(tab, tabs[i]) == 0)
 			nas.tab = (enum nastab)i;
 	rest += strcspn(rest, "/");
-	if (*rest == '/' && strcmp(rest + 1, nas.r.sid) != 0) {
-		snprintf(nas.r.sid, sizeof(nas.r.sid), "%.15s", rest + 1);
-		if (nas.r.o != NULL)
-			ucl_object_unref(nas.r.o);
-		nas.r.o = NULL;
-		nas_load();
+	if (*rest != '/')
+		return;
+	rest++;
+	snprintf(sid, sizeof(sid), "%.*s", (int)strcspn(rest, "/"), rest);
+	rest += strcspn(rest, "/");
+	snprintf(jail, sizeof(jail), "%s", *rest == '/' && url_word(rest + 1) ?
+	    rest + 1 : "");
+	if (strcmp(sid, nas.r.sid) != 0 || strcmp(jail, nas.jail) != 0) {
+		snprintf(nas.r.sid, sizeof(nas.r.sid), "%s", sid);
+		snprintf(nas.jail, sizeof(nas.jail), "%s", jail);
+		nas_reload();
 	}
 }
 
