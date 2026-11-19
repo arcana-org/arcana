@@ -348,7 +348,7 @@ sudo and wheel included.
   sleeps holds up no other request; the file 0640, a world-writable
   directory on its way, a symbolic link, a malformed line and an
   unknown flag refused, absent off; no sysfile writes it;
-  `--terminal-users none` gives "unknown command".
+  `--terminal-users none` gives "mapped logins are off on this host" (EPERM), `--test-unregister terminal-as` "unknown command".
 - agent_test `terminal_mapped_local`: PEER_LOCAL refused though NACM
   and the file would let its user (libfakejail's FAKEPEERUID).
 - agent_test `config_bundle`: no bundle carries the file.
