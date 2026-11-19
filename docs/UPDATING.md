@@ -93,6 +93,15 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Running reads no state (cblink 0.2.30); agent 0.322.0, console 0.467.0
+
+- A read of running or the candidate no longer runs the handlers of
+  state-only nodes (config false, or containers holding only state):
+  an edit's read of running no longer runs the storage read (zpool,
+  zfs, camcontrol, smart) and the other state reads twice, and a state
+  read that fails cannot fail an edit.  Operational reads are as
+  before.
+
 ### Mapped terminal logins; agent 0.321.0, console 0.466.0
 
 - A host's admin can map a console user to an account of the host, or
