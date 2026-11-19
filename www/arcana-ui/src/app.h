@@ -1457,6 +1457,8 @@ void		 sec_ids_set_objs(const char *, const char *const *,
 		    ucl_object_t **, int);
 void		 sec_job(char *, const char *);
 const char	*sec_host_id(void);
+const char	*sec_where(void);
+const char	*sec_place(void);
 bool		 sec_tab_tls(void);
 const ucl_object_t *sec_state(void);
 /* idsstats.c: an intrusion detection's statistics, as graphs. */

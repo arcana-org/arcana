@@ -11,7 +11,10 @@
  * (pcap-log) goes out as one (suricata-pcap-get).  And what its
  * profiling wrote, Suricata built with --enable-profiling: packets'
  * ticks per protocol and per stage (packet_stats.log), its rules'
- * (rule_perf.log), read back for the suricata-rules read.
+ * (rule_perf.log), read back for the suricata-rules read.  An instance
+ * in a jail has them beneath the jail's root, each opened there by a
+ * descriptor beneath it (never by a link out of it), their paths as
+ * the jail has them.
  */
 
 #include <sys/param.h>
@@ -98,36 +101,53 @@ capture_name_ok(const char *s)
 	    strcmp(s + n - 4, ".cap") == 0));
 }
 
-/* Its replay directory's captures, made when it has none. */
-static bool
-captures_dir(const char *inst, char *buf, size_t len)
+/* A directory of w's scope read: a jail's beneath its root. */
+static DIR *
+dir_open(struct work *w, const char *dir)
 {
-	char	rd[MAXPATHLEN];
+	DIR	*d;
+	int	 fd;
 
-	suricata_inst_path(inst, "replay.d", rd, sizeof(rd));
-	if (mkdir_mode(rd, 0750) == -1 && errno != EEXIST)
-		return (false);
-	if ((size_t)snprintf(buf, len, "%s/captures", rd) >= len)
-		return (false);
-	return (mkdir_mode(buf, 0750) == 0 || errno == EEXIST);
+	if ((fd = scope_dirfd(w, dir)) == -1)
+		return (NULL);
+	if ((d = fdopendir(fd)) == NULL)
+		close(fd);
+	return (d);
 }
 
-/* The instance there is: its configuration. */
-static bool
-inst_there(const char *inst)
+/* Its replay directory's captures, made when it has none, in w's
+ * scope: opened, its path in *pathp; -1 for none. */
+static int
+captures_dir(struct work *w, const char *inst, const char **pathp)
 {
-	char	p[MAXPATHLEN];
+	const char	*rd;
 
-	suricata_inst_path(inst, "yaml", p, sizeof(p));
-	return (access(p, R_OK) == 0);
+	rd = suricata_inst_file(w, inst, "replay.d");
+	*pathp = wfmt(w, "%s/captures", rd);
+	if (w->jail != NULL) {
+		if (scope_mkdirs(w, *pathp) != 0)
+			return (-1);
+	} else if ((mkdir_mode(rd, 0750) == -1 && errno != EEXIST) ||
+	    (mkdir_mode(*pathp, 0750) == -1 && errno != EEXIST))
+		return (-1);
+	return (scope_dirfd(w, *pathp));
+}
+
+/* The instance there is, in w's scope: its configuration. */
+static bool
+inst_there(struct work *w, const char *inst)
+{
+
+	return (scope_access(w, suricata_inst_file(w, inst, "yaml"), false));
 }
 
 /*
- * The captures an instance's replay keeps: CAPTURES_KEPT, the oldest
- * let go, and a part nobody finished a day ago.
+ * The captures an instance's replay keeps (its directory dfd):
+ * CAPTURES_KEPT, the oldest let go, and a part nobody finished a day
+ * ago.
  */
 static void
-captures_prune(const char *dir)
+captures_prune(int dfd)
 {
 	struct {
 		char	name[160];
@@ -135,25 +155,28 @@ captures_prune(const char *dir)
 	}		 v[64];
 	struct dirent	*de;
 	struct stat	 sb;
-	char		 p[MAXPATHLEN];
 	size_t		 n, i, old, len;
 	DIR		*d;
+	int		 fd;
 
-	if ((d = opendir(dir)) == NULL)
+	if ((fd = dup(dfd)) == -1)
 		return;
+	if ((d = fdopendir(fd)) == NULL) {
+		close(fd);
+		return;
+	}
 	n = 0;
 	while ((de = readdir(d)) != NULL) {
-		if (de->d_name[0] == '.' || (size_t)snprintf(p, sizeof(p),
-		    "%s/%s", dir, de->d_name) >= sizeof(p) || lstat(p, &sb) !=
-		    0 || !S_ISREG(sb.st_mode))
+		if (de->d_name[0] == '.' || fstatat(dfd, de->d_name, &sb,
+		    AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(sb.st_mode))
 			continue;
 		len = strlen(de->d_name);
 		if (len > 5 && strcmp(de->d_name + len - 5, ".part") == 0) {
 			if (sb.st_mtime < time(NULL) - 86400)
-				(void)unlink(p);
+				(void)unlinkat(dfd, de->d_name, 0);
 			continue;
 		}
-		if (n < nitems(v)) {
+		if (n < nitems(v) && len < sizeof(v[n].name)) {
 			snprintf(v[n].name, sizeof(v[n].name), "%s", de->d_name);
 			v[n++].at = sb.st_mtime;
 		}
@@ -163,32 +186,32 @@ captures_prune(const char *dir)
 		for (old = 0, i = 1; i < n; i++)
 			if (v[i].at < v[old].at)
 				old = i;
-		snprintf(p, sizeof(p), "%s/%s", dir, v[old].name);
-		(void)unlink(p);
+		(void)unlinkat(dfd, v[old].name, 0);
 		v[old] = v[--n];
 	}
 }
 
-/* The captures uploaded for its replay, for the sdwan read. */
+/* The captures uploaded for its replay, for the sdwan read, in w's
+ * scope: a jail's paths as the jail has them. */
 ucl_object_t *
-suricata_captures_json(const char *inst)
+suricata_captures_json(struct work *w, const char *inst)
 {
 	ucl_object_t	*arr, *o;
 	struct dirent	*de;
 	struct stat	 sb;
-	char		 rd[MAXPATHLEN], dir[MAXPATHLEN], p[MAXPATHLEN];
+	const char	*dir, *p;
 	DIR		*d;
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
-	suricata_inst_path(inst, "replay.d", rd, sizeof(rd));
-	snprintf(dir, sizeof(dir), "%s/captures", rd);
-	if ((d = opendir(dir)) == NULL)
+	dir = wfmt(w, "%s/captures", suricata_inst_file(w, inst, "replay.d"));
+	if ((d = dir_open(w, dir)) == NULL)
 		return (arr);
 	while ((de = readdir(d)) != NULL) {
-		if (!capture_name_ok(de->d_name) || (size_t)snprintf(p,
-		    sizeof(p), "%s/%s", dir, de->d_name) >= sizeof(p) ||
-		    lstat(p, &sb) != 0 || !S_ISREG(sb.st_mode))
+		if (!capture_name_ok(de->d_name) || fstatat(dirfd(d),
+		    de->d_name, &sb, AT_SYMLINK_NOFOLLOW) != 0 ||
+		    !S_ISREG(sb.st_mode))
 			continue;
+		p = wfmt(w, "%s/%s", dir, de->d_name);
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(p), "path", 0,
 		    false);
@@ -204,11 +227,14 @@ suricata_captures_json(const char *inst)
 
 /* ---- A capture in: suricata-pcap-put --------------------------------- */
 
+/* A capture coming: its part and its name in the captures directory
+ * dfd (a jail's beneath its root), its path as its place has it. */
 struct put {
-	int		 fd;
+	int		 fd, dfd;
 	bool		 last, failed;
 	int64_t		 offset, written;
-	char		 part[MAXPATHLEN], path[MAXPATHLEN], dir[MAXPATHLEN];
+	char		 part[NAME_MAX + 1], name[NAME_MAX + 1];
+	char		 path[MAXPATHLEN];
 };
 
 static void
@@ -217,6 +243,8 @@ put_free(struct put *p)
 
 	if (p->fd != -1)
 		close(p->fd);
+	if (p->dfd != -1)
+		close(p->dfd);
 	free(p);
 	pthread_mutex_lock(&xf_lock);
 	nputs--;
@@ -269,12 +297,12 @@ put_hclose(cbl_stream *s, void *arg)
 		return;
 	}
 	if (p->last) {
-		if (rename(p->part, p->path) == -1) {
+		if (renameat(p->dfd, p->part, p->dfd, p->name) == -1) {
 			p->failed = true;
 			(void)cbl_stream_close(s, EIO, strerror(errno));
 			return;
 		}
-		captures_prune(p->dir);
+		captures_prune(p->dfd);
 		logmsg(LOG_INFO, "suricata: a capture came for replay, %s, "
 		    "%jd bytes", p->path, (intmax_t)(p->offset + p->written));
 	}
@@ -290,7 +318,7 @@ put_close(cbl_stream *s __unused, int code __unused,
 	struct put	*p = arg;
 
 	if (p->fd != -1 || p->failed)
-		(void)unlink(p->part);
+		(void)unlinkat(p->dfd, p->part, 0);
 	put_free(p);
 }
 
@@ -300,8 +328,9 @@ static const struct ys_cbs put_cbs = {
 	.on_close = put_close,
 };
 
-int
-pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
+/* A capture's stream opened, w where its instance runs. */
+static int
+put_open(struct work *w, cbl_req *req, const struct arcana_stream_open *rq,
     cbl_stream *s)
 {
 	static const char *const keys[] = { "instance", "file", "offset",
@@ -309,7 +338,8 @@ pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
 	struct arcana_stream_opened		 rsp;
 	struct put				*p;
 	struct stat				 sb;
-	const char				*inst, *file, *off, *last;
+	const char				*inst, *file, *off, *last, *e;
+	const char				*dir;
 	char					*end, json[MAXPATHLEN + 32];
 	char					 why[96];
 	long long				 o;
@@ -329,7 +359,13 @@ pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
 		    "and last=1", NULL, 0, -1);
 		return (EINVAL);
 	}
-	if (!inst_there(inst)) {
+	/* Where it runs: a jail's captures beneath its root. */
+	e = NULL;
+	if (suricata_inst_in(w, inst, &e) != 0) {
+		(void)cbl_req_set_err(req, e, NULL, 0, -1);
+		return (ENOENT);
+	}
+	if (!inst_there(w, inst)) {
 		(void)cbl_req_set_err(req, "there is no such instance here",
 		    NULL, 0, -1);
 		return (ENOENT);
@@ -352,17 +388,18 @@ pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
 	p->fd = -1;
 	p->offset = o;
 	p->last = last != NULL;
-	if (!captures_dir(inst, p->dir, sizeof(p->dir))) {
+	if ((p->dfd = captures_dir(w, inst, &dir)) == -1) {
 		(void)cbl_req_set_err(req, strerror(errno), NULL, 0, -1);
 		put_free(p);
 		return (EIO);
 	}
-	snprintf(p->path, sizeof(p->path), "%s/%s", p->dir, file);
-	snprintf(p->part, sizeof(p->part), "%s/%s.part", p->dir, file);
+	snprintf(p->path, sizeof(p->path), "%s/%s", dir, file);
+	snprintf(p->name, sizeof(p->name), "%s", file);
+	snprintf(p->part, sizeof(p->part), "%s.part", file);
 	/* The first part makes it; the next one goes on where the one
 	 * before ended, or is refused. */
-	p->fd = open(p->part, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | (o == 0 ?
-	    O_CREAT | O_TRUNC : O_APPEND), 0640);
+	p->fd = openat(p->dfd, p->part, O_WRONLY | O_CLOEXEC | O_NOFOLLOW |
+	    (o == 0 ? O_CREAT | O_TRUNC : O_APPEND), 0640);
 	if (p->fd == -1 || fstat(p->fd, &sb) == -1 || !S_ISREG(sb.st_mode) ||
 	    sb.st_size != o) {
 		if (p->fd != -1)
@@ -380,11 +417,24 @@ pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
 	snprintf(json, sizeof(json), "{\"path\":\"%s\"}", p->path);
 	rsp.json = json;
 	if (ys_accept(s, &rsp, &put_cbs, p) != 0) {
-		(void)unlink(p->part);
+		(void)unlinkat(p->dfd, p->part, 0);
 		put_free(p);
 		return (ECONNREFUSED);
 	}
 	return (0);
+}
+
+int
+pcap_put_open(cbl_req *req, const struct arcana_stream_open *rq,
+    cbl_stream *s)
+{
+	struct work	w;
+	int		rc;
+
+	work_init(&w);
+	rc = put_open(&w, req, rq, s);
+	work_free(&w);
+	return (rc);
 }
 
 /* ---- A pcap-log file out: suricata-pcap-get -------------------------- */
@@ -482,8 +532,9 @@ static const struct ys_cbs get_cbs = {
 	.on_close = get_closed,
 };
 
-int
-pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
+/* A pcap-log file's stream opened, w where its instance runs. */
+static int
+get_open(struct work *w, cbl_req *req, const struct arcana_stream_open *rq,
     cbl_stream *s)
 {
 	static const char *const keys[] = { "instance", "file" };
@@ -491,8 +542,8 @@ pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
 	struct get				*g;
 	struct stat				 sb;
 	pthread_t				 tid;
-	const char				*inst, *file;
-	char					 dir[MAXPATHLEN], p[MAXPATHLEN];
+	const char				*inst, *file, *e;
+	char					 p[MAXPATHLEN];
 	char					 json[MAXPATHLEN + 64];
 
 	inst = word(rq->name.v, rq->name.n, "instance");
@@ -506,8 +557,13 @@ pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
 		    "name alone)", NULL, 0, -1);
 		return (EINVAL);
 	}
-	suricata_inst_path(inst, "d", dir, sizeof(dir));
-	snprintf(p, sizeof(p), "%s/%s", dir, file);
+	/* Where it runs: a jail's files beneath its root. */
+	e = NULL;
+	if (suricata_inst_in(w, inst, &e) != 0) {
+		(void)cbl_req_set_err(req, e, NULL, 0, -1);
+		return (ENOENT);
+	}
+	snprintf(p, sizeof(p), "%s/%s", suricata_inst_file(w, inst, "d"), file);
 	pthread_mutex_lock(&xf_lock);
 	if (ngets >= XF_MAX) {
 		pthread_mutex_unlock(&xf_lock);
@@ -527,7 +583,7 @@ pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
 	g->refs = 2;
 	pthread_mutex_init(&g->lock, NULL);
 	pthread_cond_init(&g->wake, NULL);
-	if ((g->fd = open(p, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)) == -1 ||
+	if ((g->fd = scope_open(w, p, O_RDONLY, 0)) == -1 ||
 	    fstat(g->fd, &sb) == -1 || !S_ISREG(sb.st_mode)) {
 		(void)cbl_req_set_err(req, g->fd == -1 && errno == ENOENT ?
 		    "the instance has no such file: Suricata may have let it "
@@ -559,6 +615,19 @@ pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
 	return (0);
 }
 
+int
+pcap_get_open(cbl_req *req, const struct arcana_stream_open *rq,
+    cbl_stream *s)
+{
+	struct work	w;
+	int		rc;
+
+	work_init(&w);
+	rc = get_open(&w, req, rq, s);
+	work_free(&w);
+	return (rc);
+}
+
 /* ---- Profiling: what Suricata wrote of it, read back ----------------- */
 
 /* A file's last TAIL_MAX bytes at most, as text; NULL for none. */
@@ -572,7 +641,7 @@ tail_of(struct work *w, const char *path, time_t *atp)
 	size_t		 got;
 	int		 fd;
 
-	if ((fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)) == -1)
+	if ((fd = scope_open(w, path, O_RDONLY, 0)) == -1)
 		return (NULL);
 	if (fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode)) {
 		close(fd);
@@ -786,7 +855,8 @@ suricata_profiling(struct work *w, const char *inst,
     struct json_rsp *rsp)
 {
 	ucl_object_t	*top, *b, *o;
-	char		 dir[MAXPATHLEN], *json;
+	const char	*e;
+	char		*json;
 
 	rsp->has_ok = true;
 	rsp->ok = false;
@@ -794,8 +864,15 @@ suricata_profiling(struct work *w, const char *inst,
 		rsp->error = "profiling is read by instance= and profiling=1";
 		return;
 	}
-	if (!inst_there(inst)) {
+	/* Where it runs: a jail's, its Suricata and files there. */
+	e = NULL;
+	if (suricata_inst_in(w, inst, &e) != 0) {
+		rsp->error = e;
+		return;
+	}
+	if (!inst_there(w, inst)) {
 		rsp->error = wfmt(w, "there is no instance %s here", inst);
+		(void)scope_enter_jail(w, NULL, NULL, false);
 		return;
 	}
 	top = ucl_object_typed_new(UCL_OBJECT);
@@ -814,12 +891,11 @@ suricata_profiling(struct work *w, const char *inst,
 		ucl_object_unref(o);
 	}
 	ucl_object_insert_key(top, b, "build", 0, false);
-	suricata_inst_path(inst, "d", dir, sizeof(dir));
-	if ((o = dir_json(w, dir)) != NULL)
+	if ((o = dir_json(w, suricata_inst_file(w, inst, "d"))) != NULL)
 		ucl_object_insert_key(top, o, "running", 0, false);
-	suricata_inst_path(inst, "replay.d", dir, sizeof(dir));
-	if ((o = dir_json(w, dir)) != NULL)
+	if ((o = dir_json(w, suricata_inst_file(w, inst, "replay.d"))) != NULL)
 		ucl_object_insert_key(top, o, "replay", 0, false);
+	(void)scope_enter_jail(w, NULL, NULL, false);
 	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
 	if (json == NULL) {

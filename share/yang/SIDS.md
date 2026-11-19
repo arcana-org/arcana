@@ -161,7 +161,7 @@ on the wire.
 | 85 200 | 100 | `arcana-crashes` | `share/yang/arcana-crashes@2026-10-29.sid` (25 used) |
 | 85 300 | 100 | `arcana-system` | `share/yang/arcana-system@2026-10-29.sid` (58 used) |
 | 85 400 | 100 | `arcana-netstore` | `share/yang/arcana-netstore@2026-10-29.sid` (48 used) |
-| 85 500 | 200 | `arcana-suricata` | `share/yang/arcana-suricata@2026-10-29.sid` (132 used) |
+| 85 500 | 200 | `arcana-suricata` | `share/yang/arcana-suricata@2026-10-29.sid` (134 used) |
 | 85 700 | 100 | `arcana-smtpd` | `share/yang/arcana-smtpd@2026-10-29.sid` (68 used) |
 | 85 800 | 160 | `arcana-speeder` | `share/yang/arcana-speeder@2026-10-29.sid` (156 used) |
 | 85 960 | 40 | `arcana-stream`, the structures of Arcana's own stream family | `share/yang/arcana-stream@2026-10-29.sid` (12 used) |

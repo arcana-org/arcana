@@ -367,6 +367,7 @@ module: arcana-jobs
     |  |     |  +--:(suricata)
     |  |     |  |  +---w suricata!
     |  |     |  |     +---w verb    enumeration
+    |  |     |  |     +---w jail?   string
     |  |     |  |     +---w args*   string
     |  |     |  |     +---w text?   string
     |  |     |  +--:(nfs)
@@ -741,6 +742,7 @@ module: arcana-jobs
        |  |  |  +--:(suricata)
        |  |  |  |  +---w suricata!
        |  |  |  |     +---w verb    enumeration
+       |  |  |  |     +---w jail?   string
        |  |  |  |     +---w args*   string
        |  |  |  |     +---w text?   string
        |  |  |  +--:(nfs)

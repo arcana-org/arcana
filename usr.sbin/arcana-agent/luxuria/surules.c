@@ -15,6 +15,13 @@
  * of a classtype (re:classtype:), or of a source's file (group:).  The
  * admin's modify.conf, a rule's text changed by a pattern, is kept and
  * given too.
+ *
+ * A jail's ruleset is its own (the Security section's instances in a
+ * jail read it): its suricata-update run there by jexec(8), its sources
+ * and its ruleset beneath its root, read from there (never by a link
+ * out of it), and the admin's choices for it kept apart, NAME.JAIL
+ * beside the host's, given to its suricata-update as files beneath the
+ * jail's root.  w's scope (scope_enter_jail()) says which.
  */
 
 #include <sys/param.h>
@@ -49,6 +56,9 @@
 #define	SIDS_JOB	1000	/* sids a rule job sets, at most */
 #define	LIMIT_DEFAULT	100
 #define	LIMIT_MAX	500
+/* A jail's: where the files given to its suricata-update are beneath
+ * its root, beside its instances' (sdids.c's JAIL_DIR). */
+#define	JAIL_DIR	"/var/db/arcana-security"
 
 static void	sources_json(struct work *, ucl_object_t *);
 static const char *matcher_line(struct work *, const char *);
@@ -66,6 +76,15 @@ struct gstate {
 	char		match[160];
 	char		st;
 };
+
+/* A file of the admin's choices, beside the agent's other files: the
+ * host's, or those of a jail's own ruleset, NAME.JAIL. */
+static const char *
+kept(struct work *w, const char *base)
+{
+
+	return (w->jail != NULL ? wfmt(w, "%s.%s", base, w->jail) : base);
+}
 
 static int
 state_cmp(const void *a, const void *b)
@@ -96,7 +115,7 @@ state_load(struct work *w, size_t *np)
 
 	v = wcalloc(w, STATES_MAX, sizeof(*v));
 	n = 0;
-	if ((text = sdwan_kept_read(STATE_FILE)) != NULL) {
+	if ((text = sdwan_kept_read(kept(w, STATE_FILE))) != NULL) {
 		for (it = text; (line = strsep(&it, "\n")) != NULL &&
 		    n < STATES_MAX;) {
 			sid = strtoul(line, &end, 10);
@@ -169,7 +188,7 @@ state_save(struct work *w, const struct rstate *v, size_t n,
 	for (i = 0; i < n && off < len; i++)
 		off += (size_t)snprintf(text + off, len - off, "%u %s\n",
 		    v[i].sid, state_word(v[i].st));
-	return (sdwan_conf_write(STATE_FILE, text, errp));
+	return (sdwan_conf_write(kept(w, STATE_FILE), text, errp));
 }
 
 /* classtype:NAME or group:FILE, as a job gives one. */
@@ -201,7 +220,7 @@ groups_load(struct work *w, struct gstate **vp)
 	size_t		 n = 0;
 
 	v = wcalloc(w, GROUPS_MAX, sizeof(*v));
-	if ((text = sdwan_kept_read(GROUP_FILE)) != NULL) {
+	if ((text = sdwan_kept_read(kept(w, GROUP_FILE))) != NULL) {
 		for (it = text; (line = strsep(&it, "\n")) != NULL &&
 		    n < GROUPS_MAX;) {
 			if ((sp = strrchr(line, ' ')) == NULL)
@@ -229,7 +248,7 @@ groups_save(struct work *w, const struct gstate *v, size_t n,
 	for (i = 0; i < n; i++)
 		text = wfmt(w, "%s%s %s\n", text, v[i].match,
 		    state_word(v[i].st));
-	return (sdwan_conf_write(GROUP_FILE, text, errp));
+	return (sdwan_conf_write(kept(w, GROUP_FILE), text, errp));
 }
 
 /* A group as suricata-update matches it: a classtype by its option. */
@@ -283,9 +302,32 @@ modify_wrong(const char *text)
 
 /*
  * suricata-update's arguments for the admin's rules, after argv[*np]:
- * its three files written from the state first.  -1 and why when one
+ * its three files written from the state first, a jail's beneath its
+ * root where its suricata-update reads them.  -1 and why when one
  * cannot be.
  */
+static const char *
+conf_put(struct work *w, const char *file, const char *text,
+    const char **errp)
+{
+	char		 path[MAXPATHLEN];
+	const char	*p;
+
+	if (w->jail == NULL) {
+		if (sdwan_conf_write(file, text, errp) != 0)
+			return (NULL);
+		return (wstrdup(w, sdwan_conf_path(file, path, sizeof(path))));
+	}
+	p = wfmt(w, "%s/%s", JAIL_DIR, file);
+	if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w, p, text,
+	    strlen(text), 0600, NULL) != 0) {
+		*errp = wfmt(w, "%s in the jail %s: %s", p, w->jail,
+		    strerror(errno));
+		return (NULL);
+	}
+	return (p);
+}
+
 int
 suricata_rule_args(struct work *w, char **argv, int *np, const char **errp)
 {
@@ -299,25 +341,32 @@ suricata_rule_args(struct work *w, char **argv, int *np, const char **errp)
 	};
 	struct rstate	*v;
 	struct gstate	*g;
+	const char	*p;
 	char		 path[MAXPATHLEN], *mod;
 	size_t		 n, ng, i;
 
 	v = state_load(w, &n);
 	ng = groups_load(w, &g);
 	for (i = 0; i < nitems(confs); i++) {
-		if (sdwan_conf_write(confs[i].file, conf_text(w, v, n, g, ng,
-		    confs[i].st, confs[i].what), errp) != 0)
+		if ((p = conf_put(w, confs[i].file, conf_text(w, v, n, g, ng,
+		    confs[i].st, confs[i].what), errp)) == NULL)
 			return (-1);
 		argv[(*np)++] = (char *)(uintptr_t)confs[i].opt;
-		argv[(*np)++] = wstrdup(w, sdwan_conf_path(confs[i].file, path,
-		    sizeof(path)));
+		argv[(*np)++] = (char *)(uintptr_t)p;
 	}
-	/* The admin's modify.conf, kept as given. */
-	if ((mod = sdwan_kept_read(MODIFY_FILE)) != NULL) {
+	/* The admin's modify.conf, kept as given; a jail's put beneath its
+	 * root for it. */
+	if ((mod = sdwan_kept_read(kept(w, MODIFY_FILE))) != NULL) {
 		if (mod[strspn(mod, " \t\n")] != '\0') {
-			argv[(*np)++] = (char *)(uintptr_t)"--modify-conf";
-			argv[(*np)++] = wstrdup(w, sdwan_conf_path(MODIFY_FILE,
+			p = w->jail != NULL ? conf_put(w, MODIFY_FILE, wstrdup(w,
+			    mod), errp) : wstrdup(w, sdwan_conf_path(MODIFY_FILE,
 			    path, sizeof(path)));
+			if (p == NULL) {
+				free(mod);
+				return (-1);
+			}
+			argv[(*np)++] = (char *)(uintptr_t)"--modify-conf";
+			argv[(*np)++] = (char *)(uintptr_t)p;
 		}
 		free(mod);
 	}
@@ -442,7 +491,7 @@ suricata_rule_set(struct work *w, const struct arc_job_spec *sp,
 	if ((*errp = suricata_rule_check(sp)) != NULL)
 		return (-1);
 	if (strcmp(sp->names.v[0], "modify") == 0)
-		return (sdwan_conf_write(MODIFY_FILE, sp->text, errp));
+		return (sdwan_conf_write(kept(w, MODIFY_FILE), sp->text, errp));
 	v = state_load(w, &n);
 	ng = groups_load(w, &g);
 	sids = wcalloc(w, SIDS_JOB, sizeof(*sids));
@@ -591,7 +640,7 @@ do_suricata_rules(struct work *w, const char *const *names, size_t nn,
 {
 	static const char *const keys[] = { "q", "sid", "only", "classtype",
 	    "offset", "limit", "sources", "instance", "command", "iface",
-	    "profiling" };
+	    "profiling", "jail" };
 	struct {
 		char	name[64];
 		size_t	rules, on;
@@ -633,6 +682,15 @@ do_suricata_rules(struct work *w, const char *const *names, size_t nn,
 	/* instance= command=: Suricata's own answer. */
 	if (sc_read(w, names, nn, rsp))
 		return;
+	/* jail=: a running jail's own ruleset and sources. */
+	if ((s = word_value(names, nn, "jail")) != NULL && s[0] != '\0') {
+		const char	*e = NULL;
+
+		if (!valid_jail(s) || scope_enter_jail(w, s, &e, false) != 0) {
+			rsp->error = e != NULL ? e : "the jail is a jail's name";
+			return;
+		}
+	}
 	/* sources=1: the rule sources, not the rules. */
 	if (word_value(names, nn, "sources") != NULL) {
 		top = ucl_object_typed_new(UCL_OBJECT);
@@ -676,12 +734,15 @@ do_suricata_rules(struct work *w, const char *const *names, size_t nn,
 	ucl_object_insert_key(top, ucl_object_fromint((int64_t)n), "changed",
 	    0, false);
 	total = enabled = matched = 0;
-	path = suricata_ruleset();
+	path = suricata_ruleset_in(w);
 	/* Read whole, not mapped: suricata-update truncates and rewrites
-	 * the file in place, and a mapping of it would fault. */
+	 * the file in place, and a mapping of it would fault.  A jail's
+	 * beneath its root. */
 	map = NULL;
-	if ((fd = open(path, O_RDONLY | O_CLOEXEC)) != -1 && fstat(fd, &sb) ==
-	    0 && sb.st_size > 0 && sb.st_size < 1024L * 1024 * 1024 &&
+	if ((fd = scope_open_read(w, path)) != -1)
+		(void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+	if (fd != -1 && fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) &&
+	    sb.st_size > 0 && sb.st_size < 1024L * 1024 * 1024 &&
 	    (map = malloc((size_t)sb.st_size)) != NULL) {
 		ssize_t	got = 0, rd;
 
@@ -815,7 +876,7 @@ do_suricata_rules(struct work *w, const char *const *names, size_t nn,
 		ucl_array_append(arr, o);
 	}
 	ucl_object_insert_key(top, arr, "classes", 0, false);
-	if ((json = sdwan_kept_read(MODIFY_FILE)) != NULL) {
+	if ((json = sdwan_kept_read(kept(w, MODIFY_FILE))) != NULL) {
 		put_s(top, "modify", json);
 		free(json);
 	}
@@ -839,15 +900,42 @@ do_suricata_rules(struct work *w, const char *const *names, size_t nn,
  */
 
 /* suricata-update's data directory: the rules directory's parent,
- * /var/lib/suricata as it ships. */
+ * /var/lib/suricata as it ships; of w's scope, the host's or the
+ * jail's. */
 const char *
 suricata_data_dir(struct work *w)
 {
-	const char	*r = opts.suricata_rules, *slash;
+	const char	*r = suricata_rules_dir(w), *slash;
 
 	if ((slash = strrchr(r, '/')) == NULL || slash == r)
 		return ("/");
 	return (wfmt(w, "%.*s", (int)(slash - r), r));
+}
+
+/* suricata-update where w works: the host's, or the jail's own where
+ * the port puts it. */
+static const char *
+update_bin(struct work *w)
+{
+	const char	*bin;
+
+	if (w->jail != NULL || (bin = tool(w, "suricata-update")) == NULL)
+		bin = "/usr/local/bin/suricata-update";
+	return (bin);
+}
+
+/* A directory of w's scope read: a jail's beneath its root. */
+static DIR *
+scope_opendir(struct work *w, const char *dir)
+{
+	DIR	*d;
+	int	 fd;
+
+	if ((fd = scope_dirfd(w, dir)) == -1)
+		return (NULL);
+	if ((d = fdopendir(fd)) == NULL)
+		close(fd);
+	return (d);
 }
 
 static bool
@@ -964,23 +1052,25 @@ suricata_source_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
 {
 	struct execres	 res;
-	const char	*name, *bin, *on, *off, *text, *tmp;
+	const char	*name, *bin, *on, *off, *text;
 	char		*argv[6];
 	size_t		 i;
-	int		 step, fd;
+	int		 step;
 	bool		 k;
 
 	if ((*errp = suricata_source_check(sp)) != NULL)
 		return (-1);
 	if (strcmp(sp->verb, "sources") == 0) {
-		if ((bin = tool(w, "suricata-update")) == NULL)
-			bin = "/usr/local/bin/suricata-update";
+		bin = update_bin(w);
 		argv[0] = (char *)(uintptr_t)bin;
 		argv[1] = (char *)(uintptr_t)"-D";
 		argv[2] = (char *)(uintptr_t)suricata_data_dir(w);
 		argv[3] = (char *)(uintptr_t)"update-sources";
 		argv[4] = NULL;
-		if (run_exec(w, argv, &res) != 0) {
+		if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
+			if ((*errp = scope_missing(w, &res, "suricata-update",
+			    "suricata")) != NULL)
+				return (-1);
 			*errp = wtext(w, exec_error(w, &res, "suricata-update "
 			    "update-sources"));
 			return (-1);
@@ -998,14 +1088,15 @@ suricata_source_job(struct work *w, const struct arc_job_spec *sp,
 	    "kept as %s", name, off) : strcmp(sp->verb, "source-remove") == 0 ?
 	    wfmt(w, "%s taken away", name) : wfmt(w, "%s written", on));
 	if (strcmp(sp->verb, "source-disable") == 0) {
-		if (rename(on, off) != 0) {
+		if (scope_rename(w, on, strrchr(on, '/') + 1, strrchr(off, '/') +
+		    1) != 0) {
 			*errp = wfmt(w, "%s is not enabled", name);
 			step_end(w, step, false, "%s", *errp);
 			return (-1);
 		}
 	} else if (strcmp(sp->verb, "source-remove") == 0) {
-		k = unlink(on) == 0;
-		if (!(unlink(off) == 0 || k)) {
+		k = scope_unlink(w, on) == 0;
+		if (!(scope_unlink(w, off) == 0 || k)) {
 			*errp = wfmt(w, "%s is neither enabled nor disabled",
 			    name);
 			step_end(w, step, false, "%s", *errp);
@@ -1014,8 +1105,9 @@ suricata_source_job(struct work *w, const struct arc_job_spec *sp,
 	} else {
 		/* Enabled again as it was, or with what is given. */
 		if (strcmp(sp->verb, "source-enable") == 0 && sp->names.n == 1 &&
-		    access(off, F_OK) == 0) {
-			if (rename(off, on) != 0) {
+		    scope_access(w, off, false)) {
+			if (scope_rename(w, off, strrchr(off, '/') + 1, strrchr(on,
+			    '/') + 1) != 0) {
 				*errp = wfmt(w, "%s: %s", on, strerror(errno));
 				step_end(w, step, false, "%s", *errp);
 				return (-1);
@@ -1039,27 +1131,14 @@ suricata_source_job(struct work *w, const struct arc_job_spec *sp,
 					    yaml_quoted(w, strchr(sp->names.v[i],
 					    '=') + 1));
 		}
-		(void)mkdir_mode(wfmt(w, "%s/update", suricata_data_dir(w)), 0755);
-		(void)mkdir_mode(wfmt(w, "%s/update/sources", suricata_data_dir(w)),
-		    0755);
-		(void)unlink(off);
+		(void)scope_mkdirs(w, wfmt(w, "%s/update/sources",
+		    suricata_data_dir(w)));
+		(void)scope_unlink(w, off);
 		/* Its secret, root's alone: a new file, its mode set whatever
-		 * an older one had, moved over the old. */
-		tmp = wfmt(w, "%s.new", on);
-		if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |
-		    O_NOFOLLOW, 0600)) == -1 || fchmod(fd, 0600) != 0 ||
-		    write(fd, text, strlen(text)) != (ssize_t)strlen(text) ||
-		    fsync(fd) != 0) {
+		 * an older one had, moved over the old; a jail's beneath its
+		 * root, never by a link out of it. */
+		if (scope_replace(w, on, text, strlen(text), 0600, NULL) != 0) {
 			*errp = wfmt(w, "%s: %s", on, strerror(errno));
-			if (fd != -1)
-				(void)close(fd);
-			(void)unlink(tmp);
-			step_end(w, step, false, "%s", *errp);
-			return (-1);
-		}
-		if (close(fd) != 0 || rename(tmp, on) != 0) {
-			*errp = wfmt(w, "%s: %s", on, strerror(errno));
-			(void)unlink(tmp);
 			step_end(w, step, false, "%s", *errp);
 			return (-1);
 		}
@@ -1076,6 +1155,9 @@ file_slurp(struct work *w, const char *path)
 	char	*buf;
 	size_t	 n;
 
+	/* A jail's beneath its root. */
+	if (w->jail != NULL)
+		return (scope_slurp(w, path, NULL));
 	if ((fp = fopen(path, "re")) == NULL)
 		return (NULL);
 	buf = wcalloc(w, 64 * 1024 + 1, 1);
@@ -1119,16 +1201,15 @@ sources_json(struct work *w, ucl_object_t *top)
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	o = NULL;
-	if (access(wfmt(w, "%s/update/cache/index.yaml",
-	    suricata_data_dir(w)), R_OK) == 0) {
-		if ((bin = tool(w, "suricata-update")) == NULL)
-			bin = "/usr/local/bin/suricata-update";
+	if (scope_access(w, wfmt(w, "%s/update/cache/index.yaml",
+	    suricata_data_dir(w)), false)) {
+		bin = update_bin(w);
 		argv[0] = (char *)(uintptr_t)bin;
 		argv[1] = (char *)(uintptr_t)"-D";
 		argv[2] = (char *)(uintptr_t)suricata_data_dir(w);
 		argv[3] = (char *)(uintptr_t)"list-sources";
 		argv[4] = NULL;
-		if (run_exec(w, argv, &res) == 0) {
+		if (run_exec(w, scope_jexec(w, argv), &res) == 0) {
 			copy = wstrdup(w, res.out);
 			no_ansi(copy);
 			for (it2 = copy; (line = strsep(&it2, "\n")) != NULL;) {
@@ -1165,9 +1246,9 @@ sources_json(struct work *w, ucl_object_t *top)
 	it = NULL;
 	while ((e = ucl_object_iterate(arr, &it, true)) != NULL) {
 		v = ucl_object_tostring(ucl_object_lookup(e, "name"));
-		st = access(source_file(w, v, false), F_OK) == 0 ? "enabled" :
-		    access(source_file(w, v, true), F_OK) == 0 ? "disabled" :
-		    NULL;
+		st = scope_access(w, source_file(w, v, false), false) ?
+		    "enabled" : scope_access(w, source_file(w, v, true), false) ?
+		    "disabled" : NULL;
 		if (st != NULL && strcmp(st, "enabled") == 0)
 			any = true;
 		if (st != NULL)
@@ -1180,7 +1261,7 @@ sources_json(struct work *w, ucl_object_t *top)
 		size_t		 len;
 		bool		 dis;
 
-		if ((d = opendir(wfmt(w, "%s/update/sources",
+		if ((d = scope_opendir(w, wfmt(w, "%s/update/sources",
 		    suricata_data_dir(w)))) != NULL) {
 			while ((de = readdir(d)) != NULL) {
 				len = strlen(de->d_name);
@@ -1264,31 +1345,62 @@ sc_line(struct work *w, int s)
 	return (buf);
 }
 
-static const char *
-sc_ask(struct work *w, const char *path, const char *cmd, const char *iface,
-    const char **errp)
+/*
+ * A socket connected to an instance's command socket, where it runs: a
+ * jail's connected by the helper attached to the jail, to the path as
+ * the jail has it (none of the host's, whatever links the jail made),
+ * and handed over.  -1 and why for none.
+ */
+static int
+sc_connect(struct work *w, const char *inst, const char **errp)
 {
 	struct sockaddr_un	 sun;
-	struct timeval		 tv = { 5, 0 };
-	const char		*line;
-	char			*r;
-	int			 s;
+	const char		*path;
+	int			 s, e;
 
+	if (suricata_inst_in(w, inst, errp) != 0)
+		return (-1);
+	path = suricata_socket(w, inst);
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	if (strlcpy(sun.sun_path, path, sizeof(sun.sun_path)) >=
 	    sizeof(sun.sun_path)) {
 		*errp = "its socket's path is too long";
-		return (NULL);
+		return (-1);
+	}
+	if (w->jail != NULL) {
+		if ((s = helper_unix_socket(w->jid, path)) == -1)
+			*errp = wfmt(w, "Suricata does not answer on %s in the "
+			    "jail %s (is it running?)", path, w->jail);
+		return (s);
 	}
 	if ((s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1 ||
-	    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1 ||
-	    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == -1 ||
 	    connect(s, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+		e = errno;
 		*errp = wfmt(w, "Suricata does not answer on %s: %s (is it "
-		    "running?)", path, strerror(errno));
+		    "running?)", path, strerror(e));
 		if (s != -1)
 			close(s);
+		return (-1);
+	}
+	return (s);
+}
+
+static const char *
+sc_ask(struct work *w, const char *inst, const char *cmd, const char *iface,
+    const char **errp)
+{
+	struct timeval		 tv = { 5, 0 };
+	const char		*line;
+	char			*r;
+	int			 s;
+
+	if ((s = sc_connect(w, inst, errp)) == -1)
+		return (NULL);
+	if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1 ||
+	    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == -1) {
+		*errp = wfmt(w, "its socket: %s", strerror(errno));
+		close(s);
 		return (NULL);
 	}
 	line = "{\"version\":\"0.2\"}\n";
@@ -1348,7 +1460,9 @@ sc_read(struct work *w, const char *const *names, size_t nn,
 		return (true);
 	}
 	e = NULL;
-	if ((r = sc_ask(w, suricata_socket(w, inst), cmd, ifn, &e)) == NULL) {
+	r = sc_ask(w, inst, cmd, ifn, &e);
+	(void)scope_enter_jail(w, NULL, NULL, false);
+	if (r == NULL) {
 		rsp->error = e;
 		return (true);
 	}
@@ -1367,8 +1481,8 @@ suricata_sources_secret(struct work *w)
 	bool		 any;
 
 	any = false;
-	if ((d = opendir(wfmt(w, "%s/update/sources", suricata_data_dir(w)))) ==
-	    NULL)
+	if ((d = scope_opendir(w, wfmt(w, "%s/update/sources",
+	    suricata_data_dir(w)))) == NULL)
 		return (false);
 	while (!any && (de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.' || strstr(de->d_name, ".yaml") == NULL)

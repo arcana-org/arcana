@@ -176,29 +176,27 @@
   one that prevents needs a vnet jail, its divert rules placed in the
   jail's own ipfw (set 25 by set 24, rule 6, `// secids:`), and is
   refused in a jail of the host's network (divert(4) sockets are a
-  vnet jail's alone).  Left, each a task of its own:
-  - An instance in a jail is started again only when its list is
-    applied again (Start on the page): a jail restarted leaves it
-    stopped until then, the agent not watching jails come and go for
-    it (jailwatch.c could).
-  - Its Own rules' live counters and its Statistics' socket commands
-    (surules.c's sc_ask, the instance's command socket), its pcap-log
-    files and replays (idsfiles.c) are the host's instances' alone;
-    for one in a jail they say there is none.
-  - The ruleset (Rules and Sources, the suricata job) is the host's: a
-    jail's instance adds the jail's own, fetched by its suricata-update
-    run there by hand; the job could take a jail (jexec suricata-update).
-  - Its interfaces' offloading still on is read for the host's alone.
+  vnet jail's alone).  Done since (agent_test:security_jail,
+  pwa_test:pwa_security_rules_jail): its command socket reached by the
+  helper attached to the jail (unix-socket, the jail's path), its
+  pcap-log, captures, replays (the jail's Suricata, a capture the jail
+  has) and profiling beneath the jail's root; a vnet jail's interfaces'
+  offloading read there (ifconfig -j); started again when its jail
+  comes back (the IDS reader sees the jail gone, or another jid, and
+  applies its group's kept list again once the jail has settled, a jail
+  not running kept); the suricata job, Rules and Sources take a jail
+  (its own suricata-update by jexec, /var/lib/suricata beneath its
+  root, the rules set for it kept as NAME.JAIL), the page's following
+  Runs in.  Left: the jail's restart is seen by polling (the reader's
+  jail_getv each second), not by jailwatch.c's EVFILT_JAIL, which tells
+  a jail made before its vnet interfaces are moved in.
 - SD-WAN's URL filter and IPS at an edge that is a vnet jail
   (agent_test:sdwan_jail_proxy_ids, console_test:sdwan_jail_security):
   the services' Squid with c-icap and Suricata run in the jail as its
   dnsmasq and unbound do, files in /var/db/arcana-sdwan beneath its
   root, the MD+R's hashes its own ClamAV's, what Suricata prevents
   diverted by the edge's own rules (rule 9 in the jail's ipfw), no
-  idsfw.c rule.  Left: the same as the Security section's in a jail
-  above (a jail not running at the agent's start waits for the next
-  apply; replays and the ruleset are the host's); not run yet in a
-  real vnet jail.
+  idsfw.c rule.  Left: not run yet in a real vnet jail.
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's

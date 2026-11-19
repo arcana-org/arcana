@@ -1870,6 +1870,11 @@ submodule arcana-jobs-kinds {
             description
               "Verb";
           }
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
           leaf-list args {
             type string;
             ordered-by user;

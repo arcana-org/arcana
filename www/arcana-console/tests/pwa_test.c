@@ -13936,6 +13936,102 @@ part_security_jail(void)
 	    "'this host') && !document.querySelector('table.secids')", 10);
 }
 
+/*
+ * IDS/IPS's Rules in a jail: Runs in picks the jail gw; Fetch the
+ * ruleset runs the jail's own suricata-update there (jexec), into the
+ * jail's /var/lib/suricata beneath its root; Rules reads that ruleset,
+ * and a rule set on there is kept for the jail apart from the host's,
+ * given to the jail's suricata-update beneath its root.
+ */
+static void
+part_security_rules_jail(void)
+{
+	FILE	*fp;
+	int	 i;
+
+	ATF_REQUIRE((fp = fopen("fake-jexec", "w")) != NULL);
+	fputs("#!/bin/sh\necho \"jexec $*\" >> jexec.log\n"
+	    "r=$(awk -v j=\"$1\" '$2 == j { print $4 }' jails)\n"
+	    "[ -n \"$r\" ] || exit 1\nshift\np=$1\nshift\n"
+	    "case \"$p\" in /usr/local/*|/var/*) p=$r$p ;; esac\n"
+	    "for a; do case \"$a\" in /usr/local/*|/var/*) a=$r$a ;; esac; "
+	    "set -- \"$@\" \"$a\"; shift; done\n"
+	    "JROOT=$r exec \"$p\" \"$@\"\n", fp);
+	fclose(fp);
+	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+	ATF_REQUIRE(system("mkdir -p jroot/usr/local/bin && cp "
+	    "tools/suricata-update jroot/usr/local/bin/suricata-update && "
+	    "cp tools/suricata jroot/usr/local/bin/suricata && chmod +x "
+	    "jroot/usr/local/bin/suricata-update jroot/usr/local/bin/suricata")
+	    == 0);
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("location.hash.startsWith('#/security/') && document."
+	    "querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = s.options[s.options.length - 1].value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=ids]", 10);
+	wait_js("document.querySelector('select[data-input=sec-where]') && "
+	    "[...document.querySelector('select[data-input=sec-where]')."
+	    "options].some(o => o.value === 'gw')", 20);
+	run("const s = document.querySelector('select[data-input=sec-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	/* The jail's ruleset, not fetched there yet. */
+	click_when("button[data-act=sec-idsview][data-arg=rules]", 10);
+	wait_js("document.querySelector('.secpage .empty') && document."
+	    "querySelector('.secpage .empty').textContent.includes('not "
+	    "fetched for the jail gw')", 20);
+	click_when("button[data-act=sec-idsview][data-arg=instances]", 10);
+	click_when("button[data-act=sec-ruleset]", 10);
+	queued_run();
+	/* The host's effect: the jail's suricata-update run in it, the
+	 * ruleset beneath the jail's root, none on the host. */
+	for (i = 0; i < 300 && access("jroot/var/lib/suricata/rules/"
+	    "suricata.rules", F_OK) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's ruleset is not fetched");
+	ATF_CHECK(system("grep -q '^jexec 4 /usr/local/bin/suricata-update "
+	    "--no-test --no-reload --suricata /usr/local/bin/suricata -o "
+	    "/var/lib/suricata/rules -D /var/lib/suricata ' jexec.log") == 0);
+	ATF_CHECK(system("! find . -path ./jroot -prune -o -name "
+	    "suricata.rules -print | grep -q .") == 0);
+	dock_closed();
+	click_when("button[data-act=sec-idsview][data-arg=rules]", 10);
+	wait_js("document.querySelector('table.surules') && document."
+	    "querySelector('.secpage').textContent.includes('3 rules, 2 "
+	    "enabled')", 20);
+	run("const f = document.querySelector('form[data-form=sur-search]'); "
+	    "f.q.value = 'CURL'; f.requestSubmit();");
+	wait_js("document.querySelectorAll('table.surules tbody tr').length == 1 "
+	    "&& document.querySelector('table.surules').textContent.includes("
+	    "'ET INFO curl')", 20);
+	click_when("table.surules button[data-act=sur-set][data-value=on]", 10);
+	queued_run();
+	wait_js("document.querySelector('table.surules') && document."
+	    "querySelector('table.surules').textContent.includes('set on') && "
+	    "document.querySelector('table.surules .chip.st-up')", 30);
+	/* Kept for the jail alone, given to its suricata-update beneath
+	 * its root; the host's choices untouched. */
+	ATF_CHECK(system("grep -rqx '2000005 on' --include=suricata-rule-state."
+	    "gw .") == 0);
+	ATF_CHECK(system("! find . -name suricata-rule-state | grep -q .") ==
+	    0);
+	ATF_CHECK(system("grep -qx 2000005 jroot/var/db/arcana-security/"
+	    "suricata-enable.conf") == 0);
+	ATF_CHECK(system("grep -q 'suricata-update .* --offline$' jexec.log") ==
+	    0);
+	dock_closed();
+	shot("9w-security-rules-jail");
+	/* The host's place: its own ruleset, still not fetched. */
+	run("const s = document.querySelector('select[data-input=sec-where]'); "
+	    "s.value = ''; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('.secpage .empty') && document."
+	    "querySelector('.secpage .empty').textContent.includes('not "
+	    "fetched for this host')", 20);
+}
+
 static void
 part_security(void)
 {
@@ -14611,6 +14707,25 @@ ATF_TC_BODY(pwa_security_jail, tc)
 	part_security_jail();
 }
 ATF_TC_CLEANUP(pwa_security_jail, tc)
+{
+
+	browser_stop();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_security_rules_jail);
+ATF_TC_HEAD(pwa_security_rules_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "IDS/IPS's Rules with a jail picked: the jail's own suricata-update run there, its ruleset beneath its root, a rule set on kept for the jail apart from the host's");
+	atf_tc_set_md_var(tc, "timeout", "120");
+}
+ATF_TC_BODY(pwa_security_rules_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_security_rules_jail();
+}
+ATF_TC_CLEANUP(pwa_security_rules_jail, tc)
 {
 
 	browser_stop();
@@ -16718,6 +16833,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_map_fleet);
 	ATF_TP_ADD_TC(tp, pwa_flows_security);
 	ATF_TP_ADD_TC(tp, pwa_security_jail);
+	ATF_TP_ADD_TC(tp, pwa_security_rules_jail);
 	ATF_TP_ADD_TC(tp, pwa_security_tls);
 	ATF_TP_ADD_TC(tp, pwa_security_tls_jail);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netpaths);

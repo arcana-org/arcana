@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The Security section's Suricata in a jail, in full; agent 0.335.0, console 0.478.0
+
+- A jailed Suricata works as one on the host does: its Statistics'
+  socket commands reach its command socket through a helper attached to
+  the jail; its pcap-log files, captures, replays (by the jail's own
+  Suricata; a capture's path is the jail's) and profiling are read
+  beneath the jail's root; a vnet jail's interfaces' offloading is read
+  there; an instance is started again by itself when its jail comes
+  back (an SD-WAN jail edge's too).
+- The suricata job, the Rules and Sources tabs and `arcanactl -j ...
+  suricata` act on a jail's own ruleset: its suricata-update runs in
+  the jail into /var/lib/suricata, and the rules set for a jail are kept
+  apart from the host's (NAME.JAIL).  arcana-suricata's read-rules and
+  read-sources take an optional jail (85632-85633); the suricata job
+  takes jail (arcana-jobs 63132-63133).
+- Update the agent and the console together.
+
 ### SSL inspection's do-not-decrypt list; agent 0.334.0, console 0.477.0
 
 - SSL inspection gains a do-not-decrypt list, on the Security tab and in

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.334.0"
+#define	ARCANA_AGENT_VERSION	"0.335.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1375,7 +1375,6 @@ int		 do_smtpd_job(struct work *, const struct arc_job_spec *,
 		    const char **);
 char		*smtpd_render(struct work *, const struct ucl_object_s *,
 		    const char **);
-const char	*suricata_ruleset(void);
 /* luxuria/surules.c: the ruleset's rules, and those the admin set. */
 void		 do_suricata_rules(struct work *, const char *const *, size_t,
 		    struct json_rsp *);
@@ -1397,10 +1396,13 @@ char		*suricata_title(const struct arc_job_spec *);
 int		 do_suricata_job(struct work *, const struct arc_job_spec *,
 		    const char **);
 void		 sdwan_ids_json(struct work *, struct ucl_object_s *);
-void		 suricata_inst_path(const char *, const char *, char *, size_t);
+int		 suricata_inst_in(struct work *, const char *, const char **);
+const char	*suricata_inst_file(struct work *, const char *, const char *);
+const char	*suricata_rules_dir(struct work *);
+const char	*suricata_ruleset_in(struct work *);
 struct ucl_object_s *suricata_build_json(struct work *);
 /* luxuria/idsfiles.c: captures in, pcap-log out, profiling read. */
-struct ucl_object_s *suricata_captures_json(const char *);
+struct ucl_object_s *suricata_captures_json(struct work *, const char *);
 void		 suricata_profiling(struct work *, const char *,
 		    struct json_rsp *);
 int		 do_rtadvd(struct work *, const char *, const char *const *,
@@ -1815,6 +1817,7 @@ int		 helper_sysctl_int(int, const char *, int *);
 int		 helper_ipfw_socket(int);
 int		 helper_bmp_socket(int, int, int);
 int		 helper_pfkey_socket(int);
+int		 helper_unix_socket(int, const char *);
 unsigned int	 plugins_here(void);
 int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);

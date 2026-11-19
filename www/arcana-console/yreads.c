@@ -732,7 +732,7 @@ yr_suricata(cbl_conn *conn, const char *const *words, size_t n,
 {
 	static const char *const keys[] = { "q", "sid", "only", "classtype",
 	    "offset", "limit", "sources", "instance", "command", "iface",
-	    "profiling" };
+	    "profiling", "jail" };
 	static const char *const commands[] = { "uptime", "version",
 	    "running-mode", "capture-mode", "memcap-list", "ruleset-stats",
 	    "ruleset-failed-rules", "ruleset-profile", "iface-list",
@@ -846,16 +846,22 @@ yr_suricata(cbl_conn *conn, const char *const *words, size_t n,
 		}
 		return (0);
 	}
-	/* sources=1: the rule sources, not the rules. */
-	if (word_of(words, n, "sources") != NULL)
+	/* sources=1: the rule sources, not the rules; jail= a jail's own. */
+	if (word_of(words, n, "sources") != NULL) {
+		struct arcana_suricata_suricata_read_sources_input sin;
+
+		memset(&sin, 0, sizeof(sin));
+		sin.jail = word_of(words, n, "jail");
 		return (flat_call(conn, "arcana-suricata", "suricata",
-		    "read-sources", NULL, sizeof(struct
+		    "read-sources", sin.jail != NULL ? &sin : NULL, sizeof(struct
 		    arcana_suricata_suricata_read_sources_output), yfn_suricata,
 		    data, err, errlen));
+	}
 	{
 		struct arcana_suricata_suricata_read_rules_input rin;
 
 		memset(&rin, 0, sizeof(rin));
+		rin.jail = word_of(words, n, "jail");
 		rin.q = word_of(words, n, "q");
 		rin.classtype = word_of(words, n, "classtype");
 		if ((s = word_of(words, n, "only")) != NULL) {

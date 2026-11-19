@@ -264,7 +264,7 @@ arcana_suricata_suricata_read_rules_action(cbl_req *req,
 	    "changed" };
 	struct json_rsp	 r;
 	struct work	*w;
-	const char	*names[6];
+	const char	*names[7];
 	size_t		 n;
 	int		 root;
 
@@ -285,6 +285,9 @@ arcana_suricata_suricata_read_rules_action(cbl_req *req,
 		names[n++] = wfmt(w, "offset=%u", in->offset);
 	if (in->has_limit)
 		names[n++] = wfmt(w, "limit=%u", (unsigned)in->limit);
+	/* A jail's own ruleset. */
+	if (in->jail != NULL)
+		names[n++] = wfmt(w, "jail=%s", in->jail);
 	memset(&r, 0, sizeof(r));
 	do_suricata_rules(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-suricata",
@@ -297,21 +300,26 @@ arcana_suricata_suricata_read_sources_action(cbl_req *req,
     const struct arcana_suricata_suricata_read_sources_input *in,
     struct arcana_suricata_suricata_read_sources_output *out, cbl_yarena *a)
 {
-	static const char *const names[] = { "sources=1" };
 	struct json_rsp	 r;
 	struct work	*w;
+	const char	*names[2];
+	size_t		 n;
 	int		 root;
 
 	(void)target;
-	(void)in;
 	if ((w = ywork_told(req, a, "Suricata's rule sources read", &root)) ==
 	    NULL)
 		return (ENOMEM);
+	n = 0;
+	names[n++] = "sources=1";
+	/* A jail's own sources. */
+	if (in != NULL && in->jail != NULL)
+		names[n++] = wfmt(w, "jail=%s", in->jail);
 	/* A source's url may hold its secret code in its path: a viewer
 	 * has its host alone (wurl()). */
 	w->clear = clearance(req);
 	memset(&r, 0, sizeof(r));
-	do_suricata_rules(w, names, nitems(names), &r);
+	do_suricata_rules(w, names, n, &r);
 	return (answer(req, w, root, &r, "arcana-suricata",
 	    "suricata/read-sources/output", out, a, yfn_suricata,
 	    w->clear < CLEAR_OPERATOR));

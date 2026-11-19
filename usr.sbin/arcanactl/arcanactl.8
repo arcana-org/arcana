@@ -1130,6 +1130,32 @@ and
 .Cm pcap-get
 are streams of the agent's own family,
 .Ql arcana-stream .
+With
+.Fl j ,
+.Cm update ,
+.Cm rule ,
+.Cm sources ,
+the
+.Cm source-
+verbs and
+.Cm rules
+(but its
+.Cm instance Ns =
+words) are a running jail's own: its
+.Xr suricata-update 8 ,
+run in the jail by
+.Xr jexec 8 ,
+its sources and ruleset beneath its root
+.Pq Pa /var/lib/suricata ,
+the rules set for it kept apart from the host's; the instances that run
+in the jail take it.
+An instance in a jail is asked, profiled, sent captures and replays
+them where it runs, its files beneath the jail's root
+.Pq Pa /var/db/arcana-security ,
+a capture's
+.Ar path
+the jail's; its command socket is reached by a helper attached to the
+jail.
 .It Cm system Op Ar file | Cm host
 The system's own configuration, as JSON: each file of the
 .Cm sysfile

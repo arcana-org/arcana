@@ -977,9 +977,17 @@ view_replay(struct html *h, const ucl_object_t *l)
 	char			 sz[32], age[32], url[200];
 	int			 n;
 
+	/* One in a jail replays there: a capture the jail has. */
 	h_raw(h, "<h4>Replay a capture</h4><form class=\"secform\" "
 	    "data-form=\"ist-replay\"><div class=\"rowform\"><label>A "
-	    "capture the host has <input name=\"file\" required spellcheck="
+	    "capture ");
+	if (jstr(l, "jail") != NULL) {
+		h_raw(h, "the jail ");
+		h_txt(h, jstr(l, "jail"));
+		h_raw(h, " has");
+	} else
+		h_raw(h, "the host has");
+	h_raw(h, " <input name=\"file\" required spellcheck="
 	    "\"false\" placeholder=\"/var/tmp/suspect.pcap\"><small class=\""
 	    "help\">a .pcap, .pcapng or .cap, by its whole path: run through "
 	    "this instance's configuration and rules (suricata -r), offline"

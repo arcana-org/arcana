@@ -43,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 
 #include <net/pfkeyv2.h>
@@ -476,6 +477,15 @@ helper_pfkey_socket(int jid)
 {
 
 	return (helper_socket(jid, "pfkey-socket", NULL));
+}
+
+/* A stream socket connected, in a jail, to its unix socket at path (as
+ * the jail has it): a daemon's command socket there. */
+int
+helper_unix_socket(int jid, const char *path)
+{
+
+	return (helper_socket(jid, "unix-socket", path));
 }
 
 /* The helper's side: fd handed over on its standard output. */
@@ -1109,6 +1119,24 @@ scope_helper(int argc, char **argv)
 
 		if ((fd = socket(PF_KEY, SOCK_RAW, PF_KEY_V2)) == -1) {
 			fprintf(stderr, "socket: %s\n", strerror(errno));
+			return (1);
+		}
+		return (fd_send(fd));
+	}
+	/* A unix socket of the jail's connected to: the path as the jail
+	 * has it, which reaches nothing out of it. */
+	if (strcmp(argv[1], "unix-socket") == 0 && argc == 3 && jid > 0) {
+		struct sockaddr_un	sun;
+		int			fd;
+
+		memset(&sun, 0, sizeof(sun));
+		sun.sun_family = AF_UNIX;
+		if (argv[2][0] != '/' || strlcpy(sun.sun_path, argv[2],
+		    sizeof(sun.sun_path)) >= sizeof(sun.sun_path))
+			return (2);
+		if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1 ||
+		    connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+			fprintf(stderr, "%s: %s\n", argv[2], strerror(errno));
 			return (1);
 		}
 		return (fd_send(fd));

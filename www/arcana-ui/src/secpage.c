@@ -1255,24 +1255,26 @@ view_ids(struct html *h)
 	    "spellcheck=\"false\"");
 	h_attr(h, "value", app.filter);
 	h_raw(h, "><button class=\"ghost\" data-act=\"sec-ruleset\" title=\""
-	    "suricata-update fetches Emerging Threats Open; each instance that "
-	    "adds the ruleset takes it\">");
-	h_raw(h, jget(sec.state, "ids_ruleset") != NULL ? "Fetch the ruleset "
-	    "again" : "Fetch the ruleset");
+	    "suricata-update fetches Emerging Threats Open, in the place shown "
+	    "(a jail's own, run there); each instance there that adds the "
+	    "ruleset takes it\">");
+	h_raw(h, sec.where[0] == '\0' && jget(sec.state, "ids_ruleset") !=
+	    NULL ? "Fetch the ruleset again" : "Fetch the ruleset");
 	h_raw(h, "</button><button class=\"primary\" data-act=\"sec-new\">New "
 	    "intrusion detection</button></div>");
-	ruleset_line(h);
 	/* In a jail: its own ruleset, and a divert there its own ipfw's. */
 	if (sec.where[0] != '\0') {
 		h_raw(h, "<p class=\"dim\">In the jail <b>");
 		h_txt(h, sec.where);
 		h_raw(h, "</b> Suricata is the jail's own, and so is the ruleset "
-		    "it adds (its suricata-update, run there): the ruleset above "
-		    "is the host's. One that prevents needs a jail with a network "
-		    "of its own (vnet): Arcana places the divert rules in the "
-		    "jail's ipfw (set 25, rule 6), the jail's own rules left "
-		    "alone.</p>");
-	}
+		    "it adds: Fetch the ruleset runs the jail's suricata-update "
+		    "there, and Rules and Sources are the jail's (its ruleset "
+		    "beneath its root, the rules set for it kept apart from the "
+		    "host's). One that prevents needs a jail with a network of its "
+		    "own (vnet): Arcana places the divert rules in the jail's ipfw "
+		    "(set 25, rule 6), the jail's own rules left alone.</p>");
+	} else
+		ruleset_line(h);
 	n = (int)ucl_array_size(specs(true));
 	if (sec.edit >= 0)
 		ids_form(h, sec.edit < n ? ucl_array_find_index(specs(true),
@@ -1618,6 +1620,48 @@ sec_host_id(void)
 	return (sec.sid);
 }
 
+/* The place shown, for surules.c: a jail, "" the host; said for a
+ * notice, "this host" or "the jail X". */
+const char *
+sec_where(void)
+{
+
+	return (sec.where);
+}
+
+const char *
+sec_place(void)
+{
+
+	return (place());
+}
+
+/*
+ * A suricata job (the ruleset, its rules and sources) of the place
+ * shown: a jail's own, its suricata-update run there; the title says
+ * the jail.  json replaced, the old freed.
+ */
+static char *
+place_job(char *json, char *title, size_t tlen)
+{
+	static const char	 head[] = "{\"kind\":\"suricata\",";
+	char			*q, *t;
+	size_t			 n;
+
+	if (json == NULL || sec.where[0] == '\0' || strncmp(json, head,
+	    sizeof(head) - 1) != 0)
+		return (json);
+	q = json_quote(sec.where);
+	if (asprintf(&t, "%s\"jail\":%s,%s", head, q, json + sizeof(head) -
+	    1) == -1)
+		abort();
+	free(q);
+	free(json);
+	if (title != NULL && (n = strlen(title)) < tlen)
+		snprintf(title + n, tlen - n, " in the jail %s", sec.where);
+	return (t);
+}
+
 /* Whether the SSL inspection tab is shown, for the book's part. */
 bool
 sec_tab_tls(void)
@@ -1745,6 +1789,8 @@ secpage_form(const char *form, const ucl_object_t *f)
 		if (surules_form(form, f, &json[0], title, sizeof(title)) ||
 		    susources_form(form, f, &json[0], title, sizeof(title))) {
 			if (json[0] != NULL) {
+				json[0] = place_job(json[0], title,
+				    sizeof(title));
 				t[0] = title;
 				sec_jobs(json, t, 1);
 			}
@@ -2027,6 +2073,7 @@ secpage_action(const char *act, const char *arg, const char *value)
 		    value, &json[0], title, sizeof(title)))
 			return (false);
 		if (json[0] != NULL) {
+			json[0] = place_job(json[0], title, sizeof(title));
 			t[0] = title;
 			sec_jobs(json, t, 1);
 		}
@@ -2070,6 +2117,11 @@ secpage_action(const char *act, const char *arg, const char *value)
 			return (true);
 		snprintf(sec.where, sizeof(sec.where), "%s", value);
 		sec.edit = -1;
+		/* The ruleset's rules and sources shown: the place's own. */
+		if (sec.tab == SEC_IDS && sec.rules)
+			surules_load(sec.sid);
+		if (sec.tab == SEC_IDS && sec.sources)
+			susources_load(sec.sid);
 		return (true);
 	}
 	if (strcmp(act, "sec-new") == 0) {
@@ -2265,13 +2317,17 @@ secpage_action(const char *act, const char *arg, const char *value)
 		return (true);
 	}
 	if (strcmp(act, "sec-ruleset") == 0) {
-		char		*json[1];
+		char		*json[1], tbuf[96];
 		const char	*title[1];
 
+		/* The place's own: a jail's suricata-update run there. */
 		if ((json[0] = strdup("{\"kind\":\"suricata\",\"verb\":"
 		    "\"update\"}")) == NULL)
 			abort();
-		title[0] = "suricata-update: the ruleset fetched";
+		snprintf(tbuf, sizeof(tbuf), "suricata-update: the ruleset "
+		    "fetched");
+		json[0] = place_job(json[0], tbuf, sizeof(tbuf));
+		title[0] = tbuf;
 		sec_jobs(json, title, 1);
 		(void)arg;
 		return (true);

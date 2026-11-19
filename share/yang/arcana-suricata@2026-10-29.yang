@@ -219,6 +219,13 @@ module arcana-suricata {
           description
             "The rules at most; 100 unless given.";
         }
+        leaf jail {
+          type string;
+          description
+            "A running jail's own ruleset (its suricata-update's,
+             beneath its root) and the rules the admin set for it;
+             the host's unless given.";
+        }
       }
       output {
         leaf changed {
@@ -371,6 +378,14 @@ module arcana-suricata {
     action read-sources {
       description
         "suricata-update's rule sources and their state here.";
+      input {
+        leaf jail {
+          type string;
+          description
+            "A running jail's own sources, beneath its root; the
+             host's unless given.";
+        }
+      }
       output {
         leaf index {
           type boolean;

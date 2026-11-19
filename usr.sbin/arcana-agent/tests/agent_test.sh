@@ -14340,8 +14340,8 @@ sdwan_ids_cleanup()
 atf_test_case security_jail cleanup
 security_jail_head()
 {
-	atf_set "descr" "The Security section's Suricata, Squid and c-icap in a jail: rendered beneath its root, run there by jexec, read back from there; a divert one's rules in a vnet jail's own ipfw, the jail admin's left alone; refused where the jail is not running, shares the host's network for a divert, or has no Suricata; a link out of the jail not followed; ClamAV and freshclam's mirrors the jail's own"
-	atf_set "timeout" "120"
+	atf_set "descr" "The Security section's Suricata, Squid and c-icap in a jail: rendered beneath its root, run there by jexec, read back from there; its command socket reached by the helper in the jail, its pcap-log, captures and replays beneath the root, its interfaces' offloading the vnet jail's; started again when its jail comes back; a divert one's rules in a vnet jail's own ipfw, the jail admin's left alone; refused where the jail is not running, shares the host's network for a divert, or has no Suricata; a link out of the jail not followed; ClamAV and freshclam's mirrors the jail's own; the jail's own ruleset, rules and sources by its suricata-update, run there"
+	atf_set "timeout" "180"
 }
 security_jail_body()
 {
@@ -14362,7 +14362,8 @@ EOS
 	    "$W/usr/local/etc" jb outside
 	# The jails' own Suricata: the stand-in, its log directory beneath
 	# the root jexec says.
-	sed 's|^d=\$(sed|d=${JROOT}$(sed|' tools/suricata > "$G/usr/local/bin/suricata"
+	sed 's|^d=\$(sed|d=${JROOT}$(sed|; s|^k=\$(sed|k=${JROOT}$(sed|' \
+	    tools/suricata > "$G/usr/local/bin/suricata"
 	cp "$G/usr/local/bin/suricata" "$W/usr/local/bin/suricata"
 	# The jail's Squid and c-icap: started by -f, each its pid file the
 	# conf's, beneath the root; its certificate maker.
@@ -14415,11 +14416,37 @@ list)	[ -f $(pwd)/fw25 ] && echo "00006 divert 8002 ip from any to any via epair
 esac
 exit 0
 EOS
+	# ifconfig(8): the vnet jail's epair0b (-j 7) with its checksums
+	# and LRO on.
+	cat > fake-ifconfig <<EOS
+#!/bin/sh
+echo "ifconfig \$*" >> $(pwd)/ifconfig.log
+[ "\$*" = "-j 7 epair0b" ] && printf 'epair0b: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\toptions=8000b<RXCSUM,TXCSUM,VLAN_MTU,LRO>\n'
+exit 0
+EOS
+	chmod +x fake-ifconfig
+	# The helper's unix-socket: connected beneath the jail's root (as
+	# the helper attached to the jail connects to the jail's path) and
+	# handed over; each asked for logged.
+	mv fake-helper fake-helper.real
+	cat > fake-helper <<EOS
+#!/bin/sh
+if [ "\$3" = unix-socket ]; then
+	r=\$(awk -v j="\$2" '\$2 == j { print \$4 }' $(pwd)/jails)
+	echo "\$2 unix-socket \$4" >> $(pwd)/sockets.log
+	exec python3 -I -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+socket.send_fds(socket.socket(fileno=1), [b"x"], [s.fileno()])' "\$r\$4"
+fi
+exec $(pwd)/fake-helper.real "\$@"
+EOS
+	chmod +x fake-helper
 	J=$G/var/db/arcana-security
 	# Detection in the vnet jail: its files beneath the jail's root,
 	# its Suricata the jail's, checked and run there, its alerts read
 	# from there; nothing of it on the host.
-	ids='{"group":"security","instances":[{"name":"sec-j","jail":"gw","interfaces":["epair0b"],"spec":{"interfaces":["epair0b"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	ids='{"group":"security","instances":[{"name":"sec-j","jail":"gw","interfaces":["epair0b"],"spec":{"interfaces":["epair0b"],"home":["any"],"yaml":"# SCSRV\n"},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "$ids"
 	atf_check -o match:'^jexec 7 /usr/local/bin/suricata -T -c /var/db/arcana-security/sdwan-ids-sec-j.yaml ' \
 	    -o match:'^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-j.pid --pcap -D$' \
@@ -14433,6 +14460,67 @@ EOS
 	atf_check -o match:'"ids":\[\{"name":"sec-j","jail":"gw","interfaces":\["epair0b"\],"mode":"detect","running":true,"alerts_seen":1,' \
 	    -o match:'"security_ids":\[\{.*"name":"sec-j","jail":"gw"' "$JGC" -c "$SOCK" sdwan
 	atf_check -o match:'"jail":"gw"' cat "$(dirname "$f")/security-ids.json"
+	# Its interfaces' offloading, the vnet jail's own (ifconfig -j).
+	atf_check -o match:'"offload":\{"epair0b":\["rxcsum","txcsum","lro"\]\}' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'^ifconfig -j 7 epair0b$' cat ifconfig.log
+	# Its own answers, by its command socket beneath the jail's root:
+	# reached by the helper attached to the jail, the jail's path.
+	if [ -x /usr/local/bin/python3 ]; then
+		for i in $(seq 1 50); do [ -S "$J/sdwan-ids-sec-j.sock" ] && break; sleep 0.1; done
+		atf_check -o match:'"name": "flow", "value": "32mb"' \
+		    "$JGC" -c "$SOCK" suricata rules instance=sec-j command=memcap-list
+		atf_check -o match:'"rules_failed": 1' "$JGC" -c "$SOCK" suricata rules instance=sec-j command=ruleset-stats
+		atf_check -o match:'^7 unix-socket /var/db/arcana-security/sdwan-ids-sec-j.sock$' cat sockets.log
+	fi
+	# The packets of its alerts (pcap-log), beneath the jail's root:
+	# listed by the jail's paths, read back; a link out not followed.
+	printf 'PCAPLOG' > "$J/sdwan-ids-sec-j.d/log.pcap.1792400000"
+	atf_check -o match:'"pcaps":\[\{"path":"/var/db/arcana-security/sdwan-ids-sec-j.d/log.pcap.1792400000","size":7,' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o inline:'PCAPLOG' "$JGC" -c "$SOCK" suricata pcap-get instance=sec-j file=log.pcap.1792400000
+	printf 'HOST' > secret.pcap
+	ln -s "$(pwd)/secret.pcap" "$J/sdwan-ids-sec-j.d/log.pcap.1792400001"
+	atf_check -s exit:1 -e match:'not a file of its pcap-log' "$JGC" -c "$SOCK" suricata pcap-get instance=sec-j file=log.pcap.1792400001
+	# A capture sent for it, kept beneath the jail's root, replayed
+	# there by the jail's Suricata (jexec), its alerts read back; a
+	# file the host has and the jail has not refused.
+	printf 'PCAP' > lab.pcap
+	atf_check -o match:'"path":"/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap"' \
+	    "$JGC" -c "$SOCK" suricata pcap-put instance=sec-j file=up.pcap last=1 < lab.pcap
+	atf_check -o inline:'PCAP' cat "$J/sdwan-ids-sec-j.replay.d/captures/up.pcap"
+	atf_check -o match:'"captures":\[\{"path":"/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap"' \
+	    "$JGC" -c "$SOCK" sdwan
+	: > jexec.log
+	atf_check -o match:'done +suricata replays /var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap through sec-j' \
+	    "$JGC" -c "$SOCK" suricata pcap instance=sec-j file=/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml -r /var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap -l /var/db/arcana-security/sdwan-ids-sec-j.replay.d ' \
+	    cat jexec.log
+	atf_check -o match:'"replay":\{"file":"/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap","at":[0-9]+,"seconds":[0-9]+,"status":0,"alerts_total":1,' \
+	    "$JGC" -c "$SOCK" sdwan
+	test -f "$J/sdwan-ids-sec-j.replay.json" || atf_fail "its replay is not kept beneath the jail's root"
+	atf_check -s exit:1 -o match:'is not a file the jail gw has' \
+	    "$JGC" -c "$SOCK" suricata pcap instance=sec-j file="$(pwd)/lab.pcap"
+	atf_check -s exit:1 -e match:'pcap names no jail' \
+	    "$JGC" -c "$SOCK" -j gw suricata pcap instance=sec-j file=/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap
+	# Its jail stopped (gone from ./jails, its Suricata with it) and
+	# started again: the agent sees it come back and starts sec-j
+	# there again by itself.
+	spid=$(cat "$J/sdwan-ids-sec-j.pid")
+	cp jails jails.all
+	grep -v '^gw ' jails.all > jails
+	kill "$spid"
+	wait_match '"name":"sec-j","jail":"gw",[^}]*"running":false' "$JGC" -c "$SOCK" sdwan ||
+	    atf_fail "sec-j is still said to run"
+	# Gone long enough for the agent's reader (a second a round) to
+	# see it so: the same number back is the jail again.
+	sleep 3
+	: > jexec.log
+	cp jails.all jails
+	wait_match '^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-j.pid --pcap -D$' cat jexec.log ||
+	    atf_fail "sec-j is not started again: $(cat jexec.log)"
+	wait_match '"name":"sec-j","jail":"gw",[^}]*"running":true' "$JGC" -c "$SOCK" sdwan ||
+	    atf_fail "sec-j does not run again"
 	spid=$(cat "$J/sdwan-ids-sec-j.pid")
 	alive "$spid" || atf_fail "suricata sec-j does not run"
 	# Prevention there: run on its divert port, the divert rule placed
@@ -14528,6 +14616,39 @@ EOS
 	alive "$ipid" && atf_fail "its c-icap still runs"
 	atf_check -o match:'^jexec 8 /bin/kill -15 '"$qpid"'$' cat jexec.log
 	test ! -e "$K/sdwan-proxy-sec-jw.conf" || atf_fail "its file stayed in the jail"
+	# The jail's own ruleset: its suricata-update run there (jexec),
+	# into the jail's /var/lib/suricata, the files it is given beneath
+	# its root; its rules and sources read from there, the rules set
+	# for it kept apart from the host's.
+	cp tools/suricata-update "$G/usr/local/bin/suricata-update"
+	: > jexec.log
+	atf_check -s exit:1 -o match:"the jail gw's ruleset is not fetched yet" \
+	    "$JGC" -c "$SOCK" -j gw suricata rule on=2000005
+	atf_check -s exit:1 -o match:'the jail bare has no /usr/local/bin/suricata-update.*pkg -j bare install suricata' \
+	    "$JGC" -c "$SOCK" -j bare suricata update
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j gw suricata update
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata-update --no-test --no-reload --suricata /usr/local/bin/suricata -o /var/lib/suricata/rules -D /var/lib/suricata --enable-conf /var/db/arcana-security/suricata-enable.conf --disable-conf /var/db/arcana-security/suricata-disable.conf --drop-conf /var/db/arcana-security/suricata-drop.conf$' \
+	    cat jexec.log
+	test -f "$G/var/lib/suricata/rules/suricata.rules" || atf_fail "the jail's ruleset is not beneath its root"
+	test ! -e rules/suricata.rules || atf_fail "the host's ruleset was fetched"
+	atf_check -o match:'"ruleset":\{"path":"/var/lib/suricata/rules/suricata.rules",' -o match:'"total":3,"enabled":2,' \
+	    "$JGC" -c "$SOCK" -j gw suricata rules
+	atf_check -o not-match:'"ruleset"' "$JGC" -c "$SOCK" suricata rules
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j gw suricata rule on=2000005
+	atf_check -o inline:'2000005 on\n' cat "$(dirname "$f")/suricata-rule-state.gw"
+	test ! -e "$(dirname "$f")/suricata-rule-state" || atf_fail "set as the host's"
+	atf_check -o match:'^2000005$' cat "$J/suricata-enable.conf"
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata-update .* --offline$' cat jexec.log
+	atf_check -o match:'"sid":2000005,[^}]*"enabled":true,"state":"on"' \
+	    "$JGC" -c "$SOCK" -j gw suricata rules sid=2000005
+	# Its sources: the index fetched there, a source enabled beneath
+	# its root, its secret there alone.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j gw suricata sources
+	test -f "$G/var/lib/suricata/update/cache/index.yaml" || atf_fail "the index is not the jail's"
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j gw suricata source-enable name=et/pro secret-code=S3CRET
+	atf_check -o match:'secret-code:' cat "$G/var/lib/suricata/update/sources/et-pro.yaml"
+	atf_check -o match:'"name":"et/pro",[^}]*"state":"enabled"' "$JGC" -c "$SOCK" -j gw suricata rules sources=1
+	atf_check -o not-match:'"state":"enabled"' "$JGC" -c "$SOCK" suricata rules sources=1
 }
 security_jail_cleanup()
 {

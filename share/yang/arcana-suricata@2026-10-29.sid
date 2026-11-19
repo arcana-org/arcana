@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-suricata",
     "module-revision": "2026-10-29",
-    "sid-file-version": 0,
+    "sid-file-version": 1,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -676,6 +676,16 @@
         "namespace": "data",
         "identifier": "/arcana-suricata:suricata/read-sources/output/source/vendor",
         "sid": "85631"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-suricata:suricata/read-rules/input/jail",
+        "sid": "85632"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-suricata:suricata/read-sources/input/jail",
+        "sid": "85633"
       }
     ]
   }

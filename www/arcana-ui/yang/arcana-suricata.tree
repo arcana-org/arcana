@@ -8,6 +8,7 @@ module: arcana-suricata
      |  |  +---w classtype?   string
      |  |  +---w offset?      uint32
      |  |  +---w limit?       uint16
+     |  |  +---w jail?        string
      |  +--ro output
      |     +--ro changed?     uint32
      |     +--ro ruleset
@@ -39,6 +40,8 @@ module: arcana-suricata
      |     |  +--ro enabled?     uint32
      |     +--ro modify?      string
      +---x read-sources
+     |  +---w input
+     |  |  +---w jail?   string
      |  +--ro output
      |     +--ro index?             boolean
      |     +--ro source* [name]

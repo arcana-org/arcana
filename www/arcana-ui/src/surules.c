@@ -30,6 +30,7 @@ static struct {
 	char		 classtype[64];
 	long		 offset;
 	long long	 open;		/* the sid whose text is shown */
+	char		 where[64];	/* the place read: a jail, "" the host */
 } sr;
 
 static const struct tcol cols[] = {
@@ -52,7 +53,8 @@ put_param(struct html *in, const char *key, const char *v)
 }
 
 /* The page of rules asked again, of host sid: arcana-suricata's
- * read-rules through the fleet mount. */
+ * read-rules through the fleet mount; of the place the Security page
+ * shows, the host or a jail's own ruleset. */
 void
 surules_load(const char *sid)
 {
@@ -60,13 +62,15 @@ surules_load(const char *sid)
 
 	if (sid == NULL || sid[0] == '\0')
 		return;
-	if (strcmp(sid, sr.r.sid) != 0)
+	if (strcmp(sid, sr.r.sid) != 0 || strcmp(sec_where(), sr.where) != 0)
 		sr.offset = 0;
+	snprintf(sr.where, sizeof(sr.where), "%s", sec_where());
 	memset(&in, 0, sizeof(in));
 	h_strf(&in, "{\"limit\":%d", SR_PAGE);
 	put_param(&in, "q", sr.q);
 	put_param(&in, "only", sr.only);
 	put_param(&in, "classtype", sr.classtype);
+	put_param(&in, "jail", sr.where);
 	if (sr.offset > 0)
 		h_strf(&in, ",\"offset\":%ld", sr.offset);
 	h_raw(&in, "}");
@@ -236,10 +240,14 @@ view_surules(struct html *h, const char *sid)
 	}
 	h_raw(h, "</select><button class=\"primary\">Search</button></form>");
 	if (jget(sr.r.o, "ruleset") == NULL) {
+		/* The place names a jail: text, not markup. */
 		h_raw(h, "<div class=\"empty\"><p>The ruleset is not fetched "
-		    "on this host yet.</p><p class=\"dim\">Fetch the ruleset "
-		    "(Instances) runs suricata-update; its rules are set here "
-		    "once it has.</p></div>");
+		    "for ");
+		h_txt(h, sec_place());
+		h_fmt(h, " yet.</p><p class=\"dim\">Fetch the ruleset "
+		    "(Instances) runs suricata-update%s; its rules are set here "
+		    "once it has.</p></div>", sec_where()[0] != '\0' ?
+		    " in the jail" : "");
 		return;
 	}
 	matched = jint(sr.r.o, "matched", 0);
@@ -421,10 +429,22 @@ void
 susources_load(const char *sid)
 {
 
+	char	*in, *q;
+
 	if (sid == NULL || sid[0] == '\0')
 		return;
-	res_yread(&so.r, sid, "arcana-suricata:suricata/read-sources", "{}",
+	/* The place's own: a jail's sources beneath its root. */
+	q = json_quote(sec_where());
+	if (sec_where()[0] == '\0')
+		in = strdup("{}");
+	else if (asprintf(&in, "{\"jail\":%s}", q) == -1)
+		in = NULL;
+	if (in == NULL)
+		abort();
+	free(q);
+	res_yread(&so.r, sid, "arcana-suricata:suricata/read-sources", in,
 	    suricata_conv);
+	free(in);
 }
 
 static void
@@ -482,9 +502,11 @@ view_susources(struct html *h, const char *sid)
 	}
 	if (ucl_array_size(jget(so.r.o, "sources")) == 0) {
 		h_raw(h, "<div class=\"empty\"><p>The list of sources is not "
-		    "fetched on this host.</p><p class=\"dim\">Fetch the list "
-		    "of sources: Emerging Threats Open and Pro, OISF's, "
-		    "Abuse.ch's and others suricata-update knows.</p></div>");
+		    "fetched for ");
+		h_txt(h, sec_place());
+		h_raw(h, ".</p><p class=\"dim\">Fetch the list of sources: "
+		    "Emerging Threats Open and Pro, OISF's, Abuse.ch's and "
+		    "others suricata-update knows.</p></div>");
 		return;
 	}
 	h_raw(h, "<table class=\"net susources\"><thead><tr><th>Source</th>"

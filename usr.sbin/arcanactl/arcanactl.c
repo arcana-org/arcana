@@ -6445,10 +6445,23 @@ cmd_suricata(cbl_conn *conn, int argc, char **argv)
 	    strcmp(argv[1], "pcap-get") == 0))
 		return (cmd_suricata_xfer(conn, argc, argv));
 	if (argc >= 2 && strcmp(argv[1], "rules") == 0) {
-		/* arcana-suricata's actions, as the words say. */
+		const char	**words;
+		size_t		  nw;
+
+		/* arcana-suricata's actions, as the words say; -j a jail's
+		 * own ruleset and sources. */
+		if ((words = calloc((size_t)argc, sizeof(*words))) == NULL)
+			xo_err(1, "calloc");
+		for (nw = 0; nw < (size_t)argc - 2; nw++)
+			words[nw] = argv[2 + nw];
+		if (netjail != NULL) {
+			if (asprintf((char **)(uintptr_t)&words[nw++], "jail=%s",
+			    netjail) == -1)
+				xo_err(1, "asprintf");
+		}
 		ytold_begin(conn);
-		error = yr_suricata(conn, (const char *const *)&argv[2],
-		    (size_t)argc - 2, &data, &raw, ebuf, sizeof(ebuf));
+		error = yr_suricata(conn, words, nw, &data, &raw, ebuf,
+		    sizeof(ebuf));
 		/* Suricata's own answer, as it wrote it. */
 		if (raw != NULL) {
 			xo_emit("{:json/%s}\n", txj(raw));

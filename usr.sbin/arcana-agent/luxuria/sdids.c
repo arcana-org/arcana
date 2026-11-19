@@ -91,6 +91,8 @@
 #define	EDGE_DIR	"/var/db/arcana-sdwan"
 #define	DIR_OF(name)	(IS_SEC(name) ? JAIL_DIR : EDGE_DIR)
 #define	JAIL_RULESET	"/var/lib/suricata/rules/suricata.rules"
+#define	JAIL_SETTLE	3	/* s, a jail come back given to settle */
+#define	JAIL_TRIES	4	/* its instances started, at most */
 #define	START_WAIT	180	/* s, for its engine to start */
 #define	DIVERT_EVERY	10	/* s, ipfw read again for one down */
 #define	CONF_MAX	(256 * 1024)
@@ -115,6 +117,8 @@ struct instance {
 	char	 jail[64];		/* the jail it runs in, "" the host */
 	bool	 vnet;			/* its jail has a network of its own */
 	bool	 jaildown;		/* its jail not running at the start */
+	int	 jid;			/* its jail's number when last seen
+					 * running, 0 none */
 	char	 ifs[IFS_MAX][IFNAMSIZ];
 	int	 nifs;
 	int	 divert;		/* its divert port, prevent; 0 detect */
@@ -163,9 +167,13 @@ static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 static bool		reading;
 static bool		ids_started;	/* both groups read at the start */
-static bool		starting;	/* the kept lists applied at the start */
+/* A jail of instances come back (a restart): their groups to start
+ * again, by one thread at a time. */
+static bool		jail_due[2];	/* SD-WAN's, the Security section's */
+static bool		jail_restarting;
 
 static bool	running(const char *, const char *);
+static int	ids_apply(struct work *, const char *, bool, const char **);
 
 /* Is an instance of the list applied: of its group and, SD-WAN's, of
  * its edge (the jail it runs in, "" the host's)? */
@@ -491,12 +499,60 @@ ruleset_path(void)
 	return (ruleset_buf);
 }
 
-/* For idsfiles.c: where an instance's files are. */
-void
-suricata_inst_path(const char *name, const char *ext, char *buf, size_t len)
+/*
+ * For idsfiles.c and surules.c: w working where the instance named runs,
+ * its jail (running) or the host; the host for a name none has.  0, or
+ * -1 and why.
+ */
+int
+suricata_inst_in(struct work *w, const char *name, const char **errp)
+{
+	char	jail[64];
+	int	i;
+
+	jail[0] = '\0';
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].name, name) == 0)
+			(void)strlcpy(jail, instances[i].jail, sizeof(jail));
+	pthread_mutex_unlock(&lock);
+	if (inst_in(w, jail, errp) != 0) {
+		if (errp != NULL)
+			*errp = wfmt(w, "%s runs in the jail %s, which is not "
+			    "running", name, jail);
+		return (-1);
+	}
+	return (0);
+}
+
+/* An instance's file in w's scope: beside the agent's kept files, or
+ * as its jail sees it, beneath the jail's root. */
+const char *
+suricata_inst_file(struct work *w, const char *name, const char *ext)
 {
 
-	ids_pathbuf(name, ext, buf, len);
+	return (inst_path(w, name, ext));
+}
+
+/* The directory suricata-update writes the ruleset into, of w's scope:
+ * the host's (--suricata-rules), or the jail's own. */
+const char *
+suricata_rules_dir(struct work *w)
+{
+	const char	*r;
+
+	r = w->jail != NULL ? JAIL_RULESET : opts.suricata_rules;
+	if (w->jail != NULL)
+		return (wfmt(w, "%.*s", (int)(strrchr(r, '/') - r), r));
+	return (r);
+}
+
+/* The ruleset of w's scope, for surules.c. */
+const char *
+suricata_ruleset_in(struct work *w)
+{
+
+	return (ruleset_of(w));
 }
 
 /* For surules.c: an instance's name, and its command socket. */
@@ -512,14 +568,6 @@ suricata_socket(struct work *w, const char *name)
 {
 
 	return (inst_path(w, name, "sock"));
-}
-
-/* Where suricata-update writes the ruleset, for surules.c. */
-const char *
-suricata_ruleset(void)
-{
-
-	return (ruleset_path());
 }
 
 /*
@@ -1203,25 +1251,101 @@ guard(struct work *w, struct instance *in, bool there)
 	in->sev = sev;
 }
 
+/*
+ * A jail that instances run in started again, or running at last where
+ * it was not when they were applied (the agent's start): their group's
+ * kept list applied again, once the jail has had time to settle (a vnet
+ * jail's interfaces are moved into it after it is made), those of a
+ * jail not running kept as at the start.  An apply that fails is tried
+ * again, a while later each time, JAIL_TRIES times at most; then not
+ * until a jail comes back again.
+ */
+static void *
+jail_restart(void *arg __unused)
+{
+	struct work	 w;
+	char		*json;
+	const char	*e;
+	bool		 due[2], failed;
+	int		 g, try;
+
+	try = 0;
+	for (;;) {
+		sleep(JAIL_SETTLE << try);
+		pthread_mutex_lock(&lock);
+		due[0] = jail_due[0];
+		due[1] = jail_due[1];
+		jail_due[0] = jail_due[1] = false;
+		if (!due[0] && !due[1]) {
+			jail_restarting = false;
+			pthread_mutex_unlock(&lock);
+			return (NULL);
+		}
+		pthread_mutex_unlock(&lock);
+		failed = false;
+		for (g = 0; g < 2; g++) {
+			if (!due[g] || (json = sdwan_kept_read(g == 1 ? SEC_FILE :
+			    IDS_FILE)) == NULL)
+				continue;
+			work_init(&w);
+			e = NULL;
+			if (ids_apply(&w, json, true, &e) != 0) {
+				logmsg(LOG_WARNING, "%s ids, a jail started again: "
+				    "%s", g == 1 ? "security" : "sdwan", e);
+				pthread_mutex_lock(&lock);
+				jail_due[g] = try + 1 < JAIL_TRIES;
+				pthread_mutex_unlock(&lock);
+				failed = true;
+			} else
+				logmsg(LOG_INFO, "%s ids: started again in the jails "
+				    "that came back", g == 1 ? "security" : "sdwan");
+			work_free(&w);
+			free(json);
+		}
+		try = failed && try + 1 < JAIL_TRIES ? try + 1 : 0;
+	}
+}
+
 static void *
 reader(void *arg __unused)
 {
 	struct work	w;
-	int		i;
-	bool		there;
+	pthread_t	tid;
+	int		i, jid;
+	bool		there, due[2];
 
 	for (;;) {
 		sleep(1);
+		due[0] = due[1] = false;
 		pthread_mutex_lock(&lock);
 		for (i = 0; i < ninstances; i++) {
 			/* Each where it runs: a jail not running, nothing
 			 * read of it. */
 			work_init(&w);
 			there = inst_in(&w, instances[i].jail, NULL) == 0;
+			/* Its jail back, or started again (another number)
+			 * since it was last seen: it is started again with
+			 * its group (jail_restart()). */
+			if (instances[i].jail[0] != '\0') {
+				jid = there ? w.jid : 0;
+				if (jid != 0 && jid != instances[i].jid &&
+				    !instances[i].stopped)
+					due[IS_SEC(instances[i].name)] = true;
+				instances[i].jid = jid;
+			}
 			if (there)
 				read_eve(&w, &instances[i]);
 			guard(&w, &instances[i], there);
 			work_free(&w);
+		}
+		if (due[0] || due[1]) {
+			jail_due[0] |= due[0];
+			jail_due[1] |= due[1];
+			if (!jail_restarting && pthread_create(&tid, NULL,
+			    jail_restart, NULL) == 0) {
+				(void)pthread_detach(tid);
+				jail_restarting = true;
+			}
 		}
 		pthread_mutex_unlock(&lock);
 	}
@@ -1509,9 +1633,12 @@ diverts_all(struct work *w, const struct instance *v, int n,
  * in it, what they prevent diverted by the edge's own rules; the other
  * edges' are left as they are, and each edge's list is kept in a file
  * of its own.
+ * keepdown (the start, a jail come back): one whose jail is not running
+ * is kept, not started, rather than the list refused.
  */
-int
-do_sdwan_ids(struct work *w, const char *json, const char **errp)
+static int
+ids_apply(struct work *w, const char *json, bool keepdown,
+    const char **errp)
 {
 	ucl_object_t		*top;
 	const ucl_object_t	*in, *v, *f;
@@ -1555,7 +1682,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	memset(&eji, 0, sizeof(eji));
 	if (edge[0] != '\0') {
 		if (jail_named(w, edge, &eji) < 0) {
-			if (!starting) {
+			if (!keepdown) {
 				ucl_object_unref(top);
 				*errp = wfmt(w, "the edge %s: the jail is not "
 				    "running", edge);
@@ -1662,7 +1789,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			struct jinfo	ji;
 
 			if (jail_named(w, ni[n].jail, &ji) < 0) {
-				if (!starting) {
+				if (!keepdown) {
 					ucl_object_unref(top);
 					*errp = wfmt(w, "%s: the jail %s is not "
 					    "running: it runs in it, start the jail "
@@ -1862,6 +1989,9 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		 * or one before it.  Those that stay keep where they were
 		 * read to. */
 		ni[k].off = eve_size(w, ni[k].name);
+		/* Its jail as it runs now: another number later is the jail
+		 * started again, and it with it (reader()). */
+		ni[k].jid = w->jail != NULL ? w->jid : 0;
 		/* Stopped by the admin: not run, its place kept. */
 		if (ni[k].stopped) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
@@ -2110,6 +2240,13 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	return (0);
 }
 
+int
+do_sdwan_ids(struct work *w, const char *json, const char **errp)
+{
+
+	return (ids_apply(w, json, false, errp));
+}
+
 /* At the start: the instances kept, the host's, each jail edge's and
  * the Security section's, started again. */
 void
@@ -2123,10 +2260,9 @@ sdwan_ids_start(void)
 	size_t		 n;
 
 	work_init(&w);
-	starting = true;
 	if ((json = sdwan_kept_read(IDS_FILE)) != NULL) {
 		e = NULL;
-		if (do_sdwan_ids(&w, json, &e) != 0)
+		if (ids_apply(&w, json, true, &e) != 0)
 			logmsg(LOG_WARNING, "sdwan ids: %s", e);
 		free(json);
 	}
@@ -2144,7 +2280,7 @@ sdwan_ids_start(void)
 			if ((json = sdwan_kept_read(de->d_name)) == NULL)
 				continue;
 			e = NULL;
-			if (do_sdwan_ids(&w, json, &e) != 0)
+			if (ids_apply(&w, json, true, &e) != 0)
 				logmsg(LOG_WARNING, "sdwan ids: %s: %s", de->d_name,
 				    e);
 			free(json);
@@ -2153,11 +2289,10 @@ sdwan_ids_start(void)
 	}
 	if ((json = sdwan_kept_read(SEC_FILE)) != NULL) {
 		e = NULL;
-		if (do_sdwan_ids(&w, json, &e) != 0)
+		if (ids_apply(&w, json, true, &e) != 0)
 			logmsg(LOG_WARNING, "security ids: %s", e);
 		free(json);
 	}
-	starting = false;
 	work_free(&w);
 	/* Both groups' read: the first full view. */
 	ids_started = true;
@@ -2193,6 +2328,17 @@ build_json(struct work *w)
 	char		*argv[3], *copy, *it, *line, *v;
 	size_t		 i;
 
+	/* A jail's own, asked there each time: kept for none. */
+	if (w->jail != NULL) {
+		argv[0] = (char *)(uintptr_t)suricata_bin(w);
+		argv[1] = (char *)(uintptr_t)"--build-info";
+		argv[2] = NULL;
+		if (run_exec(w, scope_jexec(w, argv), &res) != 0 || res.out ==
+		    NULL)
+			return (NULL);
+		copy = wstrndup(w, res.out, res.outlen);
+		goto parse;
+	}
 	if (stat(suricata_bin(w), &sb) != 0)
 		return (NULL);
 	/* Two reads at once: the cache is one's at a time. */
@@ -2213,6 +2359,7 @@ build_json(struct work *w)
 	pthread_mutex_unlock(&kept_lock);
 	if (copy == NULL)
 		return (NULL);
+parse:
 	o = ucl_object_typed_new(UCL_OBJECT);
 	for (it = copy; (line = strsep(&it, "\n")) != NULL;) {
 		line += strspn(line, " \t");
@@ -2283,10 +2430,49 @@ caps_json(const char *name)
 	return (arr);
 }
 
+/* The same of an interface of the vnet jail w works in, its own: as
+ * the jail's ifconfig(8) says its options (the host's, -j). */
+static ucl_object_t *
+caps_jail_json(struct work *w, const char *name)
+{
+	static const struct {
+		const char	*opt, *word;
+	} caps[] = {
+		{ "RXCSUM", "rxcsum" }, { "TXCSUM", "txcsum" },
+		{ "RXCSUM_IPV6", "rxcsum6" }, { "TXCSUM_IPV6", "txcsum6" },
+		{ "TSO4", "tso4" }, { "TSO6", "tso6" },
+		{ "LRO", "lro" }, { "VLAN_HWTSO", "vlanhwtso" },
+	};
+	struct execres	 res;
+	ucl_object_t	*arr;
+	char		*argv[3], *t, *o, *e, *opt;
+	size_t		 i;
+
+	argv[0] = (char *)(uintptr_t)opts.ifconfig_bin;
+	argv[1] = wfmt(w, "%.*s", (int)strcspn(name, "^"), name);
+	argv[2] = NULL;
+	if (run_read(w, argv, &res) != 0 || res.out == NULL)
+		return (NULL);
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	t = wstrndup(w, res.out, res.outlen);
+	if ((o = strstr(t, "options=")) == NULL || (o = strchr(o, '<')) ==
+	    NULL || (e = strchr(o, '>')) == NULL)
+		return (arr);
+	*e = '\0';
+	o++;
+	while ((opt = strsep(&o, ",")) != NULL)
+		for (i = 0; i < nitems(caps); i++)
+			if (strcmp(opt, caps[i].opt) == 0)
+				ucl_array_append(arr, ucl_object_fromstring(
+				    caps[i].word));
+	return (arr);
+}
+
 /* The packets it logged for its alerts (pcap-log), in its directory:
  * each file's path, size, when it was last written and when it was
  * begun, as its name says (log.pcap.<seconds>): the time its packets
- * span. */
+ * span.  In w's scope: a jail's beneath its root, its paths as the
+ * jail has them. */
 static ucl_object_t *
 pcaps_json(struct work *w, const char *name)
 {
@@ -2295,16 +2481,22 @@ pcaps_json(struct work *w, const char *name)
 	struct stat	 sb;
 	const char	*dir, *p;
 	DIR		*d;
+	int		 dfd;
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	dir = inst_path(w, name, "d");
-	if ((d = opendir(dir)) == NULL)
+	if ((dfd = scope_dirfd(w, dir)) == -1)
 		return (arr);
+	if ((d = fdopendir(dfd)) == NULL) {
+		close(dfd);
+		return (arr);
+	}
 	while ((de = readdir(d)) != NULL) {
 		if (strncmp(de->d_name, "log.pcap", 8) != 0)
 			continue;
 		p = wfmt(w, "%s/%s", dir, de->d_name);
-		if (stat(p, &sb) != 0 || !S_ISREG(sb.st_mode))
+		if (fstatat(dirfd(d), de->d_name, &sb, AT_SYMLINK_NOFOLLOW) != 0 ||
+		    !S_ISREG(sb.st_mode))
 			continue;
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(p), "path", 0,
@@ -2437,6 +2629,7 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 	ucl_object_t	*arr, *o, *ifs, *al, *a;
 	struct stat	 sb;
 	int		 i, k, j;
+	bool		 there;
 
 	pthread_mutex_lock(&lock);
 	arr = ucl_object_typed_new(UCL_ARRAY);
@@ -2457,11 +2650,11 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 		if (instances[i].divert > 0)
 			ucl_object_insert_key(o, ucl_object_fromint(
 			    instances[i].divert), "divert", 0, false);
-		/* Where it runs: a jail's beneath its root. */
-		ucl_object_insert_key(o, ucl_object_frombool(inst_in(w,
-		    instances[i].jail, NULL) == 0 && inst_pid(w,
-		    instances[i].name) != 0), "running", 0, false);
-		(void)inst_in(w, "", NULL);
+		/* Where it runs: a jail's beneath its root, read from there
+		 * (and its files below) while the jail runs. */
+		there = inst_in(w, instances[i].jail, NULL) == 0;
+		ucl_object_insert_key(o, ucl_object_frombool(there &&
+		    inst_pid(w, instances[i].name) != 0), "running", 0, false);
 		if (instances[i].stopped)
 			ucl_object_insert_key(o, ucl_object_frombool(true),
 			    "stopped", 0, false);
@@ -2483,18 +2676,19 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 		    instances[i].netmap ? "netmap" : instances[i].divert > 0 ?
 		    "divert" : "pcap"), "capture", 0, false);
 		/* What it logged and replayed, and its interfaces' offloading:
-		 * the host's alone. */
-		if (instances[i].jail[0] != '\0') {
+		 * a jail's while it runs. */
+		if (!there) {
 			ucl_object_insert_key(o, ucl_object_fromstring(IS_SEC(
 			    instances[i].name) ? "security" : "sdwan"), "group",
 			    0, false);
 			ucl_array_append(arr, o);
+			(void)inst_in(w, "", NULL);
 			continue;
 		}
 		ucl_object_insert_key(o, pcaps_json(w, instances[i].name),
 		    "pcaps", 0, false);
 		/* The captures that came for its replay. */
-		ucl_object_insert_key(o, suricata_captures_json(
+		ucl_object_insert_key(o, suricata_captures_json(w,
 		    instances[i].name), "captures", 0, false);
 		/* The last capture replayed through it. */
 		{
@@ -2505,17 +2699,24 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 			    "replay.json"))) != NULL && (r = parse(t)) != NULL)
 				ucl_object_insert_key(o, r, "replay", 0, false);
 		}
-		/* Each interface's offloading still on. */
+		/* Each interface's offloading still on: a vnet jail's
+		 * interfaces its own, read there; those of a jail of the
+		 * host's network the host's. */
 		{
 			ucl_object_t	*off, *c;
+			bool		 own;
 
+			own = w->jail != NULL && instances[i].vnet;
 			off = ucl_object_typed_new(UCL_OBJECT);
 			for (k = 0; k < instances[i].nifs; k++)
-				if ((c = caps_json(instances[i].ifs[k])) != NULL)
+				if ((c = own ? caps_jail_json(w,
+				    instances[i].ifs[k]) : caps_json(
+				    instances[i].ifs[k])) != NULL)
 					ucl_object_insert_key(off, c,
 					    instances[i].ifs[k], 0, true);
 			ucl_object_insert_key(o, off, "offload", 0, false);
 		}
+		(void)inst_in(w, "", NULL);
 		ucl_object_insert_key(o, ucl_object_fromstring(IS_SEC(
 		    instances[i].name) ? "security" : "sdwan"), "group", 0,
 		    false);
@@ -2568,16 +2769,21 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
  * suricata.rules in --suricata-rules.  Then the instances are applied again from what was
  * kept of them, so that one started without the ruleset takes it, and
  * those that read it already are told to read their rules again
- * (SIGUSR2).  The host's only; never in safe mode.
+ * (SIGUSR2).  Never in safe mode.  With a jail (running), the jail's
+ * own: its suricata-update run there by jexec(8), its sources, the
+ * rules set and the ruleset beneath its root, the instances that run
+ * in it told; a replay is where its instance runs, and names no jail.
  */
 const char *
 suricata_check(const struct arc_job_spec *sp)
 {
 
-	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("these are the host's Suricata's ruleset, sources and "
-		    "replays: an instance in a jail reads the jail's own ruleset "
-		    "(its suricata-update, run in the jail)");
+	if (sp->jail != NULL && sp->jail[0] != '\0' && !valid_jail(sp->jail))
+		return ("the jail is a jail's name");
+	if (sp->jail != NULL && sp->jail[0] != '\0' && sp->verb != NULL &&
+	    strcmp(sp->verb, "pcap") == 0)
+		return ("a capture is replayed where its instance runs, its "
+		    "jail's or the host's: pcap names no jail");
 	if (sp->safe)
 		return ("a fetched ruleset is not undone: not in safe mode");
 	if (sp->verb != NULL && strcmp(sp->verb, "rule") == 0)
@@ -2626,6 +2832,53 @@ suricata_title(const struct arc_job_spec *sp)
 	return (strdup("suricata-update: the ruleset fetched"));
 }
 
+/*
+ * A jail's ruleset fetched or made again (w in the jail): the kept lists
+ * applied again, a jail not running kept as at the start, so that one
+ * of the jail's started without the ruleset takes it; those of the jail
+ * that read it already told to read their rules again (SIGUSR2), from
+ * inside the jail.
+ */
+static int
+jail_ruleset_taken(struct work *w, const char **errp)
+{
+	const char	*jail, *e, *t;
+	char		*json;
+	pid_t		 pid;
+	int		 g, i, step, rc;
+
+	jail = wstrdup(w, w->jail);
+	rc = 0;
+	for (g = 0; g < 2; g++) {
+		if ((json = sdwan_kept_read(g == 1 ? SEC_FILE : IDS_FILE)) ==
+		    NULL)
+			continue;
+		e = NULL;
+		if (ids_apply(w, json, true, &e) != 0) {
+			*errp = wfmt(w, "fetched, but %s", e);
+			rc = -1;
+		}
+		free(json);
+	}
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++) {
+		if (strcmp(instances[i].jail, jail) != 0 || inst_in(w, jail,
+		    NULL) != 0)
+			continue;
+		t = file_text(w, inst_path(w, instances[i].name, "yaml"));
+		if (t == NULL || strstr(t, JAIL_RULESET) == NULL ||
+		    (pid = inst_pid(w, instances[i].name)) <= 1)
+			continue;
+		step = step_begin(w, STEP_DAEMON, "arcana-agent",
+		    "suricata %s of the jail %s reads its rules again",
+		    instances[i].name, jail);
+		step_end(w, step, scope_kill(w, pid, SIGUSR2) == 0, NULL);
+	}
+	pthread_mutex_unlock(&lock);
+	(void)inst_in(w, "", NULL);
+	return (rc);
+}
+
 int
 do_suricata_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
@@ -2640,6 +2893,10 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 
 	if ((*errp = suricata_check(sp)) != NULL)
 		return (-1);
+	/* A jail's: its own, there. */
+	if (sp->jail != NULL && sp->jail[0] != '\0' && scope_enter_jail(w,
+	    sp->jail, errp, false) != 0)
+		return (-1);
 	/* The sources: their files, or their index fetched. */
 	if (strcmp(sp->verb, "sources") == 0 || strncmp(sp->verb, "source-",
 	    7) == 0)
@@ -2649,16 +2906,23 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 		return (suricata_replay(w, sp, errp));
 	rule = strcmp(sp->verb, "rule") == 0;
 	/* The rules set are made into the ruleset already fetched. */
-	if (rule && access(SURICATA_RULESET, R_OK) != 0) {
-		*errp = "the ruleset is not fetched yet: fetch it first "
+	if (rule && !scope_access(w, ruleset_of(w), false)) {
+		*errp = w->jail != NULL ? wfmt(w, "the jail %s's ruleset is not "
+		    "fetched yet: fetch it first (suricata update in the jail)",
+		    w->jail) : "the ruleset is not fetched yet: fetch it first "
 		    "(suricata update)";
 		return (-1);
 	}
-	if ((bin = tool(w, "suricata-update")) == NULL)
+	/* A jail's, where the port puts it. */
+	if (w->jail != NULL)
 		bin = "/usr/local/bin/suricata-update";
-	if (access(bin, X_OK) != 0) {
-		*errp = wfmt(w, "no %s: it comes with Suricata (pkg install "
-		    "suricata)", bin);
+	else if ((bin = tool(w, "suricata-update")) == NULL)
+		bin = "/usr/local/bin/suricata-update";
+	if (!scope_access(w, bin, true)) {
+		*errp = w->jail != NULL ? wfmt(w, "the jail %s has no %s: it "
+		    "comes with Suricata (pkg -j %s install suricata)", w->jail,
+		    bin, w->jail) : wfmt(w, "no %s: it comes with Suricata (pkg "
+		    "install suricata)", bin);
 		return (-1);
 	}
 	if (rule) {
@@ -2671,8 +2935,9 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 		step_end(w, step, true, NULL);
 	}
 	step = step_begin(w, STEP_EXEC, "suricata-update",
-	    rule ? "the ruleset made again, from what was fetched, to %s" :
-	    "the ruleset fetched to %s", SURICATA_RULESET);
+	    rule ? "the ruleset made again, from what was fetched, to %s%s%s" :
+	    "the ruleset fetched to %s%s%s", ruleset_of(w), w->jail != NULL ?
+	    " in the jail " : "", w->jail != NULL ? w->jail : "");
 	/* Each instance is checked by suricata -T as it is applied: the
 	 * ruleset's own test would read a suricata.yaml of the port's,
 	 * which is not the instances'. */
@@ -2682,7 +2947,7 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 	argv[3] = (char *)(uintptr_t)"--suricata";
 	argv[4] = (char *)(uintptr_t)suricata_bin(w);
 	argv[5] = (char *)(uintptr_t)"-o";
-	argv[6] = (char *)(uintptr_t)opts.suricata_rules;
+	argv[6] = (char *)(uintptr_t)suricata_rules_dir(w);
 	/* Its data directory, where its sources and cache are. */
 	argv[7] = (char *)(uintptr_t)"-D";
 	argv[8] = (char *)(uintptr_t)suricata_data_dir(w);
@@ -2699,7 +2964,7 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 	 * logs: its output is then kept nowhere. */
 	secret = suricata_sources_secret(w);
 	exec_set_secret(secret);
-	rc = run_exec(w, argv, &res);
+	rc = run_exec(w, scope_jexec(w, argv), &res);
 	exec_set_secret(false);
 	if (rc != 0) {
 		if (secret) {
@@ -2718,6 +2983,8 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 		return (-1);
 	}
 	step_end(w, step, true, NULL);
+	if (w->jail != NULL)
+		return (jail_ruleset_taken(w, errp));
 	if ((json = sdwan_kept_read(IDS_FILE)) != NULL) {
 		e = NULL;
 		if (do_sdwan_ids(w, json, &e) != 0) {
@@ -2738,6 +3005,9 @@ do_suricata_job(struct work *w, const struct arc_job_spec *sp,
 	}
 	pthread_mutex_lock(&lock);
 	for (i = 0; i < ninstances; i++) {
+		/* A jail's reads the jail's own ruleset. */
+		if (instances[i].jail[0] != '\0')
+			continue;
 		t = file_text(w, inst_path(w, instances[i].name, "yaml"));
 		if (t == NULL || strstr(t, SURICATA_RULESET) == NULL ||
 		    (pid = (pid_t)inst_pid(w, instances[i].name)) <= 1)
@@ -2779,7 +3049,8 @@ suricata_replay_check(const struct arc_job_spec *sp)
 	    ".pcap") != 0 && strcmp(file + len - 7, ".pcapng") != 0 &&
 	    strcmp(file + len - 4, ".cap") != 0))
 		return ("pcap's file= is a .pcap, .pcapng or .cap the host "
-		    "has, by its whole path");
+		    "has, by its whole path (one the jail has, of an instance "
+		    "in a jail)");
 	return (NULL);
 }
 
@@ -2798,7 +3069,7 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 	int64_t		 total;
 	FILE		*fp;
 	DIR		*d;
-	int		 step, rc;
+	int		 step, rc, rfd;
 	time_t		 t0;
 
 	if ((*errp = suricata_replay_check(sp)) != NULL)
@@ -2809,35 +3080,36 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 			inst = sp->names.v[i] + 9;
 		else
 			file = sp->names.v[i] + 5;
-	if (access(inst_path(w, inst, "yaml"), R_OK) != 0) {
-		const char	*j = "";
-
-		pthread_mutex_lock(&lock);
-		for (i = 0; i < (size_t)ninstances; i++)
-			if (strcmp(instances[i].name, inst) == 0)
-				j = wstrdup(w, instances[i].jail);
-		pthread_mutex_unlock(&lock);
-		*errp = j[0] != '\0' ? wfmt(w, "%s runs in the jail %s: a capture "
-		    "is replayed through the host's instances alone", inst, j) :
-		    wfmt(w, "there is no instance %s here", inst);
+	/* Where it runs: a jail's replays there, by its own Suricata, a
+	 * capture the jail has. */
+	if (suricata_inst_in(w, inst, errp) != 0)
+		return (-1);
+	if (!scope_access(w, inst_path(w, inst, "yaml"), false)) {
+		*errp = wfmt(w, "there is no instance %s here", inst);
 		return (-1);
 	}
-	if (lstat(file, &sb) != 0 || !S_ISREG(sb.st_mode)) {
-		*errp = wfmt(w, "%s is not a file the host has (a link is not "
+	if ((w->jail != NULL ? jail_lstat(w, file, &sb) : lstat(file, &sb)) !=
+	    0 || !S_ISREG(sb.st_mode)) {
+		*errp = w->jail != NULL ? wfmt(w, "%s is not a file the jail %s "
+		    "has, where %s runs (a link is not followed)", file, w->jail,
+		    inst) : wfmt(w, "%s is not a file the host has (a link is not "
 		    "followed)", file);
 		return (-1);
 	}
 	/* Its own directory, emptied: what this run writes alone; the
-	 * captures that came for it stay. */
+	 * captures that came for it stay.  A jail's beneath its root. */
 	dir = inst_path(w, inst, "replay.d");
-	if ((d = opendir(dir)) != NULL) {
-		while ((de = readdir(d)) != NULL)
-			if (de->d_name[0] != '.' && strcmp(de->d_name,
-			    "captures") != 0)
-				(void)unlink(wfmt(w, "%s/%s", dir, de->d_name));
-		closedir(d);
+	if ((rfd = scope_dirfd(w, dir)) != -1) {
+		if ((d = fdopendir(rfd)) != NULL) {
+			while ((de = readdir(d)) != NULL)
+				if (de->d_name[0] != '.' && strcmp(de->d_name,
+				    "captures") != 0)
+					(void)unlinkat(dirfd(d), de->d_name, 0);
+			closedir(d);
+		} else
+			close(rfd);
 	}
-	(void)mkdir_mode(dir, 0750);
+	inst_mkdir(w, dir);
 	step = step_begin(w, STEP_EXEC, "suricata", "%s through %s, "
 	    "offline", file, inst);
 	argv[0] = (char *)(uintptr_t)suricata_bin(w);
@@ -2856,11 +3128,11 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 	argv[12] = wfmt(w, "default-log-dir=%s", dir);
 	argv[13] = NULL;
 	t0 = time(NULL);
-	rc = run_exec(w, argv, &res);
+	rc = run_exec(w, scope_jexec(w, argv), &res);
 	/* Its alerts: told how many, the first 200 kept. */
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	total = 0;
-	if ((fp = fopen(wfmt(w, "%s/eve.json", dir), "re")) != NULL) {
+	if ((fp = scope_fopen(w, wfmt(w, "%s/eve.json", dir))) != NULL) {
 		line = NULL;
 		cap = 0;
 		while ((n = getline(&line, &cap, fp)) > 0) {
