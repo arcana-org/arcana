@@ -506,5 +506,5 @@ kinds:
   - kind: sslproxy
     title: SSL inspection by SSLproxy configured, its fwd rules loaded, started or stopped
     needs: verb
-    uses: args text force
+    uses: jail args text force
     values: verb=conf|enable|disable|start|stop|restart

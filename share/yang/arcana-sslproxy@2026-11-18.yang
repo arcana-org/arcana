@@ -24,9 +24,12 @@ module arcana-sslproxy {
      rules that send the clients' traffic to it, set 27 at rule 7;
      where an SD-WAN service's MBSF (MEF 138's middlebox, a function
      policy bound to zones) is what it serves, the service, the policy
-     and the zones the console compiled the form from.  Changes are
-     jobs of kind sslproxy; the CA's key and certificate are this
-     module's actions.";
+     and the zones the console compiled the form from.  A jail runs one
+     of its own beside the host's (its files beneath its root, its
+     rc.conf, its CA): a vnet jail's rules are its own ipfw's, a jail
+     of the host's network's the host's, sent to the jail's address.
+     Changes are jobs of kind sslproxy (in a jail: the job's jail); the
+     CA's key and certificate are this module's actions.";
 
   revision 2026-11-18 {
     description
@@ -65,9 +68,29 @@ module arcana-sslproxy {
       "SSLproxy, read when asked.";
     action read {
       description
-        "SSLproxy on the host: its service, configuration, CA and
-         rules.";
+        "SSLproxy on the host, or a jail's own: its service,
+         configuration, CA and rules.";
+      input {
+        leaf jail {
+          type string;
+          description
+            "The running jail whose SSLproxy is read; none, the
+             host's.";
+        }
+      }
       output {
+        leaf jail {
+          type string;
+          description
+            "The jail read, where one was asked.";
+        }
+        leaf vnet {
+          type boolean;
+          description
+            "The jail has a network of its own: its rules are its own
+             ipfw's, SSLproxy at its loopback; false, the host's ipfw
+             fwds to the jail's address.";
+        }
         leaf installed {
           type boolean;
           description
@@ -249,6 +272,12 @@ module arcana-sslproxy {
             "A new key, the one in use kept until the new one's
              certificate is installed.";
         }
+        leaf jail {
+          type string;
+          description
+            "The running jail whose SSLproxy the key is for, written
+             beneath its root alone; none, the host's.";
+        }
       }
       output {
         leaf csr {
@@ -278,6 +307,12 @@ module arcana-sslproxy {
           mandatory true;
           description
             "The CAs above it up to the root, PEM.";
+        }
+        leaf jail {
+          type string;
+          description
+            "The running jail whose SSLproxy's key it is for; none,
+             the host's.";
         }
       }
       output {

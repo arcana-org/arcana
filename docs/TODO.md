@@ -2,6 +2,17 @@
 
 ## To do
 
+- SSL inspection in jails (the user's rule: every service feature of
+  Arcana in a jail too), built 2026-11-19 (docs/notes/ssl-inspection.md,
+  Jails; agent_test:sslproxy_jail, sslproxy_rc; console_test:
+  sdwan_inspect_jail; pwa_test:pwa_security_tls_jail). Left:
+  - A vnet jail's cleartext-HTTP reset (a bound MBSF's) logs to the
+    jail's own routing socket: the agent's record listens on the
+    host's, so no SEN comes from it.
+  - The host's fwd to a jail of its network's address, and SSLproxy's
+    getsockname(2) there, were read from the kernel's path, not tried on
+    a real one: the root suite's next round (a jail with an address of
+    its own, a client in a vnet jail before it).
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
   - Done (agent_test:services_jail, pwa_test:pwa_service_jail): a

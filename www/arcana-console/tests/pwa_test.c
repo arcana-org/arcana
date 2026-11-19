@@ -13595,6 +13595,131 @@ part_sslinspect(void)
 	shot("9x-security-tls");
 }
 
+/*
+ * Security, SSL inspection of a jail's own SSLproxy: gw (a vnet jail,
+ * jroot) picked on the tab, sslproxy offered there by pkg -j, the
+ * jail's CA issued (its key made beneath the jail's root, named for the
+ * jail), the form sent: sslproxy.conf and the fwd rules beneath the
+ * jail's root, Arcana's rc script copied there, its rc.conf the jail's;
+ * enabled, started in the jail and the rules loaded by its own ipfw,
+ * the host's untouched.
+ */
+static void
+part_sslinspect_jail(void)
+{
+	char	dir[MAXPATHLEN], buf[2048], cmd[MAXPATHLEN * 3];
+	int	i;
+
+	ATF_REQUIRE(getcwd(dir, sizeof(dir)) != NULL);
+	/* jexec, in the jail as far as a stand-in goes: a path the jail has
+	 * is its own, its root the working directory (the service's
+	 * markers, its ipfw's log); the agent's stand-ins (./fake-*) the
+	 * test's. */
+	snprintf(buf, sizeof(buf), "#!/bin/sh\necho \"jexec $*\" >> "
+	    "%s/jexec.log\nr=$(awk -v j=\"$1\" '$2 == j { print $4 }' "
+	    "%s/jails)\n[ -n \"$r\" ] || exit 1\nshift\nn=0\nfor a; do case "
+	    "\"$a\" in /*) [ -e \"$r$a\" ] && a=$r$a ;; ./*) [ $n = 0 ] && "
+	    "a=%s/${a#./} ;; esac; set -- \"$@\" \"$a\"; n=$((n+1)); done\n"
+	    "shift $n\ncd \"$r\" || exit 1\nexec \"$@\"\n", dir, dir, dir);
+	put("fake-jexec", buf);
+	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+	put("rc.d/arcana_sslproxy", "#!/bin/sh\n# Arcana's, the host's copy\n");
+	ATF_REQUIRE(chmod("rc.d/arcana_sslproxy", 0555) == 0);
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("document.querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = [...s.options].find(o => o.textContent === 'lab').value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=tls]", 10);
+	wait_js("location.hash.startsWith('#/security/tls') && document."
+	    "querySelector('select[data-input=ssl-where] option[value=gw]')",
+	    20);
+	run("const s = document.querySelector('select[data-input=ssl-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	/* Not in the jail: offered there, by pkg -j. */
+	wait_js("document.querySelector('.sec-missing button[data-act="
+	    "ssl-install]') && document.querySelector('.sec-missing')."
+	    "textContent.includes('in jail gw')", 20);
+	click_when(".sec-missing button[data-act=ssl-install]", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q -- '-j gw install.*sslproxy' "
+	    "pkg.log") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "pkg -j gw install sslproxy was not run");
+	dock_closed();
+	/* What pkg -j leaves there: the jail's sslproxy. */
+	ATF_REQUIRE(system("mkdir -p jroot/usr/local/bin") == 0);
+	put("jroot/usr/local/bin/sslproxy", "#!/bin/sh\necho \"sslproxy $*\" "
+	    ">> sslproxy.log\n[ \"$1\" = -V ] && echo 'SSLproxy 0.10.0' >&2\n"
+	    "exit 0\n");
+	ATF_REQUIRE(chmod("jroot/usr/local/bin/sslproxy", 0755) == 0);
+	run("const s = document.querySelector('select[data-input=ssl-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('.sslview button[data-act=ssl-issue]') "
+	    "&& document.querySelector('form[data-form=ssl-conf]') && document."
+	    "querySelector('.sslview').textContent.includes('in jail gw') && "
+	    "document.querySelector('.sslview').textContent.includes("
+	    "'its own ipfw')", 20);
+	/* Its CA: the key made beneath the jail's root, never the host's. */
+	click_when("button[data-act=ssl-issue]", 10);
+	snprintf(cmd, sizeof(cmd), "jroot%s/ssl.d/ca.crt", dir);
+	for (i = 0; i < 300 && access(cmd, F_OK) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's CA is not issued");
+	ATF_CHECK(access("ssl.d/ca.crt", F_OK) != 0 && access("ssl.d/ca.key",
+	    F_OK) != 0);
+	snprintf(cmd, sizeof(cmd), "test -f jroot%s/ssl.d/ca.key && openssl "
+	    "x509 -in jroot%s/ssl.d/ca.crt -noout -subject | grep -q '/gw$' && "
+	    "openssl verify -CAfile jroot%s/ssl.d/chain.crt jroot%s/ssl.d/ca.crt "
+	    "> /dev/null 2>&1", dir, dir, dir, dir);
+	ATF_CHECK_MSG(system(cmd) == 0, "the jail's intermediate is not its "
+	    "own");
+	wait_js("document.querySelector('.ssl-ca').textContent.includes("
+	    "'Arcana SSL inspection on') && document.querySelector('.ssl-ca')."
+	    "textContent.includes('/gw')", 20);
+	/* The form: https, its clients and the jail's interface. */
+	run("const f = document.querySelector('form[data-form=ssl-conf]'); "
+	    "f.interfaces.value = 'epair1b'; f.clients.value = "
+	    "'192.0.2.0/24'; f.ipv6.checked = false; f.requestSubmit();");
+	queued_run();
+	snprintf(cmd, sizeof(cmd), "grep -q '^ProxySpec https 127.0.0.1 8443 "
+	    "ipfw$' jroot%s/sslproxy.conf", dir);
+	for (i = 0; i < 300 && system(cmd) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's sslproxy.conf is not written");
+	ATF_CHECK(access("sslproxy.conf", F_OK) != 0);
+	snprintf(cmd, sizeof(cmd), "grep -q '^add 7 set 26 fwd 127.0.0.1,8443 "
+	    "tcp from 192.0.2.0/24 to not me 443 in recv epair1b // "
+	    "sslproxy:https$' jroot%s/ssl.d/fwd.rules && grep -q 'host.s copy' "
+	    "jroot/usr/local/etc/rc.d/arcana_sslproxy && grep -q "
+	    "'^arcana_sslproxy_fwd=\"%s/ssl.d/fwd.rules\"$' jroot/etc/rc.conf",
+	    dir, dir);
+	ATF_CHECK_MSG(system(cmd) == 0, "the jail's rules, rc script or "
+	    "rc.conf are not there");
+	dock_closed();
+	/* Enabled: started in the jail, its own ipfw loading the rules. */
+	wait_js("document.querySelector('.sslview button[data-act=ssl-job]"
+	    "[data-arg=enable]')", 20);
+	click_when(".sslview button[data-act=ssl-job][data-arg=enable]", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q 'ipfw -q set swap 26 27' "
+	    "jroot/ipfw.log 2>/dev/null") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's ipfw did not load the rules");
+	ATF_CHECK(system("grep -q '^add 7 set 26 fwd 127.0.0.1,8443 tcp from "
+	    "192.0.2.0/24 to not me 443 in recv epair1b // sslproxy:https$' "
+	    "jroot/ipfw.log && grep -q '^jexec 4 .*fake-ipfw -q set swap 26 "
+	    "27$' jexec.log && ! grep -q 'set swap 26 27' ipfw.log && grep -q "
+	    "'^arcana_sslproxy_enable=\"YES\"$' jroot/etc/rc.conf") == 0);
+	ATF_CHECK(access("jroot/running.arcana_sslproxy", F_OK) == 0 &&
+	    access("running.arcana_sslproxy", F_OK) != 0);
+	dock_closed();
+	wait_js("document.querySelector('.sslview .chip.st-up')", 20);
+	shot("9x-security-tls-jail");
+}
+
 static void
 part_security(void)
 {
@@ -14232,6 +14357,25 @@ ATF_TC_BODY(pwa_security_tls, tc)
 	part_sslinspect();
 }
 ATF_TC_CLEANUP(pwa_security_tls, tc)
+{
+
+	browser_stop();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_security_tls_jail);
+ATF_TC_HEAD(pwa_security_tls_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "Security, SSL inspection in a vnet jail picked on the tab: sslproxy offered there by pkg -j, the jail's CA from the fleet's root, the form sent, sslproxy.conf and the fwd rules beneath the jail's root, enabled and the rules loaded by the jail's own ipfw");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_security_tls_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_sslinspect_jail();
+}
+ATF_TC_CLEANUP(pwa_security_tls_jail, tc)
 {
 
 	browser_stop();
@@ -16310,6 +16454,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_map_fleet);
 	ATF_TP_ADD_TC(tp, pwa_flows_security);
 	ATF_TP_ADD_TC(tp, pwa_security_tls);
+	ATF_TP_ADD_TC(tp, pwa_security_tls_jail);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netpaths);
 	ATF_TP_ADD_TC(tp, pwa_plugins_wg);
 	ATF_TP_ADD_TC(tp, pwa_storage_relay);

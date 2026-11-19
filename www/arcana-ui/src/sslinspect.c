@@ -16,7 +16,11 @@
  * an SD-WAN service's MBSF is what SSLproxy serves (MEF 138's function
  * policy bound to zones, the form the console's), the binding is shown
  * in place of the form: the service, the policy, its table, each zone's
- * clients and interfaces, changed in SD-WAN alone.
+ * clients and interfaces, changed in SD-WAN alone.  Each jail may run
+ * one of its own: picked here (the host, or a running jail), its read,
+ * jobs, CA and Install (pkg -j) the jail's; a vnet jail's rules are its
+ * own ipfw's, a jail of the host's network's the host's, sent to the
+ * jail's address.
  */
 
 #include <stdbool.h>
@@ -41,6 +45,8 @@ static const struct {
 static struct {
 	struct res	 r;		/* arcana-sslproxy's read */
 	bool		 issuing;	/* inspection-ca under way */
+	bool		 picked;	/* where, chosen by hand: jail */
+	char		 jail[64];	/* "" the host */
 } si;
 
 void
@@ -64,11 +70,105 @@ si_conv(const ucl_object_t *o)
 	return (r);
 }
 
+/* The Security page's host. */
+static struct server *
+si_server(void)
+{
+	int	i;
+
+	for (i = 0; i < app.nservers; i++)
+		if (strcmp(app.servers[i].id, sec_host_id()) == 0)
+			return (&app.servers[i]);
+	return (NULL);
+}
+
+/* Where SSLproxy is looked for: the place picked in the tab, else the
+ * host where it has it, else a running jail that has, else the host. */
+static const char *
+si_where(const struct server *s)
+{
+	const char	*at;
+
+	if (si.picked || s == NULL)
+		return (si.jail);
+	at = plugin_anywhere(s, "sslproxy");
+	return (at != NULL ? at : "");
+}
+
 static void
 si_load(const char *sid)
 {
+	struct server	*s;
+	char		 in[160], *q;
 
-	res_yread(&si.r, sid, "arcana-sslproxy:sslproxy/read", "{}", si_conv);
+	/* Another host: its own choice. */
+	if (strcmp(sid, si.r.sid) != 0)
+		si.picked = false;
+	snprintf(in, sizeof(in), "{}");
+	if ((s = si_server()) != NULL && si_where(s)[0] != '\0') {
+		q = json_quote(si_where(s));
+		snprintf(in, sizeof(in), "{\"jail\":%s}", q);
+		free(q);
+	}
+	res_yread(&si.r, sid, "arcana-sslproxy:sslproxy/read", in, si_conv);
+}
+
+/* A job's extra: the jail it is done in, when SSLproxy is a jail's. */
+static const char *
+si_extra(const char *more)
+{
+	static char	 extra[160];
+	char		*q;
+
+	if (si_where(si_server())[0] == '\0')
+		return (more);
+	q = json_quote(si_where(si_server()));
+	snprintf(extra, sizeof(extra), ",\"jail\":%s%s", q, more != NULL ?
+	    more : "");
+	free(q);
+	return (extra);
+}
+
+/* A job's title, with the jail it is done in. */
+static void
+si_title(char *buf, size_t len, const char *what)
+{
+	const char	*j;
+
+	j = si_where(si_server());
+	snprintf(buf, len, "%s%s%s", what, j[0] != '\0' ? " in jail " : "", j);
+}
+
+/* The picker: the host, or any running jail of it. */
+static void
+si_pick(struct html *h, const struct server *s)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	h_raw(h, "<div class=\"toolbar\"><label class=\"secpick\">Where "
+	    "<select data-input=\"ssl-where\"><option value=\"\"");
+	if (si_where(s)[0] == '\0')
+		h_raw(h, " selected");
+	h_raw(h, ">the host</option>");
+	it = NULL;
+	while (s != NULL && s->list != NULL && (e = ucl_object_iterate(jget(
+	    s->list, "jails"), &it, true)) != NULL) {
+		if (jstr(e, "name") == NULL || jstr(e, "state") == NULL ||
+		    strcmp(jstr(e, "state"), "running") != 0)
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", jstr(e, "name"));
+		if (strcmp(si_where(s), jstr(e, "name")) == 0)
+			h_raw(h, " selected");
+		h_raw(h, ">jail ");
+		h_txt(h, jstr(e, "name"));
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label><small class=\"help\">SSLproxy on the "
+	    "host, or a jail's own: a vnet jail's rules in its own ipfw, a "
+	    "jail of the host's network's in the host's, sent to the jail's "
+	    "address</small></div>");
 }
 
 static void
@@ -269,21 +369,46 @@ view_sslinspect(struct html *h, struct server *s)
 {
 	const ucl_object_t	*o, *ca, *c, *e;
 	ucl_object_iter_t	 it;
+	const char		*jail;
 	int64_t			 n;
+	bool			 shared;
 
+	si_pick(h, s);
 	if (!res_shown(h, &si.r, s->id, si_load, "ssl-retry"))
 		return;
 	o = si.r.o;
+	jail = jstr(o, "jail");
+	/* A jail of the host's network: the host's ipfw fwds to it. */
+	shared = jail != NULL && !jbool(o, "vnet");
 	if (jget(o, "installed") != NULL && !jbool(o, "installed")) {
 		h_raw(h, "<div class=\"notice warn sec-missing\"><span>SSLproxy "
-		    "is not installed on this host: TLS is inspected by it, "
-		    "transparently (ipfw fwd), the clients setting no proxy."
-		    "</span><button class=\"primary small\" data-act=\""
-		    "sec-install\" data-arg=\"sslproxy\">Install sslproxy</button>"
-		    "</div>");
+		    "is not installed ");
+		if (jail != NULL) {
+			h_raw(h, "in jail ");
+			h_txt(h, jail);
+			h_raw(h, ": a plugin, the port security/sslproxy, "
+			    "installed there with pkg -j.");
+		} else
+			h_raw(h, "on this host: TLS is inspected by it, "
+			    "transparently (ipfw fwd), the clients setting no "
+			    "proxy.");
+		h_raw(h, "</span><button class=\"primary small\" data-act=\""
+		    "ssl-install\">Install sslproxy</button></div>");
 		return;
 	}
-	h_raw(h, "<div class=\"sslview\"><p class=\"dim\">TLS opened by "
+	h_raw(h, "<div class=\"sslview\">");
+	if (jail != NULL) {
+		h_raw(h, "<p><span class=\"chip\">in jail ");
+		h_txt(h, jail);
+		h_raw(h, "</span> ");
+		h_raw(h, shared ? "of the host's network: SSLproxy listens at "
+		    "the jail's address, the host's <code>ipfw fwd</code> sends "
+		    "the clients there" : "with a network of its own (vnet): its "
+		    "own <code>ipfw</code> has the rules, SSLproxy at its "
+		    "loopback");
+		h_raw(h, "</p>");
+	}
+	h_raw(h, "<p class=\"dim\">TLS opened by "
 	    "<code>sslproxy(1)</code> in split mode, its NAT engine "
 	    "<code>ipfw</code>: the clients' traffic reaches it by "
 	    "<code>ipfw fwd</code> rules, set 27 at rule 7, which keep the "
@@ -340,9 +465,10 @@ view_sslinspect(struct html *h, struct server *s)
 	if (jbool(ca, "pending"))
 		h_raw(h, "<dt>Waiting</dt><dd class=\"dim\">a new key waits for "
 		    "its certificate</dd>");
-	h_raw(h, "</dl><p class=\"dim\">The key is made on this host and never "
+	h_fmt(h, "</dl><p class=\"dim\">The key is made for %s and never "
 	    "leaves it; the console signs its request with the tenant fleet's "
-	    "root, whose key stays on the console.</p>");
+	    "root, whose key stays on the console.</p>", jail != NULL ?
+	    "the jail, beneath its root," : "this host");
 	h_fmt(h, "<button class=\"%s small\" data-act=\"ssl-issue\"%s>%s</button>",
 	    jget(ca, "certificate") != NULL ? "ghost" : "primary", si.issuing ?
 	    " disabled" : "", jget(ca, "certificate") != NULL ?
@@ -366,8 +492,10 @@ view_sslinspect(struct html *h, struct server *s)
 	it = NULL;
 	while ((e = ucl_object_iterate(jget(o, "rules"), &it, true)) != NULL)
 		n++;
-	h_fmt(h, "<p class=\"dim\">%lld loaded in set 27, of %lld the form "
-	    "makes", (long long)n, (long long)jint(o, "rules_expected", 0));
+	h_fmt(h, "<p class=\"dim\">%lld loaded in set 27 of %s, of %lld the "
+	    "form makes", (long long)n, jail == NULL ? "the host's ipfw" :
+	    shared ? "the host's ipfw (the jail's, tagged @jail)" : "the "
+	    "jail's own ipfw", (long long)jint(o, "rules_expected", 0));
 	if (jstr(o, "rules_file") != NULL) {
 		h_raw(h, " (<code>");
 		h_txt(h, jstr(o, "rules_file"));
@@ -439,7 +567,7 @@ bool
 sslinspect_form(const char *form, const ucl_object_t *f)
 {
 	ucl_object_t	*spec, *ls, *l;
-	char		 k[32], *text, *json;
+	char		 k[32], *text, *json, title[128];
 	const char	*v;
 	size_t		 i;
 
@@ -483,23 +611,45 @@ sslinspect_form(const char *form, const ucl_object_t *f)
 	ucl_object_unref(spec);
 	if (text == NULL)
 		abort();
-	json = job_json("sslproxy", "conf", NULL, 0, text, jbool(f, "replace") ?
-	    ",\"force\":true" : NULL);
+	json = job_json("sslproxy", "conf", NULL, 0, text, si_extra(jbool(f,
+	    "replace") ? ",\"force\":true" : NULL));
 	free(text);
-	sec_job(json, "SSL inspection: sslproxy.conf and its fwd rules");
+	si_title(title, sizeof(title), "SSL inspection: sslproxy.conf and its "
+	    "fwd rules");
+	sec_job(json, title);
 	return (true);
 }
 
 bool
 sslinspect_action(const char *act, const char *arg, const char *value)
 {
-	char		 url[256], title[64], *json;
-	const char	*sid;
+	char		 url[256], title[96], body[160], *json, *q;
+	const char	*sid, *jail;
 
-	(void)value;
+	if (strcmp(act, "input:ssl-where") == 0) {
+		si.picked = true;
+		snprintf(si.jail, sizeof(si.jail), "%s", value != NULL ? value :
+		    "");
+		res_drop(&si.r);
+		render();
+		return (true);
+	}
 	if (strncmp(act, "ssl-", 4) != 0)
 		return (false);
 	sid = sec_host_id();
+	jail = si_where(si_server());
+	if (strcmp(act, "ssl-install") == 0 && si_server() != NULL) {
+		/* Where the tab looks: the host, or the jail by pkg -j. */
+		q = json_quote(jail);
+		if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"
+		    "[\"sslproxy\"]%s%s}", jail[0] != '\0' ? ",\"jail\":" : "",
+		    jail[0] != '\0' ? q : "") == -1)
+			abort();
+		free(q);
+		si_title(title, sizeof(title), "pkg install sslproxy");
+		job_send_host(si_server(), json, title, JOB_SECURITY, jail);
+		return (true);
+	}
 	if (strcmp(act, "ssl-retry") == 0) {
 		res_drop(&si.r);
 		return (true);
@@ -508,8 +658,9 @@ sslinspect_action(const char *act, const char *arg, const char *value)
 	    "enable") == 0 || strcmp(arg, "disable") == 0 || strcmp(arg,
 	    "start") == 0 || strcmp(arg, "stop") == 0 || strcmp(arg,
 	    "restart") == 0)) {
-		json = job_json("sslproxy", arg, NULL, 0, NULL, NULL);
-		snprintf(title, sizeof(title), "SSL inspection: %s", arg);
+		json = job_json("sslproxy", arg, NULL, 0, NULL, si_extra(NULL));
+		snprintf(body, sizeof(body), "SSL inspection: %s", arg);
+		si_title(title, sizeof(title), body);
 		sec_job(json, title);
 		return (true);
 	}
@@ -517,9 +668,16 @@ sslinspect_action(const char *act, const char *arg, const char *value)
 		const ucl_object_t	*ca = jget(si.r.o, "ca");
 
 		si.issuing = true;
+		/* A jail's: its own intermediate, its key made for it. */
+		q = json_quote(jail);
+		snprintf(body, sizeof(body), "{%s%s%s%s}", jail[0] != '\0' ?
+		    "\"jail\":" : "", jail[0] != '\0' ? q : "", jail[0] != '\0'
+		    && jget(ca, "certificate") != NULL ? "," : "", jget(ca,
+		    "certificate") != NULL ? "\"renew\":true" : "");
+		free(q);
 		rc_verb(rc_c(url, sizeof(url), "hosts/host=%s/inspection-ca",
-		    rc_key(sid)), jget(ca, "certificate") != NULL ?
-		    "{\"renew\":true}" : NULL, NULL, issue_cb, NULL);
+		    rc_key(sid)), strcmp(body, "{}") != 0 ? body : NULL, NULL,
+		    issue_cb, NULL);
 		render();
 		return (true);
 	}

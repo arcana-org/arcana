@@ -2714,19 +2714,26 @@ module arcana-console {
       }
       action inspection-ca {
         description
-          "SSL inspection's CA on the host (arcana-sslproxy): a key made
-           there and its request, signed here by the root of the host's
-           tenant fleet (the fleet's own for a host of no tenant; made
-           at its first use, its key kept here alone) as an
-           intermediate CA, and installed with that root as its
-           chain.  Apart from the console's own CA, which no browser
-           is to trust.";
+          "SSL inspection's CA on the host (arcana-sslproxy), or on a
+           jail's own SSLproxy: a key made there and its request,
+           signed here by the root of the host's tenant fleet (the
+           fleet's own for a host of no tenant; made at its first use,
+           its key kept here alone) as an intermediate CA, and
+           installed with that root as its chain.  Apart from the
+           console's own CA, which no browser is to trust.";
         input {
           leaf renew {
             type boolean;
             description
               "A new key on the host, the one in use kept until the new
                one's certificate is installed.";
+          }
+          leaf jail {
+            type string;
+            description
+              "The running jail whose SSLproxy's CA it is, an
+               intermediate of its own (named for the host and the
+               jail); none, the host's.";
           }
         }
         output {

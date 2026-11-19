@@ -415,6 +415,7 @@ module: arcana-jobs
     |  |     |  +--:(sslproxy)
     |  |     |     +---w sslproxy!
     |  |     |        +---w verb     enumeration
+    |  |     |        +---w jail?    string
     |  |     |        +---w args*    string
     |  |     |        +---w text?    string
     |  |     |        +---w force?   boolean
@@ -787,6 +788,7 @@ module: arcana-jobs
        |  |  |  +--:(sslproxy)
        |  |  |     +---w sslproxy!
        |  |  |        +---w verb     enumeration
+       |  |  |        +---w jail?    string
        |  |  |        +---w args*    string
        |  |  |        +---w text?    string
        |  |  |        +---w force?   boolean

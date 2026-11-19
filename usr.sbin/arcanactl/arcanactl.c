@@ -6034,7 +6034,7 @@ cmd_speeder(cbl_conn *conn, int argc, char **argv)
 /*
  * sslproxy: SSL inspection by SSLproxy, read; with words, a job of it,
  * or its CA's key and request made (csr), or its certificate installed
- * (install-ca).
+ * (install-ca); with -j, a jail's own SSLproxy.
  */
 static int
 cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
@@ -6047,15 +6047,15 @@ cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
 	if (argc == 1) {
 		/* arcana-sslproxy's read. */
 		ytold_begin(conn);
-		error = yr_sslproxy(conn, &data, ebuf, sizeof(ebuf));
+		error = yr_sslproxy(conn, netjail, &data, ebuf, sizeof(ebuf));
 		return (ydata_out("sslproxy", error, data, ebuf));
 	}
 	if (strcmp(argv[1], "csr") == 0) {
 		if (argc > 3 || (argc == 3 && strcmp(argv[2], "renew") != 0))
 			usage();
 		ytold_begin(conn);
-		if ((error = yr_sslproxy_csr(conn, argc == 3, &csr, ebuf,
-		    sizeof(ebuf))) != 0)
+		if ((error = yr_sslproxy_csr(conn, netjail, argc == 3, &csr,
+		    ebuf, sizeof(ebuf))) != 0)
 			return (ydata_out("sslproxy", error, NULL, ebuf));
 		fputs(csr, stdout);
 		free(csr);
@@ -6065,14 +6065,15 @@ cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
 		if (argc != 4)
 			usage();
 		ytold_begin(conn);
-		error = yr_sslproxy_install(conn, slurp(argv[2]), slurp(argv[3]),
-		    &data, ebuf, sizeof(ebuf));
+		error = yr_sslproxy_install(conn, netjail, slurp(argv[2]),
+		    slurp(argv[3]), &data, ebuf, sizeof(ebuf));
 		return (ydata_out("sslproxy", error, data, ebuf));
 	}
 	memset(&sp, 0, sizeof(sp));
 	sp.has_kind = true;
 	sp.kind = ARC_JOB_KIND_SSLPROXY;
 	sp.verb = argv[1];
+	sp.jail = netjail;
 	if (strcmp(argv[1], "conf") == 0) {
 		/* conf form.json [replace]: replace says the admin's own
 		 * sslproxy.conf is to be replaced by the form. */

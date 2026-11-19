@@ -93,6 +93,25 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SSL inspection in jails; agent 0.329.0, console 0.473.0
+
+- SSL inspection runs in jails too: pick a jail on Security > SSL
+  inspection (or arcanactl -j <jail> sslproxy ...); install sslproxy
+  there with the tab's button (pkg -j), issue its CA, save the form.  A
+  vnet jail's fwd rules are its own ipfw's set 27; a jail of the host's
+  network listens at its own address and the host's set 27 carries its
+  rules (tagged @<jail>), with a rule refusing direct connections to
+  it.
+- The rc script arcana_sslproxy changed: arcana_sslproxy_fwd set empty
+  loads no rules (it no longer falls back to the default), and the new
+  arcana_sslproxy_jails names the directory of the jails' started
+  rules.
+- SD-WAN: an MBSF at a vnet jail's edge is served by the jail's own
+  SSLproxy instead of failing the plan; the apply asks for sslproxy on
+  an edge that lacks it.
+- Update the agent and the console together (arcana-sslproxy 97400+,
+  arcana-console 97420).
+
 ### NFS and router advertisements in a vnet jail; agent 0.328.0, console 0.472.0
 
 - The nfs and rtadvd jobs take a jail: a vnet jail's own NFS server

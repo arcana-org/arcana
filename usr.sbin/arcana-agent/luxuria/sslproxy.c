@@ -58,9 +58,34 @@
  * as an intermediate and sends it back (install-ca): taken only when it
  * is a CA's and the waiting key's, and when the chain given issued it;
  * written as ca.crt (CACert) with the root as chain.crt (CAChain).
+ *
+ * A jail's own SSLproxy, one a jail beside the host's: the jail's
+ * sslproxy (pkg -j), its files beneath the jail's root (opened from the
+ * root's descriptor, never through a link out of it: invidia/scope.c),
+ * the CA's key made for it and written there alone, the rc script
+ * copied into the jail's /usr/local/etc/rc.d and run there (service by
+ * jexec), its rc.conf the jail's (sysrc -j).  The rules follow its
+ * network.  A vnet jail's are its own ipfw's, run in it (jexec): set 27
+ * at rule 7 there, staged and refused as the host's, the fwd to its own
+ * loopback, loaded by the rc script at the jail's start too.  A jail of
+ * the host's network listens at its own address (ip4.addr, ip6.addr;
+ * the loopback where it inherits the host's), which the host's ipfw
+ * fwds to: a local address, so the connection keeps its destination,
+ * which getsockname(2) in the jail says (the accepted socket's local
+ * address is the packet's, the jail's own being only where it was
+ * looked up), as SSLproxy's NAT engine ipfw asks.  Those rules are the
+ * host's set 27 beside the host's own, each comment tagged
+ * "@<jail>", rendered by the agent and kept on the host
+ * (jails/<jail>.fwd), never read from the jail; while the jail's
+ * SSLproxy is started they are jails/<jail>.rules, which the host's set
+ * 27 is loaded from (and the host's rc script, and the watch, where the
+ * jail runs and its SSLproxy does).  A deny rule of the jail's listen
+ * ports keeps clients from reaching SSLproxy at its address but by the
+ * fwd.
  */
 
 #include <sys/param.h>
+#include <sys/jail.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
@@ -68,8 +93,10 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jail.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,6 +136,9 @@ static pthread_mutex_t	fw_lock = PTHREAD_MUTEX_INITIALIZER;
 #define	ZONES_MAX	16
 #define	PASSES_MAX	64
 #define	COMMENT_MAX	80		/* ipfw(8)'s, for a rule's comment */
+#define	JAILS		"jails"		/* the host's: jails' rules */
+#define	JAIL_RC		"/usr/local/etc/rc.d/" SERVICE	/* in a jail */
+#define	FILES_MAX	65		/* set 27's files: the host's, jails' */
 
 /* The protocols the form takes: SSLproxy's type, the usual port. */
 static const struct {
@@ -166,11 +196,114 @@ static const char *const tls_mef[] = { "ssl3", "tls1.0", "tls1.1",
 static const char *const tls_names[] = { "ssl3", "tls10", "tls11",
     "tls12", "tls13" };
 
+/*
+ * Where SSLproxy runs: the host, a vnet jail (its own ipfw and
+ * loopback) or a jail of the host's network (the host's ipfw, the
+ * jail's address); the address it listens at, of each family, NULL
+ * where the jail has none.
+ */
+struct place {
+	bool		 jailed, vnet;
+	const char	*a4, *a6;
+};
+
+/* The work's scope, kept while w works on the host. */
+struct was {
+	const char	*jail, *jroot;
+	int		 jid;
+};
+
+static void
+to_host(struct work *w, struct was *s)
+{
+
+	s->jail = w->jail;
+	s->jroot = w->jroot;
+	s->jid = w->jid;
+	w->jail = NULL;
+	w->jroot = NULL;
+	w->jid = 0;
+}
+
+static void
+back_to(struct work *w, const struct was *s)
+{
+
+	w->jail = s->jail;
+	w->jroot = s->jroot;
+	w->jid = s->jid;
+}
+
+/* A parameter of the jail named, as jailparam_export(3) says it; NULL
+ * where it has none (a kernel without INET6 has no ip6.addr). */
+static const char *
+jail_param(struct work *w, const char *jail, const char *name)
+{
+	struct jailparam	 jp[2];
+	const char		*v;
+	char			*s;
+
+	memset(jp, 0, sizeof(jp));
+	v = NULL;
+	if (jailparam_init(&jp[0], "name") == 0 && jailparam_import(&jp[0],
+	    jail) == 0 && jailparam_init(&jp[1], name) == 0 &&
+	    jailparam_get(jp, 2, 0) >= 0 && (s = jailparam_export(&jp[1])) !=
+	    NULL) {
+		v = wstrdup(w, s);
+		free(s);
+	}
+	jailparam_free(jp, 2);
+	return (v);
+}
+
+/* The first address of a jail's list of one family, or NULL. */
+static const char *
+first_addr(struct work *w, const char *jail, const char *param,
+    const char *mode, const char *loopback)
+{
+	const char	*v;
+
+	if ((v = jail_param(w, jail, param)) != NULL && v[0] != '\0')
+		return (wstrndup(w, v, strcspn(v, ", ")));
+	/* None of its own: the host's, the loopback among them. */
+	if ((v = jail_param(w, jail, mode)) != NULL && strcmp(v, "inherit") ==
+	    0)
+		return (loopback);
+	return (NULL);
+}
+
+/* The place of w's scope; 0, or -1 with why where the jail is gone. */
+static int
+place_of(struct work *w, struct place *pl, const char **errp)
+{
+	struct jinfo	ji;
+
+	memset(pl, 0, sizeof(*pl));
+	pl->a4 = "127.0.0.1";
+	pl->a6 = "::1";
+	if (w->jail == NULL)
+		return (0);
+	pl->jailed = true;
+	if (jail_named(w, w->jail, &ji) < 0) {
+		*errp = wfmt(w, "the jail %s is not running", w->jail);
+		return (-1);
+	}
+	if ((pl->vnet = ji.vnet))
+		return (0);
+	pl->a4 = first_addr(w, w->jail, "ip4.addr", "ip4", "127.0.0.1");
+	pl->a6 = first_addr(w, w->jail, "ip6.addr", "ip6", "::1");
+	return (0);
+}
+
+/* sslproxy(1): the host's (or the tools directory's), or the jail's
+ * own, run there. */
 static const char *
 bin(struct work *w)
 {
 	const char	*p;
 
+	if (w->jail != NULL)
+		return (opts.sslproxy_bin);
 	return ((p = tool(w, "sslproxy")) != NULL ? p : opts.sslproxy_bin);
 }
 
@@ -179,6 +312,61 @@ dir_file(struct work *w, const char *name)
 {
 
 	return (wfmt(w, "%s/%s", opts.sslproxy_dir, name));
+}
+
+/* A jail's file of the host's (jails/<jail><ext>), by its name. */
+static const char *
+jail_file(struct work *w, const char *jail, const char *ext)
+{
+
+	return (wfmt(w, "%s/" JAILS "/%s%s", opts.sslproxy_dir, jail, ext));
+}
+
+/* Whether a file is there, of the host or beneath w's jail's root, a
+ * link not followed. */
+static bool
+there(struct work *w, const char *path)
+{
+	struct stat	 sb;
+	const char	*base;
+	int		 dfd, rc;
+
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (false);
+	rc = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW);
+	close(dfd);
+	return (rc == 0);
+}
+
+/* A file's size, as there() finds it; -1 for none. */
+static off_t
+size_of(struct work *w, const char *path)
+{
+	struct stat	 sb;
+	const char	*base;
+	int		 dfd, rc;
+
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (-1);
+	rc = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW);
+	close(dfd);
+	return (rc == 0 && S_ISREG(sb.st_mode) ? sb.st_size : -1);
+}
+
+/* Whether a program is there to run, beneath w's jail's root alone. */
+static bool
+runnable(struct work *w, const char *path)
+{
+	const char	*base;
+	int		 dfd, rc;
+
+	if (w->jail == NULL)
+		return (access(path, X_OK) == 0);
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (false);
+	rc = faccessat(dfd, base, X_OK, AT_RESOLVE_BENEATH);
+	close(dfd);
+	return (rc == 0);
 }
 
 /* ---- The form ---------------------------------------------------- */
@@ -590,9 +778,25 @@ form_of(struct work *w, const ucl_object_t *o, struct form *f)
 	return (mbsf_of(w, ucl_object_lookup(o, "mbsf"), f));
 }
 
+/* What a place cannot listen at for the form; NULL where it can. */
+static const char *
+place_refuses(struct work *w, const struct place *pl, const struct form *f)
+{
+
+	if (pl->a4 == NULL)
+		return (wfmt(w, "the jail %s has no IPv4 address of its own "
+		    "(ip4.addr): SSLproxy listens at the jail's address, which "
+		    "the host's ipfw fwds the clients to", w->jail));
+	if (f->ipv6 && pl->a6 == NULL)
+		return (wfmt(w, "the jail %s has no IPv6 address of its own "
+		    "(ip6.addr), where SSLproxy would listen for the IPv6 "
+		    "clients: give it one, or turn IPv6 off", w->jail));
+	return (NULL);
+}
+
 /* sslproxy.conf(5), from the form. */
 static char *
-conf_render(struct work *w, const struct form *f)
+conf_render(struct work *w, const struct form *f, const struct place *pl)
 {
 	char	*out;
 	size_t	 len, i;
@@ -602,9 +806,13 @@ conf_render(struct work *w, const struct form *f)
 	if ((fp = open_memstream(&out, &len)) == NULL)
 		return (NULL);
 	fprintf(fp, MARK " from the SSL inspection form (Security,\n"
-	    "# SSL inspection): a change here is replaced at its next save.\n"
-	    "# The clients' traffic comes by ipfw fwd rules (%s).\n",
-	    dir_file(w, "fwd.rules"));
+	    "# SSL inspection): a change here is replaced at its next save.\n");
+	if (pl->jailed && !pl->vnet)
+		fprintf(fp, "# The clients' traffic comes by the host's ipfw fwd "
+		    "rules, to %s.\n", pl->a4);
+	else
+		fprintf(fp, "# The clients' traffic comes by ipfw fwd rules "
+		    "(%s).\n", dir_file(w, "fwd.rules"));
 	fprintf(fp, "CACert %s\nCAKey %s\nCAChain %s\n", dir_file(w, "ca.crt"),
 	    dir_file(w, "ca.key"), dir_file(w, "chain.crt"));
 	/* Split: opened, logged and encrypted again, given to no program. */
@@ -632,11 +840,11 @@ conf_render(struct work *w, const struct form *f)
 	if (f->content_log)
 		fprintf(fp, "ContentLogDir " LOG_DIR "/content\n");
 	for (i = 0; i < f->nl; i++) {
-		fprintf(fp, "ProxySpec %s 127.0.0.1 %d ipfw\n", f->l[i].type,
+		fprintf(fp, "ProxySpec %s %s %d ipfw\n", f->l[i].type, pl->a4,
 		    f->l[i].listen);
 		if (f->ipv6)
-			fprintf(fp, "ProxySpec %s ::1 %d ipfw\n", f->l[i].type,
-			    f->l[i].listen);
+			fprintf(fp, "ProxySpec %s %s %d ipfw\n", f->l[i].type,
+			    pl->a6, f->l[i].listen);
 	}
 	if (fclose(fp) != 0) {
 		free(out);
@@ -679,13 +887,17 @@ sources(struct work *w, const char *const *v, size_t n)
  * interface, the other zones' prefixes skipped first (a Default
  * zone's), a protocol's rule each, then cleartext HTTP reset where a
  * bound MBSF blocks it.  The reset logs, its comment the one the
- * console makes a SEN of while ipfw's 80 characters hold it.
+ * console makes a SEN of while ipfw's 80 characters hold it.  A jail
+ * of the host's network: the fwd to its address, each comment's tag
+ * followed by @<jail> (the host's set 27 has the host's and the jails'
+ * rules), and its listen ports denied but by the fwd.
  */
 static char *
-rules_render(struct work *w, const struct form *f, int *np)
+rules_render(struct work *w, const struct form *f, const struct place *pl,
+    int *np)
 {
 	const struct zone	*z;
-	const char		*src, *cm;
+	const char		*src, *cm, *sfx, *to;
 	char			*out;
 	size_t			 len, i, k, zi, nx;
 	int			 fam, n;
@@ -696,10 +908,11 @@ rules_render(struct work *w, const struct form *f, int *np)
 	n = 0;
 	if ((fp = open_memstream(&out, &len)) == NULL)
 		return (NULL);
-	cm = f->bound ? wfmt(w, "security %s %s unencrypted " TAG "http",
-	    f->service, f->policy) : NULL;
+	sfx = pl->jailed && !pl->vnet ? wfmt(w, "@%s", w->jail) : "";
+	cm = f->bound ? wfmt(w, "security %s %s unencrypted " TAG "http%s",
+	    f->service, f->policy, sfx) : NULL;
 	if (cm != NULL && strlen(cm) > COMMENT_MAX)
-		cm = TAG "http";
+		cm = wfmt(w, TAG "http%s", sfx);
 	for (zi = 0; zi < f->nz; zi++) {
 		z = &f->z[zi];
 		for (fam = 4; fam <= 6; fam += 2) {
@@ -715,25 +928,25 @@ rules_render(struct work *w, const struct form *f, int *np)
 			famq = any || zero_len(fam == 4 ? z->c.v4 : z->c.v6,
 			    fam == 4 ? z->c.n4 : z->c.n6);
 			nx = fam == 4 ? z->x.n4 : z->x.n6;
+			to = fam == 4 ? pl->a4 : pl->a6;
 			for (k = 0; k < z->nifs; k++) {
 				if (nx > 0) {
 					fprintf(fp, "add %d set %d skipto %d tcp from "
 					    "%s to not %s in recv %s // " TAG
-					    "except\n", FW_RULE, FW_STAGE, FW_RULE +
+					    "except%s\n", FW_RULE, FW_STAGE, FW_RULE +
 					    1, sources(w, fam == 4 ? z->x.v4 :
 					    z->x.v6, nx), fam == 4 ? "me" : "me6",
-					    z->ifs[k]);
+					    z->ifs[k], sfx);
 					n++;
 				}
 				for (i = 0; i < f->nl; i++) {
 					fprintf(fp, "add %d set %d fwd %s,%d tcp from "
 					    "%s to not %s %d in recv %s%s // " TAG
-					    "%s\n", FW_RULE, FW_STAGE, fam == 4 ?
-					    "127.0.0.1" : "::1", f->l[i].listen,
-					    src, fam == 4 ? "me" : "me6",
-					    f->l[i].port, z->ifs[k], famq ? (fam ==
-					    4 ? " ip4" : " ip6") : "",
-					    f->l[i].proto);
+					    "%s%s\n", FW_RULE, FW_STAGE, to,
+					    f->l[i].listen, src, fam == 4 ? "me" :
+					    "me6", f->l[i].port, z->ifs[k], famq ?
+					    (fam == 4 ? " ip4" : " ip6") : "",
+					    f->l[i].proto, sfx);
 					n++;
 				}
 				if (f->plain_block) {
@@ -747,6 +960,20 @@ rules_render(struct work *w, const struct form *f, int *np)
 					n++;
 				}
 			}
+		}
+	}
+	/* SSLproxy at a jail's address: reached by the fwd alone (a fwd
+	 * keeps the packet's destination, which this does not match). */
+	for (fam = 4; *sfx != '\0' && fam <= 6; fam += 2) {
+		to = fam == 4 ? pl->a4 : pl->a6;
+		if ((fam == 6 && !f->ipv6) || strcmp(to, fam == 4 ?
+		    "127.0.0.1" : "::1") == 0)
+			continue;
+		for (i = 0; i < f->nl; i++) {
+			fprintf(fp, "add %d set %d deny tcp from any to %s %d in "
+			    "// " TAG "direct%s\n", FW_RULE, FW_STAGE, to,
+			    f->l[i].listen, sfx);
+			n++;
 		}
 	}
 	if (fclose(fp) != 0) {
@@ -764,6 +991,7 @@ struct krule {
 	int		 set;
 	const char	*text;		/* the rule, without the counters */
 	bool		 ours;		/* its comment is SSL inspection's */
+	const char	*jail;		/* ours of a jail's ("@<jail>"), or "" */
 };
 
 /* ipfw -a -S list read; -1 where ipfw cannot be. */
@@ -809,9 +1037,16 @@ kernel_rules(struct work *w, struct krule **out, size_t *np)
 		v[n].num = num;
 		v[n].set = set;
 		v[n].text = line + off;
-		/* Its comment has the tag: an SEN's starts otherwise. */
+		/* Its comment has the tag: an SEN's starts otherwise.  A
+		 * jail's: the tag's word ends in @<jail>. */
 		v[n].ours = (c = strstr(line + off, "// ")) != NULL &&
-		    strstr(c, TAG) != NULL;
+		    (c = strstr(c, TAG)) != NULL;
+		v[n].jail = "";
+		if (v[n].ours) {
+			c = wstrndup(w, c, strcspn(c, " \t"));
+			if ((c = strchr(c, '@')) != NULL)
+				v[n].jail = c + 1;
+		}
 		n++;
 	}
 	*out = v;
@@ -874,21 +1109,26 @@ ipfw(struct work *w, const char **errp, const char *a, const char *b,
 
 #define	SET(n)		__XSTRING(n)
 
-/* The fwd file loaded into set 27, by set 26; 0, or -1 with why. */
+/*
+ * The fwd files loaded into set 27, by set 26, by the ipfw of w's scope
+ * (the host's, or a vnet jail's, run there, its files as it sees them);
+ * 0, or -1 with why.
+ */
 static int
-rules_load(struct work *w, const char **errp)
+rules_load(struct work *w, const char *const *files, size_t nf,
+    const char **errp)
 {
 	struct krule	*k;
-	const char	*path, *e;
-	size_t		 nk, len;
+	const char	*e;
+	size_t		 nk, i;
 	bool		 any;
 	int		 step, rc;
 
-	path = dir_file(w, "fwd.rules");
-	if (scope_slurp(w, path, &len) == NULL || len == 0)
+	if (nf == 0)
 		return (0);
 	step = step_begin(w, STEP_EXEC, "ipfw fwd", "the fwd rules loaded into "
-	    "set " SET(FW_SET) " at rule " SET(FW_RULE));
+	    "set " SET(FW_SET) " at rule " SET(FW_RULE) "%s%s", w->jail != NULL ?
+	    " of the jail " : "", w->jail != NULL ? w->jail : "");
 	if (kernel_rules(w, &k, &nk) != 0) {
 		*errp = "ipfw cannot be read (ipfw(4) not loaded?): no fwd rule "
 		    "sends the clients to SSLproxy";
@@ -904,10 +1144,12 @@ rules_load(struct work *w, const char **errp)
 	rc = -1;
 	if (ipfw(w, errp, "set", "disable", SET(FW_STAGE), NULL) != 0)
 		goto out;
-	if (ipfw(w, errp, path, NULL, NULL, NULL) != 0) {
-		(void)ipfw(w, NULL, "-f", "delete", "set", SET(FW_STAGE));
-		goto out;
-	}
+	for (i = 0; i < nf; i++)
+		if (ipfw(w, errp, files[i], NULL, NULL, NULL) != 0) {
+			(void)ipfw(w, NULL, "-f", "delete", "set",
+			    SET(FW_STAGE));
+			goto out;
+		}
 	if (ipfw(w, errp, "set", "swap", SET(FW_STAGE), SET(FW_SET)) != 0) {
 		(void)ipfw(w, NULL, "-f", "delete", "set", SET(FW_STAGE));
 		goto out;
@@ -956,7 +1198,8 @@ rules_unload(struct work *w, const char **errp)
 
 /* ---- The service ------------------------------------------------- */
 
-/* "service arcana_sslproxy one<verb>"; 0, or -1 with why when asked. */
+/* "service arcana_sslproxy one<verb>", of the host or run in w's jail;
+ * 0, or -1 with why when asked. */
 static int
 svc(struct work *w, const char *verb, const char **errp)
 {
@@ -967,11 +1210,14 @@ svc(struct work *w, const char *verb, const char **errp)
 	argv[1] = (char *)(uintptr_t)SERVICE;
 	argv[2] = wfmt(w, "one%s", verb);
 	argv[3] = NULL;
-	if ((strcmp(verb, "status") == 0 ? run_read(w, argv, &res) :
-	    run_exec(w, argv, &res)) != 0) {
+	if ((strcmp(verb, "status") == 0 ? run_read(w, scope_jexec(w, argv),
+	    &res) : run_exec(w, scope_jexec(w, argv), &res)) != 0 ||
+	    res.status != 0) {
 		if (errp != NULL)
 			*errp = wtext(w, exec_error(w, &res, wfmt(w, "service "
-			    SERVICE " one%s", verb)));
+			    SERVICE " one%s%s%s", verb, w->jail != NULL ?
+			    " in the jail " : "", w->jail != NULL ? w->jail :
+			    "")));
 		return (-1);
 	}
 	return (0);
@@ -993,10 +1239,136 @@ yes(const char *v)
 	    "true") == 0 || strcasecmp(v, "on") == 0 || strcmp(v, "1") == 0));
 }
 
+/* A file's lines (its rules), of the work's scope; 0 for none. */
+static size_t
+lines(struct work *w, const char *path)
+{
+	const char	*p;
+	size_t		 n;
+
+	n = 0;
+	if ((p = scope_slurp(w, path, NULL)) != NULL)
+		for (; *p != '\0'; p++)
+			n += *p == '\n';
+	return (n);
+}
+
+/*
+ * The files of the host's set 27, w on the host: its own SSLproxy's
+ * rules (with_host), and the started ones of each jail of the host's
+ * network (jails/<jail>.rules) that runs and whose SSLproxy runs, but
+ * skip's.  How many into files.
+ */
+static size_t
+host_files(struct work *w, bool with_host, const char *skip,
+    const char **files, size_t max)
+{
+	struct jinfo	 ji;
+	struct dirent	*de;
+	const char	*path;
+	char		*name;
+	size_t		 n, l;
+	bool		 up;
+	DIR		*d;
+
+	n = 0;
+	if (with_host && size_of(w, dir_file(w, "fwd.rules")) > 0)
+		files[n++] = dir_file(w, "fwd.rules");
+	if ((d = opendir(dir_file(w, JAILS))) == NULL)
+		return (n);
+	while ((de = readdir(d)) != NULL && n < max) {
+		l = strlen(de->d_name);
+		if (l <= 6 || strcmp(de->d_name + l - 6, ".rules") != 0)
+			continue;
+		name = wstrndup(w, de->d_name, l - 6);
+		path = jail_file(w, name, ".rules");
+		if (!valid_jail(name) || (skip != NULL && strcmp(name, skip) ==
+		    0) || size_of(w, path) <= 0)
+			continue;
+		/* Gone, or another network now: not the host's to send to. */
+		if (jail_named(w, name, &ji) < 0 || ji.vnet)
+			continue;
+		w->jail = ji.name;
+		w->jid = ji.jid;
+		w->jroot = ji.path;
+		up = running(w);
+		w->jail = w->jroot = NULL;
+		w->jid = 0;
+		if (up)
+			files[n++] = path;
+	}
+	closedir(d);
+	return (n);
+}
+
+/* The host's set 27 loaded from host_files(), or taken away where they
+ * are none; w on the host.  0, or -1 with why. */
+static int
+host_load(struct work *w, bool with_host, const char *skip,
+    const char **errp)
+{
+	const char	*files[FILES_MAX];
+	size_t		 n;
+
+	if ((n = host_files(w, with_host, skip, files, nitems(files))) == 0)
+		return (rules_unload(w, errp));
+	return (rules_load(w, files, n, errp));
+}
+
+/*
+ * The rules where p's are, its own SSLproxy up (its rules in) or not:
+ * a vnet jail's in its own ipfw; the host's and a jail's of the host's
+ * network in the host's set 27, with the others' there.  0, or -1 with
+ * why.
+ */
+static int
+rules_set(struct work *w, const struct place *p, bool up, const char **errp)
+{
+	struct was	 s;
+	const char	*file;
+	int		 rc;
+
+	if (p->vnet) {
+		file = dir_file(w, "fwd.rules");
+		if (!up)
+			return (rules_unload(w, errp));
+		return (rules_load(w, &file, size_of(w, file) > 0 ? 1 : 0,
+		    errp));
+	}
+	if (!p->jailed)
+		return (host_load(w, up, NULL, errp));
+	/* A jail's: started, its rules are jails/<jail>.rules, the copy of
+	 * what its form made; stopped, none. */
+	to_host(w, &s);
+	rc = 0;
+	if (up) {
+		const char	*text;
+		size_t		 len;
+
+		if ((text = scope_slurp(w, jail_file(w, s.jail, ".fwd"), &len))
+		    == NULL) {
+			text = "";
+			len = 0;
+		}
+		if (file_replace(jail_file(w, s.jail, ".rules"), text, len,
+		    0600) != 0) {
+			*errp = wfmt(w, "%s: %s", jail_file(w, s.jail,
+			    ".rules"), strerror(errno));
+			rc = -1;
+		}
+	}
+	if (rc == 0)
+		rc = host_load(w, running(w), up ? NULL : s.jail, errp);
+	if (rc == 0 && !up)
+		(void)unlink(jail_file(w, s.jail, ".rules"));
+	back_to(w, &s);
+	return (rc);
+}
+
 /* Started (or started again, unless again is false and it runs),
  * then its rules loaded. */
 static int
-start(struct work *w, bool again, const char **errp)
+start(struct work *w, const struct place *p, bool again, const char **errp)
 {
 	int	rc;
 
@@ -1007,68 +1379,140 @@ start(struct work *w, bool again, const char **errp)
 	else if (again)
 		rc = svc(w, "restart", errp);
 	if (rc == 0)
-		rc = rules_load(w, errp);
+		rc = rules_set(w, p, true, errp);
 	pthread_mutex_unlock(&fw_lock);
 	return (rc);
 }
 
 /* Its rules taken away, then stopped. */
 static int
-stop(struct work *w, const char **errp)
+stop(struct work *w, const struct place *p, const char **errp)
 {
 	int	rc;
 
 	pthread_mutex_lock(&fw_lock);
-	if ((rc = rules_unload(w, errp)) == 0 && running(w))
+	if ((rc = rules_set(w, p, false, errp)) == 0 && running(w))
 		rc = svc(w, "stop", errp);
 	pthread_mutex_unlock(&fw_lock);
 	return (rc);
 }
 
+/* Said once a change, not every turn: the host's, and the jails'. */
+static bool	warned_host, warned_jail;
+
 /*
- * The watch: set 27 emptied under a running SSLproxy (ipfw(8)
- * restarted, or flushed) has its rules loaded again, where the service
- * is enabled, the rules file is not empty and the sets are free.  Said
- * once a change, not every turn.
+ * The host's set 27 against what it should hold: the host's rules while
+ * its SSLproxy runs, and each started jail's of the host's network
+ * while it and its SSLproxy run.  Loaded again where the count differs
+ * (ipfw restarted, a jail stopped or started by its own rc), where the
+ * sets are free.
+ */
+static void
+watch_host(struct work *w)
+{
+	const char	*files[FILES_MAX], *e;
+	struct krule	*k;
+	size_t		 nf, nk, i, want, have;
+	bool		 any, mine;
+	DIR		*d;
+
+	mine = size_of(w, dir_file(w, "fwd.rules")) > 0;
+	if (!mine) {
+		/* Nothing of the host's, and no jail's: nothing to ask. */
+		if ((d = opendir(dir_file(w, JAILS))) == NULL)
+			return;
+		closedir(d);
+	}
+	nf = host_files(w, mine && running(w), NULL, files, nitems(files));
+	for (want = 0, i = 0; i < nf; i++)
+		want += lines(w, files[i]);
+	if (kernel_rules(w, &k, &nk) != 0)
+		return;
+	for (have = 0, i = 0; i < nk; i++)
+		have += k[i].set == FW_SET && k[i].ours;
+	if (want == have || kernel_free(w, k, nk, &any) != NULL)
+		return;
+	if ((nf == 0 ? rules_unload(w, &e) : rules_load(w, files, nf, &e)) ==
+	    0) {
+		if (have == 0)
+			logmsg(LOG_NOTICE, "sslproxy: ipfw set %d held none of "
+			    "its fwd rules while SSLproxy runs (ipfw "
+			    "restarted?): loaded again", FW_SET);
+		else
+			logmsg(LOG_NOTICE, "sslproxy: ipfw set %d held %zu of "
+			    "SSL inspection's rules, %zu wanted (a jail's "
+			    "SSLproxy started or stopped?): loaded again",
+			    FW_SET, have, want);
+		warned_host = false;
+	} else if (!warned_host) {
+		logmsg(LOG_WARNING, "sslproxy: the fwd rules not loaded again: "
+		    "%s", e);
+		warned_host = true;
+	}
+}
+
+/* Each vnet jail's set 27, in its own ipfw: loaded again where it holds
+ * none of the rules of its running SSLproxy (the jail's ipfw restarted). */
+static void
+watch_vnets(struct work *w)
+{
+	struct jinfo	*list;
+	struct krule	*k;
+	const char	*file, *e;
+	size_t		 n, j, nk, i;
+	bool		 ours, any;
+
+	if (jails_running(w, &list, &n, &e) != 0)
+		return;
+	for (j = 0; j < n; j++) {
+		if (!list[j].vnet || list[j].dying || list[j].path == NULL ||
+		    list[j].name == NULL)
+			continue;
+		w->jail = list[j].name;
+		w->jid = list[j].jid;
+		w->jroot = list[j].path;
+		file = dir_file(w, "fwd.rules");
+		if (size_of(w, file) > 0 && kernel_rules(w, &k, &nk) == 0) {
+			for (ours = false, i = 0; i < nk; i++)
+				ours |= k[i].set == FW_SET && k[i].ours;
+			if (!ours && kernel_free(w, k, nk, &any) == NULL &&
+			    running(w)) {
+				if (rules_load(w, &file, 1, &e) == 0) {
+					logmsg(LOG_NOTICE, "sslproxy: the jail "
+					    "%s's ipfw set %d held none of its "
+					    "fwd rules while SSLproxy runs there: "
+					    "loaded again", list[j].name, FW_SET);
+					warned_jail = false;
+				} else if (!warned_jail) {
+					logmsg(LOG_WARNING, "sslproxy: the jail "
+					    "%s's fwd rules not loaded again: %s",
+					    list[j].name, e);
+					warned_jail = true;
+				}
+			}
+		}
+		w->jail = w->jroot = NULL;
+		w->jid = 0;
+	}
+}
+
+/*
+ * The watch: the rules loaded again where ipfw(8) lost them (restarted,
+ * or flushed) under a running SSLproxy, the host's and its jails', and
+ * a jail's taken away from the host's set where it stopped.
  */
 static void *
 watch(void *arg __unused)
 {
-	struct work	 w;
-	struct krule	*k;
-	struct stat	 sb;
-	const char	*e, *path;
-	size_t		 nk, i;
-	bool		 ours, any, warned;
+	struct work	w;
 
-	warned = false;
 	for (;;) {
 		sleep((unsigned int)opts.sslproxy_watch_s);
 		work_init(&w);
 		w.nice = true;
-		path = dir_file(&w, "fwd.rules");
 		pthread_mutex_lock(&fw_lock);
-		if (stat(path, &sb) == 0 && sb.st_size > 0 && kernel_rules(&w,
-		    &k, &nk) == 0) {
-			ours = false;
-			for (i = 0; i < nk; i++)
-				if (k[i].set == FW_SET && k[i].ours)
-					ours = true;
-			if (!ours && kernel_free(&w, k, nk, &any) == NULL &&
-			    yes(rc_get(&w, SERVICE "_enable")) && running(&w)) {
-				if (rules_load(&w, &e) == 0) {
-					logmsg(LOG_NOTICE, "sslproxy: ipfw set %d "
-					    "held none of its fwd rules while "
-					    "SSLproxy runs (ipfw restarted?): "
-					    "loaded again", FW_SET);
-					warned = false;
-				} else if (!warned) {
-					logmsg(LOG_WARNING, "sslproxy: the fwd "
-					    "rules not loaded again: %s", e);
-					warned = true;
-				}
-			}
-		}
+		watch_host(&w);
+		watch_vnets(&w);
 		pthread_mutex_unlock(&fw_lock);
 		work_free(&w);
 	}
@@ -1180,13 +1624,23 @@ key_read(struct work *w, const char *path)
 	return (k);
 }
 
-/* The CA's directory, root's alone. */
+/* The CA's directory, root's alone (of the host, or beneath the
+ * jail's root, a link on the way not followed). */
 static int
 dir_make(struct work *w, const char **errp)
 {
+	const char	*base;
+	int		 dfd, rc, e;
 
-	if (scope_mkdirs(w, opts.sslproxy_dir) != 0 || chmod(opts.sslproxy_dir,
-	    0700) != 0) {
+	rc = -1;
+	if (scope_mkdirs(w, opts.sslproxy_dir) == 0 && (dfd = scope_open_dir(w,
+	    opts.sslproxy_dir, &base)) != -1) {
+		rc = fchmodat(dfd, base, 0700, AT_SYMLINK_NOFOLLOW);
+		e = errno;
+		close(dfd);
+		errno = e;
+	}
+	if (rc != 0) {
 		*errp = wfmt(w, "%s: %s", opts.sslproxy_dir, strerror(errno));
 		return (-1);
 	}
@@ -1216,8 +1670,7 @@ sslproxy_csr(struct work *w, bool renew, const char **csrp, const char **errp)
 	kpath = dir_file(w, "ca.key.next");
 	step = step_begin(w, STEP_LIB, "csr", "the edge's CA key and its "
 	    "request");
-	if (renew || (access(kpath, F_OK) != 0 && access(dir_file(w, "ca.key"),
-	    F_OK) != 0)) {
+	if (renew || (!there(w, kpath) && !there(w, dir_file(w, "ca.key")))) {
 		if ((key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256")) ==
 		    NULL || (b = BIO_new(BIO_s_mem())) == NULL) {
 			EVP_PKEY_free(key);
@@ -1239,7 +1692,7 @@ sslproxy_csr(struct work *w, bool renew, const char **csrp, const char **errp)
 			return (-1);
 		}
 		explicit_bzero(pem, strlen(pem));
-	} else if ((key = key_read(w, access(kpath, F_OK) == 0 ? kpath :
+	} else if ((key = key_read(w, there(w, kpath) ? kpath :
 	    dir_file(w, "ca.key"))) == NULL) {
 		*errp = "the edge's CA key cannot be read";
 		step_end(w, step, false, "%s", *errp);
@@ -1247,7 +1700,10 @@ sslproxy_csr(struct work *w, bool renew, const char **csrp, const char **errp)
 	}
 	if (gethostname(host, sizeof(host)) != 0)
 		snprintf(host, sizeof(host), "edge");
-	cn = wfmt(w, "Arcana SSL inspection on %.*s", 32, host);
+	/* A jail's: its own request, named for the edge and the jail. */
+	cn = w->jail != NULL ? wfmt(w, "Arcana SSL inspection on %.*s/%.*s",
+	    20, host, 16, w->jail) : wfmt(w, "Arcana SSL inspection on %.*s",
+	    32, host);
 	rq = X509_REQ_new();
 	nm = rq != NULL ? X509_REQ_get_subject_name(rq) : NULL;
 	ok = rq != NULL && X509_REQ_set_version(rq, 0) == 1 &&
@@ -1295,7 +1751,7 @@ sslproxy_install(struct work *w, const char *certpem, const char *chainpem,
 		return (-1);
 	}
 	next = dir_file(w, "ca.key.next");
-	waits = access(next, F_OK) == 0;
+	waits = there(w, next);
 	kpath = waits ? next : dir_file(w, "ca.key");
 	x = pem_cert(certpem);
 	up = pem_cert(chainpem);
@@ -1319,7 +1775,7 @@ sslproxy_install(struct work *w, const char *certpem, const char *chainpem,
 	    strlen(chainpem), 0644, NULL) != 0 || scope_replace(w,
 	    dir_file(w, "ca.crt"), certpem, strlen(certpem), 0644, NULL) != 0)
 		*errp = wfmt(w, "%s: %s", opts.sslproxy_dir, strerror(errno));
-	else if (waits && rename(next, dir_file(w, "ca.key")) != 0)
+	else if (waits && scope_rename(w, next, "ca.key.next", "ca.key") != 0)
 		*errp = wfmt(w, "%s: %s", next, strerror(errno));
 	else {
 		*subjectp = name_line(w, X509_get_subject_name(x));
@@ -1362,7 +1818,7 @@ static bool
 installed(struct work *w)
 {
 
-	return (access(bin(w), X_OK) == 0);
+	return (runnable(w, bin(w)));
 }
 
 /* What sslproxy -V says first. */
@@ -1376,7 +1832,7 @@ version(struct work *w)
 	argv[0] = (char *)(uintptr_t)bin(w);
 	argv[1] = (char *)(uintptr_t)"-V";
 	argv[2] = NULL;
-	if (run_read(w, argv, &res) != 0)
+	if (run_read(w, scope_jexec(w, argv), &res) != 0)
 		return (NULL);
 	t = res.out != NULL && res.out[0] != '\0' ? res.out : res.err;
 	if (t == NULL || t[0] == '\0')
@@ -1392,8 +1848,8 @@ ca_json(struct work *w, ucl_object_t *top)
 	X509		*x;
 
 	ca = ucl_object_typed_new(UCL_OBJECT);
-	put_bool(ca, "key", access(dir_file(w, "ca.key"), F_OK) == 0);
-	put_bool(ca, "pending", access(dir_file(w, "ca.key.next"), F_OK) == 0);
+	put_bool(ca, "key", there(w, dir_file(w, "ca.key")));
+	put_bool(ca, "pending", there(w, dir_file(w, "ca.key.next")));
 	put_str(ca, "csr", scope_slurp(w, dir_file(w, "ca.csr"), NULL));
 	if ((pem = scope_slurp(w, dir_file(w, "ca.crt"), NULL)) != NULL &&
 	    (x = pem_cert(pem)) != NULL) {
@@ -1462,34 +1918,41 @@ bound_json(struct work *w, ucl_object_t *top, const char *text)
 	ucl_object_unref(spec);
 }
 
+/*
+ * The rules of the place's SSLproxy as its ipfw has them: the host's
+ * set 27's own (no jail's tag), a vnet jail's set 27 in its ipfw, or
+ * the host's of a jail of its network (tagged @<jail>), its file the
+ * host's copy.
+ */
 static void
-rules_json(struct work *w, ucl_object_t *top)
+rules_json(struct work *w, ucl_object_t *top, const struct place *pl)
 {
 	ucl_object_t	*arr, *o;
 	struct krule	*k;
-	const char	*file, *p, *e;
+	struct was	 s;
+	const char	*file, *e, *jail;
 	size_t		 nk, i;
-	bool		 any;
-	int		 n;
+	bool		 any, host;
 
-	file = dir_file(w, "fwd.rules");
+	host = pl->jailed && !pl->vnet;
+	jail = host ? w->jail : "";
+	if (host)
+		to_host(w, &s);
+	file = host ? jail_file(w, jail, ".fwd") : dir_file(w, "fwd.rules");
 	put_str(top, "rules_file", file);
-	n = 0;
-	if ((p = scope_slurp(w, file, NULL)) != NULL)
-		for (; *p != '\0'; p++)
-			n += *p == '\n';
-	ucl_object_insert_key(top, ucl_object_fromint(n), "rules_expected", 0,
-	    false);
+	ucl_object_insert_key(top, ucl_object_fromint((int64_t)lines(w, file)),
+	    "rules_expected", 0, false);
 	if (kernel_rules(w, &k, &nk) != 0) {
 		put_str(top, "rules_error", "ipfw cannot be read (ipfw(4) not "
 		    "loaded?)");
-		return;
+		goto out;
 	}
 	if ((e = kernel_free(w, k, nk, &any)) != NULL)
 		put_str(top, "rules_error", e);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (i = 0; i < nk; i++) {
-		if (k[i].set != FW_SET || !k[i].ours)
+		if (k[i].set != FW_SET || !k[i].ours || (!pl->vnet &&
+		    strcmp(k[i].jail, jail) != 0))
 			continue;
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromint(k[i].num), "number",
@@ -1500,19 +1963,31 @@ rules_json(struct work *w, ucl_object_t *top)
 		ucl_array_append(arr, o);
 	}
 	ucl_object_insert_key(top, arr, "rules", 0, false);
+out:
+	if (host)
+		back_to(w, &s);
 }
 
 void
 do_sslproxy(struct work *w, struct json_rsp *rsp)
 {
 	ucl_object_t	*top;
-	struct stat	 sb;
-	const char	*conf, *log, *spec;
+	struct place	 pl;
+	const char	*conf, *log, *spec, *e;
 	char		*json;
+	off_t		 size;
 
 	rsp->has_ok = true;
 	rsp->ok = false;
+	if (place_of(w, &pl, &e) != 0) {
+		rsp->error = e;
+		return;
+	}
 	top = ucl_object_typed_new(UCL_OBJECT);
+	if (pl.jailed) {
+		put_str(top, "jail", w->jail);
+		put_bool(top, "vnet", pl.vnet);
+	}
 	put_bool(top, "installed", installed(w));
 	if (installed(w))
 		put_str(top, "version", version(w));
@@ -1527,9 +2002,9 @@ do_sslproxy(struct work *w, struct json_rsp *rsp)
 			log += strlen("\nConnectLog ");
 			log = wfmt(w, "%.*s", (int)strcspn(log, " \t\r\n"), log);
 			put_str(top, "connect_log", log);
-			if (stat(log, &sb) == 0)
+			if ((size = size_of(w, log)) >= 0)
 				ucl_object_insert_key(top, ucl_object_fromint(
-				    sb.st_size), "connect_log_size", 0, false);
+				    size), "connect_log_size", 0, false);
 		}
 	} else
 		put_bool(top, "ours", false);
@@ -1537,7 +2012,7 @@ do_sslproxy(struct work *w, struct json_rsp *rsp)
 	    NULL)));
 	bound_json(w, top, spec);
 	ca_json(w, top);
-	rules_json(w, top);
+	rules_json(w, top, &pl);
 	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
 	if (json == NULL) {
@@ -1560,8 +2035,8 @@ sslproxy_check(const struct arc_job_spec *sp)
 	ucl_object_t			*o;
 	const char			*e;
 
-	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("SSL inspection is the host's: no jail");
+	if (sp->jail != NULL && sp->jail[0] != '\0' && !valid_jail(sp->jail))
+		return ("invalid jail name");
 	if (sp->safe)
 		return ("SSL inspection is not undone: not in safe mode");
 	if (sp->verb == NULL)
@@ -1595,7 +2070,9 @@ sslproxy_title(const struct arc_job_spec *sp)
 {
 	char	*t;
 
-	if (asprintf(&t, "SSL inspection: %s", sp->verb) == -1)
+	if (asprintf(&t, "SSL inspection: %s%s%s", sp->verb, sp->jail != NULL &&
+	    sp->jail[0] != '\0' ? " in the jail " : "", sp->jail != NULL ?
+	    sp->jail : "") == -1)
 		return (NULL);
 	return (t);
 }
@@ -1621,7 +2098,7 @@ conf_put(struct work *w, const char *conf, const char **errp)
 	argv[2] = (char *)(uintptr_t)"-f";
 	argv[3] = (char *)(uintptr_t)path;
 	argv[4] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		(void)scope_unlink(w, path);
 		*errp = wfmt(w, "sslproxy does not take it: %s", exec_error(w,
 		    &res, "sslproxy -Q"));
@@ -1641,10 +2118,53 @@ conf_put(struct work *w, const char *conf, const char **errp)
 	return (0);
 }
 
-/* The rc script's variables where the agent's files are not its
- * defaults (a test's, or an agent told otherwise). */
+/*
+ * Arcana's rc script in the jail w works in, as the host has it: the
+ * port has none, and the jail's service(8) runs what its own rc.d
+ * holds.  Written beneath the jail's root (never through a link) where
+ * it is not there as the host's.  0, or -1 with why.
+ */
 static int
-vars_set(struct work *w, const struct form *f, const char **errp)
+script_put(struct work *w, const char **errp)
+{
+	struct was	 s;
+	const char	*text, *cur;
+	char		*dirs, *p, *d;
+	size_t		 len;
+
+	if (w->jail == NULL)
+		return (0);
+	to_host(w, &s);
+	text = NULL;
+	dirs = wstrdup(w, opts.rc_dirs);
+	for (p = dirs; text == NULL && (d = strsep(&p, ":")) != NULL; )
+		if (*d != '\0')
+			text = scope_slurp(w, wfmt(w, "%s/" SERVICE, d), &len);
+	back_to(w, &s);
+	if (text == NULL) {
+		*errp = wfmt(w, "Arcana's rc script " SERVICE " is not on the "
+		    "host (%s): it is what the jail is given to run SSLproxy "
+		    "by", opts.rc_dirs);
+		return (-1);
+	}
+	if ((cur = scope_slurp(w, JAIL_RC, NULL)) != NULL && strcmp(cur, text)
+	    == 0)
+		return (0);
+	if (scope_mkdirs(w, "/usr/local/etc/rc.d") != 0 || scope_replace(w,
+	    JAIL_RC, text, len, 0555, NULL) != 0) {
+		*errp = wfmt(w, JAIL_RC " in the jail %s: %s", w->jail,
+		    strerror(errno));
+		return (-1);
+	}
+	return (0);
+}
+
+/* The rc script's variables where the agent's files are not its
+ * defaults (a test's, or an agent told otherwise); a jail of the host's
+ * network loads no rules itself (the host's ipfw has them). */
+static int
+vars_set(struct work *w, const struct form *f, const struct place *pl,
+    const char **errp)
 {
 	const char	*fwd;
 
@@ -1656,7 +2176,7 @@ vars_set(struct work *w, const struct form *f, const char **errp)
 	} else if (rc_get(w, SERVICE "_fib") != NULL)
 		rc_unset(w, SERVICE "_fib");
 
-	fwd = dir_file(w, "fwd.rules");
+	fwd = pl->jailed && !pl->vnet ? "" : dir_file(w, "fwd.rules");
 	if (strcmp(opts.sslproxy_conf, "/usr/local/etc/sslproxy.conf") != 0 &&
 	    rc_set(w, SERVICE "_config", "=", opts.sslproxy_conf, errp) != 0)
 		return (-1);
@@ -1666,30 +2186,76 @@ vars_set(struct work *w, const struct form *f, const char **errp)
 	return (0);
 }
 
+/*
+ * The rules a form makes, where they are kept: the host's and a vnet
+ * jail's beside the CA (fwd.rules, which its own ipfw and rc script
+ * load), a jail's of the host's network the host's own (jails/<jail>.fwd:
+ * never read from the jail, whose root may write there what it likes).
+ */
+static int
+rules_put(struct work *w, const struct place *pl, const char *rules,
+    const char **errp)
+{
+	struct was	 s;
+	const char	*path;
+	int		 rc;
+
+	if (!pl->jailed || pl->vnet) {
+		path = dir_file(w, "fwd.rules");
+		if (scope_replace(w, path, rules, strlen(rules), 0600, NULL) !=
+		    0) {
+			*errp = wfmt(w, "%s: %s", path, strerror(errno));
+			return (-1);
+		}
+		return (0);
+	}
+	to_host(w, &s);
+	path = jail_file(w, s.jail, ".fwd");
+	rc = 0;
+	if (dir_make(w, errp) != 0)
+		rc = -1;
+	else if (mkdir(dir_file(w, JAILS), 0700) != 0 && errno != EEXIST) {
+		*errp = wfmt(w, "%s: %s", dir_file(w, JAILS), strerror(errno));
+		rc = -1;
+	} else if (file_replace(path, rules, strlen(rules), 0600) != 0) {
+		*errp = wfmt(w, "%s: %s", path, strerror(errno));
+		rc = -1;
+	}
+	back_to(w, &s);
+	/* A file of the jail's own would be loaded by nothing. */
+	if (rc == 0 && there(w, dir_file(w, "fwd.rules")))
+		(void)scope_unlink(w, dir_file(w, "fwd.rules"));
+	return (rc);
+}
+
 static int
 conf_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
 	struct form	 f;
+	struct place	 pl;
 	ucl_object_t	*o;
 	const char	*conf, *rules, *cur;
 	char		*text;
 	int		 n, rc;
 
+	if (place_of(w, &pl, errp) != 0)
+		return (-1);
 	if ((o = spec_of(sp->text)) == NULL) {
 		*errp = "conf takes the form as JSON";
 		return (-1);
 	}
 	rc = -1;
-	if ((*errp = form_of(w, o, &f)) != NULL)
+	if ((*errp = form_of(w, o, &f)) != NULL ||
+	    (*errp = place_refuses(w, &pl, &f)) != NULL)
 		goto out;
-	if (access(dir_file(w, "ca.crt"), F_OK) != 0 || access(dir_file(w,
-	    "ca.key"), F_OK) != 0) {
+	if (!there(w, dir_file(w, "ca.crt")) || !there(w, dir_file(w,
+	    "ca.key"))) {
 		*errp = "the edge's CA is not installed: issue it from the "
 		    "fleet's root first (SSL inspection, the CA)";
 		goto out;
 	}
-	if ((conf = conf_render(w, &f)) == NULL || (rules = rules_render(w,
-	    &f, &n)) == NULL) {
+	if ((conf = conf_render(w, &f, &pl)) == NULL || (rules = rules_render(w,
+	    &f, &pl, &n)) == NULL) {
 		*errp = "out of memory";
 		goto out;
 	}
@@ -1702,24 +2268,19 @@ conf_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 		    "purpose", opts.sslproxy_conf);
 		goto out;
 	}
-	if (dir_make(w, errp) != 0 || conf_put(w, conf, errp) != 0)
+	if (script_put(w, errp) != 0 || dir_make(w, errp) != 0 ||
+	    conf_put(w, conf, errp) != 0 || rules_put(w, &pl, rules, errp) != 0)
 		goto out;
-	if (scope_replace(w, dir_file(w, "fwd.rules"), rules, strlen(rules),
-	    0600, NULL) != 0) {
-		*errp = wfmt(w, "%s: %s", dir_file(w, "fwd.rules"),
-		    strerror(errno));
-		goto out;
-	}
 	text = (char *)ucl_object_emit(o, UCL_EMIT_JSON_COMPACT);
 	if (text != NULL) {
 		(void)scope_replace(w, dir_file(w, "spec.json"), text,
 		    strlen(text), 0600, NULL);
 		free(text);
 	}
-	if (vars_set(w, &f, errp) != 0)
+	if (vars_set(w, &f, &pl, errp) != 0)
 		goto out;
 	/* Taken where it runs: started again, the new rules in. */
-	rc = running(w) ? start(w, true, errp) : 0;
+	rc = running(w) ? start(w, &pl, true, errp) : 0;
 out:
 	ucl_object_unref(o);
 	return (rc);
@@ -1729,24 +2290,30 @@ int
 do_sslproxy_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
 {
+	struct place	pl;
 
 	if ((*errp = sslproxy_check(sp)) != NULL)
 		return (-1);
+	if (place_of(w, &pl, errp) != 0)
+		return (-1);
 	if (strcmp(sp->verb, "conf") == 0)
 		return (conf_job(w, sp, errp));
+	if (strcmp(sp->verb, "disable") == 0)
+		return (stop(w, &pl, errp) != 0 ? -1 : rc_set(w, SERVICE
+		    "_enable", "=", "NO", errp));
+	if (strcmp(sp->verb, "stop") == 0)
+		return (stop(w, &pl, errp));
+	/* A jail's runs Arcana's rc script, as the host has it now. */
+	if (script_put(w, errp) != 0)
+		return (-1);
 	if (strcmp(sp->verb, "enable") == 0)
 		return (rc_set(w, SERVICE "_enable", "=", "YES", errp) != 0 ? -1 :
-		    start(w, false, errp));
-	if (strcmp(sp->verb, "disable") == 0)
-		return (stop(w, errp) != 0 ? -1 : rc_set(w, SERVICE "_enable",
-		    "=", "NO", errp));
-	if (strcmp(sp->verb, "stop") == 0)
-		return (stop(w, errp));
+		    start(w, &pl, false, errp));
 	/* start, restart. */
-	if (access(opts.sslproxy_conf, F_OK) != 0) {
+	if (!there(w, opts.sslproxy_conf)) {
 		*errp = wfmt(w, "%s is not there: save the form first",
 		    opts.sslproxy_conf);
 		return (-1);
 	}
-	return (start(w, true, errp));
+	return (start(w, &pl, true, errp));
 }

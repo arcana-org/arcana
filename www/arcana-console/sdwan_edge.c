@@ -3423,11 +3423,13 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
  * clients its prefixes here and its interfaces the service's UNIs here,
  * a Default zone's except the other zones' prefixes; "mbsf" the policy.
  * One SSLproxy an edge, so one service and one MBSF an edge: another
- * fails the plan, said.  A vnet jail's edge has none (SSL inspection is
- * the host's).  The edge's CA first, from its tenant fleet's root where
- * it has none (inspection-ca, the console's own); then the form, and
- * enabled; taken away, disabled.  SSLproxy is a plugin the edge has
- * installed, which the apply tells when it has not.
+ * fails the plan, said.  A vnet jail's edge has its own, run in the
+ * jail (its rules its own ipfw's, its CA an intermediate of its own),
+ * beside the host's and other jails'.  The edge's CA first, from its
+ * tenant fleet's root where it has none (inspection-ca, the console's
+ * own); then the form, and enabled; taken away, disabled.  SSLproxy is
+ * a plugin the edge has installed (a jail's in the jail), which the
+ * apply tells when it has not.
  */
 static bool
 inspect_build(struct plan *pl, const ucl_object_t *doc)
@@ -3522,14 +3524,6 @@ inspect_build(struct plan *pl, const ucl_object_t *doc)
 		if (ucl_array_size(zones) == 0) {
 			ucl_object_unref(zones);
 			continue;
-		}
-		if (strchr(sid, '/') != NULL) {
-			snprintf(pl->why, sizeof(pl->why), "edge %s is a vnet "
-			    "jail: an MBSF is opened by the server's SSLproxy, "
-			    "and a jail has none yet (bind it at the server's "
-			    "edge)", server_name_of(sid));
-			ucl_object_unref(zones);
-			return (false);
 		}
 		fib = efib(pl, bsw, sid);
 		spec = ucl_object_typed_new(UCL_OBJECT);
@@ -8908,11 +8902,17 @@ job_run(const char *sid, const ucl_object_t *j, char *why, size_t wlen)
 	/* A device edit, by RESTCONF (never a jail's). */
 	if (strcmp(str(j, "kind"), "edit") == 0)
 		return (edit_run(sid, uri, peer, name, j, why, wlen));
-	/* SSL inspection's CA, the console's own ask (inspect_build()). */
+	/* SSL inspection's CA, the console's own ask (inspect_build()): a
+	 * jail's edge's its own SSLproxy's. */
 	if (strcmp(str(j, "kind"), "inspection-ca") == 0) {
+		char	hsid[64], hj[64];
 		bool	ok;
 
-		json = hosts_inspect_ca(sid, uri, peer, name, &status);
+		if (!sdwan_edge_split(sid, hsid, sizeof(hsid), hj, sizeof(hj))) {
+			snprintf(why, wlen, "no server %s", sid);
+			return (false);
+		}
+		json = hosts_inspect_ca(hsid, jail, uri, peer, name, &status);
 		ans = parse(json);
 		free(json);
 		ok = status == 200 && ans != NULL && str(ans, "error") == NULL;
@@ -11949,6 +11949,9 @@ static const struct sdwan_need {
 	{ "sdwan-ids", "suricata", "suricata",
 	    "Suricata, for intrusion detection on the UNIs (and "
 	    "suricata-update for its ruleset)" },
+	{ "sslproxy", "sslproxy", "sslproxy",
+	    "SSLproxy, for the TLS an MBSF opens (a jail's edge: in the "
+	    "jail)" },
 };
 
 /*

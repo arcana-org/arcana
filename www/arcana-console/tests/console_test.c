@@ -15353,6 +15353,92 @@ ATF_TC_BODY(sdwan_jail, tc)
 }
 
 /*
+ * SSL inspection at an edge that is a vnet jail (ssl-inspection.md,
+ * jails): the MBSF bound to the jail's zone compiled into its own
+ * SSLproxy's form, beside the host's edge's own, each its CA first; the
+ * jail's plugin looked for in the jail; its CA issued by inspection-ca
+ * with the jail, the key made beneath the jail's root, the intermediate
+ * named for the jail.
+ */
+CONSOLE_TC(sdwan_inspect_jail, "SD-WAN's MBSF at an edge that is a vnet "
+    "jail: its own SSLproxy's form and CA")
+ATF_TC_BODY(sdwan_inspect_jail, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sj[40], path[256], dir[MAXPATHLEN];
+	char		doc[4096], t1[4096], cmd[MAXPATHLEN * 3];
+	size_t		i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_host("a", "jgd.sock", sa, sizeof(sa));
+	snprintf(sj, sizeof(sj), "%s/gw", sa);
+	snprintf(doc, sizeof(doc), "%s", sdwan_jail_doc);
+	static const char *const edits[][2] = {
+		{ "\"tunnel\":{\"kind\":\"gre\"}",
+		    "\"tunnel\":{\"kind\":\"gre\",\"ipsec\":false}" },
+		/* No BIRD in the jail here: no BFD. */
+		{ "\"bfd\":{\"interval\":200,\"multiplier\":3},", "" },
+		{ "\"zones\":[{\"name\":\"rest\",\"prefixes\":\"Default\"}],",
+		    "\"zones\":[{\"name\":\"rest\",\"prefixes\":\"Default\"}],"
+		    "\"security_function_policies\":[{\"id\":\"g-mbsf\","
+		    "\"function\":\"mbsf\",\"no-match\":\"allow\","
+		    "\"invalid-server-certificate\":\"block\",\"unencrypted\":"
+		    "\"block\"}],\"security_policies\":[{\"name\":\"guard\","
+		    "\"function-policies\":[\"g-mbsf\"]}]," },
+		{ "\"name\":\"open\",\"direction\":\"ingress\",\"criteria\":{}",
+		    "\"name\":\"open\",\"direction\":\"ingress\",\"criteria\":{"
+		    "\"af-security-ingress\":\"guard\"}" },
+	};
+	for (i = 0; i < nitems(edits); i++) {
+		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
+		    sizeof(t1)), "%s is not in the document", edits[i][0]);
+		snprintf(doc, sizeof(doc), "%s", t1);
+	}
+	while (swap_in(doc, "@A", sa, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	while (swap_in(doc, "@J", sj, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	r3_keep(doc);
+	/* Planned, not refused: each edge its own SSLproxy, the jail's on
+	 * its UNI (epair1b), the host's on its own (lo0). */
+	r3_sdwan("plan", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "is a vnet jail") == NULL && strstr(r.body,
+	    "\\\"interfaces\\\":[\\\"epair1b\\\"]") != NULL &&
+	    strstr(r.body, "\\\"interfaces\\\":[\\\"lo0\\\"]") != NULL,
+	    "%s", r.body);
+	snprintf(t1, sizeof(t1), "{\"kind\":\"sslproxy\",\"verb\":"
+	    "\"disable\"}],\"server\":\"%s\",\"change\":\"make\",\"name\":"
+	    "\"a/gw\"", sj);
+	ATF_CHECK_MSG(strstr(r.body, t1) != NULL, "%s", r.body);
+	resp_free(&r);
+	/* The jail's sslproxy is looked for in the jail: missing there,
+	 * though the host has it. */
+	http("POST", CC "sdwan/apply", "{\"arcana-console:input\":{}}", &r);
+	EXPECT(&r, 409);
+	ATF_CHECK_MSG(strstr(r.body, "a/gw: pkg install sslproxy") != NULL &&
+	    strstr(r.body, "a: pkg install sslproxy") == NULL, "%s", r.body);
+	resp_free(&r);
+	/* Its CA: the key made for the jail beneath its root, the console's
+	 * intermediate named for the host and the jail. */
+	ATF_REQUIRE(getcwd(dir, sizeof(dir)) != NULL);
+	snprintf(path, sizeof(path), CC "hosts/host=%s/inspection-ca", sa);
+	rc_act(path, "\"jail\":\"gw\"", &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "\"error\":") == NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(cmd, sizeof(cmd), "test -f jroot%s/ssl.d/ca.key && test ! -e "
+	    "ssl.d/ca.key && openssl x509 -in jroot%s/ssl.d/ca.crt -noout "
+	    "-subject | grep -q 'inspection on a/gw$'", dir, dir);
+	ATF_CHECK_MSG(system(cmd) == 0, "the jail's CA is not its own");
+	rc_act(path, "\"jail\":\"no/such\"", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+}
+
+/*
  * The root lab (sdwan_lab): two vnet jails, each an agent's host, an
  * epair between them for the Internet and another whose ends are their
  * UNIs.  What a service makes there, snapshot by lab.sh: each jail's
@@ -28991,6 +29077,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_notices);
 	ATF_TP_ADD_TC(tp, sdwan_sfp);
 	ATF_TP_ADD_TC(tp, sdwan_inspect);
+	ATF_TP_ADD_TC(tp, sdwan_inspect_jail);
 	ATF_TP_ADD_TC(tp, sdwan_jail);
 	ATF_TP_ADD_TC(tp, sdwan_lab);
 	ATF_TP_ADD_TC(tp, sdwan_l3nm_lab);

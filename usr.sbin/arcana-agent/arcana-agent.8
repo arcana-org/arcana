@@ -119,7 +119,7 @@ the cores dumped (arcana-crashes); the system's own files and settings
 answers and its profiling (arcana-suricata); OpenSMTPD (arcana-smtpd)
 and UDPspeeder's relays (arcana-speeder), of the host or of a jail;
 SSLproxy's SSL inspection, its CA's key and certificate (arcana-sslproxy),
-the host's; the
+of the host or of a jail; the
 admin's monitors (arcana-probe's
 .Ic read
 with
@@ -1051,9 +1051,13 @@ Default 60; 0 looks never.
 .It Fl -sslproxy-watch Ar seconds
 How often ipfw set 27 is looked at while SSL inspection's
 .Xr sslproxy 1
-is enabled and runs: a restart of
+runs: a restart of
 .Xr ipfw 8
 empties it, and its fwd rules are then loaded again.
+A vnet jail's own SSLproxy, its own ipfw's set 27, the same; the
+host's set 27 holds the rules of each jail of the host's network whose
+SSLproxy runs, taken out where it stopped and put back when it runs
+again.
 Default 30; 0 looks never.
 .It Fl -routes-cache Ar seconds
 How long the routes of a FIB, as the probes' state counts them for each

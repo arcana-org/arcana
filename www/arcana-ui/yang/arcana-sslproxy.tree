@@ -1,7 +1,11 @@
 module: arcana-sslproxy
   +--ro sslproxy
      +---x read
+     |  +---w input
+     |  |  +---w jail?   string
      |  +--ro output
+     |     +--ro jail?               string
+     |     +--ro vnet?               boolean
      |     +--ro installed?          boolean
      |     +--ro version?            string
      |     +--ro enabled?            boolean
@@ -44,12 +48,14 @@ module: arcana-sslproxy
      +---x csr
      |  +---w input
      |  |  +---w renew?   boolean
+     |  |  +---w jail?    string
      |  +--ro output
      |     +--ro csr?   string
      +---x install-ca
         +---w input
         |  +---w certificate    string
         |  +---w chain          string
+        |  +---w jail?          string
         +--ro output
            +--ro subject?     string
            +--ro not-after?   int64

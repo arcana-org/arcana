@@ -3297,12 +3297,16 @@ connected:
 		 */
 		ysteps_begin(conn, c, &ys);
 		{
-			char	 why[300], *csr, *pem, *root;
+			char	 why[300], *csr, *pem, *root, edge[400];
 
 			csr = root = NULL;
 			e = NULL;
+			/* A jail's own SSLproxy: its intermediate, named for
+			 * the host and the jail. */
+			snprintf(edge, sizeof(edge), "%s%s%s", c->sname,
+			    c->jail[0] != '\0' ? "/" : "", c->jail);
 			/* The SD-WAN's apply: one the host has is kept. */
-			if (c->if_missing && yr_sslproxy(conn, &e, ywhy,
+			if (c->if_missing && yr_sslproxy(conn, c->jail, &e, ywhy,
 			    sizeof(ywhy)) == 0 && e != NULL) {
 				const ucl_object_t *ca;
 
@@ -3316,15 +3320,15 @@ connected:
 					break;
 				}
 			}
-			ok = yr_sslproxy_csr(conn, c->renew, &csr, ywhy,
+			ok = yr_sslproxy_csr(conn, c->jail, c->renew, &csr, ywhy,
 			    sizeof(ywhy)) == 0;
 			if (ok && (pem = pki_inspect_issue(c->tenant, csr,
-			    c->sname, &root, why, sizeof(why))) == NULL) {
+			    edge, &root, why, sizeof(why))) == NULL) {
 				ok = false;
 				snprintf(ywhy, sizeof(ywhy), "%s", why);
 			} else if (ok) {
-				ok = yr_sslproxy_install(conn, pem, root, &e,
-				    ywhy, sizeof(ywhy)) == 0;
+				ok = yr_sslproxy_install(conn, c->jail, pem, root,
+				    &e, ywhy, sizeof(ywhy)) == 0;
 				if (ok && e != NULL) {
 					put_str(e, "certificate", pem);
 					put_str(e, "root", root);
@@ -4500,9 +4504,20 @@ api_tls(struct http_request *req)
 	return (call_start(req, c));
 }
 
+/* A jail's name as a jail(8) takes it: letters, digits, _, - and . */
+static bool
+inspect_jail_ok(const char *s)
+{
+
+	return (s[0] != '\0' && s[0] != '.' && s[0] != '-' && strlen(s) < 64 &&
+	    strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	    "0123456789_.-") == strlen(s) && strstr(s, "..") == NULL);
+}
+
 /*
- * POST hosts/host=<id>/inspection-ca {"renew": true}: SSL inspection's
- * CA on the host, its intermediate from the root of its tenant fleet.
+ * POST hosts/host=<id>/inspection-ca {"renew": true, "jail": <name>}:
+ * SSL inspection's CA on the host, or on a jail's own SSLproxy, its
+ * intermediate from the root of its tenant fleet.
  */
 int
 api_inspect_ca(struct http_request *req)
@@ -4510,15 +4525,28 @@ api_inspect_ca(struct http_request *req)
 	const struct server	*s;
 	struct call		*c;
 	ucl_object_t		*body;
+	const char		*j;
 
 	if (req->hdlr_extra != NULL)
 		return (call_finish(req));
-	if ((c = call_new(req, OP_INSPECT_CA)) == NULL)
+	if ((body = read_json(req)) != NULL && (j = ucl_object_tostring(
+	    ucl_object_lookup(body, "jail"))) != NULL && j[0] != '\0' &&
+	    !inspect_jail_ok(j)) {
+		ucl_object_unref(body);
+		return (reply_error(req, 400, "jail", "not a jail's name"));
+	}
+	if ((c = call_new(req, OP_INSPECT_CA)) == NULL) {
+		if (body != NULL)
+			ucl_object_unref(body);
 		return (WEB_OK);
+	}
 	if ((s = server_find(c->sid)) != NULL && s->tenant != NULL)
 		snprintf(c->tenant, sizeof(c->tenant), "%s", s->tenant);
-	if ((body = read_json(req)) != NULL) {
+	if (body != NULL) {
 		c->renew = ucl_flag(body, "renew");
+		if ((j = ucl_object_tostring(ucl_object_lookup(body, "jail"))) !=
+		    NULL)
+			snprintf(c->jail, sizeof(c->jail), "%s", j);
 		ucl_object_unref(body);
 	}
 	return (call_start(req, c));
@@ -5029,13 +5057,14 @@ self_call(struct call *c, const char *uri, const char *peer,
 }
 
 /*
- * SSL inspection's CA on server sid where it has none (the SD-WAN's
- * apply, before an MBSF's form: the agent takes no form without it), as
- * inspection-ca makes it: its intermediate from its tenant fleet's root.
+ * SSL inspection's CA on server sid where it has none, or on its jail's
+ * own SSLproxy (the SD-WAN's apply, before an MBSF's form: the agent
+ * takes no form without it), as inspection-ca makes it: its
+ * intermediate from its tenant fleet's root.
  */
 char *
-hosts_inspect_ca(const char *sid, const char *uri, const char *peer,
-    const char *name, int *status)
+hosts_inspect_ca(const char *sid, const char *jail, const char *uri,
+    const char *peer, const char *name, int *status)
 {
 	const struct server	*s;
 	struct call		*c;
@@ -5044,6 +5073,7 @@ hosts_inspect_ca(const char *sid, const char *uri, const char *peer,
 	c->op = OP_INSPECT_CA;
 	c->if_missing = true;
 	snprintf(c->sid, sizeof(c->sid), "%s", sid);
+	snprintf(c->jail, sizeof(c->jail), "%s", jail != NULL ? jail : "");
 	if ((s = server_find(sid)) != NULL && s->tenant != NULL)
 		snprintf(c->tenant, sizeof(c->tenant), "%s", s->tenant);
 	return (self_call(c, uri, peer, name, "inspection-ca", status));

@@ -15753,7 +15753,7 @@ EOF
 	# A renewal: a new key waits beside the one in use.
 	atf_check -o match:'BEGIN CERTIFICATE REQUEST' "$JGC" -c "$SOCK" sslproxy csr renew
 	atf_check test -f ssl/arcana/ca.key -a -f ssl/arcana/ca.key.next
-	# Never in safe mode, never a jail's.
+	# Never in safe mode.
 	atf_check -s exit:1 -o ignore -e match:'not in safe mode' \
 	    "$JGC" -s -c "$SOCK" sslproxy start
 }
@@ -15882,10 +15882,248 @@ sslproxy_bound_cleanup()
 	stop_daemon
 }
 
+atf_test_case sslproxy_jail cleanup
+sslproxy_jail_head()
+{
+	atf_set "descr" "SSL inspection by a jail's own SSLproxy beside the host's: stand-in jails, a vnet one (gw) and one of the host's network (web); installed and read in the jail (pkg -j's sslproxy, beneath its root); the CA's key made for the jail and written there alone, its request named for the jail; the form rendered into the jail's sslproxy.conf, checked by the jail's sslproxy -Q, Arcana's rc script copied into the jail, its rc.conf the jail's; the vnet jail's fwd rules in its own ipfw's set 27 (a stand-in apart from the host's), the jail admin's rules untouched, the same refusals; the shared-network jail's in the host's set 27 beside the host's, sent to its address and tagged, its listen ports denied but by the fwd, the host's file never the jail's; a jail without an address of a family refused; the watch loading the vnet jail's again and taking a stopped jail's out of the host's set"
+	atf_set "timeout" "180"
+}
+sslproxy_jail_body()
+{
+	local d="$(pwd)" i R1 R2
+
+	R1=$d/gw
+	R2=$d/web
+	for r in "$R1" "$R2"; do
+		mkdir -p "$r/etc" "$r/usr/local/bin" "$r/var/run"
+		: > "$r/etc/rc.conf"
+		# The jail's own sslproxy (pkg -j's), run there by jexec.
+		cat > "$r/usr/local/bin/sslproxy" <<EOF
+#!/bin/sh
+echo "sslproxy \$*" >> $r/sslproxy.log
+case "\$1" in
+-V)	echo 'SSLproxy 0.10.0 (jail)' >&2 ;;
+-Q)	[ -f $r/refuse ] && { echo "sslproxy: \$3: bad option" >&2; exit 1; } ;;
+esac
+exit 0
+EOF
+		chmod +x "$r/usr/local/bin/sslproxy"
+	done
+	cat > jails <<EOF
+gw 4 new $R1
+web 7 inherit $R2 16.0-CURRENT ip4.addr=10.0.0.10 ip6.addr=2001:db8::10
+EOF
+	# jexec: in the jail, as far as a stand-in goes: a path the jail
+	# has is its own, the jail's root the working directory (the
+	# service's markers its own), its ipfw's sets a file of its own.
+	cat > fake-jexec <<EOF
+#!/bin/sh
+echo "jexec \$*" >> $d/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $d/jails)
+[ -n "\$r" ] || { echo "jexec: jail \$1 not found" >&2; exit 1; }
+shift
+n=0
+for a; do
+	case "\$a" in /*) [ -e "\$r\$a" ] && a=\$r\$a ;; esac
+	set -- "\$@" "\$a"
+	n=\$((n + 1))
+done
+shift \$n
+cd "\$r" || exit 1
+SSLJ_ST=\$r/fw.state; export SSLJ_ST
+exec "\$@"
+EOF
+	chmod +x fake-jexec
+	acl_fake_ipfw
+	sed -i '' "s|^st=.*|st=\\\${SSLJ_ST:-$d/fw.state}|" fake-ipfw
+	# The vnet jail's ipfw: its admin's rule.
+	printf '200 0 allow ip from any to any // the jail admin\n65535 31 deny ip from any to any\n' > "$R1/fw.state"
+	mkdir -p tools
+	DAEMON_ARGS="-h $d/fake-ipfw -2 $d/tools --sslproxy-conf $d/sslproxy.conf --sslproxy-dir $d/ssl/arcana --sslproxy-watch 1"
+	start_daemon
+	printf '#!/bin/sh\n# Arcana rc script, the host copy\n' > rc.d/arcana_sslproxy
+	chmod +x rc.d/arcana_sslproxy
+
+	# Not the host's: the jail's own, beneath its root.
+	atf_check -o match:'"installed":false' "$JGC" -c "$SOCK" sslproxy
+	atf_check -o match:'"jail":"gw"' -o match:'"vnet":true' \
+	    -o match:'"installed":true' -o match:'"version":"SSLproxy 0.10.0 \(jail\)"' \
+	    -o match:'"running":false' "$JGC" -c "$SOCK" -j gw sslproxy
+	atf_check -o match:'"jail":"web"' -o match:'"vnet":false' \
+	    -o match:'"installed":true' "$JGC" -c "$SOCK" -j web sslproxy
+	atf_check -s exit:1 -o ignore -e match:'not running' \
+	    "$JGC" -c "$SOCK" -j nosuch sslproxy
+
+	# The CA: the key made for the jail, written beneath its root alone.
+	atf_check -o save:gw.csr "$JGC" -c "$SOCK" -j gw sslproxy csr
+	atf_check -o match:'^-rw-------' ls -l "$R1$d/ssl/arcana/ca.key.next"
+	atf_check test ! -e ssl/arcana/ca.key.next
+	atf_check -o match:'Arcana SSL inspection on .*/gw' \
+	    openssl req -in gw.csr -noout -subject
+	atf_check -o ignore -e ignore openssl req -x509 -newkey ec -pkeyopt \
+	    ec_paramgen_curve:P-256 -nodes -keyout root.key -out root.pem \
+	    -subj /CN=test-root -days 30 -addext basicConstraints=critical,CA:TRUE
+	printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n' \
+	    > ca.ext
+	atf_check -o ignore -e ignore openssl x509 -req -in gw.csr -CA root.pem \
+	    -CAkey root.key -CAcreateserial -out gw.pem -days 10 -extfile ca.ext
+	atf_check -o ignore "$JGC" -c "$SOCK" -j gw sslproxy install-ca gw.pem root.pem
+	atf_check test -f "$R1$d/ssl/arcana/ca.key" -a -f "$R1$d/ssl/arcana/ca.crt" \
+	    -a ! -e "$R1$d/ssl/arcana/ca.key.next"
+	atf_check -o match:'"certificate":\{"subject":"CN=Arcana SSL inspection on [^"]*/gw"' \
+	    "$JGC" -c "$SOCK" -j gw sslproxy
+	# The host's CA is not the jail's.
+	atf_check -o match:'"ca":\{"key":false' "$JGC" -c "$SOCK" sslproxy
+	# A link the jail's root put where the CA goes, out of the jail:
+	# never followed, nothing written out there.
+	mkdir -p "$R2$d/ssl" outside
+	ln -s "$d/outside" "$R2$d/ssl/arcana"
+	atf_check -s exit:1 -o ignore -e ignore "$JGC" -c "$SOCK" -j web sslproxy csr
+	atf_check -o inline:'' ls outside
+	rm "$R2$d/ssl/arcana"
+	# web's, by the same steps.
+	atf_check -o save:web.csr "$JGC" -c "$SOCK" -j web sslproxy csr
+	atf_check -o ignore -e ignore openssl x509 -req -in web.csr -CA root.pem \
+	    -CAkey root.key -CAcreateserial -out web.pem -days 10 -extfile ca.ext
+	atf_check -o ignore "$JGC" -c "$SOCK" -j web sslproxy install-ca web.pem root.pem
+
+	# The vnet jail's form: its files, its rc.conf, its rc script.
+	cat > form.json <<'EOF'
+{"listeners":[{"proto":"https","port":443,"listen":8443}],
+ "clients":"192.0.2.0/24, 2001:db8::/64","interfaces":["epair1b"]}
+EOF
+	touch "$R1/refuse"
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" -j gw sslproxy conf form.json
+	atf_check -o ignore grep -q 'sslproxy does not take it' o e
+	atf_check test ! -e "$R1$d/sslproxy.conf"
+	rm "$R1/refuse"
+	atf_check -o match:done "$JGC" -c "$SOCK" -j gw sslproxy conf form.json
+	atf_check -o match:'^-Q -f ' sh -c "sed -n 's/^sslproxy //p' $R1/sslproxy.log | tail -1"
+	atf_check test ! -e sslproxy.conf
+	atf_check -o match:"^CACert $d/ssl/arcana/ca.crt\$" \
+	    -o match:'^ProxySpec https 127.0.0.1 8443 ipfw$' \
+	    -o match:'^ProxySpec https ::1 8443 ipfw$' cat "$R1$d/sslproxy.conf"
+	atf_check -o match:'^add 7 set 26 fwd 127.0.0.1,8443 tcp from 192.0.2.0/24 to not me 443 in recv epair1b // sslproxy:https$' \
+	    cat "$R1$d/ssl/arcana/fwd.rules"
+	atf_check -o inline:'#!/bin/sh\n# Arcana rc script, the host copy\n' \
+	    cat "$R1/usr/local/etc/rc.d/arcana_sslproxy"
+	atf_check -o match:"^arcana_sslproxy_fwd=\"$d/ssl/arcana/fwd.rules\"\$" \
+	    cat "$R1/etc/rc.conf"
+	atf_check -o not-match:'arcana_sslproxy' cat rc.conf
+	# Enabled: started in the jail, the rules in its own ipfw's set 27,
+	# the jail admin's rule and the host's ipfw as they were.
+	atf_check -o match:done "$JGC" -c "$SOCK" -j gw sslproxy enable
+	atf_check -o match:'^arcana_sslproxy_enable="YES"$' cat "$R1/etc/rc.conf"
+	atf_check test -f "$R1/running.arcana_sslproxy" -a ! -f running.arcana_sslproxy
+	atf_check -o inline:'2\n' sh -c "grep -c '^7 27 fwd .* // sslproxy:https\$' $R1/fw.state"
+	atf_check -o match:'^200 0 allow ip from any to any // the jail admin$' cat "$R1/fw.state"
+	atf_check -o not-match:' 27 ' cat fw.state
+	atf_check -o match:"^jexec 4 $d/fake-ipfw -q set swap 26 27\$" cat jexec.log
+	atf_check -o match:'"running":true' -o match:'"rules_expected":2' \
+	    -o match:'\{"number":7,"set":27,"text":"fwd 127.0.0.1,8443 tcp from 192.0.2.0/24' \
+	    -o not-match:'rules_error' "$JGC" -c "$SOCK" -j gw sslproxy
+	# The jail's ipfw restarted: loaded again there by the watch.
+	sed -i '' '/^7 27 /d' "$R1/fw.state"
+	for i in $(jot 50); do
+		[ "$(grep -c '^7 27 ' "$R1/fw.state")" = 2 ] && break
+		sleep 0.2
+	done
+	atf_check -o inline:'2\n' sh -c "grep -c '^7 27 ' $R1/fw.state"
+	atf_check -o match:"sslproxy: the jail gw's ipfw set 27 held none" cat daemon.out
+	# An admin's rule in the jail's set 27: refused, left as it was.
+	echo '500 27 allow ip from any to any' >> "$R1/fw.state"
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" -j gw sslproxy restart
+	atf_check -o ignore grep -q 'move it to another set first' o e
+	atf_check -o match:'^500 27 allow ip from any to any$' cat "$R1/fw.state"
+	sed -i '' '/^500 27 /d' "$R1/fw.state"
+
+	# A jail of the host's network: SSLproxy at its address, the host's
+	# ipfw fwds there; IPv6 too, its own address.
+	cat > web.json <<'EOF'
+{"listeners":[{"proto":"https","port":443,"listen":8443}],
+ "clients":"192.0.2.0/24, 2001:db8::/64","interfaces":["em1"]}
+EOF
+	atf_check -o match:done "$JGC" -c "$SOCK" -j web sslproxy conf web.json
+	atf_check -o match:'^ProxySpec https 10.0.0.10 8443 ipfw$' \
+	    -o match:'^ProxySpec https 2001:db8::10 8443 ipfw$' cat "$R2$d/sslproxy.conf"
+	# The rules the host's, kept on the host, never in the jail.
+	atf_check test ! -e "$R2$d/ssl/arcana/fwd.rules"
+	atf_check -o match:'^add 7 set 26 fwd 10.0.0.10,8443 tcp from 192.0.2.0/24 to not me 443 in recv em1 // sslproxy:https@web$' \
+	    -o match:'^add 7 set 26 fwd 2001:db8::10,8443 tcp from 2001:db8::/64 to not me6 443 in recv em1 // sslproxy:https@web$' \
+	    -o match:'^add 7 set 26 deny tcp from any to 10.0.0.10 8443 in // sslproxy:direct@web$' \
+	    -o match:'^add 7 set 26 deny tcp from any to 2001:db8::10 8443 in // sslproxy:direct@web$' \
+	    cat ssl/arcana/jails/web.fwd
+	atf_check -o match:'^-rw-------' ls -l ssl/arcana/jails/web.fwd
+	atf_check -o match:'^arcana_sslproxy_fwd=""$' cat "$R2/etc/rc.conf"
+	# The host's own SSLproxy beside it: started, its rules in set 27.
+	mkdir -p ssl/arcana
+	cp "$R1$d/ssl/arcana/ca.crt" "$R1$d/ssl/arcana/ca.key" ssl/arcana/
+	printf '#!/bin/sh\ncase "$1" in -V) echo SSLproxy >&2 ;; esac\nexit 0\n' > tools/sslproxy
+	chmod +x tools/sslproxy
+	printf '{"listeners":[{"proto":"https","listen":8443}],"interfaces":["em2"],"ipv6":false}' > host.json
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy conf host.json
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy start
+	atf_check -o inline:'1\n' sh -c 'grep -c "^7 27 " fw.state'
+	# The jail's started: its rules joined to the host's, by the host's
+	# ipfw, never the jail's.
+	atf_check -o match:done "$JGC" -c "$SOCK" -j web sslproxy enable
+	atf_check test -f "$R2/running.arcana_sslproxy" -a -f ssl/arcana/jails/web.rules
+	atf_check -o inline:'5\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o inline:'4\n' sh -c 'grep -c "^7 27 .*@web$" fw.state'
+	atf_check -o match:'^7 27 fwd 127.0.0.1,8443 tcp from any to not me 443 in recv em2 ip4 // sslproxy:https$' cat fw.state
+	atf_check -o not-match:'jexec 7 .*fake-ipfw' cat jexec.log
+	atf_check -o match:'"rules_expected":4' -o match:'"text":"fwd 10.0.0.10,8443 tcp' \
+	    -o not-match:'"text":"fwd 127.0.0.1' "$JGC" -c "$SOCK" -j web sslproxy
+	atf_check -o match:'"rules_expected":1' -o not-match:'10.0.0.10' \
+	    "$JGC" -c "$SOCK" sslproxy
+	# The host's stopped: the jail's kept.
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy stop
+	atf_check -o inline:'4\n' sh -c 'grep -c "^7 27 .*@web$" fw.state'
+	atf_check -o inline:'0\n' sh -c 'grep -c "^7 27 .*sslproxy:https$" fw.state || true'
+	atf_check -o match:done "$JGC" -c "$SOCK" sslproxy start
+	# The jail's SSLproxy stopped by itself (its rc): the watch takes its
+	# rules out of the host's set, the host's kept.
+	rm "$R2/running.arcana_sslproxy"
+	for i in $(jot 50); do
+		[ "$(grep -c '^7 27 ' fw.state)" = 1 ] && break
+		sleep 0.2
+	done
+	atf_check -o inline:'1\n' sh -c 'grep -c "^7 27 " fw.state'
+	# Started again there: back by the watch.
+	touch "$R2/running.arcana_sslproxy"
+	for i in $(jot 50); do
+		[ "$(grep -c '^7 27 ' fw.state)" = 5 ] && break
+		sleep 0.2
+	done
+	atf_check -o inline:'5\n' sh -c 'grep -c "^7 27 " fw.state'
+	# Disabled by the agent: taken out, its started file gone.
+	atf_check -o match:done "$JGC" -c "$SOCK" -j web sslproxy disable
+	atf_check test ! -e ssl/arcana/jails/web.rules -a -f ssl/arcana/jails/web.fwd
+	atf_check -o inline:'1\n' sh -c 'grep -c "^7 27 " fw.state'
+	atf_check -o match:'^arcana_sslproxy_enable="NO"$' cat "$R2/etc/rc.conf"
+
+	# A jail without an IPv6 address of its own: refused with IPv6 on.
+	echo 'db 9 inherit '"$R2"' 16.0-CURRENT ip4.addr=10.0.0.20' >> jails
+	atf_check -s exit:1 -o save:o -e save:e "$JGC" -c "$SOCK" -j db sslproxy conf web.json
+	atf_check -o ignore grep -q 'no IPv6 address of its own' o e
+	# Never in safe mode.
+	atf_check -s exit:1 -o ignore -e match:'not in safe mode' \
+	    "$JGC" -s -c "$SOCK" -j gw sslproxy start
+	# The vnet jail's stopped: its own set 27 emptied, the admin's rule
+	# there.
+	atf_check -o match:done "$JGC" -c "$SOCK" -j gw sslproxy stop
+	atf_check -o not-match:' 27 ' cat "$R1/fw.state"
+	atf_check -o match:'^200 0 ' cat "$R1/fw.state"
+}
+sslproxy_jail_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sslproxy_rc cleanup
 sslproxy_rc_head()
 {
-	atf_set "descr" "Arcana's rc script for SSLproxy under the real rc.subr(8), a stand-in sslproxy and ipfw: the configuration checked before a start, the fwd rules loaded into set 27 at the start and taken away at the stop; rules of another's in set 27 left alone and nothing loaded; another set's rule at 7 refusing the load as the agent does; the SEN's comment of a reset rule SSL inspection's own"
+	atf_set "descr" "Arcana's rc script for SSLproxy under the real rc.subr(8), a stand-in sslproxy and ipfw: the configuration checked before a start, the fwd rules loaded into set 27 at the start and taken away at the stop; rules of another's in set 27 left alone and nothing loaded; another set's rule at 7 refusing the load as the agent does; the SEN's comment of a reset rule SSL inspection's own; the started rules of a jail of the host's network loaded with the host's and kept at its stop; no fwd file (such a jail's), no rule touched"
 }
 sslproxy_rc_body()
 {
@@ -15915,6 +16153,7 @@ EOF
 	export arcana_sslproxy_pidfile="$d/run/sslproxy.pid"
 	export arcana_sslproxy_logdir="$d/log"
 	export arcana_sslproxy_ipfw="$d/fake-ipfw"
+	export arcana_sslproxy_jails="$d/jails.d"
 	mkdir -p run
 	atf_check -o match:'Starting arcana_sslproxy' -e ignore /bin/sh "$script" start
 	atf_check -o match:"^-Q -f $d/sslproxy.conf\$" -o match:"^-d -f $d/sslproxy.conf -p $d/run/sslproxy.pid\$" cat argv
@@ -15952,6 +16191,26 @@ EOF
 	atf_check -o match:'^7 27 reset .* sslproxy:http$' cat fw.state
 	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
 	atf_check -o not-match:' 27 ' cat fw.state
+	# A jail's started rules (the agent's, of a jail of the host's
+	# network): loaded with the host's, kept at the stop.
+	mkdir jails.d
+	printf 'add 7 set 26 fwd 10.0.0.10,8443 tcp from any to not me 443 in recv em1 ip4 // sslproxy:https@web\n' > jails.d/web.rules
+	atf_check -o match:'Starting' -e ignore /bin/sh "$script" start
+	atf_check -o match:'^7 27 fwd 10.0.0.10,8443 .*@web$' \
+	    -o match:'^7 27 fwd 127.0.0.1,8443 ' cat fw.state
+	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
+	atf_check -o match:'^7 27 fwd 10.0.0.10,8443 .*@web$' \
+	    -o not-match:'^7 27 fwd 127.0.0.1' cat fw.state
+	rm jails.d/web.rules
+	atf_check -o match:'Starting' -e ignore /bin/sh "$script" start
+	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
+	atf_check -o not-match:' 27 ' cat fw.state
+	# In a jail of the host's network: no fwd file, no rule touched.
+	export arcana_sslproxy_fwd=
+	: > ipfw.log
+	atf_check -o match:'Starting' -e ignore /bin/sh "$script" start
+	atf_check -o match:'Stopping' -e ignore /bin/sh "$script" stop
+	atf_check -o empty cat ipfw.log
 }
 sslproxy_rc_cleanup()
 {
@@ -23400,6 +23659,7 @@ atf_init_test_cases()
 	atf_add_test_case relay_rc
 	atf_add_test_case sslproxy
 	atf_add_test_case sslproxy_bound
+	atf_add_test_case sslproxy_jail
 	atf_add_test_case sslproxy_rc
 	atf_add_test_case monitors
 	atf_add_test_case sysfiles

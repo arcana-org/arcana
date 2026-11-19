@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 14,
+    "sid-file-version": 15,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -15,6 +15,10 @@
       }
     ],
     "assignment-range": [
+      {
+        "entry-point": "97420",
+        "size": "10"
+      },
       {
         "entry-point": "91800",
         "size": "300"
@@ -3416,6 +3420,11 @@
         "namespace": "data",
         "identifier": "/arcana-console:hosts/host/terminal-prompt",
         "sid": "96006"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/inspection-ca/input/jail",
+        "sid": "97420"
       }
     ]
   }

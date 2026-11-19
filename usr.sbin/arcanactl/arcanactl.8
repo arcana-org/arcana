@@ -108,6 +108,9 @@ With
 .Fl p
 a change is kept in the jail's own
 .Xr rc.conf 5 .
+For
+.Cm sslproxy ,
+any running jail, vnet or not: the jail's own SSLproxy.
 .It Fl p
 Keep a change to an interface or a route in
 .Xr rc.conf 5
@@ -1535,6 +1538,13 @@ waits, the request, the certificate and the root it chains to; the
 .Xr ipfw 8
 fwd rules loaded in set 27, how many the form makes, and why they could
 not be read or are left alone; the connect log and its size.
+With
+.Fl j ,
+a jail's own SSLproxy, its files beneath the jail's root: a vnet jail's
+rules are its own ipfw's, a jail of the host's network's the host's set
+27 (their comments tagged
+.Li @ Ns Ar jail ) ,
+sent to the jail's address.
 .It Cm sslproxy conf Ar form.json Op Cm replace
 The configuration rendered from the form, a JSON object (listeners,
 each a proto of https, http, smtps, pop3s or imaps, its port and the

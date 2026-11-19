@@ -954,19 +954,21 @@ yr_speeder(cbl_conn *conn, const char *jail, ucl_object_t **data, char *err,
 }
 
 int
-yr_sslproxy(cbl_conn *conn, ucl_object_t **data, char *err, size_t errlen)
+yr_sslproxy(cbl_conn *conn, const char *jail, ucl_object_t **data, char *err,
+    size_t errlen)
 {
 	struct arcana_sslproxy_sslproxy_read_input	in;
 
 	memset(&in, 0, sizeof(in));
+	in.jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	return (flat_call(conn, "arcana-sslproxy", "sslproxy", "read", &in,
 	    sizeof(struct arcana_sslproxy_sslproxy_read_output), yfn_sslproxy,
 	    data, err, errlen));
 }
 
 int
-yr_sslproxy_csr(cbl_conn *conn, bool renew, char **csr, char *err,
-    size_t errlen)
+yr_sslproxy_csr(cbl_conn *conn, const char *jail, bool renew, char **csr,
+    char *err, size_t errlen)
 {
 	struct arcana_sslproxy_sslproxy_csr_input	 in;
 	ucl_object_t					*o;
@@ -977,6 +979,7 @@ yr_sslproxy_csr(cbl_conn *conn, bool renew, char **csr, char *err,
 	memset(&in, 0, sizeof(in));
 	in.has_renew = renew;
 	in.renew = renew;
+	in.jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	if ((error = flat_call(conn, "arcana-sslproxy", "sslproxy", "csr", &in,
 	    sizeof(struct arcana_sslproxy_sslproxy_csr_output), NULL, &o, err,
 	    errlen)) != 0)
@@ -992,12 +995,13 @@ yr_sslproxy_csr(cbl_conn *conn, bool renew, char **csr, char *err,
 }
 
 int
-yr_sslproxy_install(cbl_conn *conn, const char *cert, const char *chain,
-    ucl_object_t **data, char *err, size_t errlen)
+yr_sslproxy_install(cbl_conn *conn, const char *jail, const char *cert,
+    const char *chain, ucl_object_t **data, char *err, size_t errlen)
 {
 	struct arcana_sslproxy_sslproxy_install_ca_input	in;
 
 	memset(&in, 0, sizeof(in));
+	in.jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
 	in.certificate = cert;
 	in.chain = chain;
 	return (flat_call(conn, "arcana-sslproxy", "sslproxy", "install-ca",

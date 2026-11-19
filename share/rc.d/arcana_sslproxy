@@ -18,14 +18,26 @@
 # agent runs SSLproxy for an SD-WAN service, arcana_sslproxy_fib is
 # the service's routing table, which rc.subr(8) starts it in (setfib).
 #
+# The host's set 27 holds the rules of its jails' own SSLproxies too,
+# those of jails of the host's network (the agent's, sent to each
+# jail's address): the started ones are files of arcana_sslproxy_jails,
+# loaded with the host's own at the start and kept at the stop.  In a
+# jail, the agent copies this script into the jail's rc.d: a vnet jail
+# loads its own rules into its own ipfw; a jail of the host's network
+# has arcana_sslproxy_fwd empty, and loads none.
+#
 # Add these lines to /etc/rc.conf to enable it:
 #
 # arcana_sslproxy_enable (bool):	Set to "YES" to run it.
 # arcana_sslproxy_config (str):	sslproxy.conf(5).
 #				Default: /usr/local/etc/sslproxy.conf
 # arcana_sslproxy_fwd (str):	The fwd rules, an ipfw(8) file; empty or
-#				not there, none.
+#				not there, none (and no rule loaded or
+#				taken away: a jail of the host's network).
 #				Default: /usr/local/etc/sslproxy/arcana/fwd.rules
+# arcana_sslproxy_jails (str):	The jails' started rules, a file each
+#				(<jail>.rules), loaded with the host's.
+#				Default: /usr/local/etc/sslproxy/arcana/jails
 # arcana_sslproxy_pidfile (str):	Default: /var/run/arcana_sslproxy.pid
 # arcana_sslproxy_logdir (str):	Where its logs go, made at start.
 #				Default: /var/log/sslproxy
@@ -46,7 +58,8 @@ load_rc_config $name
 
 : ${arcana_sslproxy_enable:=NO}
 : ${arcana_sslproxy_config:=/usr/local/etc/sslproxy.conf}
-: ${arcana_sslproxy_fwd:=/usr/local/etc/sslproxy/arcana/fwd.rules}
+: ${arcana_sslproxy_fwd=/usr/local/etc/sslproxy/arcana/fwd.rules}
+: ${arcana_sslproxy_jails:=/usr/local/etc/sslproxy/arcana/jails}
 : ${arcana_sslproxy_pidfile:=/var/run/arcana_sslproxy.pid}
 : ${arcana_sslproxy_logdir:=/var/log/sslproxy}
 : ${arcana_sslproxy_ipfw:=/sbin/ipfw}
@@ -90,9 +103,34 @@ arcana_sslproxy_fwd_seven()
 	    $5 != 27 && $1 + 0 == 7 { f = 1 } END { exit !f }'
 }
 
+# The files set 27 is loaded from: the host's own rules (but with
+# "nohost") and the jails' started ones.
+arcana_sslproxy_fwd_files()
+{
+	local f
+
+	[ "$1" != nohost -a -s "${arcana_sslproxy_fwd}" ] &&
+	    echo "${arcana_sslproxy_fwd}"
+	for f in "${arcana_sslproxy_jails}"/*.rules; do
+		[ -s "$f" ] && echo "$f"
+	done
+}
+
+# Set 27 loaded from arcana_sslproxy_fwd_files $1, by set 26; with none
+# and "nohost", taken away.
 arcana_sslproxy_fwd_load()
 {
-	[ -s "${arcana_sslproxy_fwd}" ] || return 0
+	local files f ok
+
+	[ -n "${arcana_sslproxy_fwd}" ] || return 0
+	files=$(arcana_sslproxy_fwd_files "$1")
+	if [ -z "${files}" ]; then
+		if [ "$1" = nohost ]; then
+			${ipfw} -q -f delete set 27
+			${ipfw} -q -f delete set 26
+		fi
+		return 0
+	fi
 	if arcana_sslproxy_fwd_theirs; then
 		warn "ipfw sets 26 and 27 hold rules that are not SSL inspection's: no fwd rule loaded"
 		return 0
@@ -103,23 +141,25 @@ arcana_sslproxy_fwd_load()
 	fi
 	${ipfw} -q -f delete set 26
 	${ipfw} -q set disable 26
-	if ${ipfw} -q "${arcana_sslproxy_fwd}" &&
-	    ${ipfw} -q set swap 26 27; then
+	ok=yes
+	for f in ${files}; do
+		${ipfw} -q "$f" || { ok=no; warn "$f: not loaded"; break; }
+	done
+	if [ ${ok} = yes ] && ${ipfw} -q set swap 26 27; then
 		${ipfw} -q set enable 27
-	else
-		warn "${arcana_sslproxy_fwd}: not loaded"
 	fi
 	${ipfw} -q -f delete set 26
 }
 
+# Stopped: the host's rules taken away, the jails' kept.
 arcana_sslproxy_fwd_unload()
 {
+	[ -n "${arcana_sslproxy_fwd}" ] || return 0
 	if arcana_sslproxy_fwd_theirs; then
 		warn "ipfw sets 26 and 27 hold rules that are not SSL inspection's: left alone"
 		return 0
 	fi
-	${ipfw} -q -f delete set 27
-	${ipfw} -q -f delete set 26
+	arcana_sslproxy_fwd_load nohost
 }
 
 run_rc_command "$1"

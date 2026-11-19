@@ -2,8 +2,8 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sslproxy",
     "module-revision": "2026-11-18",
-    "sid-file-version": 1,
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 96 900, 100, listed first so that new items go there; 96 500, 100.",
+    "sid-file-version": 2,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 97 400, 20, listed first so that new items go there; 96 900, 100; 96 500, 100.",
     "dependency-revision": [
       {
         "module-name": "ietf-netconf-acm",
@@ -11,6 +11,10 @@
       }
     ],
     "assignment-range": [
+      {
+        "entry-point": "97400",
+        "size": "20"
+      },
       {
         "entry-point": "96900",
         "size": "100"
@@ -300,6 +304,31 @@
         "namespace": "data",
         "identifier": "/arcana-sslproxy:sslproxy/read/output/bound/zone/name",
         "sid": "96907"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/csr/input/jail",
+        "sid": "97400"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/install-ca/input/jail",
+        "sid": "97401"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/input/jail",
+        "sid": "97402"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/jail",
+        "sid": "97403"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/vnet",
+        "sid": "97404"
       }
     ]
   }

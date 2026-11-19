@@ -47,10 +47,11 @@
  * (instance=, command=, iface=; where raw is not NULL, *raw its text
  * as Suricata wrote it, malloc(3)ed), or its profiling (instance=,
  * profiling=1); yr_smtpd(), yr_speeder(), of jail where it is not NULL;
- * yr_sslproxy(), the host's SSLproxy; yr_sslproxy_csr(), its CA's key
- * made where there is none (or a new one, renew) and the request for
- * it, PEM into *csr (malloc(3)ed); yr_sslproxy_install(), the
- * certificate for it and its chain installed, the answer into *data.
+ * yr_sslproxy(), the host's SSLproxy, or jail's own where it is not
+ * NULL; yr_sslproxy_csr(), its CA's key made where there is none (or a
+ * new one, renew) and the request for it, PEM into *csr (malloc(3)ed);
+ * yr_sslproxy_install(), the certificate for it and its chain
+ * installed, the answer into *data.
  */
 int	yr_sshd(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
@@ -73,11 +74,12 @@ int	yr_smtpd(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
 int	yr_speeder(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
-int	yr_sslproxy(cbl_conn *conn, ucl_object_t **data, char *err,
-	    size_t errlen);
-int	yr_sslproxy_csr(cbl_conn *conn, bool renew, char **csr, char *err,
-	    size_t errlen);
-int	yr_sslproxy_install(cbl_conn *conn, const char *cert,
-	    const char *chain, ucl_object_t **data, char *err, size_t errlen);
+int	yr_sslproxy(cbl_conn *conn, const char *jail, ucl_object_t **data,
+	    char *err, size_t errlen);
+int	yr_sslproxy_csr(cbl_conn *conn, const char *jail, bool renew,
+	    char **csr, char *err, size_t errlen);
+int	yr_sslproxy_install(cbl_conn *conn, const char *jail,
+	    const char *cert, const char *chain, ucl_object_t **data,
+	    char *err, size_t errlen);
 
 #endif	/* !_ARCANA_YREADS_H_ */

@@ -1809,9 +1809,11 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		    do_speeder_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_SSLPROXY:
-		/* The host's alone. */
+		/* The host's, or a jail's own, with or without a network of
+		 * its own. */
 		error = NULL;
-		ok = do_sslproxy_job(w, sp, &error) == 0;
+		ok = scope_enter_jail(w, sp->jail, &error, false) == 0 &&
+		    do_sslproxy_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_MONITOR:
 		/* A jail's is probed from its network by the prober; the

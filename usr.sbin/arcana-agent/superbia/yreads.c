@@ -527,12 +527,16 @@ arcana_sslproxy_sslproxy_read_action(cbl_req *req,
 {
 	struct json_rsp	 r;
 	struct work	*w;
-	int		 root;
+	int		 root, error;
 
 	(void)target;
-	(void)in;
 	if ((w = ywork_told(req, a, "SSLproxy read", &root)) == NULL)
 		return (ENOMEM);
+	/* The host's, or a jail's own. */
+	if ((error = jail_in(req, in->jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (error);
+	}
 	memset(&r, 0, sizeof(r));
 	do_sslproxy(w, &r);
 	return (answer(req, w, root, &r, "arcana-sslproxy",
@@ -593,6 +597,11 @@ arcana_sslproxy_sslproxy_csr_action(cbl_req *req,
 	(void)target;
 	if ((w = ywork_told(req, a, "SSLproxy csr", &root)) == NULL)
 		return (ENOMEM);
+	/* A jail's own key: made for it, written beneath its root. */
+	if ((rc = jail_in(req, in->jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (rc);
+	}
 	w->nice = false;
 	if (!ssl_change_begin("SSLproxy csr")) {
 		step_end(w, root, false, NULL);
@@ -624,6 +633,10 @@ arcana_sslproxy_sslproxy_install_ca_action(cbl_req *req,
 	(void)target;
 	if ((w = ywork_told(req, a, "SSLproxy install-ca", &root)) == NULL)
 		return (ENOMEM);
+	if ((rc = jail_in(req, in->jail, w)) != 0) {
+		step_end(w, root, false, NULL);
+		return (rc);
+	}
 	w->nice = false;
 	if (!ssl_change_begin("SSLproxy install-ca")) {
 		step_end(w, root, false, NULL);

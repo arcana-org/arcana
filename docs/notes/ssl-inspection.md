@@ -67,11 +67,10 @@ button is the admin's to press.
   another key refused); pwa_test `pwa_security_tls` (the form sent, the
   host's file and ipfw's rules checked).
 
-Left by phase 1: a jail's own SSLproxy (a vnet jail's network),
-rotation of a root (an edge's intermediate is renewed by Renew), a
-root's revocation list. Since phase 2, the roots are the cluster's
-(below), and an ipfw restart no longer leaves SSLproxy without its
-rules.
+Left by phase 1: rotation of a root (an edge's intermediate is renewed
+by Renew), a root's revocation list. Since phase 2, the roots are the
+cluster's (below), and an ipfw restart no longer leaves SSLproxy
+without its rules; a jail's own SSLproxy is built (Jails, below).
 
 ## Phase 2: MEF 138 function policies (the binding built)
 
@@ -92,7 +91,10 @@ maps; one MBSF a zone).
   the other zones' prefixes, skipped first by a `skipto 8`), `mbsf`
   (the policy as the module says it). One SSLproxy an edge: a second
   service, or a second MBSF, with such a zone at one edge fails the
-  plan, said; a vnet jail's edge has none and fails it too.
+  plan, said. A vnet jail's edge is served by the jail's own SSLproxy
+  (Jails, below): its jobs carry the jail, its CA is its own
+  (`inspection-ca` with the jail), and the plugin is looked for in the
+  jail.
 - **The apply**: the edge's CA first where it has none
   (`inspection-ca`, the console's own ask, its intermediate from the
   tenant fleet's root), then the form (job `sslproxy conf`), then
@@ -129,6 +131,75 @@ maps; one MBSF a zone).
   node's own directory: every node signs with the same root, its first
   making under a cluster lock. A root made before (the node's
   `inspection/` directory) is not read.
+
+## Jails (built)
+
+The user's rule: every service feature of Arcana works in a jail too.
+One SSLproxy a jail, beside the host's: a host may run several.
+
+- **Installed and read in the jail**: the jail's own sslproxy (`pkg -j
+  <jail> install sslproxy`, the tab's Install button with the jail
+  picked), found beneath the jail's root without following a link out
+  of it (`faccessat(AT_RESOLVE_BENEATH)`), run there by jexec(8)
+  (`sslproxy -V`, `-Q -f`). The read, the jobs and the CA's actions take
+  the jail (`arcana-sslproxy` read, csr and install-ca `jail`; jobs'
+  `jail`; arcanactl `-j`), any running jail, vnet or not.
+- **Its files**: sslproxy.conf, spec.json, the CA's files and the rules
+  beneath the jail's root, at the paths the jail sees (the agent's
+  `--sslproxy-conf` and `--sslproxy-dir`), opened from the root's
+  descriptor, never through a link (invidia/scope.c's
+  `O_RESOLVE_BENEATH`, `O_NOFOLLOW`): a link the jail's root put there
+  refuses the write, nothing is written out of the jail.
+- **Its CA**: the key made for the jail (EC P-256) and written beneath
+  its root alone, its request named for the host and the jail; the
+  console signs it as an intermediate of its own (CN "Arcana SSL
+  inspection on <host>/<jail>"), installed there. The key never leaves
+  the jail's directory.
+- **Its service**: Arcana's rc script copied into the jail's
+  `/usr/local/etc/rc.d` (the host's copy, written where it differs), run
+  there (`jexec <jid> service arcana_sslproxy`), its variables in the
+  jail's rc.conf (`sysrc -j`), the service's table its FIBs.
+- **A vnet jail's rules**: its own ipfw's, run in it by jexec, set 27 at
+  rule 7, staged by set 26 and refused as the host's are (a rule of
+  another's in 26 or 27, or at 7 of another set: the jail admin's left
+  alone); the fwd to its own loopback. The rc script in the jail loads
+  them at its start; the agent's watch loads them again where the
+  jail's set 27 lost them under a running SSLproxy.
+- **A jail of the host's network**: SSLproxy listens at the jail's
+  address (`ip4.addr`, `ip6.addr`, the first of each; the loopback where
+  it inherits the host's); the host's ipfw fwds the clients there
+  (`fwd 10.0.0.10,8443`): the destination is a local address, so the
+  connection keeps its own, and getsockname(2) on the socket accepted
+  in the jail says it (syncache_socket() gives the new socket the
+  packet's destination as its local address, the jail's being only
+  where the listener was looked up), as SSLproxy's NAT engine `ipfw`
+  asks. A jail without an address of a family refuses the form (IPv6:
+  give it one, or turn IPv6 off). The rules, tagged `sslproxy:<proto>@<jail>`,
+  are the host's: rendered by the agent and kept on the host
+  (`jails/<jail>.fwd`, 0600), never read from the jail, whose root may
+  write there what it likes; while the jail's SSLproxy is started they
+  are `jails/<jail>.rules`, which the host's set 27 is loaded from
+  beside the host's own (the agent, the host's rc script at its start
+  and stop: `arcana_sslproxy_jails`). The jail's rc script has
+  `arcana_sslproxy_fwd` empty and touches no rule. A `deny` rule of
+  the jail's listen ports keeps clients from reaching SSLproxy at its
+  address but by the fwd (a fwd keeps the packet's destination, which
+  the deny does not match). The watch takes a jail's rules out of the
+  host's set where the jail or its SSLproxy stopped (its own rc, or the
+  jail), and puts them back when it runs again.
+- **The page**: a picker on the SSL inspection tab (the host, or a
+  running jail); what it reads, sends and issues is the jail's; the
+  rules shown are the jail's own ipfw's, or the host's tagged with it.
+- **Tests**: agent_test `sslproxy_jail` (stand-in jails, the vnet one's
+  ipfw a stand-in apart from the host's), `sslproxy_rc` (the jails'
+  started rules); console_test `sdwan_inspect_jail`; pwa_test
+  `pwa_security_tls_jail` (a jail picked, its CA, the form, the jail's
+  files and its ipfw's rules).
+
+Left: a vnet jail's cleartext-HTTP reset logs to the jail's own
+routing socket, which the agent's record does not listen on (no SEN
+from it yet); the fwd to a jail's address and getsockname(2) there were
+read from the kernel, not tried on one.
 
 ## The URL filter's move (planned)
 
