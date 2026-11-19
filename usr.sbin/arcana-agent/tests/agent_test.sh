@@ -11497,7 +11497,7 @@ services_jail_body()
 	wait_match '"stream-xpath-filter":"/arcana-events:event/service-state"' \
 	    "$JGC" -c "$SOCK" get subscriptions
 	# Started in the jail: the jail's marker, never the host's.
-	atf_check -o match:'done +service crowdsec start in svcj' \
+	atf_check -o match:'done +svcj: service crowdsec start in svcj' \
 	    -o match:'Running: yes' "$JGC" -c "$SOCK" service -j svcj crowdsec \
 	    start
 	atf_check test -f jroot/running.crowdsec
@@ -21613,9 +21613,9 @@ crashes_body()
 	    "$JGC" -j nosuch -c "$SOCK" geom mirror label gm0 ada1
 	atf_check -s exit:2 -e match:'zfs has no jail' \
 	    "$JGC" -j nosuch -c "$SOCK" zfs create tank/x
-	atf_check -s exit:2 -e match:'iscsi has no jail' \
+	atf_check -s exit:2 -e match:'iscsi is the host.s alone, no jail.s' \
 	    "$JGC" -j nosuch -c "$SOCK" iscsi enable yes
-	atf_check -s exit:2 -e match:'hast has no jail' \
+	atf_check -s exit:2 -e match:'hast is the host.s alone, no jail.s' \
 	    "$JGC" -j nosuch -c "$SOCK" hast enable yes
 }
 crashes_cleanup()

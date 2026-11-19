@@ -15380,16 +15380,15 @@ ATF_TC_BODY(sdwan_inspect_jail, tc)
 		    "\"tunnel\":{\"kind\":\"gre\",\"ipsec\":false}" },
 		/* No BIRD in the jail here: no BFD. */
 		{ "\"bfd\":{\"interval\":200,\"multiplier\":3},", "" },
-		{ "\"zones\":[{\"name\":\"rest\",\"prefixes\":\"Default\"}],",
-		    "\"zones\":[{\"name\":\"rest\",\"prefixes\":\"Default\"}],"
-		    "\"security_function_policies\":[{\"id\":\"g-mbsf\","
-		    "\"function\":\"mbsf\",\"no-match\":\"allow\","
-		    "\"invalid-server-certificate\":\"block\",\"unencrypted\":"
-		    "\"block\"}],\"security_policies\":[{\"name\":\"guard\","
-		    "\"function-policies\":[\"g-mbsf\"]}]," },
-		{ "\"name\":\"open\",\"direction\":\"ingress\",\"criteria\":{}",
-		    "\"name\":\"open\",\"direction\":\"ingress\",\"criteria\":{"
-		    "\"af-security-ingress\":\"guard\"}" },
+		/* The jail document's guard is a DNF's: an MBSF's instead,
+		 * so that SSLproxy, not unbound, serves the zone. */
+		{ "{\"id\":\"g-dnf\",\"function\":\"dnf\",\"block\":["
+		    "\"ads.example\"],\"no-match\":\"allow\",\"duration\":6}",
+		    "{\"id\":\"g-mbsf\",\"function\":\"mbsf\",\"no-match\":"
+		    "\"allow\",\"invalid-server-certificate\":\"block\","
+		    "\"unencrypted\":\"block\"}" },
+		{ "\"function-policies\":[\"g-dnf\"]",
+		    "\"function-policies\":[\"g-mbsf\"]" },
 	};
 	for (i = 0; i < nitems(edits); i++) {
 		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
