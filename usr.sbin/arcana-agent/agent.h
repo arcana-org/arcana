@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.335.0"
+#define	ARCANA_AGENT_VERSION	"0.336.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -43,6 +43,7 @@
 #define	PATH_IFCONFIG_BIN	"/sbin/ifconfig"
 #define	PATH_NGCTL_BIN		"/usr/sbin/ngctl"
 #define	PATH_JEXEC_BIN		"/usr/sbin/jexec"
+#define	PATH_CRONTAB_BIN	"/usr/bin/crontab"
 #define	PATH_KLDLOAD_BIN	"/sbin/kldload"
 #define	PATH_KLDUNLOAD_BIN	"/sbin/kldunload"
 #define	PATH_ZFS_BIN		"/sbin/zfs"
@@ -150,6 +151,7 @@ struct opts {
 	const char	*ifconfig_bin;
 	const char	*ngctl_bin;
 	const char	*jexec_bin;
+	const char	*crontab_bin;	/* crontab(1): users' crontabs */
 	const char	*kldload_bin;
 	const char	*kldunload_bin;
 	const char	*zfs_bin;
@@ -1322,6 +1324,23 @@ int		 do_sysfile_job(struct work *, const struct arc_job_spec *,
 		    const char **);
 const char	*sysfile_path(struct work *, const char *);
 int		 sysfile_tell(struct work *, const char *, const char **);
+/* superbia/cron.c: cron(8)'s entries, Arcana's file and its part of a
+ * user's crontab. */
+void		 do_cron(struct work *, struct json_rsp *);
+const char	*cron_check(const struct arc_job_spec *);
+char		*cron_title(const struct arc_job_spec *);
+int		 do_cron_job(struct work *, const struct arc_job_spec *,
+		    const char **);
+const char	*cron_path(struct work *);
+struct cron_was {			/* a user's crontab as it was */
+	const char	*text;
+	bool		 had;		/* the user had one */
+	bool		 taken;
+};
+int		 cron_snap(struct work *, const struct arc_job_spec *,
+		    struct cron_was *, const char **);
+int		 cron_undo(struct work *, const struct arc_job_spec *,
+		    const struct cron_was *, const char **);
 /* superbia/netstore.c: NFS, iSCSI and HAST. */
 void		 do_netstore(struct work *, const char *const *, size_t,
 		    struct json_rsp *);

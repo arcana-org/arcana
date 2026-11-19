@@ -828,7 +828,7 @@ submit(const char *form, const ucl_object_t *f)
 	    ipsecbase_form(form, f) || ipsec_form(form, f) ||
 	    workflows_form(form, f) || sdwan_form(form, f) ||
 	    trouble_form(form, f) || secpage_form(form, f) ||
-	    naspage_form(form, f) || sysview_form(form, f) || mail_form(form, f) || relay_form(form, f) || monitor_form(form, f) ||
+	    naspage_form(form, f) || sysview_form(form, f) || cron_form(form, f) || mail_form(form, f) || relay_form(form, f) || monitor_form(form, f) ||
 	    builder_form(form, f) ||
 	    kernel_form(form, f) || storage_form(form, f) || cfg_form(form, f) ||
 	    sysctl_form(form, f) || term_form(form, f) || nacm_form(form, f) || ra_form(form, f) || procs_form(form, f) || logs_form(form, f) || usage_form(form, f) ||
@@ -1302,7 +1302,7 @@ dispatch(const char *act, const char *arg, const char *value)
 	    ipsecbase_action(act, arg, value) ||
 	    ipsec_action(act, arg, value) || workflows_action(act, arg, value) ||
 	    sdwan_action(act, arg, value) || trouble_action(act, arg, value) ||
-	    sysview_action(act, arg, value) || mail_action(act, arg, value) || relay_action(act, arg, value) ||
+	    sysview_action(act, arg, value) || cron_action(act, arg, value) || mail_action(act, arg, value) || relay_action(act, arg, value) ||
 	    monitor_action(act, arg, value) ||
 	    secpage_action(act, arg, value) || naspage_action(act, arg, value) ||
 	    builder_action(act, arg, value) || cfg_action(act, arg, value) ||

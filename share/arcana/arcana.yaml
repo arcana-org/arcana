@@ -568,6 +568,22 @@ definitions:
           at rule 7 (staged in set 26), stopped they are taken away;
           refused where a rule of the admin's is in those sets or at
           that number.  The host's alone; never in safe mode.
+      - name: cron
+        doc: |
+          cron(8)'s entries of Arcana's own: add (text: the line, five
+          time fields or @reboot, @daily and the like, then the user and
+          the command; description: the comment line above it),
+          delete (text: the line), replace (args: the line replaced;
+          text: the new one; description: its comment), in
+          /usr/local/etc/cron.d/arcana, Arcana's file, which cron reads
+          by itself.  With user, that user's crontab: its line has no
+          user field, and it is changed by crontab(1) alone (crontab -u
+          user -), between Arcana's markers, its other lines kept as
+          they are.  The admin's /etc/crontab, other cron.d files and
+          lines outside the markers are never changed.  The user must
+          be one of the host's, or with jail of that running jail,
+          where its own crontab(1) is run.  Undone in safe mode: the
+          file or the crontab as it was.
   - name: job-state
     type: enum
     entries:

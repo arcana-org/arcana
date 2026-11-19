@@ -1,0 +1,155 @@
+module arcana-cron {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-cron";
+  prefix arccron;
+
+  import ietf-netconf-acm {
+    prefix nacm;
+    reference
+      "RFC 8341: Network Configuration Access Control Model";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "cron(8) of a FreeBSD host, or of one of its running jails, as the
+     agent reads it: every entry of the system crontab (/etc/crontab),
+     of the files of the cron.d directories cron reads (/etc/cron.d,
+     /usr/local/etc/cron.d) and of each user's crontab (crontab(1) -l
+     -u, as root), with its schedule, the user it runs as, its command,
+     its file and the comment line above it; and cron's own daemon.  No
+     IETF or OpenConfig model has cron: this one is FreeBSD's.
+     Arcana's own entries are in a file of its own,
+     /usr/local/etc/cron.d/arcana, and in a user's crontab between
+     Arcana's markers, written there by crontab(1) alone; the rest is
+     the admin's, read here and never written.  A jail's are read
+     beneath its root, never through a link out of it, its users'
+     crontabs by its own crontab(1).  Changes are jobs of kind cron (a
+     jail's, the job's jail).";
+
+  revision 2026-11-19 {
+    description
+      "Initial revision.";
+  }
+
+  container cron {
+    config false;
+    description
+      "cron, read when asked.";
+    action read {
+      nacm:default-deny-all;
+      description
+        "The entries and the daemon: the commands may hold what should
+         stay on the host (a password on a command line), so run by a
+         rule that permits it.";
+      input {
+        leaf jail {
+          type string;
+          description
+            "A running jail's own cron, with or without a network of its
+             own; none, the host's.";
+        }
+      }
+      output {
+        leaf jail {
+          type string;
+          description
+            "The jail read; none, the host.";
+        }
+        container daemon {
+          description
+            "cron(8) itself.";
+          leaf enabled {
+            type boolean;
+            description
+              "rc.conf's cron_enable.";
+          }
+          leaf running {
+            type boolean;
+            description
+              "service cron onestatus says it runs.";
+          }
+          leaf flags {
+            type string;
+            description
+              "rc.conf's cron_flags, where it sets them.";
+          }
+        }
+        list entry {
+          description
+            "An entry, in the order cron's files are read: the system
+             crontab, the cron.d files by directory and name, the users'
+             crontabs by user.  Lines that set a variable (SHELL=,
+             MAILTO=) are not entries.";
+          leaf source {
+            type enumeration {
+              enum system {
+                description
+                  "/etc/crontab, with a user field.";
+              }
+              enum cron-d {
+                description
+                  "A file of a cron.d directory, with a user field:
+                   Arcana's file among them.";
+              }
+              enum user {
+                description
+                  "A user's crontab, run as that user.";
+              }
+            }
+            description
+              "Where it is.";
+          }
+          leaf file {
+            type string;
+            description
+              "Its file: a user's crontab as /var/cron/tabs has it.";
+          }
+          leaf line {
+            type uint32;
+            description
+              "Its line in the file (a crontab's as crontab -l prints
+               it), 1 the first.";
+          }
+          leaf schedule {
+            type string;
+            description
+              "When: its five time fields, a space between them, or one
+               of @reboot, @yearly, @annually, @monthly, @weekly,
+               @daily, @midnight, @hourly, @every_minute,
+               @every_second.";
+          }
+          leaf user {
+            type string;
+            description
+              "Who it runs as.";
+          }
+          leaf command {
+            type string;
+            description
+              "What it runs, as the line has it.";
+          }
+          leaf comment {
+            type string;
+            description
+              "The comment line just above it, its # taken off.";
+          }
+          leaf arcana {
+            type boolean;
+            description
+              "Arcana's own, changed by cron jobs: in Arcana's file, or
+               between its markers in a user's crontab.  Otherwise the
+               admin's, read-only here.";
+          }
+        }
+        leaf-list unread {
+          type string;
+          description
+            "A file or a crontab that could not be read, and why.";
+        }
+      }
+    }
+  }
+}

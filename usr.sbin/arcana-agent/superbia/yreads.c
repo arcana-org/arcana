@@ -7,10 +7,11 @@
 /*
  * Superbia: the host's daemons and files read through their modules
  * (PLAN-SDN-YANG 3.8): arcana-crashes, arcana-system, arcana-netstore,
- * arcana-suricata, arcana-smtpd, arcana-speeder and arcana-sslproxy, each
- * an action that runs the read the operation of arcana.yaml ran
- * (crashes.c, sysfiles.c, netstore.c, surules.c, idsfiles.c, smtpd.c,
- * speeder.c; sslproxy.c's, and its CA's key and certificate, new)
+ * arcana-suricata, arcana-smtpd, arcana-speeder, arcana-sslproxy and
+ * arcana-cron, each an action that runs the read the operation of
+ * arcana.yaml ran (crashes.c, sysfiles.c, netstore.c, surules.c,
+ * idsfiles.c, smtpd.c, speeder.c; sslproxy.c's, and its CA's key and
+ * certificate, and cron.c's, new)
  * and gives its JSON as the module's output, by yflat.c and the names
  * of yflatnames.h.  Their containers hold no state: an empty GET.
  */
@@ -664,4 +665,37 @@ arcana_sslproxy_sslproxy_install_ca_action(cbl_req *req,
 	out->has_not_after = true;
 	out->not_after = until;
 	return (0);
+}
+
+int
+arcana_cron_cron_get(cbl_req *req, struct arcana_cron *data, cbl_yarena *a)
+{
+
+	(void)req;
+	(void)data;
+	(void)a;
+	return (0);
+}
+
+int
+arcana_cron_cron_read_action(cbl_req *req, const struct cbl_bytes *target,
+    const struct arcana_cron_cron_read_input *in,
+    struct arcana_cron_cron_read_output *out, cbl_yarena *a)
+{
+	struct json_rsp	 r;
+	struct work	*w;
+	int		 root;
+
+	(void)target;
+	if ((w = ywork_told(req, a, "cron read", &root)) == NULL)
+		return (ENOMEM);
+	/* A jail's own cron, beneath its root, its crontab(1). */
+	if (jail_in(req, in->jail, w) != 0) {
+		step_end(w, root, false, NULL);
+		return (EIO);
+	}
+	memset(&r, 0, sizeof(r));
+	do_cron(w, &r);
+	return (answer(req, w, root, &r, "arcana-cron", "cron/read/output",
+	    out, a, yfn_cron, false));
 }

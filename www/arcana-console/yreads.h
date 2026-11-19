@@ -51,7 +51,8 @@
  * NULL; yr_sslproxy_csr(), its CA's key made where there is none (or a
  * new one, renew) and the request for it, PEM into *csr (malloc(3)ed);
  * yr_sslproxy_install(), the certificate for it and its chain
- * installed, the answer into *data.
+ * installed, the answer into *data; yr_cron(), cron's entries and
+ * daemon, of jail where it is not NULL.
  */
 int	yr_sshd(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
@@ -80,6 +81,9 @@ int	yr_sslproxy_csr(cbl_conn *conn, const char *jail, bool renew,
 	    char **csr, char *err, size_t errlen);
 int	yr_sslproxy_install(cbl_conn *conn, const char *jail,
 	    const char *cert, const char *chain, ucl_object_t **data,
+	    char *err, size_t errlen);
+
+int	yr_cron(cbl_conn *conn, const char *jail, ucl_object_t **data,
 	    char *err, size_t errlen);
 
 #endif	/* !_ARCANA_YREADS_H_ */

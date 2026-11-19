@@ -522,8 +522,25 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "shift\nn=0; c=; for a; do case \"$a\" in /var/run/*) a=%s/jroot$a ;; "
 	    "/) [ \"$c\" = -C ] && a=$r ;; esac; c=$a; set -- \"$@\" \"$a\"; "
 	    "n=$((n+1)); done\nshift $n\n"
-	    "exec \"$@\"\n", cwd);
+	    /* crontab(1) finds the jail's crontabs beneath its root. */
+	    "CRONROOT=$r exec \"$@\"\n", cwd);
 	put("fake-jexec", buf);
+	/*
+	 * crontab(1): a user's crontab in the root's var/cron/tabs, the
+	 * host's tree (root) or, run by jexec, the jail's; a user not in
+	 * its passwd refused.
+	 */
+	put("fake-crontab", "#!/bin/sh\nr=${CRONROOT:-root}\n"
+	    "echo \"crontab $*\" >> crontab.log\nop=; u=\n"
+	    "while [ $# -gt 0 ]; do case \"$1\" in -u) u=$2; shift 2 ;; "
+	    "-l) op=l; shift ;; -r) op=r; shift ;; -) op=w; shift ;; "
+	    "*) shift ;; esac; done\n"
+	    "grep -q \"^$u:\" \"$r/etc/passwd\" || { echo \"crontab: user "
+	    "$u unknown\" >&2; exit 1; }\nt=$r/var/cron/tabs/$u\n"
+	    "case $op in\nl) [ -f \"$t\" ] || { echo \"no crontab for $u\" "
+	    ">&2; exit 1; }; cat \"$t\" ;;\nw) mkdir -p \"${t%/*}\"; cat > "
+	    "\"$t\" ;;\nr) rm \"$t\" ;;\nesac\n");
+	ATF_REQUIRE(chmod("fake-crontab", 0755) == 0);
 	put("fake-helper", "#!/bin/sh\necho \"$*\" >> helper.log\n"
 	    "case \"$3\" in\n"
 	    /* The routes, as the helper reads them through netlink(4). */
@@ -1791,7 +1808,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	argv[143] = tusers;
 	argv[144] = (char *)(uintptr_t)"--terminal-getent";
 	argv[145] = getent;
-	n = 146;
+	/* crontab(1), the test's stand-in. */
+	argv[146] = (char *)(uintptr_t)"--crontab";
+	argv[147] = (char *)(uintptr_t)"./fake-crontab";
+	n = 148;
 	/* Its STAMP sender's far ends: a stampd(8) of the test's. */
 	if (harness_stamp_port != 0) {
 		snprintf(sport, sizeof(sport), "%d", harness_stamp_port);

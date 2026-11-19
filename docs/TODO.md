@@ -2,6 +2,16 @@
 
 ## To do
 
+- cron, jail-aware (2026-11-20; agent_test:cron_entries, cron_crontab,
+  cron_jail; pwa_test:pwa_cron_jail): arcana-cron's read (/etc/crontab,
+  the cron.d files, the users' crontabs by crontab -l -u, the host's or
+  a running jail's), cron jobs add, delete and replace in Arcana's
+  /usr/local/etc/cron.d/arcana or between Arcana's markers in a user's
+  crontab by crontab(1), the System tab's cron(8) section, `arcanactl
+  cron`.  Left: cron itself started or enabled from the section (a
+  service-action of cron today, from the Services tab); the entries'
+  next run times; the variables of a file (SHELL=, MAILTO=) shown and
+  set; cron's log (/var/log/cron) beside the entries.
 - SSL inspection in jails (the user's rule: every service feature of
   Arcana in a jail too), built 2026-11-19 (docs/notes/ssl-inspection.md,
   Jails; agent_test:sslproxy_jail, sslproxy_rc; console_test:

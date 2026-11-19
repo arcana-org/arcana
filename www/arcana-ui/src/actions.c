@@ -804,6 +804,7 @@ job_finished(struct op *op, bool ok, const char *err)
 		break;
 	case JOB_SYSTEM:
 		refresh_system(s, true);
+		cron_refresh();
 		refresh_ssh(s, false);
 		break;
 	case JOB_MAIL:

@@ -211,6 +211,7 @@ on the wire.
 | 98 000 | 20 | `arcana-system`, its second range (listed first in its file, so that new items go there): the read's jail, in and out | `share/yang/arcana-system@2026-10-29.sid` (2 used) |
 | 98 020 | 30 | `arcana-syslog`, each running jail's syslogd, its root a mount point of `ietf-syslog` | `share/yang/arcana-syslog@2026-11-19.sid` (5 used) |
 | 97 800 | 10 | `arcana-netstore`, its second range (listed first in its file): a jail's NFS server read, why it may not serve | `share/yang/arcana-netstore@2026-10-29.sid` (3 used) |
+| 98 600 | 100 | `arcana-cron`, cron(8)'s entries of the host or a running jail and its daemon, read | `share/yang/arcana-cron@2026-11-19.sid` (21 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

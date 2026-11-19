@@ -68,6 +68,7 @@ struct opts opts = {
 	.ifconfig_bin = PATH_IFCONFIG_BIN,
 	.ngctl_bin = PATH_NGCTL_BIN,
 	.jexec_bin = PATH_JEXEC_BIN,
+	.crontab_bin = PATH_CRONTAB_BIN,
 	.kldload_bin = PATH_KLDLOAD_BIN,
 	.kldunload_bin = PATH_KLDUNLOAD_BIN,
 	.zfs_bin = PATH_ZFS_BIN,
@@ -159,7 +160,7 @@ enum { OPT_ROOT = 1000, OPT_BIRD_WATCH, OPT_SCTP_ALSO, OPT_TELEGRAM_API,
     OPT_BMP_PORT, OPT_ARCHIVE, OPT_PFKEY, OPT_TERMINAL_LOGIN,
     OPT_TERMINAL_IDLE, OPT_REPO_REACH, OPT_RC_SUBR, OPT_DEV, OPT_DEVD_PIPE,
     OPT_ALLOC_FAULT, OPT_TERMINAL_USERS, OPT_TERMINAL_GETENT,
-    OPT_TERMINAL_NOLOGIN, OPT_TEST_UNREGISTER };
+    OPT_TERMINAL_NOLOGIN, OPT_TEST_UNREGISTER, OPT_CRONTAB };
 static const struct option longopts[] = {
 	/* The system's files read and written under a directory: a test's
 	 * tree (config-export, config-apply). */
@@ -252,6 +253,8 @@ static const struct option longopts[] = {
 	{ "sslproxy-conf", required_argument, NULL, OPT_SSLPROXY_CONF },
 	{ "sslproxy-dir", required_argument, NULL, OPT_SSLPROXY_DIR },
 	{ "sslproxy-watch", required_argument, NULL, OPT_SSLPROXY_WATCH },
+	/* crontab(1), which a user's crontab is read and written by. */
+	{ "crontab", required_argument, NULL, OPT_CRONTAB },
 	{ NULL, 0, NULL, 0 },
 };
 
@@ -312,7 +315,7 @@ usage(void)
 	    "                 [--stamp-clock source[:error]] [--stampd-keys file]\n"
 	    "                 [--speederv2-log file]\n"
 	    "                 [--sslproxy-conf file] [--sslproxy-dir directory]\n"
-	    "                 [--sslproxy-watch seconds]\n"
+	    "                 [--sslproxy-watch seconds] [--crontab crontab]\n"
 	    "                 [--terminal-login login] [--terminal-idle seconds]\n"
 	    "                 [--terminal-users file] [--terminal-getent getent]\n"
 	    "                 [--terminal-nologin file]\n"
@@ -673,6 +676,9 @@ main(int argc, char *argv[])
 			break;
 		case OPT_ALLOC_FAULT:
 			opts.alloc_fault = optarg;
+			break;
+		case OPT_CRONTAB:
+			opts.crontab_bin = optarg;
 			break;
 		case OPT_SSLPROXY_CONF:
 			opts.sslproxy_conf = optarg;

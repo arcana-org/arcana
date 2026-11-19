@@ -17587,6 +17587,381 @@ sysfile_jail_cleanup()
 	stop_daemon
 }
 
+# crontab(1) for cron's cases: a user's crontab in the root's
+# var/cron/tabs, the host's (./root) or, run by jexec, the jail's
+# (CRONROOT); what it was asked logged in crontab.log.  A user not in
+# the root's etc/passwd is refused, as crontab refuses one; with
+# crontab.fail in the root, nothing is installed.  jexec(8) for the
+# jails of ./jails: crontab run with the jail's root, cron's service
+# not running there.
+cron_fakes()
+{
+	cat > fake-crontab <<EOS
+#!/bin/sh
+r=\${CRONROOT:-$(pwd)/root}
+echo "crontab \$*\${CRONROOT:+ (jail)}" >> $(pwd)/crontab.log
+op=; u=
+while [ \$# -gt 0 ]; do
+	case "\$1" in
+	-u)	u=\$2; shift 2 ;;
+	-l)	op=l; shift ;;
+	-r)	op=r; shift ;;
+	-f)	shift ;;
+	-)	op=w; shift ;;
+	*)	echo "crontab: usage" >&2; exit 2 ;;
+	esac
+done
+grep -q "^\$u:" "\$r/etc/passwd" 2>/dev/null ||
+    { echo "crontab: user \\\`\$u' unknown" >&2; exit 1; }
+t=\$r/var/cron/tabs/\$u
+case \$op in
+l)	[ -f "\$t" ] || { echo "no crontab for \$u" >&2; exit 1; }
+	cat "\$t" ;;
+w)	if [ -f "\$r/crontab.fail" ]; then
+		cat > /dev/null
+		echo "crontab: errors in crontab file, can't install" >&2
+		exit 1
+	fi
+	mkdir -p "\${t%/*}"
+	cat > "\$t" ;;
+r)	[ -f "\$t" ] || { echo "no crontab for \$u" >&2; exit 1; }
+	rm "\$t" ;;
+esac
+EOS
+	chmod +x fake-crontab
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+[ -n "\$r" ] || { echo "jexec: jail \$1 not found" >&2; exit 1; }
+shift
+case "\$1" in
+*/fake-crontab)	CRONROOT=\$r exec "\$@" ;;
+*/fake-service)	exit 1 ;;
+esac
+exit 0
+EOS
+	chmod +x fake-jexec
+}
+
+# The agent's last job's number, and with 1 the one before it.
+cron_last()
+{
+	"$JGC" -c "$SOCK" jobs | awk '$1 ~ /^[0-9]+$/ { print $1 }' |
+	    sort -n | tail -n $((${1:-0} + 1)) | head -n 1
+}
+
+# Wait until no job of the agent's is queued, running or unconfirmed.
+cron_settle()
+{
+	local i
+
+	for i in $(seq 1 200); do
+		"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
+		    break
+		sleep 0.1
+	done
+}
+
+atf_test_case cron_entries cleanup
+cron_entries_head()
+{
+	atf_set "descr" "cron's entries read from /etc/crontab, the cron.d files and the users' crontabs (crontab -l -u), each with its schedule, user, command, file and comment; Arcana's file added to, replaced in and deleted from, the admin's files left; a bad schedule, an unknown user and another's entry refused; a safe change undone"
+}
+cron_entries_body()
+{
+	mkdir -p root/etc/cron.d root/var/cron/tabs root/usr/local/etc
+	cat > root/etc/crontab <<'EOF'
+SHELL=/bin/sh
+PATH=/etc:/bin:/sbin:/usr/bin:/usr/sbin
+#minute	hour	mday	month	wday	who	command
+# Save some entropy
+*/11	*	*	*	*	operator /usr/libexec/save-entropy
+1,31	0-5	*	*	*	root	adjkerntz -a
+EOF
+	printf '# nightly\n@daily\troot\t/usr/local/bin/backup\n' > \
+	    root/etc/cron.d/backup
+	printf '* * * * * root /bin/hidden\n' > root/etc/cron.d/.hidden
+	printf '# mine\n0 9 * * 1-5 /home/alice/bin/mail-me\n' > \
+	    root/var/cron/tabs/alice
+	cat > root/etc/passwd <<'EOF'
+root:*:0:0:Charlie &:/root:/bin/sh
+operator:*:2:5:System &:/:/usr/sbin/nologin
+alice:*:1001:1001:Alice:/home/alice:/bin/sh
+EOF
+	cp root/etc/crontab crontab.before
+	cp root/etc/cron.d/backup backup.before
+	DAEMON_ARGS="--root $(pwd)/root --crontab $(pwd)/fake-crontab"
+	start_daemon
+	cron_fakes
+	printf 'cron_flags="-J 15"\n' >> rc.conf
+	# All three sources: the system crontab (its variables no entries),
+	# a cron.d file (one whose name starts with a dot left, as cron
+	# leaves it), alice's crontab by crontab -l.
+	atf_check \
+	    -o match:'"daemon":\{"enabled":false,"running":false,"flags":"-J 15"\}' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":5,"schedule":"\*/11 \* \* \* \*","user":"operator","command":"/usr/libexec/save-entropy","comment":"Save some entropy","arcana":false\}' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":6,"schedule":"1,31 0-5 \* \* \*","user":"root","command":"adjkerntz -a","arcana":false\}' \
+	    -o match:'\{"source":"cron-d","file":"/etc/cron.d/backup","line":2,"schedule":"@daily","user":"root","command":"/usr/local/bin/backup","comment":"nightly","arcana":false\}' \
+	    -o match:'\{"source":"user","file":"/var/cron/tabs/alice","line":2,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false\}' \
+	    -o not-match:'hidden|SHELL|"unread"' \
+	    "$JGC" -c "$SOCK" cron
+	atf_check -o match:'^crontab -l -u alice$' cat crontab.log
+	# Arcana's file: made with its head, the entry and its comment.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron add \
+	    'comment=newsyslog, forced' '0 3 * * * root /usr/sbin/newsyslog -F'
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron add \
+	    '@hourly  root  /bin/date'
+	cat > want <<'EOF'
+# Arcana's cron entries: cron(8) reads this file by itself.
+# Written by arcana-agent; changed from Arcana, not here.
+# newsyslog, forced
+0 3 * * * root /usr/sbin/newsyslog -F
+@hourly  root  /bin/date
+EOF
+	atf_check -o file:want cat root/usr/local/etc/cron.d/arcana
+	atf_check -o match:'\{"source":"cron-d","file":"/usr/local/etc/cron.d/arcana","line":4,"schedule":"0 3 \* \* \*","user":"root","command":"/usr/sbin/newsyslog -F","comment":"newsyslog, forced","arcana":true\}' \
+	    -o match:'"line":5,"schedule":"@hourly","user":"root","command":"/bin/date","arcana":true\}' \
+	    "$JGC" -c "$SOCK" cron
+	# The same entry again, whatever its blanks: refused.
+	atf_check -s exit:1 -o match:'has that entry already' \
+	    "$JGC" -c "$SOCK" cron add '@hourly root /bin/date'
+	# Replaced: its comment with it, the new one's in its place.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron replace \
+	    'comment=at half past' '0 3 * * * root /usr/sbin/newsyslog -F' \
+	    '30 3 * * * root /usr/sbin/newsyslog'
+	# Deleted, whatever its blanks.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron delete \
+	    '@hourly root /bin/date'
+	cat > want <<'EOF'
+# Arcana's cron entries: cron(8) reads this file by itself.
+# Written by arcana-agent; changed from Arcana, not here.
+# at half past
+30 3 * * * root /usr/sbin/newsyslog
+EOF
+	atf_check -o file:want cat root/usr/local/etc/cron.d/arcana
+	# The admin's: never written, and not Arcana's to delete.
+	atf_check -s exit:1 -o match:'Arcana.s cron file has no entry' \
+	    "$JGC" -c "$SOCK" cron delete '@daily root /usr/local/bin/backup'
+	atf_check cmp crontab.before root/etc/crontab
+	atf_check cmp backup.before root/etc/cron.d/backup
+	# Refused before anything runs: a schedule out of its range, a
+	# special string cron has not, no user, no command, a comment with
+	# a delete.
+	atf_check -s exit:1 -e match:'schedule is five fields' \
+	    "$JGC" -c "$SOCK" cron add '61 * * * * root /bin/true'
+	atf_check -s exit:1 -e match:'schedule is five fields' \
+	    "$JGC" -c "$SOCK" cron add '* * 0 * * root /bin/true'
+	atf_check -s exit:1 -e match:'schedule is five fields' \
+	    "$JGC" -c "$SOCK" cron add '@sometimes root /bin/true'
+	atf_check -s exit:1 -e match:'schedule is five fields' \
+	    "$JGC" -c "$SOCK" cron add '1-jan * * * * root /bin/true'
+	atf_check -s exit:1 -e match:'names the user it runs as' \
+	    "$JGC" -c "$SOCK" cron add '0 * * * * /bin/true'
+	atf_check -s exit:1 -e match:'runs a command' \
+	    "$JGC" -c "$SOCK" cron add '0 * * * * root'
+	atf_check -s exit:1 -e match:'comment is one line' \
+	    "$JGC" -c "$SOCK" cron delete comment=x '30 3 * * * root /usr/sbin/newsyslog'
+	# A user passwd(5) has not: refused by the job, nothing written.
+	cp root/usr/local/etc/cron.d/arcana arcana.before
+	atf_check -s exit:1 -o match:'no user nobody2: an entry runs as a user' \
+	    "$JGC" -c "$SOCK" cron add '0 * * * * nobody2 /bin/true'
+	atf_check cmp arcana.before root/usr/local/etc/cron.d/arcana
+	# Safe: not confirmed, the file as it was.
+	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" cron add \
+	    '15 7 * * mon root /bin/echo week'
+	cron_settle
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    -o match:'cron.d/arcana, as it was' "$JGC" -c "$SOCK" job "$(cron_last)"
+	atf_check cmp arcana.before root/usr/local/etc/cron.d/arcana
+}
+cron_entries_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case cron_crontab cleanup
+cron_crontab_head()
+{
+	atf_set "descr" "a user's crontab changed by crontab(1) alone (crontab -u user -), Arcana's entries between its markers, the user's own lines kept as they were and refused to Arcana; the markers gone with the last entry, a crontab made for none removed again; an unknown user and crontab's refusal said; a safe change undone"
+}
+cron_crontab_body()
+{
+	mkdir -p root/etc root/var/cron/tabs
+	cat > root/etc/passwd <<'EOF'
+root:*:0:0:Charlie &:/root:/bin/sh
+alice:*:1001:1001:Alice:/home/alice:/bin/sh
+carol:*:1002:1002:Carol:/home/carol:/bin/sh
+EOF
+	printf 'MAILTO=alice\n# mine\n0 9 * * 1-5 /home/alice/bin/mail-me\n' > \
+	    root/var/cron/tabs/alice
+	cp root/var/cron/tabs/alice alice.before
+	DAEMON_ARGS="--root $(pwd)/root --crontab $(pwd)/fake-crontab"
+	start_daemon
+	cron_fakes
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron add crontab=alice \
+	    comment=sync '*/10 * * * * /home/alice/bin/sync'
+	atf_check -o match:'^crontab -u alice -$' cat crontab.log
+	cat > want <<'EOF'
+MAILTO=alice
+# mine
+0 9 * * 1-5 /home/alice/bin/mail-me
+
+# BEGIN arcana: entries of Arcana's, written by crontab(1); changed from Arcana
+# sync
+*/10 * * * * /home/alice/bin/sync
+# END arcana
+EOF
+	atf_check -o file:want cat root/var/cron/tabs/alice
+	atf_check \
+	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":3,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false\}' \
+	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":7,"schedule":"\*/10 \* \* \* \*","user":"alice","command":"/home/alice/bin/sync","comment":"sync","arcana":true\}' \
+	    "$JGC" -c "$SOCK" cron
+	# The user's own: not Arcana's to change.
+	atf_check -s exit:1 -o match:'not Arcana.s: it is outside Arcana.s markers' \
+	    "$JGC" -c "$SOCK" cron delete crontab=alice '0 9 * * 1-5 /home/alice/bin/mail-me'
+	atf_check -s exit:1 -o match:'not Arcana.s' \
+	    "$JGC" -c "$SOCK" cron replace crontab=alice \
+	    '0 9 * * 1-5 /home/alice/bin/mail-me' '0 10 * * 1-5 /home/alice/bin/mail-me'
+	# Replaced between the markers, the rest as it was.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron replace crontab=alice \
+	    '*/10 * * * * /home/alice/bin/sync' '*/15 * * * * /home/alice/bin/sync'
+	atf_check -o match:'^\*/15 \* \* \* \* /home/alice/bin/sync$' \
+	    -o not-match:'^# sync$' cat root/var/cron/tabs/alice
+	atf_check -o file:alice.before head -n 3 root/var/cron/tabs/alice
+	# crontab refusing it: said, the crontab as it was.
+	cp root/var/cron/tabs/alice alice.mid
+	touch root/crontab.fail
+	atf_check -s exit:1 -o match:"errors in crontab file, can't install" \
+	    "$JGC" -c "$SOCK" cron add crontab=alice '@reboot /home/alice/bin/start'
+	rm root/crontab.fail
+	atf_check cmp alice.mid root/var/cron/tabs/alice
+	# Its last entry deleted: its markers too, the crontab as it was.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron delete crontab=alice \
+	    '*/15 * * * * /home/alice/bin/sync'
+	atf_check cmp alice.before root/var/cron/tabs/alice
+	# A user with none: one made, then removed (crontab -r).
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron add crontab=carol \
+	    '@daily /home/carol/bin/tidy'
+	printf '# BEGIN arcana: entries of Arcana%ss, written by crontab(1); changed from Arcana\n@daily /home/carol/bin/tidy\n# END arcana\n' \
+	    "'" > want
+	atf_check -o file:want cat root/var/cron/tabs/carol
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron delete crontab=carol \
+	    '@daily /home/carol/bin/tidy'
+	atf_check test ! -e root/var/cron/tabs/carol
+	atf_check -o match:'^crontab -u carol -r -f$' cat crontab.log
+	# A user passwd(5) has not.
+	atf_check -s exit:1 -o match:'no user bob: a crontab is a user.s' \
+	    "$JGC" -c "$SOCK" cron add crontab=bob '0 * * * * /bin/true'
+	atf_check -s exit:1 -e match:'a crontab.s user is a name' \
+	    "$JGC" -c "$SOCK" cron add 'crontab=a/b' '0 * * * * /bin/true'
+	# Safe: not confirmed, alice's crontab as it was; carol's, which
+	# was none, removed again.
+	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" cron add \
+	    crontab=alice '@reboot /home/alice/bin/start'
+	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" cron add \
+	    crontab=carol '@reboot /home/carol/bin/start'
+	cron_settle
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    "$JGC" -c "$SOCK" job "$(cron_last 1)"
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    "$JGC" -c "$SOCK" job "$(cron_last)"
+	atf_check cmp alice.before root/var/cron/tabs/alice
+	atf_check test ! -e root/var/cron/tabs/carol
+	# Confirmed: it stays.
+	atf_check -o match:'confirmed: it stays' "$JGC" -s -c "$SOCK" cron add \
+	    crontab=alice '@reboot /home/alice/bin/start'
+	atf_check -o match:'^@reboot /home/alice/bin/start$' \
+	    cat root/var/cron/tabs/alice
+}
+cron_crontab_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case cron_jail cleanup
+cron_jail_head()
+{
+	atf_set "descr" "a running jail's cron: its crontab, cron.d files and users' crontabs read beneath its root, the users' by its own crontab(1) through jexec; Arcana's file written in the jail and never through a link out of it, a jail user's crontab by its crontab; a user of the host's alone refused there, a jail not running said; a safe change undone in the jail; the host's left"
+}
+cron_jail_body()
+{
+	R="$(pwd)/web"
+	mkdir -p "$R/etc/cron.d" "$R/var/cron/tabs" "$R/usr/local/etc" \
+	    root/etc root/var/cron/tabs outside
+	printf 'hostname="web"\ncron_flags="-s"\n' > "$R/etc/rc.conf"
+	printf '# the jail\047s\n0 4 * * * root /usr/local/bin/jail-job\n' > \
+	    "$R/etc/crontab"
+	printf 'root:*:0:0:Charlie &:/root:/bin/sh\nwww:*:80:80:World Wide Web Owner:/nonexistent:/usr/sbin/nologin\n' > \
+	    "$R/etc/passwd"
+	printf '@hourly /usr/local/www/bin/clean\n' > "$R/var/cron/tabs/www"
+	cp "$R/var/cron/tabs/www" www.before
+	printf '0 0 * * * root /usr/local/bin/host-only\n' > root/etc/crontab
+	printf 'root:*:0:0::/root:/bin/sh\nalice:*:1001:1001::/home/alice:/bin/sh\n' > \
+	    root/etc/passwd
+	printf '@daily /home/alice/bin/host-tab\n' > root/var/cron/tabs/alice
+	DAEMON_ARGS="--root $(pwd)/root --crontab $(pwd)/fake-crontab"
+	start_daemon
+	cron_fakes
+	printf 'web 7 inherit %s 16.0-CURRENT\n' "$R" > jails
+	# The jail's own, read beneath its root, www's by its crontab.
+	atf_check -o match:'"jail":"web"' \
+	    -o match:'"flags":"-s"' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":2,"schedule":"0 4 \* \* \*","user":"root","command":"/usr/local/bin/jail-job","comment":"the jail.s","arcana":false\}' \
+	    -o match:'\{"source":"user","file":"/var/cron/tabs/www","line":1,"schedule":"@hourly","user":"www","command":"/usr/local/www/bin/clean","arcana":false\}' \
+	    -o not-match:'host-only|host-tab|alice' \
+	    "$JGC" -j web -c "$SOCK" cron
+	atf_check -o match:'^jexec 7 .*/fake-crontab -l -u www$' cat jexec.log
+	atf_check -o match:'^crontab -l -u www \(jail\)$' cat crontab.log
+	# Arcana's cron.d a link out of the jail's root: refused, nothing
+	# written out of it.
+	ln -s "$(pwd)/outside" "$R/usr/local/etc/cron.d"
+	atf_check -s exit:1 -o match:'/usr/local/etc/cron.d/arcana in web' \
+	    "$JGC" -j web -c "$SOCK" cron add '*/5 * * * * www /usr/local/www/bin/poll'
+	atf_check -o empty ls outside
+	rm "$R/usr/local/etc/cron.d"
+	# Written in the jail; the host's left.
+	atf_check -o match:'done +web: cron add' "$JGC" -j web -c "$SOCK" \
+	    cron add comment=poll '*/5 * * * * www /usr/local/www/bin/poll'
+	atf_check -o match:'^\*/5 \* \* \* \* www /usr/local/www/bin/poll$' \
+	    -o match:'^# poll$' cat "$R/usr/local/etc/cron.d/arcana"
+	atf_check test ! -e root/usr/local/etc/cron.d/arcana
+	atf_check -o match:'"file":"/usr/local/etc/cron.d/arcana","line":4,"schedule":"\*/5 \* \* \* \*","user":"www","command":"/usr/local/www/bin/poll","comment":"poll","arcana":true' \
+	    "$JGC" -j web -c "$SOCK" cron
+	# A jail user's crontab by the jail's crontab.
+	atf_check -o match:'done' "$JGC" -j web -c "$SOCK" cron add \
+	    crontab=www '0 * * * * /usr/local/www/bin/stats'
+	atf_check -o match:'^crontab -u www - \(jail\)$' cat crontab.log
+	atf_check -o file:www.before head -n 1 "$R/var/cron/tabs/www"
+	atf_check -o match:'^0 \* \* \* \* /usr/local/www/bin/stats$' \
+	    cat "$R/var/cron/tabs/www"
+	atf_check test ! -e root/var/cron/tabs/www
+	# The host's user is none of the jail's.
+	atf_check -s exit:1 -o match:'no user alice in the jail web' \
+	    "$JGC" -j web -c "$SOCK" cron add crontab=alice '0 * * * * /bin/true'
+	atf_check -s exit:1 -o match:'no user alice in the jail web' \
+	    "$JGC" -j web -c "$SOCK" cron add '0 * * * * alice /bin/true'
+	# Safe in the jail: not confirmed, its file and crontab as they were.
+	cp "$R/usr/local/etc/cron.d/arcana" arcana.before
+	cp "$R/var/cron/tabs/www" www.mid
+	atf_check -o match:'queued' "$JGC" -j web -q -s -c "$SOCK" cron add \
+	    '@reboot root /bin/echo up'
+	atf_check -o match:'queued' "$JGC" -j web -q -s -c "$SOCK" cron delete \
+	    crontab=www '0 * * * * /usr/local/www/bin/stats'
+	cron_settle
+	atf_check cmp arcana.before "$R/usr/local/etc/cron.d/arcana"
+	atf_check cmp www.mid "$R/var/cron/tabs/www"
+	# A jail that is not running: said so.
+	atf_check -s exit:1 -e match:'the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" cron
+	atf_check -s exit:1 -o match:'the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" cron add '@daily root /bin/true'
+}
+cron_jail_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case datastores_syslog_jail cleanup
 datastores_syslog_jail_head()
 {
@@ -24366,6 +24741,9 @@ atf_init_test_cases()
 	atf_add_test_case monitors
 	atf_add_test_case sysfiles
 	atf_add_test_case sysfile_jail
+	atf_add_test_case cron_entries
+	atf_add_test_case cron_crontab
+	atf_add_test_case cron_jail
 	atf_add_test_case sdwan_jail
 	atf_add_test_case jail_conf
 	atf_add_test_case jail_allow

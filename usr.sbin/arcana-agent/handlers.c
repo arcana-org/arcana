@@ -546,6 +546,8 @@ check_spec(const struct arc_job_spec *sp)
 		return (netstore_check(sp));
 	case ARC_JOB_KIND_SYSFILE:
 		return (sysfile_check(sp));
+	case ARC_JOB_KIND_CRON:
+		return (cron_check(sp));
 	case ARC_JOB_KIND_GEOM:
 		return (geom_check(sp));
 	case ARC_JOB_KIND_SMTPD:

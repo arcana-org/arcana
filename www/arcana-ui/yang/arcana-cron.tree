@@ -1,0 +1,21 @@
+module: arcana-cron
+  +--ro cron
+     +---x read
+        +---w input
+        |  +---w jail?   string
+        +--ro output
+           +--ro jail?     string
+           +--ro daemon
+           |  +--ro enabled?   boolean
+           |  +--ro running?   boolean
+           |  +--ro flags?     string
+           +--ro entry*
+           |  +--ro source?     enumeration
+           |  +--ro file?       string
+           |  +--ro line?       uint32
+           |  +--ro schedule?   string
+           |  +--ro user?       string
+           |  +--ro command?    string
+           |  +--ro comment?    string
+           |  +--ro arcana?     boolean
+           +--ro unread*   string

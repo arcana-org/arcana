@@ -178,6 +178,9 @@ submodule arcana-jobs-kinds {
       enum sslproxy {
         value 51;
       }
+      enum cron {
+        value 52;
+      }
     }
     description
       "A kind of job, by its number in arcana.yaml's job-kind.";
@@ -2214,6 +2217,51 @@ submodule arcana-jobs-kinds {
             type boolean;
             description
               "Force";
+          }
+        }
+      }
+      case cron {
+        container cron {
+          presence
+            "This kind of job.";
+          description
+            "A cron entry of Arcana's added, deleted or replaced, in its file or a user's crontab (destroys: verb=delete)";
+          leaf verb {
+            type enumeration {
+              enum add;
+              enum delete;
+              enum replace;
+            }
+            mandatory true;
+            description
+              "Verb";
+          }
+          leaf text {
+            type string;
+            mandatory true;
+            description
+              "The file";
+          }
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
+          leaf user {
+            type string;
+            description
+              "User";
+          }
+          leaf description {
+            type string;
+            description
+              "Description";
+          }
+          leaf-list args {
+            type string;
+            ordered-by user;
+            description
+              "Arguments";
           }
         }
       }

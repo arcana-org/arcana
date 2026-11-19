@@ -4439,6 +4439,84 @@ part_system_jail(void)
 }
 
 /*
+ * cron in a jail picked in the System tab: an entry added from the
+ * form, written to Arcana's file beneath the jail's root (gw's, jroot),
+ * the host's left; then edited and deleted from its row, each written
+ * there.
+ */
+static void
+part_cron_jail(void)
+{
+	int	i;
+
+	put("jroot/etc/passwd", "root:*:0:0:Charlie &:/root:/bin/sh\n"
+	    "www:*:80:80:World Wide Web Owner:/nonexistent:/usr/sbin/nologin\n");
+	put("jroot/etc/crontab", "# the jail's own\n0 4 * * * root "
+	    "/usr/local/bin/jail-job\n");
+	run("document.querySelector('button.tab[data-arg=system]').click()");
+	wait_js("document.querySelector('select[data-input=sv-jail] "
+	    "option[value=gw]')", 20);
+	run("const k = document.querySelector('select[data-input=sv-jail]'); "
+	    "k.value = 'gw'; k.dispatchEvent(new Event('input', { bubbles: "
+	    "true }));");
+	/* The jail's own entries, the admin's read alone. */
+	wait_js("document.querySelector('table.cron') && document.querySelector("
+	    "'table.cron').textContent.includes('/usr/local/bin/jail-job') && "
+	    "document.querySelector('table.cron').textContent.includes("
+	    "\"admin's\")", 20);
+	click_when("button[data-act=cr-new]", 10);
+	wait_js("document.querySelector('form[data-form=cr-entry]')", 10);
+	run("const f = document.querySelector('form[data-form=cr-entry]'); "
+	    "f.schedule.value = '*/5 * * * *'; f.user.value = 'www'; "
+	    "f.command.value = '/usr/local/www/bin/poll'; f.comment.value = "
+	    "'poll the queue'; f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^\\*/5 \\* \\* \\* \\* www "
+	    "/usr/local/www/bin/poll$' jroot/usr/local/etc/cron.d/arcana") != 0;
+	    i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's cron file is not written");
+	ATF_CHECK(system("grep -q '^# poll the queue$' "
+	    "jroot/usr/local/etc/cron.d/arcana") == 0);
+	ATF_CHECK(system("test ! -e root/usr/local/etc/cron.d/arcana") == 0);
+	dock_closed();
+	/* Read again: Arcana's, its Edit there. */
+	wait_js("document.querySelector('table.cron tr.ours button[data-act="
+	    "cr-edit]') && document.querySelector('table.cron tr.ours')."
+	    "textContent.includes('/usr/local/www/bin/poll')", 20);
+	shot("7t-system-cron-jail");
+	click_when("table.cron tr.ours button[data-act=cr-edit]", 10);
+	wait_js("document.querySelector('form[data-form=cr-entry] "
+	    "input[name=old]')", 10);
+	run("const f = document.querySelector('form[data-form=cr-entry]'); "
+	    "f.schedule.value = '@hourly'; f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^@hourly www "
+	    "/usr/local/www/bin/poll$' jroot/usr/local/etc/cron.d/arcana") != 0;
+	    i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's cron entry is not replaced");
+	ATF_CHECK(system("! grep -q '^\\*/5' jroot/usr/local/etc/cron.d/arcana")
+	    == 0);
+	dock_closed();
+	/* Deleted, asked first. */
+	wait_js("document.querySelector('table.cron tr.ours') && document."
+	    "querySelector('table.cron tr.ours').textContent.includes("
+	    "'@hourly')", 20);
+	click_when("table.cron tr.ours button[data-act=cr-del]", 10);
+	wait_js("document.querySelector('form[data-form=confirm]')", 10);
+	run("document.querySelector('form[data-form=confirm]')."
+	    "requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=confirm]')", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q poll "
+	    "jroot/usr/local/etc/cron.d/arcana") == 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's cron entry is not deleted");
+	dock_closed();
+}
+
+/*
  * A host's tabs of several sections (Monitoring, Network, System,
  * Security), a row of them under the tabs, an address each and the
  * old addresses led there; and a host not sampled, a line on the
@@ -13202,6 +13280,25 @@ ATF_TC_CLEANUP(pwa_system_jail, tc)
 	browser_stop();
 }
 
+ATF_TC_WITH_CLEANUP(pwa_cron_jail);
+ATF_TC_HEAD(pwa_cron_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "cron in a jail picked in the System tab: an entry added, edited and deleted from the page, each written to Arcana's file beneath the jail's root, the host's left");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_cron_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_cron_jail();
+}
+ATF_TC_CLEANUP(pwa_cron_jail, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_storage_mail);
 ATF_TC_HEAD(pwa_storage_mail, tc)
 {
@@ -16874,6 +16971,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_nettab_kinds);
 	ATF_TP_ADD_TC(tp, pwa_storage_system);
 	ATF_TP_ADD_TC(tp, pwa_system_jail);
+	ATF_TP_ADD_TC(tp, pwa_cron_jail);
 	ATF_TP_ADD_TC(tp, pwa_firewall_objects);
 	ATF_TP_ADD_TC(tp, pwa_storage_mail);
 	ATF_TP_ADD_TC(tp, pwa_flows_netstore);

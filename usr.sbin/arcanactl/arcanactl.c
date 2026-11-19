@@ -292,6 +292,10 @@ usage(void)
 	    "    sslproxy\n"
 	    "    sslproxy conf form.json [replace] | enable | disable | start | stop |\n"
 	    "        restart | csr [renew] | install-ca cert.pem chain.pem\n"
+	    "    cron\n"
+	    "    cron add [crontab=user] [comment=text] line |\n"
+	    "        delete [crontab=user] line |\n"
+	    "        replace [crontab=user] [comment=text] old-line new-line\n"
 	    "    sysfile file path | periodic name=YES|NO ... |\n"
 	    "        rc kern_securelevel_enable=YES|NO kern_securelevel=N |\n"
 	    "        dma smarthost=host [port=N] [tls=none|starttls|opportunistic|tls] [user=name]\n"	    "    geom class subcommand [word ...] [-P passfile]\n"
@@ -421,8 +425,8 @@ usage(void)
 	    "net, route, interface, ng, wg, bird, ipfw, bridge, geneve, "
 	    "ipsec, neigh, carp,\ncapture, path-check, monitor and sysctl; "
 	    "its own daemons and files for sshd,\ncert, smtpd, speeder, ps, "
-	    "signal, renice, log, storage, system, sysfile,\nand get and edit "
-	    "of syslog.\n");
+	    "signal, renice, log, storage, system, sysfile, cron,\nand get and "
+	    "edit of syslog.\n");
 	exit(2);
 }
 
@@ -6090,6 +6094,53 @@ cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
+/*
+ * cron: cron's entries, read; with words, a job: add, delete or replace
+ * an entry of Arcana's file (its line with a user field), or with
+ * crontab=user of that user's crontab, between Arcana's markers.
+ */
+static int
+cmd_cron(cbl_conn *conn, int argc, char **argv)
+{
+	struct arc_job_spec	 sp;
+	ucl_object_t		*data;
+	char			 ebuf[256];
+	int			 error, i, want;
+
+	if (argc == 1) {
+		/* arcana-cron's read. */
+		ytold_begin(conn);
+		error = yr_cron(conn, netjail, &data, ebuf, sizeof(ebuf));
+		return (ydata_out("cron", error, data, ebuf));
+	}
+	memset(&sp, 0, sizeof(sp));
+	sp.has_kind = true;
+	sp.kind = ARC_JOB_KIND_CRON;
+	sp.verb = argv[1];
+	if (strcmp(argv[1], "add") != 0 && strcmp(argv[1], "delete") != 0 &&
+	    strcmp(argv[1], "replace") != 0)
+		usage();
+	for (i = 2; i < argc; i++) {
+		if (strncmp(argv[i], "crontab=", 8) == 0)
+			sp.user = argv[i] + 8;
+		else if (strncmp(argv[i], "comment=", 8) == 0)
+			sp.description = argv[i] + 8;
+		else
+			break;
+	}
+	/* The line; replace's the old one first. */
+	want = strcmp(argv[1], "replace") == 0 ? 2 : 1;
+	if (argc - i != want)
+		usage();
+	if (want == 2) {
+		sp.names.v = (const char **)(uintptr_t)&argv[i];
+		sp.names.n = 1;
+	}
+	sp.text = argv[argc - 1];
+	sp.jail = netjail;
+	return (submit(conn, &sp));
+}
+
 /* netstore [nfs | iscsi | hast]: the host's storage services; with -j,
  * a jail's NFS server. */
 static int
@@ -8747,6 +8798,8 @@ main(int argc, char *argv[])
 		rc = cmd_speeder(conn, argc, argv);
 	else if (strcmp(argv[0], "sslproxy") == 0)
 		rc = cmd_sslproxy(conn, argc, argv);
+	else if (strcmp(argv[0], "cron") == 0)
+		rc = cmd_cron(conn, argc, argv);
 	else if (strcmp(argv[0], "monitor") == 0)
 		rc = cmd_monitor(conn, argc, argv);
 	else if (strcmp(argv[0], "system") == 0)

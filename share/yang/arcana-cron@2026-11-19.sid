@@ -1,0 +1,126 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-cron",
+    "module-revision": "2026-11-19",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 98 600, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-netconf-acm",
+        "module-revision": "2018-02-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "98600",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-cron",
+        "sid": "98600"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron",
+        "sid": "98601"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read",
+        "sid": "98602"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/input",
+        "sid": "98603"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/input/jail",
+        "sid": "98604"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output",
+        "sid": "98605"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/daemon",
+        "sid": "98606"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/daemon/enabled",
+        "sid": "98607"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/daemon/flags",
+        "sid": "98608"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/daemon/running",
+        "sid": "98609"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry",
+        "sid": "98610"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/arcana",
+        "sid": "98611"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/command",
+        "sid": "98612"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/comment",
+        "sid": "98613"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/file",
+        "sid": "98614"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/line",
+        "sid": "98615"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/schedule",
+        "sid": "98616"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/source",
+        "sid": "98617"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/user",
+        "sid": "98618"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/jail",
+        "sid": "98619"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/unread",
+        "sid": "98620"
+      }
+    ]
+  }
+}

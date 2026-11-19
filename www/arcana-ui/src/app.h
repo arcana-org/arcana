@@ -1270,6 +1270,12 @@ bool		 sslinspect_action(const char *, const char *, const char *);
 void		 sslinspect_refresh(void);
 /* sysview.c: a host's own configuration, of the system read. */
 void		 refresh_system(struct server *, bool);
+const char	*sysview_jail(const struct server *);
+/* cron.c: the System tab's cron(8), arcana-cron's read. */
+void		 view_cron(struct html *, struct server *);
+bool		 cron_form(const char *, const ucl_object_t *);
+bool		 cron_action(const char *, const char *, const char *);
+void		 cron_refresh(void);
 
 /*
  * netread.c: a host's network tables through the fleet mount, made the

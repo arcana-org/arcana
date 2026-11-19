@@ -1174,6 +1174,79 @@ Nothing is changed.
 arcana-system's
 .Ic read
 action, printed as the JSON the system operation gave.
+.It Cm cron
+.Xr cron 8 's
+entries, as JSON: each of
+.Pa /etc/crontab ,
+of the files of
+.Pa /etc/cron.d
+and
+.Pa /usr/local/etc/cron.d
+(those whose names start with a dot left out, as cron leaves them) and
+of each user's crontab
+.Pq Nm crontab Fl l Fl u Ar user ,
+with its source, file and line, schedule, user, command, the comment
+line above it, and whether it is Arcana's; and cron itself, running,
+.Va cron_enable
+and
+.Va cron_flags .
+With
+.Fl j ,
+a running jail's, read beneath its root, its users' crontabs by its own
+.Xr crontab 1 .
+Nothing is changed.
+arcana-cron's
+.Ic read
+action.
+.It Cm cron add Oo Cm crontab= Ns Ar user Oc Oo Cm comment= Ns Ar text Oc Ar line
+.It Cm cron delete Oo Cm crontab= Ns Ar user Oc Ar line
+.It Cm cron replace Oo Cm crontab= Ns Ar user Oc Oo Cm comment= Ns Ar text Oc Ar old-line new-line
+An entry of Arcana's added, deleted or replaced, a job.
+Arcana's entries are in a file of its own,
+.Pa /usr/local/etc/cron.d/arcana ,
+which cron reads by itself: its
+.Ar line
+is the system format, five time fields
+.Po
+minute 0-59, hour 0-23, day of the month 1-31, month 1-12 or
+.Li jan Ns - Ns Li dec ,
+day of the week 0-7 or
+.Li sun Ns - Ns Li sat ;
+each
+.Li * ,
+a value, a range, a list, a
+.Li / Ns Ar step
+.Pc
+or one of
+.Li @reboot , @yearly , @annually , @monthly , @weekly , @daily ,
+.Li @midnight , @hourly , @every_minute , @every_second
+or
+.Li @ Ns Ar seconds ,
+then the user it runs as, one of
+.Xr passwd 5 's,
+then the command.
+With
+.Cm crontab= Ns Ar user ,
+that user's crontab instead, its
+.Ar line
+with no user field: changed by
+.Xr crontab 1
+alone
+.Pq Nm crontab Fl u Ar user Fl ,
+Arcana's entries between its markers
+.Pq Li "# BEGIN arcana" , Li "# END arcana" ,
+the user's own lines as they were; an entry of theirs is refused, and
+the markers go with Arcana's last entry.
+.Cm comment=
+is the comment line written above the entry.
+The admin's
+.Pa /etc/crontab
+and other cron.d files are never written.
+With
+.Fl j ,
+a running jail's file, or its user's crontab by its own crontab(1); with
+.Fl s ,
+the file or the crontab put back as it was unless confirmed.
 .It Cm geom Ar class subcommand Oo Ar word ... Oc Op Fl P Ar passfile
 A GEOM class's command, as
 .Xr geom 8

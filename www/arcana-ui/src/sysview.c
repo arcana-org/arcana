@@ -16,8 +16,9 @@
  *
  * Where: the host, or a running jail picked in the System, Security and
  * Logs tabs, whose own daemons' files are read and written in it (the
- * read's jail, the sysfile jobs'): periodic, Kerberos and syslog; the
- * rest of it is the host's, said so.
+ * read's jail, the sysfile jobs'): periodic, Kerberos and syslog, and
+ * cron (cron.c, its own read and jobs); the rest of it is the host's,
+ * said so.
  */
 
 #include <ctype.h>
@@ -51,6 +52,14 @@ sv_where(const struct server *s)
 {
 
 	return (s != NULL && strcmp(s->id, sv.jsid) == 0 ? sv.jail : "");
+}
+
+/* The jail picked of s, "" for the host: cron.c's too. */
+const char *
+sysview_jail(const struct server *s)
+{
+
+	return (sv_where(s));
 }
 
 /* A job's extra: the jail it is done in, where one is picked. */
@@ -651,12 +660,16 @@ view_system(struct html *h, struct server *s)
 	const ucl_object_t	*o;
 
 	sv_picker(h, s, "the host's own configuration, or a jail's: its "
-	    "periodic(8), in it");
-	/* A jail's: periodic alone, the rest the host's. */
+	    "periodic(8) and cron(8), in it");
+	/* A jail's: periodic and cron alone, the rest the host's. */
 	if (sv_where(s)[0] != '\0') {
-		if ((o = data(h, s)) == NULL)
-			return;
 		h_raw(h, "<section class=\"sysview\">");
+		/* cron's own read, there while the system's comes. */
+		view_cron(h, s);
+		if ((o = data(h, s)) == NULL) {
+			h_raw(h, "</section>");
+			return;
+		}
 		view_periodic(h, o);
 		h_raw(h, "<p class=\"dim jail-host\">NTP, Linux compatibility, "
 		    "service jails, devd(8) and resource limits (rctl) are the "
@@ -685,6 +698,7 @@ view_system(struct html *h, struct server *s)
 	    "the system's: notify, attach, detach, nomatch, each with an action",
 	    6);
 	view_rctl(h, o, s);
+	view_cron(h, s);
 	h_raw(h, "</section>");
 }
 

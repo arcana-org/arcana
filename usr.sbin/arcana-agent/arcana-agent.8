@@ -76,6 +76,7 @@
 .Op Fl -routes-cache Ar seconds
 .Op Fl -smtpd-watch Ar seconds
 .Op Fl -sslproxy-watch Ar seconds
+.Op Fl -crontab Ar crontab
 .Op Fl -stamp-port Ar port
 .Op Fl -bmp-port Ar port
 .Op Fl -archive Ar directory
@@ -1059,6 +1060,17 @@ host's set 27 holds the rules of each jail of the host's network whose
 SSLproxy runs, taken out where it stopped and put back when it runs
 again.
 Default 30; 0 looks never.
+.It Fl -crontab Ar crontab
+The
+.Xr crontab 1
+a user's crontab is read
+.Pq Fl l Fl u Ar user
+and written
+.Pq Fl u Ar user Fl
+by, a jail's run there by
+.Xr jexec 8 ;
+default
+.Pa /usr/bin/crontab .
 .It Fl -routes-cache Ar seconds
 How long the routes of a FIB, as the probes' state counts them for each
 edge (host or vnet jail), are told again before its tables are dumped anew

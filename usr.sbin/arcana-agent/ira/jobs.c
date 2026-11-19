@@ -66,6 +66,7 @@ struct qjob {
 	bool			 undo_enabled;	/* bird: the protocol was */
 	const char		*undo_note;	/* why nothing is put back */
 	struct speeder_was	 undo_speeder;	/* speeder: as it was */
+	struct cron_was		 undo_cron;	/* cron: the crontab as it was */
 	char			*undo_secret;	/* malloc'd, zeroed at the end:
 						 * wireguard: showconf before */
 	struct undo_file {		/* files as they were: text, or none */
@@ -167,15 +168,17 @@ scoped(const struct arc_job_spec *sp)
  * run by the jail's own service(8) and its rc.conf is the jail's,
  * written by sysrc -j: a running jail, with or without a network of its
  * own (scope_enter_jail()).  Or on a jail's own daemons' files
- * (sysfile), read and kept, for a safe change, as the jail has them.
+ * (sysfile) or its cron (cron: its users' crontabs by its own
+ * crontab(1)), read and kept, for a safe change, as the jail has them.
  */
 static bool
 jailed(const struct arc_job_spec *sp)
 {
 
 	return ((sp->kind == ARC_JOB_KIND_SERVICE_ACTION || sp->kind ==
-	    ARC_JOB_KIND_SERVICE_CONFIG || sp->kind == ARC_JOB_KIND_SYSFILE) &&
-	    sp->jail != NULL && sp->jail[0] != '\0');
+	    ARC_JOB_KIND_SERVICE_CONFIG || sp->kind == ARC_JOB_KIND_SYSFILE ||
+	    sp->kind == ARC_JOB_KIND_CRON) && sp->jail != NULL &&
+	    sp->jail[0] != '\0');
 }
 
 /* Have w work where the job works: the network of the jail it names
@@ -282,6 +285,9 @@ title_words(const struct arc_job_spec *sp)
 		break;
 	case ARC_JOB_KIND_SYSFILE:
 		rc = (t = sysfile_title(sp)) != NULL ? 0 : -1;
+		break;
+	case ARC_JOB_KIND_CRON:
+		rc = (t = cron_title(sp)) != NULL ? 0 : -1;
 		break;
 	case ARC_JOB_KIND_GEOM:
 		rc = (t = geom_title(sp)) != NULL ? 0 : -1;
@@ -1036,6 +1042,19 @@ undo_prepare(struct qjob *j)
 			    "so it could not be put back: %s", sysfile_path(&j->w,
 			    sp->verb), strerror(errno)));
 		break;
+	case ARC_JOB_KIND_CRON:
+		/* Arcana's file as it is, or the user's crontab as crontab
+		 * -l says it. */
+		e = NULL;
+		if (sp->user == NULL || sp->user[0] == '\0') {
+			if (!undo_snap_file(j, cron_path(&j->w)))
+				return (wfmt(&j->w, "not changed: %s could not "
+				    "be read, so it could not be put back: %s",
+				    cron_path(&j->w), strerror(errno)));
+		} else if (cron_snap(&j->w, sp, &j->undo_cron, &e) != 0)
+			return (wfmt(&j->w, "not changed: the crontab could "
+			    "not be read, so it could not be put back: %s", e));
+		break;
 	case ARC_JOB_KIND_IPSEC:
 		/* A connection's files as they are (or are not), to go back
 		 * before the daemon reads them again; up and down are each
@@ -1435,6 +1454,13 @@ undo_steps(struct qjob *j, struct work *w, const char **ep)
 			rc = undo_files_back(j, w, &e) == 0 ? sysfile_tell(w,
 			    sp->verb, &e) : -1;
 		break;
+	case ARC_JOB_KIND_CRON:
+		/* cron reads its file again by itself. */
+		if (sp->user == NULL || sp->user[0] == '\0')
+			rc = undo_files_back(j, w, &e);
+		else
+			rc = cron_undo(w, sp, &j->undo_cron, &e);
+		break;
 	case ARC_JOB_KIND_IPSEC:
 		if (strcmp(sp->verb, "up") == 0 || strcmp(sp->verb, "down") == 0)
 			rc = ipsec_toggle(w, sp->conn, sp->verb[0] == 'd', &e);
@@ -1792,6 +1818,11 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 	case ARC_JOB_KIND_SYSFILE:
 		error = NULL;
 		ok = do_sysfile_job(w, sp, &error) == 0;
+		break;
+	case ARC_JOB_KIND_CRON:
+		/* In the jail it names, entered (jailed()). */
+		error = NULL;
+		ok = do_cron_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_GEOM:
 		error = NULL;

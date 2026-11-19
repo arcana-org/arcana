@@ -93,6 +93,19 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### cron; agent 0.336.0, console 0.479.0
+
+- A new module, arcana-cron (SIDs 98 600), reads cron(8)'s entries, the
+  host's or a running jail's: /etc/crontab, the cron.d files and the
+  users' crontabs (crontab -l -u).  A new job kind, cron, adds, deletes
+  and replaces Arcana's own entries in /usr/local/etc/cron.d/arcana or,
+  with user, between Arcana's markers in that user's crontab, written
+  by crontab(1) alone (arcana-jobs 63134-63147); undone in safe mode.
+  The admin's own files and lines are read only.
+- The System tab has a cron(8) section that follows its Where picker;
+  arcanactl has `cron`.  The agent takes --crontab.
+- Update the agent and the console together.
+
 ### The Security section's Suricata in a jail, in full; agent 0.335.0, console 0.478.0
 
 - A jailed Suricata works as one on the host does: its Statistics'

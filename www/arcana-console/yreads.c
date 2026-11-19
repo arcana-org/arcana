@@ -11,7 +11,8 @@
  * gave (the agent's ssh.c, poudriere.c, telegram.c), each key in the
  * place the agent put it; and arcana-crashes', arcana-system's,
  * arcana-netstore's, arcana-suricata's, arcana-smtpd's,
- * arcana-speeder's and arcana-sslproxy's actions, whose nodes are named
+ * arcana-speeder's, arcana-sslproxy's and arcana-cron's actions, whose
+ * nodes are named
  * as the JSON's keys,
  * by yflat.c; so that the pages keep reading what they read.
  */
@@ -1013,4 +1014,17 @@ yr_sslproxy_install(cbl_conn *conn, const char *jail, const char *cert,
 	return (flat_call(conn, "arcana-sslproxy", "sslproxy", "install-ca",
 	    &in, sizeof(struct arcana_sslproxy_sslproxy_install_ca_output),
 	    NULL, data, err, errlen));
+}
+
+int
+yr_cron(cbl_conn *conn, const char *jail, ucl_object_t **data, char *err,
+    size_t errlen)
+{
+	struct arcana_cron_cron_read_input	in;
+
+	memset(&in, 0, sizeof(in));
+	in.jail = jail != NULL && jail[0] != '\0' ? jail : NULL;
+	return (flat_call(conn, "arcana-cron", "cron", "read", &in,
+	    sizeof(struct arcana_cron_cron_read_output), yfn_cron, data, err,
+	    errlen));
 }
