@@ -93,6 +93,14 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### cblink 0.2.32; agent 0.338.0, console 0.481.0
+
+- cblink 0.2.32: a RESTCONF action target whose path names a keyed list
+  or leaf-list without its keys or value, or a key that is not UTF-8,
+  is refused by the console with 400 instead of by the agent.  A
+  connection freed from another thread gets no more frames (one could
+  still be answered).  New fuzzers (make fuzz in cblink).
+
 ### SSL inspection: wildcard names; agent 0.337.0, console 0.480.0
 
 - SSLproxy zones (the SSL inspection tab's never-opened hosts and an
