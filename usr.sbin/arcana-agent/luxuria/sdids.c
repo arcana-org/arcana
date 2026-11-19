@@ -23,6 +23,20 @@
  * are stopped, and the list is kept for the next start.  The faults are
  * held to the instances (ids_reconcile()): at the start, both groups
  * read, and at each apply.
+ *
+ * The Security section's may run in a jail (its "jail"): there its
+ * files are beneath the jail's root (JAIL_DIR, written by descriptors
+ * opened beneath it, never through a link out of it, scope.c), its
+ * Suricata, its ruleset and its etc files are the jail's own, run in it
+ * by jexec(8), and its eve.json is read from beneath the root.  A
+ * signal to it is sent from inside the jail, so that a pid file the
+ * jail's root wrote reaches none of the host's processes.  One that
+ * prevents needs a jail with a network of its own (vnet): divert(4)
+ * sockets are a vnet jail's alone, and the rules that divert to it are
+ * placed in the jail's own ipfw by Arcana (idsfw.c); a jail that shares
+ * the host's network may detect by pcap(3) where its devfs shows it
+ * bpf(4).  A jail not running at the agent's start leaves its instance
+ * kept, not started, until the list is applied again.
  */
 
 #include <sys/param.h>
@@ -39,6 +53,7 @@
 #include <dirent.h>
 #include <ifaddrs.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -61,6 +76,10 @@
 #define	IS_SEC(name)	(strncmp((name), "sec-", 4) == 0)
 #define	INSTANCES_MAX	64
 #define	IFS_MAX		16
+/* A jail's: where its instances' files are beneath its root, and the
+ * ruleset its own suricata-update keeps. */
+#define	JAIL_DIR	"/var/db/arcana-security"
+#define	JAIL_RULESET	"/var/lib/suricata/rules/suricata.rules"
 #define	START_WAIT	180	/* s, for its engine to start */
 #define	DIVERT_EVERY	10	/* s, ipfw read again for one down */
 #define	CONF_MAX	(256 * 1024)
@@ -82,6 +101,9 @@ struct spoint {
 
 struct instance {
 	char	 name[40];
+	char	 jail[64];		/* the jail it runs in, "" the host */
+	bool	 vnet;			/* its jail has a network of its own */
+	bool	 jaildown;		/* its jail not running at the start */
 	char	 ifs[IFS_MAX][IFNAMSIZ];
 	int	 nifs;
 	int	 divert;		/* its divert port, prevent; 0 detect */
@@ -102,6 +124,7 @@ struct instance {
 };
 
 static ucl_object_t	*parse(const char *);
+static const char	*ruleset_path(void);
 static const char	*suricata_replay_check(const struct arc_job_spec *);
 static int		 suricata_replay(struct work *,
 			    const struct arc_job_spec *, const char **);
@@ -122,14 +145,16 @@ static bool		applying;	/* instances stop and start: no fault */
  * divert ports, read under the lock, used without it. */
 struct was {
 	char	name[40];
+	char	jail[64];
 	int	divert;
 };
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 static bool		reading;
 static bool		ids_started;	/* both groups read at the start */
+static bool		starting;	/* the kept lists applied at the start */
 
-static bool	running(const char *);
+static bool	running(const char *, const char *);
 
 /*
  * The ids faults (by "suricata") held to the instances there are, at
@@ -143,28 +168,31 @@ static void
 ids_reconcile(bool at_start)
 {
 	struct fault_live	*v;
-	char			(*names)[40];
+	char			(*names)[40], (*jails)[64];
 	bool			*ok;
 	int			 i, n;
 
 	v = calloc(INSTANCES_MAX, sizeof(*v));
 	names = calloc(INSTANCES_MAX, sizeof(*names));
+	jails = calloc(INSTANCES_MAX, sizeof(*jails));
 	ok = calloc(INSTANCES_MAX, sizeof(*ok));
-	if (v == NULL || names == NULL || ok == NULL) {
+	if (v == NULL || names == NULL || jails == NULL || ok == NULL) {
 		free(v);
 		free(names);
+		free(jails);
 		free(ok);
 		return;
 	}
 	pthread_mutex_lock(&lock);
 	for (i = n = 0; i < ninstances; i++) {
 		(void)strlcpy(names[n], instances[i].name, sizeof(names[n]));
+		(void)strlcpy(jails[n], instances[i].jail, sizeof(jails[n]));
 		ok[n++] = instances[i].divert == 0;
 	}
 	pthread_mutex_unlock(&lock);
 	for (i = 0; i < n; i++) {
 		v[i].object = names[i];
-		v[i].well = at_start && (ok[i] || running(names[i]));
+		v[i].well = at_start && (ok[i] || running(jails[i], names[i]));
 		if (v[i].well)
 			v[i].reason = "Suricata runs, or prevents nothing";
 	}
@@ -172,6 +200,7 @@ ids_reconcile(bool at_start)
 	    "the Suricata instance is taken away");
 	free(v);
 	free(names);
+	free(jails);
 	free(ok);
 }
 
@@ -250,47 +279,104 @@ ids_pathbuf(const char *name, const char *ext, char *buf, size_t len)
 		snprintf(buf, len, "%s", rel);
 }
 
+/* An instance's file, in the scope w works in: beside the agent's
+ * kept files, or beneath its jail's root. */
 static const char *
 inst_path(struct work *w, const char *name, const char *ext)
 {
 	char	buf[MAXPATHLEN];
 
+	if (w->jail != NULL)
+		return (wfmt(w, JAIL_DIR "/sdwan-ids-%s.%s", name, ext));
 	ids_pathbuf(name, ext, buf, sizeof(buf));
 	return (wstrdup(w, buf));
 }
 
+/* w working where an instance runs: its jail (running, a network of
+ * its own or not), or the host.  0, or -1 and why. */
+static int
+inst_in(struct work *w, const char *jail, const char **errp)
+{
+	const char	*e = NULL;
+
+	if (scope_enter_jail(w, jail, &e, false) != 0) {
+		if (errp != NULL)
+			*errp = e;
+		return (-1);
+	}
+	return (0);
+}
+
+/* A jail's suricata is its own, where the port puts it. */
 static const char *
 suricata_bin(struct work *w)
 {
 	const char	*p;
 
+	if (w->jail != NULL)
+		return (PATH_SURICATA_BIN);
 	if ((p = tool(w, "suricata")) != NULL)
 		return (p);
 	return (opts.suricata_bin);
 }
 
-/* Whether an instance's process is there, by its pid file. */
-static bool
-running(const char *name)
+/* The ruleset w's scope has: the host's, or the jail's own. */
+static const char *
+ruleset_of(struct work *w)
 {
-	FILE	*fp;
-	char	 path[MAXPATHLEN];
-	long	 pid = 0;
 
-	ids_pathbuf(name, "pid", path, sizeof(path));
-	if ((fp = fopen(path, "r")) == NULL)
-		return (false);
-	if (fscanf(fp, "%ld", &pid) != 1)
-		pid = 0;
-	fclose(fp);
-	return (pid_alive((pid_t)pid));
+	return (w->jail != NULL ? JAIL_RULESET : SURICATA_RULESET);
+}
+
+/* A file of an instance's, written whole: beside the agent's kept
+ * files, or beneath its jail's root, 0600. */
+static int
+inst_write(struct work *w, const char *name, const char *ext,
+    const char *text, const char **errp)
+{
+
+	if (w->jail == NULL)
+		return (sdwan_conf_write(wfmt(w, "sdwan-ids-%s.%s", name, ext),
+		    text, errp));
+	if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w, inst_path(w,
+	    name, ext), text, strlen(text), 0600, NULL) != 0) {
+		*errp = wfmt(w, "%s in the jail %s: %s", inst_path(w, name, ext),
+		    w->jail, strerror(errno));
+		return (-1);
+	}
+	return (0);
+}
+
+/* A directory of an instance's made, in w's scope. */
+static void
+inst_mkdir(struct work *w, const char *dir)
+{
+
+	if (w->jail == NULL)
+		(void)mkdir_mode(dir, 0750);
+	else
+		(void)scope_mkdirs(w, dir);
 }
 
 static pid_t
 inst_pid(struct work *w, const char *name)
 {
 
-	return (pidfile_of(inst_path(w, name, "pid"), suricata_bin(w)));
+	return (scope_pidfile(w, inst_path(w, name, "pid"), suricata_bin(w)));
+}
+
+/* Whether an instance's process is there, by its pid file: of a jail
+ * not running, none. */
+static bool
+running(const char *jail, const char *name)
+{
+	struct work	w;
+	bool		r;
+
+	work_init(&w);
+	r = inst_in(&w, jail, NULL) == 0 && inst_pid(&w, name) != 0;
+	work_free(&w);
+	return (r);
 }
 
 static void
@@ -300,8 +386,8 @@ inst_stop(struct work *w, const char *name)
 
 	if ((pid = inst_pid(w, name)) == 0)
 		return;
-	pid_stop(pid, suricata_bin(w), 5000);
-	(void)unlink(inst_path(w, name, "pid"));
+	scope_stop(w, pid, suricata_bin(w), 5000);
+	(void)scope_unlink(w, inst_path(w, name, "pid"));
 }
 
 /*
@@ -314,9 +400,9 @@ suricata_etc(struct work *w, const char *file)
 	const char	*p;
 
 	p = wfmt(w, "%s/%s", SURICATA_ETC, file);
-	if (access(p, R_OK) == 0)
+	if (scope_access(w, p, false))
 		return (p);
-	if (access(wfmt(w, "%s.sample", p), R_OK) == 0)
+	if (scope_access(w, wfmt(w, "%s.sample", p), false))
 		return (wfmt(w, "%s.sample", p));
 	return (p);
 }
@@ -432,7 +518,7 @@ ruleset_only(struct work *w, const struct execres *res)
 	bool		 failed;
 
 	copy = said(w, res);
-	from = wfmt(w, "from file %s ", SURICATA_RULESET);
+	from = wfmt(w, "from file %s ", ruleset_of(w));
 	bad = 0;
 	failed = false;
 	why = NULL;
@@ -474,7 +560,7 @@ inst_conf(struct work *w, const char *name, const char *conf)
 
 	/* The ruleset not fetched yet: its line out, the instance's own
 	 * rules alone. */
-	if (access(SURICATA_RULESET, R_OK) != 0 && (l = strstr(conf,
+	if (!scope_access(w, ruleset_of(w), false) && (l = strstr(conf,
 	    "@RULESET@")) != NULL) {
 		p = wstrdup(w, conf);
 		l = p + (l - conf);
@@ -490,7 +576,7 @@ inst_conf(struct work *w, const char *name, const char *conf)
 	to[2] = inst_path(w, name, "pid");
 	to[3] = suricata_etc(w, "classification.config");
 	to[4] = suricata_etc(w, "reference.config");
-	to[5] = SURICATA_RULESET;
+	to[5] = ruleset_of(w);
 	to[6] = inst_path(w, name, "threshold");
 	to[7] = inst_path(w, name, "sock");
 	to[8] = inst_path(w, name, "lua");
@@ -506,6 +592,8 @@ file_text(struct work *w, const char *path)
 	char	*t;
 	long	 n;
 
+	if (w->jail != NULL)
+		return (scope_slurp(w, path, NULL));
 	if ((fp = fopen(path, "r")) == NULL)
 		return (NULL);
 	if (fseek(fp, 0, SEEK_END) != 0 || (n = ftell(fp)) < 0 || n >
@@ -531,20 +619,55 @@ file_text(struct work *w, const char *path)
  * Interface any, alone, in the pcap list: FreeBSD's libpcap has no any
  * device, so it is every interface that is up, but the loopback, pflog,
  * pfsync and enc.  NULL, with errp,
- * when there is none.
+ * when there is none.  A vnet jail's are its own, as its ifconfig -l -u
+ * says them.
  */
 static char *
-expand_any(struct work *w, char *conf, const char **errp)
+expand_any(struct work *w, char *conf, bool vnet, const char **errp)
 {
 	static const char *const skip[] = { "lo", "pflog", "pfsync", "enc" };
 	struct ifaddrs	*ifa, *i;
-	char		*at, *out, *list;
+	struct execres	 res;
+	char		*at, *out, *list, *argv[4], *names, *nm;
 	size_t		 k, n;
 	const char	*line = "  - interface: any\n";
 
 	if ((at = strstr(conf, line)) == NULL || (at != conf && at[-1] !=
 	    '\n'))
 		return (conf);
+	if (w->jail != NULL && vnet) {
+		argv[0] = (char *)(uintptr_t)opts.ifconfig_bin;
+		argv[1] = (char *)(uintptr_t)"-l";
+		argv[2] = (char *)(uintptr_t)"-u";
+		argv[3] = NULL;
+		if (run_read(w, argv, &res) != 0 || res.out == NULL) {
+			*errp = wfmt(w, "interface any: the jail's interfaces: %s",
+			    exec_error(w, &res, "ifconfig"));
+			return (NULL);
+		}
+		names = wstrndup(w, res.out, res.outlen);
+		list = wstrdup(w, "");
+		n = 0;
+		while ((nm = strsep(&names, " \t\n")) != NULL) {
+			if (nm[0] == '\0')
+				continue;
+			for (k = 0; k < nitems(skip); k++)
+				if (strncmp(nm, skip[k], strlen(skip[k])) == 0 &&
+				    isdigit((unsigned char)nm[strlen(skip[k])]))
+					break;
+			if (k < nitems(skip) || !ifname_ok(nm))
+				continue;
+			list = wfmt(w, "%s  - interface: %s\n", list, nm);
+			n++;
+		}
+		if (n == 0) {
+			*errp = "interface any: no interface is up in the jail but "
+			    "the loopback";
+			return (NULL);
+		}
+		return (wfmt(w, "%.*s%s%s", (int)(at - conf), conf, list, at +
+		    strlen(line)));
+	}
 	if (getifaddrs(&ifa) == -1) {
 		*errp = wfmt(w, "getifaddrs: %s", strerror(errno));
 		return (NULL);
@@ -580,9 +703,18 @@ static long
 log_size(struct work *w, const char *name)
 {
 	struct stat	sb;
+	FILE		*fp;
+	long		 n;
 
-	return (stat(wfmt(w, "%s/suricata.log", inst_path(w, name, "d")),
-	    &sb) == 0 ? (long)sb.st_size : 0);
+	if (w->jail == NULL)
+		return (stat(wfmt(w, "%s/suricata.log", inst_path(w, name, "d")),
+		    &sb) == 0 ? (long)sb.st_size : 0);
+	if ((fp = scope_fopen(w, wfmt(w, "%s/suricata.log", inst_path(w, name,
+	    "d")))) == NULL)
+		return (0);
+	n = fstat(fileno(fp), &sb) == 0 ? (long)sb.st_size : 0;
+	fclose(fp);
+	return (n);
 }
 
 /*
@@ -600,8 +732,8 @@ log_errors(struct work *w, const char *name, long from)
 	long		 size;
 	int		 n;
 
-	if ((fp = fopen(wfmt(w, "%s/suricata.log", inst_path(w, name, "d")),
-	    "r")) == NULL)
+	if ((fp = scope_fopen(w, wfmt(w, "%s/suricata.log", inst_path(w, name,
+	    "d")))) == NULL)
 		return (NULL);
 	if (fseek(fp, 0, SEEK_END) == 0 && (size = ftell(fp)) > from + 65536)
 		from = size - 65536;
@@ -635,8 +767,8 @@ log_started(struct work *w, const char *name, long from)
 	char	 buf[512];
 	int	 r;
 
-	if ((fp = fopen(wfmt(w, "%s/suricata.log", inst_path(w, name, "d")),
-	    "r")) == NULL)
+	if ((fp = scope_fopen(w, wfmt(w, "%s/suricata.log", inst_path(w, name,
+	    "d")))) == NULL)
 		return (0);
 	(void)fseek(fp, from, SEEK_SET);
 	r = 0;
@@ -691,13 +823,13 @@ inst_start(struct work *w, const char *name, int divert, bool netmap,
 	int		 n, i, started;
 
 	started = 0;
-	(void)mkdir_mode(inst_path(w, name, "d"), 0750);
+	inst_mkdir(w, inst_path(w, name, "d"));
 	if (divert > 0 && divert_ready(w, errp) != 0)
 		return (-1);
 	/* A pid file of one that is not running (a start that failed, a
 	 * crash) keeps Suricata from starting: it is not ours to keep. */
 	if (inst_pid(w, name) == 0)
-		(void)unlink(inst_path(w, name, "pid"));
+		(void)scope_unlink(w, inst_path(w, name, "pid"));
 	from = log_size(w, name);
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)suricata_bin(w);
@@ -712,7 +844,7 @@ inst_start(struct work *w, const char *name, int divert, bool netmap,
 		argv[n++] = (char *)(uintptr_t)(netmap ? "--netmap" : "--pcap");
 	argv[n++] = (char *)(uintptr_t)"-D";
 	argv[n] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		/* Daemonized, it says why in its own log, not here. */
 		if ((*errp = log_errors(w, name, from)) != NULL)
 			*errp = wfmt(w, "suricata did not start: %s", *errp);
@@ -902,39 +1034,43 @@ alert_json(const char *name, const char *line)
 	return (out);
 }
 
-static void
-eve_path(const char *name, char *buf, size_t len)
+/* An instance's eve.json, in w's scope. */
+static const char *
+eve_path(struct work *w, const char *name)
 {
 
-	ids_pathbuf(name, "d", buf, len);
-	strlcat(buf, "/eve.json", len);
+	return (wfmt(w, "%s/eve.json", inst_path(w, name, "d")));
 }
 
 /* How long an instance's eve.json is, 0 when it has none. */
 static off_t
-eve_size(const char *name)
-{
-	struct stat	st;
-	char		path[MAXPATHLEN];
-
-	eve_path(name, path, sizeof(path));
-	return (stat(path, &st) == 0 ? st.st_size : 0);
-}
-
-/* What an instance wrote since it was last read: its alerts. */
-static void
-read_eve(struct instance *in)
+eve_size(struct work *w, const char *name)
 {
 	struct stat	 st;
 	FILE		*fp;
-	char		 path[MAXPATHLEN], *line, *a;
+	off_t		 n;
+
+	if ((fp = scope_fopen(w, eve_path(w, name))) == NULL)
+		return (0);
+	n = fstat(fileno(fp), &st) == 0 ? st.st_size : 0;
+	fclose(fp);
+	return (n);
+}
+
+/* What an instance wrote since it was last read: its alerts.  w is
+ * where it runs. */
+static void
+read_eve(struct work *w, struct instance *in)
+{
+	struct stat	 st;
+	FILE		*fp;
+	char		*line, *a;
 	size_t		 cap;
 	ssize_t		 n;
 	int		 told;
 
 	/* Opened first, then sized: the file read is the file sized. */
-	eve_path(in->name, path, sizeof(path));
-	if ((fp = fopen(path, "r")) == NULL)
+	if ((fp = scope_fopen(w, eve_path(w, in->name))) == NULL)
 		return;
 	if (fstat(fileno(fp), &st) != 0) {
 		fclose(fp);
@@ -969,30 +1105,28 @@ read_eve(struct instance *in)
 	fclose(fp);
 }
 
-/* Does a rule of ipfw's divert (or tee) to port? */
+/* Does a rule of ipfw's divert (or tee) to port?  The ipfw of w's
+ * scope: a vnet jail's is its own. */
 static bool
-diverts_to(int port)
+diverts_to(struct work *w, int port)
 {
-	struct work	 w;
 	struct execres	 res;
 	char		*argv[3], *p, *line, *want[2];
 	bool		 found;
 
-	work_init(&w);
 	argv[0] = (char *)(uintptr_t)opts.ipfw_bin;
 	argv[1] = (char *)(uintptr_t)"list";
 	argv[2] = NULL;
 	found = false;
-	want[0] = wfmt(&w, " divert %d ", port);
-	want[1] = wfmt(&w, " tee %d ", port);
-	if (run_exec_max(&w, argv, &res, 16 * 1024 * 1024) == 0 &&
+	want[0] = wfmt(w, " divert %d ", port);
+	want[1] = wfmt(w, " tee %d ", port);
+	if (run_exec_max(w, argv, &res, 16 * 1024 * 1024) == 0 &&
 	    res.out != NULL) {
-		p = wstrndup(&w, res.out, res.outlen);
+		p = wstrndup(w, res.out, res.outlen);
 		while (!found && (line = strsep(&p, "\n")) != NULL)
 			found = strstr(line, want[0]) != NULL ||
 			    strstr(line, want[1]) != NULL;
 	}
-	work_free(&w);
 	return (found);
 }
 
@@ -1004,7 +1138,7 @@ diverts_to(int port)
  * while it is down, so a rule added meanwhile makes it Critical.
  */
 static void
-guard(struct instance *in)
+guard(struct work *w, struct instance *in, bool there)
 {
 	time_t	now;
 	bool	up;
@@ -1015,7 +1149,7 @@ guard(struct instance *in)
 		return;
 	if (in->divert == 0)
 		return;
-	up = running(in->name);
+	up = there && inst_pid(w, in->name) != 0;
 	if (up) {
 		if (in->sev != 0)
 			fault_clear("ids", in->name, "Suricata %s runs again",
@@ -1026,7 +1160,7 @@ guard(struct instance *in)
 	}
 	now = time(NULL);
 	if (!in->down || now - in->checked >= DIVERT_EVERY) {
-		in->diverted = diverts_to(in->divert);
+		in->diverted = there && diverts_to(w, in->divert);
 		in->checked = now;
 	}
 	in->down = true;
@@ -1052,14 +1186,22 @@ guard(struct instance *in)
 static void *
 reader(void *arg __unused)
 {
-	int	i;
+	struct work	w;
+	int		i;
+	bool		there;
 
 	for (;;) {
 		sleep(1);
 		pthread_mutex_lock(&lock);
 		for (i = 0; i < ninstances; i++) {
-			read_eve(&instances[i]);
-			guard(&instances[i]);
+			/* Each where it runs: a jail not running, nothing
+			 * read of it. */
+			work_init(&w);
+			there = inst_in(&w, instances[i].jail, NULL) == 0;
+			if (there)
+				read_eve(&w, &instances[i]);
+			guard(&w, &instances[i], there);
+			work_free(&w);
 		}
 		pthread_mutex_unlock(&lock);
 	}
@@ -1079,13 +1221,23 @@ divert_was(const struct was *was, int nwas, const char *name)
 	return (-1);
 }
 
-/* A file of the instance's, written whole: a new one moved over it. */
+/* A file of the instance's, written whole: a new one moved over it;
+ * beneath its jail's root, by scope_replace(). */
 static int
-put_text(const char *path, const char *text, const char **errp)
+put_text(struct work *w, const char *path, const char *text,
+    const char **errp)
 {
 	char	tmp[MAXPATHLEN];
 	FILE	*fp;
 
+	if (w->jail != NULL) {
+		if (scope_replace(w, path, text, strlen(text), 0600, NULL) !=
+		    0) {
+			*errp = strerror(errno);
+			return (-1);
+		}
+		return (0);
+	}
 	snprintf(tmp, sizeof(tmp), "%s.new", path);
 	if ((fp = fopen(tmp, "we")) == NULL || fputs(text, fp) == EOF ||
 	    fclose(fp) != 0 || rename(tmp, path) != 0) {
@@ -1147,21 +1299,29 @@ lua_sync(struct work *w, const char *name, const ucl_object_t *lua)
 
 	changed = false;
 	dir = inst_path(w, name, "lua");
-	if ((d = opendir(dir)) != NULL) {
+	{
+		int	dfd;
+
+		/* Beneath a jail's root, never by a link out of it. */
+		d = (dfd = scope_dirfd(w, dir)) != -1 ? fdopendir(dfd) : NULL;
+		if (d == NULL && dfd != -1)
+			close(dfd);
+	}
+	if (d != NULL) {
 		while ((de = readdir(d)) != NULL) {
 			if (de->d_name[0] == '.')
 				continue;
 			if (lua != NULL && ucl_object_lookup(lua, de->d_name) !=
 			    NULL)
 				continue;
-			(void)unlink(wfmt(w, "%s/%s", dir, de->d_name));
+			(void)unlinkat(dirfd(d), de->d_name, 0);
 			changed = true;
 		}
 		closedir(d);
 	}
 	if (lua == NULL || ucl_object_type(lua) != UCL_OBJECT)
 		return (changed);
-	(void)mkdir_mode(dir, 0750);
+	inst_mkdir(w, dir);
 	it = NULL;
 	while ((e = ucl_object_iterate(lua, &it, true)) != NULL) {
 		path = wfmt(w, "%s/%s", dir, ucl_object_key(e));
@@ -1169,10 +1329,24 @@ lua_sync(struct work *w, const char *name, const ucl_object_t *lua)
 		if (was != NULL && strcmp(was, ucl_object_tostring(e)) == 0)
 			continue;
 		e2 = NULL;
-		if (put_text(path, ucl_object_tostring(e), &e2) == 0)
+		if (put_text(w, path, ucl_object_tostring(e), &e2) == 0)
 			changed = true;
 	}
 	return (changed);
+}
+
+/* lstat(2) of a file beneath w's jail's root. */
+static int
+jail_lstat(struct work *w, const char *path, struct stat *sb)
+{
+	const char	*base;
+	int		 dfd, r;
+
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (-1);
+	r = fstatat(dfd, base, sb, AT_SYMLINK_NOFOLLOW);
+	close(dfd);
+	return (r);
 }
 
 /*
@@ -1201,7 +1375,9 @@ plugins_ok(struct work *w, const char *name, const ucl_object_t *pl,
 			    "/usr/local/lib", name);
 			return (false);
 		}
-		if (lstat(p, &sb) != 0 || !S_ISREG(sb.st_mode) ||
+		/* A jail's beneath its root: its Suricata loads its own. */
+		if ((w->jail != NULL ? jail_lstat(w, p, &sb) : lstat(p, &sb)) !=
+		    0 || !S_ISREG(sb.st_mode) ||
 		    sb.st_uid != 0 || (sb.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
 			*errp = wfmt(w, "%s: the plugin %s is not there, or not "
 			    "root's alone", name, p);
@@ -1211,13 +1387,101 @@ plugins_ok(struct work *w, const char *name, const ucl_object_t *pl,
 	return (true);
 }
 
+/* A directory of an instance's taken away, in w's scope. */
+static void
+inst_rmdir(struct work *w, const char *dir)
+{
+	const char	*base;
+	int		 dfd;
+
+	if (w->jail == NULL) {
+		(void)rmdir(dir);
+		return;
+	}
+	if ((dfd = scope_open_dir(w, dir, &base)) == -1)
+		return;
+	(void)unlinkat(dfd, base, AT_REMOVEDIR);
+	close(dfd);
+}
+
+/*
+ * The divert rules in the jail's own ipfw (idsfw.c) of the instances
+ * of v that run in it and prevent, those stopped or not started left
+ * out; before, only those that ran before (in held) on the same port
+ * and stay, so that none is diverted to while it is stopped.  A jail
+ * not running is left alone.  0, or -1 and why.
+ */
+static int
+jail_diverts(struct work *w, const char *jail, const struct instance *v,
+    int n, const struct was *held, int nheld, bool before, const char **errp)
+{
+	struct idsfw	r[INSTANCES_MAX];
+	int		k, m, i, rc;
+
+	for (k = m = 0; k < n; k++) {
+		if (strcmp(v[k].jail, jail) != 0 || v[k].divert == 0 ||
+		    v[k].stopped || v[k].jaildown)
+			continue;
+		if (before) {
+			for (i = 0; i < nheld; i++)
+				if (strcmp(held[i].name, v[k].name) == 0)
+					break;
+			if (i == nheld || held[i].divert != v[k].divert ||
+			    strcmp(held[i].jail, jail) != 0)
+				continue;
+		}
+		r[m].name = v[k].name;
+		r[m].port = v[k].divert;
+		r[m].nifs = v[k].nifs;
+		for (i = 0; i < v[k].nifs; i++)
+			r[m].ifs[i] = v[k].ifs[i];
+		m++;
+	}
+	if (inst_in(w, jail, NULL) != 0)
+		return (0);
+	rc = idsfw_set(w, m, r, errp);
+	(void)inst_in(w, "", NULL);
+	return (rc);
+}
+
+/* Each vnet jail the instances that prevent run in, now (v) or before
+ * (held), its divert rules made as jail_diverts() says. */
+static int
+diverts_all(struct work *w, const struct instance *v, int n,
+    const struct was *held, int nheld, bool before, const char **errp)
+{
+	const char	*j[2 * INSTANCES_MAX];
+	int		 nj, k, i, rc;
+
+	nj = 0;
+	for (k = 0; k < n + nheld; k++) {
+		const char	*jail = k < n ? v[k].jail : held[k - n].jail;
+		int		 port = k < n ? v[k].divert : held[k - n].divert;
+
+		if (jail[0] == '\0' || port == 0)
+			continue;
+		for (i = 0; i < nj; i++)
+			if (strcmp(j[i], jail) == 0)
+				break;
+		if (i == nj)
+			j[nj++] = jail;
+	}
+	rc = 0;
+	for (i = 0; i < nj; i++)
+		if (jail_diverts(w, j[i], v, n, held, nheld, before, errp) != 0)
+			rc = -1;
+	return (rc);
+}
+
 /*
  * The instances applied: {"instances": [{"name", "interfaces", "spec",
  * "rules", "thresholds", "stopped"}, ...]}, each spec its form, which
  * Suricata's YAML is rendered from (idsconf.c).  Suricata must be there
  * (a plugin); each instance's files are written, checked by suricata
  * -T, and it is started, again when they changed; those not named any
- * more are stopped.  Kept for the next start.
+ * more are stopped.  Kept for the next start.  The Security section's
+ * may each name a running jail ("jail") to run in; one that prevents
+ * there, a vnet jail, its divert rules placed in the jail's ipfw.
  */
 int
 do_sdwan_ids(struct work *w, const char *json, const char **errp)
@@ -1229,7 +1493,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	struct execres		 res;
 	char			*argv[8], *conf, *was;
 	const char		*rules, *thr, *e, *note, *what;
-	const char		*raw;
+	const char		*raw, *fwfail;
 	struct was		 held[INSTANCES_MAX];
 	int			 n, i, k, step, nkeep, nheld;
 	bool			 ok, same, samerun, sec, luach;
@@ -1276,6 +1540,29 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			    "named sec-, SD-WAN's not", ni[n].name);
 			return (-1);
 		}
+		/* The jail it runs in, the Security section's alone: an
+		 * SD-WAN service's runs on its edge. */
+		if ((f = ucl_object_lookup(in, "jail")) != NULL &&
+		    (ucl_object_type(f) != UCL_STRING || ucl_object_tostring(
+		    f)[0] != '\0')) {
+			if (ucl_object_type(f) != UCL_STRING ||
+			    !valid_jail(ucl_object_tostring(f)) || strlen(
+			    ucl_object_tostring(f)) >= sizeof(ni[n].jail)) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "%s: its jail is a jail's name",
+				    ni[n].name);
+				return (-1);
+			}
+			if (!sec) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "%s: only the Security section's run "
+				    "in a jail: an SD-WAN service's runs on its edge",
+				    ni[n].name);
+				return (-1);
+			}
+			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s",
+			    ucl_object_tostring(f));
+		}
 		if ((f = ucl_object_lookup(in, "divert")) != NULL) {
 			if (ucl_object_type(f) != UCL_INT || ucl_object_toint(f) <
 			    1 || ucl_object_toint(f) > 65535) {
@@ -1300,11 +1587,49 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			ni[n].netmap = strcmp(ucl_object_tostring(f), "netmap") ==
 			    0;
 		}
-		if (!lua_ok(w, ni[n].name, ucl_object_lookup(in, "lua"), errp) ||
-		    !plugins_ok(w, ni[n].name, ucl_object_lookup(in, "plugins"),
-		    errp)) {
+		/* Its jail running (at the start, one that is not is kept
+		 * for the next apply); one that prevents needs a network of
+		 * its own there. */
+		if (ni[n].jail[0] != '\0') {
+			struct jinfo	ji;
+
+			if (jail_named(w, ni[n].jail, &ji) < 0) {
+				if (!starting) {
+					ucl_object_unref(top);
+					*errp = wfmt(w, "%s: the jail %s is not "
+					    "running: it runs in it, start the jail "
+					    "first", ni[n].name, ni[n].jail);
+					return (-1);
+				}
+				ni[n].jaildown = true;
+			} else
+				ni[n].vnet = ji.vnet;
+			if (ni[n].divert > 0 && !ni[n].jaildown && !ni[n].vnet) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "%s: it prevents by divert, and the "
+				    "jail %s has no network of its own (vnet): "
+				    "divert(4) sockets are a vnet jail's alone, and "
+				    "the host's ipfw diverts to none in it; there it "
+				    "may detect (by pcap, no divert port)", ni[n].name,
+				    ni[n].jail);
+				return (-1);
+			}
+		}
+		if (!lua_ok(w, ni[n].name, ucl_object_lookup(in, "lua"), errp)) {
 			ucl_object_unref(top);
 			return (-1);
+		}
+		/* Its plugins where it runs: a jail's beneath its root. */
+		if (!ni[n].jaildown) {
+			bool	pok;
+
+			pok = inst_in(w, ni[n].jail, errp) == 0 && plugins_ok(w,
+			    ni[n].name, ucl_object_lookup(in, "plugins"), errp);
+			(void)inst_in(w, "", NULL);
+			if (!pok) {
+				ucl_object_unref(top);
+				return (-1);
+			}
 		}
 		if ((f = ucl_object_lookup(in, "offload")) != NULL)
 			ni[n].nooffload = ucl_object_type(f) == UCL_BOOLEAN &&
@@ -1362,11 +1687,41 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		    nkeep);
 		return (-1);
 	}
-	if (n > 0 && access(suricata_bin(w), X_OK) != 0) {
-		ucl_object_unref(top);
-		*errp = wfmt(w, "the host has no suricata (%s): it is a plugin, "
-		    "installed by hand (pkg install suricata)", suricata_bin(w));
-		return (-1);
+	/* Suricata where each runs, the host's or the jail's own; a vnet
+	 * jail's ipfw free for the divert rules: refused before any is
+	 * touched. */
+	for (k = 0; k < n; k++) {
+		if (ni[k].jaildown)
+			continue;
+		if (ni[k].jail[0] == '\0') {
+			if (access(suricata_bin(w), X_OK) != 0) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "the host has no suricata (%s): it is "
+				    "a plugin, installed by hand (pkg install "
+				    "suricata)", suricata_bin(w));
+				return (-1);
+			}
+			continue;
+		}
+		e = NULL;
+		if (inst_in(w, ni[k].jail, &e) != 0) {
+			ucl_object_unref(top);
+			*errp = wfmt(w, "%s: %s", ni[k].name, e);
+			return (-1);
+		}
+		if (!scope_access(w, suricata_bin(w), true))
+			e = wfmt(w, "the jail %s has no suricata (%s): it is a "
+			    "plugin, installed by hand in the jail (pkg -j %s "
+			    "install suricata)", ni[k].jail, suricata_bin(w),
+			    ni[k].jail);
+		else if (ni[k].divert > 0 && !ni[k].stopped)
+			e = idsfw_check(w);
+		(void)inst_in(w, "", NULL);
+		if (e != NULL) {
+			ucl_object_unref(top);
+			*errp = wfmt(w, "%s: %s", ni[k].name, e);
+			return (-1);
+		}
 	}
 	/* One apply at a time; the table read, then left to its readers
 	 * while the slow work is done. */
@@ -1378,41 +1733,67 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			continue;
 		snprintf(held[nheld].name, sizeof(held[nheld].name), "%s",
 		    instances[i].name);
+		snprintf(held[nheld].jail, sizeof(held[nheld].jail), "%s",
+		    instances[i].jail);
 		held[nheld++].divert = instances[i].divert;
 	}
 	pthread_mutex_unlock(&lock);
-	/* Those not named any more: stopped, their files gone; the other
-	 * group's are not this list's. */
+	/* The jails' divert rules first left with those that stay as they
+	 * were: none diverted to one about to stop. */
+	fwfail = NULL;
+	(void)diverts_all(w, ni, n, held, nheld, true, &fwfail);
+	/* Those not named any more, or moved to another place: stopped,
+	 * their files gone; the other group's are not this list's. */
 	for (i = 0; i < nheld; i++) {
 		for (k = 0; k < n; k++)
-			if (strcmp(ni[k].name, held[i].name) == 0)
+			if (strcmp(ni[k].name, held[i].name) == 0 &&
+			    strcmp(ni[k].jail, held[i].jail) == 0)
 				break;
 		if (k == n) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
-			    "suricata %s stopped", held[i].name);
+			    "suricata %s%s%s stopped", held[i].name,
+			    held[i].jail[0] != '\0' ? " of the jail " : "",
+			    held[i].jail);
+			if (inst_in(w, held[i].jail, &e) != 0) {
+				step_end(w, step, true, "%s: its files there are "
+				    "left", e);
+				continue;
+			}
 			inst_stop(w, held[i].name);
 			fault_clear("ids", held[i].name, "Suricata %s taken "
 			    "away", held[i].name);
-			(void)unlink(inst_path(w, held[i].name, "yaml"));
-			(void)unlink(inst_path(w, held[i].name, "rules"));
-			(void)unlink(inst_path(w, held[i].name,
+			(void)scope_unlink(w, inst_path(w, held[i].name, "yaml"));
+			(void)scope_unlink(w, inst_path(w, held[i].name,
+			    "rules"));
+			(void)scope_unlink(w, inst_path(w, held[i].name,
 			    "threshold"));
-			(void)unlink(inst_path(w, held[i].name, "sock"));
+			(void)scope_unlink(w, inst_path(w, held[i].name, "sock"));
 			(void)lua_sync(w, held[i].name, NULL);
-			(void)rmdir(inst_path(w, held[i].name, "lua"));
+			inst_rmdir(w, inst_path(w, held[i].name, "lua"));
+			(void)inst_in(w, "", NULL);
 			step_end(w, step, true, NULL);
 		}
 	}
-	/* One new here is read from where its eve.json ends before it
-	 * starts: what was there was told before, by this agent or one
-	 * before it.  Those that stay keep where they were read to. */
-	for (k = 0; k < n; k++)
-		ni[k].off = eve_size(ni[k].name);
 	ok = true;
 	it = NULL;
 	for (k = 0; k < n; k++) {
 		in = ucl_object_iterate(ucl_object_lookup(top, "instances"), &it,
 		    true);
+		/* Where it runs: its jail not running at the start, kept for
+		 * the next apply, not started. */
+		if (ni[k].jaildown || inst_in(w, ni[k].jail, NULL) != 0) {
+			ni[k].jaildown = true;
+			step = step_begin(w, STEP_DAEMON, "arcana-agent",
+			    "suricata %s of the jail %s: the jail is not running, "
+			    "kept, not started", ni[k].name, ni[k].jail);
+			step_end(w, step, true, NULL);
+			continue;
+		}
+		/* One new here is read from where its eve.json ends before
+		 * it starts: what was there was told before, by this agent
+		 * or one before it.  Those that stay keep where they were
+		 * read to. */
+		ni[k].off = eve_size(w, ni[k].name);
 		/* Stopped by the admin: not run, its place kept. */
 		if (ni[k].stopped) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
@@ -1453,7 +1834,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		}
 		raw = conf;
 		conf = inst_conf(w, ni[k].name, conf);
-		if ((conf = expand_any(w, conf, &e)) == NULL) {
+		if ((conf = expand_any(w, conf, ni[k].vnet, &e)) == NULL) {
 			*errp = wfmt(w, "%s: %s", ni[k].name, e);
 			ok = false;
 			break;
@@ -1489,17 +1870,15 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			continue;
 		}
 		e = NULL;
-		if (sdwan_conf_write(wfmt(w, "sdwan-ids-%s.rules", ni[k].name),
-		    rules, &e) != 0 || sdwan_conf_write(wfmt(w,
-		    "sdwan-ids-%s.threshold", ni[k].name), thr, &e) != 0 ||
-		    sdwan_conf_write(wfmt(w,
-		    "sdwan-ids-%s.yaml", ni[k].name), conf, &e) != 0) {
+		if (inst_write(w, ni[k].name, "rules", rules, &e) != 0 ||
+		    inst_write(w, ni[k].name, "threshold", thr, &e) != 0 ||
+		    inst_write(w, ni[k].name, "yaml", conf, &e) != 0) {
 			step_end(w, step, false, "%s", e);
 			*errp = wfmt(w, "%s: %s", ni[k].name, e);
 			ok = false;
 			break;
 		}
-		(void)mkdir_mode(inst_path(w, ni[k].name, "d"), 0750);
+		inst_mkdir(w, inst_path(w, ni[k].name, "d"));
 		/* Checked first: what suricata refuses is not run. */
 		argv[0] = (char *)(uintptr_t)suricata_bin(w);
 		argv[1] = (char *)(uintptr_t)"-T";
@@ -1512,8 +1891,8 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		    "logging.outputs.0.console.enabled=yes";
 		argv[6] = NULL;
 		note = NULL;
-		if (run_exec(w, argv, &res) != 0 && (note = ruleset_only(w,
-		    &res)) == NULL) {
+		if (run_exec(w, scope_jexec(w, argv), &res) != 0 && (note =
+		    ruleset_only(w, &res)) == NULL) {
 			step_end(w, step, false, "suricata does not take it");
 			*errp = wfmt(w, "%s: suricata does not take it: %s",
 			    ni[k].name, suricata_errors(w, &res));
@@ -1521,10 +1900,10 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			break;
 		}
 		if (note == NULL && strstr(raw, "@RULESET@") != NULL &&
-		    strstr(conf, SURICATA_RULESET) == NULL)
+		    strstr(conf, ruleset_of(w)) == NULL)
 			note = "the ruleset is not fetched yet (suricata-update): "
 			    "its own rules alone until it is";
-		if (samerun && kill((pid_t)inst_pid(w, ni[k].name), SIGUSR2) ==
+		if (samerun && scope_kill(w, inst_pid(w, ni[k].name), SIGUSR2) ==
 		    0) {
 			if (note != NULL)
 				step_end(w, step, true, "%s; %s", what, note);
@@ -1533,7 +1912,13 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			continue;
 		}
 		inst_stop(w, ni[k].name);
-		if (ni[k].nooffload)
+		/* A jail that shares the host's network: its interfaces are
+		 * the host's, set there. */
+		if (ni[k].nooffload && w->jail != NULL && !ni[k].vnet) {
+			(void)inst_in(w, "", NULL);
+			offload_off(w, &ni[k]);
+			(void)inst_in(w, ni[k].jail, NULL);
+		} else if (ni[k].nooffload)
 			offload_off(w, &ni[k]);
 		if (inst_start(w, ni[k].name, ni[k].divert, ni[k].netmap, &e) !=
 		    0) {
@@ -1547,6 +1932,11 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		else
 			step_end(w, step, true, NULL);
 	}
+	(void)inst_in(w, "", NULL);
+	/* The jails' divert rules now those of the instances that run. */
+	if (ok && diverts_all(w, ni, n, held, nheld, false, &e) != 0 &&
+	    fwfail == NULL)
+		fwfail = e;
 	pthread_mutex_lock(&lock);
 	if (!ok) {
 		/* Those not named were stopped all the same: out of the
@@ -1566,7 +1956,8 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		/* What was read of those that stay is kept with them. */
 		for (k = 0; k < n; k++)
 			for (i = 0; i < ninstances; i++)
-				if (strcmp(ni[k].name, instances[i].name) == 0) {
+				if (strcmp(ni[k].name, instances[i].name) == 0 &&
+				    strcmp(ni[k].jail, instances[i].jail) == 0) {
 					memcpy(ni[k].alerts, instances[i].alerts,
 					    sizeof(ni[k].alerts));
 					memset(instances[i].alerts, 0,
@@ -1629,6 +2020,11 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		*errp = wfmt(w, "%s: %s", sec ? SEC_FILE : IDS_FILE, e);
 		return (-1);
 	}
+	/* Running, kept, but what diverts to it could not be placed. */
+	if (fwfail != NULL) {
+		*errp = fwfail;
+		return (-1);
+	}
 	return (0);
 }
 
@@ -1641,6 +2037,7 @@ sdwan_ids_start(void)
 	const char	*e;
 
 	work_init(&w);
+	starting = true;
 	if ((json = sdwan_kept_read(IDS_FILE)) != NULL) {
 		e = NULL;
 		if (do_sdwan_ids(&w, json, &e) != 0)
@@ -1653,6 +2050,7 @@ sdwan_ids_start(void)
 			logmsg(LOG_WARNING, "security ids: %s", e);
 		free(json);
 	}
+	starting = false;
 	work_free(&w);
 	/* Both groups' read: the first full view. */
 	ids_started = true;
@@ -1939,6 +2337,9 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(instances[i].name),
 		    "name", 0, false);
+		if (instances[i].jail[0] != '\0')
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    instances[i].jail), "jail", 0, false);
 		ifs = ucl_object_typed_new(UCL_ARRAY);
 		for (k = 0; k < instances[i].nifs; k++)
 			ucl_array_append(ifs, ucl_object_fromstring(
@@ -1949,8 +2350,11 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 		if (instances[i].divert > 0)
 			ucl_object_insert_key(o, ucl_object_fromint(
 			    instances[i].divert), "divert", 0, false);
-		ucl_object_insert_key(o, ucl_object_frombool(inst_pid(w,
+		/* Where it runs: a jail's beneath its root. */
+		ucl_object_insert_key(o, ucl_object_frombool(inst_in(w,
+		    instances[i].jail, NULL) == 0 && inst_pid(w,
 		    instances[i].name) != 0), "running", 0, false);
+		(void)inst_in(w, "", NULL);
 		if (instances[i].stopped)
 			ucl_object_insert_key(o, ucl_object_frombool(true),
 			    "stopped", 0, false);
@@ -1971,6 +2375,15 @@ sdwan_ids_json(struct work *w, ucl_object_t *top)
 		ucl_object_insert_key(o, ucl_object_fromstring(
 		    instances[i].netmap ? "netmap" : instances[i].divert > 0 ?
 		    "divert" : "pcap"), "capture", 0, false);
+		/* What it logged and replayed, and its interfaces' offloading:
+		 * the host's alone. */
+		if (instances[i].jail[0] != '\0') {
+			ucl_object_insert_key(o, ucl_object_fromstring(IS_SEC(
+			    instances[i].name) ? "security" : "sdwan"), "group",
+			    0, false);
+			ucl_array_append(arr, o);
+			continue;
+		}
 		ucl_object_insert_key(o, pcaps_json(w, instances[i].name),
 		    "pcaps", 0, false);
 		/* The captures that came for its replay. */
@@ -2055,7 +2468,9 @@ suricata_check(const struct arc_job_spec *sp)
 {
 
 	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("Suricata's ruleset is the host's");
+		return ("these are the host's Suricata's ruleset, sources and "
+		    "replays: an instance in a jail reads the jail's own ruleset "
+		    "(its suricata-update, run in the jail)");
 	if (sp->safe)
 		return ("a fetched ruleset is not undone: not in safe mode");
 	if (sp->verb != NULL && strcmp(sp->verb, "rule") == 0)
@@ -2288,7 +2703,16 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 		else
 			file = sp->names.v[i] + 5;
 	if (access(inst_path(w, inst, "yaml"), R_OK) != 0) {
-		*errp = wfmt(w, "there is no instance %s here", inst);
+		const char	*j = "";
+
+		pthread_mutex_lock(&lock);
+		for (i = 0; i < (size_t)ninstances; i++)
+			if (strcmp(instances[i].name, inst) == 0)
+				j = wstrdup(w, instances[i].jail);
+		pthread_mutex_unlock(&lock);
+		*errp = j[0] != '\0' ? wfmt(w, "%s runs in the jail %s: a capture "
+		    "is replayed through the host's instances alone", inst, j) :
+		    wfmt(w, "there is no instance %s here", inst);
 		return (-1);
 	}
 	if (lstat(file, &sb) != 0 || !S_ISREG(sb.st_mode)) {
@@ -2363,7 +2787,7 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 	ucl_object_unref(top);
 	a = NULL;
 	if (json != NULL) {
-		(void)put_text(inst_path(w, inst, "replay.json"), json, &a);
+		(void)put_text(w, inst_path(w, inst, "replay.json"), json, &a);
 		free(json);
 	}
 	if (rc != 0) {

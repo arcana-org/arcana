@@ -156,6 +156,27 @@
   DLP (no engine). The book's conformance rows are to be brought up to
   SASE-6: SEN and SAN, MD+R hashes, DNF's inner wildcards, PDNS's
   CNAME and NS entries and DNS over TLS, DPF's message types.
+- The Security section in a jail (agent_test:security_jail,
+  console_test:sdwan_apply_security, pwa_test:pwa_security_jail): a
+  URL filter (Squid, its c-icap and ClamAV) or an intrusion detection
+  (Suricata) runs in a running jail, its files beneath the jail's root
+  (/var/db/arcana-security), its programs the jail's own, by jexec;
+  one that prevents needs a vnet jail, its divert rules placed in the
+  jail's own ipfw (set 25 by set 24, rule 6, `// secids:`), and is
+  refused in a jail of the host's network (divert(4) sockets are a
+  vnet jail's alone).  Left, each a task of its own:
+  - An instance in a jail is started again only when its list is
+    applied again (Start on the page): a jail restarted leaves it
+    stopped until then, the agent not watching jails come and go for
+    it (jailwatch.c could).
+  - Its Own rules' live counters and its Statistics' socket commands
+    (surules.c's sc_ask, the instance's command socket), its pcap-log
+    files and replays (idsfiles.c) are the host's instances' alone;
+    for one in a jail they say there is none.
+  - The ruleset (Rules and Sources, the suricata job) is the host's: a
+    jail's instance adds the jail's own, fetched by its suricata-update
+    run there by hand; the job could take a jail (jexec suricata-update).
+  - Its interfaces' offloading still on is read for the host's alone.
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's
@@ -323,7 +344,11 @@ Written and tested with stand-ins only:
   unmake of rtadvd and dnsmasq; SLAAC on a UCS, a UCS in a VRF, BGP
   with the underlay.
 - The Security section (URL filters, Antivirus, IDS/IPS) without
-  SD-WAN, with the real plugins.
+  SD-WAN, with the real plugins; and in a real jail: Suricata in a vnet
+  jail taking what its own ipfw diverts, by pcap in a jail of the
+  host's network whose devfs shows bpf(4), Squid and c-icap on a
+  jail's addresses (its loopback the jail's first address), freshclam
+  run there (service -j).
 - Suricata's interfaces' queue interrupts (hw.intrnames, cpuset -x) on
   a NIC with RSS queues: the lab VM's interrupts are virtio's, named by
   no interface.

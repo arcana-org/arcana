@@ -1825,10 +1825,16 @@ submodule arcana-jobs-kinds {
           leaf verb {
             type enumeration {
               enum mirrors;
+              enum start;
             }
             mandatory true;
             description
               "Verb";
+          }
+          leaf jail {
+            type string;
+            description
+              "Jail";
           }
           leaf-list args {
             type string;

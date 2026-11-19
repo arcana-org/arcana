@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.329.0"
+#define	ARCANA_AGENT_VERSION	"0.330.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1234,7 +1234,7 @@ void		 sdwan_dns_json(struct work *, struct ucl_object_s *);
 int		 do_sdwan_proxy(struct work *, const char *, const char **);
 void		 sdwan_proxy_start(void);
 void		 sdwan_proxy_json(struct work *, struct ucl_object_s *);
-void		 clamav_mirrors_json(struct ucl_object_s *);
+void		 clamav_mirrors_json(struct work *, struct ucl_object_s *);
 void		 security_specs(const char *, struct ucl_object_s *, const char *);
 int		 do_sdwan_ids(struct work *, const char *, const char **);
 /*
@@ -1750,6 +1750,18 @@ char		*storage_title(const struct arc_job_spec *);
 int		 do_storage_job(struct work *, const struct arc_job_spec *,
 		    const char **);
 
+/* luxuria/idsfw.c: the divert rules of a Security Suricata in a vnet
+ * jail, in that jail's own ipfw; w in the jail. */
+struct idsfw {
+	const char	*name;
+	int		 port;
+	int		 nifs;
+	const char	*ifs[16];
+};
+const char	*idsfw_check(struct work *);
+int		 idsfw_set(struct work *, int, const struct idsfw *,
+		    const char **);
+
 /* luxuria/plugins.c */
 void		 plugins_there(struct work *, int, const char *,
 		    const char *const **, size_t *);
@@ -1769,6 +1781,10 @@ int		 file_replace(const char *, const char *, size_t, mode_t);
 /* invidia/ynetconf.c: an undo that failed, logged and told */
 void		 undo_report(const char *, int, const char *);
 int		 scope_open(struct work *, const char *, int, mode_t);
+bool		 scope_access(struct work *, const char *, bool);
+FILE		*scope_fopen(struct work *, const char *);
+int		 scope_kill(struct work *, pid_t, int);
+void		 scope_stop(struct work *, pid_t, const char *, int);
 int		 scope_open_read(struct work *, const char *);
 int		 scope_mkdirs(struct work *, const char *);
 int		 scope_unlink(struct work *, const char *);

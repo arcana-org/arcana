@@ -232,6 +232,7 @@ module: arcana-sdwan
      |  +--rw fib?       uint16
      |  +--ro conf?      string
      |  +--rw host?      string
+     |  +--rw jail?      string
      |  +--rw spec
      |  |  +--rw flavor?     enumeration
      |  |  +--rw service?    string
@@ -294,6 +295,7 @@ module: arcana-sdwan
      |  +--rw rules?        string
      |  +--rw divert?       inet:port-number
      |  +--rw host?         string
+     |  +--rw jail?         string
      |  +--rw spec
      |  |  +--rw flavor?                  enumeration
      |  |  +--rw service?                 string
@@ -737,6 +739,7 @@ module: arcana-sdwan
      |  |  +--ro name       string
      |  |  +--ro fib?       uint16
      |  |  +--ro running?   boolean
+     |  |  +--ro jail?      string
      |  |  +--ro mode?      string
      |  |  +--ro icap?      boolean
      |  |  +--ro ca?        string
@@ -751,8 +754,21 @@ module: arcana-sdwan
      |  |  +--ro conf?        boolean
      |  |  +--ro mirror*      string
      |  |  +--ro log*         string
+     |  +--ro clamav-jail* [jail]
+     |  |  +--ro jail         string
+     |  |  +--ro database* [name]
+     |  |  |  +--ro name          string
+     |  |  |  +--ro file?         string
+     |  |  |  +--ro built?        string
+     |  |  |  +--ro version?      int64
+     |  |  |  +--ro signatures?   int64
+     |  |  +--ro freshclam?   boolean
+     |  |  +--ro conf?        boolean
+     |  |  +--ro mirror*      string
+     |  |  +--ro log*         string
      |  +--ro ids* [name]
      |  |  +--ro name           string
+     |  |  +--ro jail?          string
      |  |  +--ro interface*     string
      |  |  +--ro mode?          enumeration
      |  |  +--ro divert?        inet:port-number

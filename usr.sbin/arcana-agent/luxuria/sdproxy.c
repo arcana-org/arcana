@@ -25,6 +25,18 @@
  * kept for the next start.  One the admin stopped (stopped: true) stays
  * in the list, its files kept, but neither it nor its c-icap runs, now
  * or at the next start, until it is started again.
+ *
+ * The Security section's may run in a jail (its "jail"): its files
+ * beneath the jail's root (JAIL_DIR, written by descriptors opened
+ * beneath it, never through a link out of it, scope.c), its Squid, its
+ * certificate maker and its c-icap the jail's own, run there by
+ * jexec(8), the clients told the jail's addresses; its CA made by the
+ * host's openssl(1) and written into the jail; its signals sent from
+ * inside the jail.  c-icap's loopback is the jail's (a jail without a
+ * network of its own has its first address for it), and ClamAV's
+ * signatures are the jail's own, as its freshclam keeps them.  A jail
+ * not running at the agent's start leaves its instance kept, not
+ * started, until the list is applied again.
  */
 
 #include <sys/param.h>
@@ -60,9 +72,13 @@
 #define	DENY_MAX	(8 * 1024 * 1024)
 #define	LISTS_MAX	64		/* list files an instance */
 #define	PATH_CERTGEN	"/usr/local/libexec/squid/security_file_certgen"
+/* A jail's: where its instances' files are beneath its root. */
+#define	JAIL_DIR	"/var/db/arcana-security"
 
 struct instance {
 	char	name[40];
+	char	jail[64];	/* the jail it runs in, "" the host */
+	bool	jaildown;	/* its jail not running at the start */
 	char	mode[12];
 	int	fib;
 	bool	icap;		/* scans for malware: c-icap beside it */
@@ -72,6 +88,7 @@ struct instance {
 static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
+static bool		starting;	/* the kept lists applied at the start */
 
 static void	proxies_watch(struct work *, const ucl_object_t *,
 		    const struct instance *, int);
@@ -89,15 +106,85 @@ name_ok(const char *s)
 	return (true);
 }
 
-/* Where an instance's files are: beside the agent's kept files. */
+/* Where an instance's files are: beside the agent's kept files, or
+ * beneath its jail's root when w works there. */
 static const char *
 inst_path(struct work *w, const char *name, const char *ext)
 {
 	char	buf[MAXPATHLEN];
 
+	if (w->jail != NULL)
+		return (wfmt(w, JAIL_DIR "/sdwan-proxy-%s.%s", name, ext));
 	sdwan_conf_path(wfmt(w, "sdwan-proxy-%s.%s", name, ext), buf,
 	    sizeof(buf));
 	return (wstrdup(w, buf));
+}
+
+/* w working where an instance runs: its jail, or the host.  0, or -1
+ * and why. */
+static int
+inst_in(struct work *w, const char *jail, const char **errp)
+{
+	const char	*e = NULL;
+
+	if (scope_enter_jail(w, jail, &e, false) != 0) {
+		if (errp != NULL)
+			*errp = e;
+		return (-1);
+	}
+	return (0);
+}
+
+/* The gid of a group of w's jail, from its /etc/group; -1 none. */
+static gid_t
+jail_gid(struct work *w, const char *group)
+{
+	char		*t, *line;
+	size_t		 n;
+	long		 g;
+
+	if ((t = scope_slurp(w, "/etc/group", NULL)) == NULL)
+		return ((gid_t)-1);
+	n = strlen(group);
+	while ((line = strsep(&t, "\n")) != NULL)
+		if (strncmp(line, group, n) == 0 && line[n] == ':' &&
+		    (line = strchr(line + n + 1, ':')) != NULL) {
+			g = strtol(line + 1, NULL, 10);
+			return (g > 0 ? (gid_t)g : (gid_t)-1);
+		}
+	return ((gid_t)-1);
+}
+
+/*
+ * A file of the instance's (file, its name beside the others), written
+ * whole where w works: the host's as sdwan_conf_write() and, with a
+ * group, sdwan_conf_write_group() write them; a jail's beneath its
+ * root, 0600, or 0640 of the jail's own group when it has one.
+ */
+static int
+px_write(struct work *w, const char *file, const char *text,
+    const char *group, const char **errp)
+{
+	const char	*path, *base;
+	gid_t		 gid;
+	int		 dfd;
+
+	if (w->jail == NULL)
+		return (group != NULL ? sdwan_conf_write_group(file, text, group,
+		    errp) : sdwan_conf_write(file, text, errp));
+	path = wfmt(w, JAIL_DIR "/%s", file);
+	gid = group != NULL ? jail_gid(w, group) : (gid_t)-1;
+	if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w, path, text,
+	    strlen(text), gid != (gid_t)-1 ? 0640 : 0600, NULL) != 0) {
+		*errp = wfmt(w, "%s in the jail %s: %s", path, w->jail,
+		    strerror(errno));
+		return (-1);
+	}
+	if (gid != (gid_t)-1 && (dfd = scope_open_dir(w, path, &base)) != -1) {
+		(void)fchownat(dfd, base, 0, gid, AT_SYMLINK_NOFOLLOW);
+		close(dfd);
+	}
+	return (0);
 }
 
 /* A file's text, in the work's memory; NULL when it is not there. */
@@ -108,6 +195,8 @@ file_text(struct work *w, const char *path)
 	char	*text;
 	long	 n;
 
+	if (w->jail != NULL)
+		return (scope_slurp(w, path, NULL));
 	if ((fp = fopen(path, "r")) == NULL)
 		return (NULL);
 	if (fseek(fp, 0, SEEK_END) != 0 || (n = ftell(fp)) < 0 || n > 1024 *
@@ -130,6 +219,8 @@ squid_bin(struct work *w)
 {
 	const char	*p;
 
+	if (w->jail != NULL)
+		return (PATH_SQUID_BIN);
 	if ((p = tool(w, "squid")) != NULL)
 		return (p);
 	return (opts.squid_bin);
@@ -140,6 +231,8 @@ certgen_bin(struct work *w)
 {
 	const char	*p;
 
+	if (w->jail != NULL)
+		return (PATH_CERTGEN);
 	if (opts.tools_dir != NULL) {
 		p = wfmt(w, "%s/security_file_certgen", opts.tools_dir);
 		if (access(p, X_OK) == 0)
@@ -153,7 +246,7 @@ static pid_t
 inst_pid(struct work *w, const char *name)
 {
 
-	return (pidfile_of(inst_path(w, name, "pid"), squid_bin(w)));
+	return (scope_pidfile(w, inst_path(w, name, "pid"), squid_bin(w)));
 }
 
 /* c-icap's files of an instance, beside the instance's own. */
@@ -162,6 +255,8 @@ icap_path(struct work *w, const char *name, const char *ext)
 {
 	char	buf[MAXPATHLEN];
 
+	if (w->jail != NULL)
+		return (wfmt(w, JAIL_DIR "/sdwan-icap-%s.%s", name, ext));
 	sdwan_conf_path(wfmt(w, "sdwan-icap-%s.%s", name, ext), buf,
 	    sizeof(buf));
 	return (wstrdup(w, buf));
@@ -172,6 +267,8 @@ icap_bin(struct work *w)
 {
 	const char	*p;
 
+	if (w->jail != NULL)
+		return (PATH_CICAP_BIN);
 	if ((p = tool(w, "c-icap")) != NULL)
 		return (p);
 	return (opts.cicap_bin);
@@ -182,7 +279,7 @@ static pid_t
 icap_pid(struct work *w, const char *name)
 {
 
-	return (pidfile_of(icap_path(w, name, "pid"), icap_bin(w)));
+	return (scope_pidfile(w, icap_path(w, name, "pid"), icap_bin(w)));
 }
 
 static void
@@ -192,7 +289,7 @@ icap_stop(struct work *w, const char *name)
 
 	if ((pid = icap_pid(w, name)) == 0)
 		return;
-	pid_stop(pid, icap_bin(w), 3000);
+	scope_stop(w, pid, icap_bin(w), 3000);
 }
 
 /*
@@ -206,20 +303,30 @@ icap_missing(struct work *w)
 {
 	DIR		*d;
 	struct dirent	*de;
-	const char	*x;
+	const char	*x, *pj;
 	bool		 sigs;
+	int		 dfd;
 
-	if (access(icap_bin(w), X_OK) != 0)
-		return (wfmt(w, "the host has no c-icap (%s): it is a plugin, "
-		    "installed by hand (pkg install c-icap c-icap-modules "
-		    "clamav)", icap_bin(w)));
+	/* A jail's are its own: pkg -j installs them there. */
+	pj = w->jail != NULL ? wfmt(w, "-j %s ", w->jail) : "";
+	if (!scope_access(w, icap_bin(w), true))
+		return (wfmt(w, "%s has no c-icap (%s): it is a plugin, "
+		    "installed by hand (pkg %sinstall c-icap c-icap-modules "
+		    "clamav)", w->jail != NULL ? wfmt(w, "the jail %s", w->jail) :
+		    "the host", icap_bin(w), pj));
 	if (opts.tools_dir != NULL)
 		return (NULL);
-	if (access(PATH_CICAP_MODULES "/clamav_mod.so", R_OK) != 0)
-		return ("c-icap has no ClamAV module (" PATH_CICAP_MODULES
-		    "/clamav_mod.so): pkg install c-icap-modules");
+	if (!scope_access(w, PATH_CICAP_MODULES "/clamav_mod.so", false))
+		return (wfmt(w, "c-icap has no ClamAV module (" PATH_CICAP_MODULES
+		    "/clamav_mod.so%s): pkg %sinstall c-icap-modules",
+		    w->jail != NULL ? wfmt(w, " in the jail %s", w->jail) : "",
+		    pj));
 	sigs = false;
-	if ((d = opendir(PATH_CLAMAV_DB)) != NULL) {
+	d = (dfd = scope_dirfd(w, PATH_CLAMAV_DB)) != -1 ? fdopendir(dfd) :
+	    NULL;
+	if (d == NULL && dfd != -1)
+		close(dfd);
+	if (d != NULL) {
 		while (!sigs && (de = readdir(d)) != NULL)
 			if ((x = strrchr(de->d_name, '.')) != NULL && (strcmp(x,
 			    ".cvd") == 0 || strcmp(x, ".cld") == 0 || strcmp(x,
@@ -229,9 +336,11 @@ icap_missing(struct work *w)
 		closedir(d);
 	}
 	if (!sigs)
-		return ("ClamAV has no signatures in " PATH_CLAMAV_DB ": pkg "
-		    "install clamav, then freshclam (Security, Signatures: "
-		    "Start freshclam enables clamav_freshclam and starts it)");
+		return (wfmt(w, "ClamAV has no signatures in " PATH_CLAMAV_DB
+		    "%s: pkg %sinstall clamav, then freshclam (Security, "
+		    "Signatures: Start freshclam enables clamav_freshclam and "
+		    "starts it)", w->jail != NULL ? wfmt(w, " of the jail %s",
+		    w->jail) : "", pj));
 	return (NULL);
 }
 
@@ -248,21 +357,28 @@ icap_start(struct work *w, const struct instance *in, const char *text,
 	char		*argv[7];
 	int		 k;
 
-	if (sdwan_conf_write(wfmt(w, "sdwan-icap-%s.conf", in->name), text,
+	if (px_write(w, wfmt(w, "sdwan-icap-%s.conf", in->name), text, NULL,
 	    errp) != 0)
 		return (-1);
-	(void)mkdir_mode("/var/log/c-icap", 0755);
+	if (w->jail != NULL)
+		(void)scope_mkdirs(w, "/var/log/c-icap");
+	else
+		(void)mkdir_mode("/var/log/c-icap", 0755);
 	icap_stop(w, in->name);
-	(void)unlink(icap_path(w, in->name, "ctl"));
+	(void)scope_unlink(w, icap_path(w, in->name, "ctl"));
 	k = 0;
-	argv[k++] = (char *)(uintptr_t)opts.setfib_bin;
-	argv[k++] = (char *)(uintptr_t)"-F";
-	argv[k++] = wfmt(w, "%d", in->fib);
+	/* A jail's in its table by its own setfib(1), table 0 by none. */
+	if (w->jail == NULL || in->fib != 0) {
+		argv[k++] = (char *)(uintptr_t)(w->jail != NULL ?
+		    "/usr/sbin/setfib" : opts.setfib_bin);
+		argv[k++] = (char *)(uintptr_t)"-F";
+		argv[k++] = wfmt(w, "%d", in->fib);
+	}
 	argv[k++] = (char *)(uintptr_t)icap_bin(w);
 	argv[k++] = (char *)(uintptr_t)"-f";
 	argv[k++] = (char *)(uintptr_t)icap_path(w, in->name, "conf");
 	argv[k] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		*errp = wtext(w, exec_error(w, &res, "c-icap"));
 		return (-1);
 	}
@@ -270,7 +386,9 @@ icap_start(struct work *w, const struct instance *in, const char *text,
 	for (k = 0; k < 50 && icap_pid(w, in->name) == 0; k++)
 		usleep(100000);
 	if (icap_pid(w, in->name) == 0) {
-		*errp = "c-icap did not start: see /var/log/c-icap";
+		*errp = w->jail != NULL ? wfmt(w, "c-icap did not start: see "
+		    "/var/log/c-icap in the jail %s", w->jail) : "c-icap did not "
+		    "start: see /var/log/c-icap";
 		return (-1);
 	}
 	return (0);
@@ -281,9 +399,9 @@ icap_down(struct work *w, const char *name)
 {
 
 	icap_stop(w, name);
-	(void)unlink(icap_path(w, name, "conf"));
-	(void)unlink(icap_path(w, name, "pid"));
-	(void)unlink(icap_path(w, name, "ctl"));
+	(void)scope_unlink(w, icap_path(w, name, "conf"));
+	(void)scope_unlink(w, icap_path(w, name, "pid"));
+	(void)scope_unlink(w, icap_path(w, name, "ctl"));
 }
 
 /* An instance stopped: its process signalled and waited for, briefly. */
@@ -294,28 +412,38 @@ inst_stop(struct work *w, const char *name)
 
 	if ((pid = inst_pid(w, name)) == 0)
 		return;
-	pid_stop(pid, squid_bin(w), 3000);
+	scope_stop(w, pid, squid_bin(w), 3000);
 }
 
 /*
  * The instance's CA, made once by openssl(1) and kept beside its files:
  * the certificate and the key in one file for Squid, the certificate
- * alone for the clients.  False and why when it could not be.
+ * alone for the clients.  A jail's made by the host's openssl beside
+ * the agent's files, then written beneath the jail's root and taken
+ * away here.  False and why when it could not be.
  */
 static bool
 inst_ca(struct work *w, const char *name, const char **errp)
 {
 	struct execres	 res;
-	const char	*pem, *crt, *key;
+	const char	*pem, *crt, *key, *jail;
 	char		*argv[14], *text, *k, *c;
 	size_t		 n;
 	FILE		*fp;
 
 	pem = inst_path(w, name, "pem");
 	crt = inst_path(w, name, "crt");
-	if (access(pem, R_OK) == 0 && access(crt, R_OK) == 0)
+	if (w->jail != NULL ? scope_access(w, pem, false) && scope_access(w,
+	    crt, false) : access(pem, R_OK) == 0 && access(crt, R_OK) == 0)
 		return (true);
-	key = inst_path(w, name, "key");
+	jail = NULL;
+	if (w->jail != NULL) {
+		jail = wstrdup(w, w->jail);
+		(void)inst_in(w, "", NULL);
+		crt = inst_path(w, name, "jcrt");
+		pem = NULL;
+	}
+	key = inst_path(w, name, jail != NULL ? "jkey" : "key");
 	argv[0] = (char *)(uintptr_t)"/usr/bin/openssl";
 	argv[1] = (char *)(uintptr_t)"req";
 	argv[2] = (char *)(uintptr_t)"-x509";
@@ -350,11 +478,33 @@ inst_ca(struct work *w, const char *name, const char **errp)
 		}
 	}
 	if ((k = file_text(w, key)) == NULL || (c = file_text(w, crt)) == NULL) {
+		(void)unlink(key);
 		*errp = wfmt(w, "%s: the CA was not written", name);
+		if (jail != NULL)
+			(void)inst_in(w, jail, NULL);
 		return (false);
 	}
 	text = wfmt(w, "%s%s", c, k);
 	(void)unlink(key);
+	/* A jail's: the certificate and the pair written there. */
+	if (jail != NULL) {
+		(void)unlink(crt);
+		if (inst_in(w, jail, errp) != 0)
+			return (false);
+		if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w,
+		    inst_path(w, name, "pem"), text, strlen(text), 0600, NULL) !=
+		    0 || scope_replace(w, inst_path(w, name, "crt"), c, strlen(c),
+		    0644, NULL) != 0) {
+			*errp = wfmt(w, "%s: the CA in the jail %s: %s", name, jail,
+			    strerror(errno));
+			explicit_bzero(text, strlen(text));
+			explicit_bzero(k, strlen(k));
+			return (false);
+		}
+		explicit_bzero(text, strlen(text));
+		explicit_bzero(k, strlen(k));
+		return (true);
+	}
 	if ((fp = fopen(pem, "w")) == NULL) {
 		*errp = wfmt(w, "%s: %s", pem, strerror(errno));
 		return (false);
@@ -382,7 +532,8 @@ inst_chown(struct work *w, const char *path, bool recurse)
 	argv[n++] = (char *)(uintptr_t)"squid:squid";
 	argv[n++] = (char *)(uintptr_t)path;
 	argv[n] = NULL;
-	(void)run_exec(w, argv, &res);
+	/* A jail's by its own chown(8), its own squid user. */
+	(void)run_exec(w, scope_jexec(w, argv), &res);
 }
 
 /* The certificate cache, beside the instance's files: made once, the
@@ -395,8 +546,11 @@ inst_ssldb(struct work *w, const char *name, const char **errp)
 	const char	*dir;
 
 	dir = inst_path(w, name, "ssl_db");
-	if (access(dir, F_OK) == 0)
+	if (w->jail != NULL ? scope_access(w, dir, false) : access(dir, F_OK) ==
+	    0)
 		return (true);
+	if (w->jail != NULL)
+		(void)scope_mkdirs(w, JAIL_DIR);
 	argv[0] = (char *)(uintptr_t)certgen_bin(w);
 	argv[1] = (char *)(uintptr_t)"-c";
 	argv[2] = (char *)(uintptr_t)"-s";
@@ -404,7 +558,7 @@ inst_ssldb(struct work *w, const char *name, const char **errp)
 	argv[4] = (char *)(uintptr_t)"-M";
 	argv[5] = (char *)(uintptr_t)"4MB";
 	argv[6] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		*errp = wtext(w, exec_error(w, &res, "security_file_certgen"));
 		return (false);
 	}
@@ -439,14 +593,20 @@ lists_clear(struct work *w, const char *name)
 	struct dirent	*de;
 	const char	*path, *dir, *pre;
 	size_t		 n;
+	int		 dfd;
 
 	path = inst_path(w, name, "x");
 	dir = strrchr(path, '/') != NULL ? wfmt(w, "%.*s", (int)(strrchr(path,
 	    '/') - path), path) : ".";
 	pre = wfmt(w, "sdwan-proxy-%s.list-", name);
 	n = strlen(pre);
-	if ((d = opendir(dir)) == NULL)
+	/* Beneath a jail's root, never by a link out of it. */
+	if ((dfd = scope_dirfd(w, dir)) == -1)
 		return;
+	if ((d = fdopendir(dfd)) == NULL) {
+		close(dfd);
+		return;
+	}
 	while ((de = readdir(d)) != NULL)
 		if (strncmp(de->d_name, pre, n) == 0)
 			(void)unlinkat(dirfd(d), de->d_name, 0);
@@ -464,8 +624,8 @@ lists_write(struct work *w, const char *name, const ucl_object_t *lists,
 	lists_clear(w, name);
 	it = NULL;
 	while ((l = ucl_object_iterate(lists, &it, true)) != NULL)
-		if (sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.list-%s",
-		    name, ucl_object_key(l)), ucl_object_tostring(l), "squid",
+		if (px_write(w, wfmt(w, "sdwan-proxy-%s.list-%s", name,
+		    ucl_object_key(l)), ucl_object_tostring(l), "squid",
 		    errp) != 0)
 			return (false);
 	return (true);
@@ -508,15 +668,20 @@ inst_start(struct work *w, const struct instance *in, bool running,
 		argv[n++] = (char *)(uintptr_t)"-k";
 		argv[n++] = (char *)(uintptr_t)"reconfigure";
 	} else {
-		argv[n++] = (char *)(uintptr_t)opts.setfib_bin;
-		argv[n++] = (char *)(uintptr_t)"-F";
-		argv[n++] = wfmt(w, "%d", in->fib);
+		/* A jail's in its table by its own setfib(1), table 0 by
+		 * none. */
+		if (w->jail == NULL || in->fib != 0) {
+			argv[n++] = (char *)(uintptr_t)(w->jail != NULL ?
+			    "/usr/sbin/setfib" : opts.setfib_bin);
+			argv[n++] = (char *)(uintptr_t)"-F";
+			argv[n++] = wfmt(w, "%d", in->fib);
+		}
 		argv[n++] = (char *)(uintptr_t)squid_bin(w);
 	}
 	argv[n++] = (char *)(uintptr_t)"-f";
 	argv[n++] = (char *)(uintptr_t)inst_path(w, in->name, "conf");
 	argv[n] = NULL;
-	if (run_exec(w, argv, &res) != 0) {
+	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		*errp = wtext(w, exec_error(w, &res, "squid"));
 		return (-1);
 	}
@@ -530,10 +695,10 @@ inst_down(struct work *w, const char *name)
 
 	inst_stop(w, name);
 	icap_down(w, name);
-	(void)unlink(inst_path(w, name, "conf"));
-	(void)unlink(inst_path(w, name, "deny"));
+	(void)scope_unlink(w, inst_path(w, name, "conf"));
+	(void)scope_unlink(w, inst_path(w, name, "deny"));
 	lists_clear(w, name);
-	(void)unlink(inst_path(w, name, "pid"));
+	(void)scope_unlink(w, inst_path(w, name, "pid"));
 }
 
 /* ClamAV's hash signature files the MD+R's hashes go to. */
@@ -621,7 +786,8 @@ parse(const char *json)
  * squid -k parse before it is made the instance's; a running one is
  * told to reconfigure, one not yet is started in its table; one stopped
  * (stopped: true) is stopped, its files kept; those not named any more
- * are stopped, their files gone.  Kept for the next start.
+ * are stopped, their files gone.  Kept for the next start.  The
+ * Security section's may each name a running jail ("jail") to run in.
  */
 int
 do_sdwan_proxy(struct work *w, const char *json, const char **errp)
@@ -688,6 +854,37 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		snprintf(ni[n].name, sizeof(ni[n].name), "%s",
 		    ucl_object_tostring(v));
+		/* The jail it runs in, the Security section's alone: an
+		 * SD-WAN service's runs on its edge.  Running, but at the
+		 * start, when one that is not is kept for the next apply. */
+		if ((v = ucl_object_lookup(in, "jail")) != NULL &&
+		    (ucl_object_type(v) != UCL_STRING || ucl_object_tostring(
+		    v)[0] != '\0')) {
+			if (ucl_object_type(v) != UCL_STRING ||
+			    !valid_jail(ucl_object_tostring(v)) || strlen(
+			    ucl_object_tostring(v)) >= sizeof(ni[n].jail) ||
+			    !sec) {
+				ucl_object_unref(top);
+				*errp = !sec ? wfmt(w, "%s: only the Security "
+				    "section's run in a jail: an SD-WAN service's "
+				    "runs on its edge", ni[n].name) : wfmt(w, "%s: "
+				    "its jail is a jail's name", ni[n].name);
+				return (-1);
+			}
+			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s",
+			    ucl_object_tostring(v));
+			if (inst_in(w, ni[n].jail, NULL) != 0) {
+				if (!starting) {
+					ucl_object_unref(top);
+					*errp = wfmt(w, "%s: the jail %s is not "
+					    "running: it runs in it, start the jail "
+					    "first", ni[n].name, ni[n].jail);
+					return (-1);
+				}
+				ni[n].jaildown = true;
+			}
+			(void)inst_in(w, "", NULL);
+		}
 		snprintf(ni[n].mode, sizeof(ni[n].mode), "%s", mode);
 		ni[n].fib = (int)ucl_object_toint(ucl_object_lookup(in, "fib"));
 		ni[n].icap = squid_conf_icap(ucl_object_lookup(in, "spec"));
@@ -705,7 +902,11 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		host = ucl_object_type(ucl_object_lookup(in, "host")) ==
 		    UCL_STRING ? ucl_object_tostring(ucl_object_lookup(in,
 		    "host")) : "";
+		/* Its paths as it sees them: a jail's beneath its root. */
+		if (!ni[n].jaildown)
+			(void)inst_in(w, ni[n].jail, NULL);
 		inst_paths(w, ni[n].name, &pp);
+		(void)inst_in(w, "", NULL);
 		e = NULL;
 		icaps[n] = NULL;
 		if ((confs[n] = squid_conf_render(w, ucl_object_lookup(in,
@@ -733,18 +934,29 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		    nkeep);
 		return (-1);
 	}
-	if (n > 0 && access(squid_bin(w), X_OK) != 0) {
-		ucl_object_unref(top);
-		*errp = wfmt(w, "the host has no squid (%s): it is a plugin, "
-		    "installed by hand (pkg install squid)", squid_bin(w));
-		return (-1);
-	}
-	for (k = 0; k < n; k++)
-		if (ni[k].icap && (e = icap_missing(w)) != NULL) {
+	/* Squid, and c-icap where it scans, where each runs: the host's,
+	 * or the jail's own. */
+	for (k = 0; k < n; k++) {
+		if (ni[k].jaildown || inst_in(w, ni[k].jail, NULL) != 0)
+			continue;
+		e = NULL;
+		if (w->jail == NULL ? access(squid_bin(w), X_OK) != 0 :
+		    !scope_access(w, squid_bin(w), true))
+			e = w->jail == NULL ? wfmt(w, "the host has no squid "
+			    "(%s): it is a plugin, installed by hand (pkg install "
+			    "squid)", squid_bin(w)) : wfmt(w, "%s: the jail %s has "
+			    "no squid (%s): it is a plugin, installed by hand in "
+			    "the jail (pkg -j %s install squid)", ni[k].name,
+			    w->jail, squid_bin(w), w->jail);
+		else if (ni[k].icap)
+			e = icap_missing(w);
+		(void)inst_in(w, "", NULL);
+		if (e != NULL) {
 			ucl_object_unref(top);
 			*errp = e;
 			return (-1);
 		}
+	}
 	/* The MD+R policies' hashes as ClamAV's signatures first: the
 	 * instances' c-icap read them as they start. */
 	if (!sec) {
@@ -771,13 +983,23 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		/* The other group's are not this list's to stop. */
 		if (IS_SEC(instances[i].name) != sec)
 			continue;
+		/* Not named any more, or moved to another place. */
 		for (k = 0; k < n; k++)
-			if (strcmp(ni[k].name, instances[i].name) == 0)
+			if (strcmp(ni[k].name, instances[i].name) == 0 &&
+			    strcmp(ni[k].jail, instances[i].jail) == 0)
 				break;
 		if (k == n) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
-			    "squid %s stopped", instances[i].name);
+			    "squid %s%s%s stopped", instances[i].name,
+			    instances[i].jail[0] != '\0' ? " of the jail " : "",
+			    instances[i].jail);
+			if (inst_in(w, instances[i].jail, &e) != 0) {
+				step_end(w, step, true, "%s: its files there are "
+				    "left", e);
+				continue;
+			}
 			inst_down(w, instances[i].name);
+			(void)inst_in(w, "", NULL);
 			step_end(w, step, true, NULL);
 		}
 	}
@@ -786,6 +1008,16 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	for (k = 0; k < n; k++) {
 		in = ucl_object_iterate(ucl_object_lookup(top, "instances"), &it,
 		    true);
+		/* Where it runs: its jail not running at the start, kept for
+		 * the next apply, not started. */
+		if (ni[k].jaildown || inst_in(w, ni[k].jail, NULL) != 0) {
+			ni[k].jaildown = true;
+			step = step_begin(w, STEP_DAEMON, "arcana-agent",
+			    "squid %s of the jail %s: the jail is not running, "
+			    "kept, not started", ni[k].name, ni[k].jail);
+			step_end(w, step, true, NULL);
+			continue;
+		}
 		/* Stopped by the admin: it and its c-icap, files kept. */
 		if (ni[k].stopped) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
@@ -797,8 +1029,9 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		was = inst_pid(w, ni[k].name) != 0;
 		step = step_begin(w, STEP_DAEMON, "arcana-agent",
-		    "squid %s in fib %d, %s: %s", ni[k].name, ni[k].fib, ni[k].mode,
-		    was ? "reconfigured" : "started");
+		    "squid %s%s%s in fib %d, %s: %s", ni[k].name, ni[k].jail[0] !=
+		    '\0' ? " of the jail " : "", ni[k].jail, ni[k].fib,
+		    ni[k].mode, was ? "reconfigured" : "started");
 		e = NULL;
 		/* The certificate cache in both modes: Squid's certificate
 		 * maker serves the TLS port's own pages too. */
@@ -810,11 +1043,11 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		inst_chown(w, inst_path(w, ni[k].name, "pem"), false);
 		/* Read again by Squid as its user at a reconfigure. */
-		if (sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.deny",
-		    ni[k].name), denies[k], "squid", &e) != 0 || !lists_write(w,
-		    ni[k].name, ucl_object_lookup(in, "lists"), &e) ||
-		    sdwan_conf_write_group(wfmt(w, "sdwan-proxy-%s.conf",
-		    ni[k].name), confs[k], "squid", &e) != 0) {
+		if (px_write(w, wfmt(w, "sdwan-proxy-%s.deny", ni[k].name),
+		    denies[k], "squid", &e) != 0 || !lists_write(w, ni[k].name,
+		    ucl_object_lookup(in, "lists"), &e) || px_write(w, wfmt(w,
+		    "sdwan-proxy-%s.conf", ni[k].name), confs[k], "squid", &e) !=
+		    0) {
 			step_end(w, step, false, "%s", e);
 			*errp = wfmt(w, "%s: %s", ni[k].name, e);
 			ok = false;
@@ -837,7 +1070,7 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		argv[3] = (char *)(uintptr_t)"-f";
 		argv[4] = (char *)(uintptr_t)inst_path(w, ni[k].name, "conf");
 		argv[5] = NULL;
-		if (run_exec(w, argv, &res) != 0) {
+		if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 			step_end(w, step, false, "squid does not take it");
 			*errp = wfmt(w, "%s: squid does not take it: %s", ni[k].name,
 			    res.errlen > 0 ? res.err : res.out != NULL ? res.out :
@@ -853,6 +1086,7 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		step_end(w, step, true, NULL);
 	}
+	(void)inst_in(w, "", NULL);
 	if (ok) {
 		/* The other group's kept, then this list's. */
 		nkeep = 0;
@@ -923,6 +1157,7 @@ sdwan_proxy_start(void)
 	const char	*e;
 
 	work_init(&w);
+	starting = true;
 	if ((json = sdwan_kept_read(PROXY_FILE)) != NULL) {
 		e = NULL;
 		if (do_sdwan_proxy(&w, json, &e) != 0)
@@ -935,6 +1170,7 @@ sdwan_proxy_start(void)
 			logmsg(LOG_WARNING, "security proxy: %s", e);
 		free(json);
 	}
+	starting = false;
 	work_free(&w);
 }
 
@@ -960,10 +1196,21 @@ security_specs(const char *file, ucl_object_t *top, const char *key)
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;
 	while ((in = ucl_object_iterate(ucl_object_lookup(kept, "instances"),
-	    &it, true)) != NULL)
-		if (ucl_object_lookup(in, "spec") != NULL)
-			ucl_array_append(arr, ucl_object_copy(ucl_object_lookup(
-			    in, "spec")));
+	    &it, true)) != NULL) {
+		ucl_object_t		*sp;
+		const ucl_object_t	*j;
+
+		if (ucl_object_lookup(in, "spec") == NULL)
+			continue;
+		/* With the jail it runs in, where it has one. */
+		sp = ucl_object_copy(ucl_object_lookup(in, "spec"));
+		if ((j = ucl_object_lookup(in, "jail")) != NULL &&
+		    ucl_object_type(j) == UCL_STRING && ucl_object_tostring(
+		    j)[0] != '\0' && ucl_object_type(sp) == UCL_OBJECT)
+			ucl_object_replace_key(sp, ucl_object_copy(j), "jail", 0,
+			    false);
+		ucl_array_append(arr, sp);
+	}
 	ucl_object_unref(kept);
 	ucl_object_insert_key(top, arr, key, 0, false);
 }
@@ -972,10 +1219,11 @@ security_specs(const char *file, ucl_object_t *top, const char *key)
  * ClamAV's signatures as freshclam left them: each database's version,
  * signatures and when it was built, read from the head of its file
  * ("ClamAV-VDB:time:version:signatures:level:..."), and whether
- * freshclam runs.  Nothing when there is no database.
+ * freshclam runs; the host's, or w's jail's own, read beneath its root.
+ * NULL when there is no database.
  */
-static void
-clamav_json(ucl_object_t *top)
+static ucl_object_t *
+clamav_obj(struct work *w)
 {
 	static const char *const dbs[] = { "main", "daily", "bytecode" };
 	ucl_object_t	*o, *arr, *d;
@@ -989,10 +1237,10 @@ clamav_json(ucl_object_t *top)
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (i = 0; i < nitems(dbs); i++) {
 		snprintf(path, sizeof(path), "%s/%s.cvd", CLAMAV_DB, dbs[i]);
-		if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1) {
+		if ((fd = scope_open_read(w, path)) == -1) {
 			snprintf(path, sizeof(path), "%s/%s.cld", CLAMAV_DB,
 			    dbs[i]);
-			if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1)
+			if ((fd = scope_open_read(w, path)) == -1)
 				continue;
 		}
 		n = read(fd, head, sizeof(head) - 1);
@@ -1021,20 +1269,20 @@ clamav_json(ucl_object_t *top)
 		    10)), "signatures", 0, false);
 		ucl_array_append(arr, d);
 	}
-	if (ucl_array_size(arr) == 0 && access(CLAMAV_DB, F_OK) != 0) {
+	if (ucl_array_size(arr) == 0 && !scope_access(w, CLAMAV_DB, false)) {
 		ucl_object_unref(arr);
-		return;
+		return (NULL);
 	}
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, arr, "databases", 0, false);
 	pid = 0;
-	if ((pf = fopen(FRESHCLAM_PID, "re")) != NULL) {
+	if ((pf = scope_fopen(w, FRESHCLAM_PID)) != NULL) {
 		if (fscanf(pf, "%ld", &pid) != 1)
 			pid = 0;
 		fclose(pf);
 	}
-	ucl_object_insert_key(o, ucl_object_frombool(pid > 0 && kill((pid_t)pid,
-	    0) == 0), "freshclam", 0, false);
+	ucl_object_insert_key(o, ucl_object_frombool(pid > 1 &&
+	    pid_alive((pid_t)pid)), "freshclam", 0, false);
 	/* freshclam's configuration: there, and not the port's sample
 	 * still saying Example, which makes freshclam refuse to run; and
 	 * the last of its log, which says why signatures do not come. */
@@ -1043,7 +1291,8 @@ clamav_json(ucl_object_t *top)
 		int	 nl, j;
 		bool	 conf, example;
 
-		conf = (pf = fopen(opts.freshclam_conf, "re")) != NULL;
+		conf = (pf = scope_fopen(w, w->jail != NULL ?
+		    PATH_FRESHCLAM_CONF : opts.freshclam_conf)) != NULL;
 		example = false;
 		while (pf != NULL && fgets(line, sizeof(line), pf) != NULL)
 			if (strncmp(line, "Example", 7) == 0 && (line[7] == '\n' ||
@@ -1053,9 +1302,10 @@ clamav_json(ucl_object_t *top)
 			fclose(pf);
 		ucl_object_insert_key(o, ucl_object_frombool(conf && !example),
 		    "conf", 0, false);
-		clamav_mirrors_json(o);
+		clamav_mirrors_json(w, o);
 		nl = 0;
-		if ((pf = fopen("/var/log/clamav/freshclam.log", "re")) != NULL) {
+		if ((pf = scope_fopen(w, "/var/log/clamav/freshclam.log")) !=
+		    NULL) {
 			while (fgets(line, sizeof(line), pf) != NULL) {
 				if (line[0] == '\n' || strncmp(line, "---", 3) == 0)
 					continue;
@@ -1074,7 +1324,7 @@ clamav_json(ucl_object_t *top)
 			ucl_object_insert_key(o, lg, "log", 0, false);
 		}
 	}
-	ucl_object_insert_key(top, o, "clamav", 0, false);
+	return (o);
 }
 
 /* The instances as they are, into the sdwan reply: each its name, fib,
@@ -1086,12 +1336,39 @@ sdwan_proxy_json(struct work *w, ucl_object_t *top)
 	char		*ca;
 	int		 i;
 
+	const char	*jails[INSTANCES_MAX];
+	int		 nj, k;
+
 	pthread_mutex_lock(&lock);
 	arr = ucl_object_typed_new(UCL_ARRAY);
+	nj = 0;
 	for (i = 0; i < ninstances; i++) {
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(instances[i].name),
 		    "name", 0, false);
+		/* Where it runs: a jail's read beneath its root, and its
+		 * ClamAV, where it scans, the jail's own. */
+		if (instances[i].jail[0] != '\0') {
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    instances[i].jail), "jail", 0, false);
+			for (k = 0; k < nj; k++)
+				if (strcmp(jails[k], instances[i].jail) == 0)
+					break;
+			if (k == nj && instances[i].icap)
+				jails[nj++] = wstrdup(w, instances[i].jail);
+		}
+		if (inst_in(w, instances[i].jail, NULL) != 0) {
+			ucl_object_insert_key(o, ucl_object_fromint(
+			    instances[i].fib), "fib", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    instances[i].mode), "mode", 0, false);
+			ucl_object_insert_key(o, ucl_object_frombool(false),
+			    "running", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring("security"),
+			    "group", 0, false);
+			ucl_array_append(arr, o);
+			continue;
+		}
 		ucl_object_insert_key(o, ucl_object_fromint(instances[i].fib),
 		    "fib", 0, false);
 		ucl_object_insert_key(o, ucl_object_fromstring(instances[i].mode),
@@ -1109,9 +1386,26 @@ sdwan_proxy_json(struct work *w, ucl_object_t *top)
 		    instances[i].name) ? "security" : "sdwan"), "group", 0,
 		    false);
 		ucl_array_append(arr, o);
+		(void)inst_in(w, "", NULL);
 	}
 	pthread_mutex_unlock(&lock);
 	ucl_object_insert_key(top, arr, "proxy", 0, false);
 	security_specs(SEC_FILE, top, "security_proxy");
-	clamav_json(top);
+	if ((o = clamav_obj(w)) != NULL)
+		ucl_object_insert_key(top, o, "clamav", 0, false);
+	/* Each jail's own, where a filter there scans. */
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (k = 0; k < nj; k++) {
+		if (inst_in(w, jails[k], NULL) == 0 && (o = clamav_obj(w)) !=
+		    NULL) {
+			ucl_object_insert_key(o, ucl_object_fromstring(jails[k]),
+			    "jail", 0, false);
+			ucl_array_append(arr, o);
+		}
+		(void)inst_in(w, "", NULL);
+	}
+	if (ucl_array_size(arr) > 0)
+		ucl_object_insert_key(top, arr, "clamav_jails", 0, false);
+	else
+		ucl_object_unref(arr);
 }

@@ -2315,6 +2315,64 @@ module arcana-sdwan {
     }
   }
 
+  grouping clamav-state {
+    description
+      "ClamAV's signatures as freshclam left them.";
+    list database {
+      key "name";
+      description
+        "Each database there.";
+      leaf name {
+        type string;
+        description
+          "main, daily or bytecode.";
+      }
+      leaf file {
+        type string;
+        description
+          "Its file.";
+      }
+      leaf built {
+        type string;
+        description
+          "When it was built, as its head says.";
+      }
+      leaf version {
+        type int64;
+        description
+          "Its version.";
+      }
+      leaf signatures {
+        type int64;
+        description
+          "Its signatures.";
+      }
+    }
+    leaf freshclam {
+      type boolean;
+      description
+        "freshclam runs.";
+    }
+    leaf conf {
+      type boolean;
+      description
+        "freshclam's configuration is there, and not the port's
+         sample.";
+    }
+    leaf-list mirror {
+      type string;
+      ordered-by user;
+      description
+        "Its DatabaseMirror lines.";
+    }
+    leaf-list log {
+      type string;
+      ordered-by user;
+      description
+        "The last lines of its log.";
+    }
+  }
+
   container sdwan {
     description
       "The edge.";
@@ -2326,6 +2384,13 @@ module arcana-sdwan {
          (sec-): each checked by squid -k parse, one running told to
          reconfigure.";
       uses instance;
+      leaf jail {
+        type string;
+        description
+          "The Security section's (sec-) alone: the jail it runs in,
+           its files beneath the jail's root and its programs the
+           jail's own; none, the host's.";
+      }
       container spec {
         description
           "The form Squid's file is rendered from.";
@@ -2404,6 +2469,13 @@ module arcana-sdwan {
         type string;
         description
           "The host's name, for the YAML's comment.";
+      }
+      leaf jail {
+        type string;
+        description
+          "The Security section's (sec-) alone: the jail it runs in,
+           its files beneath the jail's root and its programs the
+           jail's own; none, the host's.";
       }
       container spec {
         description
@@ -2520,7 +2592,9 @@ module arcana-sdwan {
         leaf jail {
           type string;
           description
-            "The edge that is this vnet jail; none, the host's.";
+            "The edge that is this vnet jail; none, the host's.  The
+             Security section's instances (security) each say their
+             own jail: this is not theirs.";
         }
         leaf security {
           type boolean;
@@ -2859,6 +2933,11 @@ module arcana-sdwan {
         description
           "Each Squid instance.";
         uses running;
+        leaf jail {
+          type string;
+          description
+            "The jail it runs in; none, the host's.";
+        }
         leaf mode {
           type string;
           description
@@ -2880,59 +2959,20 @@ module arcana-sdwan {
         description
           "ClamAV's signatures, for the proxies that scan for
            malware, as freshclam left them.";
-        list database {
-          key "name";
-          description
-            "Each database there.";
-          leaf name {
-            type string;
-            description
-              "main, daily or bytecode.";
-          }
-          leaf file {
-            type string;
-            description
-              "Its file.";
-          }
-          leaf built {
-            type string;
-            description
-              "When it was built, as its head says.";
-          }
-          leaf version {
-            type int64;
-            description
-              "Its version.";
-          }
-          leaf signatures {
-            type int64;
-            description
-              "Its signatures.";
-          }
-        }
-        leaf freshclam {
-          type boolean;
-          description
-            "freshclam runs.";
-        }
-        leaf conf {
-          type boolean;
-          description
-            "freshclam's configuration is there, and not the port's
-             sample.";
-        }
-        leaf-list mirror {
+        uses clamav-state;
+      }
+      list clamav-jail {
+        key "jail";
+        description
+          "ClamAV's signatures of each jail a Security URL filter that
+           scans for malware runs in: the jail's own, as its freshclam
+           left them.";
+        leaf jail {
           type string;
-          ordered-by user;
           description
-            "Its DatabaseMirror lines.";
+            "The jail.";
         }
-        leaf-list log {
-          type string;
-          ordered-by user;
-          description
-            "The last lines of its log.";
-        }
+        uses clamav-state;
       }
       list ids {
         key "name";
@@ -2942,6 +2982,11 @@ module arcana-sdwan {
           type string;
           description
             "The service.";
+        }
+        leaf jail {
+          type string;
+          description
+            "The jail it runs in; none, the host's.";
         }
         leaf-list interface {
           type string;

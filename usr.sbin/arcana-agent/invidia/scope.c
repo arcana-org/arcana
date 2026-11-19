@@ -698,6 +698,87 @@ scope_open_read(struct work *w, const char *path)
 }
 
 /*
+ * Is a file there, of the host or beneath w's jail's root (never by a
+ * link out of it), and, with exec, may it be run?  A jail's program is
+ * looked for as the jail has it: the daemon run there is the jail's.
+ */
+bool
+scope_access(struct work *w, const char *path, bool exec)
+{
+	struct stat	 sb;
+	const char	*base;
+	int		 dfd, r;
+
+	if (w->jail == NULL)
+		return (access(path, exec ? X_OK : R_OK) == 0);
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (false);
+	r = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW);
+	close(dfd);
+	return (r == 0 && (exec ? S_ISREG(sb.st_mode) && (sb.st_mode & 0111) !=
+	    0 : S_ISREG(sb.st_mode) || S_ISDIR(sb.st_mode)));
+}
+
+/* A file of the host or of w's jail opened to read as a stream, as
+ * scope_open_read() opens it; NULL with errno for none. */
+FILE *
+scope_fopen(struct work *w, const char *path)
+{
+	FILE	*fp;
+	int	 fd, e;
+
+	if ((fd = scope_open_read(w, path)) == -1)
+		return (NULL);
+	/* Read as a file is, blocking. */
+	(void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+	if ((fp = fdopen(fd, "r")) == NULL) {
+		e = errno;
+		close(fd);
+		errno = e;
+	}
+	return (fp);
+}
+
+/*
+ * A signal to a process of w's jail, sent from inside the jail (its
+ * kill(1), by jexec(8)), so that a pid its root put in a file names
+ * none of the host's; on the host, kill(2).  0, or -1.
+ */
+int
+scope_kill(struct work *w, pid_t pid, int sig)
+{
+	struct execres	 res;
+	char		*argv[4];
+
+	if (w->jail == NULL)
+		return (kill(pid, sig));
+	argv[0] = (char *)(uintptr_t)"/bin/kill";
+	argv[1] = wfmt(w, "-%d", sig);
+	argv[2] = wfmt(w, "%d", (int)pid);
+	argv[3] = NULL;
+	return (run_exec(w, scope_jexec(w, argv), &res) == 0 ? 0 : -1);
+}
+
+/* pid_stop() of a process of w's jail, by scope_kill(). */
+void
+scope_stop(struct work *w, pid_t pid, const char *prog, int wait_ms)
+{
+	int	i;
+
+	if (w->jail == NULL) {
+		pid_stop(pid, prog, wait_ms);
+		return;
+	}
+	if (!pid_is(pid, prog))
+		return;
+	(void)scope_kill(w, pid, SIGTERM);
+	for (i = 0; i < wait_ms / 20 && pid_is(pid, prog); i++)
+		usleep(20000);
+	if (pid_is(pid, prog))
+		(void)scope_kill(w, pid, SIGKILL);
+}
+
+/*
  * dir and the directories above it made, as mkdir -p makes them, of the
  * host or beneath w's jail's root: a link on the way is not followed,
  * so no directory is made out of the jail.  0, or -1 with errno.

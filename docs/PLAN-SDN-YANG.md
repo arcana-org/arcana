@@ -1310,7 +1310,11 @@ whose first part is served.
   breakout's routes, and the BIRD instances; the host's dnsmasq,
   unbound, Squid and Suricata instances, SD-WAN's and the Security
   section's (sec-) in one list each, set apart as their setters keep
-  them.  An instance's form is a `spec` container of its kind's, as the
+  them; a Security section's instance may name the running jail it
+  runs in (its `jail` leaf, key still its name; the state's `proxy`
+  and `ids` say it, and `clamav-jail` each such jail's ClamAV), its
+  files beneath that jail's root and its programs the jail's own.  An
+  instance's form is a `spec` container of its kind's, as the
   module says it (bird-form, dhcp-form, dns-form, proxy-form,
   ids-form), with `host`; the rendered file is the `conf`
   state leaf, as decided before; the IDS' other

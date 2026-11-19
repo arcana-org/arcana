@@ -2,8 +2,8 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sdwan",
     "module-revision": "2026-10-15",
-    "sid-file-version": 12,
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, 95 600, 300, and 96 600, 100.",
+    "sid-file-version": 13,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, 95 600, 300, 96 600, 100, and 97 200, 100 (listed first, so that new items go there).",
     "dependency-revision": [
       {
         "module-name": "cblink-gen",
@@ -27,6 +27,10 @@
       }
     ],
     "assignment-range": [
+      {
+        "entry-point": "97200",
+        "size": "100"
+      },
       {
         "entry-point": "72100",
         "size": "200"
@@ -4323,6 +4327,86 @@
         "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/state/dns/jail",
         "sid": "96654"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/ids-instance/jail",
+        "sid": "97200"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/proxy-instance/jail",
+        "sid": "97201"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail",
+        "sid": "97202"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/conf",
+        "sid": "97203"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database",
+        "sid": "97204"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database/built",
+        "sid": "97205"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database/file",
+        "sid": "97206"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database/name",
+        "sid": "97207"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database/signatures",
+        "sid": "97208"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/database/version",
+        "sid": "97209"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/freshclam",
+        "sid": "97210"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/jail",
+        "sid": "97211"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/log",
+        "sid": "97212"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/clamav-jail/mirror",
+        "sid": "97213"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/ids/jail",
+        "sid": "97214"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/proxy/jail",
+        "sid": "97215"
       }
     ]
   }

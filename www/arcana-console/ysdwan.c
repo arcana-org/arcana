@@ -622,6 +622,7 @@ instance_of(const char *kind, const ucl_object_t *in)
 		copy(m, "rules", in, "rules");
 		copy(m, "divert", in, "divert");
 		copy(m, "host", in, "host");
+		copy(m, "jail", in, "jail");
 		form_put(m, "ids-instance", in);
 		copy(m, "capture", in, "capture");
 		copy(m, "offload", in, "offload");
@@ -642,6 +643,7 @@ instance_of(const char *kind, const ucl_object_t *in)
 	    "dhcp") == 0 ? "dhcp-instance" : strcmp(kind, "dns") == 0 ?
 	    "dns-instance" : "proxy-instance", in);
 	if (strcmp(kind, "proxy") == 0) {
+		copy(m, "jail", in, "jail");
 		copy(m, "mode", in, "mode");
 		put_list(m, "named-list", named(ucl_object_lookup(in, "lists")));
 		copy(m, "stopped", in, "stopped");
@@ -1611,6 +1613,7 @@ ids_json(const struct arcana_sdwan_sdwan_state_ids *d)
 
 	o = ucl_object_typed_new(UCL_OBJECT);
 	put_str(o, "name", d->name);
+	put_str(o, "jail", d->jail);
 	put(o, "interfaces", strs(d->interface.n, d->interface.v));
 	put_str(o, "mode", d->has_mode && d->mode ==
 	    ARCANA_SDWAN_SDWAN_STATE_IDS_MODE_PREVENT ? "prevent" : "detect");
@@ -1734,6 +1737,7 @@ security_ids(ucl_object_t *arr,
 	if (f != NULL)
 		ucl_object_unref(f);
 	put_str(s, "name", d->name);
+	put_str(s, "jail", d->jail);
 	if (d->has_divert)
 		put(s, "divert", ucl_object_fromint(d->divert));
 	put_str(s, "rules", d->rules);
@@ -1789,36 +1793,57 @@ security_proxy(ucl_object_t *arr,
 			    "address")));
 	put(s, "listen", l);
 	put_str(s, "name", p->name);
+	put_str(s, "jail", p->jail);
 	if (p->has_stopped && p->stopped)
 		put(s, "stopped", ucl_object_frombool(true));
 	ucl_array_append(arr, s);
 }
 
-static void
-clamav_json(ucl_object_t *top, const struct arcana_sdwan_sdwan_state_clamav *c)
-{
-	ucl_object_t	*o, *arr, *d;
+/* A ClamAV's state, the host's or a jail's (the module's clamav-state,
+ * whichever struct has it), as the read's object. */
+#define	CLAMAV_JSON(o, c) do {						\
+	ucl_object_t	*arr_, *d_;					\
+									\
+	(o) = ucl_object_typed_new(UCL_OBJECT);				\
+	arr_ = ucl_object_typed_new(UCL_ARRAY);				\
+	for (size_t i_ = 0; i_ < (c)->database.n; i_++) {		\
+		d_ = ucl_object_typed_new(UCL_OBJECT);			\
+		put_str(d_, "name", (c)->database.v[i_].name);		\
+		put_str(d_, "file", (c)->database.v[i_].file);		\
+		put_str(d_, "built", (c)->database.v[i_].built);	\
+		PUT_INT(d_, "version", &(c)->database.v[i_], version);	\
+		PUT_INT(d_, "signatures", &(c)->database.v[i_],	\
+		    signatures);					\
+		ucl_array_append(arr_, d_);				\
+	}								\
+	put((o), "databases", arr_);					\
+	put((o), "freshclam", ucl_object_frombool((c)->freshclam));	\
+	put((o), "conf", ucl_object_frombool((c)->conf));		\
+	put((o), "mirrors", strs((c)->mirror.n, (c)->mirror.v));	\
+	if ((c)->log.n > 0)						\
+		put((o), "log", strs((c)->log.n, (c)->log.v));		\
+} while (0)
 
-	if (c == NULL)
-		return;
-	o = ucl_object_typed_new(UCL_OBJECT);
-	arr = ucl_object_typed_new(UCL_ARRAY);
-	for (size_t i = 0; i < c->database.n; i++) {
-		d = ucl_object_typed_new(UCL_OBJECT);
-		put_str(d, "name", c->database.v[i].name);
-		put_str(d, "file", c->database.v[i].file);
-		put_str(d, "built", c->database.v[i].built);
-		PUT_INT(d, "version", &c->database.v[i], version);
-		PUT_INT(d, "signatures", &c->database.v[i], signatures);
-		ucl_array_append(arr, d);
+/* ClamAV's state: the host's, and each jail's where a Security URL
+ * filter there scans (clamav_jails, each with its jail). */
+static void
+clamav_json(ucl_object_t *top, const struct arcana_sdwan_sdwan_state *st)
+{
+	ucl_object_t	*o, *arr;
+
+	if (st->clamav != NULL) {
+		CLAMAV_JSON(o, st->clamav);
+		put(top, "clamav", o);
 	}
-	put(o, "databases", arr);
-	put(o, "freshclam", ucl_object_frombool(c->freshclam));
-	put(o, "conf", ucl_object_frombool(c->conf));
-	put(o, "mirrors", strs(c->mirror.n, c->mirror.v));
-	if (c->log.n > 0)
-		put(o, "log", strs(c->log.n, c->log.v));
-	put(top, "clamav", o);
+	if (st->clamav_jail.n == 0)
+		return;
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	for (size_t k = 0; k < st->clamav_jail.n; k++) {
+		CLAMAV_JSON(o, &st->clamav_jail.v[k]);
+		put_str(o, "jail", st->clamav_jail.v[k].jail);
+		ucl_array_append(arr, o);
+	}
+	put(top, "clamav_jails", arr);
 }
 
 /* The sdwan read, all of it, from the two modules' data. */
@@ -1940,6 +1965,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put_str(o, "name", p->name);
+		put_str(o, "jail", p->jail);
 		put(o, "fib", ucl_object_fromint(p->fib));
 		put_str(o, "mode", p->mode);
 		put(o, "running", ucl_object_frombool(p->running));
@@ -1954,7 +1980,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 	for (size_t i = 0; sd != NULL && i < sd->proxy_instance.n; i++)
 		security_proxy(arr, &sd->proxy_instance.v[i]);
 	put(top, "security_proxy", arr);
-	clamav_json(top, st->clamav);
+	clamav_json(top, st);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	for (size_t i = 0; i < st->ids.n; i++)
 		ucl_array_append(arr, ids_json(&st->ids.v[i]));

@@ -13,7 +13,12 @@
  * the clients' TLS sent to it by ipfw fwd rules (sslinspect.c, its own
  * read, arcana-sslproxy's).  A host at a time: its
  * SD-WAN state tells what runs and the forms it was given; a save makes
- * the kind's whole list the host's.  Both through the fleet mount
+ * the kind's whole list the host's.  And a place at a time, beside the
+ * host (Runs in): the host itself, or one of its running jails, where
+ * a URL filter (and its scanning) or an intrusion detection made there
+ * runs, its plugins the jail's own; the tabs show the place's alone and
+ * install there (pkg -j), the lists saved whole all the same.  SSL
+ * inspection is the host's.  Both through the fleet mount
  * (sdread.c): arcana-sdwan's state and instances, arcana-probe's and
  * arcana-steer's.
  */
@@ -41,6 +46,7 @@ static struct {
 	unsigned	 gen;		/* of reads: an older reply is dropped */
 	bool		 rules;		/* IDS/IPS: the ruleset's rules shown */
 	bool		 sources;	/* IDS/IPS: the rule sources shown */
+	char		 where[64];	/* the place shown: a jail, "" the host */
 } sec = { .edit = -1 };
 
 static const char *const tabs[] = { "url", "antivirus", "ids", "tls" };
@@ -123,6 +129,7 @@ sec_reset(void)
 	sec.busy = false;
 	sec.rules = false;
 	sec.sources = false;
+	sec.where[0] = '\0';
 	sec.error[0] = '\0';
 	idsown_reset();
 	idsstats_reset();
@@ -134,6 +141,32 @@ specs(bool ids)
 {
 
 	return (jget(sec.state, ids ? "security_ids" : "security_proxy"));
+}
+
+/* Is a form's (or a read's entry's) place the one the page shows? */
+static bool
+here(const ucl_object_t *f)
+{
+
+	return (strcmp(jstr(f, "jail") != NULL ? jstr(f, "jail") : "",
+	    sec.where) == 0);
+}
+
+/* The kind's forms of the place shown, a copy the caller frees. */
+static ucl_object_t *
+specs_here(bool ids)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+	ucl_object_t		*out;
+
+	out = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((e = ucl_object_iterate(specs(ids), &it, true)) != NULL)
+		if (here(e))
+			ucl_array_append(out, ucl_object_ref((ucl_object_t *)
+			    (uintptr_t)e));
+	return (out);
 }
 
 /* What runs of a form's instance: its entry in the host's read. */
@@ -234,6 +267,49 @@ chip_kept(struct html *h)
 	    "\">stopped (kept)</span>");
 }
 
+/*
+ * Where the page looks, beside the host: the host itself, or a jail of
+ * it that runs, a network of its own or not (a URL filter serves with
+ * the jail's addresses; an intrusion detection that prevents needs a
+ * vnet jail, the host says so).
+ */
+static void
+where_pick(struct html *h)
+{
+	const struct server	*s;
+	const ucl_object_t	*j;
+	ucl_object_iter_t	 it;
+
+	s = NULL;
+	for (int i = 0; i < app.nservers && s == NULL; i++)
+		if (strcmp(app.servers[i].id, sec.sid) == 0)
+			s = &app.servers[i];
+	if (s == NULL || s->list == NULL || sec.tab == SEC_TLS)
+		return;
+	h_raw(h, "<label class=\"secpick\" title=\"Where its filters and "
+	    "intrusion detections run: the host, or one of its running jails "
+	    "(their plugins the jail's own)\">Runs in <select data-input=\""
+	    "sec-where\"><option value=\"\"");
+	if (sec.where[0] == '\0')
+		h_raw(h, " selected");
+	h_raw(h, ">the host</option>");
+	it = NULL;
+	while ((j = ucl_object_iterate(jget(s->list, "jails"), &it, true)) !=
+	    NULL) {
+		if (jstr(j, "name") == NULL || jstr(j, "state") == NULL ||
+		    strcmp(jstr(j, "state"), "running") != 0)
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", jstr(j, "name"));
+		if (strcmp(jstr(j, "name"), sec.where) == 0)
+			h_raw(h, " selected");
+		h_raw(h, ">jail ");
+		h_txt(h, jstr(j, "name"));
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label>");
+}
+
 static void
 host_pick(struct html *h)
 {
@@ -275,6 +351,7 @@ static void
 missing(struct html *h, const char *what, const char *pkgs)
 {
 
+	/* Installed where the page looks: the host, or the jail (pkg -j). */
 	h_raw(h, "<div class=\"notice warn sec-missing\"><span>");
 	h_txt(h, what);
 	h_raw(h, "</span><button class=\"primary small\" data-act=\""
@@ -293,7 +370,42 @@ sec_has(const char *plugin)
 
 	if ((s = sec_server()) == NULL || s->list == NULL)
 		return (true);
-	return (has_plugin(s, plugin));
+	return (sec.where[0] != '\0' ? plugin_at(s, sec.where, plugin) :
+	    has_plugin(s, plugin));
+}
+
+/* The place shown, said for a notice: "this host" or "the jail X". */
+static const char *
+place(void)
+{
+	static char	buf[96];
+
+	if (sec.where[0] == '\0')
+		return ("this host");
+	snprintf(buf, sizeof(buf), "the jail %s", sec.where);
+	return (buf);
+}
+
+/*
+ * A form's place, kept as it was for one changed, the place shown for a
+ * new one: a hidden field (the tag before it left open, for the caller
+ * to close), and a line saying it.
+ */
+static void
+jail_field(struct html *h, const ucl_object_t *f)
+{
+	const char	*j;
+
+	j = f != NULL ? (jstr(f, "jail") != NULL ? jstr(f, "jail") : "") :
+	    sec.where;
+	h_raw(h, "><input type=\"hidden\" name=\"jail\"");
+	h_attr(h, "value", j);
+	if (j[0] != '\0') {
+		h_raw(h, "><p class=\"dim secwhere\">Runs in the jail <b>");
+		h_txt(h, j);
+		h_raw(h, "</b>: its files beneath the jail's root, its program "
+		    "the jail's own.</p");
+	}
 }
 
 /* ---- URL filter ------------------------------------------------------- */
@@ -309,6 +421,7 @@ proxy_form(struct html *h, const ucl_object_t *f)
 	h_raw(h, f != NULL ? "Change the URL filter" : "A URL filter");
 	h_raw(h, "</h4><input type=\"hidden\" name=\"orig\"");
 	h_attr(h, "value", jstr(f, "name") != NULL ? jstr(f, "name") : "");
+	jail_field(h, f);
 	h_raw(h, "><label>Name <input name=\"name\" required "
 	    "pattern=\"sec-[A-Za-z0-9_-]{1,28}\" spellcheck=\"false\"");
 	h_attr(h, "value", jstr(f, "name") != NULL ? jstr(f, "name") :
@@ -370,11 +483,15 @@ static void
 view_url(struct html *h, bool malware_only)
 {
 	const ucl_object_t	**rows, *f, *l;
+	ucl_object_t		 *mine;
+	char			  what[160];
 	int			  r, n;
 
-	if (!malware_only && !sec_has("squid"))
-		missing(h, "Squid is not installed on this host: a URL filter "
-		    "is Squid.", "squid");
+	if (!malware_only && !sec_has("squid")) {
+		snprintf(what, sizeof(what), "Squid is not installed in %s: a "
+		    "URL filter is Squid.", place());
+		missing(h, what, "squid");
+	}
 	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
 	    "data-input=\"filter\" placeholder=\"Filter\" autocomplete=\"off\" "
 	    "spellcheck=\"false\"");
@@ -388,18 +505,21 @@ view_url(struct html *h, bool malware_only)
 	if (sec.edit >= 0 && !malware_only)
 		proxy_form(h, sec.edit < n ? ucl_array_find_index(specs(false),
 		    (unsigned)sec.edit) : NULL);
-	if (n == 0) {
-		h_raw(h, "<div class=\"empty\"><p>No URL filter on this host.</p>"
+	/* The place's alone. */
+	mine = specs_here(false);
+	if (ucl_array_size(mine) == 0) {
+		ucl_object_unref(mine);
+		h_fmt(h, "<div class=\"empty\"><p>No URL filter in %s.</p>"
 		    "<p class=\"dim\">Squid as a proxy the clients are told of: "
 		    "what they ask for by a denied name is refused, its TLS "
-		    "ended at the name.</p></div>");
+		    "ended at the name.</p></div>", place());
 		return;
 	}
 	h_fmt(h, "<table class=\"net secproxy%s\">", sec.busy ? " applying" :
 	    "");
 	tbl_head(h, "secproxy", pcols, 6, 1);
 	h_raw(h, "<tbody>");
-	rows = tbl_rows("secproxy", specs(false), pcols, 6, app.filter);
+	rows = tbl_rows("secproxy", mine, pcols, 6, app.filter);
 	for (r = 0; (f = rows[r]) != NULL; r++) {
 		if (malware_only && !jbool(f, "malware"))
 			continue;
@@ -466,6 +586,7 @@ view_url(struct html *h, bool malware_only)
 		}
 	}
 	free(rows);
+	ucl_object_unref(mine);
 	h_raw(h, "</tbody></table>");
 }
 
@@ -478,10 +599,14 @@ view_malware(struct html *h)
 	ucl_object_iter_t	 it;
 	int			 n;
 
-	if (!sec_has("c-icap") || jget(sec.state, "clamav") == NULL)
-		missing(h, "Scanning needs c-icap, its modules and ClamAV, not "
-		    "all installed on this host.", "c-icap c-icap-modules "
-		    "clamav");
+	if (!sec_has("c-icap") || (sec.where[0] == '\0' && jget(sec.state,
+	    "clamav") == NULL)) {
+		char	what[160];
+
+		snprintf(what, sizeof(what), "Scanning needs c-icap, its modules "
+		    "and ClamAV, not all installed in %s.", place());
+		missing(h, what, "c-icap c-icap-modules clamav");
+	}
 	h_raw(h, "<p class=\"lead\">c-icap with ClamAV's module scans what a "
 	    "URL filter fetches, before the client has it: one that holds "
 	    "malware is refused. Each URL filter that scans has its own "
@@ -490,7 +615,7 @@ view_malware(struct html *h)
 	n = 0;
 	it = NULL;
 	while ((f = ucl_object_iterate(specs(false), &it, true)) != NULL)
-		if (jbool(f, "malware"))
+		if (jbool(f, "malware") && here(f))
 			n++;
 	if (n == 0) {
 		h_raw(h, "<div class=\"empty\"><p>No URL filter here scans for "
@@ -515,15 +640,22 @@ static const struct tcol dcols[] = {
 static const char *const default_mirrors[] = { "database.clamav.net",
     "https://packages.microsoft.com/clam" };
 
-/* A clamav job of mirrors, n of them, as the API takes it. */
+/* A clamav job of mirrors, n of them, as the API takes it: the place's
+ * freshclam.conf, the host's or the jail's own. */
 static char *
 mirrors_job(const char *const *m, size_t n)
 {
 	char	*json, *q, *t;
 	size_t	 i;
 
-	if ((json = strdup("{\"kind\":\"clamav\",\"verb\":\"mirrors\","
-	    "\"args\":[")) == NULL)
+	if (sec.where[0] != '\0') {
+		q = json_quote(sec.where);
+		if (asprintf(&json, "{\"kind\":\"clamav\",\"verb\":\"mirrors\","
+		    "\"jail\":%s,\"args\":[", q) == -1)
+			abort();
+		free(q);
+	} else if ((json = strdup("{\"kind\":\"clamav\",\"verb\":"
+	    "\"mirrors\",\"args\":[")) == NULL)
 		abort();
 	for (i = 0; i < n; i++) {
 		char	*w;
@@ -607,19 +739,50 @@ mirrors_form(struct html *h, const ucl_object_t *cl)
 	    "freshclam") ? " and restart freshclam" : "");
 }
 
+/* ClamAV's state of the place shown: the host's, or the jail's own. */
+static const ucl_object_t *
+sec_clamav(void)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it;
+
+	if (sec.where[0] == '\0')
+		return (jget(sec.state, "clamav"));
+	it = NULL;
+	while ((e = ucl_object_iterate(jget(sec.state, "clamav_jails"), &it,
+	    true)) != NULL)
+		if (here(e))
+			return (e);
+	return (NULL);
+}
+
 static void
 view_sigs(struct html *h)
 {
 	const ucl_object_t	**rows, *cl, *d;
 	int			  r;
 
-	cl = jget(sec.state, "clamav");
+	cl = sec_clamav();
 	h_raw(h, "<p class=\"lead\">ClamAV's signatures, as freshclam fetches "
 	    "them from ClamAV's mirrors into /var/db/clamav: the malware "
 	    "scanning knows what they know. freshclam runs as the service "
 	    "clamav_freshclam.</p>");
 	if (cl == NULL) {
-		missing(h, "ClamAV is not installed on this host.", "clamav");
+		char	what[160];
+
+		/* A jail's is read once a filter there scans. */
+		if (sec.where[0] != '\0') {
+			h_raw(h, "<div class=\"empty\"><p>No ClamAV read in the "
+			    "jail ");
+			h_txt(h, sec.where);
+			h_raw(h, " yet.</p><p class=\"dim\">Its signatures are "
+			    "read once a URL filter there scans for malware; "
+			    "freshclam there is the jail's own.</p></div>");
+			return;
+		}
+		snprintf(what, sizeof(what), "ClamAV is not installed in %s.",
+		    place());
+		missing(h, what, "clamav");
 		h_raw(h, "<div class=\"empty\"><p>No ClamAV here.</p><p class=\""
 		    "dim\">Once it is installed, Start freshclam here enables "
 		    "it at boot and starts it.</p></div>");
@@ -694,6 +857,7 @@ ids_form(struct html *h, const ucl_object_t *f)
 	    "An intrusion detection");
 	h_raw(h, "</h4><input type=\"hidden\" name=\"orig\"");
 	h_attr(h, "value", jstr(f, "name") != NULL ? jstr(f, "name") : "");
+	jail_field(h, f);
 	h_raw(h, "><label>Name <input name=\"name\" required "
 	    "pattern=\"sec-[A-Za-z0-9_-]{1,28}\" spellcheck=\"false\"");
 	h_attr(h, "value", jstr(f, "name") != NULL ? jstr(f, "name") :
@@ -1077,11 +1241,15 @@ view_ids(struct html *h)
 {
 	const ucl_object_t	**rows, *f, *l, *a;
 	ucl_object_iter_t	  it;
+	ucl_object_t		 *mine;
+	char			  what[160];
 	int			  r, n;
 
-	if (!sec_has("suricata"))
-		missing(h, "Suricata is not installed on this host: intrusion "
-		    "detection here is Suricata.", "suricata");
+	if (!sec_has("suricata")) {
+		snprintf(what, sizeof(what), "Suricata is not installed in %s: "
+		    "intrusion detection here is Suricata.", place());
+		missing(h, what, "suricata");
+	}
 	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
 	    "data-input=\"filter\" placeholder=\"Filter\" autocomplete=\"off\" "
 	    "spellcheck=\"false\"");
@@ -1094,22 +1262,35 @@ view_ids(struct html *h)
 	h_raw(h, "</button><button class=\"primary\" data-act=\"sec-new\">New "
 	    "intrusion detection</button></div>");
 	ruleset_line(h);
+	/* In a jail: its own ruleset, and a divert there its own ipfw's. */
+	if (sec.where[0] != '\0') {
+		h_raw(h, "<p class=\"dim\">In the jail <b>");
+		h_txt(h, sec.where);
+		h_raw(h, "</b> Suricata is the jail's own, and so is the ruleset "
+		    "it adds (its suricata-update, run there): the ruleset above "
+		    "is the host's. One that prevents needs a jail with a network "
+		    "of its own (vnet): Arcana places the divert rules in the "
+		    "jail's ipfw (set 25, rule 6), the jail's own rules left "
+		    "alone.</p>");
+	}
 	n = (int)ucl_array_size(specs(true));
 	if (sec.edit >= 0)
 		ids_form(h, sec.edit < n ? ucl_array_find_index(specs(true),
 		    (unsigned)sec.edit) : NULL);
-	if (n == 0) {
-		h_raw(h, "<div class=\"empty\"><p>No intrusion detection on this "
-		    "host.</p><p class=\"dim\">Suricata watching interfaces, "
+	mine = specs_here(true);
+	if (ucl_array_size(mine) == 0) {
+		h_fmt(h, "<div class=\"empty\"><p>No intrusion detection in %s."
+		    "</p><p class=\"dim\">Suricata watching interfaces, "
 		    "its alerts here; or, where it prevents, dropping what its "
-		    "rules say.</p></div>");
+		    "rules say.</p></div>", place());
+		ucl_object_unref(mine);
 		return;
 	}
 	h_fmt(h, "<table class=\"net secids%s\">", sec.busy ? " applying" :
 	    "");
 	tbl_head(h, "secids", icols, 5, 1);
 	h_raw(h, "<tbody>");
-	rows = tbl_rows("secids", specs(true), icols, 5, app.filter);
+	rows = tbl_rows("secids", mine, icols, 5, app.filter);
 	for (r = 0; (f = rows[r]) != NULL; r++) {
 		l = live(true, jstr(f, "name"));
 		h_raw(h, "<tr><td><b>");
@@ -1244,6 +1425,7 @@ view_ids(struct html *h)
 		h_raw(h, "</ul></td></tr>");
 	}
 	free(rows);
+	ucl_object_unref(mine);
 	h_raw(h, "</tbody></table>");
 }
 
@@ -1263,6 +1445,7 @@ view_secpage(struct html *h)
 
 	h_raw(h, "<section class=\"secpage\"><div class=\"sechead\">");
 	host_pick(h);
+	where_pick(h);
 	h_raw(h, "</div><nav class=\"tabs\">");
 	for (i = 0; i < nitems(names); i++) {
 		h_fmt(h, "<button class=\"tab%s\" data-act=\"sec-tab\" "
@@ -1569,7 +1752,7 @@ secpage_form(const char *form, const ucl_object_t *f)
 		}
 	}
 	if (strcmp(form, "sec-mirrors") == 0) {
-		const ucl_object_t	*cl = jget(sec.state, "clamav");
+		const ucl_object_t	*cl = sec_clamav();
 		char			*copy, *it, *line, *json[2];
 		const char		*m[16], *title[2];
 		size_t			 n;
@@ -1594,8 +1777,9 @@ secpage_form(const char *form, const ucl_object_t *f)
 		nj = 0;
 		json[nj] = mirrors_job(m, n);
 		title[nj++] = "freshclam's mirrors written";
-		/* A running freshclam reads them as it starts again. */
-		if (jbool(cl, "freshclam")) {
+		/* A running freshclam reads them as it starts again (a
+		 * jail's is told by the job itself). */
+		if (jbool(cl, "freshclam") && sec.where[0] == '\0') {
 			if (asprintf(&json[nj], "{\"kind\":\"service-action\","
 			    "\"service\":\"clamav_freshclam\",\"action\":"
 			    "\"restart\"}") == -1)
@@ -1620,6 +1804,10 @@ secpage_form(const char *form, const ucl_object_t *f)
 	o = ucl_object_typed_new(UCL_OBJECT);
 	ucl_object_insert_key(o, ucl_object_fromstring(jstr(f, "name") !=
 	    NULL ? jstr(f, "name") : ""), "name", 0, false);
+	/* Where it runs: the form's place, the host when none. */
+	if (jstr(f, "jail") != NULL && jstr(f, "jail")[0] != '\0')
+		ucl_object_insert_key(o, ucl_object_fromstring(jstr(f, "jail")),
+		    "jail", 0, false);
 	if (!ids) {
 		ucl_object_insert_key(o, words(jstr(f, "listen")), "listen", 0,
 		    false);
@@ -1844,7 +2032,8 @@ secpage_action(const char *act, const char *arg, const char *value)
 		}
 		return (true);
 	}
-	if (strncmp(act, "sec-", 4) != 0 && strcmp(act, "input:sec-host") != 0)
+	if (strncmp(act, "sec-", 4) != 0 && strcmp(act, "input:sec-host") != 0 &&
+	    strcmp(act, "input:sec-where") != 0)
 		return (false);
 	ids = sec.tab == SEC_IDS;
 	if (strcmp(act, "sec-idsview") == 0) {
@@ -1874,6 +2063,13 @@ secpage_action(const char *act, const char *arg, const char *value)
 		snprintf(sec.sid, sizeof(sec.sid), "%s", value);
 		sec_reset();
 		sec_load();
+		return (true);
+	}
+	if (strcmp(act, "input:sec-where") == 0) {
+		if (value == NULL || strcmp(value, sec.where) == 0)
+			return (true);
+		snprintf(sec.where, sizeof(sec.where), "%s", value);
+		sec.edit = -1;
 		return (true);
 	}
 	if (strcmp(act, "sec-new") == 0) {
@@ -2001,22 +2197,47 @@ secpage_action(const char *act, const char *arg, const char *value)
 			first = false;
 		}
 		free(copy);
-		if (asprintf(&t, "%s]}", json) == -1)
+		/* In the place shown: the host, or the jail by pkg -j. */
+		if (sec.where[0] != '\0') {
+			q = json_quote(sec.where);
+			if (asprintf(&t, "%s],\"jail\":%s}", json, q) == -1)
+				abort();
+			free(q);
+		} else if (asprintf(&t, "%s]}", json) == -1)
 			abort();
 		free(json);
 		{
-			char	title[96];
+			char	title[160];
 
-			snprintf(title, sizeof(title), "pkg install %s", arg);
-			job_send_host(s, t, title, JOB_SECURITY, "");
+			snprintf(title, sizeof(title), "pkg install %s%s%s", arg,
+			    sec.where[0] != '\0' ? " in " : "", sec.where);
+			job_send_host(s, t, title, JOB_SECURITY, sec.where);
 		}
 		return (true);
 	}
 	if (strcmp(act, "sec-freshclam") == 0) {
-		const ucl_object_t	*cl = jget(sec.state, "clamav");
-		char			*json[3];
+		const ucl_object_t	*cl = sec_clamav();
+		char			*json[3], *q;
 		const char		*title[3];
 		int			 n = 0;
+
+		/* A jail's: its own freshclam.conf, then its own
+		 * clamav_freshclam enabled and (re)started there. */
+		if (sec.where[0] != '\0') {
+			if (jget(cl, "conf") == NULL || !jbool(cl, "conf")) {
+				json[n] = mirrors_job(default_mirrors,
+				    nitems(default_mirrors));
+				title[n++] = "freshclam.conf written in the jail";
+			}
+			q = json_quote(sec.where);
+			if (asprintf(&json[n], "{\"kind\":\"clamav\",\"verb\":"
+			    "\"start\",\"jail\":%s}", q) == -1)
+				abort();
+			free(q);
+			title[n++] = "clamav_freshclam started in the jail";
+			sec_jobs(json, title, n);
+			return (true);
+		}
 
 		/* A configuration it can run with first, the default
 		 * mirrors in it; then enabled, so that rc starts it, and

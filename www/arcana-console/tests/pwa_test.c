@@ -13720,6 +13720,84 @@ part_sslinspect_jail(void)
 	shot("9x-security-tls-jail");
 }
 
+/*
+ * The Security page in a jail: Runs in picks the jail gw (./jails, its
+ * root ./jroot); an intrusion detection made there is the jail's, its
+ * Suricata's YAML beneath the jail's root and its Suricata the jail's
+ * own, run there by jexec (the stand-in rewrites the jail's paths
+ * beneath ./jroot); the host's place shows none of it.
+ */
+static void
+part_security_jail(void)
+{
+	FILE	*fp;
+	int	 i;
+
+	ATF_REQUIRE((fp = fopen("fake-jexec", "w")) != NULL);
+	fputs("#!/bin/sh\necho \"jexec $*\" >> jexec.log\n"
+	    "r=$(awk -v j=\"$1\" '$2 == j { print $4 }' jails)\n"
+	    "[ -n \"$r\" ] || exit 1\nshift\np=$1\nshift\n"
+	    "case \"$p\" in /usr/local/*|/var/*) p=$r$p ;; esac\n"
+	    "for a; do case \"$a\" in /usr/local/*|/var/*) a=$r$a ;; esac; "
+	    "set -- \"$@\" \"$a\"; shift; done\n"
+	    "JROOT=$r exec \"$p\" \"$@\"\n", fp);
+	fclose(fp);
+	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+	ATF_REQUIRE(system("mkdir -p jroot/usr/local/bin && sed "
+	    "'s|^d=\\$(sed|d=${JROOT}$(sed|' tools/suricata > "
+	    "jroot/usr/local/bin/suricata && chmod +x "
+	    "jroot/usr/local/bin/suricata") == 0);
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("location.hash.startsWith('#/security/') && document."
+	    "querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = s.options[s.options.length - 1].value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=ids]", 10);
+	wait_js("document.querySelector('select[data-input=sec-where]') && "
+	    "[...document.querySelector('select[data-input=sec-where]')."
+	    "options].some(o => o.value === 'gw')", 20);
+	run("const s = document.querySelector('select[data-input=sec-where]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('.secpage .empty') && document."
+	    "querySelector('.secpage .empty').textContent.includes("
+	    "'the jail gw')", 10);
+	click_when("button[data-act=sec-new]", 10);
+	wait_js("document.querySelector('form[data-form=sec-ids]') && "
+	    "document.querySelector('form[data-form=sec-ids]').jail.value === "
+	    "'gw' && document.querySelector('form[data-form=sec-ids] "
+	    ".secwhere')", 10);
+	run("const f = document.querySelector('form[data-form=sec-ids]'); "
+	    "f.interfaces.value = 'lo0'; f.ruleset.checked = false; "
+	    "f.rules.value = 'alert tcp any any -> any 23 (sid:1000011;)'; "
+	    "f.requestSubmit();");
+	wait_js("document.querySelector('table.secids') && document."
+	    "querySelector('table.secids').textContent.includes('lo0') && "
+	    "!document.querySelector('form[data-form=sec-ids]')", 30);
+	/* The host's effect: the jail's files, its own Suricata run in it,
+	 * nothing of it beside the agent's. */
+	for (i = 0; i < 100 && system("grep -qx 'default-log-dir: /var/db/"
+	    "arcana-security/sdwan-ids-sec-lan.d' jroot/var/db/arcana-security/"
+	    "sdwan-ids-sec-lan.yaml") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 100, "its YAML is not beneath the jail's root");
+	ATF_CHECK(system("grep -q 'sid:1000011' jroot/var/db/arcana-security/"
+	    "sdwan-ids-sec-lan.rules") == 0);
+	ATF_CHECK(system("grep -q '^jexec 4 /usr/local/bin/suricata -c "
+	    "/var/db/arcana-security/sdwan-ids-sec-lan.yaml ' jexec.log") == 0);
+	ATF_CHECK(access("sdwan-ids-sec-lan.yaml", F_OK) != 0);
+	wait_js("document.querySelector('table.secids .chip.st-up')", 30);
+	shot("9w-security-jail");
+	/* The host's own place: none of the jail's there. */
+	run("const s = document.querySelector('select[data-input=sec-where]'); "
+	    "s.value = ''; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('.secpage .empty') && document."
+	    "querySelector('.secpage .empty').textContent.includes("
+	    "'this host') && !document.querySelector('table.secids')", 10);
+}
+
 static void
 part_security(void)
 {
@@ -14376,6 +14454,25 @@ ATF_TC_BODY(pwa_security_tls_jail, tc)
 	part_sslinspect_jail();
 }
 ATF_TC_CLEANUP(pwa_security_tls_jail, tc)
+{
+
+	browser_stop();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_security_jail);
+ATF_TC_HEAD(pwa_security_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The Security page in a jail: Runs in, an intrusion detection made there, its YAML beneath the jail's root");
+	atf_tc_set_md_var(tc, "timeout", "120");
+}
+ATF_TC_BODY(pwa_security_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_security_jail();
+}
+ATF_TC_CLEANUP(pwa_security_jail, tc)
 {
 
 	browser_stop();
@@ -16453,6 +16550,7 @@ ATF_TP_ADD_TCS(tp)
 
 	ATF_TP_ADD_TC(tp, pwa_map_fleet);
 	ATF_TP_ADD_TC(tp, pwa_flows_security);
+	ATF_TP_ADD_TC(tp, pwa_security_jail);
 	ATF_TP_ADD_TC(tp, pwa_security_tls);
 	ATF_TP_ADD_TC(tp, pwa_security_tls_jail);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netpaths);

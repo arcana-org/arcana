@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 29,
+    "sid-file-version": 30,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3712,6 +3712,16 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/sslproxy/jail",
         "sid": "63129"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/clamav/jail",
+        "sid": "63130"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/clamav/jail",
+        "sid": "63131"
       },
       {
         "namespace": "data",

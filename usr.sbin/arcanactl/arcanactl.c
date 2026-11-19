@@ -277,7 +277,7 @@ usage(void)
 	    "    poudriere [list] | show-options key=value ... |\n"
 	    "        make-conf name|- file|- | verb [key=value ...]\n"
 	    "    crashes [backtrace core [program]]\n"
-	    "    clamav mirrors mirror ...\n"
+	    "    clamav mirrors mirror ... | start\n"
 	    "    netstore [nfs | iscsi | hast]\n"
 	    "    system [file | host]\n"
 	    "    smtpd\n"
@@ -6161,7 +6161,8 @@ cmd_netstore_job(cbl_conn *conn, int argc, char **argv, int kind)
 
 /*
  * clamav mirrors mirror ...: freshclam.conf's DatabaseMirror lines, in
- * place of those there were; a job.
+ * place of those there were; clamav start, with -j: the jail's own
+ * freshclam enabled and started there; a job.
  */
 static int
 cmd_clamav(cbl_conn *conn, int argc, char **argv)
@@ -6170,6 +6171,14 @@ cmd_clamav(cbl_conn *conn, int argc, char **argv)
 	const char		**w;
 	int			 i;
 
+	if (argc == 2 && strcmp(argv[1], "start") == 0) {
+		memset(&sp, 0, sizeof(sp));
+		sp.has_kind = true;
+		sp.kind = ARC_JOB_KIND_CLAMAV;
+		sp.verb = argv[1];
+		sp.jail = netjail;
+		return (submit(conn, &sp));
+	}
 	if (argc < 3 || strcmp(argv[1], "mirrors") != 0)
 		usage();
 	if ((w = calloc((size_t)argc - 2, sizeof(*w))) == NULL)
@@ -6184,7 +6193,7 @@ cmd_clamav(cbl_conn *conn, int argc, char **argv)
 	sp.verb = argv[1];
 	sp.names.v = w;
 	sp.names.n = (size_t)argc - 2;
-	/* The host's alone: -j is passed on to be refused, not dropped. */
+	/* The host's, or with -j the jail's own. */
 	sp.jail = netjail;
 	return (submit(conn, &sp));
 }

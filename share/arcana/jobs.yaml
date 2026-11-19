@@ -453,8 +453,8 @@ kinds:
   - kind: clamav
     title: freshclam's mirrors of ClamAV's signatures
     needs: verb
-    uses: args text
-    values: verb=mirrors
+    uses: jail args text
+    values: verb=mirrors|start
   - kind: suricata
     title: Suricata's ruleset fetched by suricata-update, its rules and sources set
     needs: verb

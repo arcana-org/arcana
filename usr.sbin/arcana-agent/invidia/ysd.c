@@ -610,6 +610,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 				continue;
 			YJ_NUM(e, "fib", &v[n], fib);
 			v[n].host = yj_str(a, e, "host");
+			v[n].jail = yj_str(a, e, "jail");
 			v[n].spec = form_of(a, e, kind);
 			if ((m = yj_str(a, e, "mode")) != NULL) {
 				v[n].has_mode = true;
@@ -645,6 +646,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 			v[n].rules = yj_str(a, e, "rules");
 			YJ_NUM(e, "divert", &v[n], divert);
 			v[n].host = yj_str(a, e, "host");
+			v[n].jail = yj_str(a, e, "jail");
 			v[n].spec = form_of(a, e, kind);
 			if ((f = ucl_object_lookup(e, "capture")) != NULL &&
 			    ucl_object_type(f) == UCL_STRING) {
@@ -981,6 +983,7 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 			ucl_object_t	*l;
 
 			put_str(o, "host", v->host);
+			put_str(o, "jail", v->jail);
 			l = ucl_object_typed_new(UCL_ARRAY);
 			for (size_t k = 0; k < v->interface.n; k++)
 				ucl_array_append(l, ucl_object_fromstring(
@@ -1020,6 +1023,7 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 				    ARCANA_SDWAN_SDWAN_PROXY_INSTANCE_MODE_INSPECT ?
 				    "inspect" : "sni");
 			put_str(o, "host", v->host);
+			put_str(o, "jail", v->jail);
 			put(o, "lists", named_object(v->named_list.n,
 			    (const struct named *)(const void *)
 			    v->named_list.v));
@@ -1419,6 +1423,36 @@ ids_of(cbl_yarena *a, const ucl_object_t *e,
 	return (0);
 }
 
+/*
+ * A ClamAV's read into cv (a struct of the module's clamav-state, the
+ * host's or a jail's), its databases into db, which has room for them.
+ */
+#define	CLAMAV_OF(a, o, cv, db) do {					\
+	const ucl_object_t	*ce_;					\
+	ucl_object_iter_t	 cit_ = NULL;				\
+	size_t			 cm_ = 0;				\
+									\
+	YJ_EACH(ucl_object_lookup((o), "databases"), cit_, ce_) {	\
+		memset(&(db)[cm_], 0, sizeof((db)[cm_]));		\
+		if (((db)[cm_].name = yj_str((a), ce_, "name")) == NULL)\
+			continue;					\
+		(db)[cm_].file = yj_str((a), ce_, "file");		\
+		(db)[cm_].built = yj_str((a), ce_, "built");		\
+		YJ_NUM(ce_, "version", &(db)[cm_], version);		\
+		YJ_NUM(ce_, "signatures", &(db)[cm_], signatures);	\
+		cm_++;							\
+	}								\
+	(cv)->database.n = cm_;						\
+	(cv)->database.v = (db);					\
+	(cv)->freshclam = yj_yes((o), "freshclam", &(cv)->has_freshclam); \
+	(cv)->conf = yj_yes((o), "conf", &(cv)->has_conf);		\
+	if (yj_strs((a), ucl_object_lookup((o), "mirrors"),		\
+	    &(cv)->mirror.n, &(cv)->mirror.v) != 0 || yj_strs((a),	\
+	    ucl_object_lookup((o), "log"), &(cv)->log.n,		\
+	    &(cv)->log.v) != 0)						\
+		return (ENOMEM);					\
+} while (0)
+
 /* The host-wide parts of the IDS and ClamAV. */
 static int
 ids_host_of(cbl_yarena *a, const ucl_object_t *top,
@@ -1485,26 +1519,30 @@ ids_host_of(cbl_yarena *a, const ucl_object_t *top,
 		    ucl_object_lookup(o, "databases"))))
 			return (ENOMEM);
 		memset(cv, 0, sizeof(*cv));
+		CLAMAV_OF(a, o, cv, db);
+		out->clamav = cv;
+	}
+	/* Each jail's own, where a Security URL filter there scans. */
+	{
+		struct arcana_sdwan_sdwan_state_clamav_jail	*cj;
+		struct arcana_sdwan_sdwan_state_clamav_jail_database *jd;
+
+		if (!ALLOC_N(a, cj, yj_count(ucl_object_lookup(top,
+		    "clamav_jails"))))
+			return (ENOMEM);
 		m = 0;
-		YJ_EACH(ucl_object_lookup(o, "databases"), it, e) {
-			memset(&db[m], 0, sizeof(db[m]));
-			if ((db[m].name = yj_str(a, e, "name")) == NULL)
+		YJ_EACH(ucl_object_lookup(top, "clamav_jails"), it, e) {
+			memset(&cj[m], 0, sizeof(cj[m]));
+			if ((cj[m].jail = yj_str(a, e, "jail")) == NULL)
 				continue;
-			db[m].file = yj_str(a, e, "file");
-			db[m].built = yj_str(a, e, "built");
-			YJ_NUM(e, "version", &db[m], version);
-			YJ_NUM(e, "signatures", &db[m], signatures);
+			if (!ALLOC_N(a, jd, yj_count(ucl_object_lookup(e,
+			    "databases"))))
+				return (ENOMEM);
+			CLAMAV_OF(a, e, &cj[m], jd);
 			m++;
 		}
-		cv->database.n = m;
-		cv->database.v = db;
-		cv->freshclam = yj_yes(o, "freshclam", &cv->has_freshclam);
-		cv->conf = yj_yes(o, "conf", &cv->has_conf);
-		if (yj_strs(a, ucl_object_lookup(o, "mirrors"), &cv->mirror.n,
-		    &cv->mirror.v) != 0 || yj_strs(a, ucl_object_lookup(o,
-		    "log"), &cv->log.n, &cv->log.v) != 0)
-			return (ENOMEM);
-		out->clamav = cv;
+		out->clamav_jail.n = m;
+		out->clamav_jail.v = cj;
 	}
 	return (0);
 }
@@ -1659,6 +1697,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 	k = 0;
 	YJ_EACH(ucl_object_lookup(top, "proxy"), it, e) {
 		running_of(a, e, (void *)&px[k]);
+		px[k].jail = yj_str(a, e, "jail");
 		px[k].mode = yj_str(a, e, "mode");
 		px[k].icap = yj_yes(e, "icap", &px[k].has_icap);
 		px[k].ca = yj_str(a, e, "ca");
@@ -1675,6 +1714,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 		memset(&id[k], 0, sizeof(id[k]));
 		if ((id[k].name = yj_str(a, e, "name")) == NULL)
 			continue;
+		id[k].jail = yj_str(a, e, "jail");
 		if (ids_of(a, e, &id[k]) != 0)
 			goto nomem;
 		k++;

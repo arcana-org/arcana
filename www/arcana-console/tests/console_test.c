@@ -19883,6 +19883,9 @@ r4_sec_one(const ucl_object_t *in, bool ids, const char *host)
 	}
 	ucl_object_insert_key(o, ucl_object_fromstring(host), "host", 0,
 	    false);
+	/* The jail it runs in, as the page has it. */
+	if ((v = ucl_object_lookup(in, "jail")) != NULL)
+		ucl_object_insert_key(o, ucl_object_copy(v), "jail", 0, false);
 	if (ucl_object_toboolean(ucl_object_lookup(in, "stopped")))
 		ucl_object_insert_key(o, ucl_object_frombool(true), "stopped", 0,
 		    false);
@@ -20400,6 +20403,66 @@ ATF_TC_BODY(sdwan_apply_security, tc)
 	    NULL && strstr(r.body, "suricata rules set: off=2000001") != NULL,
 	    "%s", r.body);
 	resp_free(&r);
+	/* One in the jail gw: its files beneath the jail's root, its
+	 * Suricata the jail's own, run there by jexec (the paths of the
+	 * jail's beneath ./jroot, its program the stand-in's); running
+	 * keeps its jail, the state says it. */
+	{
+		FILE	*fp;
+
+		ATF_REQUIRE(rename("fake-jexec", "fake-jexec.was") == 0);
+		ATF_REQUIRE((fp = fopen("fake-jexec", "w")) != NULL);
+		fputs("#!/bin/sh\necho \"jexec $*\" >> jexec.log\n"
+		    "r=$(awk -v j=\"$1\" '$2 == j { print $4 }' jails)\n"
+		    "[ -n \"$r\" ] || exit 1\nshift\np=$1\nshift\n"
+		    "case \"$p\" in /usr/local/*|/var/*) p=$r$p ;; esac\n"
+		    "for a; do case \"$a\" in /usr/local/*|/var/*) a=$r$a ;; "
+		    "esac; set -- \"$@\" \"$a\"; shift; done\n"
+		    "JROOT=$r exec \"$p\" \"$@\"\n", fp);
+		fclose(fp);
+		ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
+		ATF_REQUIRE(system("mkdir -p jroot/usr/local/bin && sed "
+		    "'s|^d=\\$(sed|d=${JROOT}$(sed|' tools/suricata > "
+		    "jroot/usr/local/bin/suricata && chmod +x "
+		    "jroot/usr/local/bin/suricata") == 0);
+		(void)unlink("jexec.log");
+		r4_sec(sa, "a", "{\"what\":\"ids\",\"instances\":[{\"name\":"
+		    "\"sec-jl\",\"jail\":\"gw\",\"interfaces\":[\"lo0\"],"
+		    "\"home\":[\"any\"],\"rules\":\"alert tcp any any -> any 23 "
+		    "(sid:1000010;)\"}]}", &r);
+		R4_SAVED(&r);
+		resp_free(&r);
+		ATF_CHECK_MSG(system("grep -qx 'default-log-dir: /var/db/"
+		    "arcana-security/sdwan-ids-sec-jl.d' jroot/var/db/"
+		    "arcana-security/sdwan-ids-sec-jl.yaml && grep -q "
+		    "'sid:1000010' jroot/var/db/arcana-security/"
+		    "sdwan-ids-sec-jl.rules && ! test -e sdwan-ids-sec-jl.yaml")
+		    == 0, "not rendered beneath the jail's root");
+		ATF_CHECK_MSG(system("grep -q '^jexec 4 /usr/local/bin/suricata "
+		    "-c /var/db/arcana-security/sdwan-ids-sec-jl.yaml --pidfile "
+		    "/var/db/arcana-security/sdwan-ids-sec-jl.pid --pcap -D$' "
+		    "jexec.log") == 0, "not run in the jail");
+		snprintf(t2, sizeof(t2), "/restconf/data/arcana-fleet:fleet/"
+		    "host=%s/arcana-sdwan:sdwan/ids-instance=sec-jl/jail", sa);
+		rc_get(t2, &r);
+		ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "\"gw\"") !=
+		    NULL, "%d %s", r.status, r.body);
+		resp_free(&r);
+		snprintf(t1, sizeof(t1), FLEET "%s/arcana-sdwan:sdwan/state", sa);
+		rc_get(t1, &r);
+		EXPECT(&r, 200);
+		ATF_CHECK_MSG(strstr(r.body, "\"name\":\"sec-jl\"") != NULL &&
+		    strstr(r.body, "\"jail\":\"gw\"}") != NULL, "%s", r.body);
+		resp_free(&r);
+		r4_sec(sa, "a", "{\"what\":\"ids\",\"instances\":[]}", &r);
+		R4_SAVED(&r);
+		resp_free(&r);
+		ATF_CHECK(access("jroot/var/db/arcana-security/"
+		    "sdwan-ids-sec-jl.yaml", F_OK) != 0);
+		ATF_CHECK(system("grep -q '^jexec 4 /bin/kill -15 ' jexec.log")
+		    == 0);
+		ATF_REQUIRE(rename("fake-jexec.was", "fake-jexec") == 0);
+	}
 	r4_sec(sa, "a", "{\"what\":\"ids\",\"instances\":[]}", &r);
 	R4_SAVED(&r);
 	resp_free(&r);

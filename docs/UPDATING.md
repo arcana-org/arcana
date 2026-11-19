@@ -93,6 +93,22 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### The Security section's filters and detections in jails; agent 0.330.0, console 0.474.0
+
+- The Security section's URL filters (Squid, with c-icap and ClamAV)
+  and intrusion detections (Suricata) may run in a jail.
+  arcana-sdwan's proxy-instance and ids-instance take a jail leaf; the
+  state's proxy and ids lists say it, and clamav-jail gives each such
+  jail's ClamAV (SIDs 97 200 to 97 215).  A jailed instance's files
+  live in /var/db/arcana-security beneath the jail's root, and its
+  programs are the jail's own (pkg -j).
+- Prevention needs a vnet jail: Arcana places its divert rules in the
+  jail's own ipfw, set 25 (staged in set 24) at rule 6, and refuses if
+  a rule of the jail's is there.  The clamav job takes a jail, with a
+  new verb start (the jail's clamav_freshclam enabled and restarted;
+  arcana-jobs 63130-63131).
+- Update the agent and the console together.
+
 ### SSL inspection in jails; agent 0.329.0, console 0.473.0
 
 - SSL inspection runs in jails too: pick a jail on Security > SSL

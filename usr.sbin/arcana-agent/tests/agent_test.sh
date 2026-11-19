@@ -14234,6 +14234,203 @@ sdwan_ids_cleanup()
 	stop_daemon
 }
 
+atf_test_case security_jail cleanup
+security_jail_head()
+{
+	atf_set "descr" "The Security section's Suricata, Squid and c-icap in a jail: rendered beneath its root, run there by jexec, read back from there; a divert one's rules in a vnet jail's own ipfw, the jail admin's left alone; refused where the jail is not running, shares the host's network for a divert, or has no Suricata; a link out of the jail not followed; ClamAV and freshclam's mirrors the jail's own"
+	atf_set "timeout" "120"
+}
+security_jail_body()
+{
+	local G W J K
+
+	sdwan_start
+	G=$(pwd)/jg
+	W=$(pwd)/jw
+	# Stand-in jails: gw with a network of its own, web with the host's,
+	# bare with nothing installed.
+	cat > jails <<EOS
+gw 7 new $G
+web 8 inherit $W
+bare 9 new $(pwd)/jb
+EOS
+	mkdir -p "$G/usr/local/bin" "$G/var/db" "$W/usr/local/sbin" \
+	    "$W/usr/local/bin" "$W/usr/local/libexec/squid" "$W/var/db/clamav" \
+	    "$W/usr/local/etc" jb outside
+	# The jails' own Suricata: the stand-in, its log directory beneath
+	# the root jexec says.
+	sed 's|^d=\$(sed|d=${JROOT}$(sed|' tools/suricata > "$G/usr/local/bin/suricata"
+	cp "$G/usr/local/bin/suricata" "$W/usr/local/bin/suricata"
+	# The jail's Squid and c-icap: started by -f, each its pid file the
+	# conf's, beneath the root; its certificate maker.
+	for p in "sbin/squid pid_filename" "bin/c-icap PidFile"; do
+		set -- $p
+		cat > "$W/usr/local/$1" <<EOS
+#!/bin/sh
+[ "\$1" = --hold ] && { echo \$\$ > "\$2"; i=0; while [ \$i -lt 300 ]; do sleep 1; i=\$((i+1)); done; exit 0; }
+echo "jail \${0##*/} \$*" >> $(pwd)/squid.log
+[ "\$1" = -f ] && { p=\$JROOT\$(sed -n 's/^$2 //p' "\$2"); "\$0" --hold "\$p" & }
+exit 0
+EOS
+	done
+	printf '#!/bin/sh\necho "jail certgen $*" >> %s/squid.log\nmkdir -p "$3"\n' \
+	    "$(pwd)" > "$W/usr/local/libexec/squid/security_file_certgen"
+	chmod +x "$G/usr/local/bin/suricata" "$W/usr/local/bin/suricata" \
+	    "$W/usr/local/sbin/squid" "$W/usr/local/bin/c-icap" \
+	    "$W/usr/local/libexec/squid/security_file_certgen"
+	# jexec(8): logged; its program and the jail's paths beneath the
+	# jail's root (a jail not in ./jails is gone); the host's programs
+	# (ipfw's stand-in, kill) as they are.
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+[ -n "\$r" ] || { echo "jexec: jail_getid: jail \$1 not found" >&2; exit 1; }
+shift
+p=\$1
+shift
+case "\$p" in /usr/local/*|/var/*) p=\$r\$p ;; esac
+for a; do
+	case "\$a" in /usr/local/*|/var/*) a=\$r\$a ;; esac
+	set -- "\$@" "\$a"
+	shift
+done
+JROOT=\$r exec "\$p" "\$@"
+EOS
+	chmod +x fake-jexec
+	# The jail's ipfw: set 25 as the divert rules loaded leave it, and
+	# an admin's rule there when ./set25 says so.
+	cat > fake-ipfw <<EOS
+#!/bin/sh
+echo "ipfw \$*" >> $(pwd)/ipfw.log
+case "\$*" in
+"-a -S list")	[ -f $(pwd)/set25 ] && echo "00006 0 0 set 25 allow ip from any to any"
+		cat $(pwd)/fw25 2>/dev/null ;;
+"-q set swap 24 25")	echo "00006 0 0 set 25 divert 8002 ip from any to any via epair0b // secids:sec-j" > $(pwd)/fw25 ;;
+"-q -f delete set 25")	rm -f $(pwd)/fw25 ;;
+list)	[ -f $(pwd)/fw25 ] && echo "00006 divert 8002 ip from any to any via epair0b" ;;
+esac
+exit 0
+EOS
+	J=$G/var/db/arcana-security
+	# Detection in the vnet jail: its files beneath the jail's root,
+	# its Suricata the jail's, checked and run there, its alerts read
+	# from there; nothing of it on the host.
+	ids='{"group":"security","instances":[{"name":"sec-j","jail":"gw","interfaces":["epair0b"],"spec":{"interfaces":["epair0b"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "$ids"
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata -T -c /var/db/arcana-security/sdwan-ids-sec-j.yaml ' \
+	    -o match:'^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-j.pid --pcap -D$' \
+	    cat jexec.log
+	atf_check -o match:'^default-log-dir: /var/db/arcana-security/sdwan-ids-sec-j.d$' \
+	    -o match:'^  - /var/db/arcana-security/sdwan-ids-sec-j.rules$' \
+	    -o match:'^  - interface: epair0b$' cat "$J/sdwan-ids-sec-j.yaml"
+	atf_check -o match:'sid:1000001' cat "$J/sdwan-ids-sec-j.rules"
+	test ! -e "$(dirname "$f")/sdwan-ids-sec-j.yaml" || atf_fail "written on the host"
+	wait_match '"alerts_seen":1,' "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"ids":\[\{"name":"sec-j","jail":"gw","interfaces":\["epair0b"\],"mode":"detect","running":true,"alerts_seen":1,' \
+	    -o match:'"security_ids":\[\{.*"name":"sec-j","jail":"gw"' "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"jail":"gw"' cat "$(dirname "$f")/security-ids.json"
+	spid=$(cat "$J/sdwan-ids-sec-j.pid")
+	alive "$spid" || atf_fail "suricata sec-j does not run"
+	# Prevention there: run on its divert port, the divert rule placed
+	# in the jail's own ipfw, set 25 at rule 6, by set 24.
+	ips='{"group":"security","instances":[{"name":"sec-j","jail":"gw","divert":8002,"interfaces":["epair0b"],"spec":{"interfaces":["epair0b"],"home":["any"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	atf_check -o match:'suricata sec-j on 1 interface, prevents by divert 8002: started' \
+	    -o match:'1 rule in set 25 at rule 6 of the jail gw' "$JGC" -t -c "$SOCK" sdwan ids "$ips"
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-j.pid -d 8002 -D$' \
+	    -o match:"^jexec 7 $(pwd)/fake-ipfw -q set disable 24\$" \
+	    -o match:"^jexec 7 $(pwd)/fake-ipfw -q add 6 set 24 divert 8002 ip from any to any via epair0b // secids:sec-j\$" \
+	    -o match:"^jexec 7 $(pwd)/fake-ipfw -q set swap 24 25\$" cat jexec.log
+	atf_check -o match:'^jexec 7 /bin/kill -15 '"$spid"'$' cat jexec.log
+	atf_check -o match:'"name":"sec-j","jail":"gw","interfaces":\["epair0b"\],"mode":"prevent","divert":8002,"running":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	# A rule of the jail admin's in set 25: refused, nothing changed.
+	touch set25
+	: > jexec.log
+	atf_check -s exit:1 -e match:'rule 6 is in ipfw set 25 of the jail gw, which its intrusion prevention keeps, and is not its own' \
+	    -o ignore "$JGC" -c "$SOCK" sdwan ids "$ips"
+	atf_check -o not-match:'fake-ipfw -q' -o not-match:'suricata -c' cat jexec.log
+	rm set25
+	# Refused: a divert in a jail of the host's network, a jail not
+	# running, an SD-WAN service's in a jail, a jail with no Suricata.
+	atf_check -s exit:1 -e match:'the jail web has no network of its own \(vnet\): divert\(4\) sockets are a vnet jail' \
+	    -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    '{"group":"security","instances":[{"name":"sec-w","jail":"web","divert":8003,"interfaces":["em0"],"spec":{"interfaces":["em0"],"home":["any"]}}]}'
+	atf_check -s exit:1 -e match:'the jail gone is not running' -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    '{"group":"security","instances":[{"name":"sec-g","jail":"gone","interfaces":["em0"],"spec":{"interfaces":["em0"],"home":["any"]}}]}'
+	atf_check -s exit:1 -e match:'only the Security section.s run in a jail' -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    '{"instances":[{"name":"sw9","jail":"gw","interfaces":["em0"],"spec":{"interfaces":["em0"],"home":["any"]}}]}'
+	atf_check -s exit:1 -e match:'the jail bare has no suricata \(/usr/local/bin/suricata\).*pkg -j bare install suricata' \
+	    -o ignore "$JGC" -c "$SOCK" sdwan ids \
+	    '{"group":"security","instances":[{"name":"sec-b","jail":"bare","interfaces":["em0"],"spec":{"interfaces":["em0"],"home":["any"]}}]}'
+	# Detection in the jail of the host's network: by pcap, there.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids \
+	    '{"group":"security","instances":[{"name":"sec-w","jail":"web","interfaces":["em0"],"spec":{"interfaces":["em0"],"home":["any"]}}]}'
+	atf_check -o match:'^jexec 8 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-w.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-w.pid --pcap -D$' \
+	    cat jexec.log
+	# sec-j, not named, stopped from inside its jail, its files there
+	# gone, the divert rules with it.
+	atf_check -o match:'"name":"sec-w","jail":"web"' -o not-match:'"name":"sec-j"' "$JGC" -c "$SOCK" sdwan
+	test ! -e "$J/sdwan-ids-sec-j.yaml" || atf_fail "its files stayed in the jail"
+	atf_check -o match:"^jexec 7 $(pwd)/fake-ipfw -q -f delete set 25\$" cat jexec.log
+	spid=$(cat "$W/var/db/arcana-security/sdwan-ids-sec-w.pid")
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
+	alive "$spid" && atf_fail "suricata sec-w still runs"
+	# A link out of the jail where its files go: not followed, nothing
+	# written there.
+	rm -rf "$J"
+	ln -s "$(pwd)/outside" "$J"
+	atf_check -s exit:1 -e match:'in the jail gw' -o ignore "$JGC" -c "$SOCK" sdwan ids "$ids"
+	atf_check -o empty ls outside
+	rm "$J"
+	# A URL filter in the jail of the host's network, scanning: Squid,
+	# its CA, its list and c-icap beneath the root, the jail's own run
+	# there; its ClamAV the jail's.
+	printf 'ClamAV-VDB:01 Nov 2026 00-00 +0000:62:6647427:90:x\n' > "$W/var/db/clamav/main.cvd"
+	K=$W/var/db/arcana-security
+	web='{"name":"sec-jw","listen":[{"address":"10.0.0.8"}],"allow":["10.0.0.0/24"],"deny":[".bad.example"],"malware":true}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
+	    '{"group":"security","instances":[{"name":"sec-jw","jail":"web","fib":0,"mode":"sni","host":"edge-a","spec":'"$web"'}]}'
+	atf_check -o match:'^pid_filename /var/db/arcana-security/sdwan-proxy-sec-jw.pid$' \
+	    -o match:'^http_port 10.0.0.8:3128 ssl-bump tls-cert=/var/db/arcana-security/sdwan-proxy-sec-jw.pem ' \
+	    -o match:'^acl denied_site ssl::server_name "/var/db/arcana-security/sdwan-proxy-sec-jw.deny"$' \
+	    cat "$K/sdwan-proxy-sec-jw.conf"
+	atf_check -o inline:'.bad.example\n' cat "$K/sdwan-proxy-sec-jw.deny"
+	atf_check -o match:'BEGIN CERTIFICATE' -o match:'BEGIN PRIVATE KEY' cat "$K/sdwan-proxy-sec-jw.pem"
+	test ! -e "$(dirname "$f")/sdwan-proxy-sec-jw.jkey" || atf_fail "the jail's key stayed on the host"
+	atf_check -o match:'^PidFile /var/db/arcana-security/sdwan-icap-sec-jw.pid$' cat "$K/sdwan-icap-sec-jw.conf"
+	atf_check -o match:'^jexec 8 /usr/local/bin/c-icap -f /var/db/arcana-security/sdwan-icap-sec-jw.conf$' \
+	    -o match:'^jexec 8 /usr/local/sbin/squid -k parse -f /var/db/arcana-security/sdwan-proxy-sec-jw.conf$' \
+	    -o match:'^jexec 8 /usr/local/sbin/squid -f /var/db/arcana-security/sdwan-proxy-sec-jw.conf$' \
+	    -o match:'^jexec 8 /usr/local/libexec/squid/security_file_certgen -c -s /var/db/arcana-security/sdwan-proxy-sec-jw.ssl_db -M 4MB$' \
+	    cat jexec.log
+	atf_check -o match:'"proxy":\[\{"name":"sec-jw","jail":"web","fib":0,"mode":"sni","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE' \
+	    -o match:'"clamav_jails":\[\{"databases":\[\{"name":"main","file":"/var/db/clamav/main.cvd","built":"01 Nov 2026 00-00 \+0000","version":62,"signatures":6647427\}\],.*"jail":"web"\}\]' \
+	    -o match:'"security_proxy":\[\{.*"name":"sec-jw","jail":"web"' "$JGC" -c "$SOCK" sdwan
+	qpid=$(cat "$K/sdwan-proxy-sec-jw.pid")
+	ipid=$(cat "$K/sdwan-icap-sec-jw.pid")
+	alive "$qpid" && alive "$ipid" || atf_fail "squid or c-icap does not run in the jail"
+	# freshclam's mirrors, the jail's own freshclam.conf.
+	printf 'Example\nDatabaseMirror database.clamav.net\n' > "$W/usr/local/etc/freshclam.conf.sample"
+	atf_check -o match:'done' "$JGC" -c "$SOCK" -j web clamav mirrors https://mirror.example.org/clamav
+	atf_check -o inline:'DatabaseMirror https://mirror.example.org/clamav\n' cat "$W/usr/local/etc/freshclam.conf"
+	atf_check -o match:'"mirrors":\["https://mirror.example.org/clamav"\],.*"jail":"web"' "$JGC" -c "$SOCK" sdwan
+	# Gone: stopped from inside the jail, its files there gone.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy '{"group":"security","instances":[]}'
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		alive "$qpid" || alive "$ipid" || break
+		sleep 0.3
+	done
+	alive "$qpid" && atf_fail "squid sec-jw still runs"
+	alive "$ipid" && atf_fail "its c-icap still runs"
+	atf_check -o match:'^jexec 8 /bin/kill -15 '"$qpid"'$' cat jexec.log
+	test ! -e "$K/sdwan-proxy-sec-jw.conf" || atf_fail "its file stayed in the jail"
+}
+security_jail_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sdwan_ids_rules cleanup
 sdwan_ids_rules_head()
 {
@@ -20964,13 +21161,16 @@ clamav_body()
 	    https://mirror.example.org/clamav
 	atf_check -o inline:'# Comment\nDatabaseOwner clamav\nDatabaseMirror https://mirror.example.org/clamav\nNotifyClamd /usr/local/etc/clamd.conf\n' \
 	    cat fc/freshclam.conf
-	# What is not a mirror, none, a jail's: refused.
+	# What is not a mirror, none, a jail not running: refused (a
+	# running jail's own is agent_test:security_jail's).
 	atf_check -s exit:1 -e match:'host name, or an http or https' \
 	    -o ignore "$JGC" -c "$SOCK" clamav mirrors 'ftp://x/y'
 	atf_check -s exit:1 -e match:'host name, or an http or https' \
 	    -o ignore "$JGC" -c "$SOCK" clamav mirrors 'a b'
-	atf_check -s exit:1 -e match:'clamav takes no jail' -o ignore \
+	atf_check -s exit:1 -o match:'the jail web is not running' -e ignore \
 	    "$JGC" -c "$SOCK" -j web clamav mirrors database.clamav.net
+	atf_check -s exit:1 -e match:'start is a jail.s freshclam.s' -o ignore \
+	    "$JGC" -c "$SOCK" clamav start
 	# Neither the file nor its sample: ClamAV is not there.
 	rm fc/freshclam.conf fc/freshclam.conf.sample
 	atf_check -s exit:1 -o match:'pkg install clamav' -e ignore \
@@ -23544,6 +23744,7 @@ atf_init_test_cases()
 	atf_add_test_case agent_build_trust
 	atf_add_test_case agent_build_submodule
 	atf_add_test_case sdwan_ids
+	atf_add_test_case security_jail
 	atf_add_test_case vpn_bird_gone
 	atf_add_test_case safe_mode_restore
 	atf_add_test_case sdwan_ids_forms

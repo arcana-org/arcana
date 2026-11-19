@@ -953,6 +953,22 @@ not there yet is made from the port's sample, without its
 .Li Example
 line.
 A running freshclam takes them when it is restarted.
+With
+.Fl j ,
+the jail's own
+.Pa freshclam.conf ,
+beneath its root, and its own freshclam restarted when it runs: the
+signatures a Security URL filter's c-icap reads in that jail.
+A job.
+.It Fl j Ar jail Cm clamav Cm start
+The jail's
+.Li clamav_freshclam
+enabled in its own
+.Xr rc.conf 5
+.Pq Nm sysrc Fl j
+and started again there
+.Pq Nm service Fl j .
+The host's is the service's own.
 A job.
 .It Cm suricata Cm update | Cm rules Oo Ar key Ns = Ns Ar value ... Oc | Cm rule Ar state Ns = Ns Ar sid Ns Oo , Ns Ar sid ... Oc ... | Cm rule Cm modify Ar file | Cm sources | Cm source- Ns Ar verb Cm name Ns = Ns Ar source Oo Ar key Ns = Ns Ar value ... Oc | Cm pcap Cm instance Ns = Ns Ar name Cm file Ns = Ns Ar path | Cm pcap-put Ar word ... | Cm pcap-get Ar word ...
 .Cm update

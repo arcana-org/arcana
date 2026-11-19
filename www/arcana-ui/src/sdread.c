@@ -252,6 +252,7 @@ ids_json(const ucl_object_t *d)
 
 	o = ucl_object_typed_new(UCL_OBJECT);
 	cp(o, "name", d, "name");
+	cp(o, "jail", d, "jail");
 	put(o, "interfaces", strs(jget(d, "interface")));
 	put_str(o, "mode", jstr(d, "mode") != NULL && strcmp(jstr(d, "mode"),
 	    "prevent") == 0 ? "prevent" : "detect");
@@ -359,6 +360,7 @@ security_ids(const ucl_object_t *v)
 		put(s, key, ucl_object_copy(e));
 	}
 	put_str(s, "name", jstr(v, "name"));
+	put_str(s, "jail", jstr(v, "jail"));
 	if (jget(v, "divert") != NULL)
 		put(s, "divert", ucl_object_fromint(jint(v, "divert", 0)));
 	put_str(s, "rules", jstr(v, "rules"));
@@ -413,6 +415,7 @@ security_specs(const ucl_object_t *list, bool ids)
 		put(s, "listen", l);
 		(void)ucl_object_delete_key(s, "flavor");
 		put_str(s, "name", jstr(v, "name"));
+		put_str(s, "jail", jstr(v, "jail"));
 		if (jbool(v, "stopped"))
 			put(s, "stopped", ucl_object_frombool(true));
 		ucl_array_append(arr, s);
@@ -420,8 +423,9 @@ security_specs(const ucl_object_t *list, bool ids)
 	return (arr);
 }
 
-static void
-clamav_json(ucl_object_t *top, const ucl_object_t *c)
+/* A ClamAV's state, the host's or a jail's, as the pages draw it. */
+static ucl_object_t *
+clamav_obj(const ucl_object_t *c)
 {
 	static const char *const db[] = { "name", "name", "file", "file",
 	    "built", "built", NULL };
@@ -429,8 +433,6 @@ clamav_json(ucl_object_t *top, const ucl_object_t *c)
 	ucl_object_iter_t	 it = NULL;
 	ucl_object_t		*o, *arr, *d;
 
-	if (c == NULL)
-		return;
 	o = ucl_object_typed_new(UCL_OBJECT);
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	while ((v = ucl_object_iterate(jget(c, "database"), &it, true)) !=
@@ -446,7 +448,29 @@ clamav_json(ucl_object_t *top, const ucl_object_t *c)
 	put(o, "mirrors", strs(jget(c, "mirror")));
 	if (ucl_array_size(jget(c, "log")) > 0)
 		put(o, "log", strs(jget(c, "log")));
-	put(top, "clamav", o);
+	return (o);
+}
+
+/* The host's ClamAV, and each jail's where a Security URL filter there
+ * scans (clamav_jails, each with its jail). */
+static void
+clamav_json(ucl_object_t *top, const ucl_object_t *c, const ucl_object_t *cj)
+{
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it = NULL;
+	ucl_object_t		*arr, *o;
+
+	if (c != NULL)
+		put(top, "clamav", clamav_obj(c));
+	if (ucl_array_size(cj) == 0)
+		return;
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	while ((v = ucl_object_iterate(cj, &it, true)) != NULL) {
+		o = clamav_obj(v);
+		cp(o, "jail", v, "jail");
+		ucl_array_append(arr, o);
+	}
+	put(top, "clamav_jails", arr);
 }
 
 /* A BIRD instance's BMP station (PLAN-SDN-YANG 5.6.2): its peers and
@@ -649,6 +673,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 	    NULL) {
 		o = ucl_object_typed_new(UCL_OBJECT);
 		cp(o, "name", v, "name");
+		cp(o, "jail", v, "jail");
 		put(o, "fib", ucl_object_fromint(jint(v, "fib", 0)));
 		cp(o, "mode", v, "mode");
 		put(o, "running", ucl_object_frombool(jbool(v, "running")));
@@ -663,7 +688,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 	/* The Security section's forms, from the configuration. */
 	put(top, "security_proxy", security_specs(jget(sd,
 	    "proxy-instance"), false));
-	clamav_json(top, jget(st, "clamav"));
+	clamav_json(top, jget(st, "clamav"), jget(st, "clamav-jail"));
 	arr = ucl_object_typed_new(UCL_ARRAY);
 	it = NULL;
 	while ((v = ucl_object_iterate(jget(st, "ids"), &it, true)) != NULL) {
@@ -1431,6 +1456,9 @@ proxy_one(const ucl_object_t *in, const char *host, char *err,
 	put(o, "fib", ucl_object_fromint(fib));
 	put_str(o, "mode", mode);
 	put_str(o, "host", host);
+	/* The jail it runs in; none, the host. */
+	if (jstr(in, "jail") != NULL && jstr(in, "jail")[0] != '\0')
+		put_str(o, "jail", jstr(in, "jail"));
 	if (jbool(in, "stopped"))
 		put(o, "stopped", ucl_object_frombool(true));
 	put(o, "spec", proxy_form(in, mode, fib, port));
@@ -1570,6 +1598,9 @@ ids_one(const ucl_object_t *in, const char *host, char *err, size_t errlen)
 	if (divert > 0)
 		put(o, "divert", ucl_object_fromint(divert));
 	put_str(o, "host", host);
+	/* The jail it runs in; none, the host. */
+	if (jstr(in, "jail") != NULL && jstr(in, "jail")[0] != '\0')
+		put_str(o, "jail", jstr(in, "jail"));
 	put(o, "spec", ids_form(in));
 	if (jstr(in, "capture") != NULL && strcmp(jstr(in, "capture"),
 	    "netmap") == 0)
