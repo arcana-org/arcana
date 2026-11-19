@@ -5,9 +5,10 @@
  */
 
 /*
- * crash [backtrace core [program [jail]]]: crashes.c alone, for
- * agent_test.sh, what a backtrace is let read and how its debugger is
- * run.  The environment stands in for the host: COREFILE kern.corefile's
+ * crash [backtrace core [program [jail]] | delete core [jail]]:
+ * crashes.c alone, for agent_test.sh, what a backtrace is let read and
+ * how its debugger is run, and which core the crash job takes away.
+ * The environment stands in for the host: COREFILE kern.corefile's
  * pattern, KMSG "name pid uid [jid]" the core the kernel said it dumped,
  * JAILS "name:jid:root ..." the jails running,
  * LLDB and GDB the debuggers found (none when unset), TMPDIR where a
@@ -238,6 +239,25 @@ main(int argc, char **argv)
 	memset(&w, 0, sizeof(w));
 	memset(&rsp, 0, sizeof(rsp));
 	opts.helper_bin = "/helper";
+	/* delete core [jail]: the crash job, its check first. */
+	if (argc >= 3 && strcmp(argv[1], "delete") == 0) {
+		struct arc_job_spec	 sp;
+		const char		*e;
+
+		memset(&sp, 0, sizeof(sp));
+		sp.verb = argv[1];
+		sp.names.v = (const char **)(uintptr_t)&argv[2];
+		sp.names.n = 1;
+		sp.jail = argc > 3 ? argv[3] : NULL;
+		e = NULL;
+		if ((e = crash_check(&sp)) == NULL)
+			(void)do_crash_job(&w, &sp, &e);
+		if (e == NULL)
+			printf("ok\n");
+		else
+			printf("error %s\n", e);
+		return (0);
+	}
 	do_crashes(&w, (const char *const *)(argv + 1), (size_t)argc - 1,
 	    &rsp);
 	if (rsp.ok)

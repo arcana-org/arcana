@@ -785,6 +785,9 @@ job_finished(struct op *op, bool ok, const char *err)
 	case JOB_KERNEL:
 		refresh_kernel(s, true);
 		break;
+	case JOB_CRASHES:
+		refresh_crashes(s, true);
+		break;
 	case JOB_CERTS:
 		refresh_certs(s, true);
 		break;

@@ -64,13 +64,16 @@ On the network of a jail that has one of its own
 .Cm bridge ,
 .Cm geneve ,
 .Cm ipsec ,
+.Cm ipsec-sa ,
 .Cm neigh ,
 .Cm carp ,
 .Cm capture ,
 .Cm path-check ,
 .Cm monitor ,
 .Cm rtadvd ,
-.Cm nfs
+.Cm nfs ,
+.Cm netstore
+(the jail's NFS server)
 and
 .Cm sysctl
 (its
@@ -81,6 +84,8 @@ On any jail's own daemons and files, a network of its own or not:
 .Cm cert ,
 .Cm smtpd ,
 .Cm speeder ,
+.Cm sslproxy ,
+.Cm clamav ,
 .Cm ps ,
 .Cm signal ,
 .Cm renice ,
@@ -96,7 +101,14 @@ of
 .Cm syslog ,
 the jail's
 .Xr syslogd 8 .
-The commands of
+With
+.Cm crashes backtrace
+and
+.Cm crashes delete ,
+the jail whose core it is.
+.Cm services ,
+.Cm service
+and the commands of
 .Xr pkg 8
 take a
 .Fl j
@@ -697,7 +709,8 @@ write its rcvar in the jail's
 put back as it was in safe mode.
 A jail that is not running, or has no script of the name, is refused;
 .Cm pidfile
-is refused in a jail.
+writes the jail's stale pidfile again, its paths the jail's, beneath
+its root.
 .It Cm service Oo Fl a Ar warning Oc ... Oo Fl j Ar jail Oc Ar name Cm config Oo Fl x Ar key Oc ... Oo Ar key Ns = Ns Ar value Oc ...
 The service's
 .Xr rc.conf 5
@@ -937,6 +950,13 @@ Nothing is changed.
 arcana-crashes'
 .Ic read
 action, printed as the JSON the crashes operation gave.
+.It Cm crashes delete Ar core
+Takes the core away, the crash job: only one in the directory
+.Va kern.corefile
+names, a regular file of one link, opened without a link; with
+.Fl j ,
+a running jail's, that directory beneath the jail's root.
+A core elsewhere, or a name that is no core's, is refused.
 .It Cm clamav Cm mirrors Ar mirror ...
 ClamAV's
 .Xr freshclam 1 :

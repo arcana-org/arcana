@@ -266,6 +266,7 @@ host_tab(const char *name)
 		{ "strongswan", "network" }, { "relay", "network" },
 		{ "alerts", "monitoring" }, { "utilization", "monitoring" },
 		{ "tunnels", "monitoring" }, { "mail", "services" },
+		{ "crashes", "system" },
 	};
 	char	sel[128];
 	size_t	i;
@@ -10473,6 +10474,105 @@ ATF_TC_CLEANUP(pwa_ra_jail, tc)
 }
 
 /*
+ * System, Crashes: the cores where kern.corefile puts them, the host's
+ * and a jail's beneath its root with its jail, a table that sorts and
+ * filters; the jail's core's backtrace read with the jail's program
+ * (lldb a stand-in that says what it was given, the kernel's line for
+ * the crash the test's); the jail's core deleted by a crash job, gone
+ * from beneath the jail's root, the host's of the same name kept.
+ */
+ATF_TC_WITH_CLEANUP(pwa_crashes);
+ATF_TC_HEAD(pwa_crashes, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "System, Crashes: the host's and a jail's cores listed, a backtrace read with the jail's program, a core deleted by a crash job");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_crashes, tc)
+{
+	char	wd[MAXPATHLEN], cmd[4 * MAXPATHLEN + 256];
+
+	prologue(tc, 1);
+	ATF_REQUIRE(getcwd(wd, sizeof(wd)) != NULL);
+	/* The host's cores, and gw's (jid 4, its root ./jroot) where
+	 * kern.corefile puts one for its processes; the jail's nginx. */
+	snprintf(cmd, sizeof(cmd), "mkdir -p cores 'jroot%s/cores' "
+	    "jroot/usr/local/sbin", wd);
+	ATF_REQUIRE(system(cmd) == 0);
+	put("cores/nginx.812.core", "CORE-H\n");
+	put("cores/sh.4242.core", "CORE-S\n");
+	snprintf(cmd, sizeof(cmd), "jroot%s/cores/nginx.812.core", wd);
+	put(cmd, "CORE-J\n");
+	put("jroot/usr/local/sbin/nginx", "#!/bin/sh\n");
+	ATF_REQUIRE(chmod("jroot/usr/local/sbin/nginx", 0755) == 0);
+	/* lldb, a stand-in: the program it was given, as a backtrace. */
+	put("tools/lldb", "#!/bin/sh\neval p=\"\\${$#}\"\necho \"* thread "
+	    "#1, stop reason = signal SIGSEGV\"\necho \"  frame #0: main of "
+	    "$p\"\n");
+	ATF_REQUIRE(chmod("tools/lldb", 0755) == 0);
+	/* The kernel's line for the jail's crash: its core is read. */
+	snprintf(cmd, sizeof(cmd), "pid 812 (nginx), jid 4, uid %d: exited "
+	    "on signal 11 (core dumped)\n", (int)getuid());
+	put("msgbuf", cmd);
+	host_tab("crashes");
+	wait_js("document.querySelector('table.crashes tr[data-core=\"nginx.812"
+	    ".core\"][data-jail=gw]') && document.querySelector('table.crashes "
+	    "tr[data-core=\"nginx.812.core\"][data-jail=\"\"]') && document."
+	    "querySelector('table.crashes tr[data-core=\"sh.4242.core\"]')", 30);
+	ATF_CHECK(js_true("document.querySelector('table.crashes tr[data-jail="
+	    "gw]').textContent.includes('gw') && document.querySelector("
+	    "'table.crashes tr[data-jail=gw] button[data-act=crash-delete]')"));
+	shot("7k-crashes");
+	/* Filtered, as every table is: the jail's name leaves its row. */
+	run("const f = document.querySelector('#filter'); f.value = 'sh.4242'; "
+	    "f.dispatchEvent(new Event('input', {bubbles: true}));");
+	wait_js("document.querySelectorAll('table.crashes tbody tr').length === "
+	    "1", 10);
+	run("const f = document.querySelector('#filter'); f.value = ''; "
+	    "f.dispatchEvent(new Event('input', {bubbles: true}));");
+	wait_js("document.querySelectorAll('table.crashes tbody tr').length >= "
+	    "3", 10);
+	/* Sorted by a column. */
+	run("document.querySelector('table.crashes th[data-act=t-sort]')."
+	    "click()");
+	wait_js("document.querySelector('table.crashes th.sortable.up, "
+	    "table.crashes th.sortable.down, table.crashes th.sortable.asc, "
+	    "table.crashes th.sortable.desc')", 5);
+	/* Once the agent has the kernel's line (its crash fault). */
+	ATF_REQUIRE_MSG(host_has("grep -q 'fault crash (Major) jail:gw/nginx' "
+	    "arcana-agent.out"), "the agent did not read the kernel's line");
+	/* The jail's core's backtrace, with the jail's program. */
+	run("document.querySelector('table.crashes tr[data-jail=gw] "
+	    "button[data-act=crash-bt]').click()");
+	snprintf(cmd, sizeof(cmd), "document.querySelector('pre.crbt') && "
+	    "document.querySelector('pre.crbt').textContent.includes('main of "
+	    "%s/jroot/usr/local/sbin/nginx') && document.querySelector("
+	    "'section.cr-bt h4').textContent.includes('in jail gw')", wd);
+	wait_js(cmd, 30);
+	shot("7k-crash-backtrace");
+	/* The jail's core deleted: gone beneath its root, the host's of
+	 * the name kept. */
+	run("document.querySelector('table.crashes tr[data-jail=gw] "
+	    "button[data-act=crash-delete]').click()");
+	wait_js("document.querySelector('form[data-form=confirm]')", 5);
+	run("document.querySelector('form[data-form=confirm]').requestSubmit()");
+	queued_run();
+	snprintf(cmd, sizeof(cmd), "test ! -e 'jroot%s/cores/nginx.812.core'",
+	    wd);
+	ATF_CHECK_MSG(host_has(cmd), "the jail's core is still there");
+	ATF_CHECK_MSG(access("cores/nginx.812.core", F_OK) == 0,
+	    "the host's core of the same name went too");
+	wait_js("!document.querySelector('table.crashes tr[data-jail=gw]') && "
+	    "document.querySelector('table.crashes tr[data-core=\"nginx.812."
+	    "core\"][data-jail=\"\"]')", 30);
+}
+ATF_TC_CLEANUP(pwa_crashes, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A bridge's forms on the Network tab, each submitted and found in
  * what ifconfig was told: a member taken in and kept, its own options
  * (only the one changed sent), an address set behind a member; then a
@@ -17014,6 +17114,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_scale);
 	ATF_TP_ADD_TC(tp, pwa_ra_lists);
 	ATF_TP_ADD_TC(tp, pwa_ra_jail);
+	ATF_TP_ADD_TC(tp, pwa_crashes);
 	ATF_TP_ADD_TC(tp, pwa_nas_jail);
 	ATF_TP_ADD_TC(tp, pwa_netstore_forms);
 	ATF_TP_ADD_TC(tp, pwa_l2_forms);

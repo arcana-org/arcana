@@ -131,6 +131,7 @@ static const char *const tabnames[] = {
 	[TAB_MONITORING] = "monitoring", [TAB_ALERTS] = "monitoring/alerts",
 	[TAB_MODELS] = "models", [TAB_TERMINAL] = "terminal",
 	[TAB_IPSEC] = "network/base/ipsec",
+	[TAB_CRASHES] = "system/crashes",
 };
 
 /* A jail's name in the address: what is not a letter, a digit or ._- in
@@ -1310,7 +1311,7 @@ dispatch(const char *act, const char *arg, const char *value)
 	    feeds_action(act, arg, value) ||
 	    user_action(act, arg) ||
 	    routing_action(act, arg, value) ||
-	    kernel_action(act, arg, value) || storage_action(act, arg, value) ||
+	    kernel_action(act, arg, value) || crashes_action(act, arg, value) || storage_action(act, arg, value) ||
 	    sysctl_action(act, arg, value) || nacm_action(act, arg, value) ||
 	    macdo_action(act, arg, value) ||
 	    ra_action(act, arg, value) || yform_action(act, arg, value) ||
@@ -1346,6 +1347,8 @@ dispatch(const char *act, const char *arg, const char *value)
 				refresh_services(s, true);
 			if (app.tab == TAB_KERNEL)
 				refresh_kernel(s, false);
+			if (app.tab == TAB_CRASHES)
+				refresh_crashes(s, false);
 			if (app.tab == TAB_CERTS)
 				refresh_certs(s, false);
 			if (app.tab == TAB_SSH)
@@ -1417,6 +1420,7 @@ dispatch(const char *act, const char *arg, const char *value)
 		    strcmp(arg, "alerts") == 0 ? TAB_ALERTS :
 		    strcmp(arg, "packages") == 0 ? TAB_PACKAGES :
 		    strcmp(arg, "kernel") == 0 ? TAB_KERNEL :
+		    strcmp(arg, "crashes") == 0 ? TAB_CRASHES :
 		    strcmp(arg, "sysctl") == 0 ? TAB_SYSCTL :
 		    strcmp(arg, "certificates") == 0 ? TAB_CERTS :
 		    strcmp(arg, "ssh") == 0 ? TAB_SSH :
@@ -1441,6 +1445,8 @@ dispatch(const char *act, const char *arg, const char *value)
 			refresh_jobs(s);
 		if (app.tab == TAB_KERNEL)
 			refresh_kernel(s, true);
+		if (app.tab == TAB_CRASHES)
+			refresh_crashes(s, true);
 		if (app.tab == TAB_CERTS)
 			refresh_certs(s, false);
 		if (app.tab == TAB_SSH)
@@ -2047,6 +2053,8 @@ dispatch(const char *act, const char *arg, const char *value)
 			refresh_certs(s, true);
 		} else if (app.tab == TAB_KERNEL) {
 			refresh_kernel(s, true);
+		} else if (app.tab == TAB_CRASHES) {
+			refresh_crashes(s, true);
 		} else if (app.tab == TAB_SYSCTL) {
 			refresh_sysctl(s, true);
 		} else if (app.tab == TAB_PROCESSES) {

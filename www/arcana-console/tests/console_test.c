@@ -15195,7 +15195,8 @@ static const char sdwan_jail_doc[] =
     "\"open\"}]}]}]}";
 
 CONSOLE_TC(sdwan_jail, "SD-WAN at an edge that is a vnet jail: checked, "
-    "planned and applied there, its probes, steering and resolver its own")
+    "planned and applied there, its probes, steering, resolver, rtadvd and "
+    "a uswe tunnel's SAs its own, NTP refused")
 ATF_TC_BODY(sdwan_jail, tc)
 {
 	struct authn	a;
@@ -15401,8 +15402,8 @@ ATF_TC_BODY(sdwan_jail, tc)
 		ATF_CHECK_MSG(fib && ufib, "%s", r.body);
 	}
 	resp_free(&r);
-	/* What only the host's own edge has yet (its NTP, say) is refused
-	 * at the jail's, said so. */
+	/* The host's own by nature (its NTP: the clock is the kernel's) is
+	 * refused at the jail's, said why. */
 	ATF_REQUIRE(swap_in(doc, "\"ucs_end_points\":[{\"id\":\"g-inet\"",
 	    "\"ntp\":[\"10.0.0.1\"],\"ucs_end_points\":[{\"id\":\"g-inet\"",
 	    t1, sizeof(t1)));
@@ -15415,9 +15416,51 @@ ATF_TC_BODY(sdwan_jail, tc)
 	resp_free(&r);
 	sdwan_wait(&r);
 	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "failed") == 0 &&
-	    strstr(r.body, "an edge that is a vnet jail has no ntp yet") != NULL,
+	    strstr(r.body, "an edge that is a vnet jail keeps no time of its "
+	    "own: the clock is the kernel's, which no jail sets") != NULL,
 	    "%s", r.body);
 	resp_free(&r);
+	/* SLAAC on the jail's UNI and a uswe tunnel to it: its rtadvd and
+	 * its manual SAs are the jail's, planned and applied there. */
+	ATF_REQUIRE(swap_in(doc, "\"ntp\":[\"10.0.0.1\"],", "", t1,
+	    sizeof(t1)));
+	ATF_REQUIRE(swap_in(t1, "\"version\":2", "\"version\":3", doc,
+	    sizeof(doc)));
+	ATF_REQUIRE(swap_in(doc, "\"10.2.0.1\"]}},", "\"10.2.0.1\"]},\"ipv6\":{"
+	    "\"mode\":\"slaac\",\"prefix\":\"2001:db8:2::/64\",\"provider\":["
+	    "\"2001:db8:2::1\"],\"dns\":[\"2001:db8:2::1\"]}},", t1, sizeof(t1)));
+	ATF_REQUIRE(swap_in(t1, "\"tunnel\":{\"kind\":\"gre\",\"ipsec\":false}",
+	    "\"tunnel\":{\"kind\":\"uswe\",\"algorithms\":\"aes-gcm-16\"}", doc,
+	    sizeof(doc)));
+	r3_keep(doc);
+	r3_sdwan("plan", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"rtadvd\",\"interface\":"
+	    "\"epair1b\"") != NULL && strstr(r.body, "\"kind\":\"ipsec-sa\","
+	    "\"verb\":\"key\",\"interface\":\"ipsec101\"") != NULL, "%s",
+	    r.body);
+	resp_free(&r);
+	ATF_REQUIRE(system("mkdir -p jroot$(pwd)") == 0);
+	(void)unlink("jexec.log");
+	http("POST", CC "sdwan/apply", accepting(false), &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	sdwan_wait(&r);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "done") == 0, "%s",
+	    r.body);
+	resp_free(&r);
+	/* rtadvd's record beneath the jail's root, its rtadvd told there;
+	 * the host's file untouched. */
+	ATF_CHECK_MSG(system("grep -q '^epair1b:' jroot$(pwd)/rtadvd.conf && "
+	    "grep -q 'addr=\"2001:db8:2::\"' jroot$(pwd)/rtadvd.conf && "
+	    "grep -q '^rtadvd_enable=\"YES\"' jroot/etc/rc.conf && "
+	    "grep -q '^jexec 4 .*rtadvd' jexec.log && ! grep -qs epair1b "
+	    "rtadvd.conf") == 0, "the jail's rtadvd was not set in it");
+	/* The jail's end's key pair kept on the host by its jail's name,
+	 * the host's by its own; the SAs derived from each other's half. */
+	ATF_CHECK_MSG(system("test -f sdwan-key-ipsec100.pem && test -f "
+	    "sdwan-key-ipsec101@gw.pem && ! test -f sdwan-key-ipsec101.pem") ==
+	    0, "the jail's key pair is not its own");
 }
 
 /*

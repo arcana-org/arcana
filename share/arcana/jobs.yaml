@@ -514,3 +514,9 @@ kinds:
     uses: jail user description args safe
     values: verb=add|delete|replace
     destroys: verb=delete
+  - kind: crash
+    title: A core the kernel dumped taken away
+    needs: verb args
+    uses: jail
+    values: verb=delete
+    destroys: always

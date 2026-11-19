@@ -36,7 +36,9 @@
  * kernel's default the tests' plans are made for, or name the machine
  * the tests run on.  A number is an int, or a long where the caller's
  * room or the number asks it (hw.physmem); anything else a string.
- * gethostname(3) and uname(3)'s node name answer kern.hostname's.  The
+ * gethostname(3) and uname(3)'s node name answer kern.hostname's.
+ * kern.msgbuf, the kernel's messages, is the file FAKEMSGBUF names
+ * while it is there (a crash the kernel said, for the cores' tests).  The
  * format, description and everything else are the kernel's; a write
  * goes to the kernel.
  *
@@ -66,6 +68,7 @@
 #include <sys/param.h>
 #include <sys/jail.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 
@@ -726,6 +729,36 @@ sysctl(const int *mib, u_int miblen, void *oldp, size_t *oldlenp,
 	return (realf(mib, miblen, oldp, oldlenp, newp, newlen));
 }
 
+/* kern.msgbuf from FAKEMSGBUF's file, as the kernel gives it: its
+ * length asked first, then its bytes; false while there is no file. */
+static bool
+fake_msgbuf(void *oldp, size_t *oldlenp)
+{
+	struct stat	 sb;
+	const char	*f;
+	ssize_t		 n;
+	int		 fd;
+
+	if ((f = getenv("FAKEMSGBUF")) == NULL || (fd = open(f, O_RDONLY |
+	    O_CLOEXEC)) == -1)
+		return (false);
+	if (fstat(fd, &sb) == -1) {
+		close(fd);
+		return (false);
+	}
+	if (oldp == NULL) {
+		*oldlenp = (size_t)sb.st_size;
+		close(fd);
+		return (true);
+	}
+	n = read(fd, oldp, MIN(*oldlenp, (size_t)sb.st_size));
+	close(fd);
+	if (n < 0)
+		return (false);
+	*oldlenp = (size_t)n;
+	return (true);
+}
+
 int
 sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     const void *newp, size_t newlen)
@@ -735,6 +768,9 @@ sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
 	if (newp == NULL && oldlenp != NULL && fake_value(name, v, sizeof(v)))
 		return (fake_read(v, oldp, oldlenp));
+	if (newp == NULL && oldlenp != NULL && strcmp(name, "kern.msgbuf") ==
+	    0 && fake_msgbuf(oldp, oldlenp))
+		return (0);
 	if (realf == NULL && (realf = (sysctlbyname_fn *)dlsym(RTLD_NEXT,
 	    "sysctlbyname")) == NULL) {
 		errno = ENOSYS;

@@ -90,6 +90,8 @@ tab_help(void)
 		return ("sections/ssh.html");
 	case TAB_PROCESSES:
 		return ("sections/kernel.html#processes");
+	case TAB_CRASHES:
+		return ("sections/kernel.html#crashes");
 	case TAB_LOG:
 		return ("sections/log.html");
 	case TAB_JOBS:

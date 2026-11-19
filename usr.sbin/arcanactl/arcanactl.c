@@ -276,7 +276,7 @@ usage(void)
 	    "        untrust file | rehash\n"
 	    "    poudriere [list] | show-options key=value ... |\n"
 	    "        make-conf name|- file|- | verb [key=value ...]\n"
-	    "    crashes [backtrace core [program]]\n"
+	    "    crashes [backtrace core [program] | delete core]\n"
 	    "    clamav mirrors mirror ... | start\n"
 	    "    netstore [nfs | iscsi | hast]\n"
 	    "    system [file | host]\n"
@@ -423,10 +423,12 @@ usage(void)
 	    "reaches the host again, -F names a routing table,\n-j a running "
 	    "jail to work in instead of the host: its network (vnet) for\n"
 	    "net, route, interface, ng, wg, bird, ipfw, bridge, geneve, "
-	    "ipsec, neigh, carp,\ncapture, path-check, monitor and sysctl; "
-	    "its own daemons and files for sshd,\ncert, smtpd, speeder, ps, "
-	    "signal, renice, log, storage, system, sysfile, cron,\nand get and "
-	    "edit of syslog.\n");
+	    "ipsec, ipsec-sa,\nneigh, carp, capture, path-check, monitor, "
+	    "rtadvd, nfs, netstore and sysctl;\nits own daemons and files "
+	    "for sshd, cert, smtpd, speeder, sslproxy, clamav,\nps, signal, "
+	    "renice, log, storage, system, sysfile, cron, and get and edit of\n"
+	    "syslog; the jail of a crashes backtrace's or delete's core.  "
+	    "services,\nservice and the pkg commands take a -j of their own.\n");
 	exit(2);
 }
 
@@ -5801,23 +5803,35 @@ cmd_poudriere(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
-/* crashes [backtrace core [program]]: the cores dumped, the host's and
- * the jails', and one's backtrace; -j: a core of that jail's. */
+/* crashes [backtrace core [program] | delete core]: the cores dumped,
+ * the host's and the jails', one's backtrace, or one taken away (the
+ * crash job); -j: a core of that jail's. */
 static int
 cmd_crashes(cbl_conn *conn, int argc, char **argv)
 {
-	ucl_object_t	*data;
-	const char	*words[4];
-	char		 ebuf[256];
-	int		 error;
-	size_t		 n;
+	struct arc_job_spec	 sp;
+	ucl_object_t		*data;
+	const char		*words[4];
+	char			 ebuf[256];
+	int			 error;
+	size_t			 n;
 
+	if (argc == 3 && strcmp(argv[1], "delete") == 0) {
+		memset(&sp, 0, sizeof(sp));
+		sp.has_kind = true;
+		sp.kind = ARC_JOB_KIND_CRASH;
+		sp.verb = argv[1];
+		sp.names.v = (const char **)(uintptr_t)&argv[2];
+		sp.names.n = 1;
+		sp.jail = netjail;
+		return (submit(conn, &sp));
+	}
 	if (argc > 1 && (strcmp(argv[1], "backtrace") != 0 || argc < 3 ||
 	    argc > 4))
 		usage();
 	if (netjail != NULL && argc == 1)
 		xo_errx(2, "crashes lists every jail's cores: -j names the jail "
-		    "of a backtrace's");
+		    "of a backtrace's or a delete's");
 	n = 0;
 	for (; n < (size_t)argc - 1; n++)
 		words[n] = argv[1 + n];

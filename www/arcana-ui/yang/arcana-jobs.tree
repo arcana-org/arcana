@@ -422,13 +422,18 @@ module: arcana-jobs
     |  |     |  |     +---w text?    string
     |  |     |  |     +---w force?   boolean
     |  |     |  +--:(cron)
-    |  |     |     +---w cron!
-    |  |     |        +---w verb           enumeration
-    |  |     |        +---w text           string
-    |  |     |        +---w jail?          string
-    |  |     |        +---w user?          string
-    |  |     |        +---w description?   string
-    |  |     |        +---w args*          string
+    |  |     |  |  +---w cron!
+    |  |     |  |     +---w verb           enumeration
+    |  |     |  |     +---w text           string
+    |  |     |  |     +---w jail?          string
+    |  |     |  |     +---w user?          string
+    |  |     |  |     +---w description?   string
+    |  |     |  |     +---w args*          string
+    |  |     |  +--:(crash)
+    |  |     |     +---w crash!
+    |  |     |        +---w verb    enumeration
+    |  |     |        +---w args*   string
+    |  |     |        +---w jail?   string
     |  |     +---w safe?        boolean
     |  |     +---w safe-wait?   uint32
     |  +--ro output
@@ -805,13 +810,18 @@ module: arcana-jobs
        |  |  |  |     +---w text?    string
        |  |  |  |     +---w force?   boolean
        |  |  |  +--:(cron)
-       |  |  |     +---w cron!
-       |  |  |        +---w verb           enumeration
-       |  |  |        +---w text           string
-       |  |  |        +---w jail?          string
-       |  |  |        +---w user?          string
-       |  |  |        +---w description?   string
-       |  |  |        +---w args*          string
+       |  |  |  |  +---w cron!
+       |  |  |  |     +---w verb           enumeration
+       |  |  |  |     +---w text           string
+       |  |  |  |     +---w jail?          string
+       |  |  |  |     +---w user?          string
+       |  |  |  |     +---w description?   string
+       |  |  |  |     +---w args*          string
+       |  |  |  +--:(crash)
+       |  |  |     +---w crash!
+       |  |  |        +---w verb    enumeration
+       |  |  |        +---w args*   string
+       |  |  |        +---w jail?   string
        |  |  +---w safe?        boolean
        |  |  +---w safe-wait?   uint32
        |  +---w undo?     uint64

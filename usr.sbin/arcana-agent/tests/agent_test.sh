@@ -2756,6 +2756,64 @@ crash_jail_cores_body()
 	    env KMSG="nginx 812 $me 7" "$c" backtrace nginx.812.core "" web
 }
 
+atf_test_case crash_delete
+crash_delete_head()
+{
+	atf_set "descr" "the crash job (crashes.c): a core taken away from" \
+	    "kern.corefile's directory alone, a running jail's beneath its" \
+	    "root; a name that is no core's, a link, a second name, a core" \
+	    "elsewhere or a pattern with no directory refused, nothing taken"
+}
+crash_delete_body()
+{
+	local c="$(atf_get_srcdir)/crash" here
+
+	here=$(pwd)
+	mkdir cores
+	printf 'CORE-A\n' > cores/sh.4242.core
+	printf 'CORE-B\n' > cores/sh.4243.core
+	printf 'notes\n' > cores/notes.txt
+	mkdir -p "jroot$here/cores"
+	printf 'CORE-J\n' > "jroot$here/cores/nginx.812.core"
+	printf 'CORE-H\n' > "$here/cores/nginx.812.core"
+	export COREFILE="$here/cores/%N.%P.core" JAILS="web:7:$here/jroot"
+	# No directory of its own: refused.
+	atf_check -o match:'^error kern.corefile names no directory' \
+	    env COREFILE=%N.core "$c" delete sh.4242.core
+	# Names that are no core's, or a path: refused by the check.
+	atf_check -o match:'^error name one core' "$c" delete notes.txt
+	atf_check -o match:'^error name one core' "$c" delete ../cores/sh.4242.core
+	atf_check -o match:'^error name one core' "$c" delete .sh.core
+	test -f cores/notes.txt || atf_fail "a file that is no core went"
+	# A link where a core is, or a second name of one: not taken.
+	ln -s sh.4242.core cores/sh.4244.core
+	atf_check -o match:'^error .*/cores/sh.4244.core is not a core of its own' \
+	    "$c" delete sh.4244.core
+	ln cores/sh.4243.core cores/sh.4245.core
+	atf_check -o match:'^error .*/cores/sh.4245.core is not a core of its own' \
+	    "$c" delete sh.4245.core
+	test -f cores/sh.4243.core -a -f cores/sh.4245.core -a -L cores/sh.4244.core ||
+	    atf_fail "a link or a second name took a core away"
+	# None of the name: said.
+	atf_check -o match:'^error .*/cores/sh.9.core: No such file' "$c" \
+	    delete sh.9.core
+	# The host's: gone, the jail's of the same name kept.
+	atf_check -o inline:'ok\n' "$c" delete sh.4242.core
+	test ! -e cores/sh.4242.core || atf_fail "the host's core is there"
+	# The jail's, beneath its root: gone, the host's of that name kept.
+	atf_check -o inline:'ok\n' "$c" delete nginx.812.core web
+	test ! -e "jroot$here/cores/nginx.812.core" || atf_fail "the jail's core is there"
+	test -f cores/nginx.812.core || atf_fail "the host's core went with the jail's"
+	# A jail not running: refused.
+	atf_check -o match:'^error the jail nosuch is not running' "$c" \
+	    delete nginx.812.core nosuch
+	# kern.corefile's directory a link out of the jail: never followed.
+	rm -rf "jroot$here/cores"
+	ln -s "$here/cores" "jroot$here/cores"
+	atf_check -o match:'^error ' "$c" delete nginx.812.core web
+	test -f cores/nginx.812.core || atf_fail "a link out of the jail was followed"
+}
+
 atf_test_case kmsg_tail
 kmsg_tail_head()
 {
@@ -24773,6 +24831,7 @@ atf_init_test_cases()
 	atf_add_test_case crashes
 	atf_add_test_case crash_cores
 	atf_add_test_case crash_jail_cores
+	atf_add_test_case crash_delete
 	atf_add_test_case capture
 	atf_add_test_case vnet
 	atf_add_test_case traceroute

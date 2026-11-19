@@ -276,6 +276,7 @@ enum tab {
 	TAB_MODELS,		/* its YANG modules, their forms (yform.c) */
 	TAB_TERMINAL,		/* login(1) on the host or a jail (term.c) */
 	TAB_IPSEC,		/* IPsec without IKE, the base system's */
+	TAB_CRASHES,		/* the cores dumped (crashes.c) */
 };
 
 /* The packages tab: pending upgrades of the host or of one jail. */
@@ -462,6 +463,7 @@ enum {
 	JOB_RELAY,		/* a host's FEC relay (relay.c) */
 	JOB_MONITOR,		/* a tunnel measured (monitors.c) */
 	JOB_SVC_OFF,		/* a service stopped, then disabled (sysview.c) */
+	JOB_CRASHES,		/* a core taken away (crashes.c) */
 };
 
 /* A change held back to be sent with others as one batch. */
@@ -1054,6 +1056,7 @@ void		 tbl_set(const char *, int, bool);
 int		 tbl_col(const char *, bool *);
 bool		 tbl_action(const char *, const char *, const char *);
 void		 refresh_kernel(struct server *, bool);
+void		 refresh_crashes(struct server *, bool);
 void		 refresh_certs(struct server *, bool);
 void		 refresh_ssh(struct server *, bool);
 void		 net_live_tick(double);
@@ -1562,6 +1565,8 @@ bool		 cfg_form(const char *, const ucl_object_t *);
 bool		 cfg_action(const char *, const char *, const char *);
 void		 cfg_merge_open(struct ycommit *);
 void		 view_kernel(struct html *, struct server *);
+void		 view_crashes(struct html *, struct server *);
+bool		 crashes_action(const char *, const char *, const char *);
 /* certs.c: the certificates OpenSSL trusts, of a host or a jail. */
 void		 view_certs(struct html *, struct server *);
 bool		 certs_modal(struct html *);

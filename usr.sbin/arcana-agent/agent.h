@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.338.0"
+#define	ARCANA_AGENT_VERSION	"0.339.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -704,9 +704,14 @@ int		 do_poudriere_job(struct work *, const struct arc_job_spec *,
 		    const char **);
 char		*poudriere_title(const struct arc_job_spec *);
 
-/* gula/crashes.c: the cores dumped, and a backtrace of one. */
+/* gula/crashes.c: the cores dumped, a backtrace of one, and the crash
+ * job that takes one away. */
 void		 do_crashes(struct work *, const char *const *, size_t,
 		    struct json_rsp *);
+const char	*crash_check(const struct arc_job_spec *);
+char		*crash_title(const struct arc_job_spec *);
+int		 do_crash_job(struct work *, const struct arc_job_spec *,
+		    const char **);
 
 /* luxuria/clamav.c: freshclam's mirrors. */
 const char	*clamav_check(const struct arc_job_spec *);

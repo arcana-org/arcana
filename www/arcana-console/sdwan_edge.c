@@ -11876,7 +11876,8 @@ of_jail(const char *object, const char *jail)
  * An edge's sdwan read, parsed, as if the edge were the whole host: of
  * the targets, faults and BIRD, dnsmasq and unbound instances, its own;
  * a jail's rules, steer and steered its edge's, in the host's places,
- * and none of the host's other services, keys or record.  NULL when its server is unknown; the host's name in
+ * the tunnel ends' keys its own, and none of the host's other services
+ * or record.  NULL when its server is unknown; the host's name in
  * name when asked.
  */
 static ucl_object_t *
@@ -11886,7 +11887,7 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 	const ucl_object_t	*t, *e;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*ans, *data, *keep;
-	static const char *const none[] = { "keys", "proxy", "ids" };
+	static const char *const none[] = { "proxy", "ids" };
 	static const char *const own[] = { "bird", "dhcp", "dns" };
 	size_t			 i;
 
@@ -11916,6 +11917,30 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 		if (of_jail(str(t, "object"), jail))
 			ucl_array_append(keep, ucl_object_copy(t));
 	ucl_object_replace_key(data, keep, "faults", 0, false);
+	/* The tunnel ends' public halves: a jail's interface's as
+	 * "ipsec0@web" (sa_keys_json()), told by its own name. */
+	keep = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((t = ucl_object_iterate(ucl_object_lookup(data, "keys"), &it,
+	    true)) != NULL) {
+		const char	*at;
+		ucl_object_t	*k;
+		char		 ifn[64];
+
+		if (str(t, "interface") == NULL)
+			continue;
+		at = strchr(str(t, "interface"), '@');
+		if (at == NULL ? jail[0] != '\0' : strcmp(at + 1, jail) != 0)
+			continue;
+		k = ucl_object_copy(t);
+		if (at != NULL) {
+			snprintf(ifn, sizeof(ifn), "%.*s", (int)(at - str(t,
+			    "interface")), str(t, "interface"));
+			put(k, "interface", S(ifn));
+		}
+		ucl_array_append(keep, k);
+	}
+	ucl_object_replace_key(data, keep, "keys", 0, false);
 	/* The instances the host's agent runs for the edge: those of its
 	 * jail, or the host's own. */
 	for (i = 0; i < nitems(own); i++) {
@@ -11962,26 +11987,24 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 }
 
 /*
- * What an edge that is a vnet jail is not given yet, said: the jail's
- * own network takes its interfaces, routes, tunnels (gre, gif, GENEVE,
- * WireGuard, IKEv2), BIRD (run in the jail by the host's agent, with
- * BFD), dnsmasq, unbound, Squid with c-icap, and Suricata (run there
- * the same way, what Suricata prevents diverted by the jail's own
- * rules), ipfw rules and steering, probes and net.* sysctls; NTP,
- * rtadvd and manual SAs (a uswe tunnel) are the host's only.
+ * What an edge that is a vnet jail is not given, said: the jail's own
+ * network takes its interfaces, routes, tunnels (gre, gif, GENEVE,
+ * WireGuard, IKEv2, a uswe tunnel's manual SAs by PF_KEY in the jail),
+ * BIRD (run in the jail by the host's agent, with BFD), dnsmasq,
+ * unbound, rtadvd, Squid with c-icap, and Suricata (run there the same
+ * way, what Suricata prevents diverted by the jail's own rules), ipfw
+ * rules and steering, probes and net.* sysctls; NTP is the host's by
+ * nature: the clock is the kernel's, which no jail sets.
  */
 static bool
 jail_kind_ok(const char *kind, char *why, size_t wlen)
 {
-	static const char *const not[] = { "ntp", "rtadvd", "ipsec-sa" };
-	size_t	i;
-
-	for (i = 0; kind != NULL && i < nitems(not); i++)
-		if (strcmp(kind, not[i]) == 0) {
-			snprintf(why, wlen, "an edge that is a vnet jail has no "
-			    "%s yet: the host's own edge has", kind);
-			return (false);
-		}
+	if (kind != NULL && strcmp(kind, "ntp") == 0) {
+		snprintf(why, wlen, "an edge that is a vnet jail keeps no time "
+		    "of its own: the clock is the kernel's, which no jail sets "
+		    "(ntpd runs on the host's own edge)");
+		return (false);
+	}
 	return (true);
 }
 

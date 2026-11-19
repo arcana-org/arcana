@@ -4906,6 +4906,7 @@ spec_from_json(const ucl_object_t *o, struct arc_job_spec *sp)
 	case ARC_JOB_KIND_MONITOR:
 	case ARC_JOB_KIND_SSLPROXY:
 	case ARC_JOB_KIND_CRON:
+	case ARC_JOB_KIND_CRASH:
 		/* Storage's verbs take more words; the host checks each. */
 		names = ucl_object_lookup(o, "args");
 		if (sp->kind == ARC_JOB_KIND_SYSCTL) {

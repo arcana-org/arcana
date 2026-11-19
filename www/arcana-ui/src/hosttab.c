@@ -9,7 +9,7 @@
  * system's, OpenSMTPD's mail), Network (the base
  * system's, BIRD, strongSwan, the FEC relay), Monitoring (utilization,
  * alerts, the tunnels measured), System (with sysctl, the kernel, the
- * processes) and Security (with SSH and the certificates).  Each is a
+ * processes, the crashes) and Security (with SSH and the certificates).  Each is a
  * tab of before (enum tab, and for the Network tab's plugins and
  * tunnels its kind), read and drawn as it was; a row under the tabs
  * goes between them.  The address is #/hosts/<id>/<tab>/<section>; a
@@ -60,6 +60,9 @@ static const struct hsect {
 	{ "system", "kernel", "Kernel", "kernel", TAB_KERNEL, -1, NULL, NULL },
 	{ "system", "processes", "Processes", "processes", TAB_PROCESSES, -1,
 	    NULL, NULL },
+	{ "system", "crashes", "Crashes", "crashes", TAB_CRASHES, -1, NULL,
+	    "The cores the kernel dumped, the host's and its jails': a "
+	    "backtrace of each" },
 	{ "system", "models", "Models", "models", TAB_MODELS, -1, NULL,
 	    "Its YANG modules, each one's configuration edited by forms "
 	    "made from the module" },

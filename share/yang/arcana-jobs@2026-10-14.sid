@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 32,
+    "sid-file-version": 33,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3802,6 +3802,46 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/cron/verb",
         "sid": "63147"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/crash",
+        "sid": "63148"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/crash/args",
+        "sid": "63149"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/crash/jail",
+        "sid": "63150"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/crash/verb",
+        "sid": "63151"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/crash",
+        "sid": "63152"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/crash/args",
+        "sid": "63153"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/crash/jail",
+        "sid": "63154"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/crash/verb",
+        "sid": "63155"
       },
       {
         "namespace": "data",

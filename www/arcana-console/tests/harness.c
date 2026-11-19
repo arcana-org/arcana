@@ -50,6 +50,7 @@ static char	 console_path[MAXPATHLEN];
 static char	*agent_argv[160];
 static char	 agent_pw[MAXPATHLEN], agent_utx[MAXPATHLEN];
 static char	 agent_fjl[MAXPATHLEN], agent_fjf[MAXPATHLEN + 8];
+static char	 agent_fsys[MAXPATHLEN + 128], agent_msgbuf[MAXPATHLEN + 8];
 
 static void	 terminate(const char *);
 /* The pid files of agent_jailed()'s agents. */
@@ -578,7 +579,10 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "for f in $r/etc/rc.d/* $r/usr/local/etc/rc.d/*; do [ -f \"$f\" "
 	    "-a -x \"$f\" ] || continue; n=${f##*/}; e=no; grep -q "
 	    "\"^${n}_enable=\\\"YES\\\"\" $r/etc/rc.conf && e=yes; echo \"$n "
-	    "${f#$r} $e\"; done ;;\nesac\n"
+	    "${f#$r} $e\"; done ;;\n"
+	    /* A debugger run as the helper runs it (as nobody where the
+	     * agent is root), on the core it is given. */
+	    "debug-as-nobody) shift 3; exec \"$@\" ;;\nesac\n"
 	    "exit 0\n");
 	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
 	ATF_REQUIRE(chmod("fake-helper", 0755) == 0);
@@ -1880,7 +1884,13 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	 * the kernel's defaults the plans are made for, on a host set
 	 * otherwise. */
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
-	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
+	/* Cores where the test puts them (kern.corefile), and the kernel's
+	 * messages its file, once a test writes one. */
+	snprintf(agent_fsys, sizeof(agent_fsys), "%s kern.corefile=%s/cores/"
+	    "%%N.%%P.core", FAKE_SYSCTL, cwd);
+	snprintf(agent_msgbuf, sizeof(agent_msgbuf), "%s/msgbuf", cwd);
+	ATF_REQUIRE(setenv("FAKESYSCTL", agent_fsys, 1) == 0);
+	ATF_REQUIRE(setenv("FAKEMSGBUF", agent_msgbuf, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", fjl, 1) == 0);
 	snprintf(agent_pw, sizeof(agent_pw), "%s/passwd", cwd);
 	snprintf(agent_utx, sizeof(agent_utx), "%s/utx", cwd);
@@ -1900,6 +1910,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	ATF_REQUIRE(unsetenv("FAKEJAIL") == 0);
 	ATF_REQUIRE(unsetenv("FAKEIFS") == 0);
 	ATF_REQUIRE(unsetenv("FAKESYSCTL") == 0);
+	ATF_REQUIRE(unsetenv("FAKEMSGBUF") == 0);
 	ATF_REQUIRE((fp = fopen("arcana-agent.pid", "w")) != NULL);
 	fprintf(fp, "%d\n", (int)pid);
 	fclose(fp);
@@ -1969,7 +1980,8 @@ agent_restart(void)
 	(void)unlink("jgd.sock");
 	ATF_REQUIRE(setenv("FAKEJAIL", agent_fjf, 1) == 0);
 	ATF_REQUIRE(setenv("FAKEIFS", FAKE_IFS, 1) == 0);
-	ATF_REQUIRE(setenv("FAKESYSCTL", FAKE_SYSCTL, 1) == 0);
+	ATF_REQUIRE(setenv("FAKESYSCTL", agent_fsys, 1) == 0);
+	ATF_REQUIRE(setenv("FAKEMSGBUF", agent_msgbuf, 1) == 0);
 	ATF_REQUIRE(setenv("LD_PRELOAD", agent_fjl, 1) == 0);
 	ATF_REQUIRE(setenv("FAKEPASSWD", agent_pw, 1) == 0);
 	ATF_REQUIRE(setenv("FAKEUTX", agent_utx, 1) == 0);
@@ -1980,6 +1992,7 @@ agent_restart(void)
 	ATF_REQUIRE(unsetenv("FAKEJAIL") == 0);
 	ATF_REQUIRE(unsetenv("FAKEIFS") == 0);
 	ATF_REQUIRE(unsetenv("FAKESYSCTL") == 0);
+	ATF_REQUIRE(unsetenv("FAKEMSGBUF") == 0);
 	ATF_REQUIRE((fp = fopen("arcana-agent.pid", "w")) != NULL);
 	fprintf(fp, "%d\n", (int)pid);
 	fclose(fp);

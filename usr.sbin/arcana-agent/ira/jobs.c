@@ -301,6 +301,9 @@ title_words(const struct arc_job_spec *sp)
 	case ARC_JOB_KIND_SSLPROXY:
 		rc = (t = sslproxy_title(sp)) != NULL ? 0 : -1;
 		break;
+	case ARC_JOB_KIND_CRASH:
+		rc = (t = crash_title(sp)) != NULL ? 0 : -1;
+		break;
 	case ARC_JOB_KIND_MONITOR:
 		rc = (t = monitor_title(sp)) != NULL ? 0 : -1;
 		break;
@@ -1845,6 +1848,12 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		error = NULL;
 		ok = scope_enter_jail(w, sp->jail, &error, false) == 0 &&
 		    do_sslproxy_job(w, sp, &error) == 0;
+		break;
+	case ARC_JOB_KIND_CRASH:
+		/* A jail's core taken away by the host, beneath the jail's
+		 * root. */
+		error = NULL;
+		ok = do_crash_job(w, sp, &error) == 0;
 		break;
 	case ARC_JOB_KIND_MONITOR:
 		/* A jail's is probed from its network by the prober; the

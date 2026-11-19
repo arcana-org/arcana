@@ -584,6 +584,16 @@ definitions:
           be one of the host's, or with jail of that running jail,
           where its own crontab(1) is run.  Undone in safe mode: the
           file or the crontab as it was.
+      - name: crash
+        doc: |
+          A core the kernel dumped taken away: verb delete, args the
+          core's name as the crashes read lists it, a regular file of
+          one link in the directory kern.corefile names, opened without
+          a link; with jail, a running jail's, the directory beneath
+          the jail's root.  Refused for anything else: a name that is
+          no core's, a core elsewhere (/, /tmp, a home), a corefile
+          pattern that names no directory of its own.  Not undone, so
+          never in safe mode.
   - name: job-state
     type: enum
     entries:

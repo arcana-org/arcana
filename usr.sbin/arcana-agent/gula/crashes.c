@@ -11,8 +11,9 @@
  * backtrace, every thread's, as lldb(1) of the base system reads the
  * core with its program in batch; and the signal's code the core keeps,
  * which tells a SIGBUS of a fault the kernel could find no memory for
- * (BUS_OOMERR) from one of a bad address.  Nothing is changed: a core
- * is read, not moved nor taken away.
+ * (BUS_OOMERR) from one of a bad address.  A read changes nothing: a
+ * core is taken away by the crash job alone, one in kern.corefile's
+ * directory (the jail's beneath its root), never one elsewhere.
  *
  * A core is a file anybody may have put there, and what reads it runs
  * what the file says, so a backtrace is only of a core the kernel wrote
@@ -814,4 +815,108 @@ do_crashes(struct work *w, const char *const *names, size_t n,
 	rsp->json = wstrdup(w, json);
 	free(json);
 	rsp->ok = true;
+}
+
+/*
+ * The crash job: verb delete takes away the core args names, the
+ * host's, or with jail a running jail's: in kern.corefile's directory
+ * alone (beneath the jail's root, opened without a link out of it), a
+ * regular file of one link, its name a core's.  A core elsewhere (/,
+ * /tmp, a home directory) is listed but not taken away here: a file
+ * there may be anybody's.  Not undone, so never in safe mode.
+ */
+const char *
+crash_check(const struct arc_job_spec *sp)
+{
+
+	if (sp->safe)
+		return ("a core taken away is not put back: not in safe mode");
+	if (sp->verb == NULL || strcmp(sp->verb, "delete") != 0)
+		return ("a crash job's verb is delete");
+	if (sp->names.n != 1 || !core_name_ok(sp->names.v[0]))
+		return ("name one core as the crashes read lists it, its file's "
+		    "name: <program>.<pid>.core, <program>.core or core");
+	return (NULL);
+}
+
+char *
+crash_title(const struct arc_job_spec *sp)
+{
+	char	*t;
+
+	if (asprintf(&t, "core %s taken away%s%s", sp->names.n > 0 ?
+	    sp->names.v[0] : "?", sp->jail != NULL && sp->jail[0] != '\0' ?
+	    " in " : "", sp->jail != NULL ? sp->jail : "") == -1)
+		return (NULL);
+	return (t);
+}
+
+int
+do_crash_job(struct work *w, const struct arc_job_spec *sp,
+    const char **errp)
+{
+	struct croot	 r;
+	struct jinfo	*ji;
+	struct stat	 sb;
+	char		 pattern[MAXPATHLEN];
+	const char	*dir, *name, *err;
+	size_t		 i, nj;
+	int		 dfd, e;
+
+	name = sp->names.v[0];
+	if ((dir = core_dir(w, pattern, sizeof(pattern))) == NULL) {
+		*errp = "kern.corefile names no directory of its own: a core "
+		    "where its process ran is not taken away by Arcana";
+		return (-1);
+	}
+	r = host_root;
+	if (sp->jail != NULL && sp->jail[0] != '\0') {
+		ji = NULL;
+		nj = 0;
+		err = NULL;
+		if (jails_running(w, &ji, &nj, &err) != 0) {
+			*errp = err != NULL ? err : "the jails could not be read";
+			return (-1);
+		}
+		for (i = 0; i < nj; i++)
+			if (!ji[i].dying && ji[i].name != NULL && strcmp(
+			    ji[i].name, sp->jail) == 0 && ji[i].path != NULL &&
+			    ji[i].path[0] == '/' && strcmp(ji[i].path, "/") != 0)
+				break;
+		if (i == nj) {
+			*errp = wfmt(w, "the jail %s is not running, or its root "
+			    "is the host's", sp->jail);
+			return (-1);
+		}
+		r.jail = ji[i].name;
+		r.jid = ji[i].jid;
+		r.path = ji[i].path;
+	}
+	if ((dfd = root_dir(&r, dir)) == -1) {
+		*errp = wfmt(w, "%s: %s", root_path(w, &r, dir), strerror(errno));
+		return (-1);
+	}
+	if (fstatat(dfd, name, &sb, AT_SYMLINK_NOFOLLOW) != 0) {
+		e = errno;
+		close(dfd);
+		*errp = wfmt(w, "%s/%s: %s", root_path(w, &r, dir), name,
+		    strerror(e));
+		return (-1);
+	}
+	if (!S_ISREG(sb.st_mode) || sb.st_nlink != 1) {
+		close(dfd);
+		*errp = wfmt(w, "%s/%s is not a core of its own (a regular "
+		    "file of one link): not taken away", root_path(w, &r, dir),
+		    name);
+		return (-1);
+	}
+	if (unlinkat(dfd, name, 0) != 0) {
+		e = errno;
+		close(dfd);
+		*errp = wfmt(w, "%s/%s: %s", root_path(w, &r, dir), name,
+		    strerror(e));
+		return (-1);
+	}
+	close(dfd);
+	return (0);
 }

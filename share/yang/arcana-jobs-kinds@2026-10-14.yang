@@ -181,6 +181,9 @@ submodule arcana-jobs-kinds {
       enum cron {
         value 52;
       }
+      enum crash {
+        value 53;
+      }
     }
     description
       "A kind of job, by its number in arcana.yaml's job-kind.";
@@ -2262,6 +2265,33 @@ submodule arcana-jobs-kinds {
             ordered-by user;
             description
               "Arguments";
+          }
+        }
+      }
+      case crash {
+        container crash {
+          presence
+            "This kind of job.";
+          description
+            "A core the kernel dumped taken away (destroys: always)";
+          leaf verb {
+            type enumeration {
+              enum delete;
+            }
+            mandatory true;
+            description
+              "Verb";
+          }
+          leaf-list args {
+            type string;
+            ordered-by user;
+            description
+              "Arguments";
+          }
+          leaf jail {
+            type string;
+            description
+              "Jail";
           }
         }
       }

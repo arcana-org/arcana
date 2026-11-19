@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Jail loose ends, a Crashes view; agent 0.339.0, console 0.482.0
+
+- A new job kind, crash (53): verb delete takes away a core the kernel
+  dumped, only one in kern.corefile's directory (a running jail's
+  beneath its root with jail), a regular file of one link; not undone,
+  so never in safe mode.  `arcanactl [-j jail] crashes delete core`.
+- The page has a Crashes section under System: the host's and each
+  jail's cores, a backtrace on demand, delete.
+- SD-WAN: an edge that is a vnet jail now takes rtadvd (SLAAC on its
+  UNI) and a uswe tunnel's manual SAs, its keys read as the jail's own;
+  NTP stays the host's edge's alone (the clock is the kernel's).
+- arcanactl(8) and its usage name every command -j applies to.
+- Update the agent and the console together.
+
 ### cblink 0.2.32; agent 0.338.0, console 0.481.0
 
 - cblink 0.2.32: a RESTCONF action target whose path names a keyed list

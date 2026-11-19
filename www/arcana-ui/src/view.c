@@ -997,33 +997,37 @@ stage(struct html *h)
 			[TAB_STORAGE] = "storage", [TAB_KERNEL] = "kernel",
 			[TAB_SYSCTL] = "sysctl", [TAB_CERTS] = "certificates",
 			[TAB_SSH] = "ssh", [TAB_PROCESSES] = "processes",
-			[TAB_LOG] = "log",
+			[TAB_LOG] = "log", [TAB_CRASHES] = "crashes",
 		};
 		/* The tabs; those of several sections (hosttab.c) have a
 		 * row of them under these. */
 		static const struct {
 			const char	*arg, *title;
-			int		 tab, tab2, tab3, tab4, tab5;
+			int		 tab, tab2, tab3, tab4, tab5, tab6;
 		} tabs[] = {
-			{ "summary", "Summary", TAB_SUMMARY, -1, -1, -1, -1 },
-			{ "monitoring", "Monitoring", TAB_MONITORING, TAB_ALERTS,
-			    -1, -1, -1 },
-			{ "jails", "Jails", TAB_JAILS, -1, -1, -1, -1 },
-			{ "services", "Services", TAB_SERVICES, TAB_MAIL, -1,
-			    -1, -1 },
-			{ "network", "Network", TAB_NETWORK, TAB_RELAY,
-			    TAB_IPSEC, -1, -1 },
-			{ "firewall", "Firewall", TAB_FIREWALL, -1, -1, -1, -1 },
-			{ "packages", "Packages", TAB_PACKAGES, -1, -1, -1, -1 },
-			{ "storage", "Storage", TAB_STORAGE, -1, -1, -1, -1 },
-			{ "system", "System", TAB_SYSTEM, TAB_SYSCTL, TAB_KERNEL,
-			    TAB_PROCESSES, TAB_MODELS },
-			{ "security", "Security", TAB_SECURITY, TAB_SSH,
-			    TAB_CERTS, -1, -1 },
-			{ "log", "Log", TAB_LOG, -1, -1, -1, -1 },
-			{ "jobs", "Jobs", TAB_JOBS, -1, -1, -1, -1 },
-			{ "terminal", "Terminal", TAB_TERMINAL, -1, -1, -1,
+			{ "summary", "Summary", TAB_SUMMARY, -1, -1, -1, -1,
 			    -1 },
+			{ "monitoring", "Monitoring", TAB_MONITORING, TAB_ALERTS,
+			    -1, -1, -1, -1 },
+			{ "jails", "Jails", TAB_JAILS, -1, -1, -1, -1, -1 },
+			{ "services", "Services", TAB_SERVICES, TAB_MAIL, -1,
+			    -1, -1, -1 },
+			{ "network", "Network", TAB_NETWORK, TAB_RELAY,
+			    TAB_IPSEC, -1, -1, -1 },
+			{ "firewall", "Firewall", TAB_FIREWALL, -1, -1, -1, -1,
+			    -1 },
+			{ "packages", "Packages", TAB_PACKAGES, -1, -1, -1, -1,
+			    -1 },
+			{ "storage", "Storage", TAB_STORAGE, -1, -1, -1, -1,
+			    -1 },
+			{ "system", "System", TAB_SYSTEM, TAB_SYSCTL, TAB_KERNEL,
+			    TAB_PROCESSES, TAB_MODELS, TAB_CRASHES },
+			{ "security", "Security", TAB_SECURITY, TAB_SSH,
+			    TAB_CERTS, -1, -1, -1 },
+			{ "log", "Log", TAB_LOG, -1, -1, -1, -1, -1 },
+			{ "jobs", "Jobs", TAB_JOBS, -1, -1, -1, -1, -1 },
+			{ "terminal", "Terminal", TAB_TERMINAL, -1, -1, -1,
+			    -1, -1 },
 		};
 		size_t		 t;
 		bool		 on, mon;
@@ -1035,7 +1039,8 @@ stage(struct html *h)
 			on = (int)app.tab == tabs[t].tab || (int)app.tab ==
 			    tabs[t].tab2 || (int)app.tab == tabs[t].tab3 ||
 			    (int)app.tab == tabs[t].tab4 ||
-			    (int)app.tab == tabs[t].tab5;
+			    (int)app.tab == tabs[t].tab5 ||
+			    (int)app.tab == tabs[t].tab6;
 			if (mon)
 				on = tabs[t].tab == TAB_MONITORING;
 			h_fmt(h, "<button class=\"tab%s\" data-act=\"tab\" "
@@ -1122,6 +1127,11 @@ stage(struct html *h)
 	}
 	if (app.tab == TAB_KERNEL) {
 		view_kernel(h, s);
+		h_raw(h, "</main>");
+		return;
+	}
+	if (app.tab == TAB_CRASHES) {
+		view_crashes(h, s);
 		h_raw(h, "</main>");
 		return;
 	}
