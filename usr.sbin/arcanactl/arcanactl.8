@@ -51,21 +51,57 @@ and
 .Cm net routes
 work in, when not the first.
 .It Fl j Ar jail
-Work on the network of a running jail that has one of its own
-.Pq vnet
-instead of the host's: for
+Work in a running jail instead of the host.
+On the network of a jail that has one of its own
+.Pq vnet :
 .Cm net ,
 .Cm route ,
 .Cm interface ,
 .Cm ng ,
-.Cm wg
+.Cm wg ,
+.Cm bird ,
+.Cm ipfw ,
+.Cm bridge ,
+.Cm geneve ,
+.Cm ipsec ,
+.Cm neigh ,
+.Cm carp ,
+.Cm capture ,
+.Cm path-check ,
+.Cm monitor
 and
-.Cm bird .
-The host does it; nothing runs in the jail but the jail's own
-.Xr birdc 8 ,
-.Xr bird 8
+.Cm sysctl
+(its
+.Va net.*
+values).
+On any jail's own daemons and files, a network of its own or not:
+.Cm sshd ,
+.Cm cert ,
+.Cm smtpd ,
+.Cm speeder ,
+.Cm ps ,
+.Cm signal ,
+.Cm renice ,
+.Cm log ,
+.Cm storage ,
+.Cm system ,
+.Cm sysfile ,
 and
-.Xr wg 8 .
+.Cm get
+and
+.Cm edit
+of
+.Cm syslog ,
+the jail's
+.Xr syslogd 8 .
+The commands of
+.Xr pkg 8
+take a
+.Fl j
+of their own.
+The host does it, the jail's files opened beneath its root; what runs
+in the jail is the jail's own program
+.Pq Xr birdc 8 , Xr wg 8 , Xr service 8 ... .
 With
 .Fl p
 a change is kept in the jail's own
@@ -157,6 +193,14 @@ the vnet jails as RFC 8530's logical network elements
 .Xr syslog.conf 5
 as ietf-syslog
 .Pq Cm syslog ,
+each running jail's as ietf-syslog in its root, an RFC 8528 mount point
+.Pq Cm jail-syslog ,
+which with
+.Fl j Ar jail ,
+.Cm get syslog
+prints, and
+.Cm edit syslog
+changes, of that jail alone,
 RFC 8525's YANG library, the modules the agent implements
 .Pq Cm yang-library ,
 RFC 8639's streams and the subscriptions running
@@ -1073,6 +1117,12 @@ it at work; and the host's NTP peers, Linux compatibility, securelevel,
 MAC modules, auditd, GEOM's tree
 .Pq Nm geom Fl t ,
 GELI's providers, periodic's variables and service jails.
+With
+.Fl j ,
+a running jail's: the files of its own daemons
+.Cm sysfile
+writes there, and of its settings periodic's variables and
+.Xr dma 8 's .
 Nothing is changed.
 arcana-system's
 .Ic read
@@ -1163,6 +1213,30 @@ removes the sign-in.
 The host's
 .Cm system
 read shows these, and whether a password is set, never the password.
+With
+.Fl j ,
+a running jail's own daemons' files instead, written beneath its root
+and never through a link out of it, its daemon told there by its own
+.Xr service 8 :
+.Cm syslog.conf ,
+.Cm newsyslog.conf ,
+.Cm periodic.conf ,
+.Cm periodic ,
+.Cm krb5.conf ,
+.Cm dma ,
+and
+.Cm ipsec.conf
+in a jail with a network of its own; the rest is the host's and
+refused for a jail with why:
+.Cm devfs.rules ,
+.Cm devd ,
+.Cm audit_control ,
+.Cm audit_user ,
+.Cm rctl.conf ,
+.Cm loader.conf.d ,
+.Cm loader.conf
+and
+.Cm rc .
 A job.
 .It Cm smtpd
 OpenSMTPD on the host, or with
@@ -3440,6 +3514,12 @@ A commit of ietf-syslog where
 is not running says
 .Cm syslogd-stopped :
 it reads the files when it starts.
+A jail's, by
+.Cm jail-syslog
+.Pq Fl j ,
+the same of the jail's own files and
+.Xr syslogd 8 ;
+the jails a commit changes are put back together when one fails.
 .Pp
 With
 .Fl q ,

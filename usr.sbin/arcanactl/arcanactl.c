@@ -417,8 +417,12 @@ usage(void)
 	    "instead of waited for.\n-p keeps a change to an interface or a "
 	    "route in rc.conf too, -s has it undone\nunless this program "
 	    "reaches the host again, -F names a routing table,\n-j a running "
-	    "jail with a network of its own (vnet), for net, route,\n"
-	    "interface, ng, wg and bird to work in instead of the host.\n");
+	    "jail to work in instead of the host: its network (vnet) for\n"
+	    "net, route, interface, ng, wg, bird, ipfw, bridge, geneve, "
+	    "ipsec, neigh, carp,\ncapture, path-check, monitor and sysctl; "
+	    "its own daemons and files for sshd,\ncert, smtpd, speeder, ps, "
+	    "signal, renice, log, storage, system, sysfile,\nand get and edit "
+	    "of syslog.\n");
 	exit(2);
 }
 
@@ -836,6 +840,81 @@ patterns_ready(void)
 }
 
 static enum cbl_yds_name ds_named(const char *);
+static const struct cbl_ynode *ychild(const struct cbl_ynode *,
+		    const char *);
+
+/* The mount point of a jail's root in arcana-syslog. */
+static const struct cbl_ynode *
+jail_root(void)
+{
+	const struct cbl_ynode	*n;
+
+	if ((n = ytop_named("jail-syslog")) == NULL || (n = ychild(n,
+	    "jail")) == NULL)
+		return (NULL);
+	return (ychild(n, "root"));
+}
+
+/*
+ * get -j jail syslog: the jail's syslogd as ietf-syslog, the jail's root
+ * in arcana-syslog's GET from ds.
+ */
+static int
+jail_syslog_get(cbl_conn *conn, enum cbl_yds_name ds)
+{
+	const struct cbl_ynode			*top, *mp;
+	const struct arcana_syslog_jail_syslog	*js;
+	const struct ietf_syslog		*sl = NULL;
+	struct arcana_syslog			 data;
+	struct cbl_ybuf				 b = { NULL, 0, 0 };
+	cbl_msg					*req, *rep = NULL;
+	cbl_yarena				*a;
+	uint64_t				 sid;
+	char					 why[256], *out;
+	bool					 first = true;
+	int					 error;
+
+	if ((top = ytop_named("jail-syslog")) == NULL || (mp = jail_root()) ==
+	    NULL)
+		xo_errx(1, "get: no arcana-syslog in the tables");
+	sid = top->sid;
+	if ((error = cbl_msg_new(cbl_conn_ctx(conn), CBL_YANG_FAMILY,
+	    CBL_YCMD_GET, 0, &req)) != 0 || (error = cbl_msg_put_yget(req,
+	    &sid, 1)) != 0 || (ds != CBL_YDS_OPERATIONAL && (error =
+	    cbl_msg_set_datastore(req, ds)) != 0))
+		xo_errx(1, "get: %s", strerror(error));
+	if ((error = cbl_request(conn, req, &rep, -1)) != 0)
+		xo_errx(1, "get: %s", txe(rep != NULL && cbl_msg_err_str(rep) !=
+		    NULL ? cbl_msg_err_str(rep) : strerror(error)));
+	if ((a = cbl_yarena_new()) == NULL)
+		xo_err(1, "get");
+	memset(&data, 0, sizeof(data));
+	if ((error = cbl_msg_ydecode_member(rep, top, &data, a, 0, why,
+	    sizeof(why))) != 0 && error != ENOENT)
+		xo_errx(1, "get: jail-syslog: %s", txe(why[0] != '\0' ? why :
+		    strerror(error)));
+	js = data.jail_syslog;
+	for (size_t i = 0; js != NULL && i < js->jail.n; i++)
+		if (strcmp(js->jail.v[i].name, netjail) == 0 &&
+		    js->jail.v[i].root != NULL)
+			sl = cbl_ymount_find(mp, js->jail.v[i].root,
+			    ytop_named("syslog")->module);
+	if (sl == NULL)
+		xo_errx(1, "get: the jail %s is not running: its syslogd is "
+		    "read while it runs", txe(netjail));
+	if ((error = cbl_yjson_members(ytop_named("syslog")->module, sl, &b,
+	    &first)) != 0)
+		xo_errx(1, "get: syslog: %s", strerror(error));
+	if (asprintf(&out, "{%.*s}", (int)b.len, b.p != NULL ? (const char *)
+	    b.p : "") == -1)
+		xo_err(1, "get");
+	xo_emit("{:json/%s}\n", txj(out));
+	free(out);
+	cbl_ybuf_free(&b);
+	cbl_yarena_free(a);
+	cbl_msg_free(rep);
+	return (0);
+}
 
 /*
  * get [-d datastore] [-w mode] [-o] [-x xpath] [node ...]: what the agent
@@ -900,6 +979,13 @@ cmd_get(cbl_conn *conn, int argc, char **argv)
 	if (argc > (int)i + 1 && strcmp(argv[i], "-x") == 0) {
 		xpath = argv[i + 1];
 		i += 2;
+	}
+	/* -j: a jail's own syslogd, its root's in arcana-syslog. */
+	if (netjail != NULL) {
+		if (argc - (int)i != 1 || strcmp(argv[i], "syslog") != 0 ||
+		    xpath != NULL || origin || wd != CBL_YWD_EXPLICIT)
+			xo_errx(2, "get: -j takes syslog alone, a jail's syslogd");
+		return (jail_syslog_get(conn, said ? ds : CBL_YDS_OPERATIONAL));
 	}
 	for (; i < (uint32_t)argc; i++) {
 		if ((n = ytop_named(argv[i])) == NULL)
@@ -1059,7 +1145,7 @@ cmd_edit(cbl_conn *conn, int argc, char **argv)
 {
 	const struct cbl_ynode	*n;
 	struct ucl_parser	*p;
-	ucl_object_t		*top;
+	ucl_object_t		*top, *jtop;
 	const ucl_object_t	*v;
 	enum cbl_yds_name	 ds = CBL_YDS_CANDIDATE;
 	char			 err[512], tag[80], key[256], *text;
@@ -1106,8 +1192,33 @@ cmd_edit(cbl_conn *conn, int argc, char **argv)
 		    ucl_object_type(top) == UCL_OBJECT ?
 		    ucl_object_lookup(top, key) : top;
 	}
+	/* -j: a jail's syslogd, its root's in arcana-syslog; the other
+	 * jails' are left as they are. */
+	jtop = NULL;
+	if (netjail != NULL) {
+		ucl_object_t	*e, *r, *l;
+
+		if (strcmp(n->name, "syslog") != 0 || v == NULL)
+			xo_errx(2, "edit: -j takes syslog alone, a jail's "
+			    "syslogd, its value given");
+		if ((n = ytop_named("jail-syslog")) == NULL)
+			xo_errx(1, "edit: no arcana-syslog in the tables");
+		r = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(r, ucl_object_ref(v), "ietf-syslog:syslog",
+		    0, false);
+		e = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(e, ucl_object_fromstring(netjail), "name",
+		    0, false);
+		ucl_object_insert_key(e, r, "root", 0, false);
+		l = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(l, e);
+		jtop = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(jtop, l, "jail", 0, false);
+		v = jtop;
+	}
 	error = yjson_edit(conn, n, v, ds, accepts, naccepts, err,
 	    sizeof(err), &errsid, tag, sizeof(tag));
+	ucl_object_unref(jtop);
 	ucl_object_unref(top);
 	free(text);
 	if (error != 0)
@@ -5738,7 +5849,7 @@ cmd_system(cbl_conn *conn, int argc, char **argv)
 		usage();
 	/* arcana-system's read. */
 	ytold_begin(conn);
-	error = yr_system(conn, (const char *const *)&argv[1],
+	error = yr_system(conn, netjail, (const char *const *)&argv[1],
 	    (size_t)argc - 1, &data, ebuf, sizeof(ebuf));
 	return (ydata_out("system", error, data, ebuf));
 }

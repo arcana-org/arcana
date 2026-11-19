@@ -652,12 +652,13 @@ yr_crashes(cbl_conn *conn, const char *const *words, size_t n,
 }
 
 int
-yr_system(cbl_conn *conn, const char *const *words, size_t n,
-    ucl_object_t **data, char *err, size_t errlen)
+yr_system(cbl_conn *conn, const char *jail, const char *const *words,
+    size_t n, ucl_object_t **data, char *err, size_t errlen)
 {
 	struct arcana_system_system_read_input	in;
 
 	memset(&in, 0, sizeof(in));
+	in.jail = jail;
 	in.name.v = words;
 	in.name.n = n;
 	return (flat_call(conn, "arcana-system", "system", "read", &in,

@@ -491,14 +491,30 @@ int	ylog_files_from_json(const char *json, const char *dir, cbl_yarena *a,
 int	ylog_read_from_json(const char *json, cbl_yarena *a,
 	    struct arcana_log_logs_read_output *out);
 /*
- * ietf-syslog: syslog.conf conf, and the files it includes (under root,
- * NULL: the host's), with each file's rotation from newsyslog.conf
- * newsyslog (NULL: none); what the model cannot hold in *u (the
- * arena's), "file:line" and why.
+ * How ylog.c reaches the files when they are not the host's (a jail's,
+ * beneath its root, gula/ysyslog.c): a file opened to read, a directory
+ * opened, a name's lstat(2), each as open(2) and lstat(2) answer, and
+ * text put whole in a file's place, its owner and mode kept (0, or -1
+ * with errno).  NULL: the host's, by their paths.
  */
-int	ysyslog_read(const char *root, const char *conf, const char *newsyslog,
-	    cbl_yarena *a, struct ietf_syslog *out, struct yunread **u,
-	    size_t *nu);
+struct stat;
+struct ysyslog_io {
+	int	(*open)(void *, const char *);
+	int	(*opendir)(void *, const char *);
+	int	(*lstat)(void *, const char *, struct stat *);
+	int	(*replace)(void *, const char *, const char *, size_t);
+	void	*arg;
+};
+
+/*
+ * ietf-syslog: syslog.conf conf, and the files it includes (under root,
+ * NULL: the host's; or as io reaches them), with each file's rotation
+ * from newsyslog.conf newsyslog (NULL: none); what the model cannot hold
+ * in *u (the arena's), "file:line" and why.
+ */
+int	ysyslog_read(const struct ysyslog_io *io, const char *root,
+	    const char *conf, const char *newsyslog, cbl_yarena *a,
+	    struct ietf_syslog *out, struct yunread **u, size_t *nu);
 
 #define	SYSLOG_CONF		"/etc/syslog.conf"
 #define	NEWSYSLOG_CONF		"/etc/newsyslog.conf"
@@ -509,7 +525,8 @@ int	ysyslog_read(const char *root, const char *conf, const char *newsyslog,
  * A commit of ietf-syslog (gula/ylog.c), planned on the files under root
  * as they are: Arcana's two files' text (NULL: not written), whether
  * syslog.conf and newsyslog.conf include them, the user's lines taken
- * over ("file:line", under root) and the log files to be made.  err
+ * over ("file:line", under root) and the log files to be made; or the
+ * files as io reaches them, by paths of their own.  err
  * says what is refused.  ysyslog_take() comments the lines out;
  * ysyslog_check(): the files written read back as after asked.
  */
@@ -526,11 +543,13 @@ struct ysyslog_plan {
 	const char		**create;
 	size_t			 ncreate;
 };
-int	ysyslog_plan(const char *root, const struct ietf_syslog *after,
-	    cbl_yarena *a, struct ysyslog_plan *out, char *err, size_t errlen);
-int	ysyslog_take(const struct ysyslog_plan *pl);
-int	ysyslog_check(const char *root, const struct ietf_syslog *after,
-	    char *err, size_t errlen);
+int	ysyslog_plan(const struct ysyslog_io *io, const char *root,
+	    const struct ietf_syslog *after, cbl_yarena *a,
+	    struct ysyslog_plan *out, char *err, size_t errlen);
+int	ysyslog_take(const struct ysyslog_io *io,
+	    const struct ysyslog_plan *pl);
+int	ysyslog_check(const struct ysyslog_io *io, const char *root,
+	    const struct ietf_syslog *after, char *err, size_t errlen);
 
 /*
  * arcana-firewall (invidia/yfw.c): the network operation's ipfw kind

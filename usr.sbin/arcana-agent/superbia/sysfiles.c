@@ -19,6 +19,16 @@
  * it is told), with the host's NTP peers,
  * Linux compatibility, securelevel, MAC modules, GEOM's tree, GELI's
  * providers, periodic's variables and service jails.
+ *
+ * A jail's own daemons' files too, by the job's jail and the read's:
+ * syslog.conf, newsyslog.conf, periodic.conf (and periodic's variables),
+ * krb5.conf and dma's; ipsec.conf in a jail with a network of its own
+ * (rc.d/ipsec is nojailvnet).  Read and written beneath the jail's root
+ * and never through a link out of it (scope.c), sysrc run in it (-j),
+ * its daemon told there by its own service(8), through jexec(8).  The
+ * rest is the host's by its nature, refused for a jail with why: devfs's
+ * rules, devd, auditd, rctl, the loader's tunables and securelevel at
+ * boot.
  */
 
 #include <sys/param.h>
@@ -41,6 +51,12 @@
 
 static ucl_object_t	*dma_json(struct work *);
 
+/* Whose a file of the table can be: the host's alone, any jail's too, or
+ * a jail's with a network of its own too. */
+#define	SF_HOST		0
+#define	SF_JAIL		1
+#define	SF_VNET		2
+
 #define	TEXT_MAX	(256 * 1024)
 
 static const struct sysfile {
@@ -53,30 +69,44 @@ static const struct sysfile {
 	int		 inmode;	/* 0 always; 1 Arcana's files, 2 the
 					 * system's (config-files) */
 	const char	*(*showfn)(struct work *);	/* or the agent's own */
+	uint8_t		 where;		/* SF_HOST, SF_JAIL, SF_VNET */
+	const char	*why;		/* why a jail has it not */
 } files[] = {
 	{ "devfs.rules", "/etc/devfs.rules", 0644, "devfs",
-	    ARC_SERVICE_ACTION_RESTART, "devfs rule showsets", 0, NULL },
+	    ARC_SERVICE_ACTION_RESTART, "devfs rule showsets", 0, NULL, SF_HOST,
+	    "devfs's rules are the host's: a jail's /dev is the rule set its "
+	    "jail.conf names (devfs_ruleset)" },
 	{ "devd", "/usr/local/etc/devd/arcana.conf", 0644, "devd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL, SF_HOST,
+	    "devd(8) is the host's: a jail has no devices' events" },
 	{ "syslog.conf", "/etc/syslog.conf", 0644, "syslogd",
-	    ARC_SERVICE_ACTION_RELOAD, NULL, 0, NULL },
+	    ARC_SERVICE_ACTION_RELOAD, NULL, 0, NULL, SF_JAIL, NULL },
 	{ "newsyslog.conf", "/etc/newsyslog.conf", 0644, NULL, 0, NULL, 0,
-	    NULL },
+	    NULL, SF_JAIL, NULL },
 	{ "periodic.conf", "/etc/periodic.conf", 0644, NULL, 0, NULL, 0,
-	    NULL },
+	    NULL, SF_JAIL, NULL },
 	{ "audit_control", "/etc/security/audit_control", 0600, "auditd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL, SF_HOST,
+	    "auditd(8) is the host's: audit(4) records the jails' processes "
+	    "with the host's" },
 	{ "audit_user", "/etc/security/audit_user", 0600, "auditd",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL },
-	{ "krb5.conf", "/etc/krb5.conf", 0644, NULL, 0, NULL, 0, NULL },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, NULL, SF_HOST,
+	    "auditd(8) is the host's: audit(4) records the jails' processes "
+	    "with the host's" },
+	{ "krb5.conf", "/etc/krb5.conf", 0644, NULL, 0, NULL, 0, NULL,
+	    SF_JAIL, NULL },
 	{ "ipsec.conf", "/etc/ipsec.conf", 0600, "ipsec",
-	    ARC_SERVICE_ACTION_RESTART, NULL, 0, pfkey_spd_text },
+	    ARC_SERVICE_ACTION_RESTART, NULL, 0, pfkey_spd_text, SF_VNET,
+	    "a jail without a network of its own has the host's IPsec" },
 	{ "rctl.conf", "/etc/rctl.conf", 0644, "rctl",
-	    ARC_SERVICE_ACTION_RESTART, "rctl", 0, NULL },
+	    ARC_SERVICE_ACTION_RESTART, "rctl", 0, NULL, SF_HOST,
+	    "rctl(8)'s rules are the host's kernel's: a jail is limited from "
+	    "the host (subject jail)" },
 	{ "loader.conf.d", "/boot/loader.conf.d/arcana.conf", 0644, NULL, 0,
-	    NULL, 1, NULL },
+	    NULL, 1, NULL, SF_HOST, "the loader's tunables are the host's "
+	    "boot's" },
 	{ "loader.conf", "/boot/loader.conf", 0644, NULL, 0, NULL, 2,
-	    NULL },
+	    NULL, SF_HOST, "the loader's tunables are the host's boot's" },
 };
 
 /* Whether the entry is the host's, by its config-files. */
@@ -87,11 +117,83 @@ in_mode(const struct sysfile *f)
 	return (f->inmode == 0 || f->inmode == (cf_system() ? 2 : 1));
 }
 
+/* A file where it is: the host's (under -r's root), or a jail's own
+ * path, which scope.c opens beneath the jail's root. */
 static const char *
 rooted(struct work *w, const char *path)
 {
 
+	if (w->jail != NULL)
+		return (path);
 	return (opts.root != NULL ? wfmt(w, "%s%s", opts.root, path) : path);
+}
+
+/* Whether the jail w works in may have f: a jail's own daemon's file;
+ * NULL, or why not. */
+static const char *
+jail_may(struct work *w, const struct sysfile *f)
+{
+	struct jinfo	ji;
+
+	if (w->jail == NULL || f->where == SF_JAIL)
+		return (NULL);
+	if (f->where == SF_VNET && jail_named(w, w->jail, &ji) >= 0 &&
+	    ji.vnet)
+		return (NULL);
+	return (wfmt(w, "%s is not the jail %s's: %s", f->name, w->jail,
+	    f->why));
+}
+
+/* A service's state, of the host or of the jail w works in: there, its
+ * own service(8) asked through jexec, rc.subr's own answers. */
+static void
+svc_state(struct work *w, const char *svc, bool *running, bool *enabled)
+{
+	struct execres	 res;
+	char		*argv[4];
+
+	if (w->jail == NULL) {
+		service_state(w, svc, running, enabled);
+		return;
+	}
+	argv[0] = (char *)(uintptr_t)opts.service_bin;
+	argv[1] = (char *)(uintptr_t)svc;
+	argv[2] = (char *)(uintptr_t)"onestatus";
+	argv[3] = NULL;
+	*running = run_read(w, scope_jexec(w, argv), &res) == 0 &&
+	    res.status == 0;
+	argv[2] = (char *)(uintptr_t)"enabled";
+	*enabled = run_read(w, scope_jexec(w, argv), &res) == 0 &&
+	    res.status == 0;
+}
+
+/* A service told (reload or restart), of the host or the jail's; 0, or
+ * -1 with why in *errp. */
+static int
+svc_tell(struct work *w, const char *svc, uint8_t action, const char **errp)
+{
+	struct service_action_rsp	 r;
+	struct execres			 res;
+	char				*argv[4];
+
+	*errp = NULL;
+	if (w->jail == NULL) {
+		memset(&r, 0, sizeof(r));
+		if (do_service_action(w, svc, action, &r) == 0 && r.ok)
+			return (0);
+		*errp = r.error;
+		return (-1);
+	}
+	argv[0] = (char *)(uintptr_t)opts.service_bin;
+	argv[1] = (char *)(uintptr_t)svc;
+	argv[2] = (char *)(uintptr_t)(action == ARC_SERVICE_ACTION_RELOAD ?
+	    "onereload" : "onerestart");
+	argv[3] = NULL;
+	if (run_exec(w, scope_jexec(w, argv), &res) == 0 && res.status == 0)
+		return (0);
+	*errp = wtext(w, exec_error(w, &res, wfmt(w, "service %s %s in %s",
+	    svc, argv[2], w->jail)));
+	return (-1);
 }
 
 static void
@@ -109,6 +211,12 @@ slurp(struct work *w, const char *path)
 	char	*buf;
 	size_t	 n;
 
+	/* A jail's, beneath its root, never through a link out of it. */
+	if (w->jail != NULL) {
+		if ((buf = scope_slurp(w, path, &n)) != NULL && n > TEXT_MAX)
+			buf[TEXT_MAX] = '\0';
+		return (buf);
+	}
 	if ((fp = fopen(path, "re")) == NULL)
 		return (NULL);
 	buf = wcalloc(w, TEXT_MAX + 1, 1);
@@ -200,13 +308,16 @@ file_json(struct work *w, const struct sysfile *f)
 		put_s(o, "text", wtext(w, v));
 	if (f->service != NULL) {
 		enabled = running = false;
-		service_state(w, f->service, &running, &enabled);
+		svc_state(w, f->service, &running, &enabled);
 		put_s(o, "service", f->service);
 		ucl_object_insert_key(o, ucl_object_frombool(enabled),
 		    "enabled", 0, false);
 		ucl_object_insert_key(o, ucl_object_frombool(running),
 		    "running", 0, false);
 	}
+	/* What shows it at work is the host's (its kernel's, read here). */
+	if (w->jail != NULL)
+		return (o);
 	if (f->shows != NULL && (v = shows(w, f->shows)) != NULL)
 		put_s(o, "shows", v);
 	else if (f->showfn != NULL && (v = f->showfn(w)) != NULL)
@@ -395,14 +506,22 @@ do_system(struct work *w, const char *const *names, size_t n,
 		for (k = 0; k < n; k++)
 			if (strcmp(names[k], files[i].name) == 0)
 				break;
-		if ((n == 0 || k < n) && in_mode(&files[i]))
+		if ((n == 0 || k < n) && in_mode(&files[i]) && jail_may(w,
+		    &files[i]) == NULL)
 			ucl_object_insert_key(fo, file_json(w, &files[i]),
 			    files[i].name, 0, false);
 	}
 	ucl_object_insert_key(top, fo, "files", 0, false);
+	put_s(top, "jail", w->jail);
 	for (i = 0; i < n && strcmp(names[i], "host") != 0; i++)
 		;
-	if (n == 0 || i < n) {
+	/* A jail's settings: its periodic and its dma alone, the rest
+	 * being the host's. */
+	if (w->jail != NULL && (n == 0 || i < n)) {
+		ucl_object_insert_key(top, periodic_json(w), "periodic", 0,
+		    false);
+		ucl_object_insert_key(top, dma_json(w), "dma", 0, false);
+	} else if (n == 0 || i < n) {
 		/* NTP: its servers as ntp.conf has them, its peers. */
 		o = ucl_object_typed_new(UCL_OBJECT);
 		enabled = running = false;
@@ -630,6 +749,47 @@ dma_check(const struct arc_job_spec *sp)
 	return (NULL);
 }
 
+/* A group's number as the jail's own group(5) has it; -1: none. */
+static gid_t
+jail_gid(struct work *w, const char *name)
+{
+	char	*text, *line, *f;
+	size_t	 n = strlen(name);
+
+	if ((text = scope_slurp(w, "/etc/group", NULL)) == NULL)
+		return ((gid_t)-1);
+	while ((line = strsep(&text, "\n")) != NULL) {
+		if (strncmp(line, name, n) != 0 || line[n] != ':')
+			continue;
+		/* name:password:gid:members */
+		if ((f = strchr(line + n + 1, ':')) == NULL || !isdigit(
+		    (unsigned char)f[1]))
+			return ((gid_t)-1);
+		return ((gid_t)strtoul(f + 1, NULL, 10));
+	}
+	return ((gid_t)-1);
+}
+
+/* The same in a jail: beneath its root, the group its own mail. */
+static int
+dma_put_jail(struct work *w, const char *path, const char *text, mode_t mode,
+    const char **errp)
+{
+	gid_t	gid;
+	int	fd;
+
+	if (scope_replace(w, path, text, strlen(text), mode, NULL) != 0) {
+		*errp = wfmt(w, "%s in %s: %s", path, w->jail, strerror(errno));
+		return (-1);
+	}
+	if (geteuid() == 0 && (gid = jail_gid(w, "mail")) != (gid_t)-1 &&
+	    (fd = scope_open(w, path, O_RDONLY, 0)) != -1) {
+		(void)fchown(fd, 0, gid);
+		(void)close(fd);
+	}
+	return (0);
+}
+
 /* A file of /etc/dma written whole, owner root and group mail where
  * the agent may say so, mode as given. */
 static int
@@ -641,6 +801,8 @@ dma_put(struct work *w, const char *path, const char *text, mode_t mode,
 	size_t		 len;
 	int		 fd;
 
+	if (w->jail != NULL)
+		return (dma_put_jail(w, path, text, mode, errp));
 	tmp = wfmt(w, "%s.arcana-new", path);
 	len = strlen(text);
 	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |
@@ -755,7 +917,13 @@ dma_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 	}
 	if (host[0] != '\0' && user != NULL && user[0] != '\0')
 		aout = wfmt(w, "%s%s|%s:%s\n", aout, user, host, pw);
-	{
+	if (w->jail != NULL) {
+		if (scope_mkdirs(w, "/etc/dma") != 0) {
+			*errp = wfmt(w, "/etc/dma in %s: %s", w->jail,
+			    strerror(errno));
+			return (-1);
+		}
+	} else {
 		char	*dir = wstrdup(w, cpath);
 
 		if (strrchr(dir, '/') != NULL) {
@@ -787,10 +955,23 @@ text_ok(const char *t)
 const char *
 sysfile_check(const struct arc_job_spec *sp)
 {
-	size_t	i;
+	const struct sysfile	*f;
+	size_t			 i;
 
-	if (sp->jail != NULL && sp->jail[0] != '\0')
-		return ("the system's files are the host's");
+	/* A jail's own daemons' files; the rest the host's by nature. */
+	if (sp->jail != NULL && sp->jail[0] != '\0') {
+		if (!valid_jail(sp->jail))
+			return ("invalid jail name");
+		if (sp->verb != NULL && strcmp(sp->verb, "rc") == 0)
+			return ("securelevel at boot is the host's: a jail's is "
+			    "its jail.conf's securelevel");
+		for (i = 0; sp->verb != NULL && i < nitems(files); i++) {
+			f = &files[i];
+			if (strcmp(f->name, sp->verb) == 0 && f->where ==
+			    SF_HOST)
+				return (f->why);
+		}
+	}
 	/* dma's smart host is not put back: never safe. */
 	if (sp->safe && sp->verb != NULL && strcmp(sp->verb, "dma") == 0)
 		return ("dma's smart host is not undone: not in safe mode");
@@ -858,18 +1039,71 @@ sysfile_title(const struct arc_job_spec *sp)
 	return (t);
 }
 
+/* Is a file there, of the host or beneath the jail's root (a link
+ * counts, not followed)? */
+static bool
+there(struct work *w, const char *path)
+{
+	struct stat	 sb;
+	const char	*base;
+	int		 dfd;
+	bool		 is;
+
+	if ((dfd = scope_open_dir(w, path, &base)) == -1)
+		return (false);
+	is = fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW) == 0;
+	close(dfd);
+	return (is);
+}
+
+/*
+ * f's file written at path: its daemon told, where it runs; refusing,
+ * it gets the file before it back (kept beside it as old, where it had
+ * one) and is told again.  The host's old is a path, a jail's a name in
+ * the file's directory.
+ */
+static int
+told(struct work *w, const struct sysfile *f, const char *path,
+    const char *old, bool had, const char **errp)
+{
+	const char	*e, *base = strrchr(path, '/') + 1;
+	bool		 enabled, running, back;
+
+	if (f->service != NULL) {
+		enabled = running = false;
+		svc_state(w, f->service, &running, &enabled);
+		if ((running || enabled) && svc_tell(w, f->service, f->action,
+		    &e) != 0) {
+			*errp = wfmt(w, "%s%s%s did not take it%s%s; the file "
+			    "before it is %s", f->service, w->jail != NULL ?
+			    " in " : "", w->jail != NULL ? w->jail : "", e !=
+			    NULL ? ": " : "", e != NULL ? e : "", had ?
+			    "put back" : "gone");
+			back = had && (w->jail != NULL ? scope_rename(w, path,
+			    old, base) : rename(old, path)) == 0;
+			if (back)
+				(void)svc_tell(w, f->service, f->action, &e);
+			return (-1);
+		}
+	}
+	if (had && w->jail != NULL)
+		(void)scope_rename(w, path, old, NULL);
+	else if (had)
+		(void)unlink(old);
+	return (0);
+}
+
 int
 do_sysfile_job(struct work *w, const struct arc_job_spec *sp,
     const char **errp)
 {
-	struct service_action_rsp	 r;
 	const struct sysfile		*f;
 	struct execres			 res;
-	const char			*path, *tmp, *old;
+	const char			*path, *tmp, *old, *base;
 	char				*argv[6], *dir;
 	size_t				 i, len;
 	int				 fd;
-	bool				 enabled, running, had;
+	bool				 had;
 
 	if ((*errp = sysfile_check(sp)) != NULL)
 		return (-1);
@@ -903,7 +1137,26 @@ do_sysfile_job(struct work *w, const struct arc_job_spec *sp,
 		return (0);
 	}
 	f = file_of(sp->verb);
+	if ((*errp = jail_may(w, f)) != NULL)
+		return (-1);
 	path = rooted(w, f->path);
+	base = strrchr(path, '/') + 1;
+	old = wfmt(w, "%s.arcana-old", base);
+	/* A jail's: beneath its root, never through a link out of it,
+	 * what was there kept beside it under old. */
+	if (w->jail != NULL) {
+		dir = wstrndup(w, path, (size_t)(base - path));
+		had = there(w, path);
+		if (scope_mkdirs(w, dir) != 0 || scope_replace(w, path,
+		    sp->text, strlen(sp->text), f->mode, had ? old : NULL) !=
+		    0) {
+			*errp = wfmt(w, "%s in %s: %s", path, w->jail,
+			    strerror(errno));
+			return (-1);
+		}
+		return (told(w, f, path, old, had, errp));
+	}
+	old = wfmt(w, "%s.arcana-old", path);
 	/* Its directory, and those above it, where they are not. */
 	dir = wstrdup(w, path);
 	if (strrchr(dir, '/') != NULL) {
@@ -918,7 +1171,6 @@ do_sysfile_job(struct work *w, const struct arc_job_spec *sp,
 		(void)mkdir_mode(dir, 0755);
 	}
 	tmp = wfmt(w, "%s.arcana-new", path);
-	old = wfmt(w, "%s.arcana-old", path);
 	len = strlen(sp->text);
 	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC |
 	    O_NOFOLLOW, f->mode)) == -1 || fchmod(fd, f->mode) != 0 || write(fd,
@@ -938,37 +1190,13 @@ do_sysfile_job(struct work *w, const struct arc_job_spec *sp,
 		(void)unlink(old);
 		return (-1);
 	}
-	/* Its daemon told, where it runs; refusing, it gets the old file
-	 * back and is told again. */
-	if (f->service != NULL) {
-		enabled = running = false;
-		service_state(w, f->service, &running, &enabled);
-		if (running || enabled) {
-			memset(&r, 0, sizeof(r));
-			if (do_service_action(w, f->service, f->action, &r) != 0 ||
-			    !r.ok) {
-				*errp = wfmt(w, "%s did not take it%s%s; the file "
-				    "before it is %s", f->service, r.error !=
-				    NULL ? ": " : "", r.error != NULL ? r.error :
-				    "", had ? "put back" : "gone");
-				if (had && rename(old, path) == 0) {
-					memset(&r, 0, sizeof(r));
-					(void)do_service_action(w, f->service,
-					    f->action, &r);
-				}
-				return (-1);
-			}
-		}
-	}
-	if (had)
-		(void)unlink(old);
-	return (0);
+	return (told(w, f, path, old, had, errp));
 }
 
 /*
  * For a safe change: the file a verb writes, where the host keeps it
- * (periodic's is periodic.conf); NULL for rc, which sets rc.conf's
- * variables, and dma, which is never safe.
+ * or, w in a jail, the jail (periodic's is periodic.conf); NULL for rc,
+ * which sets rc.conf's variables, and dma, which is never safe.
  */
 const char *
 sysfile_path(struct work *w, const char *verb)
@@ -989,21 +1217,19 @@ sysfile_path(struct work *w, const char *verb)
 int
 sysfile_tell(struct work *w, const char *verb, const char **errp)
 {
-	struct service_action_rsp	 r;
-	const struct sysfile		*f;
-	bool				 enabled, running;
+	const struct sysfile	*f;
+	const char		*e;
+	bool			 enabled, running;
 
 	if ((f = file_of(verb)) == NULL || f->service == NULL)
 		return (0);
 	enabled = running = false;
-	service_state(w, f->service, &running, &enabled);
+	svc_state(w, f->service, &running, &enabled);
 	if (!running && !enabled)
 		return (0);
-	memset(&r, 0, sizeof(r));
-	if (do_service_action(w, f->service, f->action, &r) != 0 || !r.ok) {
+	if (svc_tell(w, f->service, f->action, &e) != 0) {
 		*errp = wfmt(w, "%s did not take the file as it was%s%s",
-		    f->service, r.error != NULL ? ": " : "", r.error != NULL ?
-		    r.error : "");
+		    f->service, e != NULL ? ": " : "", e != NULL ? e : "");
 		return (-1);
 	}
 	return (0);

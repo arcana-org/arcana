@@ -2,9 +2,19 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-system",
     "module-revision": "2026-10-29",
-    "sid-file-version": 0,
-    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
+    "sid-file-version": 2,
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 98 000, 20, listed first so that new items go there; 85 300, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-netconf-acm",
+        "module-revision": "2018-02-14"
+      }
+    ],
     "assignment-range": [
+      {
+        "entry-point": "98000",
+        "size": "20"
+      },
       {
         "entry-point": "85300",
         "size": "100"
@@ -300,6 +310,16 @@
         "namespace": "data",
         "identifier": "/arcana-system:system/read/output/host/svcj/value",
         "sid": "85357"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-system:system/read/input/jail",
+        "sid": "98000"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-system:system/read/output/jail",
+        "sid": "98001"
       }
     ]
   }

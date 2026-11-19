@@ -13,6 +13,11 @@
  * jobs; the rest by the jobs that own it (ntp, kmod, sysctl,
  * service-action, geom), a service's rcvar and variables (Linux, auditd,
  * a service jail) by arcana-services' commit (ycommit.c).
+ *
+ * Where: the host, or a running jail picked in the System, Security and
+ * Logs tabs, whose own daemons' files are read and written in it (the
+ * read's jail, the sysfile jobs'): periodic, Kerberos and syslog; the
+ * rest of it is the host's, said so.
  */
 
 #include <ctype.h>
@@ -33,9 +38,35 @@ static struct {
 	char		 ycfor[16];	/* its section: linux, svcj, auditd */
 	char		 ycsvc[64];	/* and service */
 	bool		 ycstart;	/* started once enabled */
+	char		 jail[256];	/* the jail picked, "" the host */
+	char		 jsid[16];	/* of that host */
 } sv;
 
 static struct server *sv_server(void);
+
+/* Where the host's files are read and written: a jail picked of it, or
+ * "" for the host itself. */
+static const char *
+sv_where(const struct server *s)
+{
+
+	return (s != NULL && strcmp(s->id, sv.jsid) == 0 ? sv.jail : "");
+}
+
+/* A job's extra: the jail it is done in, where one is picked. */
+static const char *
+sv_extra(const struct server *s)
+{
+	static char	extra[300];
+	char		*q;
+
+	if (sv_where(s)[0] == '\0')
+		return (NULL);
+	q = json_quote(sv_where(s));
+	snprintf(extra, sizeof(extra), ",\"jail\":%s", q);
+	free(q);
+	return (extra);
+}
 
 /* A service's configuration saved: started where asked; read again. */
 static void
@@ -240,8 +271,66 @@ sv_conv(const ucl_object_t *o)
 static void
 sv_load(const char *sid)
 {
+	char	*q, *in;
 
-	res_yread(&sv.r, sid, "arcana-system:system/read", "{}", sv_conv);
+	/* A jail picked of this host: its own daemons' files. */
+	if (sv.jail[0] == '\0' || strcmp(sid, sv.jsid) != 0) {
+		res_yread(&sv.r, sid, "arcana-system:system/read", "{}",
+		    sv_conv);
+		return;
+	}
+	q = json_quote(sv.jail);
+	if (asprintf(&in, "{\"jail\":%s}", q) == -1)
+		abort();
+	free(q);
+	res_yread(&sv.r, sid, "arcana-system:system/read", in, sv_conv);
+	free(in);
+}
+
+/* The host's own, of a view the host alone has: a jail picked is let
+ * go, and the host's read again. */
+static void
+sv_host(void)
+{
+
+	if (sv.jail[0] == '\0')
+		return;
+	sv.jail[0] = '\0';
+	res_drop(&sv.r);
+}
+
+/*
+ * Where: the host, or any running jail of it, picked here; what help
+ * says of it beside.
+ */
+static void
+sv_picker(struct html *h, struct server *s, const char *help)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+
+	h_raw(h, "<div class=\"toolbar\"><label class=\"secpick\">Where "
+	    "<select data-input=\"sv-jail\"><option value=\"\"");
+	if (sv_where(s)[0] == '\0')
+		h_raw(h, " selected");
+	h_raw(h, ">the host</option>");
+	while (s->list != NULL && (e = ucl_object_iterate(jget(s->list,
+	    "jails"), &it, true)) != NULL) {
+		if (jstr(e, "name") == NULL || (strcmp(jstr(e, "name"),
+		    sv_where(s)) != 0 && (jstr(e, "state") == NULL ||
+		    strcmp(jstr(e, "state"), "running") != 0)))
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", jstr(e, "name"));
+		if (strcmp(sv_where(s), jstr(e, "name")) == 0)
+			h_raw(h, " selected");
+		h_raw(h, ">jail ");
+		h_txt(h, jstr(e, "name"));
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label><small class=\"help\">");
+	h_txt(h, help);
+	h_raw(h, "</small></div>");
 }
 
 void
@@ -273,6 +362,20 @@ send(struct server *s, char *json, const char *title)
 	job_send(s, json, title, JOB_SYSTEM, s->name);
 }
 
+/* A sysfile job, of the host's files or the jail's picked. */
+static void
+send_sysfile(struct server *s, char *json, const char *title)
+{
+	char	t[160];
+
+	if (sv_where(s)[0] == '\0') {
+		send(s, json, title);
+		return;
+	}
+	snprintf(t, sizeof(t), "%s: %s", sv_where(s), title);
+	job_send(s, json, t, JOB_SYSTEM, sv_where(s));
+}
+
 /* A sysfile job: file written whole from text. */
 static void
 send_file(struct server *s, const char *file, const char *text)
@@ -280,17 +383,22 @@ send_file(struct server *s, const char *file, const char *text)
 	char	title[96];
 
 	snprintf(title, sizeof(title), "%s written", file);
-	send(s, job_json("sysfile", file, NULL, 0, text != NULL ? text : "",
-	    NULL), title);
+	send_sysfile(s, job_json("sysfile", file, NULL, 0, text != NULL ? text :
+	    "", sv_extra(s)), title);
 }
 
-/* A job of words: kind, verb (or none), its args. */
+/* A job of words: kind, verb (or none), its args; a sysfile job's of
+ * the jail picked. */
 static void
 send_words(struct server *s, const char *kind, const char *verb,
     const char *const *w, size_t n, const char *extra, const char *title)
 {
 
-	send(s, job_json(kind, verb, w, n, NULL, extra), title);
+	if (strcmp(kind, "sysfile") == 0 && extra == NULL)
+		send_sysfile(s, job_json(kind, verb, w, n, NULL, sv_extra(s)),
+		    title);
+	else
+		send(s, job_json(kind, verb, w, n, NULL, extra), title);
 }
 
 static void
@@ -542,6 +650,20 @@ view_system(struct html *h, struct server *s)
 {
 	const ucl_object_t	*o;
 
+	sv_picker(h, s, "the host's own configuration, or a jail's: its "
+	    "periodic(8), in it");
+	/* A jail's: periodic alone, the rest the host's. */
+	if (sv_where(s)[0] != '\0') {
+		if ((o = data(h, s)) == NULL)
+			return;
+		h_raw(h, "<section class=\"sysview\">");
+		view_periodic(h, o);
+		h_raw(h, "<p class=\"dim jail-host\">NTP, Linux compatibility, "
+		    "service jails, devd(8) and resource limits (rctl) are the "
+		    "host's: a jail keeps the host's clock and kernel, and is "
+		    "limited from the host.</p></section>");
+		return;
+	}
 	/* The host's power, before what is read: there while it comes. */
 	h_raw(h, "<section class=\"sysview\"><h3 class=\"secsub\">Power</h3>"
 	    "<p><button class=\"ghost small\" data-act=\"host-reboot\" "
@@ -594,9 +716,28 @@ view_hostsec(struct html *h, struct server *s)
 	size_t			 i;
 	int			 k, now;
 
+	/* A jail's: its Kerberos alone, the rest the host's. */
+	if (sv_where(s)[0] != '\0') {
+		sv_picker(h, s, "the host's security, or a jail's own: its "
+		    "Kerberos, in it");
+		if ((o = data(h, s)) == NULL)
+			return;
+		h_raw(h, "<section class=\"sysview\"><h3 class=\"secsub\">"
+		    "Kerberos</h3>");
+		file_editor(h, o, "krb5.conf", "krb5.conf", "Its realms and "
+		    "their KDCs (Heimdal's, MIT's from a package)", 8);
+		h_raw(h, "<p class=\"dim jail-host\">Arcana's access rules, "
+		    "auditd, the MAC policies and securelevel at boot are the "
+		    "host's: audit(4) and mac(4) hold the jails' processes "
+		    "with the host's, and a jail's securelevel is its "
+		    "jail.conf's.</p></section>");
+		return;
+	}
 	h_raw(h, "<section class=\"sysview\">");
 	view_nacm(h, s);
 	h_raw(h, "</section>");
+	sv_picker(h, s, "the host's security, or a jail's own: its Kerberos, "
+	    "in it");
 	if ((o = data(h, s)) == NULL)
 		return;
 	h_raw(h, "<section class=\"sysview\"><h3 class=\"secsub\">Audit "
@@ -679,6 +820,7 @@ view_storage_geom(struct html *h, struct server *s, int which)
 	ucl_object_iter_t	 it;
 	size_t			 i;
 
+	sv_host();
 	if ((o = data(h, s)) == NULL)
 		return;
 	if (which == 2) {
@@ -734,6 +876,8 @@ view_syslogconf(struct html *h, struct server *s)
 {
 	const ucl_object_t	*o;
 
+	sv_picker(h, s, "the host's syslogd(8), or a jail's own, its files "
+	    "written in it and it told there");
 	if ((o = data(h, s)) == NULL)
 		return;
 	h_raw(h, "<form class=\"secform\" data-form=\"sv-remote\"><h4>Sent to "
@@ -797,6 +941,7 @@ view_hardening(struct html *h, struct server *s)
 	size_t			 i;
 	int			 differ;
 
+	sv_host();
 	if ((o = data(h, s)) == NULL)
 		return;
 	hv = jget(o, "hardening");
@@ -840,6 +985,7 @@ view_setkey(struct html *h, struct server *s)
 {
 	const ucl_object_t	*o;
 
+	sv_host();
 	if ((o = data(h, s)) == NULL)
 		return;
 	h_raw(h, "<h3 class=\"secsub\">setkey(8)</h3><p class=\"dim\">The "
@@ -945,6 +1091,8 @@ dma_settings(struct html *h)
 	size_t			 i;
 
 	h_raw(h, "<h4>Relayed by dma</h4>");
+	/* The console's host's own dma, never a jail's. */
+	sv_host();
 	if ((s = local_server()) == NULL) {
 		h_raw(h, "<p class=\"dim\">No agent beside the console: dma's "
 		    "relay is set in /etc/dma/dma.conf and auth.conf on the "
@@ -1240,6 +1388,17 @@ sysview_action(const char *act, const char *arg, const char *value)
 		sv.hardening = false;
 	if (strcmp(act, "lg-jail") == 0 || strcmp(act, "input:lg-file") == 0)
 		sv.logconf = false;
+	/* Where: the host, or a jail of it, read again. */
+	if (strcmp(act, "input:sv-jail") == 0) {
+		if ((s = cur_server()) == NULL)
+			return (true);
+		snprintf(sv.jail, sizeof(sv.jail), "%s", value != NULL ? value :
+		    "");
+		snprintf(sv.jsid, sizeof(sv.jsid), "%s", s->id);
+		res_drop(&sv.r);
+		render();
+		return (true);
+	}
 	if (strncmp(act, "sv-", 3) != 0)
 		return (false);
 	if (ycommit_action(&sv.yc, act))

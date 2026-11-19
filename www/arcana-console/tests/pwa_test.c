@@ -4374,6 +4374,71 @@ part_system(void)
 }
 
 /*
+ * A jail's own daemons' files, the jail picked in the System and Logs
+ * tabs: periodic turned on and syslog.conf saved, each written beneath
+ * the jail's root (gw's, jroot), the host's left; what is the host's
+ * alone said, not offered.
+ */
+static void
+part_system_jail(void)
+{
+	int	i;
+
+	ATF_REQUIRE(mkdir("jroot/etc/defaults", 0755) == 0 || errno ==
+	    EEXIST);
+	put("jroot/etc/defaults/periodic.conf",
+	    "daily_clean_tmps_enable=\"NO\"\n");
+	put("jroot/etc/syslog.conf", "*.*\t/var/log/all\n");
+	run("document.querySelector('button.tab[data-arg=system]').click()");
+	wait_js("document.querySelector('select[data-input=sv-jail] "
+	    "option[value=gw]')", 20);
+	run("const k = document.querySelector('select[data-input=sv-jail]'); "
+	    "k.value = 'gw'; k.dispatchEvent(new Event('input', { bubbles: "
+	    "true }));");
+	wait_js("document.querySelector('table.periodic') && document."
+	    "querySelector('p.jail-host') && !document.querySelector("
+	    "'form[data-form=sv-ntp]') && !document.querySelector('button"
+	    "[data-act=host-reboot]')", 20);
+	click_when("table.periodic button[data-act=sv-periodic][data-arg="
+	    "daily_clean_tmps_enable]", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^daily_clean_tmps_enable=\"YES"
+	    "\"$' jroot/etc/periodic.conf") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's periodic.conf is not written");
+	ATF_CHECK(system("! grep -qs daily_clean_tmps_enable root/etc/"
+	    "periodic.conf") == 0);
+	dock_closed();
+	/* syslog: the jail's file, saved from its editor. */
+	run("document.querySelector('button.tab[data-arg=log]').click()");
+	click_when("button[data-act=sv-show][data-arg=logconf]", 10);
+	wait_js("document.querySelector('select[data-input=sv-jail]')?.value "
+	    "=== 'gw' && document.querySelector('form[data-form=sv-file] "
+	    "input[name=file][value=\"syslog.conf\"]') && document."
+	    "querySelector('form[data-form=sv-file] textarea').value."
+	    "includes('/var/log/all')", 20);
+	run("const f = document.querySelector('form[data-form=sv-file]'); "
+	    "f.text.value = '*.err\\t/var/log/errors\\n'; f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^\\*\\.err.*/var/log/errors$' "
+	    "jroot/etc/syslog.conf") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's syslog.conf is not written");
+	ATF_CHECK(system("! grep -qs /var/log/errors root/etc/syslog.conf") ==
+	    0);
+	dock_closed();
+	shot("7s-system-jail");
+	/* The host again: its own. */
+	run("const k = document.querySelector('select[data-input=sv-jail]'); "
+	    "k.value = ''; k.dispatchEvent(new Event('input', { bubbles: "
+	    "true }));");
+	wait_js("document.querySelector('form[data-form=sv-file] textarea') && "
+	    "!document.querySelector('form[data-form=sv-file] textarea')."
+	    "value.includes('/var/log/errors')", 20);
+	click_when("button[data-act=sv-show][data-arg=logconf]", 10);
+}
+
+/*
  * A host's tabs of several sections (Monitoring, Network, System,
  * Security), a row of them under the tabs, an address each and the
  * old addresses led there; and a host not sampled, a line on the
@@ -12891,6 +12956,25 @@ ATF_TC_CLEANUP(pwa_storage_system, tc)
 	browser_stop();
 }
 
+ATF_TC_WITH_CLEANUP(pwa_system_jail);
+ATF_TC_HEAD(pwa_system_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A jail picked in the System and Logs tabs: its periodic and its syslog.conf written beneath its root, the host's left");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_system_jail, tc)
+{
+
+	prologue(tc, 2);
+	part_system_jail();
+}
+ATF_TC_CLEANUP(pwa_system_jail, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_storage_mail);
 ATF_TC_HEAD(pwa_storage_mail, tc)
 {
@@ -16123,6 +16207,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_flows_builder);
 	ATF_TP_ADD_TC(tp, pwa_nettab_kinds);
 	ATF_TP_ADD_TC(tp, pwa_storage_system);
+	ATF_TP_ADD_TC(tp, pwa_system_jail);
 	ATF_TP_ADD_TC(tp, pwa_firewall_objects);
 	ATF_TP_ADD_TC(tp, pwa_storage_mail);
 	ATF_TP_ADD_TC(tp, pwa_flows_netstore);

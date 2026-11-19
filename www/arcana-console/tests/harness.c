@@ -601,10 +601,11 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    /* -j jid: the jail's rc.conf, as jexec(8) runs it there; the
 	     * agent never gives -R, which chroots as the host's root. */
 	    "[ \"$1\" = -R ] && exit 2\n"
-	    "if [ \"$1\" = -j ]; then r=$(awk -v j=\"$2\" '$2 == j { print $4 "
+	    "jr=; if [ \"$1\" = -j ]; then r=$(awk -v j=\"$2\" '$2 == j { print $4 "
 	    "}' %s/jails); [ -n \"$r\" ] || exit 1; conf=$r/etc/rc.conf; a=; "
-	    "shift 2; fi\n"
-	    "[ \"$1\" = -f ] && { conf=$2; a=; touch \"$conf\"; shift 2; }\n"
+	    "jr=$r; shift 2; fi\n"
+	    /* -f: beneath the jail's root, with -j. */
+	    "[ \"$1\" = -f ] && { conf=$jr$2; a=; touch \"$conf\"; shift 2; }\n"
 	    "[ \"$1\" = -i ] && shift\n"
 	    "case \"$1\" in\n"
 	    "-n) cat \"$conf\" $a | grep -q \"^$2=\" || exit 1; cat \"$conf\" "

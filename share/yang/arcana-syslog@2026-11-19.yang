@@ -1,0 +1,58 @@
+module arcana-syslog {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-syslog";
+  prefix arcslg;
+
+  import ietf-yang-schema-mount {
+    prefix yangmnt;
+    reference
+      "RFC 8528: YANG Schema Mount";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "The syslogd(8) of each running jail, as ietf-syslog (RFC 9742)
+     has the host's: a jail's root is a mount point (RFC 8528), a
+     shared schema, where ietf-syslog's syslog is that jail's
+     syslog.conf and newsyslog.conf, read beneath the jail's root and
+     never through a link out of it.  A commit of a jail's writes
+     Arcana's files in the jail, as the host's commit does in the
+     host (syslog-include, syslog-conf-conflict accepted the same),
+     and its syslogd is told there by its own service(8).  A jail
+     left out of an edit is left as it is; a jail that is not
+     running has no entry, and an edit of one is refused.";
+
+  revision 2026-11-19 {
+    description
+      "Initial revision.";
+  }
+
+  container jail-syslog {
+    description
+      "The jails' syslogd.";
+    list jail {
+      key "name";
+      description
+        "A running jail, with or without a network of its own.";
+      leaf name {
+        type string {
+          length "1..255";
+        }
+        description
+          "Its name.";
+      }
+      container root {
+        description
+          "The jail's own: ietf-syslog's syslog, as the jail's files
+           have it, and the YANG library that says the schema.";
+        yangmnt:mount-point "jail-root" {
+          description
+            "The jail's syslog (ietf-syslog), and the YANG library.";
+        }
+      }
+    }
+  }
+}

@@ -166,15 +166,16 @@ scoped(const struct arc_job_spec *sp)
  * Does the job work on a service of the jail it names?  Its scripts are
  * run by the jail's own service(8) and its rc.conf is the jail's,
  * written by sysrc -j: a running jail, with or without a network of its
- * own (scope_enter_jail()).
+ * own (scope_enter_jail()).  Or on a jail's own daemons' files
+ * (sysfile), read and kept, for a safe change, as the jail has them.
  */
 static bool
 jailed(const struct arc_job_spec *sp)
 {
 
 	return ((sp->kind == ARC_JOB_KIND_SERVICE_ACTION || sp->kind ==
-	    ARC_JOB_KIND_SERVICE_CONFIG) && sp->jail != NULL &&
-	    sp->jail[0] != '\0');
+	    ARC_JOB_KIND_SERVICE_CONFIG || sp->kind == ARC_JOB_KIND_SYSFILE) &&
+	    sp->jail != NULL && sp->jail[0] != '\0');
 }
 
 /* Have w work where the job works: the network of the jail it names
@@ -429,7 +430,7 @@ title_words(const struct arc_job_spec *sp)
 	if (rc == -1)
 		return (NULL);
 	/* A change to a jail's network says whose it is. */
-	if ((scoped(sp) || sp->kind == ARC_JOB_KIND_CERT ||
+	if ((scoped(sp) || jailed(sp) || sp->kind == ARC_JOB_KIND_CERT ||
 	    sp->kind == ARC_JOB_KIND_SSH) && sp->jail != NULL &&
 	    sp->jail[0] != '\0') {
 		in = t;

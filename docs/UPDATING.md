@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A jail's own syslogd, periodic, dma and krb5; agent 0.327.0, console 0.471.0
+
+- sysfile jobs and arcana-system's read take a jail (arcanactl -j
+  <jail> sysfile|system, and the System, Security and Logs tabs'
+  "Where" picker): syslog.conf, newsyslog.conf, periodic.conf and
+  periodic's variables, krb5.conf and dma's files, and ipsec.conf in a
+  vnet jail, written beneath the jail's root and never through a link
+  out of it, the jail's daemon told through jexec.  loader.conf(.d),
+  devd, rctl.conf, the audit files, devfs.rules and securelevel at boot
+  are the host's and refused for a jail with the reason.
+- Each running jail's syslogd is ietf-syslog in arcana-syslog's
+  jail-syslog, the jail's root an RFC 8528 mount point (arcanactl -j
+  <jail> get|edit syslog).  arcanactl.8 lists exactly the commands that
+  take -j.
+- Update the agent and the console together (arcana-system 98000-98001,
+  arcana-syslog 98020-98024, arcana-jobs 63122-63123).
+
 ### SD-WAN DHCP and DNS in a jail edge; agent 0.326.0, console 0.470.0
 
 - An SD-WAN edge that is a vnet jail has its own DHCP (dnsmasq) and DNS

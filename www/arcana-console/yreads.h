@@ -38,7 +38,8 @@
  * the operations they were: yr_crashes(), the cores, with words
  * "backtrace", a core, its program and its jail ("" for none), one's
  * backtrace too;
- * yr_system(), the system's files by name and host (none: all);
+ * yr_system(), the system's files by name and host (none: all), of jail
+ * (its own daemons') where it is not NULL;
  * yr_netstore(), nfs, iscsi and hast (none: all); yr_suricata(), the
  * suricata-rules operation's words: a page of the rules (q=, sid=,
  * only=, classtype=, offset=, limit=), sources=1, Suricata's answer
@@ -60,8 +61,8 @@ int	yr_notify(cbl_conn *conn, const char *token, const char *chat,
 	    const char *text, char *err, size_t errlen);
 int	yr_crashes(cbl_conn *conn, const char *const *words, size_t n,
 	    ucl_object_t **data, char *err, size_t errlen);
-int	yr_system(cbl_conn *conn, const char *const *words, size_t n,
-	    ucl_object_t **data, char *err, size_t errlen);
+int	yr_system(cbl_conn *conn, const char *jail, const char *const *words,
+	    size_t n, ucl_object_t **data, char *err, size_t errlen);
 int	yr_netstore(cbl_conn *conn, const char *const *words, size_t n,
 	    ucl_object_t **data, char *err, size_t errlen);
 int	yr_suricata(cbl_conn *conn, const char *const *words, size_t n,

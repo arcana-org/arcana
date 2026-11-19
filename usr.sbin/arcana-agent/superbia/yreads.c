@@ -184,6 +184,11 @@ arcana_system_system_read_action(cbl_req *req, const struct cbl_bytes *target,
 	if ((w = ywork_told(req, a, "the system's files read", &root)) ==
 	    NULL)
 		return (ENOMEM);
+	/* A jail's own daemons' files, beneath its root. */
+	if (jail_in(req, in->jail, w) != 0) {
+		step_end(w, root, false, NULL);
+		return (EIO);
+	}
 	memset(&r, 0, sizeof(r));
 	do_system(w, in->name.v, in->name.n, &r);
 	/* Read by an operator's rule too: ipsec.conf's manual keys, dma's

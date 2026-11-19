@@ -1,0 +1,46 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-syslog",
+    "module-revision": "2026-11-19",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 98 020, 30.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-yang-schema-mount",
+        "module-revision": "2019-01-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "98020",
+        "size": "30"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-syslog",
+        "sid": "98020"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-syslog:jail-syslog",
+        "sid": "98021"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-syslog:jail-syslog/jail",
+        "sid": "98022"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-syslog:jail-syslog/jail/name",
+        "sid": "98023"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-syslog:jail-syslog/jail/root",
+        "sid": "98024"
+      }
+    ]
+  }
+}

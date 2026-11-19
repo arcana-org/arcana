@@ -36,6 +36,10 @@
  *   TLS, a destination named otherwise than by its address, a facility
  *   override, block and stop, cron2, retention, a rollover of other
  *   than whole hours.
+ *
+ * A jail's files are reached as its caller's io says (ysyslog.c: beneath
+ * the jail's root, no link out of it followed): an include's pattern in
+ * the last part of its path alone, a name's lstat, a file whole.
  */
 
 #include <sys/param.h>
@@ -46,6 +50,7 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fnmatch.h>
 #include <glob.h>
@@ -300,6 +305,8 @@ struct rot {
 
 struct parse {
 	cbl_yarena	*a;
+	const struct ysyslog_io *io;	/* how the files are reached; NULL:
+					 * the host's, by their paths */
 	const char	*root;		/* the files under it; NULL: / */
 	const char	*own, *ownrot;	/* Arcana's files, under root */
 	struct act	 acts[64];
@@ -360,6 +367,93 @@ rooted(struct parse *p, const char *path)
 	snprintf(buf, sizeof(buf), "%s%s", path[0] == '/' && p->root != NULL ?
 	    p->root : "", path);
 	return (astrdup(p->a, buf));
+}
+
+/* path opened to read, as p reaches it; NULL with errno. */
+static FILE *
+y_fopen(const struct ysyslog_io *io, const char *path)
+{
+	struct stat	 sb;
+	FILE		*fp;
+	int		 fd, e;
+
+	if (io == NULL)
+		return (fopen(path, "re"));
+	if ((fd = io->open(io->arg, path)) == -1)
+		return (NULL);
+	if (fstat(fd, &sb) == -1 || !S_ISREG(sb.st_mode) ||
+	    (fp = fdopen(fd, "r")) == NULL) {
+		e = S_ISREG(sb.st_mode) ? errno : EFTYPE;
+		close(fd);
+		errno = e;
+		return (NULL);
+	}
+	return (fp);
+}
+
+/* Whether path is there, as p reaches it (io: the name, not followed). */
+static int
+y_stat(const struct parse *p, const char *path, struct stat *sb)
+{
+
+	return (p->io != NULL ? p->io->lstat(p->io->arg, path, sb) :
+	    stat(path, sb));
+}
+
+static int
+by_name(const void *x, const void *y)
+{
+
+	return (strcmp(*(char *const *)x, *(char *const *)y));
+}
+
+/*
+ * Each file pattern names, in order, read by fn: glob(3)'s on the host;
+ * as io reaches them, the pattern in its last part alone.
+ */
+static void
+y_glob(struct parse *p, const char *pat, void (*fn)(struct parse *,
+    const char *))
+{
+	struct dirent	*de;
+	const char	*base;
+	char		*dir, *names[256];
+	size_t		 n = 0;
+	glob_t		 g;
+	DIR		*d;
+	int		 fd;
+
+	if (p->io == NULL) {
+		if (glob(pat, 0, NULL, &g) != 0)
+			return;
+		for (size_t i = 0; i < g.gl_pathc; i++)
+			fn(p, g.gl_pathv[i]);
+		globfree(&g);
+		return;
+	}
+	if ((base = strrchr(pat, '/')) == NULL || (dir = astrdup(p->a,
+	    pat)) == NULL)
+		return;
+	dir[base - pat] = '\0';
+	base++;
+	if (strpbrk(dir, "*?[") != NULL ||
+	    (fd = p->io->opendir(p->io->arg, dir[0] != '\0' ? dir : "/")) ==
+	    -1)
+		return;
+	if ((d = fdopendir(fd)) == NULL) {
+		close(fd);
+		return;
+	}
+	while ((de = readdir(d)) != NULL && n < nitems(names))
+		if (fnmatch(base, de->d_name, FNM_PERIOD) == 0 &&
+		    strcmp(de->d_name, ".") != 0 && strcmp(de->d_name, "..") !=
+		    0)
+			names[n++] = cat(p->a, cat(p->a, NULL, dir, "/"),
+			    de->d_name, "");
+	closedir(d);
+	qsort(names, n, sizeof(names[0]), by_name);
+	for (size_t i = 0; i < n; i++)
+		fn(p, names[i]);
 }
 
 static struct act *
@@ -457,7 +551,6 @@ conf_include(struct parse *p, const char *dir)
 {
 	char	pat[MAXPATHLEN], *d;
 	size_t	n;
-	glob_t	g;
 
 	if (p->depth > 4)
 		return;
@@ -469,13 +562,9 @@ conf_include(struct parse *p, const char *dir)
 	    p->own[n] == '/' && strchr(p->own + n + 1, '/') == NULL)
 		p->included = true;
 	snprintf(pat, sizeof(pat), "%s/*.conf", d);
-	if (glob(pat, 0, NULL, &g) != 0)
-		return;
 	p->depth++;
-	for (size_t i = 0; i < g.gl_pathc; i++)
-		conf_read(p, g.gl_pathv[i]);
+	y_glob(p, pat, conf_read);
 	p->depth--;
-	globfree(&g);
 }
 
 /* A line of Arcana's file no action holds: kept as it is. */
@@ -498,7 +587,7 @@ conf_read(struct parse *p, const char *path)
 	int		 line = 0;
 	bool		 block = false, own;
 
-	if ((fp = fopen(path, "r")) == NULL)
+	if ((fp = y_fopen(p->io, path)) == NULL)
 		return;
 	own = p->own != NULL && strcmp(path, p->own) == 0;
 	where = astrdup(p->a, path);
@@ -620,9 +709,8 @@ newsyslog_read(struct parse *p, const char *path)
 	FILE		*fp;
 	int		 n, line = 0;
 	bool		 own;
-	glob_t		 g;
 
-	if ((fp = fopen(path, "r")) == NULL)
+	if ((fp = y_fopen(p->io, path)) == NULL)
 		return;
 	own = p->ownrot != NULL && strcmp(path, p->ownrot) == 0;
 	where = astrdup(p->a, path);
@@ -641,12 +729,10 @@ newsyslog_read(struct parse *p, const char *path)
 			if (p->depth == 0 && p->ownrot != NULL && fnmatch(pat,
 			    p->ownrot, FNM_PATHNAME | FNM_PERIOD) == 0)
 				p->rot_included = true;
-			if (p->depth < 4 && glob(pat, 0, NULL, &g) == 0) {
+			if (p->depth < 4) {
 				p->depth++;
-				for (size_t i = 0; i < g.gl_pathc; i++)
-					newsyslog_read(p, g.gl_pathv[i]);
+				y_glob(p, pat, newsyslog_read);
 				p->depth--;
-				globfree(&g);
 			}
 			continue;
 		}
@@ -778,8 +864,9 @@ _Static_assert(sizeof(struct ietf_syslog_syslog_actions_file_log_file_filter_fac
     "facility-list's shape");
 
 int
-ysyslog_read(const char *root, const char *conf, const char *newsyslog,
-    cbl_yarena *a, struct ietf_syslog *out, struct yunread **u, size_t *nu)
+ysyslog_read(const struct ysyslog_io *io, const char *root, const char *conf,
+    const char *newsyslog, cbl_yarena *a, struct ietf_syslog *out,
+    struct yunread **u, size_t *nu)
 {
 	struct ietf_syslog_syslog			*sl;
 	struct ietf_syslog_syslog_actions		*ac;
@@ -797,6 +884,7 @@ ysyslog_read(const char *root, const char *conf, const char *newsyslog,
 	if ((p = calloc(1, sizeof(*p))) == NULL)
 		return (ENOMEM);
 	p->a = a;
+	p->io = io;
 	p->root = root;
 	p->maxu = 64;
 	if ((p->u = cbl_yarena_alloc(a, p->maxu * sizeof(*p->u))) == NULL) {
@@ -1186,7 +1274,7 @@ rot_line(struct parse *p, const struct act *t)
 	struct stat	sb;
 	mode_t		mode = 0600;
 
-	if (stat(rooted(p, t->name), &sb) == 0)
+	if (y_stat(p, rooted(p, t->name), &sb) == 0 && S_ISREG(sb.st_mode))
 		mode = sb.st_mode & 0777;
 	if (t->size_kb >= 0)
 		snprintf(size, sizeof(size), "%lld", t->size_kb);
@@ -1254,8 +1342,9 @@ take(struct parse *p, const struct act *h, struct ysyslog_plan *out)
 }
 
 int
-ysyslog_plan(const char *root, const struct ietf_syslog *after,
-    cbl_yarena *a, struct ysyslog_plan *out, char *err, size_t errlen)
+ysyslog_plan(const struct ysyslog_io *io, const char *root,
+    const struct ietf_syslog *after, cbl_yarena *a, struct ysyslog_plan *out,
+    char *err, size_t errlen)
 {
 	struct parse	*p, *q = NULL;
 	struct stat	 sb;
@@ -1270,6 +1359,7 @@ ysyslog_plan(const char *root, const struct ietf_syslog *after,
 		return (ENOMEM);
 	}
 	p->a = q->a = a;
+	p->io = q->io = io;
 	p->root = q->root = root;
 	p->own = rooted(p, SYSLOG_ARCANA);
 	p->ownrot = rooted(p, NEWSYSLOG_ARCANA);
@@ -1305,8 +1395,8 @@ ysyslog_plan(const char *root, const struct ietf_syslog *after,
 			if (h != NULL) {
 				t->nosync = h->nosync;
 				take(p, h, out);
-			} else if (t->kind == 'f' && stat(rooted(p, t->name),
-			    &sb) == -1)
+			} else if (t->kind == 'f' && y_stat(p, rooted(p,
+			    t->name), &sb) == -1)
 				out->create[out->ncreate++] = rooted(p,
 				    t->name);
 			if ((line = line_of(a, t)) == NULL) {
@@ -1367,8 +1457,9 @@ ysyslog_plan(const char *root, const struct ietf_syslog *after,
 			conf = cat(a, conf, p->keep, "");
 			lines = true;
 		}
-		out->conf = lines || stat(p->own, &sb) == 0 ? conf : NULL;
-		out->rot = rlines || stat(p->ownrot, &sb) == 0 ? rot : NULL;
+		out->conf = lines || y_stat(p, p->own, &sb) == 0 ? conf : NULL;
+		out->rot = rlines || y_stat(p, p->ownrot, &sb) == 0 ? rot :
+		    NULL;
 		out->included = p->included;
 		out->rot_included = p->rot_included;
 	}
@@ -1377,16 +1468,71 @@ ysyslog_plan(const char *root, const struct ietf_syslog *after,
 	return (error);
 }
 
+/* in to out, the lines of path the plan takes over commented out. */
+static void
+taken(const struct ysyslog_plan *pl, const char *path, FILE *in, FILE *out)
+{
+	char	buf[4096];
+	int	line = 0;
+	bool	bol = true;
+
+	while (fgets(buf, sizeof(buf), in) != NULL) {
+		if (bol) {
+			line++;
+			for (size_t i = 0; i < pl->ntake; i++)
+				if (pl->take[i].line == line &&
+				    strcmp(pl->take[i].path, path) == 0) {
+					fputs(TAKEN, out);
+					break;
+				}
+		}
+		fputs(buf, out);
+		bol = strchr(buf, '\n') != NULL;
+	}
+}
+
+/* The same, of a file io reaches: made in memory, put whole in its
+ * place. */
+static int
+take_io(const struct ysyslog_io *io, const struct ysyslog_plan *pl,
+    const char *path)
+{
+	FILE	*in, *out;
+	char	*text = NULL;
+	size_t	 len = 0;
+	int	 error = 0;
+
+	if ((in = y_fopen(io, path)) == NULL)
+		return (errno);
+	if ((out = open_memstream(&text, &len)) == NULL) {
+		error = errno;
+		fclose(in);
+		return (error);
+	}
+	taken(pl, path, in, out);
+	if (ferror(in))
+		error = errno != 0 ? errno : EIO;
+	if (fclose(out) == EOF && error == 0)
+		error = errno;
+	fclose(in);
+	if (error == 0 && io->replace(io->arg, path, text, len) == -1)
+		error = errno;
+	free(text);
+	return (error);
+}
+
 /* The lines of path the plan takes over, commented out. */
 static int
-take_in(const struct ysyslog_plan *pl, const char *path)
+take_in(const struct ysyslog_io *io, const struct ysyslog_plan *pl,
+    const char *path)
 {
-	char		 tmp[MAXPATHLEN], buf[4096];
+	char		 tmp[MAXPATHLEN];
 	struct stat	 sb;
 	FILE		*in, *out;
-	int		 fd, line = 0, error = 0;
-	bool		 bol = true;
+	int		 fd, error = 0;
 
+	if (io != NULL)
+		return (take_io(io, pl, path));
 	if ((in = fopen(path, "re")) == NULL)
 		return (errno);
 	snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
@@ -1404,19 +1550,7 @@ take_in(const struct ysyslog_plan *pl, const char *path)
 		fclose(in);
 		return (error);
 	}
-	while (fgets(buf, sizeof(buf), in) != NULL) {
-		if (bol) {
-			line++;
-			for (size_t i = 0; i < pl->ntake; i++)
-				if (pl->take[i].line == line &&
-				    strcmp(pl->take[i].path, path) == 0) {
-					fputs(TAKEN, out);
-					break;
-				}
-		}
-		fputs(buf, out);
-		bol = strchr(buf, '\n') != NULL;
-	}
+	taken(pl, path, in, out);
 	if (ferror(in))
 		error = errno != 0 ? errno : EIO;
 	if (fclose(out) == EOF && error == 0)
@@ -1430,7 +1564,7 @@ take_in(const struct ysyslog_plan *pl, const char *path)
 }
 
 int
-ysyslog_take(const struct ysyslog_plan *pl)
+ysyslog_take(const struct ysyslog_io *io, const struct ysyslog_plan *pl)
 {
 	int	error;
 
@@ -1439,15 +1573,15 @@ ysyslog_take(const struct ysyslog_plan *pl)
 
 		for (size_t j = 0; j < i && !done; j++)
 			done = strcmp(pl->take[j].path, pl->take[i].path) == 0;
-		if (!done && (error = take_in(pl, pl->take[i].path)) != 0)
+		if (!done && (error = take_in(io, pl, pl->take[i].path)) != 0)
 			return (error);
 	}
 	return (0);
 }
 
 int
-ysyslog_check(const char *root, const struct ietf_syslog *after,
-    char *err, size_t errlen)
+ysyslog_check(const struct ysyslog_io *io, const char *root,
+    const struct ietf_syslog *after, char *err, size_t errlen)
 {
 	struct parse	*p, *q = NULL;
 	cbl_yarena	*a;
@@ -1462,6 +1596,7 @@ ysyslog_check(const char *root, const struct ietf_syslog *after,
 		return (ENOMEM);
 	}
 	p->a = q->a = a;
+	p->io = q->io = io;
 	p->root = q->root = root;
 	files_read(p, rooted(p, SYSLOG_CONF), rooted(p, NEWSYSLOG_CONF));
 	error = want_of(q, after, err, errlen);

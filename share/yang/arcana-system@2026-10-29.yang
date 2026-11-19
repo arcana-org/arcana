@@ -23,7 +23,8 @@ module arcana-system {
      securelevel(7), the MAC modules (mac(4)), auditd(8), GEOM's
      tree and classes, GELI, periodic(8)'s variables, rc.conf's
      service jails, racct, the hardening sysctls and dma(8)'s smart
-     host.  Changes are jobs of kind sysfile and geom.  The system
+     host.  A running jail's own daemons' files and settings by the
+     read's jail.  Changes are jobs of kind sysfile and geom.  The system
      operation of arcana.yaml converted (Y-3); ietf-ntp (RFC 9249)
      is what NTP's part would be once ntp.conf is written from a
      model.";
@@ -64,6 +65,15 @@ module arcana-system {
           description
             "The files by name, and host for the host's settings;
              none, all.";
+        }
+        leaf jail {
+          type string;
+          description
+            "A running jail's own, with or without a network of its
+             own: its daemons' files (syslog.conf, newsyslog.conf,
+             periodic.conf, krb5.conf, ipsec.conf in a vnet jail) and of
+             its settings periodic's and dma's, read beneath its root;
+             none, the host's.";
         }
       }
       output {
@@ -317,6 +327,11 @@ module arcana-system {
                 "auth.conf has a password for it.";
             }
           }
+        }
+        leaf jail {
+          type string;
+          description
+            "The jail read; none, the host.";
         }
       }
     }

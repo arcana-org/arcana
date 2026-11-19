@@ -205,6 +205,8 @@ on the wire.
 | 96 000 | 20 | `arcana-console`, its fifth range: a host's mapped logins (terminal-login) and its password prompt switch (terminal-prompt) | `share/yang/arcana-console@2026-11-05.sid` (7 used) |
 | 96 020 | 10 | `arcana-alarms`, its second range: empty-password | `share/yang/arcana-alarms@2026-10-27.sid` (1 used) |
 | 97 100 | 100 | `arcana-services`, its second range (listed first in its file, so that new items go there): a running jail's services, on arcana-jails' jail | `share/yang/arcana-services@2026-10-14.sid` (32 used) |
+| 98 000 | 20 | `arcana-system`, its second range (listed first in its file, so that new items go there): the read's jail, in and out | `share/yang/arcana-system@2026-10-29.sid` (2 used) |
+| 98 020 | 30 | `arcana-syslog`, each running jail's syslogd, its root a mount point of `ietf-syslog` | `share/yang/arcana-syslog@2026-11-19.sid` (5 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

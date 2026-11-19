@@ -114,7 +114,7 @@ conf(const char *path, const char *ns, cbl_yarena *a)
 	size_t nu;
 	int error;
 
-	if ((error = ysyslog_read(NULL, path, ns, a, &y, &u, &nu)) != 0)
+	if ((error = ysyslog_read(NULL, NULL, path, ns, a, &y, &u, &nu)) != 0)
 		errc(1, error, "ysyslog_read");
 	const struct ietf_syslog_syslog_actions *ac = y.syslog->actions;
 	if (ac->console != NULL) {
@@ -171,12 +171,12 @@ plan(const char *root, cbl_yarena *a)
 
 	snprintf(conf, sizeof(conf), "%s%s", root, SYSLOG_CONF);
 	snprintf(ns, sizeof(ns), "%s%s", root, NEWSYSLOG_CONF);
-	if ((error = ysyslog_read(root, conf, ns, a, &y, &u, &nu)) != 0)
+	if ((error = ysyslog_read(NULL, root, conf, ns, a, &y, &u, &nu)) != 0)
 		errc(1, error, "ysyslog_read");
 	same((void *)ietf_syslog_syslog_encode, (void *)
 	    ietf_syslog_syslog_decode, y.syslog, &bs, a);
 	back.syslog = &bs;
-	if ((error = ysyslog_plan(root, &back, a, &pl, err, sizeof(err))) != 0)
+	if ((error = ysyslog_plan(NULL, root, &back, a, &pl, err, sizeof(err))) != 0)
 		errx(1, "ysyslog_plan: %s", err);
 	printf("changed %s take %zu create %zu included %s/%s\n",
 	    pl.changed ? "yes" : "no", pl.ntake, pl.ncreate, pl.included ?

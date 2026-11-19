@@ -955,7 +955,9 @@ ietf_yang_library_yang_library_get(cbl_req *req, struct ietf_yang_library *data,
  * 8529), a shared schema whose routing names the host's interfaces
  * (its parent-reference); its config: an instance's static routes are
  * changed by an EDIT.  The root of a logical network element (RFC
- * 8530), inline: the YANG library in it says its schema.
+ * 8530), inline: the YANG library in it says its schema.  A jail's
+ * root in arcana-syslog, a shared schema: its syslogd, changed by an
+ * EDIT.
  */
 int
 ietf_yang_schema_mount_schema_mounts_get(cbl_req *req,
@@ -964,6 +966,8 @@ ietf_yang_schema_mount_schema_mounts_get(cbl_req *req,
 	static const char *const parents[] = { "/if:interfaces" };
 	static const struct ietf_yang_schema_mount_schema_mounts_mount_point_shared_schema
 	    shared = { { nitems(parents), parents } };
+	static const struct ietf_yang_schema_mount_schema_mounts_mount_point_shared_schema
+	    alone;
 	static const struct ietf_yang_schema_mount_schema_mounts_mount_point_inline
 	    inl;
 	static const struct ietf_yang_schema_mount_schema_mounts_mount_point
@@ -979,6 +983,13 @@ ietf_yang_schema_mount_schema_mounts_get(cbl_req *req,
 		.schema_ref =
 		    IETF_YANG_SCHEMA_MOUNT_SCHEMA_MOUNTS_MOUNT_POINT_SCHEMA_REF_INLINE,
 		.inline_ = &inl,
+	}, {
+		/* A jail's syslogd (gula/ysyslog.c). */
+		.module = "arcana-syslog",
+		.label = "jail-root",
+		.schema_ref =
+		    IETF_YANG_SCHEMA_MOUNT_SCHEMA_MOUNTS_MOUNT_POINT_SCHEMA_REF_SHARED_SCHEMA,
+		.shared_schema = &alone,
 	} };
 	struct ietf_yang_schema_mount_schema_mounts_namespace	*ns;
 	struct ietf_yang_schema_mount_schema_mounts		*sm;

@@ -111,13 +111,16 @@ echo "\$*" >> $(pwd)/sysrc.log
 # jail not in ./jails is gone, and jexec fails.  Never -R, which runs
 # the jail's /bin/sh by chroot(8) as the host's root.
 [ "\$1" = -R ] && { echo "sysrc: -R" >&2; exit 2; }
+jr=
 if [ "\$1" = -j ]; then
 	r=\$(awk -v j="\$2" '\$2 == j { print \$4 }' $(pwd)/jails 2>/dev/null)
 	[ -n "\$r" ] || { echo "jexec: jail_getid: jail \$2 not found" >&2; exit 1; }
 	conf=\$r/etc/rc.conf
+	jr=\$r
 	shift 2
 fi
-[ "\$1" = -f ] && { conf=\$2; touch "\$conf"; shift 2; }
+# -f: beneath the jail's root, with -j.
+[ "\$1" = -f ] && { conf=\$jr\$2; touch "\$conf"; shift 2; }
 ign=no
 [ "\$1" = -i ] && { ign=yes; shift; }
 put()
@@ -16287,7 +16290,8 @@ MASQUERADE arcana@example.org
 	printf 'bad\001\n' > ctl.new
 	atf_check -s exit:1 -e match:'lines of printable characters' "$JGC" -c "$SOCK" sysfile krb5.conf ctl.new
 	atf_check -s exit:1 -e match:'name_enable=YES or NO' "$JGC" -c "$SOCK" sysfile periodic daily_x=1
-	atf_check -s exit:1 -e match:'sysfile takes no jail' "$JGC" -j web -c "$SOCK" sysfile krb5.conf syslog.new
+	# A jail's: entered first, none running here (sysfile_jail).
+	atf_check -s exit:1 -o match:'the jail web is not running' "$JGC" -j web -c "$SOCK" sysfile krb5.conf syslog.new
 	# Safe: the file is kept to be put back (safe_sysfile, which also
 	# has dma refused as safe).
 	atf_check -o match:'confirmed: it stays' "$JGC" -s -c "$SOCK" sysfile krb5.conf syslog.new
@@ -16296,6 +16300,255 @@ sysfiles_cleanup()
 {
 	stop_daemon
 	stop_pfkey
+}
+
+# jexec(8) for the jails of ./jails: what it runs logged in jexec.log;
+# service(8) of the jail's own, from markers beneath the jail's root
+# (running.<svc>, noreload.<svc>; reloads.<svc> what it was told), its
+# rc.conf saying what is enabled.
+jail_service()
+{
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+[ -n "\$r" ] || { echo "jexec: jail \$1 not found" >&2; exit 1; }
+shift
+case "\$1" in
+*/fake-service) ;;
+*)	exit 0 ;;
+esac
+svc=\$2
+case "\$3" in
+onestatus)	[ -f "\$r/running.\$svc" ] ;;
+enabled)	grep -q "^\${svc}_enable=\"YES\"" "\$r/etc/rc.conf" ;;
+onereload|onerestart)
+		[ -f "\$r/noreload.\$svc" ] && { echo "\$svc: not reloaded" >&2; exit 1; }
+		echo "\$3" >> "\$r/reloads.\$svc" ;;
+*)		exit 2 ;;
+esac
+EOS
+	chmod +x fake-jexec
+}
+
+atf_test_case sysfile_jail cleanup
+sysfile_jail_head()
+{
+	atf_set "descr" "a jail's own daemons' files, by the system read and sysfile jobs: written beneath the jail's root and never through a link out of it, its syslogd told there by jexec, periodic.conf by sysrc -j, dma's, a safe change kept in the jail; loader.conf, devd, rctl, audit, devfs and securelevel refused for a jail with why, ipsec.conf a vnet jail's alone"
+}
+sysfile_jail_body()
+{
+	R="$(pwd)/web"
+	V="$(pwd)/gw"
+	mkdir -p "$R/etc/defaults" "$V/etc" root/etc outside
+	printf 'hostname="web"\nsyslogd_enable="YES"\n' > "$R/etc/rc.conf"
+	printf 'hostname="gw"\n' > "$V/etc/rc.conf"
+	printf '# defaults\ndaily_clean_tmps_enable="NO"\n' > \
+	    "$R/etc/defaults/periodic.conf"
+	printf '*.*\t/var/log/all\n' > "$R/etc/syslog.conf"
+	printf 'mail:*:6:\n' > "$R/etc/group"
+	# The jail's root's own links out of it: to the host's files.
+	printf 'SECRET\n' > outside/krb5.conf
+	ln -s "$(pwd)/outside/krb5.conf" "$R/etc/krb5.conf"
+	ln -s "$(pwd)/outside" "$R/etc/dma"
+	# The host's files under a root of their own: nothing of the jail's
+	# lands there.
+	DAEMON_ARGS="--root $(pwd)/root"
+	start_daemon
+	jail_service
+	printf 'web 7 inherit %s 16.0-CURRENT\ngw 8 new %s 16.0-CURRENT\n' \
+	    "$R" "$V" > jails
+	printf '#!/bin/sh\n' > rc.d/syslogd
+	chmod +x rc.d/syslogd
+	# The jail's read: its own daemons' files and its periodic, not
+	# the host's; a link out of its root not followed.
+	atf_check -o match:'"jail":"web"' \
+	    -o match:'"syslog.conf":\{"path":"/etc/syslog.conf","text":"\*\.\*\\t/var/log/all\\n","service":"syslogd","enabled":true,"running":false\}' \
+	    -o match:'"krb5.conf":\{"path":"/etc/krb5.conf"\}' \
+	    -o match:'"periodic":\[\{"name":"daily_clean_tmps_enable","default":"NO"\}\]' \
+	    -o not-match:'devd|rctl|audit|loader|devfs|ipsec|SECRET|"ntp"|"securelevel"' \
+	    "$JGC" -j web -c "$SOCK" system
+	# syslog.conf written in the jail, its syslogd told there.
+	touch "$R/running.syslogd"
+	printf '*.err\t/var/log/errors\n' > syslog.new
+	atf_check -o match:'done +web: syslog.conf written' \
+	    "$JGC" -j web -c "$SOCK" sysfile syslog.conf syslog.new
+	atf_check -o inline:'*.err\t/var/log/errors\n' cat "$R/etc/syslog.conf"
+	atf_check -o inline:'onereload\n' cat "$R/reloads.syslogd"
+	atf_check -o match:'^jexec 7 .*/fake-service syslogd onereload$' \
+	    cat jexec.log
+	atf_check test ! -e root/etc/syslog.conf
+	atf_check test ! -e "$R/etc/syslog.conf.arcana-old"
+	atf_check -o empty sh -c 'grep syslogd service.log 2>/dev/null || :'
+	# Its syslogd refusing it: the file before it put back, told again.
+	touch "$R/noreload.syslogd"
+	printf '*.*\t@192.0.2.1\n' > bad.new
+	atf_check -s exit:1 -o match:'syslogd in web did not take it.*put back' \
+	    "$JGC" -j web -c "$SOCK" sysfile syslog.conf bad.new
+	atf_check -o inline:'*.err\t/var/log/errors\n' cat "$R/etc/syslog.conf"
+	rm "$R/noreload.syslogd"
+	# A link out of the jail's root is not written through: the link
+	# itself replaced, the host's file as it was.
+	printf '[libdefaults]\n\tdefault_realm = LAB.EXAMPLE\n' > krb5.new
+	atf_check -o match:'done' "$JGC" -j web -c "$SOCK" sysfile krb5.conf krb5.new
+	atf_check -o inline:'SECRET\n' cat outside/krb5.conf
+	atf_check test ! -h "$R/etc/krb5.conf"
+	atf_check -o file:krb5.new cat "$R/etc/krb5.conf"
+	# dma's directory a link out of it: refused, nothing written there.
+	atf_check -s exit:1 -o match:'/etc/dma in web' \
+	    "$JGC" -j web -c "$SOCK" sysfile dma smarthost=smtp.example.net
+	atf_check -o inline:'krb5.conf\n' ls outside
+	rm "$R/etc/dma"
+	atf_check -o match:'done' env ARCANA_DMA_PASSWORD=pw \
+	    "$JGC" -j web -c "$SOCK" sysfile dma smarthost=smtp.example.net user=alerts
+	atf_check -o match:'^SMARTHOST smtp.example.net$' cat "$R/etc/dma/dma.conf"
+	atf_check -o inline:'alerts|smtp.example.net:pw\n' cat "$R/etc/dma/auth.conf"
+	atf_check test ! -e root/etc/dma
+	atf_check -o match:'"dma":\{"conf_path":"/etc/dma/dma.conf","smarthost":"smtp.example.net",' \
+	    -o not-match:'"pw"' "$JGC" -j web -c "$SOCK" system host
+	# periodic.conf's variables by sysrc -j, in the jail's own file.
+	atf_check -o match:'done +web: periodic.conf.s variables written' \
+	    "$JGC" -j web -c "$SOCK" sysfile periodic daily_clean_tmps_enable=YES
+	atf_check -o match:'^-j 7 -f /etc/periodic.conf daily_clean_tmps_enable=YES$' \
+	    cat sysrc.log
+	atf_check -o inline:'daily_clean_tmps_enable="YES"\n' cat "$R/etc/periodic.conf"
+	atf_check test ! -e root/etc/periodic.conf
+	atf_check -o match:'\{"name":"daily_clean_tmps_enable","default":"NO","value":"YES"\}' \
+	    "$JGC" -j web -c "$SOCK" system host
+	# periodic.conf whole, safe: kept in the jail, confirmed.
+	printf 'daily_output="root"\n' > periodic.new
+	atf_check -o match:'confirmed: it stays' \
+	    "$JGC" -j web -s -c "$SOCK" sysfile periodic.conf periodic.new
+	atf_check -o file:periodic.new cat "$R/etc/periodic.conf"
+	# The host's by its nature: refused for a jail, with why.
+	atf_check -s exit:1 -e match:'loader.s tunables are the host.s boot.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile loader.conf.d syslog.new
+	atf_check -s exit:1 -e match:'devd\(8\) is the host.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile devd syslog.new
+	atf_check -s exit:1 -e match:'rctl\(8\).s rules are the host.s kernel.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile rctl.conf syslog.new
+	atf_check -s exit:1 -e match:'auditd\(8\) is the host.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile audit_control syslog.new
+	atf_check -s exit:1 -e match:'auditd\(8\) is the host.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile audit_user syslog.new
+	atf_check -s exit:1 -e match:'devfs.s rules are the host.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile devfs.rules syslog.new
+	atf_check -s exit:1 -e match:'securelevel at boot is the host.s' \
+	    "$JGC" -j web -c "$SOCK" sysfile rc kern_securelevel=2
+	for f in boot usr/local/etc/devd etc/rctl.conf etc/security etc/devfs.rules; do
+		atf_check test ! -e "$R/$f"
+	done
+	# ipsec.conf: a vnet jail's own, not one with the host's network.
+	printf 'flush;\n' > ipsec.new
+	atf_check -s exit:1 -o match:'not the jail web.s: a jail without a network of its own has the host.s IPsec' \
+	    "$JGC" -j web -c "$SOCK" sysfile ipsec.conf ipsec.new
+	atf_check -o match:'done +gw: ipsec.conf written' \
+	    "$JGC" -j gw -c "$SOCK" sysfile ipsec.conf ipsec.new
+	atf_check -o match:'^-rw-------' ls -l "$V/etc/ipsec.conf"
+	atf_check -o match:'"ipsec.conf":\{"path":"/etc/ipsec.conf","text":"flush;\\n"' \
+	    "$JGC" -j gw -c "$SOCK" system ipsec.conf
+	# A jail that is not running: said so.
+	atf_check -s exit:1 -o match:'the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" sysfile krb5.conf krb5.new
+	atf_check -s exit:1 -e match:'the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" system
+}
+sysfile_jail_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case datastores_syslog_jail cleanup
+datastores_syslog_jail_head()
+{
+	atf_set "descr" "a jail's syslog.conf and newsyslog.conf as ietf-syslog in its root (arcana-syslog): read and committed beneath the jail's root, never through a link out of it, its syslogd told there by jexec; the host's files left"
+}
+datastores_syslog_jail_body()
+{
+	R="$(pwd)/web"
+	mkdir -p "$R/etc" "$R/var/log" "$R/usr/local/etc" root/etc outside
+	printf 'hostname="web"\n' > "$R/etc/rc.conf"
+	cat > "$R/etc/syslog.conf" <<'EOF'
+*.notice;authpriv.none					/var/log/messages
+security.*						/var/log/security
+EOF
+	cat > "$R/etc/newsyslog.conf" <<'EOF'
+/var/log/messages	644  5	1000	*	JC
+EOF
+	touch "$R/var/log/messages" "$R/var/log/security"
+	cp "$R/etc/newsyslog.conf" newsyslog.conf.before
+	DAEMON_ARGS="--root $(pwd)/root"
+	start_daemon
+	jail_service
+	printf 'web 7 inherit %s 16.0-CURRENT\n' "$R" > jails
+	touch "$R/running.syslogd"
+	"$JGC" -j web -c "$SOCK" get -d running syslog > jrun.json
+	atf_check -o match:'"name":"file:/var/log/messages"' \
+	    -o match:'"name":"file:/var/log/security"' cat jrun.json
+	atf_check -o match:'"arcana-syslog:jail-syslog":\{"jail":\[\{"name":"web","root":\{"ietf-syslog:syslog"' \
+	    "$JGC" -c "$SOCK" get -d running jail-syslog
+	# Arcana's file in the jail a link out of its root: the commit
+	# refused, nothing written out of it, the jail's files as they were.
+	mkdir -p "$R/usr/local/etc"
+	ln -s "$(pwd)/outside" "$R/usr/local/etc/syslog.d"
+	sed -e 's|"log-file":\[|"log-file":[{"name":"file:/var/log/arcana.log","filter":{"facility-list":[{"facility":"ietf-syslog:local3","severity":"info"}]},"file-rotation":{"number-of-files":4,"max-file-size":2,"rollover":1440}},|' \
+	    jrun.json > new.json
+	atf_check -o match:'arcana.log' cat new.json
+	atf_check "$JGC" -j web -c "$SOCK" edit syslog @new.json
+	atf_check -s exit:1 -e match:'in the jail web: Arcana keeps .*-a syslog-include' \
+	    "$JGC" -c "$SOCK" commit
+	atf_check -s exit:1 -e match:'in the jail web: the files as they are could not be kept' \
+	    "$JGC" -c "$SOCK" commit -a syslog-include
+	atf_check -o empty ls outside
+	atf_check -o not-match:'include' cat "$R/etc/syslog.conf"
+	atf_check cmp newsyslog.conf.before "$R/etc/newsyslog.conf"
+	atf_check test ! -e "$R/var/log/arcana.log"
+	rm "$R/usr/local/etc/syslog.d"
+	# Committed in the jail: Arcana's files there, syslog.conf's
+	# include accepted, the log made, its syslogd told there.
+	atf_check -o ignore "$JGC" -c "$SOCK" commit -a syslog-include
+	atf_check -o match:'^include[[:space:]]+/usr/local/etc/syslog.d$' \
+	    tail -n 1 "$R/etc/syslog.conf"
+	printf 'local3.info\t/var/log/arcana.log\n' > want
+	atf_check -o file:want grep -v '^#' "$R/usr/local/etc/syslog.d/arcana.conf"
+	printf '/var/log/arcana.log\t600  4\t2048\t24\tJC\n' > want
+	atf_check -o file:want grep -v '^#' \
+	    "$R/usr/local/etc/newsyslog.conf.d/arcana.conf"
+	atf_check -o match:'^<include> /usr/local/etc/newsyslog.conf.d/' \
+	    tail -n 1 "$R/etc/newsyslog.conf"
+	atf_check test -f "$R/var/log/arcana.log"
+	atf_check -o inline:'onereload\n' cat "$R/reloads.syslogd"
+	atf_check -o match:'^jexec 7 .*/fake-service syslogd onereload$' cat jexec.log
+	atf_check test ! -e root/etc/syslog.conf
+	atf_check test ! -e root/usr/local/etc/syslog.d
+	atf_check -o empty sh -c 'grep syslogd service.log 2>/dev/null || :'
+	"$JGC" -j web -c "$SOCK" get -d running syslog > jrun2.json
+	atf_check -o match:'"name":"file:/var/log/arcana.log"' \
+	    -o match:'"max-file-size":2,"number-of-files":4,"rollover":1440' \
+	    cat jrun2.json
+	# Its syslogd not reloading: the jail's files as they were.
+	cp "$R/etc/syslog.conf" syslog.conf.was
+	cp "$R/usr/local/etc/syslog.d/arcana.conf" arcana.conf.was
+	sed -e 's|"ietf-syslog:local3","severity":"info"|"ietf-syslog:local3","severity":"debug"|' \
+	    jrun2.json > dbg.json
+	atf_check -o match:'"severity":"debug"' cat dbg.json
+	atf_check "$JGC" -j web -c "$SOCK" edit syslog @dbg.json
+	touch "$R/noreload.syslogd"
+	atf_check -s exit:1 -e match:'in the jail web: .*syslogd: not reloaded' \
+	    "$JGC" -c "$SOCK" commit
+	atf_check cmp syslog.conf.was "$R/etc/syslog.conf"
+	atf_check cmp arcana.conf.was "$R/usr/local/etc/syslog.d/arcana.conf"
+	atf_check "$JGC" -c "$SOCK" discard
+	rm "$R/noreload.syslogd"
+	# -j takes syslog alone; a jail that is not running has none.
+	atf_check -s exit:2 -e match:'-j takes syslog alone' \
+	    "$JGC" -j web -c "$SOCK" get interfaces
+	atf_check -s exit:1 -e match:'the jail nope is not running' \
+	    "$JGC" -j nope -c "$SOCK" get syslog
+}
+datastores_syslog_jail_cleanup()
+{
+	stop_daemon
 }
 
 atf_test_case agent_build cleanup
@@ -22902,6 +23155,7 @@ atf_init_test_cases()
 	atf_add_test_case observe_log
 	atf_add_test_case observe_log_jail
 	atf_add_test_case datastores_syslog
+	atf_add_test_case datastores_syslog_jail
 	atf_add_test_case datastores_ra
 	atf_add_test_case datastores_ra_auto
 	atf_add_test_case datastores_sysctl
@@ -22974,6 +23228,7 @@ atf_init_test_cases()
 	atf_add_test_case sslproxy_rc
 	atf_add_test_case monitors
 	atf_add_test_case sysfiles
+	atf_add_test_case sysfile_jail
 	atf_add_test_case sdwan_jail
 	atf_add_test_case jail_conf
 	atf_add_test_case jail_allow
