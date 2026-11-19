@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.332.0"
+#define	ARCANA_AGENT_VERSION	"0.333.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1246,6 +1246,7 @@ struct sqpaths {
 	const char	*pid, *ca, *ssldb, *certgen, *deny;
 	const char	*list_pre, *list_suf;
 	const char	*icap_pid, *icap_cmd;
+	const char	*log_dir;	/* its logs' directory; NULL the host's */
 };
 /* The port an SD-WAN service's c-icap answers its Squid on; the
  * Security section's i-th, on the loopback. */
@@ -1276,8 +1277,8 @@ char		*icap_conf_render(struct work *, const struct ucl_object_s *,
 char		*bird_conf_render(struct work *, const struct ucl_object_s *,
 		    const char *, const char **);
 /* What the daemons blocked, matched back to their forms (sdblock.c). */
-const char	*sdwan_squid_log(char *, size_t, intmax_t);
-const char	*sdwan_icap_log(char *, size_t, intmax_t);
+const char	*sdwan_squid_log(char *, size_t, const char *, intmax_t);
+const char	*sdwan_icap_log(char *, size_t, const char *, intmax_t);
 const char	*sdwan_list_name(int);
 bool		 sdwan_notifies(const struct ucl_object_s *, const char *);
 int		 sdwan_dnf_list(const struct ucl_object_s *, const char *);

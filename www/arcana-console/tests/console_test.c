@@ -15353,6 +15353,83 @@ ATF_TC_BODY(sdwan_jail, tc)
 }
 
 /*
+ * A URL filter and intrusion prevention at an edge that is a vnet jail:
+ * its own Squid and Suricata instances, named by the jail as its BIRD
+ * and unbound are, in the service's table there; what Suricata
+ * prevents diverted by the jail's own rules; Squid and Suricata looked
+ * for in the jail.
+ */
+CONSOLE_TC(sdwan_jail_security, "SD-WAN's URLF and IPS at an edge that is "
+    "a vnet jail: its own Squid and Suricata, its rules' diverts")
+ATF_TC_BODY(sdwan_jail_security, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sj[40];
+	char		doc[4096], t1[4096];
+	size_t		i;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_host("a", "jgd.sock", sa, sizeof(sa));
+	snprintf(sj, sizeof(sj), "%s/gw", sa);
+	snprintf(doc, sizeof(doc), "%s", sdwan_jail_doc);
+	static const char *const edits[][2] = {
+		{ "\"tunnel\":{\"kind\":\"gre\"}",
+		    "\"tunnel\":{\"kind\":\"gre\",\"ipsec\":false}" },
+		/* No BIRD in the jail here: no BFD. */
+		{ "\"bfd\":{\"interval\":200,\"multiplier\":3},", "" },
+		/* The guard a URLF's, and prevention by Suricata. */
+		{ "{\"id\":\"g-dnf\",\"function\":\"dnf\",\"block\":["
+		    "\"ads.example\"],\"no-match\":\"allow\",\"duration\":6}",
+		    "{\"id\":\"g-urlf\",\"function\":\"urlf\",\"block\":["
+		    "\"bad.example\"],\"no-match\":\"allow\",\"duration\":6}" },
+		{ "\"function-policies\":[\"g-dnf\"]",
+		    "\"function-policies\":[\"g-urlf\"],\"ids\":{\"mode\":"
+		    "\"prevent\",\"rules\":[\"alert tcp any any -> any 23 "
+		    "(sid:1000001;)\"]}" },
+	};
+	for (i = 0; i < nitems(edits); i++) {
+		ATF_REQUIRE_MSG(swap_in(doc, edits[i][0], edits[i][1], t1,
+		    sizeof(t1)), "%s is not in the document", edits[i][0]);
+		snprintf(doc, sizeof(doc), "%s", t1);
+	}
+	while (swap_in(doc, "@A", sa, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	while (swap_in(doc, "@J", sj, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	r3_keep(doc);
+	/* Planned, not refused: the jail's Squid and Suricata named by the
+	 * jail, Squid in the service's table there, Suricata on the jail's
+	 * UNI and its divert port; the host's its own. */
+	r3_sdwan("plan", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "is a vnet jail") == NULL && strstr(r.body,
+	    "has no sdwan-") == NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"sdwan-proxy\",\"instances\":[{"
+	    "\"name\":\"sw1-gw\",\"fib\":1,") != NULL && strstr(r.body,
+	    "\"kind\":\"sdwan-proxy\",\"instances\":[{\"name\":\"sw1\",\"fib\":1,")
+	    != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"sdwan-ids\",\"instances\":[{"
+	    "\"name\":\"sw1-gw\",") != NULL && strstr(r.body, "\"kind\":"
+	    "\"sdwan-ids\",\"instances\":[{\"name\":\"sw1\",") != NULL &&
+	    strstr(r.body, "\"interfaces\":[\"epair1b\"],\"divert\":8001") !=
+	    NULL, "%s", r.body);
+	/* The jail's rules divert its UNI's way in to its Suricata. */
+	ATF_CHECK_MSG(strstr(r.body, "divert 8001 ip4 from any to any in recv "
+	    "epair1b") != NULL && strstr(r.body, "divert 8001 ip4 from any to "
+	    "any in recv lo0") != NULL, "%s", r.body);
+	resp_free(&r);
+	/* Squid and Suricata looked for in the jail, as it sees its files:
+	 * missing there. */
+	http("POST", CC "sdwan/apply", "{\"arcana-console:input\":{}}", &r);
+	EXPECT(&r, 409);
+	ATF_CHECK_MSG(strstr(r.body, "a/gw: pkg install squid") != NULL &&
+	    strstr(r.body, "a/gw: pkg install suricata") != NULL, "%s", r.body);
+	resp_free(&r);
+}
+
+/*
  * SSL inspection at an edge that is a vnet jail (ssl-inspection.md,
  * jails): the MBSF bound to the jail's zone compiled into its own
  * SSLproxy's form, beside the host's edge's own, each its CA first; the
@@ -29140,6 +29217,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_sfp);
 	ATF_TP_ADD_TC(tp, sdwan_inspect);
 	ATF_TP_ADD_TC(tp, sdwan_inspect_jail);
+	ATF_TP_ADD_TC(tp, sdwan_jail_security);
 	ATF_TP_ADD_TC(tp, sdwan_jail);
 	ATF_TP_ADD_TC(tp, sdwan_lab);
 	ATF_TP_ADD_TC(tp, sdwan_l3nm_lab);

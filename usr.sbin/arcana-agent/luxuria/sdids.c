@@ -37,6 +37,15 @@
  * the host's network may detect by pcap(3) where its devfs shows it
  * bpf(4).  A jail not running at the agent's start leaves its instance
  * kept, not started, until the list is applied again.
+ *
+ * An SD-WAN edge that is a vnet jail has its own (the payload's
+ * "jail"), each service's run in the jail the same way, its files in
+ * EDGE_DIR beneath the jail's root; one that prevents takes what the
+ * edge's own rules divert to it, the SD-WAN's rules in the jail's ipfw
+ * (sdrules.c), as the host's edge's do in the host's: no rule of
+ * idsfw.c's is placed for it.  Each edge's list is its own, kept apart
+ * (sdwan-ids@<jail>.json), neither the host's nor another jail's
+ * stopped by it.
  */
 
 #include <sys/param.h>
@@ -79,6 +88,8 @@
 /* A jail's: where its instances' files are beneath its root, and the
  * ruleset its own suricata-update keeps. */
 #define	JAIL_DIR	"/var/db/arcana-security"
+#define	EDGE_DIR	"/var/db/arcana-sdwan"
+#define	DIR_OF(name)	(IS_SEC(name) ? JAIL_DIR : EDGE_DIR)
 #define	JAIL_RULESET	"/var/lib/suricata/rules/suricata.rules"
 #define	START_WAIT	180	/* s, for its engine to start */
 #define	DIVERT_EVERY	10	/* s, ipfw read again for one down */
@@ -155,6 +166,15 @@ static bool		ids_started;	/* both groups read at the start */
 static bool		starting;	/* the kept lists applied at the start */
 
 static bool	running(const char *, const char *);
+
+/* Is an instance of the list applied: of its group and, SD-WAN's, of
+ * its edge (the jail it runs in, "" the host's)? */
+static bool
+of_list(const char *name, const char *jail, bool sec, const char *edge)
+{
+
+	return (IS_SEC(name) == sec && (sec || strcmp(jail, edge) == 0));
+}
 
 /*
  * The ids faults (by "suricata") held to the instances there are, at
@@ -287,7 +307,7 @@ inst_path(struct work *w, const char *name, const char *ext)
 	char	buf[MAXPATHLEN];
 
 	if (w->jail != NULL)
-		return (wfmt(w, JAIL_DIR "/sdwan-ids-%s.%s", name, ext));
+		return (wfmt(w, "%s/sdwan-ids-%s.%s", DIR_OF(name), name, ext));
 	ids_pathbuf(name, ext, buf, sizeof(buf));
 	return (wstrdup(w, buf));
 }
@@ -338,7 +358,7 @@ inst_write(struct work *w, const char *name, const char *ext,
 	if (w->jail == NULL)
 		return (sdwan_conf_write(wfmt(w, "sdwan-ids-%s.%s", name, ext),
 		    text, errp));
-	if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w, inst_path(w,
+	if (scope_mkdirs(w, DIR_OF(name)) != 0 || scope_replace(w, inst_path(w,
 	    name, ext), text, strlen(text), 0600, NULL) != 0) {
 		*errp = wfmt(w, "%s in the jail %s: %s", inst_path(w, name, ext),
 		    w->jail, strerror(errno));
@@ -1420,7 +1440,7 @@ jail_diverts(struct work *w, const char *jail, const struct instance *v,
 
 	for (k = m = 0; k < n; k++) {
 		if (strcmp(v[k].jail, jail) != 0 || v[k].divert == 0 ||
-		    v[k].stopped || v[k].jaildown)
+		    v[k].stopped || v[k].jaildown || !IS_SEC(v[k].name))
 			continue;
 		if (before) {
 			for (i = 0; i < nheld; i++)
@@ -1444,8 +1464,9 @@ jail_diverts(struct work *w, const char *jail, const struct instance *v,
 	return (rc);
 }
 
-/* Each vnet jail the instances that prevent run in, now (v) or before
- * (held), its divert rules made as jail_diverts() says. */
+/* Each vnet jail the Security section's instances that prevent run in,
+ * now (v) or before (held), its divert rules made as jail_diverts()
+ * says. */
 static int
 diverts_all(struct work *w, const struct instance *v, int n,
     const struct was *held, int nheld, bool before, const char **errp)
@@ -1458,7 +1479,9 @@ diverts_all(struct work *w, const struct instance *v, int n,
 		const char	*jail = k < n ? v[k].jail : held[k - n].jail;
 		int		 port = k < n ? v[k].divert : held[k - n].divert;
 
-		if (jail[0] == '\0' || port == 0)
+		/* A jail edge's SD-WAN service's are its rules' diverts. */
+		if (jail[0] == '\0' || port == 0 || !IS_SEC(k < n ? v[k].name :
+		    held[k - n].name))
 			continue;
 		for (i = 0; i < nj; i++)
 			if (strcmp(j[i], jail) == 0)
@@ -1482,6 +1505,10 @@ diverts_all(struct work *w, const struct instance *v, int n,
  * more are stopped.  Kept for the next start.  The Security section's
  * may each name a running jail ("jail") to run in; one that prevents
  * there, a vnet jail, its divert rules placed in the jail's ipfw.
+ * SD-WAN's with "jail" are those of an edge that is that vnet jail, run
+ * in it, what they prevent diverted by the edge's own rules; the other
+ * edges' are left as they are, and each edge's list is kept in a file
+ * of its own.
  */
 int
 do_sdwan_ids(struct work *w, const char *json, const char **errp)
@@ -1491,12 +1518,13 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	ucl_object_iter_t	 it, fit;
 	struct instance		 ni[INSTANCES_MAX];
 	struct execres		 res;
-	char			*argv[8], *conf, *was;
+	struct jinfo		 eji;
+	char			*argv[8], *conf, *was, kpath[MAXPATHLEN];
 	const char		*rules, *thr, *e, *note, *what;
-	const char		*raw, *fwfail;
+	const char		*raw, *fwfail, *edge, *file;
 	struct was		 held[INSTANCES_MAX];
 	int			 n, i, k, step, nkeep, nheld;
-	bool			 ok, same, samerun, sec, luach;
+	bool			 ok, same, samerun, sec, luach, edgedown;
 
 	if ((top = parse(json)) == NULL || ucl_object_type(top) != UCL_OBJECT) {
 		if (top != NULL)
@@ -1508,6 +1536,39 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	sec = ucl_object_lookup(top, "group") != NULL && strcmp(
 	    ucl_object_tostring_forced(ucl_object_lookup(top, "group")),
 	    "security") == 0;
+	/* The edge, SD-WAN's: a vnet jail's, running (at the start, one
+	 * that is not keeps its instances for the next apply), or the
+	 * host's.  The Security section's are the host's edge's, each
+	 * naming its own jail. */
+	if ((edge = sdwan_payload_jail(top, errp)) == NULL) {
+		ucl_object_unref(top);
+		return (-1);
+	}
+	edge = wstrdup(w, edge);
+	if (sec && edge[0] != '\0') {
+		ucl_object_unref(top);
+		*errp = "the Security section's are the host's edge's: each "
+		    "names the jail it runs in";
+		return (-1);
+	}
+	edgedown = false;
+	memset(&eji, 0, sizeof(eji));
+	if (edge[0] != '\0') {
+		if (jail_named(w, edge, &eji) < 0) {
+			if (!starting) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "the edge %s: the jail is not "
+				    "running", edge);
+				return (-1);
+			}
+			edgedown = true;
+		} else if (!eji.vnet) {
+			ucl_object_unref(top);
+			*errp = wfmt(w, "the edge %s: the jail has no network of "
+			    "its own (vnet)", edge);
+			return (-1);
+		}
+	}
 	memset(ni, 0, sizeof(ni));
 	n = 0;
 	it = NULL;
@@ -1556,12 +1617,19 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			if (!sec) {
 				ucl_object_unref(top);
 				*errp = wfmt(w, "%s: only the Security section's run "
-				    "in a jail: an SD-WAN service's runs on its edge",
+				    "in a jail: an SD-WAN service's runs on its edge "
+				    "(a jail edge's list names the jail)",
 				    ni[n].name);
 				return (-1);
 			}
 			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s",
 			    ucl_object_tostring(f));
+		}
+		/* An SD-WAN service's at a jail edge: in the jail. */
+		if (!sec && edge[0] != '\0') {
+			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s", edge);
+			ni[n].jaildown = edgedown;
+			ni[n].vnet = true;
 		}
 		if ((f = ucl_object_lookup(in, "divert")) != NULL) {
 			if (ucl_object_type(f) != UCL_INT || ucl_object_toint(f) <
@@ -1590,7 +1658,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		/* Its jail running (at the start, one that is not is kept
 		 * for the next apply); one that prevents needs a network of
 		 * its own there. */
-		if (ni[n].jail[0] != '\0') {
+		if (ni[n].jail[0] != '\0' && (sec || edge[0] == '\0')) {
 			struct jinfo	ji;
 
 			if (jail_named(w, ni[n].jail, &ji) < 0) {
@@ -1673,18 +1741,18 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			}
 		n++;
 	}
-	/* The two groups' together within the table: refused before any
-	 * is started, none started and then not kept. */
+	/* The lists' together within the table: refused before any is
+	 * started, none started and then not kept. */
 	pthread_mutex_lock(&lock);
 	for (i = nkeep = 0; i < ninstances; i++)
-		if (IS_SEC(instances[i].name) != sec)
+		if (!of_list(instances[i].name, instances[i].jail, sec, edge))
 			nkeep++;
 	pthread_mutex_unlock(&lock);
 	if (nkeep + n > INSTANCES_MAX) {
 		ucl_object_unref(top);
-		*errp = wfmt(w, "%d instances at most, SD-WAN's and the Security "
-		    "section's together: the other has %d", INSTANCES_MAX,
-		    nkeep);
+		*errp = wfmt(w, "%d instances at most, SD-WAN's of every edge and "
+		    "the Security section's together: the others have %d",
+		    INSTANCES_MAX, nkeep);
 		return (-1);
 	}
 	/* Suricata where each runs, the host's or the jail's own; a vnet
@@ -1714,7 +1782,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			    "plugin, installed by hand in the jail (pkg -j %s "
 			    "install suricata)", ni[k].jail, suricata_bin(w),
 			    ni[k].jail);
-		else if (ni[k].divert > 0 && !ni[k].stopped)
+		else if (ni[k].divert > 0 && !ni[k].stopped && sec)
 			e = idsfw_check(w);
 		(void)inst_in(w, "", NULL);
 		if (e != NULL) {
@@ -1729,7 +1797,7 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	pthread_mutex_lock(&lock);
 	applying = true;
 	for (i = nheld = 0; i < ninstances; i++) {
-		if (IS_SEC(instances[i].name) != sec)
+		if (!of_list(instances[i].name, instances[i].jail, sec, edge))
 			continue;
 		snprintf(held[nheld].name, sizeof(held[nheld].name), "%s",
 		    instances[i].name);
@@ -1945,7 +2013,8 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 			for (k = 0; k < n; k++)
 				if (strcmp(ni[k].name, instances[i].name) == 0)
 					break;
-			if (IS_SEC(instances[i].name) != sec || k < n)
+			if (!of_list(instances[i].name, instances[i].jail, sec,
+			    edge) || k < n)
 				instances[nkeep++] = instances[i];
 			else
 				alerts_free(&instances[i]);
@@ -1986,11 +2055,12 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 						    "Suricata %s detects now, "
 						    "nothing diverted", ni[k].name);
 				}
-		/* The other group's kept as they are, this group's
-		 * replaced by the list. */
+		/* The other lists' kept as they are, this one's replaced
+		 * by the list. */
 		nkeep = 0;
 		for (i = 0; i < ninstances; i++) {
-			if (IS_SEC(instances[i].name) != sec)
+			if (!of_list(instances[i].name, instances[i].jail, sec,
+			    edge))
 				instances[nkeep++] = instances[i];
 			else
 				alerts_free(&instances[i]);
@@ -2015,9 +2085,21 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 		ids_reconcile(false);
 	if (!ok)
 		return (-1);
+	/* Kept, a file per edge; a jail's with no instance goes, so that a
+	 * start makes none for a jail that has none now. */
+	file = sec ? SEC_FILE : edge[0] != '\0' ? wfmt(w, "sdwan-ids@%s.json",
+	    edge) : IDS_FILE;
+	if (edge[0] != '\0' && n == 0) {
+		if (unlink(sdwan_conf_path(file, kpath, sizeof(kpath))) == -1 &&
+		    errno != ENOENT) {
+			*errp = wfmt(w, "%s: %s", file, strerror(errno));
+			return (-1);
+		}
+		return (0);
+	}
 	e = NULL;
-	if (sdwan_conf_write(sec ? SEC_FILE : IDS_FILE, json, &e) != 0) {
-		*errp = wfmt(w, "%s: %s", sec ? SEC_FILE : IDS_FILE, e);
+	if (sdwan_conf_write(file, json, &e) != 0) {
+		*errp = wfmt(w, "%s: %s", file, e);
 		return (-1);
 	}
 	/* Running, kept, but what diverts to it could not be placed. */
@@ -2028,13 +2110,17 @@ do_sdwan_ids(struct work *w, const char *json, const char **errp)
 	return (0);
 }
 
-/* At the start: the instances kept, started again. */
+/* At the start: the instances kept, the host's, each jail edge's and
+ * the Security section's, started again. */
 void
 sdwan_ids_start(void)
 {
 	struct work	 w;
-	char		*json;
+	struct dirent	*de;
+	DIR		*d;
+	char		*json, dir[MAXPATHLEN], *slash;
 	const char	*e;
+	size_t		 n;
 
 	work_init(&w);
 	starting = true;
@@ -2043,6 +2129,27 @@ sdwan_ids_start(void)
 		if (do_sdwan_ids(&w, json, &e) != 0)
 			logmsg(LOG_WARNING, "sdwan ids: %s", e);
 		free(json);
+	}
+	sdwan_conf_path(IDS_FILE, dir, sizeof(dir));
+	if ((slash = strrchr(dir, '/')) == NULL)
+		snprintf(dir, sizeof(dir), ".");
+	else
+		*slash = '\0';
+	if ((d = opendir(dir)) != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			n = strlen(de->d_name);
+			if (strncmp(de->d_name, "sdwan-ids@", 10) != 0 || n <= 15 ||
+			    strcmp(de->d_name + n - 5, ".json") != 0)
+				continue;
+			if ((json = sdwan_kept_read(de->d_name)) == NULL)
+				continue;
+			e = NULL;
+			if (do_sdwan_ids(&w, json, &e) != 0)
+				logmsg(LOG_WARNING, "sdwan ids: %s: %s", de->d_name,
+				    e);
+			free(json);
+		}
+		closedir(d);
 	}
 	if ((json = sdwan_kept_read(SEC_FILE)) != NULL) {
 		e = NULL;

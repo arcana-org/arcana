@@ -80,8 +80,8 @@ arcana-log:/logs/read/line/text	a log's line: a viewer reads only the logs every
 arcana-network:/socket/command	a socket's process's command name (ki_comm), no argument
 arcana-sdwan:/edge-config/rules/rule/text	an SD-WAN ipfw rule the console wrote, no secret
 arcana-sdwan:/edge-state/rules/counter/text	an SD-WAN ipfw rule's counters, no secret
-arcana-sdwan:/sdwan/ids-instance/lua/text	a Suricata Lua script the console sent: a detection, no credential
-arcana-sdwan:/sdwan/proxy-instance/named-list/text	a proxy's list of names or addresses, no secret
+arcana-sdwan:/edge-config/ids-instance/lua/text	a Suricata Lua script the console sent: a detection, no credential
+arcana-sdwan:/edge-config/proxy-instance/named-list/text	a proxy's list of names or addresses, no secret
 arcana-services:/services/service/command	the names of a script's commands (extracommands)
 arcana-services:/services/service/read/command	the names of a script's commands (extracommands)
 arcana-services://arcj:jails/arcj:jail/services/read/service/command	the names of a jail's script's commands (extracommands)

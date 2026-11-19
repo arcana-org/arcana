@@ -541,7 +541,10 @@ inst_form(ucl_object_t *o, const ucl_object_t *sd, const char *key,
 	ucl_object_iter_t	 it = NULL;
 
 	list = jget(sd, key);
-	if (jstr(v, "jail") != NULL && jstr(v, "jail")[0] != '\0') {
+	/* The Security section's are the host's edge's, whatever jail
+	 * each runs in. */
+	if (jstr(v, "jail") != NULL && jstr(v, "jail")[0] != '\0' &&
+	    !is_sec(jstr(v, "name"))) {
 		list = NULL;
 		while ((e = ucl_object_iterate(jget(sd, "jail"), &it, true)) !=
 		    NULL)

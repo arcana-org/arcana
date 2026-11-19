@@ -528,7 +528,7 @@ main(int argc, char **argv)
 		w.proxy_instance.n = n;
 		w.proxy_instance.v = v;
 		for (size_t i = 0; i < n; i++) {
-			const struct arcana_sdwan_sdwan_proxy_instance *p =
+			const struct arcana_sdwan_proxy_instance *p =
 			    &w.proxy_instance.v[i];
 
 			printf("proxy %s fib=%u mode=%s host=%s spec=%s", p->name,
@@ -542,9 +542,10 @@ main(int argc, char **argv)
 				printf(" stopped=%s", p->stopped ? "yes" : "no");
 			printf("\n");
 		}
-		/* Each group's apart, as the setter keeps them. */
-		for (int g = 0; g < 2; g++) {
-			if ((js = ysd_instances_json(YSD_PROXY, NULL, g, n, v,
+		/* Each group's apart, as the setter keeps them; a jail
+		 * edge's SD-WAN's alone. */
+		for (int g = 0; g < (jail != NULL ? 1 : 2); g++) {
+			if ((js = ysd_instances_json(YSD_PROXY, jail, g, n, v,
 			    &e)) == NULL)
 				printf("refused: %s\n", e);
 			else
@@ -566,7 +567,7 @@ main(int argc, char **argv)
 		w.ids_instance.n = n;
 		w.ids_instance.v = v;
 		for (size_t i = 0; i < n; i++) {
-			const struct arcana_sdwan_sdwan_ids_instance *d =
+			const struct arcana_sdwan_ids_instance *d =
 			    &w.ids_instance.v[i];
 
 			printf("ids %s divert=%u rules=%zu interfaces=", d->name,
@@ -582,8 +583,8 @@ main(int argc, char **argv)
 			    NULL ? strlen(d->thresholds) : 0, d->lua.n,
 			    d->plugin.n, form("ids-instance", d->spec));
 		}
-		for (int g = 0; g < 2; g++) {
-			if ((js = ysd_instances_json(YSD_IDS, NULL, g, n, v,
+		for (int g = 0; g < (jail != NULL ? 1 : 2); g++) {
+			if ((js = ysd_instances_json(YSD_IDS, jail, g, n, v,
 			    &e)) == NULL)
 				printf("refused: %s\n", e);
 			else

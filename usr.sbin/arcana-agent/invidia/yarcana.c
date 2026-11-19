@@ -3193,12 +3193,14 @@ sd_kept(struct work *w, const char *base, const char *jail)
 	return (sdwan_kept_read(sd_file(w, base, jail)));
 }
 
-/* The jails with an edge kept: sdwan-{rules,steer,bird,dhcp,dns}@jail.json. */
+/* The jails with an edge kept:
+ * sdwan-{rules,steer,bird,dhcp,dns,proxy,ids}@jail.json. */
 static size_t
 sd_jails(struct work *w, const char **v, size_t max)
 {
 	static const char *const bases[] = { "sdwan-rules@", "sdwan-steer@",
-	    "sdwan-bird@", "sdwan-dhcp@", "sdwan-dns@" };
+	    "sdwan-bird@", "sdwan-dhcp@", "sdwan-dns@", "sdwan-proxy@",
+	    "sdwan-ids@" };
 	struct dirent	*de;
 	DIR		*d;
 	char		 dir[MAXPATHLEN], *slash, *name;
@@ -3233,7 +3235,8 @@ sd_jails(struct work *w, const char **v, size_t max)
 }
 
 /* An edge's rules, steer, and BIRD, dnsmasq and unbound instances, as
- * their files keep them. */
+ * their files keep them; a jail's Squid and Suricata too (the host's
+ * are sd_conf()'s, the Security section's with them). */
 static int
 sd_edge_conf(struct work *w, const char *jail, cbl_yarena *a,
     struct arcana_sdwan_sdwan_jail *e)
@@ -3276,6 +3279,20 @@ sd_edge_conf(struct work *w, const char *jail, cbl_yarena *a,
 		if ((error = ysd_instances_from_json(json, YSD_DNS, a,
 		    &e->dns_instance.n, &v)) == 0)
 			e->dns_instance.v = v;
+		free(json);
+	}
+	if (error == 0 && jail != NULL && (json = sd_kept(w, "sdwan-proxy",
+	    jail)) != NULL) {
+		if ((error = ysd_instances_from_json(json, YSD_PROXY, a,
+		    &e->proxy_instance.n, &v)) == 0)
+			e->proxy_instance.v = v;
+		free(json);
+	}
+	if (error == 0 && jail != NULL && (json = sd_kept(w, "sdwan-ids",
+	    jail)) != NULL) {
+		if ((error = ysd_instances_from_json(json, YSD_IDS, a,
+		    &e->ids_instance.n, &v)) == 0)
+			e->ids_instance.v = v;
 		free(json);
 	}
 	return (error == EINVAL ? 0 : error);
@@ -3349,12 +3366,12 @@ sd_conf(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	o->dns_instance.n = host.dns_instance.n;
 	o->dns_instance.v = host.dns_instance.v;
 	if ((error = sd_instances(w, YSD_PROXY, proxy, a,
-	    sizeof(struct arcana_sdwan_sdwan_proxy_instance),
+	    sizeof(struct arcana_sdwan_proxy_instance),
 	    &o->proxy_instance.n, &v)) != 0)
 		return (error);
 	o->proxy_instance.v = v;
 	if ((error = sd_instances(w, YSD_IDS, ids, a,
-	    sizeof(struct arcana_sdwan_sdwan_ids_instance), &o->ids_instance.n,
+	    sizeof(struct arcana_sdwan_ids_instance), &o->ids_instance.n,
 	    &v)) != 0)
 		return (error);
 	o->ids_instance.v = v;
@@ -3421,10 +3438,10 @@ sd_conf_rendered(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	    "dhcp", "conf");
 	SD_RENDERED(w, a, o, dns_instance, arcana_sdwan_dns_instance,
 	    "dns", "conf");
-	SD_RENDERED(w, a, o, proxy_instance, arcana_sdwan_sdwan_proxy_instance,
+	SD_RENDERED(w, a, o, proxy_instance, arcana_sdwan_proxy_instance,
 	    "proxy", "conf");
 	/* Suricata's YAML, its places filled. */
-	SD_RENDERED(w, a, o, ids_instance, arcana_sdwan_sdwan_ids_instance,
+	SD_RENDERED(w, a, o, ids_instance, arcana_sdwan_ids_instance,
 	    "ids", "yaml");
 }
 
@@ -3497,7 +3514,7 @@ struct sd_step {
 };
 
 struct sd_plan {
-	struct sd_step	 v[5 * (SD_JAILS + 1) + 4];
+	struct sd_step	 v[7 * (SD_JAILS + 1) + 4];
 	size_t		 n;
 	const char	*why;
 };
@@ -3530,7 +3547,8 @@ sd_plan(struct sd_plan *p, int kind, const char *jail, char *was, char *now)
 }
 
 /* An edge's rules, steering, BIRD, DHCP and DNS as they were and are to
- * be. */
+ * be; a jail's Squid and Suricata too, SD-WAN's alone (the host's are
+ * planned by group, the Security section's with them). */
 static bool
 sd_plan_edge(struct sd_plan *p, const char *jail,
     const struct arcana_sdwan_sdwan_jail *b,
@@ -3566,6 +3584,18 @@ sd_plan_edge(struct sd_plan *p, const char *jail,
 	    SD_DNS, jail, ysd_instances_json(YSD_DNS, jail, -1,
 	    b->dns_instance.n, b->dns_instance.v, &e), ysd_instances_json(
 	    YSD_DNS, jail, -1, f->dns_instance.n, f->dns_instance.v, &e)))
+		return (false);
+	if (jail == NULL)
+		return (true);
+	if ((b->proxy_instance.n > 0 || f->proxy_instance.n > 0) && !sd_plan(p,
+	    SD_PROXY, jail, ysd_instances_json(YSD_PROXY, jail, 0,
+	    b->proxy_instance.n, b->proxy_instance.v, &e), ysd_instances_json(
+	    YSD_PROXY, jail, 0, f->proxy_instance.n, f->proxy_instance.v, &e)))
+		return (false);
+	if ((b->ids_instance.n > 0 || f->ids_instance.n > 0) && !sd_plan(p,
+	    SD_IDS, jail, ysd_instances_json(YSD_IDS, jail, 0,
+	    b->ids_instance.n, b->ids_instance.v, &e), ysd_instances_json(
+	    YSD_IDS, jail, 0, f->ids_instance.n, f->ids_instance.v, &e)))
 		return (false);
 	return (true);
 }
@@ -3745,11 +3775,11 @@ arcana_sdwan_sdwan_apply_action(cbl_req *req, const struct cbl_bytes *target,
 	jail = in->jail != NULL && in->jail[0] != '\0' ? in->jail : NULL;
 	if (jail != NULL && !valid_jail(jail))
 		return (said(req, "invalid jail name"));
-	if (jail != NULL && kind > SD_DNS)
-		return (said(req, "an edge that is a vnet jail has its rules, "
-		    "steering, BIRD, DHCP and DNS alone"));
 	group = kind < SD_PROXY ? -1 : in->has_security && in->security ?
 	    1 : 0;
+	if (jail != NULL && group == 1)
+		return (said(req, "the Security section's are the host's edge's: "
+		    "each names the jail it runs in"));
 	work_init(&w);
 	/* The part as running has it, the JSON its setter takes. */
 	why = NULL;
@@ -3780,11 +3810,15 @@ arcana_sdwan_sdwan_apply_action(cbl_req *req, const struct cbl_bytes *target,
 		    e.dns_instance.n, e.dns_instance.v, &why);
 		break;
 	case SD_PROXY:
-		json = ysd_instances_json(YSD_PROXY, NULL, group,
+		json = jail != NULL ? ysd_instances_json(YSD_PROXY, jail, 0,
+		    e.proxy_instance.n, e.proxy_instance.v, &why) :
+		    ysd_instances_json(YSD_PROXY, NULL, group,
 		    conf.proxy_instance.n, conf.proxy_instance.v, &why);
 		break;
 	default:
-		json = ysd_instances_json(YSD_IDS, NULL, group,
+		json = jail != NULL ? ysd_instances_json(YSD_IDS, jail, 0,
+		    e.ids_instance.n, e.ids_instance.v, &why) :
+		    ysd_instances_json(YSD_IDS, NULL, group,
 		    conf.ids_instance.n, conf.ids_instance.v, &why);
 		break;
 	}

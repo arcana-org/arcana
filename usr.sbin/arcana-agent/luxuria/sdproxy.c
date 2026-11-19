@@ -37,6 +37,15 @@
  * signatures are the jail's own, as its freshclam keeps them.  A jail
  * not running at the agent's start leaves its instance kept, not
  * started, until the list is applied again.
+ *
+ * An SD-WAN edge that is a vnet jail has its own (the payload's
+ * "jail"), each service's run in the jail the same way, in the
+ * service's table there (the jail's own setfib(1)), its files in
+ * EDGE_DIR beneath the jail's root, Squid's and c-icap's logs in the
+ * jail's /var/log, read there for what they blocked (sdblock.c), and
+ * the MD+R's hashes in the jail's own ClamAV database.  Each edge's
+ * list is its own, kept apart (sdwan-proxy@<jail>.json), neither the
+ * host's nor another jail's stopped by it.
  */
 
 #include <sys/param.h>
@@ -72,8 +81,11 @@
 #define	DENY_MAX	(8 * 1024 * 1024)
 #define	LISTS_MAX	64		/* list files an instance */
 #define	PATH_CERTGEN	"/usr/local/libexec/squid/security_file_certgen"
-/* A jail's: where its instances' files are beneath its root. */
+/* A jail's: where its instances' files are beneath its root, the
+ * Security section's and a jail edge's SD-WAN services' apart. */
 #define	JAIL_DIR	"/var/db/arcana-security"
+#define	EDGE_DIR	"/var/db/arcana-sdwan"
+#define	DIR_OF(name)	(IS_SEC(name) ? JAIL_DIR : EDGE_DIR)
 
 struct instance {
 	char	name[40];
@@ -91,7 +103,17 @@ static int		ninstances;
 static bool		starting;	/* the kept lists applied at the start */
 
 static void	proxies_watch(struct work *, const ucl_object_t *,
-		    const struct instance *, int);
+		    const struct instance *, int, const char *);
+
+/* Is an instance of the list applied: of its group and, SD-WAN's, of
+ * its edge (the jail it runs in, "" the host's)? */
+static bool
+of_list(const struct instance *in, bool sec, const char *edge)
+{
+
+	return (IS_SEC(in->name) == sec && (sec || strcmp(in->jail, edge) ==
+	    0));
+}
 
 static bool
 name_ok(const char *s)
@@ -114,7 +136,7 @@ inst_path(struct work *w, const char *name, const char *ext)
 	char	buf[MAXPATHLEN];
 
 	if (w->jail != NULL)
-		return (wfmt(w, JAIL_DIR "/sdwan-proxy-%s.%s", name, ext));
+		return (wfmt(w, "%s/sdwan-proxy-%s.%s", DIR_OF(name), name, ext));
 	sdwan_conf_path(wfmt(w, "sdwan-proxy-%s.%s", name, ext), buf,
 	    sizeof(buf));
 	return (wstrdup(w, buf));
@@ -156,14 +178,14 @@ jail_gid(struct work *w, const char *group)
 }
 
 /*
- * A file of the instance's (file, its name beside the others), written
- * whole where w works: the host's as sdwan_conf_write() and, with a
- * group, sdwan_conf_write_group() write them; a jail's beneath its
- * root, 0600, or 0640 of the jail's own group when it has one.
+ * A file of the instance name's (file, its name beside the others),
+ * written whole where w works: the host's as sdwan_conf_write() and,
+ * with a group, sdwan_conf_write_group() write them; a jail's beneath
+ * its root, 0600, or 0640 of the jail's own group when it has one.
  */
 static int
-px_write(struct work *w, const char *file, const char *text,
-    const char *group, const char **errp)
+px_write(struct work *w, const char *name, const char *file,
+    const char *text, const char *group, const char **errp)
 {
 	const char	*path, *base;
 	gid_t		 gid;
@@ -172,9 +194,9 @@ px_write(struct work *w, const char *file, const char *text,
 	if (w->jail == NULL)
 		return (group != NULL ? sdwan_conf_write_group(file, text, group,
 		    errp) : sdwan_conf_write(file, text, errp));
-	path = wfmt(w, JAIL_DIR "/%s", file);
+	path = wfmt(w, "%s/%s", DIR_OF(name), file);
 	gid = group != NULL ? jail_gid(w, group) : (gid_t)-1;
-	if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w, path, text,
+	if (scope_mkdirs(w, DIR_OF(name)) != 0 || scope_replace(w, path, text,
 	    strlen(text), gid != (gid_t)-1 ? 0640 : 0600, NULL) != 0) {
 		*errp = wfmt(w, "%s in the jail %s: %s", path, w->jail,
 		    strerror(errno));
@@ -256,7 +278,7 @@ icap_path(struct work *w, const char *name, const char *ext)
 	char	buf[MAXPATHLEN];
 
 	if (w->jail != NULL)
-		return (wfmt(w, JAIL_DIR "/sdwan-icap-%s.%s", name, ext));
+		return (wfmt(w, "%s/sdwan-icap-%s.%s", DIR_OF(name), name, ext));
 	sdwan_conf_path(wfmt(w, "sdwan-icap-%s.%s", name, ext), buf,
 	    sizeof(buf));
 	return (wstrdup(w, buf));
@@ -357,8 +379,8 @@ icap_start(struct work *w, const struct instance *in, const char *text,
 	char		*argv[7];
 	int		 k;
 
-	if (px_write(w, wfmt(w, "sdwan-icap-%s.conf", in->name), text, NULL,
-	    errp) != 0)
+	if (px_write(w, in->name, wfmt(w, "sdwan-icap-%s.conf", in->name),
+	    text, NULL, errp) != 0)
 		return (-1);
 	if (w->jail != NULL)
 		(void)scope_mkdirs(w, "/var/log/c-icap");
@@ -491,7 +513,7 @@ inst_ca(struct work *w, const char *name, const char **errp)
 		(void)unlink(crt);
 		if (inst_in(w, jail, errp) != 0)
 			return (false);
-		if (scope_mkdirs(w, JAIL_DIR) != 0 || scope_replace(w,
+		if (scope_mkdirs(w, DIR_OF(name)) != 0 || scope_replace(w,
 		    inst_path(w, name, "pem"), text, strlen(text), 0600, NULL) !=
 		    0 || scope_replace(w, inst_path(w, name, "crt"), c, strlen(c),
 		    0644, NULL) != 0) {
@@ -550,7 +572,7 @@ inst_ssldb(struct work *w, const char *name, const char **errp)
 	    0)
 		return (true);
 	if (w->jail != NULL)
-		(void)scope_mkdirs(w, JAIL_DIR);
+		(void)scope_mkdirs(w, DIR_OF(name));
 	argv[0] = (char *)(uintptr_t)certgen_bin(w);
 	argv[1] = (char *)(uintptr_t)"-c";
 	argv[2] = (char *)(uintptr_t)"-s";
@@ -583,6 +605,8 @@ inst_paths(struct work *w, const char *name, struct sqpaths *p)
 	p->list_suf = "";
 	p->icap_pid = icap_path(w, name, "pid");
 	p->icap_cmd = icap_path(w, name, "ctl");
+	/* The logs a jail's daemons write: the jail's own. */
+	p->log_dir = w->jail != NULL ? "/var/log" : NULL;
 }
 
 /* An instance's list files gone, all of them. */
@@ -624,7 +648,7 @@ lists_write(struct work *w, const char *name, const ucl_object_t *lists,
 	lists_clear(w, name);
 	it = NULL;
 	while ((l = ucl_object_iterate(lists, &it, true)) != NULL)
-		if (px_write(w, wfmt(w, "sdwan-proxy-%s.list-%s", name,
+		if (px_write(w, name, wfmt(w, "sdwan-proxy-%s.list-%s", name,
 		    ucl_object_key(l)), ucl_object_tostring(l), "squid",
 		    errp) != 0)
 			return (false);
@@ -704,13 +728,14 @@ inst_down(struct work *w, const char *name)
 /* ClamAV's hash signature files the MD+R's hashes go to. */
 static const char *const sig_ext[] = { "hdb", "hsb", "fp", "sfp" };
 
-/* Where ClamAV reads its signatures, under --root when one is given. */
+/* Where ClamAV reads its signatures, under --root when one is given;
+ * a jail's as the jail sees it. */
 static const char *
 clamav_db(struct work *w)
 {
 
-	return (opts.root != NULL ? wfmt(w, "%s%s", opts.root,
-	    PATH_CLAMAV_DB) : PATH_CLAMAV_DB);
+	return (opts.root != NULL && w->jail == NULL ? wfmt(w, "%s%s",
+	    opts.root, PATH_CLAMAV_DB) : PATH_CLAMAV_DB);
 }
 
 /*
@@ -719,7 +744,8 @@ clamav_db(struct work *w)
  * written beside and moved in, those with nothing in them gone.
  * c-icap's ClamAV module reads the whole directory as it starts, as
  * the instances' c-icap do next; the host's ClamAV is one for every
- * service.
+ * service of its edge.  A jail edge's are its own ClamAV's, written
+ * beneath the jail's root (w in the jail), through no link out of it.
  */
 static int
 hashes_write(struct work *w, const ucl_object_t *h, const char **errp)
@@ -730,6 +756,28 @@ hashes_write(struct work *w, const ucl_object_t *h, const char **errp)
 	FILE			*fp;
 	size_t			 i;
 
+	if (w->jail != NULL) {
+		if (scope_mkdirs(w, PATH_CLAMAV_DB) != 0) {
+			*errp = wfmt(w, PATH_CLAMAV_DB " in the jail %s: %s",
+			    w->jail, strerror(errno));
+			return (-1);
+		}
+		for (i = 0; i < nitems(sig_ext); i++) {
+			path = wfmt(w, PATH_CLAMAV_DB "/arcana-sdwan.%s",
+			    sig_ext[i]);
+			if ((f = ucl_object_lookup(h, sig_ext[i])) == NULL) {
+				(void)scope_unlink(w, path);
+				continue;
+			}
+			if (scope_replace(w, path, ucl_object_tostring(f),
+			    strlen(ucl_object_tostring(f)), 0644, NULL) != 0) {
+				*errp = wfmt(w, "%s in the jail %s: %s", path,
+				    w->jail, strerror(errno));
+				return (-1);
+			}
+		}
+		return (0);
+	}
 	/* The directory, where the host has no ClamAV yet. */
 	dir = wstrdup(w, clamav_db(w));
 	for (p = dir + 1; (p = strchr(p, '/')) != NULL; p++) {
@@ -788,6 +836,9 @@ parse(const char *json)
  * (stopped: true) is stopped, its files kept; those not named any more
  * are stopped, their files gone.  Kept for the next start.  The
  * Security section's may each name a running jail ("jail") to run in.
+ * SD-WAN's with "jail" are those of an edge that is that vnet jail, run
+ * in it; the other edges' are left as they are, and each edge's list
+ * is kept in a file of its own.
  */
 int
 do_sdwan_proxy(struct work *w, const char *json, const char **errp)
@@ -800,9 +851,10 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	struct sqpaths		 pp;
 	char			*argv[6], *confs[INSTANCES_MAX];
 	char			*denies[INSTANCES_MAX], *icaps[INSTANCES_MAX];
-	const char		*mode, *e, *host;
+	char			 kpath[MAXPATHLEN];
+	const char		*mode, *e, *host, *edge, *file;
 	int			 n, i, k, step, nkeep;
-	bool			 was, ok, sec;
+	bool			 was, ok, sec, edgedown;
 
 	if ((top = parse(json)) == NULL || ucl_object_type(top) != UCL_OBJECT) {
 		if (top != NULL)
@@ -814,6 +866,34 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	sec = ucl_object_lookup(top, "group") != NULL && strcmp(
 	    ucl_object_tostring_forced(ucl_object_lookup(top, "group")),
 	    "security") == 0;
+	/* The edge, SD-WAN's: a vnet jail's, running (at the start, one
+	 * that is not keeps its instances for the next apply), or the
+	 * host's.  The Security section's are the host's edge's, each
+	 * naming its own jail. */
+	if ((edge = sdwan_payload_jail(top, errp)) == NULL) {
+		ucl_object_unref(top);
+		return (-1);
+	}
+	edge = wstrdup(w, edge);
+	if (sec && edge[0] != '\0') {
+		ucl_object_unref(top);
+		*errp = "the Security section's are the host's edge's: each "
+		    "names the jail it runs in";
+		return (-1);
+	}
+	edgedown = false;
+	if (edge[0] != '\0') {
+		e = NULL;
+		if (scope_enter(w, edge, &e) != 0) {
+			if (!starting) {
+				ucl_object_unref(top);
+				*errp = wfmt(w, "the edge %s: %s", edge, e);
+				return (-1);
+			}
+			edgedown = true;
+		}
+		(void)inst_in(w, "", NULL);
+	}
 	/* Each one's flags false unless said (stopped). */
 	memset(ni, 0, sizeof(ni));
 	n = 0;
@@ -867,8 +947,9 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 				ucl_object_unref(top);
 				*errp = !sec ? wfmt(w, "%s: only the Security "
 				    "section's run in a jail: an SD-WAN service's "
-				    "runs on its edge", ni[n].name) : wfmt(w, "%s: "
-				    "its jail is a jail's name", ni[n].name);
+				    "runs on its edge (a jail edge's list names "
+				    "the jail)", ni[n].name) : wfmt(w, "%s: its "
+				    "jail is a jail's name", ni[n].name);
 				return (-1);
 			}
 			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s",
@@ -884,6 +965,11 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 				ni[n].jaildown = true;
 			}
 			(void)inst_in(w, "", NULL);
+		}
+		/* An SD-WAN service's at a jail edge: in the jail. */
+		if (!sec && edge[0] != '\0') {
+			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s", edge);
+			ni[n].jaildown = edgedown;
 		}
 		snprintf(ni[n].mode, sizeof(ni[n].mode), "%s", mode);
 		ni[n].fib = (int)ucl_object_toint(ucl_object_lookup(in, "fib"));
@@ -920,18 +1006,18 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		n++;
 	}
-	/* The two groups' together within the table: refused before any
-	 * is started, none started and then not kept. */
+	/* The lists' together within the table: refused before any is
+	 * started, none started and then not kept. */
 	pthread_mutex_lock(&lock);
 	for (i = nkeep = 0; i < ninstances; i++)
-		if (IS_SEC(instances[i].name) != sec)
+		if (!of_list(&instances[i], sec, edge))
 			nkeep++;
 	pthread_mutex_unlock(&lock);
 	if (nkeep + n > INSTANCES_MAX) {
 		ucl_object_unref(top);
-		*errp = wfmt(w, "%d instances at most, SD-WAN's and the Security "
-		    "section's together: the other has %d", INSTANCES_MAX,
-		    nkeep);
+		*errp = wfmt(w, "%d instances at most, SD-WAN's of every edge and "
+		    "the Security section's together: the others have %d",
+		    INSTANCES_MAX, nkeep);
 		return (-1);
 	}
 	/* Squid, and c-icap where it scans, where each runs: the host's,
@@ -958,8 +1044,9 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 	}
 	/* The MD+R policies' hashes as ClamAV's signatures first: the
-	 * instances' c-icap read them as they start. */
-	if (!sec) {
+	 * instances' c-icap read them as they start.  A jail edge's in its
+	 * own ClamAV's; one not running left as it is. */
+	if (!sec && !edgedown) {
 		e = NULL;
 		if ((hashes = clamav_sigs_render(w, ucl_object_lookup(top,
 		    "instances"), &e)) == NULL) {
@@ -968,9 +1055,13 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 			return (-1);
 		}
 		hit = NULL;
-		k = ucl_object_iterate(hashes, &hit, true) != NULL ||
-		    access(clamav_db(w), W_OK) == 0 ? hashes_write(w, hashes, &e) :
-		    0;
+		k = inst_in(w, edge, &e);
+		if (k == 0)
+			k = ucl_object_iterate(hashes, &hit, true) != NULL ||
+			    (w->jail != NULL ? scope_access(w, clamav_db(w),
+			    false) : access(clamav_db(w), W_OK) == 0) ?
+			    hashes_write(w, hashes, &e) : 0;
+		(void)inst_in(w, "", NULL);
 		ucl_object_unref(hashes);
 		if (k != 0) {
 			ucl_object_unref(top);
@@ -980,8 +1071,9 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	}
 	pthread_mutex_lock(&lock);
 	for (i = 0; i < ninstances; i++) {
-		/* The other group's are not this list's to stop. */
-		if (IS_SEC(instances[i].name) != sec)
+		/* The other group's and edges' are not this list's to
+		 * stop. */
+		if (!of_list(&instances[i], sec, edge))
 			continue;
 		/* Not named any more, or moved to another place. */
 		for (k = 0; k < n; k++)
@@ -1043,11 +1135,11 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 		}
 		inst_chown(w, inst_path(w, ni[k].name, "pem"), false);
 		/* Read again by Squid as its user at a reconfigure. */
-		if (px_write(w, wfmt(w, "sdwan-proxy-%s.deny", ni[k].name),
-		    denies[k], "squid", &e) != 0 || !lists_write(w, ni[k].name,
-		    ucl_object_lookup(in, "lists"), &e) || px_write(w, wfmt(w,
-		    "sdwan-proxy-%s.conf", ni[k].name), confs[k], "squid", &e) !=
-		    0) {
+		if (px_write(w, ni[k].name, wfmt(w, "sdwan-proxy-%s.deny",
+		    ni[k].name), denies[k], "squid", &e) != 0 || !lists_write(w,
+		    ni[k].name, ucl_object_lookup(in, "lists"), &e) ||
+		    px_write(w, ni[k].name, wfmt(w, "sdwan-proxy-%s.conf",
+		    ni[k].name), confs[k], "squid", &e) != 0) {
 			step_end(w, step, false, "%s", e);
 			*errp = wfmt(w, "%s: %s", ni[k].name, e);
 			ok = false;
@@ -1088,46 +1180,69 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	}
 	(void)inst_in(w, "", NULL);
 	if (ok) {
-		/* The other group's kept, then this list's. */
+		/* The other lists' kept, then this one's. */
 		nkeep = 0;
 		for (i = 0; i < ninstances; i++)
-			if (IS_SEC(instances[i].name) != sec)
+			if (!of_list(&instances[i], sec, edge))
 				instances[nkeep++] = instances[i];
 		memcpy(instances + nkeep, ni, sizeof(*ni) * (size_t)n);
 		ninstances = nkeep + n;
 		/* The SD-WAN's logs read for what they blocked: each
-		 * running Squid's, and its c-icap's. */
-		if (!sec)
-			proxies_watch(w, top, ni, n);
+		 * running Squid's, and its c-icap's, of its edge. */
+		if (!sec && !edgedown)
+			proxies_watch(w, top, ni, n, edge);
 	}
 	pthread_mutex_unlock(&lock);
 	ucl_object_unref(top);
 	if (!ok)
 		return (-1);
+	/* Kept, a file per edge; a jail's with no instance goes, so that a
+	 * start makes none for a jail that has none now. */
+	file = sec ? SEC_FILE : edge[0] != '\0' ? wfmt(w,
+	    "sdwan-proxy@%s.json", edge) : PROXY_FILE;
+	if (edge[0] != '\0' && n == 0) {
+		if (unlink(sdwan_conf_path(file, kpath, sizeof(kpath))) == -1 &&
+		    errno != ENOENT) {
+			*errp = wfmt(w, "%s: %s", file, strerror(errno));
+			return (-1);
+		}
+		return (0);
+	}
 	e = NULL;
-	if (sdwan_conf_write(sec ? SEC_FILE : PROXY_FILE, json, &e) != 0) {
-		*errp = wfmt(w, "%s: %s", sec ? SEC_FILE : PROXY_FILE, e);
+	if (sdwan_conf_write(file, json, &e) != 0) {
+		*errp = wfmt(w, "%s: %s", file, e);
 		return (-1);
 	}
 	return (0);
 }
 
 /*
- * The SD-WAN instances' logs, those not stopped, read for what they
- * blocked (sdblock.c): Squid's access log, c-icap's server log, where
- * sdconf.c had them write.
+ * The SD-WAN instances' logs of an edge, those not stopped, read for
+ * what they blocked (sdblock.c): Squid's access log, c-icap's server
+ * log, where sdconf.c had them write; a jail edge's in its /var/log,
+ * read beneath its root.
  */
 static void
 proxies_watch(struct work *w, const ucl_object_t *top,
-    const struct instance *ni, int n)
+    const struct instance *ni, int n, const char *edge)
 {
 	const ucl_object_t	*in, *sq[INSTANCES_MAX], *ic[INSTANCES_MAX];
 	const char		*sn[INSTANCES_MAX], *sp[INSTANCES_MAX];
 	const char		*in_[INSTANCES_MAX], *ip[INSTANCES_MAX];
+	const char		*jroot, *dir;
 	ucl_object_iter_t	 it;
 	char			 buf[MAXPATHLEN];
 	int			 k, ns, ni_;
 
+	jroot = NULL;
+	dir = NULL;
+	if (edge[0] != '\0') {
+		if (inst_in(w, edge, NULL) != 0)
+			return;
+		jroot = wstrdup(w, w->jroot);
+		(void)inst_in(w, "", NULL);
+		dir = "/var/log";
+	}
 	ns = ni_ = 0;
 	it = NULL;
 	for (k = 0; k < n; k++) {
@@ -1136,25 +1251,31 @@ proxies_watch(struct work *w, const ucl_object_t *top,
 		if (ni[k].stopped)
 			continue;
 		sn[ns] = ni[k].name;
-		sp[ns] = wstrdup(w, sdwan_squid_log(buf, sizeof(buf), ni[k].fib));
+		sp[ns] = wstrdup(w, sdwan_squid_log(buf, sizeof(buf), dir,
+		    ni[k].fib));
 		sq[ns++] = ucl_object_lookup(in, "spec");
 		if (!ni[k].icap)
 			continue;
 		in_[ni_] = ni[k].name;
-		ip[ni_] = wstrdup(w, sdwan_icap_log(buf, sizeof(buf), ni[k].fib));
+		ip[ni_] = wstrdup(w, sdwan_icap_log(buf, sizeof(buf), dir,
+		    ni[k].fib));
 		ic[ni_++] = ucl_object_lookup(in, "spec");
 	}
-	sdblock_watch(SDB_SQUID, ns, sn, sp, sq);
-	sdblock_watch(SDB_ICAP, ni_, in_, ip, ic);
+	sdblock_watch_jail(SDB_SQUID, edge, jroot, ns, sn, sp, sq);
+	sdblock_watch_jail(SDB_ICAP, edge, jroot, ni_, in_, ip, ic);
 }
 
-/* At the start: the instances kept, started again. */
+/* At the start: the instances kept, the host's, each jail edge's and
+ * the Security section's, started again. */
 void
 sdwan_proxy_start(void)
 {
 	struct work	 w;
-	char		*json;
+	struct dirent	*de;
+	DIR		*d;
+	char		*json, dir[MAXPATHLEN], *slash;
 	const char	*e;
+	size_t		 n;
 
 	work_init(&w);
 	starting = true;
@@ -1163,6 +1284,27 @@ sdwan_proxy_start(void)
 		if (do_sdwan_proxy(&w, json, &e) != 0)
 			logmsg(LOG_WARNING, "sdwan proxy: %s", e);
 		free(json);
+	}
+	sdwan_conf_path(PROXY_FILE, dir, sizeof(dir));
+	if ((slash = strrchr(dir, '/')) == NULL)
+		snprintf(dir, sizeof(dir), ".");
+	else
+		*slash = '\0';
+	if ((d = opendir(dir)) != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			n = strlen(de->d_name);
+			if (strncmp(de->d_name, "sdwan-proxy@", 12) != 0 || n <=
+			    17 || strcmp(de->d_name + n - 5, ".json") != 0)
+				continue;
+			if ((json = sdwan_kept_read(de->d_name)) == NULL)
+				continue;
+			e = NULL;
+			if (do_sdwan_proxy(&w, json, &e) != 0)
+				logmsg(LOG_WARNING, "sdwan proxy: %s: %s",
+				    de->d_name, e);
+			free(json);
+		}
+		closedir(d);
 	}
 	if ((json = sdwan_kept_read(SEC_FILE)) != NULL) {
 		e = NULL;
@@ -1364,8 +1506,9 @@ sdwan_proxy_json(struct work *w, ucl_object_t *top)
 			    instances[i].mode), "mode", 0, false);
 			ucl_object_insert_key(o, ucl_object_frombool(false),
 			    "running", 0, false);
-			ucl_object_insert_key(o, ucl_object_fromstring("security"),
-			    "group", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring(IS_SEC(
+			    instances[i].name) ? "security" : "sdwan"), "group", 0,
+			    false);
 			ucl_array_append(arr, o);
 			continue;
 		}

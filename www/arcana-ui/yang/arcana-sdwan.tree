@@ -528,51 +528,168 @@ module: arcana-sdwan
      |  |           +--rw lease?      string
      |  |           +--rw dns*        inet:ip-address-no-zone
      |  +--rw dns-instance* [name]
-     |     +--rw name    string
-     |     +--rw fib?    uint16
-     |     +--ro conf?   string
-     |     +--rw host?   string
+     |  |  +--rw name    string
+     |  |  +--rw fib?    uint16
+     |  |  +--ro conf?   string
+     |  |  +--rw host?   string
+     |  |  +--rw spec
+     |  |     +--rw service?        string
+     |  |     +--rw fib?            uint32
+     |  |     +--rw dot?            boolean
+     |  |     +--rw upstream*       string
+     |  |     +--rw upstream-tls?   boolean
+     |  |     +--rw unis* [id address]
+     |  |     |  +--rw id         string
+     |  |     |  +--rw address    inet:ip-address-no-zone
+     |  |     |  +--rw prefix?    string
+     |  |     +--rw zones* [name]
+     |  |        +--rw name        string
+     |  |        +--rw prefixes*   string
+     |  |        +--rw dnf!
+     |  |        |  +--rw no-match?     allow-block
+     |  |        |  +--rw notify*       sfp-list
+     |  |        |  +--rw id?           string
+     |  |        |  +--rw block*        string
+     |  |        |  +--rw quarantine*   string
+     |  |        |  +--rw allow*        string
+     |  |        |  +--rw listed
+     |  |        |     +--rw block*        string
+     |  |        |     +--rw quarantine*   string
+     |  |        |     +--rw allow*        string
+     |  |        +--rw pdns!
+     |  |           +--rw no-match?   allow-block
+     |  |           +--rw notify*     sfp-list
+     |  |           +--rw id?         string
+     |  |           +--rw block* [type value]
+     |  |           |  +--rw type     enumeration
+     |  |           |  +--rw value    string
+     |  |           +--rw quarantine* [type value]
+     |  |           |  +--rw type     enumeration
+     |  |           |  +--rw value    string
+     |  |           +--rw allow* [type value]
+     |  |           |  +--rw type     enumeration
+     |  |           |  +--rw value    string
+     |  |           +--rw listed
+     |  |              +--rw block*        string
+     |  |              +--rw quarantine*   string
+     |  |              +--rw allow*        string
+     |  +--rw proxy-instance* [name]
+     |  |  +--rw name       string
+     |  |  +--rw fib?       uint16
+     |  |  +--ro conf?      string
+     |  |  +--rw host?      string
+     |  |  +--rw jail?      string
+     |  |  +--rw spec
+     |  |  |  +--rw flavor?     enumeration
+     |  |  |  +--rw service?    string
+     |  |  |  +--rw fib?        uint32
+     |  |  |  +--rw listen* [address]
+     |  |  |  |  +--rw address      inet:ip-address-no-zone
+     |  |  |  |  +--rw end-point?   string
+     |  |  |  +--rw resolver?   boolean
+     |  |  |  +--rw icap?       boolean
+     |  |  |  +--rw zones* [name]
+     |  |  |  |  +--rw name        string
+     |  |  |  |  +--rw default?    boolean
+     |  |  |  |  +--rw prefixes*   string
+     |  |  |  |  +--rw dnf*        string
+     |  |  |  |  +--rw dnf-id?     string
+     |  |  |  |  +--rw urlf!
+     |  |  |  |  |  +--rw no-match?     allow-block
+     |  |  |  |  |  +--rw notify*       sfp-list
+     |  |  |  |  |  +--rw id?           string
+     |  |  |  |  |  +--rw block*        string
+     |  |  |  |  |  +--rw quarantine*   string
+     |  |  |  |  |  +--rw allow*        string
+     |  |  |  |  |  +--rw listed
+     |  |  |  |  |     +--rw block*        string
+     |  |  |  |  |     +--rw quarantine*   string
+     |  |  |  |  |     +--rw allow*        string
+     |  |  |  |  +--rw mbsf!
+     |  |  |  |  |  +--rw no-match?                     allow-block
+     |  |  |  |  |  +--rw block*                        string
+     |  |  |  |  |  +--rw allow*                        string
+     |  |  |  |  |  +--rw pass-through*                 string
+     |  |  |  |  |  +--rw invalid-server-certificate?   allow-block
+     |  |  |  |  |  +--rw unencrypted?                  allow-block
+     |  |  |  |  |  +--rw id?                           string
+     |  |  |  |  +--rw mdr!
+     |  |  |  |     +--rw no-match?     allow-block
+     |  |  |  |     +--rw notify*       sfp-list
+     |  |  |  |     +--rw id?           string
+     |  |  |  |     +--rw block*        string
+     |  |  |  |     +--rw quarantine*   string
+     |  |  |  |     +--rw allow*        string
+     |  |  |  |     +--rw listed
+     |  |  |  |        +--rw block*        string
+     |  |  |  |        +--rw quarantine*   string
+     |  |  |  |        +--rw allow*        string
+     |  |  |  +--rw mode?       enumeration
+     |  |  |  +--rw port?       inet:port-number
+     |  |  |  +--rw allow*      string
+     |  |  |  +--rw deny*       string
+     |  |  |  +--rw malware?    boolean
+     |  |  +--rw mode?      enumeration
+     |  |  +--rw named-list* [name]
+     |  |  |  +--rw name    string
+     |  |  |  +--rw text?   string
+     |  |  +--rw stopped?   boolean
+     |  +--rw ids-instance* [name]
+     |     +--rw name          string
+     |     +--rw interface*    string
+     |     +--ro conf?         string
+     |     +--rw rules?        string
+     |     +--rw divert?       inet:port-number
+     |     +--rw host?         string
+     |     +--rw jail?         string
      |     +--rw spec
-     |        +--rw service?        string
-     |        +--rw fib?            uint32
-     |        +--rw dot?            boolean
-     |        +--rw upstream*       string
-     |        +--rw upstream-tls?   boolean
-     |        +--rw unis* [id address]
-     |        |  +--rw id         string
-     |        |  +--rw address    inet:ip-address-no-zone
-     |        |  +--rw prefix?    string
-     |        +--rw zones* [name]
-     |           +--rw name        string
-     |           +--rw prefixes*   string
-     |           +--rw dnf!
-     |           |  +--rw no-match?     allow-block
-     |           |  +--rw notify*       sfp-list
-     |           |  +--rw id?           string
-     |           |  +--rw block*        string
-     |           |  +--rw quarantine*   string
-     |           |  +--rw allow*        string
-     |           |  +--rw listed
-     |           |     +--rw block*        string
-     |           |     +--rw quarantine*   string
-     |           |     +--rw allow*        string
-     |           +--rw pdns!
-     |              +--rw no-match?   allow-block
-     |              +--rw notify*     sfp-list
-     |              +--rw id?         string
-     |              +--rw block* [type value]
-     |              |  +--rw type     enumeration
-     |              |  +--rw value    string
-     |              +--rw quarantine* [type value]
-     |              |  +--rw type     enumeration
-     |              |  +--rw value    string
-     |              +--rw allow* [type value]
-     |              |  +--rw type     enumeration
-     |              |  +--rw value    string
-     |              +--rw listed
-     |                 +--rw block*        string
-     |                 +--rw quarantine*   string
-     |                 +--rw allow*        string
+     |     |  +--rw flavor?                  enumeration
+     |     |  +--rw service?                 string
+     |     |  +--rw interfaces*              string
+     |     |  +--rw home*                    string
+     |     |  +--rw ruleset?                 boolean
+     |     |  +--rw oneside?                 boolean
+     |     |  +--rw capture?                 enumeration
+     |     |  +--rw pairs*                   string
+     |     |  +--rw eve*                     eve-type
+     |     |  +--rw payload?                 boolean
+     |     |  +--rw stats-interval?          uint16
+     |     |  +--rw max-pending?             uint16
+     |     |  +--rw runmode?                 enumeration
+     |     |  +--rw autofp-scheduler?        enumeration
+     |     |  +--rw mpm?                     enumeration
+     |     |  +--rw profile?                 enumeration
+     |     |  +--rw preset?                  enumeration
+     |     |  +--rw management-cpus?         cpu-set
+     |     |  +--rw worker-cpus?             cpu-set
+     |     |  +--rw flow-memcap?             ids-size
+     |     |  +--rw stream-memcap?           ids-size
+     |     |  +--rw reassembly-memcap?       ids-size
+     |     |  +--rw defrag-memcap?           ids-size
+     |     |  +--rw host-memcap?             ids-size
+     |     |  +--rw http-memcap?             ids-size
+     |     |  +--rw reassembly-depth?        ids-size
+     |     |  +--rw http-request-body?       ids-size
+     |     |  +--rw http-response-body?      ids-size
+     |     |  +--rw stream-inline?           enumeration
+     |     |  +--rw midstream?               boolean
+     |     |  +--rw exception-policy?        enumeration
+     |     |  +--rw pcap-log?                boolean
+     |     |  +--rw pcap-log-limit?          ids-size
+     |     |  +--rw pcap-log-files?          uint16
+     |     |  +--rw lua-outputs*             string
+     |     |  +--rw plugins*                 string
+     |     |  +--rw profiling*               enumeration
+     |     |  +--rw profiling-sample-rate?   uint32
+     |     |  +--rw yaml?                    string
+     |     +--rw capture?      enumeration
+     |     +--rw offload?      boolean
+     |     +--rw lua* [name]
+     |     |  +--rw name    string
+     |     |  +--rw text?   string
+     |     +--rw plugin*       string
+     |     +--rw stopped?      boolean
+     |     +--rw thresholds?   string
      +--ro state
      |  +--ro rules
      |  |  +--ro set?       uint8

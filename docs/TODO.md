@@ -189,6 +189,16 @@
     jail's instance adds the jail's own, fetched by its suricata-update
     run there by hand; the job could take a jail (jexec suricata-update).
   - Its interfaces' offloading still on is read for the host's alone.
+- SD-WAN's URL filter and IPS at an edge that is a vnet jail
+  (agent_test:sdwan_jail_proxy_ids, console_test:sdwan_jail_security):
+  the services' Squid with c-icap and Suricata run in the jail as its
+  dnsmasq and unbound do, files in /var/db/arcana-sdwan beneath its
+  root, the MD+R's hashes its own ClamAV's, what Suricata prevents
+  diverted by the edge's own rules (rule 9 in the jail's ipfw), no
+  idsfw.c rule.  Left: the same as the Security section's in a jail
+  above (a jail not running at the agent's start waits for the next
+  apply; replays and the ruleset are the host's); not run yet in a
+  real vnet jail.
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's

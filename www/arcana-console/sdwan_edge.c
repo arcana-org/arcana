@@ -3382,8 +3382,7 @@ proxy_build(struct plan *pl, const ucl_object_t *doc)
 				if (zone_proxied(sw, zone) && zone_fn(sw, zone,
 				    "mbsf") != NULL)
 					inspect = true;
-			snprintf(name, sizeof(name), "sw%jd", (intmax_t)
-			    ucl_object_toint(ucl_object_lookup(sw, "fib")));
+			inst_name(name, sizeof(name), sw, sid);
 			inst = ucl_object_typed_new(UCL_OBJECT);
 			put(inst, "name", S(name));
 			put(inst, "fib", I(efib(pl, sw, sid)));
@@ -3710,8 +3709,7 @@ ids_build(struct plan *pl, const ucl_object_t *doc)
 				ucl_object_unref(ifs);
 				continue;
 			}
-			snprintf(name, sizeof(name), "sw%jd", (intmax_t)
-			    ucl_object_toint(ucl_object_lookup(sw, "fib")));
+			inst_name(name, sizeof(name), sw, sid);
 			inst = ucl_object_typed_new(UCL_OBJECT);
 			put(inst, "name", S(name));
 			put(inst, "host", S(server_name_of(sid)));
@@ -11901,15 +11899,15 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
  * What an edge that is a vnet jail is not given yet, said: the jail's
  * own network takes its interfaces, routes, tunnels (gre, gif, GENEVE,
  * WireGuard, IKEv2), BIRD (run in the jail by the host's agent, with
- * BFD), dnsmasq and unbound (run there the same way), ipfw rules and
- * steering, probes and net.* sysctls; Squid, Suricata, NTP, rtadvd and
- * manual SAs (a uswe tunnel) are the host's only.
+ * BFD), dnsmasq, unbound, Squid with c-icap, and Suricata (run there
+ * the same way, what Suricata prevents diverted by the jail's own
+ * rules), ipfw rules and steering, probes and net.* sysctls; NTP,
+ * rtadvd and manual SAs (a uswe tunnel) are the host's only.
  */
 static bool
 jail_kind_ok(const char *kind, char *why, size_t wlen)
 {
-	static const char *const not[] = { "sdwan-proxy", "sdwan-ids", "ntp",
-	    "rtadvd", "ipsec-sa" };
+	static const char *const not[] = { "ntp", "rtadvd", "ipsec-sa" };
 	size_t	i;
 
 	for (i = 0; kind != NULL && i < nitems(not); i++)

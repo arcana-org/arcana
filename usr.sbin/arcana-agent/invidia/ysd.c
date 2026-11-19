@@ -599,7 +599,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 		return (EINVAL);
 	cnt = yj_count(ucl_object_lookup(top, "instances"));
 	if (kind == YSD_PROXY) {
-		struct arcana_sdwan_sdwan_proxy_instance	*v;
+		struct arcana_sdwan_proxy_instance	*v;
 		const char					*m;
 
 		if (!ALLOC_N(a, v, cnt))
@@ -615,8 +615,8 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 			if ((m = yj_str(a, e, "mode")) != NULL) {
 				v[n].has_mode = true;
 				v[n].mode = strcmp(m, "inspect") == 0 ?
-				    ARCANA_SDWAN_SDWAN_PROXY_INSTANCE_MODE_INSPECT :
-				    ARCANA_SDWAN_SDWAN_PROXY_INSTANCE_MODE_SNI;
+				    ARCANA_SDWAN_PROXY_INSTANCE_MODE_INSPECT :
+				    ARCANA_SDWAN_PROXY_INSTANCE_MODE_SNI;
 			}
 			if (named_of(a, ucl_object_lookup(e, "lists"),
 			    &v[n].named_list.n, (const struct named **)(void *)
@@ -627,7 +627,7 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 		}
 		*vp = v;
 	} else if (kind == YSD_IDS) {
-		struct arcana_sdwan_sdwan_ids_instance	*v;
+		struct arcana_sdwan_ids_instance	*v;
 
 		if (!ALLOC_N(a, v, cnt))
 			goto nomem;
@@ -653,8 +653,8 @@ ysd_instances_from_json(const char *json, int kind, cbl_yarena *a,
 				v[n].has_capture = true;
 				v[n].capture = strcmp(ucl_object_tostring(f),
 				    "netmap") == 0 ?
-				    ARCANA_SDWAN_SDWAN_IDS_INSTANCE_CAPTURE_NETMAP :
-				    ARCANA_SDWAN_SDWAN_IDS_INSTANCE_CAPTURE_PCAP;
+				    ARCANA_SDWAN_IDS_INSTANCE_CAPTURE_NETMAP :
+				    ARCANA_SDWAN_IDS_INSTANCE_CAPTURE_PCAP;
 			}
 			v[n].offload = yj_yes(e, "offload", &v[n].has_offload);
 			v[n].stopped = yj_yes(e, "stopped", &v[n].has_stopped);
@@ -955,14 +955,14 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 		const void	*form;
 
 		if (kind == YSD_PROXY) {
-			name = ((const struct arcana_sdwan_sdwan_proxy_instance *)
+			name = ((const struct arcana_sdwan_proxy_instance *)
 			    vp)[i].name;
-			form = ((const struct arcana_sdwan_sdwan_proxy_instance *)
+			form = ((const struct arcana_sdwan_proxy_instance *)
 			    vp)[i].spec;
 		} else if (kind == YSD_IDS) {
-			name = ((const struct arcana_sdwan_sdwan_ids_instance *)
+			name = ((const struct arcana_sdwan_ids_instance *)
 			    vp)[i].name;
-			form = ((const struct arcana_sdwan_sdwan_ids_instance *)
+			form = ((const struct arcana_sdwan_ids_instance *)
 			    vp)[i].spec;
 		} else {
 			/* dnsmasq's and unbound's have BIRD's layout. */
@@ -977,8 +977,8 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put_str(o, "name", name);
 		if (kind == YSD_IDS) {
-			const struct arcana_sdwan_sdwan_ids_instance *v =
-			    &((const struct arcana_sdwan_sdwan_ids_instance *)
+			const struct arcana_sdwan_ids_instance *v =
+			    &((const struct arcana_sdwan_ids_instance *)
 			    vp)[i];
 			ucl_object_t	*l;
 
@@ -991,7 +991,7 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 			put(o, "interfaces", l);
 			if (v->has_capture)
 				put_str(o, "capture", v->capture ==
-				    ARCANA_SDWAN_SDWAN_IDS_INSTANCE_CAPTURE_NETMAP ?
+				    ARCANA_SDWAN_IDS_INSTANCE_CAPTURE_NETMAP ?
 				    "netmap" : "pcap");
 			if (v->has_offload)
 				put(o, "offload", ucl_object_frombool(v->offload));
@@ -1012,15 +1012,15 @@ ysd_instances_json(int kind, const char *jail, int group, size_t n,
 			put_str(o, "rules", v->rules);
 			put_str(o, "thresholds", v->thresholds);
 		} else if (kind == YSD_PROXY) {
-			const struct arcana_sdwan_sdwan_proxy_instance *v =
-			    &((const struct arcana_sdwan_sdwan_proxy_instance *)
+			const struct arcana_sdwan_proxy_instance *v =
+			    &((const struct arcana_sdwan_proxy_instance *)
 			    vp)[i];
 
 			if (v->has_fib)
 				put(o, "fib", ucl_object_fromint(v->fib));
 			if (v->has_mode)
 				put_str(o, "mode", v->mode ==
-				    ARCANA_SDWAN_SDWAN_PROXY_INSTANCE_MODE_INSPECT ?
+				    ARCANA_SDWAN_PROXY_INSTANCE_MODE_INSPECT ?
 				    "inspect" : "sni");
 			put_str(o, "host", v->host);
 			put_str(o, "jail", v->jail);

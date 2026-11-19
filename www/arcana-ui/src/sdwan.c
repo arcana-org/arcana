@@ -959,13 +959,16 @@ of_jail(const char *object, const char *jail)
 
 /*
  * The server's sdwan read made the edge's own: a jail's (server/jail)
- * targets, faults, BIRD, dnsmasq and unbound instances, rules and
- * steering, the host's without its jails'.
+ * targets, faults, BIRD, dnsmasq, unbound, Squid and Suricata
+ * instances, rules and steering, the host's without its jails'.  The
+ * Security section's Squid and Suricata are the host's, whatever jail
+ * each runs in.
  */
 static void
 edge_view(ucl_object_t *data, const char *edge)
 {
-	static const char *const own[] = { "bird", "dhcp", "dns" };
+	static const char *const own[] = { "bird", "dhcp", "dns", "proxy",
+	    "ids" };
 	const ucl_object_t	*t, *e;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*keep;
@@ -988,15 +991,17 @@ edge_view(ucl_object_t *data, const char *edge)
 		if (of_jail(jstr(t, "object"), jail))
 			ucl_array_append(keep, ucl_object_copy(t));
 	ucl_object_replace_key(data, keep, "faults", 0, false);
-	/* Its BIRD instances, their BMP stations with them, its dnsmasq
-	 * and unbound instances: the host's read has every jail's too. */
+	/* Its BIRD instances, their BMP stations with them, its dnsmasq,
+	 * unbound, Squid and Suricata instances: the host's read has every
+	 * jail's too. */
 	for (i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
 		keep = ucl_object_typed_new(UCL_ARRAY);
 		it = NULL;
 		while ((t = ucl_object_iterate(jget(data, own[i]), &it, true)) !=
 		    NULL)
-			if (strcmp(jstr(t, "jail") != NULL ? jstr(t, "jail") : "",
-			    jail) == 0)
+			if (jstr(t, "group") != NULL && strcmp(jstr(t, "group"),
+			    "security") == 0 ? jail[0] == '\0' : strcmp(jstr(t,
+			    "jail") != NULL ? jstr(t, "jail") : "", jail) == 0)
 				ucl_array_append(keep, ucl_object_copy(t));
 		ucl_object_replace_key(data, keep, own[i], 0, false);
 	}
@@ -4967,6 +4972,7 @@ view_ids(struct html *h)
 			h_txt(h, host_name(ucl_object_key(v)));
 			h_raw(h, "</b></td><td class=\"mono\">");
 			h_txt(h, jstr(di, "name"));
+			inst_jail(h, di);
 			h_raw(h, "</td><td class=\"mono\">");
 			while ((f = ucl_object_iterate(jget(di, "interfaces"),
 			    &fit, true)) != NULL) {
@@ -6015,10 +6021,13 @@ view_security(struct html *h)
 			n++;
 			h_raw(h, "<tr><td><b>");
 			h_txt(h, host_name(ucl_object_key(v)));
-			h_fmt(h, "</b></td><td class=\"mono\">%s <span class=\"dim\">"
-			    "fib %lld</span></td><td>%s</td><td><span class=\"chip "
-			    "st-%s\">%s</span></td><td>", jstr(pi, "name"), (long long)
-			    jint(pi, "fib", 0), jstr(pi, "mode") != NULL ? jstr(pi,
+			h_raw(h, "</b></td><td class=\"mono\">");
+			h_txt(h, jstr(pi, "name") != NULL ? jstr(pi, "name") : "");
+			h_fmt(h, " <span class=\"dim\">fib %lld</span>", (long
+			    long)jint(pi, "fib", 0));
+			inst_jail(h, pi);
+			h_fmt(h, "</td><td>%s</td><td><span class=\"chip st-%s\">%s"
+			    "</span></td><td>", jstr(pi, "mode") != NULL ? jstr(pi,
 			    "mode") : "", jbool(pi, "running") ? "up" : "down",
 			    jbool(pi, "running") ? "running" : "not running");
 			if (jstr(pi, "ca") != NULL)

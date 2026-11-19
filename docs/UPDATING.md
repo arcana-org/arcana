@@ -93,6 +93,25 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN URL filter and IPS in a jail edge; agent 0.333.0, console 0.476.0
+
+- An SD-WAN edge that is a vnet jail has its own URL filters (Squid,
+  with c-icap and ClamAV) and intrusion detection or prevention
+  (Suricata), run in the jail by jexec(8): the console no longer refuses
+  sdwan-proxy and sdwan-ids at a jail edge, and names those instances
+  sw<fib>-<jail>.  arcana-sdwan's jail list gains proxy-instance and
+  ids-instance (SIDs 97 216 to 97 299 and 96 655 to 96 687); the
+  Security section's instances stay the host's edge's, each naming its
+  own jail.
+- The agent keeps a jail edge's lists in sdwan-proxy@<jail>.json and
+  sdwan-ids@<jail>.json, the instances' files in /var/db/arcana-sdwan
+  beneath the jail's root, Squid's and c-icap's logs in the jail's
+  /var/log (read there for blocks), and the MD+R's hashes in the jail's
+  own ClamAV.  A Suricata that prevents takes what the edge's own rules
+  divert to it in the jail's ipfw.  Squid, c-icap and Suricata must be
+  installed in the jail (pkg -j <jail> install ...).
+- Update the agent and the console together.
+
 ### A jail's stale pidfile, a jail's own net.fibs; agent 0.332.0, console 0.475.0
 
 - A jail's stale pidfile is looked for in the jail (its script read by

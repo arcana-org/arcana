@@ -2488,6 +2488,9 @@ set {"group":"security","instances":[{"name":"sec-web","fib":0,"mode":"sni","lis
 yang-cbor 262 bytes, the same back
 EOT
 	atf_check -o file:want "$y" proxy proxy.json
+	# A jail edge's, in its entry of the jail list: SD-WAN's alone.
+	sed -e '/^set {"group"/d' -e 's/^set {/set {"jail":"gateway",/' want > want.jail
+	atf_check -o file:want.jail "$y" proxy proxy.json gateway
 	# The IDS' forms as ids-form says them (spec): SD-WAN's (flavor
 	# sdwan) and the Security section's, what is not of the model left
 	# out, an object again for the setter with its words spelled as
@@ -2503,6 +2506,8 @@ set {"group":"security","instances":[{"name":"sec-lan","host":"edge-a","interfac
 yang-cbor 347 bytes, the same back
 EOT
 	atf_check -o file:want "$y" ids ids.json
+	sed -e '/^set {"group"/d' -e 's/^set {/set {"jail":"gateway",/' want > want.jail
+	atf_check -o file:want.jail "$y" ids ids.json gateway
 	# The Security section's sec-lan as a host keeps it from before the
 	# module said the form: its name, divert and stopped, the
 	# instance's own, left out of it; what Suricata's YAML is made of
@@ -14529,6 +14534,176 @@ security_jail_cleanup()
 	stop_daemon
 }
 
+atf_test_case sdwan_jail_proxy_ids cleanup
+sdwan_jail_proxy_ids_head()
+{
+	atf_set "descr" "An SD-WAN edge that is a vnet jail: its services' Squid, c-icap and Suricata run in it by jexec, in the service's table there, their files beneath its root, the MD+R's hashes its own ClamAV's, Squid's log read there for blocks; a Suricata that prevents diverted by the edge's rules, none of idsfw's; kept apart from the host's edge, started again at a restart; refused where the jail is not running or has no network of its own"
+	atf_set "timeout" "180"
+}
+sdwan_jail_proxy_ids_body()
+{
+	local G W E
+
+	sdwan_start
+	G=$(pwd)/jg
+	W=$(pwd)/jw
+	E=$G/var/db/arcana-sdwan
+	# Stand-in jails: gw with a network of its own, web with the host's.
+	cat > jails <<EOS
+gw 7 new $G
+web 8 inherit $W
+EOS
+	mkdir -p "$G/usr/local/bin" "$G/usr/local/sbin" \
+	    "$G/usr/local/libexec/squid" "$G/var/db" "$G/var/log/squid" \
+	    "$G/var/log/c-icap" "$W/usr/local/bin"
+	# The jail's own Suricata, Squid, c-icap and certificate maker,
+	# their pid files beneath the root jexec says.
+	sed 's|^d=\$(sed|d=${JROOT}$(sed|' tools/suricata > "$G/usr/local/bin/suricata"
+	for p in "sbin/squid pid_filename" "bin/c-icap PidFile"; do
+		set -- $p
+		cat > "$G/usr/local/$1" <<EOS
+#!/bin/sh
+[ "\$1" = --hold ] && { echo \$\$ > "\$2"; i=0; while [ \$i -lt 300 ]; do sleep 1; i=\$((i+1)); done; exit 0; }
+echo "jail \${0##*/} \$*" >> $(pwd)/squid.log
+[ "\$1" = -f ] && { p=\$JROOT\$(sed -n 's/^$2 //p' "\$2"); "\$0" --hold "\$p" & }
+exit 0
+EOS
+	done
+	printf '#!/bin/sh\necho "jail certgen $*" >> %s/squid.log\nmkdir -p "$3"\n' \
+	    "$(pwd)" > "$G/usr/local/libexec/squid/security_file_certgen"
+	chmod +x "$G/usr/local/bin/suricata" "$G/usr/local/sbin/squid" \
+	    "$G/usr/local/bin/c-icap" \
+	    "$G/usr/local/libexec/squid/security_file_certgen"
+	# jexec(8): logged; the jail's setfib(1) its table, the rest run;
+	# its program and the jail's paths beneath the jail's root (a jail
+	# not in ./jails is gone); the host's programs (ipfw's stand-in,
+	# pgrep, kill) as they are.
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+[ -n "\$r" ] || { echo "jexec: jail_getid: jail \$1 not found" >&2; exit 1; }
+shift
+[ "\$1" = /usr/sbin/setfib ] && shift 3
+p=\$1
+shift
+case "\$p" in /usr/local/*|/var/*) p=\$r\$p ;; esac
+for a; do
+	case "\$a" in /usr/local/*|/var/*) a=\$r\$a ;; esac
+	set -- "\$@" "\$a"
+	shift
+done
+JROOT=\$r exec "\$p" "\$@"
+EOS
+	chmod +x fake-jexec
+	sni='{"flavor":"sdwan","service":"acme","fib":1,"listen":[{"end_point":"hq","address":"10.1.0.1"}],"zones":[]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy \
+	    '{"instances":[{"name":"sw1","fib":1,"mode":"sni","host":"edge-a","spec":'"$sni"'}]}'
+	qhost=$(cat "$(dirname "$f")/sdwan-proxy-sw1.pid")
+	# The jail edge's URL filter that scans: Squid, its CA, its list and
+	# c-icap beneath the root, the jail's own run there in the
+	# service's table, the MD+R's hashes in the jail's ClamAV, the
+	# logs the jail's /var/log.
+	gwp='{"jail":"gw","instances":[{"name":"sw2-gw","fib":2,"mode":"sni","host":"edge-a/gw","spec":{"flavor":"sdwan","service":"acme","fib":2,"listen":[{"end_point":"hq","address":"10.2.0.1"}],"icap":true,"zones":[{"name":"z0","prefixes":["10.2.0.0/24"],"urlf":{"id":"g-urlf","no-match":"allow","block":["bad.example"]},"mdr":{"id":"g-mdr","no-match":"allow","block":["44D88612FEA8A8F36DE82E1278ABB02F:68"]}}]},"lists":{"z0-block":".worse.example\n"}}]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "$gwp"
+	atf_check -o match:'^pid_filename /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.pid$' \
+	    -o match:'^access_log /var/log/squid/sdwan-sw2-access.log arcana$' \
+	    -o match:'^acl z0_fblock_d dstdomain "/var/db/arcana-sdwan/sdwan-proxy-sw2-gw.list-z0-block"$' \
+	    -o match:'^icap_service sdwan_av respmod_precache bypass=off icap://10.2.0.1:1364/avscan$' \
+	    cat "$E/sdwan-proxy-sw2-gw.conf"
+	atf_check -o inline:'.worse.example\n' cat "$E/sdwan-proxy-sw2-gw.list-z0-block"
+	atf_check -o match:'BEGIN CERTIFICATE' -o match:'BEGIN PRIVATE KEY' cat "$E/sdwan-proxy-sw2-gw.pem"
+	atf_check -o match:'^PidFile /var/db/arcana-sdwan/sdwan-icap-sw2-gw.pid$' \
+	    -o match:'^ServerLog /var/log/c-icap/sdwan-sw2-server.log$' cat "$E/sdwan-icap-sw2-gw.conf"
+	atf_check -o match:'^jexec 7 /usr/sbin/setfib -F 2 /usr/local/bin/c-icap -f /var/db/arcana-sdwan/sdwan-icap-sw2-gw.conf$' \
+	    -o match:'^jexec 7 /usr/local/sbin/squid -k parse -f /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.conf$' \
+	    -o match:'^jexec 7 /usr/sbin/setfib -F 2 /usr/local/sbin/squid -f /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.conf$' \
+	    -o match:'^jexec 7 /usr/local/libexec/squid/security_file_certgen -c -s /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.ssl_db -M 4MB$' \
+	    cat jexec.log
+	atf_check -o inline:'44d88612fea8a8f36de82e1278abb02f:68:Arcana.acme.g-mdr.block\n' cat "$G/var/db/clamav/arcana-sdwan.hdb"
+	test ! -f root/var/db/clamav/arcana-sdwan.hdb || atf_fail "the jail's hashes went to the host's ClamAV"
+	test ! -e "$(dirname "$f")/sdwan-proxy-sw2-gw.conf" || atf_fail "written on the host"
+	test -f "$(dirname "$f")/sdwan-proxy@gw.json" || atf_fail "the jail's proxies are not kept"
+	atf_check -o match:'"proxy":\[\{"name":"sw1","fib":1,"mode":"sni","running":true,.*"group":"sdwan"\},\{"name":"sw2-gw","jail":"gw","fib":2,"mode":"sni","running":true,"icap":true,"ca":"-----BEGIN CERTIFICATE' \
+	    "$JGC" -c "$SOCK" sdwan
+	alive "$qhost" || atf_fail "the host's squid was stopped"
+	qpid=$(cat "$E/sdwan-proxy-sw2-gw.pid")
+	ipid=$(cat "$E/sdwan-icap-sw2-gw.pid")
+	alive "$qpid" && alive "$ipid" || atf_fail "squid or c-icap does not run in the jail"
+	# What it blocked, from its log beneath the jail's root.
+	echo '1792000010.123 10.2.0.9 TCP_DENIED/403 GET http://bad.example/x - -' \
+	    >> "$G/var/log/squid/sdwan-sw2-access.log"
+	wait_match '"kind":"sdwan-block","data":\{"name":"sw2-gw","daemon":"squid","time":"1792000010.123","src":"10.2.0.9","function":"urlf"' \
+	    "$JGC" -c "$SOCK" events || atf_fail "$("$JGC" -c "$SOCK" events)"
+	# The host's list applied: the jail's left as it is.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy '{"instances":[]}'
+	alive "$qpid" || atf_fail "the jail's squid was stopped by the host's list"
+	atf_check -o match:'"proxy":\[\{"name":"sw2-gw","jail":"gw"' "$JGC" -c "$SOCK" sdwan
+	# Refused: an edge not running, one without a network of its own,
+	# the Security section's at a jail edge, an instance's own jail.
+	atf_check -s exit:1 -e match:'the edge nope: the jail nope is not running' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan proxy '{"jail":"nope","instances":[]}'
+	atf_check -s exit:1 -e match:'the edge web: the jail web has no network of its own' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan proxy '{"jail":"web","instances":[]}'
+	atf_check -s exit:1 -e match:"the Security section's .*the host's edge's" -o ignore \
+	    "$JGC" -c "$SOCK" sdwan proxy '{"jail":"gw","group":"security","instances":[]}'
+	atf_check -s exit:1 -e match:'only the Security section.s run in a jail' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan proxy \
+	    '{"jail":"gw","instances":[{"name":"sw3-gw","jail":"gw","fib":3,"mode":"sni","spec":'"$sni"'}]}'
+	# The jail edge's Suricata that prevents: run in the jail on its
+	# divert port, what it takes the edge's rules' diverts: none of
+	# idsfw's placed in the jail's ipfw.
+	: > jexec.log
+	ips='{"jail":"gw","instances":[{"name":"sw2-gw","divert":8002,"interfaces":["epair0b"],"spec":{"interfaces":["epair0b"],"home":["10.2.0.0/24"]},"rules":"alert tcp any any -> any 80 (sid:1000001;)\n"}]}'
+	atf_check -o match:'suricata sw2-gw on 1 interface, prevents by divert 8002: started' \
+	    -o not-match:'set 25 at rule 6' "$JGC" -t -c "$SOCK" sdwan ids "$ips"
+	atf_check -o match:'^jexec 7 /usr/local/bin/suricata -T -c /var/db/arcana-sdwan/sdwan-ids-sw2-gw.yaml ' \
+	    -o match:'^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-sdwan/sdwan-ids-sw2-gw.yaml --pidfile /var/db/arcana-sdwan/sdwan-ids-sw2-gw.pid -d 8002 -D$' \
+	    -o not-match:'fake-ipfw -q' cat jexec.log
+	atf_check -o match:'^default-log-dir: /var/db/arcana-sdwan/sdwan-ids-sw2-gw.d$' \
+	    -o match:'^  - /var/db/arcana-sdwan/sdwan-ids-sw2-gw.rules$' cat "$E/sdwan-ids-sw2-gw.yaml"
+	test -f "$(dirname "$f")/sdwan-ids@gw.json" || atf_fail "the jail's IDS is not kept"
+	test ! -e "$(dirname "$f")/sdwan-ids-sw2-gw.yaml" || atf_fail "written on the host"
+	wait_match '"alerts_seen":1,' "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"ids":\[\{"name":"sw2-gw","jail":"gw","interfaces":\["epair0b"\],"mode":"prevent","divert":8002,"running":true,"alerts_seen":1,' \
+	    "$JGC" -c "$SOCK" sdwan
+	spid=$(cat "$E/sdwan-ids-sw2-gw.pid")
+	atf_check -s exit:1 -e match:'the edge web: the jail has no network of its own' -o ignore \
+	    "$JGC" -c "$SOCK" sdwan ids '{"jail":"web","instances":[]}'
+	# The host's IDS list applied: the jail's left as it is.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"instances":[]}'
+	alive "$spid" || atf_fail "the jail's suricata was stopped by the host's list"
+	# A restart: each jail edge's applied again from its own kept file.
+	stop_daemon
+	: > jexec.log
+	start_daemon
+	atf_check -o match:'^jexec 7 /usr/local/sbin/squid -k parse -f /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.conf$' \
+	    -o match:'^jexec 7 /usr/local/bin/suricata -T -c /var/db/arcana-sdwan/sdwan-ids-sw2-gw.yaml ' cat jexec.log
+	atf_check -o match:'"name":"sw2-gw","jail":"gw","fib":2,"mode":"sni","running":true' \
+	    -o match:'"name":"sw2-gw","jail":"gw","interfaces":\["epair0b"\],"mode":"prevent","divert":8002,"running":true' \
+	    "$JGC" -c "$SOCK" sdwan
+	# Emptied: stopped from inside the jail, its files there and its
+	# kept files gone.
+	qpid=$(cat "$E/sdwan-proxy-sw2-gw.pid")
+	spid=$(cat "$E/sdwan-ids-sw2-gw.pid")
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy '{"jail":"gw","instances":[]}'
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"jail":"gw","instances":[]}'
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		alive "$qpid" || alive "$spid" || break
+		sleep 0.3
+	done
+	alive "$qpid" && atf_fail "squid sw2-gw still runs"
+	alive "$spid" && atf_fail "suricata sw2-gw still runs"
+	test ! -e "$E/sdwan-proxy-sw2-gw.conf" -a ! -e "$E/sdwan-ids-sw2-gw.yaml" || atf_fail "its files stayed in the jail"
+	test ! -e "$(dirname "$f")/sdwan-proxy@gw.json" -a ! -e "$(dirname "$f")/sdwan-ids@gw.json" || \
+	    atf_fail "the jail's kept files stayed"
+	atf_check -o match:'"proxy":\[\]' -o match:'"ids":\[\]' "$JGC" -c "$SOCK" sdwan
+}
+sdwan_jail_proxy_ids_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case sdwan_ids_rules cleanup
 sdwan_ids_rules_head()
 {
@@ -23843,6 +24018,7 @@ atf_init_test_cases()
 	atf_add_test_case agent_build_submodule
 	atf_add_test_case sdwan_ids
 	atf_add_test_case security_jail
+	atf_add_test_case sdwan_jail_proxy_ids
 	atf_add_test_case vpn_bird_gone
 	atf_add_test_case safe_mode_restore
 	atf_add_test_case sdwan_ids_forms

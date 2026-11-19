@@ -828,7 +828,8 @@ running(cbl_conn *conn, const struct cbl_ynode *n, char *err, size_t errlen,
 }
 
 /* Whether an edge that is a jail has anything left: rules (more than
- * their set), steering, or BIRD, dnsmasq or unbound instances. */
+ * their set), steering, or BIRD, dnsmasq, unbound, Squid or Suricata
+ * instances. */
 static bool
 edge_empty(const ucl_object_t *e)
 {
@@ -842,7 +843,9 @@ edge_empty(const ucl_object_t *e)
 	    NULL && ucl_object_lookup(s, "route") == NULL)) &&
 	    ucl_object_lookup(e, "bird-instance") == NULL &&
 	    ucl_object_lookup(e, "dhcp-instance") == NULL &&
-	    ucl_object_lookup(e, "dns-instance") == NULL);
+	    ucl_object_lookup(e, "dns-instance") == NULL &&
+	    ucl_object_lookup(e, "proxy-instance") == NULL &&
+	    ucl_object_lookup(e, "ids-instance") == NULL);
 }
 
 static const char *const kinds[] = { "rules", "steer", "bird", "dhcp", "dns",
@@ -885,18 +888,20 @@ ysdwan_edit(cbl_conn *conn, const char *kind, const char *json, bool *same,
 		snprintf(err, errlen, "invalid jail name");
 		return (EINVAL);
 	}
-	if (jail != NULL && k > 4) {
-		ucl_object_unref(in);
-		snprintf(err, errlen, "an edge that is a vnet jail has no %s: "
-		    "the host's own edge has", kind);
-		return (EINVAL);
-	}
 	if (nums_bad(k, in, err, errlen)) {
 		ucl_object_unref(in);
 		return (EINVAL);
 	}
 	group = str(in, "group") != NULL && strcmp(str(in, "group"),
 	    "security") == 0 ? 1 : 0;
+	/* A jail edge's Squid and Suricata are SD-WAN's: the Security
+	 * section's are the host's edge's, each naming its own jail. */
+	if (jail != NULL && k >= 5 && group == 1) {
+		ucl_object_unref(in);
+		snprintf(err, errlen, "the Security section's %s are the host's "
+		    "edge's: each names the jail it runs in", kind);
+		return (EINVAL);
+	}
 	/* The proxies and the IDS of a group: the Security section's named
 	 * sec-, SD-WAN's not; the module keeps both in one list. */
 	it = NULL;
@@ -948,7 +953,7 @@ ysdwan_edit(cbl_conn *conn, const char *kind, const char *json, bool *same,
 		    k == 4 ? "dns-instance" : k == 5 ? "proxy-instance" :
 		    "ids-instance";
 		put_list(e, key, instances_of(kind, in, ucl_object_lookup(e,
-		    key), k >= 5 ? group : -1));
+		    key), k >= 5 && jail == NULL ? group : -1));
 		break;
 	}
 	if (jail != NULL) {
@@ -1704,7 +1709,7 @@ ids_json(const struct arcana_sdwan_sdwan_state_ids *d)
  */
 static void
 security_ids(ucl_object_t *arr,
-    const struct arcana_sdwan_sdwan_ids_instance *d)
+    const struct arcana_sdwan_ids_instance *d)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
 	const struct cbl_ynode	*n;
@@ -1763,7 +1768,7 @@ security_ids(ucl_object_t *arr,
  * name and whether it is stopped. */
 static void
 security_proxy(ucl_object_t *arr,
-    const struct arcana_sdwan_sdwan_proxy_instance *p)
+    const struct arcana_sdwan_proxy_instance *p)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
 	const struct cbl_ynode	*n;

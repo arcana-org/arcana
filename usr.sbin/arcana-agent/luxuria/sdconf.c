@@ -1477,7 +1477,8 @@ squid_sdwan(struct work *w, const ucl_object_t *spec, const char *host,
 	    "access_log %s arcana\ncache_log %s/squid/sdwan-sw%jd-cache.log\n"
 	    "cache deny all\nvisible_hostname sdwan-sw%jd\n", conf_word(sstr(
 	    spec, "service")), conf_word(host), fib, p->pid, sdwan_squid_log(
-	    alog, sizeof(alog), fib), opts.log_dir, fib, fib);
+	    alog, sizeof(alog), p->log_dir, fib), p->log_dir != NULL ?
+	    p->log_dir : opts.log_dir, fib, fib);
 	/* The oldest TLS let through: the strictest zone's MBSF. */
 	tlsmin = 0;
 	zit = NULL;
@@ -1931,21 +1932,23 @@ clamav_sigs_render(struct work *w, const ucl_object_t *instances,
 /* ---- What the daemons blocked, matched back (sdblock.c) ---------------- */
 
 /* Where an SD-WAN service's Squid writes its requests, in the arcana
- * format; where its c-icap writes what it says (the viruses found). */
+ * format; where its c-icap writes what it says (the viruses found): in
+ * dir, a jail's /var/log as it sees it, or NULL the host's. */
 const char *
-sdwan_squid_log(char *buf, size_t len, intmax_t fib)
+sdwan_squid_log(char *buf, size_t len, const char *dir, intmax_t fib)
 {
 
-	snprintf(buf, len, "%s/squid/sdwan-sw%jd-access.log", opts.log_dir, fib);
+	snprintf(buf, len, "%s/squid/sdwan-sw%jd-access.log", dir != NULL ?
+	    dir : opts.log_dir, fib);
 	return (buf);
 }
 
 const char *
-sdwan_icap_log(char *buf, size_t len, intmax_t fib)
+sdwan_icap_log(char *buf, size_t len, const char *dir, intmax_t fib)
 {
 
-	snprintf(buf, len, "%s/c-icap/sdwan-sw%jd-server.log", opts.log_dir,
-	    fib);
+	snprintf(buf, len, "%s/c-icap/sdwan-sw%jd-server.log", dir != NULL ?
+	    dir : opts.log_dir, fib);
 	return (buf);
 }
 
@@ -2236,8 +2239,9 @@ icap_conf_render(struct work *w, const ucl_object_t *spec, const char *name,
 		    "%s\nAccessLog %s/c-icap/sdwan-sw%jd-access.log\n%s",
 		    conf_word(sstr(spec, "service")), conf_word(host), fib,
 		    p->icap_pid, p->icap_cmd, own, SDWAN_ICAP_PORT(fib), own,
-		    icap_tail, sdwan_icap_log(slog, sizeof(slog), fib),
-		    opts.log_dir, fib, icap_scan);
+		    icap_tail, sdwan_icap_log(slog, sizeof(slog), p->log_dir,
+		    fib), p->log_dir != NULL ? p->log_dir : opts.log_dir, fib,
+		    icap_scan);
 	} else
 		fprintf(b, "# Written by arcana-agent for the Arcana console: the "
 		    "Security section's malware scanning for %s at %s,\n# by "

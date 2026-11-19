@@ -1883,8 +1883,8 @@ module arcana-sdwan {
   grouping edge-config {
     description
       "What the console writes to an edge, the host's or a vnet
-       jail's: its rules, its steering, and its BIRD, dnsmasq and
-       unbound instances.";
+       jail's: its rules, its steering, and its BIRD, dnsmasq,
+       unbound, Squid and Suricata instances.";
     container rules {
       cg:struct "rules-config";
       description
@@ -2272,6 +2272,167 @@ module arcana-sdwan {
         uses dns-form;
       }
     }
+    list proxy-instance {
+      cg:struct "proxy-instance";
+      key "name";
+      description
+        "The Squid instances, SD-WAN's and, at the host's edge, the
+         Security section's (sec-): each checked by squid -k parse,
+         one running told to reconfigure; a jail edge's run in it
+         (jexec), its files beneath its root.";
+      uses instance;
+      leaf jail {
+        type string;
+        description
+          "The Security section's (sec-) alone, at the host's edge:
+           the jail it runs in, its files beneath the jail's root and
+           its programs the jail's own; none, the host's.";
+      }
+      container spec {
+        description
+          "The form Squid's file is rendered from.";
+        uses proxy-form;
+      }
+      leaf mode {
+        type enumeration {
+          enum sni {
+            description
+              "The TLS names looked at, nothing opened.";
+          }
+          enum inspect {
+            description
+              "TLS opened, with a CA of the instance's own.";
+          }
+        }
+        description
+          "How TLS is treated.";
+      }
+      list named-list {
+        key "name";
+        description
+          "The files a zone's URLF names, by name.";
+        leaf name {
+          type string;
+          description
+            "The list.";
+        }
+        leaf text {
+          type string;
+          description
+            "Its text.";
+        }
+      }
+      leaf stopped {
+        type boolean;
+        description
+          "Stopped by the admin: kept, not run, nor its c-icap.";
+      }
+    }
+    list ids-instance {
+      cg:struct "ids-instance";
+      key "name";
+      description
+        "The Suricata instances, SD-WAN's and, at the host's edge, the
+         Security section's (sec-): each checked by suricata -T before
+         it runs, one whose files changed started again; a jail
+         edge's run in it (jexec), its files beneath its root, what
+         it prevents diverted by the edge's own rules.";
+      leaf name {
+        type string;
+        description
+          "The service.";
+      }
+      leaf-list interface {
+        type string;
+        ordered-by user;
+        description
+          "The UNIs it watches.";
+      }
+      leaf conf {
+        type string;
+        config false;
+        description
+          "Suricata's YAML, as the agent rendered it from spec, its
+           places filled.";
+      }
+      leaf rules {
+        type string;
+        description
+          "The service's own rules, one a line.";
+      }
+      leaf divert {
+        type inet:port-number;
+        description
+          "For one that prevents: the divert port it runs on.";
+      }
+      leaf host {
+        type string;
+        description
+          "The host's name, for the YAML's comment.";
+      }
+      leaf jail {
+        type string;
+        description
+          "The Security section's (sec-) alone, at the host's edge:
+           the jail it runs in, its files beneath the jail's root and
+           its programs the jail's own; none, the host's.";
+      }
+      container spec {
+        description
+          "The form Suricata's YAML is rendered from.";
+        uses ids-form;
+      }
+      leaf capture {
+        type enumeration {
+          enum pcap {
+            description
+              "By libpcap.";
+          }
+          enum netmap {
+            description
+              "By netmap(4).";
+          }
+        }
+        description
+          "How it takes the packets, where it does not prevent.";
+      }
+      leaf offload {
+        type boolean;
+        description
+          "false: its interfaces' offloading turned off as it starts.";
+      }
+      list lua {
+        key "name";
+        description
+          "Its Lua scripts.";
+        leaf name {
+          type string;
+          description
+            "NAME.lua.";
+        }
+        leaf text {
+          type string;
+          description
+            "The script.";
+        }
+      }
+      leaf-list plugin {
+        type string;
+        ordered-by user;
+        description
+          "The plugins it loads, .so files under /usr/local/lib.";
+      }
+      leaf stopped {
+        type boolean;
+        description
+          "Stopped by the admin: kept, not run.";
+      }
+      leaf thresholds {
+        type string;
+        description
+          "Its threshold.config lines.";
+      }
+    }
   }
 
   grouping running {
@@ -2377,167 +2538,12 @@ module arcana-sdwan {
     description
       "The edge.";
     uses edge-config;
-    list proxy-instance {
-      key "name";
-      description
-        "The Squid instances, SD-WAN's and the Security section's
-         (sec-): each checked by squid -k parse, one running told to
-         reconfigure.";
-      uses instance;
-      leaf jail {
-        type string;
-        description
-          "The Security section's (sec-) alone: the jail it runs in,
-           its files beneath the jail's root and its programs the
-           jail's own; none, the host's.";
-      }
-      container spec {
-        description
-          "The form Squid's file is rendered from.";
-        uses proxy-form;
-      }
-      leaf mode {
-        type enumeration {
-          enum sni {
-            description
-              "The TLS names looked at, nothing opened.";
-          }
-          enum inspect {
-            description
-              "TLS opened, with a CA of the instance's own.";
-          }
-        }
-        description
-          "How TLS is treated.";
-      }
-      list named-list {
-        key "name";
-        description
-          "The files a zone's URLF names, by name.";
-        leaf name {
-          type string;
-          description
-            "The list.";
-        }
-        leaf text {
-          type string;
-          description
-            "Its text.";
-        }
-      }
-      leaf stopped {
-        type boolean;
-        description
-          "Stopped by the admin: kept, not run, nor its c-icap.";
-      }
-    }
-    list ids-instance {
-      key "name";
-      description
-        "The Suricata instances, SD-WAN's and the Security section's
-         (sec-): each checked by suricata -T before it runs, one whose
-         files changed started again.";
-      leaf name {
-        type string;
-        description
-          "The service.";
-      }
-      leaf-list interface {
-        type string;
-        ordered-by user;
-        description
-          "The UNIs it watches.";
-      }
-      leaf conf {
-        type string;
-        config false;
-        description
-          "Suricata's YAML, as the agent rendered it from spec, its
-           places filled.";
-      }
-      leaf rules {
-        type string;
-        description
-          "The service's own rules, one a line.";
-      }
-      leaf divert {
-        type inet:port-number;
-        description
-          "For one that prevents: the divert port it runs on.";
-      }
-      leaf host {
-        type string;
-        description
-          "The host's name, for the YAML's comment.";
-      }
-      leaf jail {
-        type string;
-        description
-          "The Security section's (sec-) alone: the jail it runs in,
-           its files beneath the jail's root and its programs the
-           jail's own; none, the host's.";
-      }
-      container spec {
-        description
-          "The form Suricata's YAML is rendered from.";
-        uses ids-form;
-      }
-      leaf capture {
-        type enumeration {
-          enum pcap {
-            description
-              "By libpcap.";
-          }
-          enum netmap {
-            description
-              "By netmap(4).";
-          }
-        }
-        description
-          "How it takes the packets, where it does not prevent.";
-      }
-      leaf offload {
-        type boolean;
-        description
-          "false: its interfaces' offloading turned off as it starts.";
-      }
-      list lua {
-        key "name";
-        description
-          "Its Lua scripts.";
-        leaf name {
-          type string;
-          description
-            "NAME.lua.";
-        }
-        leaf text {
-          type string;
-          description
-            "The script.";
-        }
-      }
-      leaf-list plugin {
-        type string;
-        ordered-by user;
-        description
-          "The plugins it loads, .so files under /usr/local/lib.";
-      }
-      leaf stopped {
-        type boolean;
-        description
-          "Stopped by the admin: kept, not run.";
-      }
-      leaf thresholds {
-        type string;
-        description
-          "Its threshold.config lines.";
-      }
-    }
     list jail {
       key "name";
       description
         "Each edge that is a vnet jail on this host: its rules,
-         steering, BIRD, dnsmasq and unbound, run in it.";
+         steering, BIRD, dnsmasq, unbound, Squid and Suricata, run in
+         it.";
       leaf name {
         type string;
         description
@@ -2593,8 +2599,8 @@ module arcana-sdwan {
           type string;
           description
             "The edge that is this vnet jail; none, the host's.  The
-             Security section's instances (security) each say their
-             own jail: this is not theirs.";
+             Security section's instances (security) are the host's
+             edge's, each saying its own jail: this is not theirs.";
         }
         leaf security {
           type boolean;
@@ -2964,9 +2970,9 @@ module arcana-sdwan {
       list clamav-jail {
         key "jail";
         description
-          "ClamAV's signatures of each jail a Security URL filter that
-           scans for malware runs in: the jail's own, as its freshclam
-           left them.";
+          "ClamAV's signatures of each jail a URL filter that scans for
+           malware runs in, the Security section's or a jail edge's:
+           the jail's own, as its freshclam left them.";
         leaf jail {
           type string;
           description
