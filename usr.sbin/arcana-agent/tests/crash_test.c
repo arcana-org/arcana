@@ -5,10 +5,11 @@
  */
 
 /*
- * crash [backtrace core [program]]: crashes.c alone, for agent_test.sh,
- * what a backtrace is let read and how its debugger is run.  The
- * environment stands in for the host: COREFILE kern.corefile's
- * pattern, KMSG "name pid uid" the core the kernel said it dumped,
+ * crash [backtrace core [program [jail]]]: crashes.c alone, for
+ * agent_test.sh, what a backtrace is let read and how its debugger is
+ * run.  The environment stands in for the host: COREFILE kern.corefile's
+ * pattern, KMSG "name pid uid [jid]" the core the kernel said it dumped,
+ * JAILS "name:jid:root ..." the jails running,
  * LLDB and GDB the debuggers found (none when unset), TMPDIR where a
  * copy goes.  Each program it would run is printed as "exec" and its
  * words, what its standard input begins with as "stdin" (or "stdin
@@ -50,18 +51,61 @@ sysctlbyname(const char *name, void *old, size_t *oldlen,
 	return (0);
 }
 
+/* KMSG "name pid uid [jid]": jid 0, the host's, when not given. */
 bool
-kmsg_core_dumped(const char *comm, int pid, int *uidp)
+kmsg_core_dumped(const char *comm, int pid, int jid, int *uidp)
 {
 	const char	*k;
 	char		 c[64];
-	int		 p, u;
+	int		 p, u, j;
 
-	if ((k = getenv("KMSG")) == NULL || sscanf(k, "%63s %d %d", c, &p,
-	    &u) != 3 || strcmp(c, comm) != 0 || (pid != -1 && pid != p))
+	j = 0;
+	if ((k = getenv("KMSG")) == NULL || sscanf(k, "%63s %d %d %d", c, &p,
+	    &u, &j) < 3 || strcmp(c, comm) != 0 || (pid != -1 && pid != p) ||
+	    (jid != -1 && jid != j))
 		return (false);
 	*uidp = u;
 	return (true);
+}
+
+/* The running jails, JAILS's "name:jid:root" separated by spaces. */
+int
+jails_running(struct work *w __unused, struct jinfo **out, size_t *nout,
+    const char **errp __unused)
+{
+	struct jinfo	*v;
+	char		*s, *one, *name, *jid;
+	size_t		 n;
+
+	*out = NULL;
+	*nout = 0;
+	if (getenv("JAILS") == NULL || (s = strdup(getenv("JAILS"))) == NULL)
+		return (0);
+	if ((v = calloc(16, sizeof(*v))) == NULL)
+		abort();
+	n = 0;
+	while (n < 16 && (one = strsep(&s, " ")) != NULL) {
+		if ((name = strsep(&one, ":")) == NULL || (jid = strsep(&one,
+		    ":")) == NULL || one == NULL)
+			continue;
+		v[n].name = name;
+		v[n].jid = atoi(jid);
+		v[n].path = one;
+		n++;
+	}
+	*out = v;
+	*nout = n;
+	return (0);
+}
+
+void *
+wcalloc(struct work *w __unused, size_t n, size_t size)
+{
+	void	*p;
+
+	if ((p = calloc(n, size)) == NULL)
+		abort();
+	return (p);
 }
 
 const char *

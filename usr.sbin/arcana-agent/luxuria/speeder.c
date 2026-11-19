@@ -14,9 +14,11 @@
  * daemon.notice, /var/log/messages).  The job writes the flags from
  * words checked one by one (rc.subr hands them to a shell), changes the
  * ratios of a running relay through its --fifo without dropping the
- * tunnel, and starts, stops and enables it.  On the host a safe change
- * is undone: the rc.conf variables and whether it ran, put back
- * (ira/jobs.c).
+ * tunnel, and starts, stops and enables it.  A safe change is undone,
+ * on the host or in the jail it was made in: the rc.conf variables and
+ * whether it ran, put back there (ira/jobs.c).  The history's rates are
+ * read from the host's log and from each running jail's, beneath its
+ * root, a jail's relay told by its jail's name before its tag.
  *
  * Several relays: each a profile of arcana_relay, run as "service
  * arcana_relay <verb> <name>" under rc.subr's name arcana_relay_<name>,
@@ -46,6 +48,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jail.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1047,8 +1050,16 @@ static struct {
 	double		 plain, added;
 } rates[RATES_MAX];
 static size_t	nrates;
-static off_t	rates_off = -1;		/* how far the log is read */
-static ino_t	rates_ino;
+
+#define	LOGS_MAX	32		/* logs read: the host's, the jails' */
+
+/* How far each log is read: the host's (jail ""), each jail's. */
+static struct {
+	char		 jail[MAXHOSTNAMELEN];
+	off_t		 off;
+	ino_t		 ino;
+} logs[LOGS_MAX];
+static size_t	nlogs;
 
 /* The tag of a relay's line, " arcana_relay[", " arcana_relay_<name>["
  * or the admin's " speederv2[", into tag; false for another's. */
@@ -1116,56 +1127,121 @@ rate_take(const char *tag, const struct way *up, const struct way *down,
 	rates[i].at = at;
 }
 
+/* A log's place: the jail's (or the host's, ""), made at its first
+ * look; LOGS_MAX when there is no room for another. */
+static size_t
+log_of(const char *jail)
+{
+	size_t	i;
+
+	for (i = 0; i < nlogs; i++)
+		if (strcmp(logs[i].jail, jail) == 0)
+			return (i);
+	if (nlogs == LOGS_MAX || strlen(jail) >= sizeof(logs[0].jail))
+		return (LOGS_MAX);
+	strlcpy(logs[nlogs].jail, jail, sizeof(logs[0].jail));
+	logs[nlogs].off = -1;
+	logs[nlogs].ino = 0;
+	return (nlogs++);
+}
+
 /*
- * The relays of the host's log, each by its tag, with the rates of its
- * last interval while its last report is fresh (within two intervals
- * and a look, step), else none.  The log is read on from where the look
- * before left it, its end at the first look, and from its start again
- * once it was turned over.  Called by the history's thread alone.
+ * A log's reports taken in, read on from where the look before left
+ * it, its end at the first look, and from its start again once it was
+ * turned over; a jail's relays' tags behind its name ("web:arcana_relay").
+ */
+static void
+rates_read(int fd, const struct stat *st, size_t k)
+{
+	struct way	 up, down;
+	char		*buf, *line, *nl, tag[48], jtag[48];
+	ssize_t		 n;
+	time_t		 at;
+
+	if (!S_ISREG(st->st_mode) || (buf = malloc(RATES_READ + 1)) == NULL)
+		return;
+	if (logs[k].off == -1 || st->st_ino != logs[k].ino || st->st_size <
+	    logs[k].off)
+		logs[k].off = logs[k].off == -1 ? st->st_size : 0;
+	logs[k].ino = st->st_ino;
+	/* Fallen behind: the last of it. */
+	if (st->st_size - logs[k].off > RATES_READ)
+		logs[k].off = st->st_size - RATES_READ;
+	n = pread(fd, buf, RATES_READ, logs[k].off);
+	if (n > 0) {
+		buf[n] = '\0';
+		/* The lines that are whole; the rest at the next. */
+		if ((nl = strrchr(buf, '\n')) != NULL) {
+			nl[1] = '\0';
+			logs[k].off += nl + 1 - buf;
+		}
+		for (line = buf; nl != NULL && *line != '\0'; line = nl + 1) {
+			nl = strchr(line, '\n');
+			*nl = '\0';
+			if (!tag_of(line, tag, sizeof(tag)) || !report_of(line,
+			    &up, &down) || (at = line_time(line)) == -1)
+				continue;
+			if (logs[k].jail[0] != '\0')
+				snprintf(jtag, sizeof(jtag), "%s:%s", logs[k].jail,
+				    tag);
+			rate_take(logs[k].jail[0] != '\0' ? jtag : tag, &up,
+			    &down, at);
+		}
+	}
+	free(buf);
+}
+
+/*
+ * The relays of the host's log and of each running jail's, each by its
+ * tag (a jail's behind the jail's name), with the rates of its last
+ * interval while its last report is fresh (within two intervals and a
+ * look, step), else none.  A jail's log is where the host's is, beneath
+ * the jail's root, opened there without a link that leads out of it;
+ * one that is the host's own (a jail whose root is the host's, a
+ * nullfs mount of its /var/log) read once, as the host's.  Called by
+ * the history's thread alone.
  */
 size_t
 speeder_rates(struct speeder_rate *v, size_t max, unsigned int step)
 {
-	struct stat	 st;
-	struct way	 up, down;
-	char		*buf, *line, *nl, tag[48];
-	ssize_t		 n;
-	time_t		 now, at;
-	size_t		 i;
-	int		 fd;
+	struct stat	 st, hst;
+	char		 last[16], name[MAXHOSTNAMELEN], path[MAXPATHLEN];
+	const char	*rel;
+	time_t		 now;
+	size_t		 i, k;
+	int		 fd, root, jid, nj;
+	bool		 host;
 
-	if ((fd = open(opts.speederv2_log, O_RDONLY | O_CLOEXEC)) != -1 &&
-	    fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && (buf =
-	    malloc(RATES_READ + 1)) != NULL) {
-		if (rates_off == -1 || st.st_ino != rates_ino || st.st_size <
-		    rates_off)
-			rates_off = rates_off == -1 ? st.st_size : 0;
-		rates_ino = st.st_ino;
-		/* Fallen behind: the last of it. */
-		if (st.st_size - rates_off > RATES_READ)
-			rates_off = st.st_size - RATES_READ;
-		n = pread(fd, buf, RATES_READ, rates_off);
-		if (n > 0) {
-			buf[n] = '\0';
-			/* The lines that are whole; the rest at the next. */
-			if ((nl = strrchr(buf, '\n')) != NULL) {
-				nl[1] = '\0';
-				rates_off += nl + 1 - buf;
-			}
-			for (line = buf; nl != NULL && *line != '\0'; line =
-			    nl + 1) {
-				nl = strchr(line, '\n');
-				*nl = '\0';
-				if (tag_of(line, tag, sizeof(tag)) &&
-				    report_of(line, &up, &down) && (at =
-				    line_time(line)) != -1)
-					rate_take(tag, &up, &down, at);
-			}
+	host = false;
+	if ((fd = open(opts.speederv2_log, O_RDONLY | O_CLOEXEC)) != -1) {
+		if (fstat(fd, &hst) == 0) {
+			host = true;
+			if ((k = log_of("")) != LOGS_MAX)
+				rates_read(fd, &hst, k);
 		}
-		free(buf);
-	}
-	if (fd != -1)
 		close(fd);
+	}
+	rel = opts.speederv2_log + strspn(opts.speederv2_log, "/");
+	strlcpy(last, "0", sizeof(last));
+	for (nj = 0; nj < LOGS_MAX * 4 && rel[0] != '\0'; nj++) {
+		name[0] = path[0] = '\0';
+		if ((jid = jail_getv(0, "lastjid", last, "name", name, "path",
+		    path, NULL)) <= 0)
+			break;
+		snprintf(last, sizeof(last), "%d", jid);
+		if (path[0] != '/' || strcmp(path, "/") == 0 || name[0] == '\0' ||
+		    (root = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+			continue;
+		fd = openat(root, rel, O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+		    O_CLOEXEC | O_RESOLVE_BENEATH);
+		close(root);
+		if (fd == -1)
+			continue;
+		if (fstat(fd, &st) == 0 && !(host && st.st_dev == hst.st_dev &&
+		    st.st_ino == hst.st_ino) && (k = log_of(name)) != LOGS_MAX)
+			rates_read(fd, &st, k);
+		close(fd);
+	}
 	now = time(NULL);
 	for (i = 0; i < nrates && i < max; i++) {
 		strlcpy(v[i].tag, rates[i].tag, sizeof(v[i].tag));
@@ -1335,8 +1411,6 @@ speeder_check(const struct arc_job_spec *sp)
 	if (sp->verb == NULL)
 		return ("a speeder job has a verb: conf, fec, enable, disable, "
 		    "start, stop, restart, remove");
-	if (sp->safe && sp->jail != NULL && sp->jail[0] != '\0')
-		return ("a jail's relay is not undone: not in safe mode");
 	for (i = np = 0; i < sp->names.n; i++)
 		if ((prof = arg_of(sp->names.v[i], "profile")) != NULL) {
 			if (!profile_ok(prof))

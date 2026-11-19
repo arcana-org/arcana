@@ -877,6 +877,13 @@ time.
 A SIGBUS whose code is
 .Dv BUS_OOMERR
 was a page fault the kernel found no memory for.
+Each running jail's cores are listed too, found beneath its root where
+.Va kern.corefile
+puts them for a process of the jail, each with the jail's name; with
+.Fl j ,
+.Cm backtrace
+reads that jail's core with the jail's own program (named as the jail
+has it) and libraries, of a crash the kernel said was in that jail.
 Nothing is changed.
 arcana-crashes'
 .Ic read
@@ -1869,6 +1876,18 @@ Arcana's on the interface's SAs; never an
 interface's own,
 .Pa ipsec.conf Ns 's
 or an IKE daemon's.
+.Pp
+With
+.Fl j ,
+each
+.Cm ipsec-sa
+is of a vnet jail's interface: its SAs and policies the jail's own
+network's, by PF_KEY there; its key pair and what was set kept on the
+host, named
+.Ar interface Ns @ Ns Ar jail
+as its faults and its public half in the
+.Cm sdwan
+read are.
 .It Cm allow Oo Fl n Oc Ar jail Ar allow.name=0|1|unset ...
 The jail's permissions, the
 .Va allow.*

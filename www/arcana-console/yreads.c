@@ -636,14 +636,15 @@ yr_crashes(cbl_conn *conn, const char *const *words, size_t n,
 
 	memset(&in, 0, sizeof(in));
 	if (n > 0) {
-		if (strcmp(words[0], "backtrace") != 0 || n < 2 || n > 3) {
+		if (strcmp(words[0], "backtrace") != 0 || n < 2 || n > 4) {
 			*data = NULL;
-			snprintf(err, errlen, "crashes takes backtrace, a core and "
-			    "its program");
+			snprintf(err, errlen, "crashes takes backtrace, a core, "
+			    "its program and its jail");
 			return (EINVAL);
 		}
 		in.backtrace = words[1];
-		in.program = n > 2 ? words[2] : NULL;
+		in.program = n > 2 && words[2][0] != '\0' ? words[2] : NULL;
+		in.jail = n > 3 && words[3][0] != '\0' ? words[3] : NULL;
 	}
 	return (flat_call(conn, "arcana-crashes", "crashes", "read", &in,
 	    sizeof(struct arcana_crashes_crashes_read_output), yfn_crashes,

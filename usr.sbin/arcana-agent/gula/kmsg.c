@@ -28,8 +28,9 @@
  * an hour without one.  The crash faults an agent before this one left
  * open are taken up at the start (faults_open()), each cleared an hour
  * after its last crash.  Each core the kernel says it dumped, from the
- * lines read at the start too, is noted (its program, pid and uid, the
- * last CORES_SEEN of them): crashes.c reads no core but one of those.
+ * lines read at the start too, is noted (its program, pid, jail and
+ * uid, the last CORES_SEEN of them): crashes.c reads no core but one of
+ * those.
  *
  * A line not finished yet is left for the next read.  The end of the
  * last read is looked for where it must be if the buffer only grew (it
@@ -81,6 +82,7 @@ struct crashes {
 struct core_seen {
 	char	comm[MAXCOMLEN + 2];
 	int	pid;
+	int	jid;
 	int	uid;
 };
 
@@ -221,11 +223,12 @@ crash_note(const char *object, const char *comm, time_t now)
 
 /*
  * Did the kernel say it dumped a core of comm's, pid's (-1: the latest
- * of comm's)?  Its uid in *uidp.  Lines read at the start count: the
- * kernel's message buffer is the kernel's alone.
+ * of comm's), in jail jid (-1: in any)?  Its uid in *uidp.  Lines read
+ * at the start count: the kernel's message buffer is the kernel's
+ * alone.
  */
 bool
-kmsg_core_dumped(const char *comm, int pid, int *uidp)
+kmsg_core_dumped(const char *comm, int pid, int jid, int *uidp)
 {
 	int	i, k;
 	bool	found;
@@ -235,7 +238,7 @@ kmsg_core_dumped(const char *comm, int pid, int *uidp)
 	for (i = 0; i < ncs && !found; i++) {
 		k = (cs_next - 1 - i + CORES_SEEN) % CORES_SEEN;
 		if (strcmp(cs[k].comm, comm) == 0 && (pid == -1 ||
-		    cs[k].pid == pid)) {
+		    cs[k].pid == pid) && (jid == -1 || cs[k].jid == jid)) {
 			*uidp = cs[k].uid;
 			found = true;
 		}
@@ -270,6 +273,7 @@ kmsg_crash_line(const char *text, time_t now)
 	if (core) {
 		snprintf(cs[cs_next].comm, sizeof(cs[0].comm), "%s", comm);
 		cs[cs_next].pid = pid;
+		cs[cs_next].jid = jid;
 		cs[cs_next].uid = uid;
 		cs_next = (cs_next + 1) % CORES_SEEN;
 		if (ncs < CORES_SEEN)

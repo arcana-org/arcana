@@ -962,6 +962,11 @@ submodule arcana-jobs-kinds {
             description
               "Arguments";
           }
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
         }
       }
       case zfs {

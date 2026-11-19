@@ -27,6 +27,19 @@
  * that name.  The debugger runs as nobody, with
  * no init file and no script of its own or of the symbols', within
  * limits of CPU, memory and time: nothing it says is trusted.
+ *
+ * A jailed process's core is where kern.corefile says beneath the
+ * jail's root (the kernel resolves the pattern in the process's own
+ * root), so each running jail's are listed too, with the jail's name,
+ * their directory the host's path to it: each directory opened beneath
+ * the jail's root, never through a link that leads out of it, and the
+ * core in it without one.  Its backtrace is of the jail's own program
+ * and libraries: the host's debugger told the jail's root is where the
+ * program's files are (lldb's image search paths, gdb's sysroot), the
+ * program found beneath the root; the core one the kernel said it
+ * dumped in that jail.  The jail's root can still turn a name on that
+ * way into a link after it was looked at: what the debugger reads then
+ * is read as nobody, and nothing it says is trusted.
  */
 
 #include <sys/param.h>
@@ -58,6 +71,16 @@
 #define	DBG_AS		((rlim_t)6 << 30)	/* and its address space */
 #define	DBG_WALL	300		/* killed after so long */
 
+/* Whose cores: the host's (jail NULL), or a running jail's, beneath its
+ * root. */
+struct croot {
+	const char	*jail;
+	int		 jid;
+	const char	*path;		/* the jail's root, as the host has it */
+};
+
+static const struct croot	host_root = { NULL, 0, "/" };
+
 /* Where cores go: kern.corefile's directory; NULL when it names none
  * (each in its process's own directory). */
 static const char *
@@ -88,10 +111,64 @@ core_name_ok(const char *s)
 	    strcmp(s, "core") == 0));
 }
 
-/* The program of that name (the crashed process's, as the kernel
- * names it), where programs are. */
+/*
+ * A directory of r's: the host's, or opened beneath the jail's root,
+ * whatever links the jail has put on the way.  -1 with errno.
+ */
+static int
+root_dir(const struct croot *r, const char *dir)
+{
+	int	root, fd, e;
+
+	if (r->jail == NULL)
+		return (open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+	if ((root = open(r->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+		return (-1);
+	dir += strspn(dir, "/");
+	fd = openat(root, dir[0] != '\0' ? dir : ".", O_RDONLY | O_DIRECTORY |
+	    O_CLOEXEC | O_RESOLVE_BENEATH);
+	e = errno;
+	close(root);
+	errno = e;
+	return (fd);
+}
+
+/* A directory of r's as the host names it: beneath the jail's root. */
 static const char *
-core_program(struct work *w, const char *name)
+root_path(struct work *w, const struct croot *r, const char *dir)
+{
+
+	if (r->jail == NULL)
+		return (dir);
+	return (strcmp(dir, "/") == 0 ? r->path : wfmt(w, "%s%s",
+	    strcmp(r->path, "/") == 0 ? "" : r->path, dir));
+}
+
+/* Is program, as r sees it, a program there: an executable file,
+ * beneath the jail's root for a jail's? */
+static bool
+program_ok(const struct croot *r, const char *program)
+{
+	struct stat	sb;
+	int		root;
+	bool		ok;
+
+	if (program[0] != '/')
+		return (false);
+	if (r->jail == NULL)
+		return (access(program, X_OK) == 0);
+	if ((root = open(r->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1)
+		return (false);
+	ok = fstatat(root, program + 1, &sb, AT_RESOLVE_BENEATH) == 0 &&
+	    S_ISREG(sb.st_mode) && (sb.st_mode & 0111) != 0;
+	close(root);
+	return (ok);
+}
+
+/* The program of that name (the crashed process's, as the kernel
+ * names it), where programs are, as r sees them. */
+static const char *
+core_program(struct work *w, const struct croot *r, const char *name)
 {
 	static const char *const dirs[] = { "/usr/local/sbin",
 	    "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
@@ -101,31 +178,36 @@ core_program(struct work *w, const char *name)
 
 	for (i = 0; i < nitems(dirs); i++) {
 		p = wfmt(w, "%s/%s", dirs[i], name);
-		if (access(p, X_OK) == 0)
+		if (program_ok(r, p))
 			return (p);
 	}
 	return (NULL);
 }
 
 /*
- * The cores of dir into arr, each with where it is; *othersp counts
- * the directory's other files; false, with why in *errp, when the
- * directory cannot be read.
+ * The cores of r's dir into arr, each with where it is (the host's path
+ * to it) and whose; *othersp counts the directory's other files; false,
+ * with why in *errp, when the directory cannot be read.
  */
 static bool
-cores_list(struct work *w, const char *dir, ucl_object_t *arr, int *othersp,
-    ucl_object_t *others, const char **errp)
+cores_list(struct work *w, const struct croot *r, const char *dir,
+    ucl_object_t *arr, int *othersp, ucl_object_t *others, const char **errp)
 {
 	ucl_object_t	*o;
 	DIR		*d;
 	struct dirent	*de;
 	struct stat	 st;
 	char		 pid[16];
-	const char	*p;
-	int		 n;
+	const char	*p, *where;
+	int		 n, fd, e;
 
-	if ((d = opendir(dir)) == NULL) {
-		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
+	where = root_path(w, r, dir);
+	if ((fd = root_dir(r, dir)) == -1 || (d = fdopendir(fd)) == NULL) {
+		e = errno;
+		*errp = wfmt(w, "%s: %s", where, strerror(e));
+		if (fd != -1)
+			close(fd);
+		errno = e;
 		return (false);
 	}
 	n = 0;
@@ -136,15 +218,18 @@ cores_list(struct work *w, const char *dir, ucl_object_t *arr, int *othersp,
 		if (!core_name_ok(de->d_name)) {
 			if ((*othersp)++ < 20 && others != NULL)
 				ucl_array_append(others, ucl_object_fromstring(wfmt(
-				    w, "%s/%s (%jd bytes)", strcmp(dir, "/") == 0 ? "" :
-				    dir, de->d_name, (intmax_t)st.st_size)));
+				    w, "%s/%s (%jd bytes)", strcmp(where, "/") == 0 ?
+				    "" : where, de->d_name, (intmax_t)st.st_size)));
 			continue;
 		}
 		o = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(o, ucl_object_fromstring(de->d_name),
 		    "name", 0, true);
-		ucl_object_insert_key(o, ucl_object_fromstring(dir), "directory",
-		    0, true);
+		ucl_object_insert_key(o, ucl_object_fromstring(where),
+		    "directory", 0, true);
+		if (r->jail != NULL)
+			ucl_object_insert_key(o, ucl_object_fromstring(r->jail),
+			    "jail", 0, true);
 		ucl_object_insert_key(o, ucl_object_fromlstring(de->d_name,
 		    strcspn(de->d_name, ".")), "program", 0, false);
 		/* %N.%P.core: its pid, when the name has one. */
@@ -271,19 +356,19 @@ debug_as_nobody(int argc, char **argv)
 }
 
 /*
- * The core opened: beneath its directory, never through a link, a
- * regular file of one link, the crashed process's user's or root's,
- * not too large; -1 and why.
+ * The core opened: beneath its directory (beneath the jail's root for
+ * a jail's), never through a link, a regular file of one link, the
+ * crashed process's user's or root's, not too large; -1 and why.
  */
 static int
-core_open(struct work *w, const char *dir, const char *core, int uid,
-    const char **errp)
+core_open(struct work *w, const struct croot *r, const char *dir,
+    const char *core, int uid, const char **errp)
 {
 	struct stat	 sb;
 	int		 dfd, fd;
 
-	if ((dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
-		*errp = wfmt(w, "%s: %s", dir, strerror(errno));
+	if ((dfd = root_dir(r, dir)) == -1) {
+		*errp = wfmt(w, "%s: %s", root_path(w, r, dir), strerror(errno));
 		return (-1);
 	}
 	fd = openat(dfd, core, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
@@ -371,14 +456,19 @@ debug_run(struct work *w, char **argv, int cfd, struct execres *res)
 	(void)run_exec_max(w, hv, res, BT_MAX);
 }
 
-/* lldb's backtrace of every thread of a core, and the signal's code. */
+/*
+ * lldb's backtrace of every thread of a core, and the signal's code:
+ * of r's, dir as r sees it.
+ */
 static int
-core_backtrace(struct work *w, const char *dir, const char *core,
-    const char *program, ucl_object_t *top, const char **errp)
+core_backtrace(struct work *w, const struct croot *r, const char *dir,
+    const char *core, const char *program, ucl_object_t *top,
+    const char **errp)
 {
 	struct execres	 res;
-	const char	*lldb, *gdb, *path, *base, *copy, *cdir;
-	char		*argv[24], *text, pattern[MAXPATHLEN],
+	const char	*lldb, *gdb, *path, *base, *copy, *cdir, *prog,
+			*rootp;
+	char		*argv[28], *text, pattern[MAXPATHLEN],
 			 comm[MAXCOMLEN + 2];
 	size_t		 len;
 	int		 n, step, pid, uid, cfd;
@@ -399,16 +489,19 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 		    "core: not read", path, pattern);
 		return (-1);
 	}
-	if (!kmsg_core_dumped(comm, pid, &uid)) {
+	if (!kmsg_core_dumped(comm, pid, r->jail != NULL ? r->jid : -1,
+	    &uid)) {
 		*errp = pid != -1 ? wfmt(w, "the kernel was not seen to dump a "
-		    "core of %s, pid %d: %s not read", comm, pid, core) :
-		    wfmt(w, "the kernel was not seen to dump a core of %s: %s "
-		    "not read", comm, core);
+		    "core of %s, pid %d%s%s: %s not read", comm, pid, r->jail !=
+		    NULL ? ", in the jail " : "", r->jail != NULL ? r->jail : "",
+		    core) : wfmt(w, "the kernel was not seen to dump a core of "
+		    "%s%s%s: %s not read", comm, r->jail != NULL ? " in the jail " :
+		    "", r->jail != NULL ? r->jail : "", core);
 		return (-1);
 	}
 	/* The program the kernel named; another of its name named. */
 	if (program == NULL || program[0] == '\0')
-		program = core_program(w, comm);
+		program = core_program(w, r, comm);
 	if (program != NULL) {
 		base = strrchr(program, '/') != NULL ? strrchr(program, '/') +
 		    1 : program;
@@ -419,17 +512,21 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 			return (-1);
 		}
 	}
-	if (program == NULL || program[0] != '/' || access(program, X_OK) !=
-	    0) {
-		*errp = wfmt(w, "the program of %s is not found: name it", core);
+	if (program == NULL || !program_ok(r, program)) {
+		*errp = r->jail != NULL ? wfmt(w, "the program of %s is not found "
+		    "in the jail %s: name it as the jail has it", core, r->jail) :
+		    wfmt(w, "the program of %s is not found: name it", core);
 		return (-1);
 	}
+	/* The debugger's: the host's path to the jail's. */
+	rootp = r->jail != NULL && strcmp(r->path, "/") != 0 ? r->path : "";
+	prog = wfmt(w, "%s%s", rootp, program);
 	if ((lldb = tool(w, "lldb")) == NULL) {
 		*errp = "the host has no lldb(1): its base system is built "
 		    "without it";
 		return (-1);
 	}
-	if ((cfd = core_open(w, dir, core, uid, errp)) == -1)
+	if ((cfd = core_open(w, r, dir, core, uid, errp)) == -1)
 		return (-1);
 	if ((copy = core_copy(w, cfd, &cdir, errp)) == NULL) {
 		close(cfd);
@@ -449,8 +546,14 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 	/* The symbols a port keeps apart (WITH_DEBUG): beside the base
 	 * system's. */
 	argv[n++] = (char *)(uintptr_t)"-O";
-	argv[n++] = (char *)(uintptr_t)"settings set target.debug-file-search-"
-	    "paths /usr/local/lib/debug /usr/lib/debug";
+	argv[n++] = wfmt(w, "settings set target.debug-file-search-paths "
+	    "%s/usr/local/lib/debug %s/usr/lib/debug", rootp, rootp);
+	/* A jail's libraries, where the core names them, beneath its root. */
+	if (rootp[0] != '\0') {
+		argv[n++] = (char *)(uintptr_t)"-O";
+		argv[n++] = wfmt(w, "settings set target.image-search-paths / "
+		    "%s/", rootp);
+	}
 	argv[n++] = (char *)(uintptr_t)"-c";
 	argv[n++] = (char *)(uintptr_t)copy;
 	argv[n++] = (char *)(uintptr_t)"-o";
@@ -460,10 +563,10 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 	argv[n++] = (char *)(uintptr_t)"-o";
 	argv[n++] = (char *)(uintptr_t)"thread siginfo";
 	argv[n++] = (char *)(uintptr_t)"--";
-	argv[n++] = (char *)(uintptr_t)program;
+	argv[n++] = (char *)(uintptr_t)prog;
 	argv[n] = NULL;
 	step = step_begin(w, STEP_EXEC, "lldb", "%s of %s", core,
-	    program);
+	    prog);
 	debug_run(w, argv, cfd, &res);
 	(void)unlink(copy);
 	(void)rmdir(cdir);
@@ -482,20 +585,25 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 		/* Before anything is read: no script of the symbols'. */
 		argv[n++] = (char *)(uintptr_t)"-iex";
 		argv[n++] = (char *)(uintptr_t)"set auto-load off";
+		/* A jail's libraries beneath its root. */
+		if (rootp[0] != '\0') {
+			argv[n++] = (char *)(uintptr_t)"-iex";
+			argv[n++] = wfmt(w, "set sysroot %s", rootp);
+		}
 		argv[n++] = (char *)(uintptr_t)"-ex";
-		argv[n++] = (char *)(uintptr_t)"set debug-file-directory "
-		    "/usr/local/lib/debug:/usr/lib/debug";
+		argv[n++] = wfmt(w, "set debug-file-directory "
+		    "%s/usr/local/lib/debug:%s/usr/lib/debug", rootp, rootp);
 		argv[n++] = (char *)(uintptr_t)"-ex";
 		argv[n++] = (char *)(uintptr_t)"info threads";
 		argv[n++] = (char *)(uintptr_t)"-ex";
 		argv[n++] = (char *)(uintptr_t)"thread apply all bt";
 		argv[n++] = (char *)(uintptr_t)"-ex";
 		argv[n++] = (char *)(uintptr_t)"print $_siginfo";
-		argv[n++] = (char *)(uintptr_t)program;
+		argv[n++] = (char *)(uintptr_t)prog;
 		argv[n++] = (char *)(uintptr_t)"/dev/fd/0";
 		argv[n] = NULL;
 		step = step_begin(w, STEP_EXEC, "gdb", "%s of %s",
-		    core, program);
+		    core, prog);
 		debug_run(w, argv, cfd, &res);
 		text = wfmt(w, "%s\n%.*s%.*s", text, (int)res.outlen, res.out !=
 		    NULL ? res.out : "", (int)res.errlen, res.err != NULL ?
@@ -511,6 +619,9 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 	    false);
 	ucl_object_insert_key(top, ucl_object_fromstring(program), "program",
 	    0, false);
+	if (r->jail != NULL)
+		ucl_object_insert_key(top, ucl_object_fromstring(r->jail), "jail",
+		    0, false);
 	ucl_object_insert_key(top, ucl_object_fromstring(text), "backtrace", 0,
 	    false);
 	if (res.truncated)
@@ -519,45 +630,38 @@ core_backtrace(struct work *w, const char *dir, const char *core,
 	return (0);
 }
 
+
 /*
- * The cores, or with names "backtrace" core [program] one's backtrace
- * besides.
+ * r's cores into cores: in kern.corefile's directory dir (NULL: none of
+ * its own), its others and notes where those are given; then where else
+ * a core may lie, and each home directory.
  */
-void
-do_crashes(struct work *w, const char *const *names, size_t n,
-    struct json_rsp *rsp)
+static void
+cores_of(struct work *w, const struct croot *r, const char *dir,
+    ucl_object_t *cores, ucl_object_t *onames, ucl_object_t *notes)
 {
 	static const char *const elsewhere[] = { "/", "/root", "/tmp",
 	    "/var/tmp", "/var/db/bird", "/usr/local/etc/bird" };
-	ucl_object_t	*top, *cores, *notes, *onames;
-	char		 pattern[MAXPATHLEN], *json;
-	const char	*dir, *err;
+	DIR		*d;
+	struct dirent	*de;
+	const char	*err;
 	size_t		 i;
-	int		 others;
+	int		 others, fd;
 
-	top = ucl_object_typed_new(UCL_OBJECT);
-	notes = ucl_object_typed_new(UCL_ARRAY);
-	dir = core_dir(w, pattern, sizeof(pattern));
-	ucl_object_insert_key(top, ucl_object_fromstring(pattern),
-	    "corefile", 0, false);
-	cores = ucl_object_typed_new(UCL_ARRAY);
-	others = 0;
-	if (dir == NULL)
-		ucl_array_append(notes, ucl_object_fromstring("kern.corefile "
-		    "names no directory of its own: each core is where its "
-		    "process ran"));
-	else {
-		ucl_object_insert_key(top, ucl_object_fromstring(dir),
-		    "directory", 0, false);
-		onames = ucl_object_typed_new(UCL_ARRAY);
+	if (dir != NULL) {
 		err = NULL;
-		if (!cores_list(w, dir, cores, &others, onames, &err))
-			ucl_array_append(notes, ucl_object_fromstring(err));
-		else if (others > 0)
+		others = 0;
+		if (!cores_list(w, r, dir, cores, &others, onames, &err)) {
+			/* A jail with no such directory has dumped nothing
+			 * there. */
+			if (notes != NULL && (r->jail == NULL || errno != ENOENT))
+				ucl_array_append(notes, ucl_object_fromstring(
+				    r->jail != NULL ? wfmt(w, "the jail %s: %s",
+				    r->jail, err) : err));
+		} else if (others > 0 && notes != NULL)
 			ucl_array_append(notes, ucl_object_fromstring(wfmt(w,
-			    "%s holds %d other file%s", dir, others, others == 1 ?
-			    "" : "s")));
-		ucl_object_insert_key(top, onames, "others", 0, false);
+			    "%s holds %d other file%s", root_path(w, r, dir),
+			    others, others == 1 ? "" : "s")));
 	}
 	/* Where else a core may lie: a daemon's working directory, /,
 	 * where a %N.core of an earlier setting went; and where a hand
@@ -567,41 +671,132 @@ do_crashes(struct work *w, const char *const *names, size_t n,
 			continue;
 		err = NULL;
 		others = 0;
-		(void)cores_list(w, elsewhere[i], cores, &others, NULL, &err);
+		(void)cores_list(w, r, elsewhere[i], cores, &others, NULL, &err);
 	}
 	/* And each home directory. */
-	{
-		DIR		*d;
-		struct dirent	*de;
+	if ((fd = root_dir(r, "/home")) == -1)
+		return;
+	if ((d = fdopendir(fd)) == NULL) {
+		close(fd);
+		return;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.' || de->d_type != DT_DIR)
+			continue;
+		err = NULL;
+		others = 0;
+		(void)cores_list(w, r, wfmt(w, "/home/%s", de->d_name), cores,
+		    &others, NULL, &err);
+	}
+	closedir(d);
+}
 
-		if ((d = opendir("/home")) != NULL) {
-			while ((de = readdir(d)) != NULL) {
-				if (de->d_name[0] == '.' || de->d_type != DT_DIR)
-					continue;
-				err = NULL;
-				others = 0;
-				(void)cores_list(w, wfmt(w, "/home/%s", de->d_name),
-				    cores, &others, NULL, &err);
-			}
-			closedir(d);
-		}
+/*
+ * The cores, the host's and each running jail's, or with names
+ * "backtrace" core [program [jail]] one's backtrace besides (a jail's
+ * core with its jail named, its program as the jail has it).
+ */
+void
+do_crashes(struct work *w, const char *const *names, size_t n,
+    struct json_rsp *rsp)
+{
+	ucl_object_t		*top, *cores, *notes, *onames;
+	struct jinfo		*ji;
+	struct croot		*roots;
+	const struct croot	*r;
+	char			 pattern[MAXPATHLEN], *json;
+	const char		*dir, *err, *jail;
+	size_t			 i, nj, nr;
+
+	top = ucl_object_typed_new(UCL_OBJECT);
+	notes = ucl_object_typed_new(UCL_ARRAY);
+	dir = core_dir(w, pattern, sizeof(pattern));
+	ucl_object_insert_key(top, ucl_object_fromstring(pattern),
+	    "corefile", 0, false);
+	cores = ucl_object_typed_new(UCL_ARRAY);
+	onames = NULL;
+	if (dir == NULL)
+		ucl_array_append(notes, ucl_object_fromstring("kern.corefile "
+		    "names no directory of its own: each core is where its "
+		    "process ran"));
+	else {
+		ucl_object_insert_key(top, ucl_object_fromstring(dir),
+		    "directory", 0, false);
+		onames = ucl_object_typed_new(UCL_ARRAY);
+	}
+	cores_of(w, &host_root, dir, cores, onames, notes);
+	if (onames != NULL)
+		ucl_object_insert_key(top, onames, "others", 0, false);
+	/*
+	 * Each running jail's, beneath its root: kern.corefile is the
+	 * host's, the path it gives the process's own.  A jail whose root
+	 * is the host's has its cores where the host's are.
+	 */
+	ji = NULL;
+	nj = nr = 0;
+	err = NULL;
+	if (jails_running(w, &ji, &nj, &err) != 0)
+		ucl_array_append(notes, ucl_object_fromstring(wfmt(w, "the "
+		    "jails' cores are not listed: %s", err != NULL ? err :
+		    "the jails could not be read")));
+	roots = wcalloc(w, nj + 1, sizeof(*roots));
+	for (i = 0; i < nj; i++) {
+		if (ji[i].dying || ji[i].name == NULL || ji[i].path == NULL ||
+		    ji[i].path[0] != '/' || strcmp(ji[i].path, "/") == 0)
+			continue;
+		roots[nr].jail = ji[i].name;
+		roots[nr].jid = ji[i].jid;
+		roots[nr].path = ji[i].path;
+		cores_of(w, &roots[nr], dir, cores, NULL, notes);
+		nr++;
 	}
 	ucl_object_insert_key(top, cores, "cores", 0, false);
 	ucl_object_insert_key(top, notes, "notes", 0, false);
 	if (n >= 2 && strcmp(names[0], "backtrace") == 0) {
 		const ucl_object_t	*c;
 		ucl_object_iter_t	 it = NULL;
-		const char		*where = dir;
+		const char		*where = NULL, *cj;
 
-		/* The core named, where the list found it. */
-		while ((c = ucl_object_iterate(cores, &it, true)) != NULL)
+		/* The jail named, running. */
+		jail = n >= 4 && names[3][0] != '\0' ? names[3] : NULL;
+		r = &host_root;
+		if (jail != NULL) {
+			for (i = 0; i < nr && strcmp(roots[i].jail, jail) != 0;
+			    i++)
+				;
+			if (i == nr) {
+				ucl_object_unref(top);
+				rsp->ok = false;
+				rsp->error = wfmt(w, "the jail %s is not running, "
+				    "or its root is the host's", jail);
+				return;
+			}
+			r = &roots[i];
+		}
+		/* The core named, where the list found it, of that jail or
+		 * the host. */
+		while ((c = ucl_object_iterate(cores, &it, true)) != NULL) {
+			cj = ucl_object_tostring(ucl_object_lookup(c, "jail"));
 			if (ucl_object_tostring(ucl_object_lookup(c, "name")) !=
 			    NULL && strcmp(ucl_object_tostring(ucl_object_lookup(
-			    c, "name")), names[1]) == 0)
+			    c, "name")), names[1]) == 0 && ((jail == NULL && cj ==
+			    NULL) || (jail != NULL && cj != NULL && strcmp(cj,
+			    jail) == 0)))
 				where = ucl_object_tostring(ucl_object_lookup(c,
 				    "directory"));
+		}
+		if (where == NULL)
+			where = r->jail == NULL ? dir : dir != NULL ?
+			    root_path(w, r, dir) : NULL;
+		/* A jail's, as the jail sees it: beneath its root. */
+		if (where != NULL && r->jail != NULL) {
+			i = strlen(r->path);
+			where = strncmp(where, r->path, i) == 0 && (where[i] ==
+			    '\0' || where[i] == '/') ? (where[i] == '\0' ? "/" :
+			    where + i) : NULL;
+		}
 		err = NULL;
-		if (where == NULL || core_backtrace(w, where, names[1], n >= 3 ?
+		if (where == NULL || core_backtrace(w, r, where, names[1], n >= 3 ?
 		    names[2] : NULL, top, &err) != 0) {
 			ucl_object_unref(top);
 			rsp->ok = false;

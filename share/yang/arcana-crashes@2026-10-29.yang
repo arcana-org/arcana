@@ -16,9 +16,11 @@ module arcana-crashes {
   description
     "The cores FreeBSD's kernel dumped (core(5)), where kern.corefile
      says and where else one lies (/, /root, /tmp, /var/tmp, the home
-     directories), and a core's backtrace as lldb(1), and gdb where it
-     is installed, read it.  Nothing is changed.  The crashes
-     operation of arcana.yaml converted (Y-3).";
+     directories), the host's and each running jail's beneath its
+     root, and a core's backtrace as lldb(1), and gdb where it is
+     installed, read it, a jail's with the jail's own program and
+     libraries.  Nothing is changed.  The crashes operation of
+     arcana.yaml converted (Y-3).";
 
   revision 2026-10-29 {
     description
@@ -46,7 +48,13 @@ module arcana-crashes {
           type string;
           description
             "The program the core is of; found by the core's name
-             when not given.";
+             when not given.  A jail's as the jail has it.";
+        }
+        leaf jail {
+          type string;
+          description
+            "With backtrace, the running jail whose core it is, as the
+             list has it; the host's when not given.";
         }
       }
       output {
@@ -78,7 +86,8 @@ module arcana-crashes {
           leaf directory {
             type string;
             description
-              "Where it is.";
+              "Where it is, as the host has it: a jail's beneath the
+               jail's root.";
           }
           leaf program {
             type string;
@@ -100,6 +109,13 @@ module arcana-crashes {
             type yang:date-and-time;
             description
               "When it was written.";
+          }
+          leaf jail {
+            type string;
+            description
+              "The running jail it was found in, beneath its root
+               (kern.corefile's path as the jail sees it); none for
+               the host's.";
           }
         }
         leaf-list note {
@@ -128,6 +144,11 @@ module arcana-crashes {
           type boolean;
           description
             "The backtrace was cut at 512 KiB.";
+        }
+        leaf jail {
+          type string;
+          description
+            "With backtrace, the jail whose core was read.";
         }
       }
     }

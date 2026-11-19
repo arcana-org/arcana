@@ -238,7 +238,7 @@ main(void)
 			if ((comm = strsep(&p, " ")) == NULL || p == NULL)
 				errx(1, "not a line of the test: %s", line);
 			t = strtol(p, NULL, 10);
-			if (kmsg_core_dumped(comm, (int)t, &uid))
+			if (kmsg_core_dumped(comm, (int)t, -1, &uid))
 				printf("core of %s %ld: uid %d\n", comm, t, uid);
 			else
 				printf("no core of %s %ld\n", comm, t);

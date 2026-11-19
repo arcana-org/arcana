@@ -93,6 +93,26 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Jails: cores, relays, manual SAs, signals; agent 0.325.0, console 0.469.0
+
+- crashes lists each running jail's cores, found beneath its root where
+  kern.corefile puts them (each with "jail"), and reads a jail's
+  backtrace with the jail's own program and libraries (arcanactl -j
+  <jail> crashes backtrace <core>); a jail's core only of a crash the
+  kernel said was in that jail.
+- The FEC relays' rates in the history and archive come from each
+  jail's log too, named <jail>:<tag>; a jail's relay may be changed in
+  safe mode, undone in the jail.
+- ipsec-sa takes a vnet jail (arcanactl -j): its SAs and policies by
+  PF_KEY in the jail's network, its key pair and state kept on the host
+  as <interface>@<jail> (so named in the sdwan read, the sdwan-key
+  event and the key-rotation fault).
+- A jail's process signalled or reniced from the Processes page names
+  its jail in the job.  arcanactl: geom, zfs, zpool, gpart, cam, mount,
+  umount, swapon, swapoff, iscsi and hast refuse -j before sending.
+- Update the agent and the console together (arcana-jobs 63120-63121,
+  arcana-crashes 85222-85224).
+
 ### Services of a running jail; agent 0.324.0, console 0.468.0
 
 - arcana-services' read action on arcana-jails' jail lists a jail's

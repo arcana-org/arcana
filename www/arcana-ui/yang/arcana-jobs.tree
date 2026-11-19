@@ -200,6 +200,7 @@ module: arcana-jobs
     |  |     |  |     +---w tunnel-local?    string
     |  |     |  |     +---w tunnel-remote?   string
     |  |     |  |     +---w args*            string
+    |  |     |  |     +---w jail?            string
     |  |     |  +--:(zfs)
     |  |     |  |  +---w zfs!
     |  |     |  |     +---w verb         string
@@ -568,6 +569,7 @@ module: arcana-jobs
        |  |  |  |     +---w tunnel-local?    string
        |  |  |  |     +---w tunnel-remote?   string
        |  |  |  |     +---w args*            string
+       |  |  |  |     +---w jail?            string
        |  |  |  +--:(zfs)
        |  |  |  |  +---w zfs!
        |  |  |  |     +---w verb         string

@@ -5680,22 +5680,34 @@ cmd_poudriere(cbl_conn *conn, int argc, char **argv)
 	return (submit(conn, &sp));
 }
 
-/* crashes [backtrace core [program]]: the cores dumped, and one's
- * backtrace. */
+/* crashes [backtrace core [program]]: the cores dumped, the host's and
+ * the jails', and one's backtrace; -j: a core of that jail's. */
 static int
 cmd_crashes(cbl_conn *conn, int argc, char **argv)
 {
 	ucl_object_t	*data;
+	const char	*words[4];
 	char		 ebuf[256];
 	int		 error;
+	size_t		 n;
 
 	if (argc > 1 && (strcmp(argv[1], "backtrace") != 0 || argc < 3 ||
 	    argc > 4))
 		usage();
+	if (netjail != NULL && argc == 1)
+		xo_errx(2, "crashes lists every jail's cores: -j names the jail "
+		    "of a backtrace's");
+	n = 0;
+	for (; n < (size_t)argc - 1; n++)
+		words[n] = argv[1 + n];
+	if (netjail != NULL) {
+		if (n == 2)
+			words[n++] = "";
+		words[n++] = netjail;
+	}
 	/* arcana-crashes' read. */
 	ytold_begin(conn);
-	error = yr_crashes(conn, (const char *const *)&argv[1],
-	    (size_t)argc - 1, &data, ebuf, sizeof(ebuf));
+	error = yr_crashes(conn, words, n, &data, ebuf, sizeof(ebuf));
 	return (ydata_out("crashes", error, data, ebuf));
 }
 
@@ -5741,6 +5753,9 @@ cmd_geom(cbl_conn *conn, int argc, char **argv)
 
 	if (argc < 3)
 		usage();
+	/* The disks are the host's: no jail has a GEOM of its own. */
+	if (netjail != NULL)
+		xo_errx(2, "geom has no jail: GEOM is the host's");
 	memset(&sp, 0, sizeof(sp));
 	sp.has_kind = true;
 	sp.kind = ARC_JOB_KIND_GEOM;
@@ -5752,7 +5767,6 @@ cmd_geom(cbl_conn *conn, int argc, char **argv)
 	}
 	sp.names.v = (const char **)(uintptr_t)&argv[2];
 	sp.names.n = (size_t)n;
-	sp.jail = netjail;
 	return (submit(conn, &sp));
 }
 
@@ -5988,6 +6002,11 @@ cmd_netstore_job(cbl_conn *conn, int argc, char **argv, int kind)
 
 	if (argc < 3)
 		usage();
+	/* iSCSI's target and HAST serve the host's disks. */
+	if (netjail != NULL && (kind == ARC_JOB_KIND_ISCSI || kind ==
+	    ARC_JOB_KIND_HAST))
+		xo_errx(2, "%s has no jail: it serves the host's disks",
+		    kind == ARC_JOB_KIND_ISCSI ? "iscsi" : "hast");
 	memset(&sp, 0, sizeof(sp));
 	sp.has_kind = true;
 	sp.kind = (uint32_t)kind;
@@ -7356,10 +7375,12 @@ cmd_storage_job(cbl_conn *conn, int argc, char **argv)
 	const char		*words[24];
 	int			 i, first;
 
+	/* A jail's own zfs is read (storage -j), not changed from here. */
+	if (netjail != NULL)
+		xo_errx(2, "%s has no jail: storage is the host's", argv[0]);
 	memset(&sp, 0, sizeof(sp));
 	sp.has_kind = true;
 	sp.safe = safe;
-	sp.jail = netjail;
 	first = 2;
 	if (strcmp(argv[0], "swapon") == 0 || strcmp(argv[0], "swapoff") ==
 	    0) {

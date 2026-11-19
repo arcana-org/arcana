@@ -5261,6 +5261,70 @@ part_storage_procs(void)
 	}
 
 	/*
+	 * A jail's process, its jail picked above the table: the signal's
+	 * job names the jail, and the host checks the process is that
+	 * jail's.  The reads say here that a sleep of the host's is gw's
+	 * (jid 4): the host, asked, finds it is not, and leaves it be.
+	 */
+	ATF_REQUIRE(system("sleep 300 & echo $! > sleep2.pid") == 0);
+	{
+		char	pid[16], cmd[96];
+
+		ATF_REQUIRE((fp = fopen("sleep2.pid", "r")) != NULL);
+		ATF_REQUIRE(fgets(pid, sizeof(pid), fp) != NULL);
+		fclose(fp);
+		pid[strcspn(pid, "\n")] = '\0';
+		snprintf(script, sizeof(script), "window.subBody = ''; "
+		    "window.fetchP = window.fetch; window.fetch = function (u, o) "
+		    "{ const s = String(u); if (o && o.method === 'POST' && s."
+		    "endsWith(':submit')) window.subBody += String(o.body); "
+		    "return window.fetchP.call(this, u, o).then(r => { if (!s."
+		    "includes('arcana-processes:processes')) return r; return r."
+		    "clone().json().then(j => { const v = j[Object.keys(j)[0]]; "
+		    "if (!v || !Array.isArray(v.process)) return r; v.process."
+		    "forEach(p => { if (String(p.pid) === '%s' && p.state) { p."
+		    "state.jail = 'gw'; p.state.jid = 4; } }); v.jail = (v.jail "
+		    "|| []).concat([{ jid: 4, name: 'gw', procs: 1 }]); return "
+		    "new Response(JSON.stringify(j), { status: r.status, headers: "
+		    "r.headers }); }).catch(() => r); }); };", pid);
+		run(script);
+		wait_js("document.querySelector('button[data-act=ps-jail]"
+		    "[data-arg=gw]')", 20);
+		run("document.querySelector('button[data-act=ps-jail]"
+		    "[data-arg=gw]').click()");
+		snprintf(script, sizeof(script), "document.querySelector("
+		    "'table.procs tr[data-arg=\"%s\"]') && document."
+		    "querySelectorAll('table.procs tbody tr').length === 1", pid);
+		wait_js(script, 20);
+		snprintf(script, sizeof(script), "document.querySelector("
+		    "'table.procs tr[data-arg=\"%s\"]').click()", pid);
+		run(script);
+		wait_js("document.querySelector('form[data-form=ps-signal]')", 10);
+		run("const f = document.querySelector('form[data-form="
+		    "ps-signal]'); f.signal.value = 'TERM'; f.requestSubmit();");
+		wait_js("document.querySelector('form[data-form=confirm]')", 5);
+		run("document.querySelector('form[data-form=confirm]')."
+		    "requestSubmit()");
+		wait_js("document.querySelector('button[data-act=queue-run]')",
+		    5);
+		run("document.querySelector('button[data-act=queue-run]')."
+		    "click()");
+		wait_js("window.subBody.includes('gw') && document.body."
+		    "textContent.includes('is not a process of jail gw')", 20);
+		shot("7r-process-jail");
+		snprintf(cmd, sizeof(cmd), "kill -0 %s 2>/dev/null", pid);
+		ATF_CHECK(system(cmd) == 0);
+		run("window.fetch = window.fetchP; document.querySelector("
+		    "'button[data-act=ps-jail][data-arg=\"\"]') && document."
+		    "querySelector('button[data-act=ps-jail][data-arg=\"\"]')."
+		    "click()");
+		snprintf(cmd, sizeof(cmd), "kill %s 2>/dev/null", pid);
+		(void)system(cmd);
+		run("document.querySelector('.dock > header') && document."
+		    "querySelector('.dock > header').click()");
+	}
+
+	/*
 	 * A log: its lines taken apart, the newest first; a text searched
 	 * for on the host; and what is written while it is shown.
 	 */

@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-crashes",
     "module-revision": "2026-10-29",
-    "sid-file-version": 0,
+    "sid-file-version": 1,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -126,6 +126,21 @@
         "namespace": "data",
         "identifier": "/arcana-crashes:crashes/read/output/truncated",
         "sid": "85221"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-crashes:crashes/read/input/jail",
+        "sid": "85222"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-crashes:crashes/read/output/core-file/jail",
+        "sid": "85223"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-crashes:crashes/read/output/jail",
+        "sid": "85224"
       }
     ]
   }

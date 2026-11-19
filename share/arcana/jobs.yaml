@@ -339,7 +339,7 @@ kinds:
   - kind: ipsec-sa
     title: Manually keyed IPsec security associations and policies
     needs: verb interface
-    uses: reqid tunnel_local tunnel_remote args safe
+    uses: reqid tunnel_local tunnel_remote args safe jail
     values: verb=key|set|derive|commit|clear|policy|unpolicy
     destroys: verb=clear|unpolicy
   - kind: zfs

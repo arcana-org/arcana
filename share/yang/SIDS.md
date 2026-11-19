@@ -158,7 +158,7 @@ on the wire.
 | 84 700 | 100 | `arcana-firewall`, its second range (listed first in its file, so that new items go there): a kept rule's norm, the pipes' lines, the vnet jails' kept rules, the check and from-rc actions, the state's tunables, modules and a table's set | `share/yang/arcana-firewall@2026-10-15.sid` (60 used) |
 | 85 000 | 100 | `arcana-sshd`, its second range: the read action, the user CAs' keys and text, sshd_config's path, a certificate's serial | `share/yang/arcana-sshd@2026-10-15.sid` (54 used) |
 | 85 100 | 100 | `arcana-probe`, its third range | `share/yang/arcana-probe@2026-10-15.sid` (100 used) |
-| 85 200 | 100 | `arcana-crashes` | `share/yang/arcana-crashes@2026-10-29.sid` (22 used) |
+| 85 200 | 100 | `arcana-crashes` | `share/yang/arcana-crashes@2026-10-29.sid` (25 used) |
 | 85 300 | 100 | `arcana-system` | `share/yang/arcana-system@2026-10-29.sid` (58 used) |
 | 85 400 | 100 | `arcana-netstore` | `share/yang/arcana-netstore@2026-10-29.sid` (48 used) |
 | 85 500 | 200 | `arcana-suricata` | `share/yang/arcana-suricata@2026-10-29.sid` (132 used) |

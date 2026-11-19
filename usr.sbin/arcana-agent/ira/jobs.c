@@ -74,6 +74,7 @@ struct qjob {
 		size_t		 len;
 		mode_t		 mode;	/* 0 when not known */
 		bool		 had;
+		bool		 host;	/* the host's, the job in a jail */
 	}			 undo_files[4];
 	int			 undo_nfiles;
 	struct undo_rc {		/* rc.conf variables as they were */
@@ -153,7 +154,8 @@ scoped(const struct arc_job_spec *sp)
 	return ((sp->kind >= ARC_JOB_KIND_IF_ADDRESS && sp->kind <=
 	    ARC_JOB_KIND_BIRD) || sp->kind == ARC_JOB_KIND_IPFW || sp->kind ==
 	    ARC_JOB_KIND_BRIDGE || sp->kind == ARC_JOB_KIND_GENEVE ||
-	    sp->kind == ARC_JOB_KIND_IPSEC || sp->kind == ARC_JOB_KIND_NEIGHBOUR ||
+	    sp->kind == ARC_JOB_KIND_IPSEC || sp->kind == ARC_JOB_KIND_IPSEC_SA ||
+	    sp->kind == ARC_JOB_KIND_NEIGHBOUR ||
 	    sp->kind == ARC_JOB_KIND_CARP ||
 	    /* A vnet jail's own network's numbers, net.*: its own. */
 	    (sp->kind == ARC_JOB_KIND_SYSCTL && sp->jail != NULL &&
@@ -733,6 +735,7 @@ undo_snap_file(struct qjob *j, const char *path)
 	f->text = NULL;
 	f->len = 0;
 	f->mode = 0;
+	f->host = false;
 	/* Its mode, for the undo to put back with the text. */
 	if ((dfd = scope_open_dir(&j->w, path, &base)) != -1) {
 		if (fstatat(dfd, base, &sb, AT_SYMLINK_NOFOLLOW) == 0)
@@ -758,12 +761,39 @@ undo_snap_file(struct qjob *j, const char *path)
 	return (true);
 }
 
+/*
+ * The same of a file of the host's own though the job works in a jail
+ * (the agent's, as an ipsec-sa key pair of a vnet jail's interface):
+ * read on the host, put back there.
+ */
+static bool
+undo_snap_host(struct qjob *j, const char *path)
+{
+	const char	*jail, *jroot;
+	int		 jid;
+	bool		 ok;
+
+	jail = j->w.jail;
+	jroot = j->w.jroot;
+	jid = j->w.jid;
+	j->w.jail = j->w.jroot = NULL;
+	j->w.jid = 0;
+	ok = undo_snap_file(j, path);
+	j->w.jail = jail;
+	j->w.jroot = jroot;
+	j->w.jid = jid;
+	if (ok)
+		j->undo_files[j->undo_nfiles - 1].host = true;
+	return (ok);
+}
+
 /* The files back as they were: the text written, or the file gone. */
 static int
 undo_files_back(struct qjob *j, struct work *w, const char **errp)
 {
 	const struct undo_file	*f;
-	int			 i, step, rc, e;
+	const char		*jail, *jroot;
+	int			 i, step, rc, e, jid;
 
 	rc = 0;
 	for (i = 0; i < j->undo_nfiles; i++) {
@@ -772,12 +802,25 @@ undo_files_back(struct qjob *j, struct work *w, const char **errp)
 		    "remove", "%s, as it was", f->path);
 		if (work_dry(w, step))
 			continue;
+		/* The host's own on the host. */
+		jail = w->jail;
+		jroot = w->jroot;
+		jid = w->jid;
+		if (f->host) {
+			w->jail = w->jroot = NULL;
+			w->jid = 0;
+		}
 		/* Whole or as it is, with the mode it had. */
 		if (f->had)
 			rc = scope_replace(w, f->path, f->text, f->len, f->mode,
 			    NULL) == 0 ? rc : -1;
 		else if (scope_unlink(w, f->path) != 0 && errno != ENOENT)
 			rc = -1;
+		e = errno;
+		w->jail = jail;
+		w->jroot = jroot;
+		w->jid = jid;
+		errno = e;
 		step_end(w, step, rc == 0, rc == 0 ? NULL : "%s",
 		    strerror(errno));
 		if (rc != 0) {
@@ -1034,9 +1077,10 @@ undo_prepare(struct qjob *j)
 		{
 			const char	*key, *next, *state;
 
+			/* The host's, though the SAs be a vnet jail's. */
 			sa_files(&j->w, sp->interface, &key, &next, &state);
-			if (!undo_snap_file(j, key) || !undo_snap_file(j, next) ||
-			    !undo_snap_file(j, state))
+			if (!undo_snap_host(j, key) || !undo_snap_host(j, next) ||
+			    !undo_snap_host(j, state))
 				return (wfmt(&j->w, "not changed: %s's key files "
 				    "could not be read, so they could not be put "
 				    "back: %s", sp->interface, strerror(errno)));
@@ -1157,9 +1201,13 @@ undo_prepare(struct qjob *j)
 		}
 		break;
 	case ARC_JOB_KIND_SPEEDER:
-		/* The host's relay alone (a jail's is refused as safe):
-		 * its flags, whether it is enabled, the profiles and
-		 * whether it runs. */
+		/* The relay of the host or of the jail named: its flags,
+		 * whether it is enabled, the profiles and whether it runs,
+		 * read where the job works, and put back there (the job's
+		 * work stays in the jail). */
+		e = NULL;
+		if (scope_enter_jail(&j->w, sp->jail, &e, false) != 0)
+			return (wfmt(&j->w, "not changed: %s", e));
 		speeder_snap(&j->w, sp, &j->undo_speeder);
 		break;
 	default:

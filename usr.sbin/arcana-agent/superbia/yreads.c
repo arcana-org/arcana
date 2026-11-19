@@ -128,7 +128,7 @@ arcana_crashes_crashes_read_action(cbl_req *req, const struct cbl_bytes *target,
 {
 	struct json_rsp	 r;
 	struct work	*w;
-	const char	*names[3];
+	const char	*names[4];
 	size_t		 n;
 	int		 root;
 
@@ -147,8 +147,10 @@ arcana_crashes_crashes_read_action(cbl_req *req, const struct cbl_bytes *target,
 	if (in->backtrace != NULL) {
 		names[n++] = "backtrace";
 		names[n++] = in->backtrace;
-		if (in->program != NULL)
-			names[n++] = in->program;
+		if (in->program != NULL || in->jail != NULL)
+			names[n++] = in->program != NULL ? in->program : "";
+		if (in->jail != NULL)
+			names[n++] = in->jail;
 	}
 	memset(&r, 0, sizeof(r));
 	do_crashes(w, names, n, &r);

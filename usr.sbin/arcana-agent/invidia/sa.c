@@ -11,6 +11,12 @@
  * SAs of a tunnel, out and in, each its SPI and keys, with the
  * interface's reqid so its policies take them; each read back once it
  * is in, and the keys never in a trace or a title.
+ *
+ * A vnet jail's interface the same, by PF_KEY in the jail's network
+ * (the helper makes the socket there, scope.c): its SAs and policies
+ * the jail's, its key pair and what was set kept on the host beside
+ * the host's, named "<interface>@<jail>" (sa_ifkey()), as its faults
+ * and its sdwan-key events are; a safe change put back in the jail.
  */
 
 #include <sys/param.h>
@@ -92,13 +98,27 @@ static const struct {
 	{ "hmac-sha2-512", { 128, 0, 0 }, false, SADB_X_AALG_SHA2_512 },
 };
 
+/*
+ * An interface's name as its files, faults and events have it: of a
+ * vnet jail's, "ipsec0@web" (the SD-WAN's edge_file()'s way); the
+ * files are the host's, beside the agent's own, in the jail nothing.
+ */
+static const char *
+sa_ifkey(struct work *w, const char *ifname)
+{
+
+	if (w->jail == NULL || strchr(ifname, '@') != NULL)
+		return (ifname);
+	return (wfmt(w, "%s@%s", ifname, w->jail));
+}
+
 static const char *
 key_path(struct work *w, const char *ifname, bool next)
 {
 	char	buf[MAXPATHLEN];
 
-	sdwan_conf_path(wfmt(w, next ? NEXT_FILE : KEY_FILE, ifname), buf,
-	    sizeof(buf));
+	sdwan_conf_path(wfmt(w, next ? NEXT_FILE : KEY_FILE, sa_ifkey(w,
+	    ifname)), buf, sizeof(buf));
 	return (wstrdup(w, buf));
 }
 
@@ -147,13 +167,14 @@ key_told(struct work *w, const char *ifname)
 {
 	EVP_PKEY	*k;
 	const char	*e;
-	char		 pub[PUB_B64 + 1], qi[6 * 32 + 1];
+	char		 pub[PUB_B64 + 1], qi[6 * (32 + MAXHOSTNAMELEN) + 1];
 
 	if (w->dry || (k = key_load(w, ifname, false, &e)) == NULL)
 		return;
 	if (key_public(k, pub, sizeof(pub)))
 		event_add("sdwan-key", "{\"interface\":\"%s\",\"public\":"
-		    "\"%s\"}", json_quote(ifname, qi, sizeof(qi)), pub);
+		    "\"%s\"}", json_quote(sa_ifkey(w, ifname), qi, sizeof(qi)),
+		    pub);
 	EVP_PKEY_free(k);
 }
 
@@ -330,11 +351,12 @@ spi_of(const unsigned char *b)
 	return (n < 256 ? n + 256 : n);
 }
 
-/* What an interface's SAs are, as kept beside its keys: the SPIs set
- * (and the next ones, between a derive with next and the commit), when,
- * and the lifetime; NULL when nothing is kept. */
+/* What an interface's SAs are, as kept beside its keys (by the name its
+ * files have, sa_ifkey()'s): the SPIs set (and the next ones, between a
+ * derive with next and the commit), when, and the lifetime; NULL when
+ * nothing is kept. */
 static ucl_object_t *
-sa_state_load(struct work *w, const char *ifname)
+sa_state_of(struct work *w, const char *key)
 {
 	struct ucl_parser	*p;
 	ucl_object_t		*o;
@@ -342,7 +364,7 @@ sa_state_load(struct work *w, const char *ifname)
 	char			 path[MAXPATHLEN], buf[8192];
 	size_t			 n;
 
-	sdwan_conf_path(wfmt(w, STATE_FILE, ifname), path, sizeof(path));
+	sdwan_conf_path(wfmt(w, STATE_FILE, key), path, sizeof(path));
 	if ((fp = fopen(path, "r")) == NULL)
 		return (NULL);
 	n = fread(buf, 1, sizeof(buf) - 1, fp);
@@ -354,6 +376,14 @@ sa_state_load(struct work *w, const char *ifname)
 	    NULL;
 	ucl_parser_free(p);
 	return (o);
+}
+
+/* An interface's of the host or of the jail w works in. */
+static ucl_object_t *
+sa_state_load(struct work *w, const char *ifname)
+{
+
+	return (sa_state_of(w, sa_ifkey(w, ifname)));
 }
 
 static const char	*sstr(const ucl_object_t *, const char *);
@@ -375,7 +405,8 @@ sa_state_save(struct work *w, const char *ifname, const ucl_object_t *o,
 	char	 path[MAXPATHLEN], *json;
 	int	 rc;
 
-	sdwan_conf_path(wfmt(w, STATE_FILE, ifname), path, sizeof(path));
+	sdwan_conf_path(wfmt(w, STATE_FILE, sa_ifkey(w, ifname)), path,
+	    sizeof(path));
 	if (o == NULL) {
 		(void)unlink(path);
 		return (0);
@@ -402,8 +433,9 @@ u32(const ucl_object_t *o, const char *key)
 }
 
 /* The public halves this host keeps, for the sdwan read: keys, each an
- * interface, its public, its next when one waits, and what was set
- * (keyed_at, lifetime, spi_in, spi_out, pending). */
+ * interface (a vnet jail's as "ipsec0@web"), its public, its next when
+ * one waits, and what was set (keyed_at, lifetime, spi_in, spi_out,
+ * pending). */
 void
 sa_keys_json(struct work *w, ucl_object_t *top)
 {
@@ -412,7 +444,8 @@ sa_keys_json(struct work *w, ucl_object_t *top)
 	DIR		*d;
 	struct dirent	*de;
 	FILE		*fp;
-	char		 dir[MAXPATHLEN], pub[PUB_B64 + 1], *slash, ifn[32];
+	char		 dir[MAXPATHLEN], pub[PUB_B64 + 1], *slash,
+			 ifn[32 + MAXHOSTNAMELEN];
 	size_t		 n;
 
 	arr = ucl_object_typed_new(UCL_ARRAY);
@@ -456,7 +489,7 @@ sa_keys_json(struct work *w, ucl_object_t *top)
 						    ucl_object_fromstring(pub), "next",
 						    0, false);
 				}
-				if ((stt = sa_state_load(w, ifn)) != NULL) {
+				if ((stt = sa_state_of(w, ifn)) != NULL) {
 					static const char *const nums[] = { "at",
 					    "lifetime", "spi_in", "spi_out" };
 
@@ -1947,7 +1980,8 @@ sa_files(struct work *w, const char *ifname, const char **key,
 
 	*key = key_path(w, ifname, false);
 	*next = key_path(w, ifname, true);
-	sdwan_conf_path(wfmt(w, STATE_FILE, ifname), buf, sizeof(buf));
+	sdwan_conf_path(wfmt(w, STATE_FILE, sa_ifkey(w, ifname)), buf,
+	    sizeof(buf));
 	*state = wstrdup(w, buf);
 }
 
@@ -2107,18 +2141,19 @@ sa_faults_start(void)
 int
 do_sa_job(struct work *w, const struct arc_job_spec *sp, const char **errp)
 {
-	int	rc;
-	bool	rotation;
+	const char	*ifk;
+	int		 rc;
+	bool		 rotation;
 
 	rc = sa_job(w, sp, errp);
 	rotation = sp->verb != NULL && sp->interface != NULL && (strcmp(sp->verb,
 	    "commit") == 0 || (strcmp(sp->verb, "derive") == 0 && word_next(sp)));
+	ifk = sp->interface != NULL ? sa_ifkey(w, sp->interface) : NULL;
 	if (rotation && rc != 0)
-		fault_set("key-rotation", "Major", sp->interface, "arcana-agent",
-		    "the keys of %s were not turned: %s", sp->interface, *errp);
+		fault_set("key-rotation", "Major", ifk, "arcana-agent",
+		    "the keys of %s were not turned: %s", ifk, *errp);
 	else if (rotation && strcmp(sp->verb, "commit") == 0)
-		fault_clear("key-rotation", sp->interface, "the keys of %s turned",
-		    sp->interface);
+		fault_clear("key-rotation", ifk, "the keys of %s turned", ifk);
 	if (!w->dry)
 		sa_reconcile(w, false);
 	return (rc);

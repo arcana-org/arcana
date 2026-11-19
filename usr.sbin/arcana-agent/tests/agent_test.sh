@@ -2672,6 +2672,70 @@ EOF
 	    sh.4242.core
 }
 
+atf_test_case crash_jail_cores
+crash_jail_cores_head()
+{
+	atf_set "descr" "a jailed daemon's core (crashes.c): found where" \
+	    "kern.corefile puts it beneath each running jail's root, never" \
+	    "through a link out of it, listed with the jail; its backtrace" \
+	    "only of a crash the kernel said was in that jail, with the" \
+	    "jail's own program and libraries (lldb's image search paths," \
+	    "gdb's sysroot)"
+}
+crash_jail_cores_body()
+{
+	local c="$(atf_get_srcdir)/crash" me here
+
+	me=$(id -u)
+	here=$(pwd)
+	mkdir cores tmp
+	printf 'CORE-H\n' > cores/sh.4242.core
+	# web's root: its own nginx, and the core where kern.corefile's
+	# path is for its processes.
+	mkdir -p "jroot$here/cores" jroot/usr/local/sbin
+	printf 'CORE-J\n' > "jroot$here/cores/nginx.812.core"
+	printf '#!/bin/sh\n' > jroot/usr/local/sbin/nginx
+	chmod +x jroot/usr/local/sbin/nginx
+	# db's root: kern.corefile's directory a link to the host's.
+	mkdir -p "jroot2$(dirname "$here")"
+	ln -s "$here" "jroot2$here"
+	export COREFILE="$here/cores/%N.%P.core" LLDB=/usr/bin/true \
+	    TMPDIR="$here/tmp" JAILS="web:7:$here/jroot db:8:$here/jroot2"
+	unset GDB KMSG
+	atf_check -o save:list "$c"
+	atf_check -o match:"\{\"name\":\"nginx.812.core\",\"directory\":\"$here/jroot$here/cores\",\"jail\":\"web\",\"program\":\"nginx\",\"pid\":812," \
+	    -o match:'"name":"sh.4242.core","directory":"[^"]*/cores","program"' \
+	    -o not-match:'"jail":"db"' cat list
+	atf_check -o inline:'1\n' sh -c 'grep -o "sh.4242.core" list | wc -l | tr -d " "'
+	# A crash the kernel said was the host's, or another jail's: not
+	# read as web's.
+	atf_check -o match:'^error the kernel was not seen to dump a core of nginx, pid 812, in the jail web' \
+	    -o not-match:'^exec' env KMSG="nginx 812 $me 0" "$c" backtrace \
+	    nginx.812.core "" web
+	atf_check -o match:'^error the jail nosuch is not running' \
+	    -o not-match:'^exec' env KMSG="nginx 812 $me 7" "$c" backtrace \
+	    nginx.812.core "" nosuch
+	# A program the jail has not.
+	atf_check -o match:'^error the program of nginx.812.core is not found in the jail web' \
+	    -o not-match:'^exec' env KMSG="nginx 812 $me 7" "$c" backtrace \
+	    nginx.812.core /usr/sbin/nginx web
+	# web's: its nginx, its libraries beneath its root, the core read
+	# without a link from beneath the root.
+	atf_check -o save:bt env KMSG="nginx 812 $me 7" GDB=/usr/bin/true \
+	    "$c" backtrace nginx.812.core "" web
+	atf_check -o match:"^exec /helper --scope-helper 0 debug-as-nobody /usr/bin/true --batch .* -O settings set target.debug-file-search-paths $here/jroot/usr/local/lib/debug $here/jroot/usr/lib/debug -O settings set target.image-search-paths / $here/jroot/ -c [^ ]*/tmp/arcana-core\.[^/ ]*/core .* -- $here/jroot/usr/local/sbin/nginx\$" \
+	    -o match:"^exec /helper --scope-helper 0 debug-as-nobody /usr/bin/true -batch -nx -iex set auto-load off -iex set sysroot $here/jroot .* $here/jroot/usr/local/sbin/nginx /dev/fd/0\$" \
+	    -o match:'^core-file CORE-J 400$' \
+	    -o match:'^ok .*"program":"/usr/local/sbin/nginx","jail":"web","backtrace":"' \
+	    cat bt
+	atf_check -o inline:'stdin CORE-J\nstdin CORE-J\n' grep '^stdin' bt
+	# The core a link where it lies: not read.
+	rm "jroot$here/cores/nginx.812.core"
+	ln -s "$here/cores/sh.4242.core" "jroot$here/cores/nginx.812.core"
+	atf_check -o match:'^error nginx.812.core: ' -o not-match:'^exec' \
+	    env KMSG="nginx 812 $me 7" "$c" backtrace nginx.812.core "" web
+}
+
 atf_test_case kmsg_tail
 kmsg_tail_head()
 {
@@ -10423,6 +10487,89 @@ safe_ipsec_sa_cleanup()
 	stop_pfkey
 }
 
+atf_test_case ipsec_sa_jail cleanup
+ipsec_sa_jail_head()
+{
+	atf_set "descr" "A vnet jail's manually keyed SAs: by PF_KEY in the jail's network (the stand-in's here), its key pair and what was set kept on the host as <interface>@<jail>, apart from the host's own, nothing in the jail; a safe derive not confirmed put back, the state on the host as it was and the SAs derived again in the jail; a jail with no network of its own, or none, refused"
+}
+ipsec_sa_jail_body()
+{
+	local h
+
+	write_rc
+	start_pfkey
+	h=$(pwd)
+	mkdir jroot jroot2
+	printf 'gw 4 new %s/jroot\nweb 7 inherit %s/jroot2\n' "$h" "$h" > jails
+	start_daemon
+	wait_jobs() {
+		for i in $(seq 1 200); do
+			"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
+			    break
+			sleep 0.1
+		done
+	}
+	last_job() {
+		"$JGC" -c "$SOCK" jobs | awk '$1 ~ /^[0-9]+$/ {print $1}' | sort -n | tail -1
+	}
+
+	# The jail's ipsec0 and the host's: two pairs, told apart.
+	atf_check -o ignore "$JGC" -j gw -c "$SOCK" ipsec-sa key ipsec0
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0
+	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1
+	KEY=$(find . -path ./jroot -prune -o -name 'sdwan-key-ipsec0@gw.pem' -print)
+	test -n "$KEY" || atf_fail "no pair for gw's ipsec0"
+	test -n "$(find . -name sdwan-key-ipsec0.pem)" || atf_fail "no pair for the host's ipsec0"
+	! cmp -s "$KEY" "$(dirname "$KEY")/sdwan-key-ipsec0.pem" || atf_fail "one pair for both"
+	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
+	atf_check -o match:'"interface":"ipsec0@gw","public":"' "$JGC" -c "$SOCK" sdwan
+	P1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
+
+	# Derived in the jail and confirmed: its SAs in, what was set kept
+	# as gw's, the host's ipsec0 having none.
+	rm -f pfkey.log
+	atf_check -o match:'confirmed: it stays' "$JGC" -j gw -s -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256
+	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 ' \
+	    -o match:'^add 10.202.0.2 10.202.0.1 esp ' cat pfkey.log
+	STATE="$(dirname "$KEY")/sdwan-sa-ipsec0@gw.json"
+	atf_check -o match:'"derive":\{"peer":"' cat "$STATE"
+	test ! -e "$(dirname "$KEY")/sdwan-sa-ipsec0.json" || atf_fail "kept as the host's"
+	cp "$STATE" state.was
+
+	# At another epoch, not confirmed: the state on the host as it was,
+	# the SAs of the first derived again; the job the jail's.
+	rm -f pfkey.log
+	atf_check -o match:'queued' "$JGC" -q -s -j gw -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-gcm-16 epoch 1
+	wait_jobs
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    -o match:'gw: ipsec sa derive ipsec0' \
+	    -o match:'sdwan-sa-ipsec0@gw.json, as it was' \
+	    -o match:'derived again as kept' "$JGC" -c "$SOCK" job $(last_job)
+	# The same SPIs and words; derived again just now.
+	spis() {
+		grep -o '"spi_[a-z]*":[0-9]*\|"enc":"[^"]*"' "$1"
+	}
+	spis state.was > spis.was
+	spis "$STATE" > spis.now
+	atf_check cmp spis.was spis.now
+	atf_check -o match:'"enc":"aes-cbc"' cat spis.was
+	atf_check -o match:'-E aes-gcm-16 ' -o match:'-E aes-cbc ' cat pfkey.log
+	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
+
+	# A jail without a network of its own, or not running: refused.
+	! "$JGC" -j web -c "$SOCK" ipsec-sa key ipsec0 > out 2>&1 ||
+	    atf_fail "a jail without vnet taken"
+	atf_check -o match:'the jail web has no network of its own' cat out
+	! "$JGC" -j nosuch -c "$SOCK" ipsec-sa key ipsec0 > out 2>&1 ||
+	    atf_fail "a jail not running taken"
+	atf_check -o match:'the jail nosuch is not running' cat out
+}
+ipsec_sa_jail_cleanup()
+{
+	stop_daemon
+	stop_pfkey
+}
+
 atf_test_case safe_sysfile cleanup
 safe_sysfile_head()
 {
@@ -15070,12 +15217,10 @@ EOM
 	    "$JGC" -c "$SOCK" job 6
 	atf_check -o match:'^arcana_relay_flags="-c -l127.0.0.1:51821' cat rc.conf
 	atf_check test -f running.arcana_relay
-	# Disabled: stopped.  A jail's is not undone, so not safe there.
+	# Disabled: stopped.
 	atf_check -o match:done "$JGC" -c "$SOCK" speeder disable
 	atf_check -o match:'^arcana_relay_enable="NO"$' cat rc.conf
 	atf_check test ! -f running.arcana_relay
-	atf_check -s exit:1 -e match:"a jail's relay is not undone" -o ignore \
-	    "$JGC" -j web -s -c "$SOCK" speeder stop
 
 	# Several relays, each a profile of arcana_relay.  One made under
 	# the port's script's name before (speederv2_b_*) is moved at its
@@ -15189,6 +15334,63 @@ EOM
 	done
 	atf_check -o match:'"relays":\["arcana_relay_b","speederv2"\]' \
 	    -o match:',14000,9000\]\]\}$' cat h.json
+
+	# A jail's relay: its rc.conf and its service the jail's (jexec,
+	# the jail's state beneath its root); a safe change not confirmed
+	# put back in the jail, the host's left alone.
+	mkdir -p jroot/etc "jroot$(pwd)"
+	: > jroot/etc/rc.conf
+	: > "jroot$(pwd)/messages"
+	printf 'web 7 inherit %s/jroot\n' "$(pwd)" > jails
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $(pwd)/jexec.log
+r=\$(awk -v j="\$1" '\$2 == j { print \$4 }' $(pwd)/jails)
+shift
+n=\$2
+[ -n "\$4" ] && n=\${2}_\$4
+case "\$3" in
+onestatus)	test -f "\$r/running.\$n" ;;
+onestart|onerestart)	touch "\$r/running.\$n" ;;
+onestop)	rm -f "\$r/running.\$n" ;;
+esac
+EOS
+	chmod +x fake-jexec
+	cp rc.conf rc.conf.host
+	atf_check -o match:done "$JGC" -j web -c "$SOCK" speeder conf \
+	    role=client listen=127.0.0.1:51830 remote=192.0.2.5:14360
+	atf_check -o match:done "$JGC" -j web -c "$SOCK" speeder start
+	atf_check test -f jroot/running.arcana_relay
+	atf_check -o match:'queued' "$JGC" -q -s -j web -c "$SOCK" speeder \
+	    conf role=server listen=192.0.2.6:14361 remote=127.0.0.1:51831
+	for i in $(seq 1 200); do
+		"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
+		    break
+		sleep 0.1
+	done
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    -o match:'speederv2: conf' "$JGC" -c "$SOCK" job $("$JGC" -c \
+	    "$SOCK" jobs | awk '$1 ~ /^[0-9]+$/ {print $1}' | sort -n | tail -1)
+	atf_check -o match:'^arcana_relay_flags="-c -l127.0.0.1:51830 -r192.0.2.5:14360' \
+	    cat jroot/etc/rc.conf
+	atf_check cmp rc.conf rc.conf.host
+	atf_check test -f jroot/running.arcana_relay
+	atf_check test ! -f running.arcana_relay
+
+	# Its rates in the history from the jail's log, beneath its root,
+	# by the jail's name and its tag.
+	sleep 1.5
+	printf '%s w arcana_relay[9]: [%s][INFO][report]client-->server:(original:10 pkt;10000 byte) (fec:15 pkt,15000 byte)  server-->client:(original:5 pkt;5000 byte) (fec:6 pkt;6000 byte)\n' \
+	    "$(date '+%b %e %T')" "$(date -v-10S '+%Y-%m-%d %H:%M:%S')" >> "jroot$(pwd)/messages"
+	printf '%s w arcana_relay[9]: [%s][INFO][report]client-->server:(original:30 pkt;30000 byte) (fec:45 pkt,45000 byte)  server-->client:(original:15 pkt;15000 byte) (fec:18 pkt;18000 byte)\n' \
+	    "$(date '+%b %e %T')" "$(date '+%Y-%m-%d %H:%M:%S')" >> "jroot$(pwd)/messages"
+	for i in $(seq 1 100); do
+		"$JGC" -c "$SOCK" history > h.json
+		grep -q ',3000,1200\]\]' h.json && break
+		sleep 0.1
+	done
+	atf_check -o match:'"relays":\["arcana_relay_b","speederv2","web:arcana_relay"\]' \
+	    -o match:',3000,1200\]\]\}$' cat h.json
 }
 speeder_cleanup()
 {
@@ -19081,7 +19283,7 @@ zfs rename fakepool/data@b.resnap fakepool/data@b
 	done
 	atf_check -s exit:1 -e match:'not in safe mode' -o ignore \
 	    "$JGC" -s -c "$SOCK" zfs snapshot fakepool/data@s
-	atf_check -s exit:1 -e match:'zfs takes no jail' -o ignore \
+	atf_check -s exit:2 -e match:'zfs has no jail' -o ignore \
 	    "$JGC" -j web -c "$SOCK" zfs snapshot fakepool/data@s
 	atf_check -o empty cat storage.log
 
@@ -20410,6 +20612,21 @@ crashes_body()
 	atf_check -s exit:1 -e match:'a core is named as the list has it|no directory of cores' \
 	    "$JGC" -c "$SOCK" crashes backtrace no-such-name
 	atf_check -s exit:2 -e match:'usage' "$JGC" -c "$SOCK" crashes nonsense
+	# A jail's core by its jail: one not running refused; the list is
+	# every jail's already.
+	atf_check -s exit:1 -e match:'the jail nosuch is not running' \
+	    "$JGC" -j nosuch -c "$SOCK" crashes backtrace nginx.812.core
+	atf_check -s exit:2 -e match:"crashes lists every jail's cores" \
+	    "$JGC" -j nosuch -c "$SOCK" crashes
+	# What has no jail by its nature is refused before it is sent.
+	atf_check -s exit:2 -e match:'geom has no jail' \
+	    "$JGC" -j nosuch -c "$SOCK" geom mirror label gm0 ada1
+	atf_check -s exit:2 -e match:'zfs has no jail' \
+	    "$JGC" -j nosuch -c "$SOCK" zfs create tank/x
+	atf_check -s exit:2 -e match:'iscsi has no jail' \
+	    "$JGC" -j nosuch -c "$SOCK" iscsi enable yes
+	atf_check -s exit:2 -e match:'hast has no jail' \
+	    "$JGC" -j nosuch -c "$SOCK" hast enable yes
 }
 crashes_cleanup()
 {
@@ -22663,6 +22880,7 @@ atf_init_test_cases()
 	atf_add_test_case sshd
 	atf_add_test_case crashes
 	atf_add_test_case crash_cores
+	atf_add_test_case crash_jail_cores
 	atf_add_test_case capture
 	atf_add_test_case vnet
 	atf_add_test_case traceroute
@@ -22682,6 +22900,7 @@ atf_init_test_cases()
 	atf_add_test_case safe_wireguard
 	atf_add_test_case safe_ipsec
 	atf_add_test_case safe_ipsec_sa
+	atf_add_test_case ipsec_sa_jail
 	atf_add_test_case safe_sysfile
 	atf_add_test_case safe_if_destroy
 	atf_add_test_case safe_l2

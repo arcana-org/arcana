@@ -608,12 +608,24 @@ static void
 proc_job(struct server *s, const ucl_object_t *o, const char *verb,
     const char *word)
 {
-	char	*json, title[160];
+	const char	*jail;
+	char		*json, *qj, title[160];
 
-	if (asprintf(&json, "{\"kind\":\"process\",\"verb\":\"%s\",\"args\":["
-	    "\"%lld\",\"%s\",\"%lld\"]}", verb, (long long)jint(o, "pid", 0),
-	    word, (long long)jint(o, "start", 0)) == -1)
+	/*
+	 * A jail's process: the job names the jail, and the host checks
+	 * the process is still that jail's before it is signalled or
+	 * reniced (a number given again since is another's).
+	 */
+	jail = jstr(o, "jail") != NULL && jstr(o, "jail")[0] != '\0' ?
+	    jstr(o, "jail") : NULL;
+	qj = jail != NULL ? json_quote(jail) : NULL;
+	if (asprintf(&json, "{\"kind\":\"process\",\"verb\":\"%s\",%s%s%s"
+	    "\"args\":[\"%lld\",\"%s\",\"%lld\"]}", verb, qj != NULL ?
+	    "\"jail\":" : "", qj != NULL ? qj : "", qj != NULL ? "," : "",
+	    (long long)jint(o, "pid", 0), word, (long long)jint(o, "start",
+	    0)) == -1)
 		abort();
+	free(qj);
 	if (strcmp(verb, "signal") == 0)
 		snprintf(title, sizeof(title), "kill -%s %lld (%s)", word,
 		    (long long)jint(o, "pid", 0), jstr(o, "comm") != NULL ?

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.324.0"
+#define	ARCANA_AGENT_VERSION	"0.325.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1001,7 +1001,7 @@ void		 host_watch_start(void);
 bool		 kmsg_lines(struct work *, uint64_t, const char *, uint32_t,
 		    struct kmsg_line **, size_t *, uint64_t *);
 bool		 kmsg_crash_line(const char *, time_t);
-bool		 kmsg_core_dumped(const char *, int, int *);
+bool		 kmsg_core_dumped(const char *, int, int, int *);
 void		 kmsg_crash_sweep(time_t);
 void		 kmsg_crash_adopt(void);
 const char	*kmsg_find(const char *, size_t, const char *, size_t, size_t,

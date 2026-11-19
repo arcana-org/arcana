@@ -4,6 +4,7 @@ module: arcana-crashes
         +---w input
         |  +---w backtrace?   string
         |  +---w program?     string
+        |  +---w jail?        string
         +--ro output
            +--ro corefile?    string
            +--ro directory?   string
@@ -15,8 +16,10 @@ module: arcana-crashes
            |  +--ro pid?         uint32
            |  +--ro size?        uint64
            |  +--ro time?        yang:date-and-time
+           |  +--ro jail?        string
            +--ro note*        string
            +--ro core?        string
            +--ro program?     string
            +--ro backtrace?   string
            +--ro truncated?   boolean
+           +--ro jail?        string

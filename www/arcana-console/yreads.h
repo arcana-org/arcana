@@ -36,7 +36,8 @@
  *
  * The reads whose nodes are their JSON's keys (yflat.c), the JSON of
  * the operations they were: yr_crashes(), the cores, with words
- * "backtrace", a core and its program, one's backtrace too;
+ * "backtrace", a core, its program and its jail ("" for none), one's
+ * backtrace too;
  * yr_system(), the system's files by name and host (none: all);
  * yr_netstore(), nfs, iscsi and hast (none: all); yr_suricata(), the
  * suricata-rules operation's words: a page of the rules (q=, sid=,
