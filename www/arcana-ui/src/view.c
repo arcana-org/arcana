@@ -1284,6 +1284,10 @@ jail_page(struct html *h)
 		    "data-act=\"jail-packages\"");
 		h_attr(h, "data-arg", app.jail);
 		h_raw(h, ">Packages of this jail</button>");
+		h_raw(h, "<button class=\"ghost small\" "
+		    "data-act=\"jail-services\"");
+		h_attr(h, "data-arg", app.jail);
+		h_raw(h, ">Services of this jail</button>");
 	}
 	if (u->error[0] != '\0') {
 		h_raw(h, "<p class=\"err\">");
@@ -3940,6 +3944,37 @@ svc_cmp(const void *ap, const void *bp)
 	return (run != 0 ? run : en != 0 ? en : r);
 }
 
+/* Whose services: the host's, or a running jail's (its own service(8)). */
+static void
+svc_jail_pick(struct html *h, struct server *s)
+{
+	const ucl_object_t	*j;
+	ucl_object_iter_t	 it;
+	const char		*name;
+
+	h_raw(h, "<label class=\"net-jail\" title=\"Whose services: the "
+	    "host's, or a running jail's, its own service(8) and rc.conf "
+	    "(service -j, sysrc -j)\"><select data-input=\"svc-jail\">");
+	h_fmt(h, "<option value=\"\"%s>", app.svc_jail[0] == '\0' ?
+	    " selected" : "");
+	h_txt(h, s->name);
+	h_raw(h, "</option>");
+	it = NULL;
+	while (s->list != NULL && (j = ucl_object_iterate(jget(s->list,
+	    "jails"), &it, true)) != NULL) {
+		if ((name = jstr(j, "name")) == NULL || (strcmp(name,
+		    app.svc_jail) != 0 && (jstr(j, "state") == NULL ||
+		    strcmp(jstr(j, "state"), "running") != 0)))
+			continue;
+		h_raw(h, "<option");
+		h_attr(h, "value", name);
+		h_raw(h, strcmp(name, app.svc_jail) == 0 ? " selected>" : ">");
+		h_txt(h, name);
+		h_raw(h, "</option>");
+	}
+	h_raw(h, "</select></label>");
+}
+
 void
 view_services(struct html *h, struct server *s)
 {
@@ -3947,13 +3982,19 @@ view_services(struct html *h, struct server *s)
 	ucl_object_iter_t	 it;
 	char			 age[32];
 	int			 shown, n, en, run;
+	bool			 mine;
 
-	h_raw(h, "<div class=\"toolbar\"><input class=\"filter\" id=\"filter\" "
+	/* What was read is the jail's picked, or nothing yet. */
+	mine = s->services != NULL && strcmp(s->services_jail,
+	    app.svc_jail) == 0;
+	h_raw(h, "<div class=\"toolbar\">");
+	svc_jail_pick(h, s);
+	h_raw(h, "<input class=\"filter\" id=\"filter\" "
 	    "data-input=\"filter\" placeholder=\"Filter services\" "
 	    "autocomplete=\"off\" spellcheck=\"false\"");
 	h_attr(h, "value", app.filter);
 	h_raw(h, ">");
-	if (s->services != NULL) {
+	if (mine) {
 		n = en = run = 0;
 		it = NULL;
 		while ((sv = ucl_object_iterate(jget(s->services, "services"),
@@ -3983,7 +4024,7 @@ view_services(struct html *h, struct server *s)
 		h_txt(h, s->services_error);
 		h_raw(h, "</div>");
 	}
-	if (s->services == NULL) {
+	if (!mine) {
 		h_raw(h, s->services_loading ? "<div class=\"empty\"><div "
 		    "class=\"loader\"></div><p class=\"dim\">service(8) is "
 		    "asking every enabled script for its status…</p></div>" :
@@ -4059,8 +4100,15 @@ view_service_drawer(struct html *h, struct server *s)
 		    "script says none, or only an operator of the host has it "
 		    "run (a viewer is shown what the agent last saw of it, its "
 		    "status and its pid).</p>");
-	if (sv != NULL)
+	if (sv != NULL && app.svc_jail[0] == '\0')
 		service_stale(h, sv, name);
+	if (app.svc_jail[0] != '\0') {
+		h_raw(h, "<p class=\"dim\">In the jail <b>");
+		h_txt(h, app.svc_jail);
+		h_raw(h, "</b>: its own service(8) runs the script (<code>"
+		    "service -j</code>), and its rc.conf is the jail's "
+		    "(<code>sysrc -j</code>), each change a job.</p>");
+	}
 	if (sv != NULL) {
 		h_raw(h, "<dl class=\"kv\"><dt>script</dt><dd class=\"mono\">");
 		h_txt(h, jstr(sv, "path"));
@@ -4106,12 +4154,16 @@ view_service_drawer(struct html *h, struct server *s)
 		h_txt(h, app.svc_error);
 		h_raw(h, "</p>");
 	}
-	/* Enabled or not and the variables: a confirmed commit's. */
-	service_commit_note(h);
-
-	h_raw(h, "<h4>rc.conf <span class=\"dim\">arcana-services, committed to "
-	    "Arcana's file</span></h4>"
-	    "<form data-form=\"svc-config\" class=\"vars\">");
+	/* Enabled or not and the variables: a confirmed commit's; a
+	 * jail's, the service-config job's. */
+	if (app.svc_jail[0] == '\0') {
+		service_commit_note(h);
+		h_raw(h, "<h4>rc.conf <span class=\"dim\">arcana-services, "
+		    "committed to Arcana's file</span></h4>");
+	} else
+		h_raw(h, "<h4>rc.conf <span class=\"dim\">the jail's, by sysrc "
+		    "-j (an admin reads its values)</span></h4>");
+	h_raw(h, "<form data-form=\"svc-config\" class=\"vars\">");
 	vars = jget(app.svc_config, "variables");
 	it = NULL;
 	while ((v = ucl_object_iterate(vars, &it, true)) != NULL) {

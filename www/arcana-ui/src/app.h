@@ -387,6 +387,7 @@ struct server {
 	double		 restart_until;	/* ms: its agent is restarting after an update; 0 none */
 	double		 restart_asked;	/* ms: when it was last asked how it is */
 	ucl_object_t	*services;	/* last good services reply */
+	char		 services_jail[256]; /* "" the host's, or a jail's */
 	double		 services_fetched;
 	bool		 services_loading;
 	char		 services_error[256];
@@ -641,6 +642,9 @@ struct app {
 					 * (a timer, an event): no task */
 	bool		 polling;	/* in the tick: its reads wait behind
 					 * the user's (bridge.js) */
+	char		 svc_jail[256];	/* the Services tab's: "" the
+					 * host, or a jail of svc_sid's */
+	char		 svc_sid[9];
 	char		 service[65];	/* open in the drawer, or "" */
 	ucl_object_t	*svc_config;	/* the open service's config reply */
 	bool		 svc_loading;
@@ -790,6 +794,8 @@ void		 jobs_poll(void);
 void		 refresh_jails(struct server *, bool);
 void		 jail_action(const char *, const char *);
 void		 refresh_services(struct server *, bool);
+void		 service_jail_config(struct server *, const char *,
+		    const ucl_object_t *, const char *);
 void		 service_action(const char *, const char *);
 void		 service_config(const char *);
 /* A service's configuration, committed (ycommit.c): enabled, its
@@ -838,6 +844,7 @@ void		 if_state(struct server *, const char *, bool);
 void		 route_change(struct server *, const char *, const char *, bool,
 		    bool, int, int, int, const char *, const char *, bool);
 bool		 service_busy(const struct server *, const char *);
+const char	*svc_key(const char *);
 bool		 packages_busy(const struct server *);
 void		 load_settings(void);
 void		 load_push(void);

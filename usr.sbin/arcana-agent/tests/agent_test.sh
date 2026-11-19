@@ -87,6 +87,10 @@ EOF
 # stand-ins for service(8) and sysrc(8) that work from them: "service -e"
 # lists the scripts whose rcvar is YES, "status" reports from a marker
 # next to the script, start/stop make and remove it, sysrc edits rc.conf.
+# "service -j jid" is the jail's of ./jails, as jexec(8) would run it
+# there: its rc.conf and its markers in its root, the run logged in
+# jail-service.log; a jail not in ./jails is gone, and jexec fails.  A
+# marker holding a pid says that pid, running while it is.
 write_rc()
 {
 	mkdir -p rc.d local/rc.d
@@ -155,6 +159,15 @@ if [ "\$1" = -e ]; then
 	done
 	exit 0
 fi
+if [ "\$1" = -j ]; then
+	r=\$(awk -v j="\$2" '\$2 == j { print \$4 }' $(pwd)/jails 2>/dev/null)
+	[ -n "\$r" ] || { echo "jexec: jail_getid: jail \$2 not found" >&2; exit 1; }
+	echo "-j \$2 \$3 \$4" >> $(pwd)/jail-service.log
+	conf=\$r/etc/rc.conf
+	cd "\$r" || exit 1
+	shift 2
+	[ -x "etc/rc.d/\$1" -o -x "usr/local/etc/rc.d/\$1" ] || { echo "\$1 does not exist in /etc/rc.d or the local startup directories" >&2; exit 1; }
+fi
 # A third word: arcana_relay's, a relay's profile, run as rc.subr's
 # arcana_relay_<profile> (its verbs noted); dhclient's, its interface,
 # the same service.
@@ -167,7 +180,9 @@ rcvar)		echo "# \$name"; echo "\${name}_enable=\"NO\""; echo '#   (default: "")'
 # root) that sets it.
 enabled)	cat "\$conf" $(pwd)/root/usr/local/etc/rc.conf.d/arcana 2>/dev/null |
 		grep "^\${name}_enable=" | tail -1 | grep -q '="YES"' ;;
-status|onestatus)	[ -f "running.\$r" ] && { echo "\$r is running as pid 4242."; exit 0; }
+status|onestatus)	p=\$(cat "running.\$r" 2>/dev/null)
+		[ -n "\$p" ] && ! kill -0 "\$p" 2>/dev/null && { echo "\$r is not running."; exit 1; }
+		[ -f "running.\$r" ] && { echo "\$r is running as pid \${p:-4242}."; exit 0; }
 		echo "\$r is not running."; exit 1 ;;
 start|onestart)	touch "running.\$r"; echo "Starting \$r." ;;
 stop|onestop)	rm -f "running.\$r"; echo "Stopping \$r." ;;
@@ -243,6 +258,21 @@ route-neighs)
 	[ "\$1" != 6 ] && echo '{"family":"inet","address":"10.0.0.2","lladdr":"58:9c:fc:00:00:02","interface-name":"em0","state":"reachable","next":120}' | grep -e "\${2#-}"
 	[ "\$1" != 4 ] && echo '{"family":"inet6","address":"fe80::1%em0","lladdr":"58:9c:fc:00:00:01","interface-name":"em0","state":"stale","router":true}' | grep -e "\${2#-}"
 	echo "#total 2" ;;
+rc-scripts)
+	# A jail's scripts, as the helper attached to it reads them: its
+	# root is ./jails', each enabled by its rc.conf; ./unread in it, a
+	# command there that reading does not tell.
+	r=\$(awk -v j="\$jid" '\$2 == j { print \$4 }' $(pwd)/jails 2>/dev/null)
+	[ -n "\$r" ] || { echo "jail_attach(\$jid): no such jail" >&2; exit 1; }
+	[ -f "\$r/unread" ] && echo "#unread rc.conf line 2: a command"
+	for f in "\$r"/etc/rc.d/* "\$r"/usr/local/etc/rc.d/*; do
+		[ -f "\$f" -a -x "\$f" ] || continue
+		n=\${f##*/}
+		e=no
+		grep -q "^\${n}_enable=\"YES\"" "\$r/etc/rc.conf" 2>/dev/null && e=yes
+		[ -f "\$r/unread" ] && e="?"
+		echo "\$n \${f#\$r} \$e"
+	done ;;
 carp-set)
 	echo "carp-set \$* key=\$(cat)" >> $(pwd)/carp.log ;;
 repo-reach)
@@ -11263,6 +11293,141 @@ EOS
 	    "$JGC" -t -c "$SOCK" -u viewer services
 }
 services_watch_cleanup()
+{
+	[ -f sub.pid ] && kill "$(cat sub.pid)" 2>/dev/null
+	[ -f procs ] && kill $(cat procs) 2>/dev/null
+	stop_daemon
+}
+
+atf_test_case services_jail cleanup
+services_jail_head()
+{
+	atf_set "descr" "A running jail's services: listed as the jail's" \
+	    "own service(8) and rc.conf have them (the helper attached to" \
+	    "it), started, stopped, restarted, enabled and disabled by the" \
+	    "jobs with the jail (service -j, sysrc -j), undone in safe mode;" \
+	    "refused for a jail not running or a script it has not; the" \
+	    "event service-state says the jail"
+	atf_set "timeout" "180"
+}
+services_jail_body()
+{
+	local sp id
+
+	# The jail svcj, its root ./jroot: crowdsec enabled, sshd not.
+	mkdir -p jroot/etc/rc.d jroot/usr/local/etc/rc.d
+	printf '#!/bin/sh\n' > jroot/etc/rc.d/sshd
+	printf '#!/bin/sh\n' > jroot/usr/local/etc/rc.d/crowdsec
+	printf 'not a script\n' > jroot/etc/rc.d/README
+	chmod +x jroot/etc/rc.d/sshd jroot/usr/local/etc/rc.d/crowdsec
+	printf 'crowdsec_enable="YES"\n' > jroot/etc/rc.conf
+	echo "svcj 7 new $(pwd)/jroot" > jails
+	start_daemon
+	cp rc.conf rc.conf.before
+	atf_check -o save:svc.out "$JGC" -c "$SOCK" services -j svcj
+	atf_check -o match:'^crowdsec +enabled +stopped' \
+	    -o match:'^sshd +- ' -o not-match:'nginx|ntpd|README' cat svc.out
+	# The scripts read in the jail, each status by its own service(8).
+	atf_check -o match:'fake-helper --scope-helper 7 rc-scripts' \
+	    -o match:'fake-service -j 7 crowdsec status' \
+	    -o not-match:'fake-service -j 7 sshd status' \
+	    "$JGC" -t -c "$SOCK" services -j svcj
+	# Reading not telling: the jail's sysrc -A.
+	touch jroot/unread
+	atf_check -o match:'^crowdsec +enabled' -o match:'fake-sysrc -j 7 -A' \
+	    "$JGC" -t -c "$SOCK" services -j svcj
+	rm jroot/unread
+	"$JGC" -c "$SOCK" subscribe -n 2 \
+	    -x '/arcana-events:event/service-state' > stream.out 2>&1 &
+	echo $! > sub.pid
+	wait_match '"stream-xpath-filter":"/arcana-events:event/service-state"' \
+	    "$JGC" -c "$SOCK" get subscriptions
+	# Started in the jail: the jail's marker, never the host's.
+	atf_check -o match:'done +service crowdsec start in svcj' \
+	    -o match:'Running: yes' "$JGC" -c "$SOCK" service -j svcj crowdsec \
+	    start
+	atf_check test -f jroot/running.crowdsec
+	atf_check test ! -e running.crowdsec
+	atf_check -o match:'^-j 7 crowdsec start$' cat jail-service.log
+	atf_check -o match:'"kind":"service-state","data":\{"service":"crowdsec","state":"running","pid":4242,"jail":"svcj"\}' \
+	    "$JGC" -c "$SOCK" events
+	atf_check -o match:'^crowdsec +enabled +running +4242' \
+	    "$JGC" -c "$SOCK" -u viewer services -j svcj
+	atf_check -o match:'Running: yes' "$JGC" -c "$SOCK" service -j svcj \
+	    crowdsec restart
+	atf_check -o match:'Running: no' "$JGC" -c "$SOCK" service -j svcj \
+	    crowdsec stop
+	atf_check -o match:'^-j 7 crowdsec restart$' \
+	    -o match:'^-j 7 crowdsec stop$' cat jail-service.log
+	# Enabled and disabled in the jail's rc.conf, by sysrc -j.
+	atf_check -o match:'Enabled: yes' "$JGC" -c "$SOCK" service -j svcj \
+	    sshd enable
+	atf_check -o match:'^sshd_enable="YES"$' cat jroot/etc/rc.conf
+	atf_check -o match:'^-j 7 sshd_enable=YES$' cat sysrc.log
+	atf_check -o match:'^sshd +enabled' "$JGC" -c "$SOCK" services -j svcj
+	atf_check -o match:'Enabled: no' "$JGC" -c "$SOCK" service -j svcj \
+	    sshd disable
+	atf_check -o match:'^sshd_enable="NO"$' cat jroot/etc/rc.conf
+	atf_check cmp rc.conf.before rc.conf
+	atf_check test ! -e root/usr/local/etc/rc.conf.d/arcana
+	# A variable of its, set and unset in the jail; read by an admin.
+	atf_check -o match:'^  crowdsec_flags=-v$' "$JGC" -c "$SOCK" service \
+	    -j svcj crowdsec config crowdsec_flags=-v
+	atf_check -o match:'^crowdsec_flags="-v"$' cat jroot/etc/rc.conf
+	atf_check -o not-match:'^  crowdsec_flags=' "$JGC" -c "$SOCK" service \
+	    -j svcj crowdsec config -x crowdsec_flags
+	atf_check -o not-match:'crowdsec_flags' cat jroot/etc/rc.conf
+	# In safe mode, not confirmed: the jail's rcvar as it was.
+	atf_check -o save:q.out "$JGC" -q -s -c "$SOCK" service -j svcj sshd \
+	    enable
+	id=$(queued_id q.out)
+	for i in $(seq 1 200); do
+		"$JGC" -c "$SOCK" jobs | grep -Eq "^ *$id (unconfirmed|queued|running)" ||
+		    break
+		sleep 0.1
+	done
+	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
+	    "$JGC" -c "$SOCK" job "$id"
+	atf_check -o match:'^sshd_enable="NO"$' cat jroot/etc/rc.conf
+	# Refused: a jail not running, a script it has not, its pidfile.
+	atf_check -s exit:1 -o match:'the jail gone is not running' \
+	    "$JGC" -c "$SOCK" service -j gone crowdsec start
+	atf_check -s exit:1 -e match:'the jail gone is not running' \
+	    "$JGC" -c "$SOCK" services -j gone
+	atf_check -s exit:1 -o match:"the jail svcj has no rc.d script 'nope'" \
+	    "$JGC" -c "$SOCK" service -j svcj nope start
+	atf_check -s exit:1 -o match:"a jail's pidfile is not looked at" \
+	    "$JGC" -c "$SOCK" service -j svcj crowdsec pidfile
+	atf_check -s exit:1 -e match:"the jail svcj has no rc.d script 'nope'" \
+	    "$JGC" -c "$SOCK" service -j svcj nope config
+	atf_check -o not-match:'nope' cat jail-service.log
+	# Its process, the host's pid, watched: killed by hand, told by the
+	# kernel, the event saying the jail.
+	sleep 300 &
+	sp=$!
+	echo "$sp" >> procs
+	echo "$sp" > jroot/running.crowdsec
+	atf_check -o match:"^crowdsec +enabled +running +$sp" \
+	    "$JGC" -c "$SOCK" services -j svcj
+	kill "$sp"
+	soon_match '^crowdsec +enabled +stopped' \
+	    "$JGC" -c "$SOCK" -u viewer services -j svcj
+	atf_check -o match:'^crowdsec +enabled +stopped' \
+	    "$JGC" -c "$SOCK" -u viewer services -j svcj
+	atf_check -o match:'"kind":"service-state","data":\{"service":"crowdsec","state":"stopped","jail":"svcj"\}' \
+	    "$JGC" -c "$SOCK" events
+	# Told on the stream, as the console hears them.
+	for i in $(seq 1 50); do
+		kill -0 "$(cat sub.pid)" 2>/dev/null || break
+		sleep 0.1
+	done
+	atf_check -o match:'"service-state":\{"pid":4242,"service":"crowdsec","state":"running","jail":"svcj"\}' \
+	    cat stream.out
+	# Nothing of the jail's scripts run for a viewer's read.
+	atf_check -o match:'collected' -o not-match:'fake-service' \
+	    "$JGC" -t -c "$SOCK" -u viewer services -j svcj
+}
+services_jail_cleanup()
 {
 	[ -f sub.pid ] && kill "$(cat sub.pid)" 2>/dev/null
 	[ -f procs ] && kill $(cat procs) 2>/dev/null
@@ -22528,6 +22693,7 @@ atf_init_test_cases()
 	atf_add_test_case agent_pidfile
 	atf_add_test_case services_stale_pidfile
 	atf_add_test_case services_watch
+	atf_add_test_case services_jail
 	atf_add_test_case storage_dev
 	atf_add_test_case agent_build
 	atf_add_test_case stop

@@ -4057,6 +4057,120 @@ arcana_services_services_service_read_action(cbl_req *req,
 	return (0);
 }
 
+/*
+ * A running jail's services, as the host's are read but in the jail
+ * (ira/services.c): every script, or the one named with what it says of
+ * itself (an operator's) and its rc.conf variables (an admin's); a
+ * viewer told what the collector saw.
+ */
+int
+arcana_services_jail_services_read_action(cbl_req *req,
+    const struct cbl_bytes *target,
+    const struct arcana_services_jail_services_read_input *in,
+    struct arcana_services_jail_services_read_output *out, cbl_yarena *a)
+{
+	struct arcana_services_jail_services_read_output_service *y;
+	struct arcana_services_jail_services_read_output_service_variable *yv;
+	struct services_rsp		 r;
+	struct service_config_rsp	 one;
+	struct service_config_req	 cq;
+	const struct arc_service	*v;
+	const void			**k;
+	const char			*jail, *e;
+	struct work			*w;
+	size_t				 n, i;
+	int				 root, clear;
+	bool				 ok;
+
+	if ((k = keys_of(target, 1, a)) == NULL)
+		return (EINVAL);
+	jail = *(const char *const *)k[0];
+	if (!valid_jail(jail))
+		return (said(req, "invalid jail name"));
+	if (in->name != NULL && !valid_service(in->name))
+		return (said(req, "invalid service name"));
+	if ((w = ywork(a)) == NULL || (w = ywork_told(req, a, in->name !=
+	    NULL ? wfmt(w, "service %s of the jail %s", in->name, jail) :
+	    wfmt(w, "services of the jail %s", jail), &root)) == NULL)
+		return (ENOMEM);
+	e = NULL;
+	if (scope_enter_jail(w, jail, &e, false) != 0) {
+		step_end(w, root, false, NULL);
+		return (said(req, e));
+	}
+	clear = clearance(req);
+	memset(&r, 0, sizeof(r));
+	memset(&one, 0, sizeof(one));
+	if (in->name != NULL) {
+		/* The script run for an operator and above; its variables,
+		 * values as often as not secret, for an admin. */
+		if (clear < CLEAR_OPERATOR)
+			(void)service_read_collected(w, in->name, &one);
+		else if (clear < CLEAR_ADMIN)
+			(void)service_read(w, in->name, &one);
+		else {
+			memset(&cq, 0, sizeof(cq));
+			cq.service = in->name;
+			(void)do_service_config(w, &cq, &one);
+		}
+		ok = one.ok;
+		e = one.error;
+		v = one.service_result;
+		n = ok && v != NULL ? 1 : 0;
+	} else {
+		if (clear < CLEAR_OPERATOR)
+			(void)do_services_collected(w, &r);
+		else
+			(void)do_services(w, &r);
+		ok = r.ok;
+		e = r.error;
+		v = r.services.v;
+		n = r.services.n;
+	}
+	w->jail = NULL;
+	w->jid = 0;
+	w->jroot = NULL;
+	step_end(w, root, ok, NULL);
+	if (!ok)
+		return (said(req, e != NULL ? e : "failed"));
+	if (n == 0)
+		return (0);
+	if ((y = cbl_yarena_alloc(a, n * sizeof(*y))) == NULL)
+		return (ENOMEM);
+	memset(y, 0, n * sizeof(*y));
+	for (i = 0; i < n; i++) {
+		y[i].name = v[i].name;
+		if ((y[i].has_enabled = v[i].has_enabled))
+			y[i].enabled = v[i].enabled;
+		y[i].path = v[i].path;
+		y[i].rcvar = v[i].rcvar;
+		if ((y[i].has_running = v[i].has_running))
+			y[i].running = v[i].running;
+		if ((y[i].has_pid = v[i].has_pid))
+			y[i].pid = v[i].pid;
+		y[i].status = v[i].status;
+	}
+	if (in->name != NULL) {
+		y[0].description = one.description;
+		y[0].command.n = one.commands.n;
+		y[0].command.v = one.commands.v;
+		if (one.variables.n > 0) {
+			if ((yv = cbl_yarena_alloc(a, one.variables.n *
+			    sizeof(*yv))) == NULL)
+				return (ENOMEM);
+			for (i = 0; i < one.variables.n; i++) {
+				yv[i].name = one.variables.v[i].key;
+				yv[i].value = one.variables.v[i].value;
+			}
+			y[0].variable.n = one.variables.n;
+			y[0].variable.v = yv;
+		}
+	}
+	out->service.n = n;
+	out->service.v = y;
+	return (0);
+}
+
 /* The services' rc.conf configuration moved under Arcana: a change of
  * the agent's own, as a commit's writes are (ira/ysvcedit.c). */
 int

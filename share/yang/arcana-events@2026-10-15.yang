@@ -213,10 +213,11 @@ module arcana-events {
   identity service-state {
     base event-kind;
     description
-      "A service of the host's rc.d started or stopped, by whoever
-       (service(8) by hand, a job, the daemon dying): its main
-       process's exit told by kqueue(2)'s EVFILT_PROC, a start by its
-       pidfile once processes start, rc(8)'s status read again.";
+      "A service of the host's rc.d, or of a running jail's, started
+       or stopped, by whoever (service(8) by hand, a job, the daemon
+       dying): its main process's exit told by kqueue(2)'s
+       EVFILT_PROC, a start by its pidfile once processes start (the
+       host's), rc(8)'s status read again.";
   }
 
   grouping event {
@@ -1093,6 +1094,12 @@ module arcana-events {
           description
             "Its main process, where known: rc's status line's, or the
              one process of its program while its pidfile is stale.";
+        }
+        leaf jail {
+          type string;
+          description
+            "The running jail whose service it is, as the jail's own
+             service(8) says it; absent for the host's.";
         }
       }
     }

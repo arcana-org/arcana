@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 24,
+    "sid-file-version": 25,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -3645,13 +3645,23 @@
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/args",
-        "sid": "95908"
+        "identifier": "/arcana-jobs:dry-run/input/change/service-action/jail",
+        "sid": "63116"
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/sslproxy/args",
-        "sid": "95909"
+        "identifier": "/arcana-jobs:dry-run/input/change/service-config/jail",
+        "sid": "63117"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/service-action/jail",
+        "sid": "63118"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/service-config/jail",
+        "sid": "63119"
       },
       {
         "namespace": "data",
@@ -3757,6 +3767,16 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/sslproxy/verb",
         "sid": "95907"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/sslproxy/args",
+        "sid": "95908"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/sslproxy/args",
+        "sid": "95909"
       }
     ]
   }

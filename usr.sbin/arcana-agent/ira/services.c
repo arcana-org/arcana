@@ -55,6 +55,29 @@
  * pidfile is stale: rc's stop and restart miss the daemon, and a start
  * makes a second one.  A job (the service-action pidfile) writes it
  * again with the pid of the one process found.
+ *
+ * A running jail's services are the jail's own, worked on from the host
+ * with nothing installed in it, for a work whose jail is set
+ * (scope_enter_jail(), by the job or the read that names the jail):
+ *
+ * - its scripts, those of its /etc/rc.d and /usr/local/etc/rc.d, and
+ *   whether each is enabled, are read by this program again as a helper
+ *   attached to the jail (rc_scripts_helper()), where the jail's root
+ *   is "/" and no link of the jail's leads out of it; reading not
+ *   telling (a command in its rc.conf), by sysrc -j <jid> -A;
+ * - a script runs in the jail alone, by the jail's own service(8):
+ *   service -j <jid> <name> <verb> (jexec(8)), and rc.conf is written
+ *   there by sysrc -j <jid>, never by Arcana's file of the host's;
+ * - a jail whose root is the host's ("/": a service jail rc.subr made)
+ *   has the host's scripts, and is not looked at as one of its own.
+ *
+ * What the collector saw is kept by the jail and the name, the jails
+ * that run looked at with the host each COLLECT_S; the watcher watches
+ * a running one's process as the host's (its pid is the host's too),
+ * and the event service-state says the jail.  A jail's stale pidfile is
+ * not looked for: its pidfile and program are paths of the jail, and
+ * the probe that reads them runs the script outside it; a stopped one
+ * is looked at by its status every UNKNOWN_S.
  */
 
 #include <sys/param.h>
@@ -86,14 +109,17 @@
 #define	RECHECK_S	15	/* the stopped ones' pidfiles looked at */
 #define	UNKNOWN_S	60	/* status of those no pid or pidfile tells of */
 #define	HOT_LOOKS	3	/* seconds of looks after a start or an exit */
+#define	JAIL_RC_DIRS	"/etc/rc.d:/usr/local/etc/rc.d"	/* jails' */
 
 struct script {
 	const char	*name;
 	const char	*path;
+	int		 on;	/* a jail's: enabled 1, 0, -1 not read */
 };
 
-/* A service as the collector saw it last. */
+/* A service as the collector saw it last: the host's, jail "". */
 struct collected {
+	char		 jail[MAXHOSTNAMELEN];
 	char		 name[65];
 	char		 rcvar[65];
 	char		 status[256];
@@ -162,7 +188,9 @@ static int	enabled_all(struct work *, const struct script *, size_t,
 static const char *last_line(struct work *, const char *, size_t);
 static void	svc_about(struct work *, const char *,
 		    struct service_config_rsp *);
-static void	collect_keep(const struct arc_service *, size_t, bool);
+static void	collect_keep(const char *, const struct arc_service *,
+		    size_t, bool);
+static void	jail_scripts(struct work *, struct script **, size_t *);
 
 static int
 cmp_script(const void *a, const void *b)
@@ -210,6 +238,11 @@ scan_scripts(struct work *w, struct script **outp, size_t *np)
 	size_t		 n, cap;
 	int		 step;
 
+	/* A jail's, read in the jail. */
+	if (w->jail != NULL) {
+		jail_scripts(w, outp, np);
+		return;
+	}
 	v = NULL;
 	n = cap = 0;
 	dirs = wstrdup(w, opts.rc_dirs);
@@ -232,6 +265,7 @@ scan_scripts(struct work *w, struct script **outp, size_t *np)
 			v = wgrow(w, v, n, &cap, sizeof(*v));
 			v[n].name = wstrdup(w, de->d_name);
 			v[n].path = path;
+			v[n].on = -1;
 			n++;
 		}
 		closedir(d);
@@ -254,16 +288,156 @@ script_find(const struct script *v, size_t n, const char *name)
 	return (NULL);
 }
 
-/* "service <name> <verb>", or "service <verb>" with name NULL. */
+/*
+ * The scripts of the jail w works in, and whether each is enabled: by
+ * the helper attached to it (rc_scripts_helper()), its lines "name path
+ * yes|no", or "?" for all after a first "#unread why".
+ */
+static void
+jail_scripts(struct work *w, struct script **outp, size_t *np)
+{
+	struct execres	 res;
+	struct script	*v;
+	char		*out, *line, *f[3];
+	size_t		 n, cap;
+	int		 i;
+
+	v = NULL;
+	n = cap = 0;
+	if (run_read(w, helper_argv(w, "rc-scripts", 0, NULL), &res) == 0 &&
+	    res.out != NULL) {
+		out = wstrndup(w, res.out, res.outlen);
+		while ((line = strsep(&out, "\n")) != NULL) {
+			if (line[0] == '#' || line[0] == '\0')
+				continue;
+			for (i = 0; i < 3; i++)
+				f[i] = strsep(&line, " ");
+			if (f[2] == NULL || !valid_name(f[0]) || f[1][0] != '/')
+				continue;
+			v = wgrow(w, v, n, &cap, sizeof(*v));
+			v[n].name = f[0];
+			v[n].path = f[1];
+			v[n].on = strcmp(f[2], "yes") == 0 ? 1 : strcmp(f[2],
+			    "no") == 0 ? 0 : -1;
+			n++;
+		}
+	}
+	*outp = v;
+	*np = n;
+}
+
+/* No such script, where w looks for them. */
+static const char *
+no_script(struct work *w, const char *name)
+{
+
+	if (w->jail != NULL)
+		return (wfmt(w, "the jail %s has no rc.d script '%s' (in its "
+		    "%s)", w->jail, name, JAIL_RC_DIRS));
+	return (wfmt(w, "no rc.d script '%s' in %s", name, opts.rc_dirs));
+}
+
+static int
+cmp_named(const void *a, const void *b)
+{
+
+	return (strcmp(*(char *const *)a, *(char *const *)b));
+}
+
+/*
+ * The helper's rc-scripts (scope_helper(), attached to the jail): the
+ * executable scripts of the jail's rc.d directories, sorted, each with
+ * whether its <name>_enable says yes in the files the jail's rc(8)
+ * reads (libvarconf), read here, where the jail's root is "/" and a
+ * link of the jail's leads nowhere out of it.  A line each, "name path
+ * yes|no"; when reading does not tell (a command in its rc.conf), a
+ * first line "#unread why" and "?" for each.
+ */
+int
+rc_scripts_helper(int argc, char **argv)
+{
+	struct dirent	 *de;
+	struct stat	  st;
+	DIR		 *d;
+	char		**v, **names, **vals, **files, err[256], *dirs, *it,
+			 *dir, *e;
+	size_t		  n, cap, nf, i;
+	bool		  read;
+
+	(void)argv;
+	if (argc != 1)
+		return (2);
+	v = NULL;
+	n = cap = 0;
+	if ((dirs = strdup(JAIL_RC_DIRS)) == NULL)
+		return (1);
+	for (it = dirs; (dir = strsep(&it, ":")) != NULL; ) {
+		if ((d = opendir(dir)) == NULL)
+			continue;
+		while ((de = readdir(d)) != NULL) {
+			if (!valid_name(de->d_name) || fstatat(dirfd(d),
+			    de->d_name, &st, 0) == -1 || !S_ISREG(st.st_mode) ||
+			    (st.st_mode & S_IXUSR) == 0)
+				continue;
+			if (n == cap) {
+				cap = cap * 2 + 32;
+				if ((v = reallocarray(v, cap, sizeof(*v))) ==
+				    NULL)
+					return (1);
+			}
+			/* "name path": the name first, for the sort. */
+			if (asprintf(&v[n], "%s %s/%s", de->d_name, dir,
+			    de->d_name) == -1)
+				return (1);
+			n++;
+		}
+		closedir(d);
+	}
+	free(dirs);
+	if (n > 1)
+		qsort(v, n, sizeof(*v), cmp_named);
+	if ((names = calloc(n + 1, sizeof(*names))) == NULL)
+		return (1);
+	for (i = 0; i < n; i++)
+		if (asprintf(&names[i], "%.*s_enable", (int)strcspn(v[i], " "),
+		    v[i]) == -1)
+			return (1);
+	err[0] = '\0';
+	read = vc_rc_values("", (const char *const *)names, n, &vals, &files,
+	    &nf, err, sizeof(err)) == 0;
+	if (!read) {
+		for (e = err; *e != '\0'; e++)
+			if (*e == '\n')
+				*e = ' ';
+		printf("#unread %s\n", err);
+	}
+	for (i = 0; i < n; i++)
+		printf("%s %s\n", v[i], !read ? "?" : vals[i] != NULL &&
+		    rc_yes(vals[i]) ? "yes" : "no");
+	if (read) {
+		vc_rc_files_free(vals, n);
+		vc_rc_files_free(files, nf);
+	}
+	return (fflush(stdout) == 0 ? 0 : 1);
+}
+
+/*
+ * "service <name> <verb>", or "service <verb>" with name NULL; in the
+ * jail w works in, by its own service(8): service -j <jid> (jexec(8)).
+ */
 static int
 svc_run(struct work *w, const char *name, const char *verb,
     struct execres *res)
 {
-	char	*argv[4];
+	char	*argv[6];
 	int	 i;
 
 	i = 0;
 	argv[i++] = (char *)(uintptr_t)opts.service_bin;
+	if (w->jail != NULL) {
+		argv[i++] = (char *)(uintptr_t)"-j";
+		argv[i++] = wfmt(w, "%d", w->jid);
+	}
 	if (name != NULL)
 		argv[i++] = (char *)(uintptr_t)name;
 	argv[i++] = (char *)(uintptr_t)verb;
@@ -349,6 +523,24 @@ enabled_all(struct work *w, const struct script *sc, size_t n, bool *on,
 	size_t		  np, i, k;
 	int		  step;
 
+	/* A jail's, as its helper read them; else by sysrc -j -A. */
+	if (w->jail != NULL) {
+		for (i = 0; i < n && sc[i].on >= 0; i++)
+			on[i] = sc[i].on == 1;
+		if (i == n)
+			return (0);
+		step = step_begin(w, STEP_FILE, "read", "the jail %s's "
+		    "rc.conf: <name>_enable of %zu scripts", w->jail, n);
+		if (sysrc_all(w, &res) != 0) {
+			step_end(w, step, false, "sysrc -A");
+			*errp = wtext(w, exec_error(w, &res, "sysrc -A"));
+			return (-1);
+		}
+		for (i = 0; i < n; i++)
+			on[i] = enabled_in(&res, sc[i].name);
+		step_end(w, step, true, "by sysrc -j -A: reading did not tell");
+		return (0);
+	}
 	names = wcalloc(w, n + 1, sizeof(*names));
 	for (i = 0; i < n; i++)
 		names[i] = wfmt(w, "%s_enable", sc[i].name);
@@ -398,8 +590,10 @@ svc_status(struct work *w, struct arc_service *s)
 		s->pid = (uint32_t)strtoul(p + 4, NULL, 10);
 	}
 	/* Not running to rc: is its program running all the same?  Not in
-	 * a dry run: what it read follows a change it did not make. */
-	if (s->has_running && !s->running && s->path != NULL && !w->dry)
+	 * a dry run: what it read follows a change it did not make; nor in
+	 * a jail (the comment at the top). */
+	if (s->has_running && !s->running && s->path != NULL && !w->dry &&
+	    w->jail == NULL)
 		(void)svc_stale(w, s, NULL);
 }
 
@@ -831,7 +1025,7 @@ do_services(struct work *w, struct services_rsp *rsp)
 	}
 	rsp->services.v = v;
 	rsp->services.n = n;
-	collect_keep(v, n, true);
+	collect_keep(w->jail, v, n, true);
 	return (0);
 }
 
@@ -853,7 +1047,7 @@ svc_current(struct work *w, const struct script *sc)
 	svc_status(w, s);
 	/* What a viewer is told, and the watcher, at once. */
 	if (!w->dry)
-		collect_keep(s, 1, false);
+		collect_keep(w->jail, s, 1, false);
 	return (s);
 }
 
@@ -877,8 +1071,7 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 	}
 	scan_scripts(w, &all, &n);
 	if ((sc = script_find(all, n, name)) == NULL) {
-		rsp->error = wfmt(w, "no rc.d script '%s' in %s", name,
-		    opts.rc_dirs);
+		rsp->error = no_script(w, name);
 		return (0);
 	}
 	switch (action) {
@@ -888,6 +1081,7 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 			rsp->error = e;
 			goto out;
 		}
+		/* A jail's rc.conf: sysrc -j <jid> (run_exec()'s scope). */
 		argv[0] = (char *)(uintptr_t)opts.sysrc_bin;
 		argv[1] = wfmt(w, "%s=%s", rcvar,
 		    action == ARC_SERVICE_ACTION_ENABLE ? "YES" : "NO");
@@ -898,6 +1092,13 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 			rsp->error = wtext(w, exec_error(w, &res, "sysrc"));
 		break;
 	case ARC_SERVICE_ACTION_PIDFILE:
+		if (w->jail != NULL) {
+			rsp->error = wfmt(w, "a jail's pidfile is not looked "
+			    "at: its paths are the jail's (service -j %s %s "
+			    "status says what the jail's rc says)", w->jail,
+			    name);
+			goto out;
+		}
 		svc_pidfile(w, sc, rsp);
 		break;
 	default:
@@ -910,8 +1111,8 @@ do_service_action(struct work *w, const char *name, uint8_t action,
 		 * service(8), which it runs, to end.  So it is handed to a
 		 * process of its own, and this is answered first.
 		 */
-		if (strcmp(name, OWN_SERVICE) == 0 && (action ==
-		    ARC_SERVICE_ACTION_STOP || action ==
+		if (w->jail == NULL && strcmp(name, OWN_SERVICE) == 0 &&
+		    (action == ARC_SERVICE_ACTION_STOP || action ==
 		    ARC_SERVICE_ACTION_RESTART)) {
 			n = (size_t)step_begin(w, STEP_DAEMON,
 			    "own service", "service %s %s: arcana-agent %s",
@@ -990,8 +1191,7 @@ do_service_config(struct work *w, const struct service_config_req *rq,
 	scan_scripts(w, &all, &n);
 	sc = script_find(all, n, name);
 	if (sc == NULL) {
-		rsp->error = wfmt(w, "no rc.d script '%s' in %s", name,
-		    opts.rc_dirs);
+		rsp->error = no_script(w, name);
 		return (0);
 	}
 	/* The rcvar tells the prefix: jail_enable -> jail_*. */
@@ -1105,8 +1305,7 @@ service_read(struct work *w, const char *name, struct service_config_rsp *rsp)
 	}
 	scan_scripts(w, &all, &n);
 	if ((sc = script_find(all, n, name)) == NULL) {
-		rsp->error = wfmt(w, "no rc.d script '%s' in %s", name,
-		    opts.rc_dirs);
+		rsp->error = no_script(w, name);
 		return (0);
 	}
 	s = wcalloc(w, 1, sizeof(*s));
@@ -1119,24 +1318,45 @@ service_read(struct work *w, const char *name, struct service_config_rsp *rsp)
 	rsp->service_result = s;
 	svc_about(w, name, rsp);
 	rsp->ok = true;
-	collect_keep(s, 1, false);
+	collect_keep(w->jail, s, 1, false);
 	return (0);
 }
 
-/* A service's state as a look saw it change: the event service-state. */
+/* A service's state as a look saw it change: the event service-state,
+ * a jail's ("" the host's) saying the jail. */
 static void
-svc_told(const char *name, bool running, bool has_pid, uint32_t pid)
+svc_told(const char *jail, const char *name, bool running, bool has_pid,
+    uint32_t pid)
 {
-	char	q[160];
+	char	q[160], jq[2 * MAXHOSTNAMELEN];
+	char	more[2 * MAXHOSTNAMELEN + 48];
+	size_t	len;
 
+	more[0] = '\0';
 	if (has_pid)
-		event_add("service-state", "{\"service\":\"%s\",\"state\":"
-		    "\"%s\",\"pid\":%u}", json_quote(name, q, sizeof(q)),
-		    running ? "running" : "stopped", pid);
-	else
-		event_add("service-state", "{\"service\":\"%s\",\"state\":"
-		    "\"%s\"}", json_quote(name, q, sizeof(q)), running ?
-		    "running" : "stopped");
+		snprintf(more, sizeof(more), ",\"pid\":%u", pid);
+	if (jail[0] != '\0') {
+		len = strlen(more);
+		snprintf(more + len, sizeof(more) - len, ",\"jail\":\"%s\"",
+		    json_quote(jail, jq, sizeof(jq)));
+	}
+	event_add("service-state", "{\"service\":\"%s\",\"state\":\"%s\"%s}",
+	    json_quote(name, q, sizeof(q)), running ? "running" : "stopped",
+	    more);
+}
+
+/* The one kept of jail's ("" the host's) by that name, or ncoll;
+ * coll_lock held. */
+static size_t
+coll_find(const char *jail, const char *name)
+{
+	size_t	k;
+
+	for (k = 0; k < ncoll; k++)
+		if (strcmp(coll[k].name, name) == 0 && strcmp(coll[k].jail,
+		    jail) == 0)
+			break;
+	return (k);
 }
 
 /* The watcher told to look at what is kept again. */
@@ -1152,55 +1372,63 @@ svc_poke(void)
 }
 
 /*
- * What a list or a read saw (v, n of them) kept for a viewer's
- * requests: each one's running, status line, pid and rcvar; with all,
- * v is every enabled service, and one not among them is forgotten.
- * One seen before whose state is not what it was (started, stopped,
- * another pid) is told (svc_told()); the watcher looks again.
+ * What a list or a read saw (v, n of them) of the host's or of jail's
+ * services kept for a viewer's requests: each one's running, status
+ * line, pid and rcvar; with all, v is every enabled service there, and
+ * one of there not among them is forgotten.  One seen before whose
+ * state is not what it was (started, stopped, another pid) is told
+ * (svc_told()); the watcher looks again.
  */
 static void
-collect_keep(const struct arc_service *v, size_t n, bool all)
+collect_keep(const char *jail, const struct arc_service *v, size_t n,
+    bool all)
 {
 	struct collected	*c, *nc;
 	size_t			 i, k, m;
 	bool			*tell;
 
+	if (jail == NULL)
+		jail = "";
 	if ((tell = calloc(n + 1, sizeof(*tell))) == NULL)
 		return;
 	pthread_mutex_lock(&coll_lock);
 	if (all) {
-		/* Kept: those of v, and what was said of them before. */
-		if ((nc = calloc(n + 1, sizeof(*nc))) == NULL) {
+		/* Kept: those of v, what was said of them before, and the
+		 * others' as they were. */
+		if ((nc = calloc(ncoll + n + 1, sizeof(*nc))) == NULL) {
 			pthread_mutex_unlock(&coll_lock);
 			free(tell);
 			return;
 		}
-		for (i = m = 0; i < n; i++) {
+		for (k = m = 0; k < ncoll; k++)
+			if (strcmp(coll[k].jail, jail) != 0)
+				nc[m++] = coll[k];
+		for (i = 0; i < n; i++) {
 			if (!v[i].has_enabled || !v[i].enabled)
 				continue;
-			for (k = 0; k < ncoll; k++)
-				if (strcmp(coll[k].name, v[i].name) == 0)
-					nc[m] = coll[k];
+			if ((k = coll_find(jail, v[i].name)) < ncoll)
+				nc[m] = coll[k];
+			(void)strlcpy(nc[m].jail, jail, sizeof(nc[m].jail));
 			(void)strlcpy(nc[m].name, v[i].name, sizeof(nc[m].name));
 			m++;
 		}
 		free(coll);
 		coll = nc;
 		ncoll = m;
-		coll_at = time(NULL);
+		if (jail[0] == '\0')
+			coll_at = time(NULL);
 	}
 	for (i = 0; i < n; i++) {
 		if (all && (!v[i].has_enabled || !v[i].enabled))
 			continue;
-		for (k = 0; k < ncoll && strcmp(coll[k].name, v[i].name) != 0;
-		    k++)
-			;
-		if (k == ncoll) {
+		if ((k = coll_find(jail, v[i].name)) == ncoll) {
 			if ((nc = reallocarray(coll, ncoll + 1,
 			    sizeof(*coll))) == NULL)
 				break;
 			coll = nc;
 			memset(&coll[ncoll], 0, sizeof(coll[ncoll]));
+			(void)strlcpy(coll[ncoll].jail, jail,
+			    sizeof(coll[ncoll].jail));
 			(void)strlcpy(coll[ncoll].name, v[i].name,
 			    sizeof(coll[ncoll].name));
 			ncoll++;
@@ -1227,10 +1455,28 @@ collect_keep(const struct arc_service *v, size_t n, bool all)
 	pthread_mutex_unlock(&coll_lock);
 	for (i = 0; i < n; i++)
 		if (tell[i])
-			svc_told(v[i].name, v[i].running, v[i].has_pid,
+			svc_told(jail, v[i].name, v[i].running, v[i].has_pid,
 			    v[i].pid);
 	free(tell);
 	svc_poke();
+}
+
+/* What was kept of the jails not among those named (n of them, jails
+ * that run) forgotten: a jail stopped, its services with it. */
+static void
+collect_jails(char *const *names, size_t n)
+{
+	size_t	k, m, i;
+
+	pthread_mutex_lock(&coll_lock);
+	for (k = m = 0; k < ncoll; k++) {
+		for (i = 0; i < n && strcmp(coll[k].jail, names[i]) != 0; i++)
+			;
+		if (coll[k].jail[0] == '\0' || i < n)
+			coll[m++] = coll[k];
+	}
+	ncoll = m;
+	pthread_mutex_unlock(&coll_lock);
 }
 
 /* Service s as the collector saw it last, into s; true when it did.
@@ -1246,7 +1492,8 @@ collected_of(struct work *w, struct arc_service *s)
 	    "rc.d script run for a viewer", s->name);
 	pthread_mutex_lock(&coll_lock);
 	for (k = 0; k < ncoll; k++) {
-		if (strcmp(coll[k].name, s->name) != 0)
+		if (strcmp(coll[k].name, s->name) != 0 || strcmp(coll[k].jail,
+		    w->jail != NULL ? w->jail : "") != 0)
 			continue;
 		s->has_running = coll[k].has_running;
 		s->running = coll[k].running;
@@ -1329,8 +1576,7 @@ service_read_collected(struct work *w, const char *name,
 	}
 	scan_scripts(w, &all, &n);
 	if ((sc = script_find(all, n, name)) == NULL) {
-		rsp->error = wfmt(w, "no rc.d script '%s' in %s", name,
-		    opts.rc_dirs);
+		rsp->error = no_script(w, name);
 		return (0);
 	}
 	s = wcalloc(w, 1, sizeof(*s));
@@ -1346,8 +1592,54 @@ service_read_collected(struct work *w, const char *name,
 	return (0);
 }
 
+/*
+ * Each running jail's services, as the host's (do_services() in the
+ * jail): a jail whose root is the host's has the host's scripts, and is
+ * left out.  What was kept of a jail no longer running is forgotten.
+ */
+static void
+collect_jails_all(void)
+{
+	struct services_rsp	  r;
+	struct work		  w;
+	const char		 *e;
+	char			**names, js[16], nb[MAXHOSTNAMELEN],
+				  pb[MAXPATHLEN];
+	size_t			  n, cap, i;
+	int			  jid;
+
+	names = NULL;
+	n = cap = 0;
+	for (jid = jail_next(0); jid > 0; jid = jail_next(jid)) {
+		snprintf(js, sizeof(js), "%d", jid);
+		if (jail_getv(0, "jid", js, "name", nb, "path", pb, NULL) ==
+		    -1 || strcmp(pb, "/") == 0)
+			continue;
+		if (n == cap) {
+			cap = cap * 2 + 8;
+			if ((names = reallocarray(names, cap,
+			    sizeof(*names))) == NULL)
+				return;
+		}
+		if ((names[n] = strdup(nb)) == NULL)
+			break;
+		n++;
+		work_init(&w);
+		w.nice = true;
+		memset(&r, 0, sizeof(r));
+		if (scope_enter_jail(&w, nb, &e, false) == 0)
+			(void)do_services(&w, &r);
+		work_free(&w);
+	}
+	collect_jails(names, n);
+	for (i = 0; i < n; i++)
+		free(names[i]);
+	free(names);
+}
+
 /* The collector: FIRST_S after the start, then every COLLECT_S, the
- * list as an operator's read has it, kept (collect_keep()). */
+ * list as an operator's read has it, kept (collect_keep()): the host's,
+ * then each running jail's. */
 static void *
 collector(void *arg __unused)
 {
@@ -1363,6 +1655,7 @@ collector(void *arg __unused)
 		memset(&r, 0, sizeof(r));
 		(void)do_services(&w, &r);
 		work_free(&w);
+		collect_jails_all();
 	}
 	return (NULL);
 }
@@ -1370,6 +1663,7 @@ collector(void *arg __unused)
 /* A pid watched for its exit (NOTE_EXIT), and whose; the watcher's. */
 struct svc_watch {
 	pid_t	 pid;
+	char	 jail[MAXHOSTNAMELEN];
 	char	 name[65];
 };
 
@@ -1378,6 +1672,7 @@ static size_t		 nwatched, capwatched;
 
 /* A service as the watcher takes it from what is kept. */
 struct look {
+	char		 jail[MAXHOSTNAMELEN];
 	char		 name[65];
 	bool		 has_running;
 	bool		 running;
@@ -1426,12 +1721,14 @@ pass_rp(struct work *w, const struct script *f, struct look *l)
 	struct collected	*c;
 	size_t			 k;
 
-	l->rp_state = f != NULL && svc_rcproc(w, f->path, &l->rp) ? RP_READ :
-	    RP_NONE;
+	/* A jail's: none read (the comment at the top). */
+	l->rp_state = l->jail[0] == '\0' && f != NULL && svc_rcproc(w,
+	    f->path, &l->rp) ? RP_READ : RP_NONE;
 	l->rp_at = time(NULL);
 	pthread_mutex_lock(&coll_lock);
 	for (k = 0; k < ncoll; k++) {
-		if (strcmp(coll[k].name, l->name) != 0)
+		if (strcmp(coll[k].name, l->name) != 0 || strcmp(coll[k].jail,
+		    l->jail) != 0)
 			continue;
 		c = &coll[k];
 		c->rp_state = l->rp_state;
@@ -1451,27 +1748,28 @@ pass_rp(struct work *w, const struct script *f, struct look *l)
 
 /* A look that saw nothing new at pid: none again for the same pid. */
 static void
-pass_quiet(const char *name, uint32_t pid)
+pass_quiet(const char *jail, const char *name, uint32_t pid)
 {
 	size_t	k;
 
 	pthread_mutex_lock(&coll_lock);
-	for (k = 0; k < ncoll; k++)
-		if (strcmp(coll[k].name, name) == 0)
-			coll[k].quiet = pid;
+	if ((k = coll_find(jail, name)) < ncoll)
+		coll[k].quiet = pid;
 	pthread_mutex_unlock(&coll_lock);
 }
 
-/* pid watched for its exit, as name's; false when it is gone already. */
+/* pid watched for its exit, as jail's name's; false when it is gone
+ * already. */
 static bool
-watch_pid(int kq, const char *name, pid_t pid)
+watch_pid(int kq, const char *jail, const char *name, pid_t pid)
 {
 	struct kevent	 ev;
 	struct svc_watch *nw;
 	size_t		 i;
 
 	for (i = 0; i < nwatched; i++)
-		if (watched[i].pid == pid && strcmp(watched[i].name, name) == 0)
+		if (watched[i].pid == pid && strcmp(watched[i].name, name) ==
+		    0 && strcmp(watched[i].jail, jail) == 0)
 			return (true);
 	EV_SET(&ev, pid, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
 	if (kevent(kq, &ev, 1, NULL, 0, NULL) == -1)
@@ -1484,16 +1782,19 @@ watch_pid(int kq, const char *name, pid_t pid)
 		capwatched = capwatched * 2 + 8;
 	}
 	watched[nwatched].pid = pid;
+	(void)strlcpy(watched[nwatched].jail, jail,
+	    sizeof(watched[nwatched].jail));
 	(void)strlcpy(watched[nwatched].name, name,
 	    sizeof(watched[nwatched].name));
 	nwatched++;
 	return (true);
 }
 
-/* Was name's watched process among those gone (it is no longer
- * watched then)? */
+/* Was jail's name's watched process among those gone (it is no
+ * longer watched then)? */
 static bool
-watch_gone(const char *name, const pid_t *gone, size_t ngone)
+watch_gone(const char *jail, const char *name, const pid_t *gone,
+    size_t ngone)
 {
 	size_t	i, j;
 	bool	was = false;
@@ -1501,7 +1802,8 @@ watch_gone(const char *name, const pid_t *gone, size_t ngone)
 	for (i = 0; i < nwatched; ) {
 		for (j = 0; j < ngone && watched[i].pid != gone[j]; j++)
 			;
-		if (j < ngone && strcmp(watched[i].name, name) == 0) {
+		if (j < ngone && strcmp(watched[i].name, name) == 0 &&
+		    strcmp(watched[i].jail, jail) == 0) {
 			watched[i] = watched[--nwatched];
 			was = true;
 		} else
@@ -1527,6 +1829,7 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 	struct script		*sc = NULL;
 	const struct script	*f;
 	struct collected	*c;
+	const char		*e;
 	size_t			 nl, i, nsc = 0;
 	time_t			 now;
 	pid_t			 pid;
@@ -1539,6 +1842,7 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 	for (i = 0; i < ncoll; i++) {
 		c = &coll[i];
 		l = &lv[i];
+		(void)strlcpy(l->jail, c->jail, sizeof(l->jail));
 		(void)strlcpy(l->name, c->name, sizeof(l->name));
 		l->has_running = c->has_running;
 		l->running = c->running;
@@ -1560,7 +1864,7 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 	for (i = 0; i < nl; i++) {
 		l = &lv[i];
 		pid = 0;
-		full = ngone > 0 && watch_gone(l->name, gone, ngone);
+		full = ngone > 0 && watch_gone(l->jail, l->name, gone, ngone);
 		if (full || !l->has_running)
 			;
 		else if (!l->running) {
@@ -1568,8 +1872,9 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 				continue;
 			if (l->rp_state == RP_UNREAD || now - l->rp_at >=
 			    COLLECT_S)
-				pass_rp(&w, pass_script(&w, &sc, &nsc, &read,
-				    l->name), l);
+				pass_rp(&w, l->jail[0] != '\0' ? NULL :
+				    pass_script(&w, &sc, &nsc, &read, l->name),
+				    l);
 			if (l->rp_state != RP_READ)
 				full = unknown;
 			else if (pidfiles && (pid = rp_pid(&w, &l->rp)) != 0)
@@ -1578,31 +1883,47 @@ svc_pass(int kq, const pid_t *gone, size_t ngone, bool pidfiles,
 			pid = l->has_pid ? (pid_t)l->pid : 0;
 			if (pid == 0 && (l->rp_state == RP_UNREAD || now -
 			    l->rp_at >= COLLECT_S))
-				pass_rp(&w, pass_script(&w, &sc, &nsc, &read,
-				    l->name), l);
+				pass_rp(&w, l->jail[0] != '\0' ? NULL :
+				    pass_script(&w, &sc, &nsc, &read, l->name),
+				    l);
 			if (pid == 0 && l->rp_state == RP_READ)
 				pid = rp_pid(&w, &l->rp);
 			if (pid == 0)
 				full = unknown;
-			else if (!watch_pid(kq, l->name, pid))
+			else if (!watch_pid(kq, l->jail, l->name, pid))
 				full = (uint32_t)pid != l->quiet;
 		}
-		if (!full || (f = pass_script(&w, &sc, &nsc, &read,
-		    l->name)) == NULL)
+		if (!full)
 			continue;
 		memset(&s, 0, sizeof(s));
-		s.name = wtext(&w, f->name);
-		s.path = wtext(&w, f->path);
-		svc_status(&w, &s);
-		collect_keep(&s, 1, false);
+		if (l->jail[0] != '\0') {
+			/* A jail's, by its own service(8): its script's path
+			 * is not needed there.  A jail gone is the
+			 * collector's to forget. */
+			if (scope_enter_jail(&w, l->jail, &e, false) != 0)
+				continue;
+			s.name = wtext(&w, l->name);
+			svc_status(&w, &s);
+			w.jail = NULL;
+			w.jid = 0;
+			w.jroot = NULL;
+		} else {
+			if ((f = pass_script(&w, &sc, &nsc, &read,
+			    l->name)) == NULL)
+				continue;
+			s.name = wtext(&w, f->name);
+			s.path = wtext(&w, f->path);
+			svc_status(&w, &s);
+		}
+		collect_keep(l->jail, &s, 1, false);
 		/* Nothing new at that pid: not looked at again for it. */
-		if (s.running && s.has_pid && !watch_pid(kq, s.name,
+		if (s.running && s.has_pid && !watch_pid(kq, l->jail, s.name,
 		    (pid_t)s.pid))
-			pass_quiet(s.name, s.pid);
+			pass_quiet(l->jail, s.name, s.pid);
 		else if (!s.running && pid != 0)
-			pass_quiet(s.name, (uint32_t)pid);
+			pass_quiet(l->jail, s.name, (uint32_t)pid);
 		else
-			pass_quiet(s.name, 0);
+			pass_quiet(l->jail, s.name, 0);
 	}
 	work_free(&w);
 }

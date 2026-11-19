@@ -772,9 +772,9 @@ job_finished(struct op *op, bool ok, const char *err)
 		if (s->services != NULL)
 			refresh_services(s, false);
 		/* The service open, if it is the job's: none open is none. */
-		if (app.service[0] != '\0' && strcmp(app.service,
+		if (app.service[0] != '\0' && strcmp(svc_key(app.service),
 		    op->target) == 0)
-			service_config(op->target);
+			service_config(app.service);
 		break;
 	case JOB_SVC_OFF:
 		/* Stopped: now not started at boot. */
@@ -2165,6 +2165,31 @@ static const char *const svc_map[] = { "name", "name", "path", "path",
     "pid", "status", "status", "pidfile-stale", "pidfile_stale", "pidfile",
     "pidfile", "pidfile-pid", "pidfile_pid", NULL };
 
+/* A service of the jail picked on the Services tab ("" the host), as
+ * the activity list keeps it: name, or name@jail. */
+const char *
+svc_key(const char *name)
+{
+	static char	buf[2][400];
+	static int	next;
+	char		*b;
+
+	b = buf[next++ % 2];
+	if (app.svc_jail[0] == '\0')
+		snprintf(b, sizeof(buf[0]), "%s", name);
+	else
+		snprintf(b, sizeof(buf[0]), "%s@%s", name, app.svc_jail);
+	return (b);
+}
+
+/* The jail picked on host s's Services tab, or "" (the host's own). */
+static const char *
+svc_jail_of(const struct server *s)
+{
+
+	return (strcmp(app.svc_sid, s->id) == 0 ? app.svc_jail : "");
+}
+
 static void
 services_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 {
@@ -2179,13 +2204,23 @@ services_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 		return;
 	}
 	s->services_loading = false;
+	/* Another jail's, picked since: the one picked read now. */
+	if (strcmp(c->jail, svc_jail_of(s)) != 0) {
+		op_done(op, status == 200, NULL, err);
+		free(c);
+		refresh_services(s, false);
+		return;
+	}
 	if (status == 200) {
 		if (s->services != NULL)
 			ucl_object_unref(s->services);
-		/* arcana-services' list as the tab draws it. */
+		/* arcana-services' list as the tab draws it: the host's, or
+		 * a jail's read action's. */
 		s->services = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(s->services, jmap_each(jget(o, "service"),
 		    svc_map), "services", 0, false);
+		snprintf(s->services_jail, sizeof(s->services_jail), "%s",
+		    c->jail);
 		s->services_fetched = arc_now();
 		s->services_error[0] = '\0';
 		op_done(op, true, NULL, NULL);
@@ -2199,26 +2234,43 @@ services_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	free(c);
 }
 
-/* The rc.d services of a server; a manual refresh goes into the log. */
+/*
+ * The rc.d services of a server, or of the running jail picked on the
+ * Services tab (its read action, below the jail's entry); a manual
+ * refresh goes into the log.
+ */
 void
 refresh_services(struct server *s, bool user)
 {
 	struct ctx	*c;
 	struct op	*op;
+	char		 path[400];
 
+	/* Another host shown: its own services, not a jail of the last. */
+	if (s == cur_server() && strcmp(app.svc_sid, s->id) != 0) {
+		app.svc_jail[0] = '\0';
+		snprintf(app.svc_sid, sizeof(app.svc_sid), "%s", s->id);
+	}
 	if (!app.online || s->services_loading)
 		return;
 	s->services_loading = true;
 	c = ctx_new();
 	snprintf(c->sid, sizeof(c->sid), "%s", s->id);
+	snprintf(c->jail, sizeof(c->jail), "%s", svc_jail_of(s));
 	c->user = user = user && !app.quiet;
 	if (user) {
-		op = op_new("list services", s->name);
+		op = op_new(c->jail[0] != '\0' ? "list services of a jail" :
+		    "list services", s->name);
 		c->op = op->id;
 		app.trace_op = op->id;
 	}
-	host_yread(s, "arcana-services:services", NULL, NULL, user,
-	    services_cb, c);
+	if (c->jail[0] != '\0') {
+		snprintf(path, sizeof(path), "arcana-jails:jails/jail=%s/"
+		    "arcana-services:services/read", rc_key(c->jail));
+		host_yread(s, path, "{}", NULL, user, services_cb, c);
+	} else
+		host_yread(s, "arcana-services:services", NULL, NULL, user,
+		    services_cb, c);
 }
 
 /* Replace the service of the same name in the server's list. */
@@ -2250,27 +2302,69 @@ merge_service(struct server *s, const ucl_object_t *j)
 	}
 }
 
-/* start, stop, restart or reload a service: a job. */
+/*
+ * start, stop, restart or reload a service: a job; in the jail picked,
+ * its own service(8) does it (service -j), and enable and disable are
+ * the job's too, the jail's rc.conf by sysrc -j.
+ */
 void
 service_action(const char *name, const char *action)
 {
 	struct server	*s;
-	char		 title[160], *qn, *json;
+	char		 title[400], *qn, *qj, *json;
 
 	if ((s = cur_server()) == NULL)
 		return;
 	/* Started at boot or not: its configuration, committed. */
-	if (strcmp(action, "enable") == 0 || strcmp(action, "disable") == 0) {
+	if (app.svc_jail[0] == '\0' && (strcmp(action, "enable") == 0 ||
+	    strcmp(action, "disable") == 0)) {
 		service_enable(s, name, strcmp(action, "enable") == 0);
 		return;
 	}
-	snprintf(title, sizeof(title), "service %s %s", name, action);
+	snprintf(title, sizeof(title), "service %s %s%s%s", name, action,
+	    app.svc_jail[0] != '\0' ? " in " : "", app.svc_jail);
 	qn = json_quote(name);
+	qj = json_quote(app.svc_jail);
 	if (asprintf(&json, "{\"kind\":\"service-action\",\"service\":%s,"
-	    "\"action\":\"%s\"}", qn, action) == -1)
+	    "\"action\":\"%s\"%s%s}", qn, action, app.svc_jail[0] != '\0' ?
+	    ",\"jail\":" : "", app.svc_jail[0] != '\0' ? qj : "") == -1)
 		abort();
 	free(qn);
-	job_send(s, json, title, JOB_SERVICE, name);
+	free(qj);
+	job_send(s, json, title, JOB_SERVICE, svc_key(name));
+}
+
+/*
+ * A service of the jail picked: its variables set, or one unset, in
+ * the jail's rc.conf by the service-config job (sysrc -j).
+ */
+void
+service_jail_config(struct server *s, const char *name,
+    const ucl_object_t *set, const char *unset)
+{
+	ucl_object_t	*job, *u;
+	char		 title[400], *json;
+
+	job = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(job, ucl_object_fromstring("service-config"),
+	    "kind", 0, false);
+	ucl_object_insert_key(job, ucl_object_fromstring(name), "service", 0,
+	    false);
+	ucl_object_insert_key(job, ucl_object_fromstring(app.svc_jail), "jail",
+	    0, false);
+	if (set != NULL)
+		ucl_object_insert_key(job, ucl_object_copy(set), "set", 0,
+		    false);
+	if (unset != NULL) {
+		u = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(u, ucl_object_fromstring(unset));
+		ucl_object_insert_key(job, u, "unset", 0, false);
+	}
+	json = (char *)ucl_object_emit(job, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(job);
+	snprintf(title, sizeof(title), "service %s configure in %s", name,
+	    app.svc_jail);
+	job_send(s, json, title, JOB_SERVICE, svc_key(name));
 }
 
 /* A service's variables, as running has them: into the drawer's. */
@@ -2299,21 +2393,30 @@ static void
 service_config_cb(int status, const ucl_object_t *o, const char *err,
     void *arg)
 {
-	struct ctx	*c;
-	struct server	*s;
-	struct op	*op;
-	ucl_object_t	*sv;
-	char		 url[512], path[300];
-	bool		 ok;
+	struct ctx		*c;
+	struct server		*s;
+	struct op		*op;
+	ucl_object_t		*sv, *vars;
+	const ucl_object_t	*v;
+	ucl_object_iter_t	 it;
+	char			 url[512], path[300];
+	bool			 ok;
 
 	c = arg;
 	op = c->op != 0 ? op_find(c->op) : NULL;
 	app.svc_loading = false;
 	ok = status == 200 && o != NULL;
+	/* A jail's (c->name): the one entry of its read action's list. */
+	if (ok && c->name[0] != '\0' && (o = ucl_array_find_index(jget(o,
+	    "service"), 0)) == NULL) {
+		ok = false;
+		err = "the jail's read said nothing of it";
+	}
 	op_done(op, ok, NULL, err);
-	if (ok && strcmp(app.service, c->jail) == 0) {
+	if (ok && strcmp(app.service, c->jail) == 0 && strcmp(app.svc_jail,
+	    c->name) == 0) {
 		/* Its read's output as the drawer draws it; its variables
-		 * as running has them, read next. */
+		 * as running has them, read next; a jail's in the read. */
 		if (app.svc_config != NULL)
 			ucl_object_unref(app.svc_config);
 		app.svc_config = ucl_object_typed_new(UCL_OBJECT);
@@ -2328,13 +2431,27 @@ service_config_cb(int status, const ucl_object_t *o, const char *err,
 		ucl_object_insert_key(app.svc_config, jget(o, "command") !=
 		    NULL ? ucl_object_copy(jget(o, "command")) :
 		    ucl_object_typed_new(UCL_ARRAY), "commands", 0, false);
-		ucl_object_insert_key(app.svc_config, ucl_object_typed_new(
-		    UCL_OBJECT), "variables", 0, false);
-		snprintf(path, sizeof(path), "arcana-services:services/"
-		    "service=%s", rc_key(c->jail));
-		rc_get(rc_ds(url, sizeof(url), "running", c->sid, path), NULL,
-		    svc_vars_cb, strdup(c->jail));
-		if ((s = server_by_id(c->sid)) != NULL)
+		vars = ucl_object_typed_new(UCL_OBJECT);
+		ucl_object_insert_key(app.svc_config, vars, "variables", 0,
+		    false);
+		if (c->name[0] != '\0') {
+			it = NULL;
+			while ((v = ucl_object_iterate(jget(o, "variable"), &it,
+			    true)) != NULL)
+				if (jstr(v, "name") != NULL)
+					ucl_object_insert_key(vars,
+					    ucl_object_fromstring(jstr(v,
+					    "value") != NULL ? jstr(v,
+					    "value") : ""), jstr(v, "name"), 0,
+					    true);
+		} else {
+			snprintf(path, sizeof(path), "arcana-services:services/"
+			    "service=%s", rc_key(c->jail));
+			rc_get(rc_ds(url, sizeof(url), "running", c->sid, path),
+			    NULL, svc_vars_cb, strdup(c->jail));
+		}
+		if ((s = server_by_id(c->sid)) != NULL &&
+		    strcmp(s->services_jail, c->name) == 0)
 			merge_service(s, sv);
 	}
 	snprintf(app.svc_error, sizeof(app.svc_error), "%s", ok ? "" :
@@ -2349,14 +2466,17 @@ service_config(const char *name)
 	struct server	*s;
 	struct ctx	*c;
 	struct op	*op;
-	char		 url[512], title[160];
+	char		 url[512], title[400], input[160];
 
 	if ((s = cur_server()) == NULL)
 		return;
 	c = ctx_new();
 	snprintf(c->sid, sizeof(c->sid), "%s", s->id);
 	snprintf(c->jail, sizeof(c->jail), "%s", name);
-	snprintf(title, sizeof(title), "service %s config", name);
+	/* The jail picked, if one: its read action, the one named. */
+	snprintf(c->name, sizeof(c->name), "%s", app.svc_jail);
+	snprintf(title, sizeof(title), "service %s config%s%s", name,
+	    app.svc_jail[0] != '\0' ? " in " : "", app.svc_jail);
 	op = op_new(title, s->name);
 	c->op = op->id;
 	app.trace_op = op->id;
@@ -2366,6 +2486,13 @@ service_config(const char *name)
 	if (!url_word(name)) {
 		op_done(op, false, NULL, "not a service's name");
 		free(c);
+		return;
+	}
+	if (app.svc_jail[0] != '\0') {
+		snprintf(url, sizeof(url), "arcana-jails:jails/jail=%s/"
+		    "arcana-services:services/read", rc_key(app.svc_jail));
+		snprintf(input, sizeof(input), "{\"name\":\"%s\"}", name);
+		host_yread(s, url, input, NULL, false, service_config_cb, c);
 		return;
 	}
 	snprintf(url, sizeof(url), "arcana-services:services/service=%s/read",
@@ -5250,12 +5377,13 @@ service_busy(const struct server *s, const char *name)
 	for (i = 0; i < app.nops; i++) {
 		o = &app.ops[i];
 		if (o->state == OP_RUNNING && o->what == JOB_SERVICE &&
-		    strcmp(o->sid, s->id) == 0 && strcmp(o->target, name) == 0)
+		    strcmp(o->sid, s->id) == 0 && strcmp(o->target,
+		    svc_key(name)) == 0)
 			return (true);
 	}
-	/* Its configuration's commit on its way. */
-	return (svc_yc.busy && strcmp(svc_yc.sid, s->id) == 0 &&
-	    strcmp(svc_yc_name, name) == 0);
+	/* Its configuration's commit on its way: the host's. */
+	return (app.svc_jail[0] == '\0' && svc_yc.busy &&
+	    strcmp(svc_yc.sid, s->id) == 0 && strcmp(svc_yc_name, name) == 0);
 }
 
 /* An upgrade of the packages shown, of this host or jail, is under way. */

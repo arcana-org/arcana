@@ -2,15 +2,27 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-services",
     "module-revision": "2026-10-14",
-    "sid-file-version": 5,
+    "sid-file-version": 6,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 200, 100.",
     "dependency-revision": [
       {
         "module-name": "ietf-netconf-acm",
         "module-revision": "2018-02-14"
+      },
+      {
+        "module-name": "cblink-gen",
+        "module-revision": "2026-10-22"
+      },
+      {
+        "module-name": "arcana-jails",
+        "module-revision": "2026-10-14"
       }
     ],
     "assignment-range": [
+      {
+        "entry-point": "97100",
+        "size": "100"
+      },
       {
         "entry-point": "62200",
         "size": "100"
@@ -501,6 +513,166 @@
         "namespace": "data",
         "identifier": "/arcana-services:services/service/stop/output/pidfile-stale",
         "sid": "62296"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services",
+        "sid": "97100"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read",
+        "sid": "97101"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/input",
+        "sid": "97102"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/input/name",
+        "sid": "97103"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output",
+        "sid": "97104"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service",
+        "sid": "97105"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/command",
+        "sid": "97106"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/description",
+        "sid": "97107"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/enabled",
+        "sid": "97108"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/name",
+        "sid": "97109"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/path",
+        "sid": "97110"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/pid",
+        "sid": "97111"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/pidfile",
+        "sid": "97112"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/pidfile-pid",
+        "sid": "97113"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/pidfile-stale",
+        "sid": "97114"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/rcvar",
+        "sid": "97115"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/running",
+        "sid": "97116"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/status",
+        "sid": "97117"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/variable",
+        "sid": "97118"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/variable/name",
+        "sid": "97119"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/read/output/service/variable/value",
+        "sid": "97120"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service",
+        "sid": "97121"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/enabled",
+        "sid": "97122"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/name",
+        "sid": "97123"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/path",
+        "sid": "97124"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/pid",
+        "sid": "97125"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/pidfile",
+        "sid": "97126"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/pidfile-pid",
+        "sid": "97127"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/pidfile-stale",
+        "sid": "97128"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/rcvar",
+        "sid": "97129"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/running",
+        "sid": "97130"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-services:services/service/status",
+        "sid": "97131"
       }
     ]
   }

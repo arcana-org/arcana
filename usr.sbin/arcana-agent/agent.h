@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.323.0"
+#define	ARCANA_AGENT_VERSION	"0.324.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -780,6 +780,8 @@ struct service_config_rsp {
 		size_t		 n;
 	} commands;
 };
+/* ira/services.c: the host's services, or those of the running jail the
+ * work is in (scope_enter_jail()), by its own service(8) and rc.conf. */
 int		 do_services(struct work *, struct services_rsp *);
 void		 service_scripts(struct work *, struct services_rsp *);
 const char	*service_rcvar(struct work *, const char *, const char **);
@@ -1768,6 +1770,7 @@ int		 scope_rename(struct work *, const char *, const char *,
 		    const char *);
 int		 scope_helper(int, char **);
 int		 repo_reach_helper(int, char **);
+int		 rc_scripts_helper(int, char **);
 const char	*scope_missing(struct work *, const struct execres *,
 		    const char *, const char *);
 char		*ifq_text(const char *, const char *, const char *);

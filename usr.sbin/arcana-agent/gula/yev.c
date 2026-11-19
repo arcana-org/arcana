@@ -371,6 +371,7 @@ data_of(cbl_yarena *a, const char *kind, const ucl_object_t *d, yevent *y)
 			    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_STOPPED;
 		}
 		YJ_NUM(d, "pid", c, pid);
+		c->jail = yj_str(a, d, "jail");
 		y->service_state = c;
 		y->data = ARCANA_EVENTS_EVENT_ENTRY_DATA_SERVICE_STATE;
 	} else if (strcmp(kind, "monitor-threshold") == 0) {

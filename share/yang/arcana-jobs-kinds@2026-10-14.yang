@@ -283,6 +283,11 @@ submodule arcana-jobs-kinds {
             description
               "Action";
           }
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
           leaf-list accept {
             type string;
             ordered-by user;
@@ -302,6 +307,11 @@ submodule arcana-jobs-kinds {
             mandatory true;
             description
               "Service";
+          }
+          leaf jail {
+            type string;
+            description
+              "Jail";
           }
           list set {
             key "name";

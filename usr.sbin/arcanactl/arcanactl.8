@@ -508,12 +508,29 @@ names the interface for the alias when the jail has no
 .Va interface
 parameter.
 The address action arcana-network adds to arcana-jails' jail.
-.It Cm services
+.It Cm services Op Fl j Ar jail
 The host's rc.d scripts: whether
 .Xr rc.conf 5
 enables them, and for the enabled ones whether they run, as
 .Xr service 8
 reports; arcana-services' state, a GET.
+With
+.Fl j ,
+a running jail's: the scripts of its
+.Pa /etc/rc.d
+and
+.Pa /usr/local/etc/rc.d
+and whether the jail's own
+.Xr rc.conf 5
+enables them, read in the jail by the agent attached to it (never
+through a link of the jail's out of its root), and for the enabled
+ones what the jail's
+.Xr service 8
+says
+.Pq Nm service Fl j Ar jail Ar name Cm status ;
+arcana-services' read action on the jail's entry in arcana-jails.
+A viewer is told what the agent last saw; a jail whose root is the
+host's (a service jail) has the host's scripts.
 .It Cm services convert Oo Fl n Oc Oo Fl a Ar warning Oc ... Op Ar name ...
 The services' configuration of your
 .Xr rc.conf 5
@@ -570,7 +587,7 @@ With
 nothing is written.
 All or nothing: a marked line that would not read back as it was
 refuses the request, and failing, every file is put back.
-.It Cm service Oo Fl a Ar warning Oc ... Ar name Cm start | stop | restart | reload | enable | disable | pidfile
+.It Cm service Oo Fl a Ar warning Oc ... Oo Fl j Ar jail Oc Ar name Cm start | stop | restart | reload | enable | disable | pidfile
 Change a service:
 .Cm start ,
 .Cm stop ,
@@ -614,7 +631,25 @@ would; with more than one, or none, it refuses.
 The service as it is after follows, by its
 .Ic read
 action.
-.It Cm service Oo Fl a Ar warning Oc ... Ar name Cm config Oo Fl x Ar key Oc ... Oo Ar key Ns = Ns Ar value Oc ...
+With
+.Fl j ,
+a service of a running jail, always the service-action job with its
+jail: the jail's own
+.Xr service 8
+runs the script
+.Pq Nm service Fl j Ar jail Ar name Ar verb ,
+and
+.Cm enable
+and
+.Cm disable
+write its rcvar in the jail's
+.Xr rc.conf 5
+.Pq Nm sysrc Fl j ,
+put back as it was in safe mode.
+A jail that is not running, or has no script of the name, is refused;
+.Cm pidfile
+is refused in a jail.
+.It Cm service Oo Fl a Ar warning Oc ... Oo Fl j Ar jail Oc Ar name Cm config Oo Fl x Ar key Oc ... Oo Ar key Ns = Ns Ar value Oc ...
 The service's
 .Xr rc.conf 5
 variables, as running has them, with what the script says of itself
@@ -638,6 +673,14 @@ commit writes it, the warnings
 .Fl a
 accepts carried in the job; in safe mode the files are put back unless
 confirmed.
+With
+.Fl j ,
+a service of a running jail: its variables in the jail's
+.Xr rc.conf 5 ,
+set and unset by the service-config job with its jail
+.Pq Nm sysrc Fl j ,
+put back as they were in safe mode; the variables' values are read
+for an admin alone.
 .It Cm net routes | nexthops | connections | sockets | interfaces | netgraph | wireguard | bird | ipsec | multicast Op Fl 4 | Fl 6
 The host's routing table
 .Pq Nm netstat Fl rnW ,

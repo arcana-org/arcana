@@ -844,6 +844,9 @@ scope_helper(int argc, char **argv)
 	/* A debugger on a core, as nobody (crashes.c). */
 	if (jid == 0 && strcmp(argv[1], "debug-as-nobody") == 0)
 		return (debug_as_nobody(argc - 1, argv + 1));
+	/* The jail's rc.d scripts, each enabled or not (services.c). */
+	if (strcmp(argv[1], "rc-scripts") == 0)
+		return (rc_scripts_helper(argc - 1, argv + 1));
 	/* Whether pkg's repository answers from the jail (packages.c). */
 	if (strcmp(argv[1], "repo-reach") == 0)
 		return (repo_reach_helper(argc - 1, argv + 1));

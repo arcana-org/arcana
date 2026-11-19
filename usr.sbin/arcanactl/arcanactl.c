@@ -133,7 +133,7 @@ static int	cmd_list(cbl_conn *, int, char **);
 static int	cmd_action(cbl_conn *, uint8_t, int, char **);
 static int	cmd_address(cbl_conn *, int, char **);
 static int	cmd_allow(cbl_conn *, int, char **);
-static int	cmd_services(cbl_conn *);
+static int	cmd_services(cbl_conn *, int, char **);
 static int	cmd_net(cbl_conn *, int, char **);
 static int	cmd_stats(cbl_conn *);
 static int	cmd_kmod(cbl_conn *, int, char **);
@@ -194,12 +194,12 @@ usage(void)
 	    "    start | stop | restart | kill jail\n"
 	    "    enable | disable [-a warning]... jail\n"
 	    "    address add | remove [-lnp] [-i interface] jail address\n"
-	    "    services\n"
+	    "    services [-j jail]\n"
 	    "    services convert [-n] [-a warning]... [name ...]\n"
 	    "    services release [-n] name ...\n"
-	    "    service [-a warning]... name start | stop | restart | reload |\n"
-	    "        enable | disable | pidfile\n"
-	    "    service [-a warning]... name config [-x key ...] "
+	    "    service [-a warning]... [-j jail] name start | stop |\n"
+	    "        restart | reload | enable | disable | pidfile\n"
+	    "    service [-a warning]... [-j jail] name config [-x key ...] "
 	    "[key=value ...]\n"
 	    "    net routes | nexthops | connections | sockets | interfaces | "
 	    "netgraph |\n        wireguard | bird [-4 | -6]\n"
@@ -2976,14 +2976,132 @@ service_of(const yservice *y)
 	return (s);
 }
 
-/* services: the rc.d scripts, a GET of arcana-services' state. */
+typedef struct arcana_services_jail_services_read_output_service yjservice;
+
+/* A jail's service, as its read action has it, for emit_service(). */
+static struct arc_service
+jservice_of(const yjservice *y)
+{
+	struct arc_service	s;
+
+	memset(&s, 0, sizeof(s));
+	s.name = y->name;
+	s.path = y->path;
+	s.rcvar = y->rcvar;
+	s.has_enabled = y->has_enabled;
+	s.enabled = y->enabled;
+	s.has_running = y->has_running;
+	s.running = y->running;
+	s.has_pid = y->has_pid;
+	s.pid = y->pid;
+	s.status = y->status;
+	return (s);
+}
+
+/*
+ * A running jail's services, arcana-services' read action on the jail's
+ * entry: every script of it, or with name that one, and with vars what
+ * it says of itself, its commands and its rc.conf variables (an
+ * admin's).
+ */
 static int
-cmd_services(cbl_conn *conn)
+services_jail(cbl_conn *conn, const char *jail, const char *name, bool vars)
+{
+	struct arcana_services_jail_services_read_input		 in;
+	struct arcana_services_jail_services_read_output	 o;
+	const struct cbl_ynode					*n;
+	struct arc_service					 s;
+	const void						*vals[1];
+	cbl_yarena						*a;
+	char							 why[512];
+	int							 error;
+
+	if ((n = ytop_named("jails")) == NULL || (n = ychild(n, "jail")) ==
+	    NULL || (n = ychild(n, "services")) == NULL)
+		xo_errx(1, "services: arcana-services is not in the tables");
+	if ((a = cbl_yarena_new()) == NULL)
+		xo_err(1, "services");
+	vals[0] = &jail;
+	memset(&in, 0, sizeof(in));
+	memset(&o, 0, sizeof(o));
+	in.name = name;
+	ytold_begin(conn);
+	error = ycall(conn, n, vals, 1, "read", &in, &o, a, why, sizeof(why));
+	ytold_end(false);
+	if (error != 0) {
+		ytold_end(true);
+		if (name != NULL)
+			xo_warnx("service %s in %s: %s", txe(name), txe(jail),
+			    txe(why));
+		else
+			xo_warnx("services in %s: %s", txe(jail), txe(why));
+		cbl_yarena_free(a);
+		return (1);
+	}
+	if (name == NULL) {
+		xo_emit("{T:/%-24s} {T:/%-8s} {T:/%-8s} {T:/%s}\n", "NAME",
+		    "ENABLED", "STATE", "PID");
+		xo_open_list("service");
+		for (size_t i = 0; i < o.service.n; i++) {
+			s = jservice_of(&o.service.v[i]);
+			emit_service(&s, true);
+		}
+		xo_close_list("service");
+	} else if (o.service.n > 0) {
+		const yjservice *y = &o.service.v[0];
+
+		s = jservice_of(y);
+		emit_service(&s, false);
+		if (vars && y->description != NULL)
+			xo_emit("{Lwc:Describe}{:description/%s}\n",
+			    tx(y->description));
+		if (vars && y->command.n > 0)
+			xo_emit("{Lwc:Commands}{d:/%s}\n", tx(join(y->command.v,
+			    y->command.n)));
+		for (size_t i = 0; vars && i < y->command.n; i++)
+			xo_emit("{el:command/%s}", y->command.v[i]);
+		if (vars) {
+			xo_open_list("variable");
+			for (size_t k = 0; k < y->variable.n; k++) {
+				xo_open_instance("variable");
+				xo_emit("{P:  }{k:key/%s}{D:=}{:value/%s}\n",
+				    tx(y->variable.v[k].name),
+				    tx(y->variable.v[k].value != NULL ?
+				    y->variable.v[k].value : ""));
+				xo_close_instance("variable");
+			}
+			xo_close_list("variable");
+		}
+	}
+	ytold_end(true);
+	cbl_yarena_free(a);
+	return (0);
+}
+
+/*
+ * services [-j jail]: the rc.d scripts, a GET of arcana-services'
+ * state; a running jail's, its read action on the jail's entry.
+ */
+static int
+cmd_services(cbl_conn *conn, int argc, char **argv)
 {
 	const struct arcana_services_services	*ss;
 	struct arc_service			 s;
 	cbl_yarena				*a;
+	const char				*jail = NULL;
+	int					 ch;
 
+	optind = 1;
+	optreset = 1;
+	while ((ch = getopt(argc, argv, "j:")) != -1) {
+		if (ch != 'j')
+			usage();
+		jail = optarg;
+	}
+	if (optind != argc)
+		usage();
+	if (jail != NULL)
+		return (services_jail(conn, jail, NULL, false));
 	if ((a = cbl_yarena_new()) == NULL)
 		xo_err(1, "services");
 	ytold_begin(conn);
@@ -3372,7 +3490,8 @@ cmd_services_release(cbl_conn *conn, int argc, char **argv)
  * configuration, committed (service_commit()), the accepts given with
  * -a; with -q or -s, each a job, as before; pidfile, a stale pidfile
  * written again, always one.  The service as it is after, by its read
- * action.
+ * action.  With -j jail, a running jail's: each change the job (its
+ * own service(8), sysrc -j), the service by the jail's read action.
  */
 static int
 cmd_service(cbl_conn *conn, int argc, char **argv)
@@ -3384,12 +3503,17 @@ cmd_service(cbl_conn *conn, int argc, char **argv)
 	const void		*vals[1];
 	cbl_yarena		*a;
 	size_t			 i, nv;
+	const char		*jail = NULL;
 	char			 why[512], *eq;
 	int			 ch, error;
 
 	optind = 1;
 	optreset = 1;
-	while ((ch = getopt(argc, argv, "a:")) != -1) {
+	while ((ch = getopt(argc, argv, "a:j:")) != -1) {
+		if (ch == 'j') {
+			jail = optarg;
+			continue;
+		}
 		if (ch != 'a')
 			usage();
 		if (naccepts < nitems(accepts))
@@ -3407,17 +3531,23 @@ cmd_service(cbl_conn *conn, int argc, char **argv)
 	if (i < nitems(verbs)) {
 		if (argc != 3)
 			usage();
-		/* A stale pidfile mended: a job alone. */
-		if (queue || safe || i == ARC_SERVICE_ACTION_PIDFILE) {
+		/* A stale pidfile mended, or a jail's: a job alone. */
+		if (queue || safe || i == ARC_SERVICE_ACTION_PIDFILE ||
+		    jail != NULL) {
 			struct arc_job_spec sp;
 
 			memset(&sp, 0, sizeof(sp));
 			sp.has_kind = true;
 			sp.kind = ARC_JOB_KIND_SERVICE_ACTION;
 			sp.service = argv[1];
+			sp.jail = jail;
 			sp.has_service_action = true;
 			sp.service_action = (uint8_t)i;
-			return (submit(conn, &sp));
+			error = submit(conn, &sp);
+			if (error == 0 && jail != NULL && !queue && !dryrun)
+				error = services_jail(conn, jail, argv[1],
+				    false);
+			return (error);
 		}
 		if (i == ARC_SERVICE_ACTION_ENABLE || i ==
 		    ARC_SERVICE_ACTION_DISABLE) {
@@ -3464,18 +3594,25 @@ cmd_service(cbl_conn *conn, int argc, char **argv)
 			usage();
 		nv++;
 	}
-	if ((queue || safe) && nv > 0) {
+	if ((queue || safe || jail != NULL) && nv > 0) {
 		struct arc_job_spec sp;
 
 		memset(&sp, 0, sizeof(sp));
 		sp.has_kind = true;
 		sp.kind = ARC_JOB_KIND_SERVICE_CONFIG;
 		sp.service = argv[1];
+		sp.jail = jail;
 		sp.variables.v = vars;
 		sp.variables.n = nv;
 		error = submit(conn, &sp);
 		free(vars);
+		if (error == 0 && jail != NULL && !queue && !dryrun)
+			error = services_jail(conn, jail, argv[1], true);
 		return (error);
+	}
+	if (jail != NULL) {
+		free(vars);
+		return (services_jail(conn, jail, argv[1], true));
 	}
 	if (nv > 0)
 		service_commit(conn, "config", argv[1], 0, vars, nv);
@@ -8394,8 +8531,9 @@ main(int argc, char *argv[])
 		rc = cmd_action(conn, ARC_ACTION_DISABLE, argc, argv);
 	else if (strcmp(argv[0], "address") == 0)
 		rc = cmd_address(conn, argc, argv);
-	else if (strcmp(argv[0], "services") == 0 && argc == 1)
-		rc = cmd_services(conn);
+	else if (strcmp(argv[0], "services") == 0 && (argc == 1 ||
+	    strncmp(argv[1], "-j", 2) == 0))
+		rc = cmd_services(conn, argc, argv);
 	else if (strcmp(argv[0], "services") == 0 && strcmp(argv[1],
 	    "convert") == 0)
 		rc = cmd_services_convert(conn, argc - 1, argv + 1);

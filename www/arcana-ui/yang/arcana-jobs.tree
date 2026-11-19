@@ -70,10 +70,12 @@ module: arcana-jobs
     |  |     |  |  +---w service-action!
     |  |     |  |     +---w service    string
     |  |     |  |     +---w action     enumeration
+    |  |     |  |     +---w jail?      string
     |  |     |  |     +---w accept*    string
     |  |     |  +--:(service-config)
     |  |     |  |  +---w service-config!
     |  |     |  |     +---w service    string
+    |  |     |  |     +---w jail?      string
     |  |     |  |     +---w set* [name]
     |  |     |  |     |  +---w name     string
     |  |     |  |     |  +---w value?   string
@@ -436,10 +438,12 @@ module: arcana-jobs
        |  |  |  |  +---w service-action!
        |  |  |  |     +---w service    string
        |  |  |  |     +---w action     enumeration
+       |  |  |  |     +---w jail?      string
        |  |  |  |     +---w accept*    string
        |  |  |  +--:(service-config)
        |  |  |  |  +---w service-config!
        |  |  |  |     +---w service    string
+       |  |  |  |     +---w jail?      string
        |  |  |  |     +---w set* [name]
        |  |  |  |     |  +---w name     string
        |  |  |  |     |  +---w value?   string

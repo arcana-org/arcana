@@ -43,6 +43,7 @@ arcana-network:/network/sockets	the kernel's sockets (pcb)
 arcana-probe:/probes/read	the probes' samples
 arcana-processes:/processes/process/read	a process's files and threads (procstat), no environment
 arcana-services:/services/service/read	service <name> enabled, status, describe, extracommands, an operator's; a viewer told what the collector saw, no script run (ira/services.c)
+arcana-services://arcj:jails/arcj:jail/services/read	a running jail's scripts (read in the jail by the helper attached to it) and service -j <jail> status, describe, extracommands, an operator's; a viewer told what the collector saw, no script run; the variables an admin's alone (ira/services.c)
 arcana-smtpd:/smtpd/read	OpenSMTPD's configuration and tables, secrets left out, the rest's masked below an operator; its state (service smtpd onestatus, smtpctl) an operator's, a viewer's what the watch last saw
 arcana-speeder:/speeder/read	the relays, read; their log's -k masked below an operator
 arcana-sslproxy:/sslproxy/read	SSLproxy's service, configuration, CA certificates and request, and ipfw's set 27, read; the CA's key never
@@ -83,6 +84,7 @@ arcana-sdwan:/sdwan/ids-instance/lua/text	a Suricata Lua script the console sent
 arcana-sdwan:/sdwan/proxy-instance/named-list/text	a proxy's list of names or addresses, no secret
 arcana-services:/services/service/command	the names of a script's commands (extracommands)
 arcana-services:/services/service/read/command	the names of a script's commands (extracommands)
+arcana-services://arcj:jails/arcj:jail/services/read/service/command	the names of a jail's script's commands (extracommands)
 arcana-smtpd:/smtpd/read/table/text	a table's text, a secret table its names alone; each secret masked below an operator (ucl_mask())
 arcana-sslproxy:/sslproxy/read/rule/text	an ipfw rule of set 27 as ipfw lists it, SSL inspection's fwd rules alone: addresses, ports and interfaces, no secret
 arcana-sshd:/sshd/config	sshd_config's text, each secret masked below an operator (wmask())

@@ -9,6 +9,13 @@ module arcana-services {
       "RFC 8341: Network Configuration Access Control Model";
   }
 
+  import cblink-gen {
+    prefix cg;
+  }
+  import arcana-jails {
+    prefix arcj;
+  }
+
   organization
     "Arcana";
   contact
@@ -22,7 +29,11 @@ module arcana-services {
 
      A service is there because its script is: an entry names a script
      the host has.  Its configuration is rc.conf's, changed in place,
-     every other line kept; its state is what the script says.";
+     every other line kept; its state is what the script says.
+
+     A running jail's services are the jail's: arcana-jails's jail has
+     them, read by its read action, as the jail's own service(8) and
+     rc.conf have them.";
 
   revision 2026-10-14 {
     description
@@ -381,6 +392,123 @@ module arcana-services {
             type string;
             description
               "The script's extra commands (service extracommands).";
+          }
+        }
+      }
+    }
+  }
+
+  grouping jail-service {
+    description
+      "A running jail's rc.d script, as the host's are listed.";
+    leaf name {
+      type string {
+        pattern '[A-Za-z0-9_][A-Za-z0-9_.-]*';
+      }
+      description
+        "The script's name, as the jail's service(8) takes it.";
+    }
+    leaf enabled {
+      type boolean;
+      description
+        "Its <name>_enable YES in the jail's rc.conf, read in the jail
+         (the files its rc(8) reads, by this daemon attached to it,
+         never through a link of the jail's out of its root).";
+    }
+    leaf path {
+      type string;
+      description
+        "The script, in the jail's /etc/rc.d or /usr/local/etc/rc.d,
+         as the jail sees it.";
+    }
+    leaf rcvar {
+      type string;
+      description
+        "The rc.conf variable that enables it, once a read asked
+         (service -j <jail> <name> rcvar).";
+    }
+    uses now {
+      description
+        "As the jail's service(8) says it (service -j <jail> <name>
+         status).  pidfile-stale and its two leaves are not looked
+         for in a jail: its pidfile and program are paths of the jail,
+         and the script that sets them would run outside it.";
+    }
+  }
+
+  augment "/arcj:jails/arcj:jail" {
+    description
+      "A running jail's services.";
+    container services {
+      cg:struct "jail-services";
+      config false;
+      description
+        "The jail's rc.d scripts, read by the read action: a read of
+         the jails leaves them out.  What is done to one is a job
+         (service-action and service-config with the jail), run as
+         service -j <jail> and sysrc -j <jail>.";
+      list service {
+        cg:struct "jail-service";
+        key "name";
+        description
+          "An rc.d script of the jail.";
+        uses jail-service;
+      }
+      action read {
+        description
+          "The jail's rc.d scripts, each enabled or not, and the
+           enabled ones' status (service -j <jail> <name> status, the
+           script run in the jail): for an operator and above; a
+           viewer is told what the collector saw last.  With name,
+           that script alone, with what it says of itself and its
+           extra commands (an operator's), and its rc.conf variables
+           (an admin's, sysrc -j <jail> -a).  Refused for a jail that
+           is not running, or a name the jail has no script for.";
+        input {
+          leaf name {
+            type string {
+              pattern '[A-Za-z0-9_][A-Za-z0-9_.-]*';
+            }
+            description
+              "The one script; none, every script of the jail.";
+          }
+        }
+        output {
+          list service {
+            key "name";
+            description
+              "An rc.d script of the jail.";
+            uses jail-service;
+            leaf description {
+              type string;
+              description
+                "What the script says of itself (service describe), of
+                 the one named.";
+            }
+            leaf-list command {
+              type string;
+              description
+                "Its extra commands (service extracommands), of the
+                 one named.";
+            }
+            list variable {
+              key "name";
+              description
+                "One of its rc.conf variables in the jail, of the one
+                 named, as sysrc(8) reads it there: an admin's read
+                 alone, a value holding a password or a key as often
+                 as not.";
+              leaf name {
+                type string;
+                description
+                  "The variable.";
+              }
+              leaf value {
+                type string;
+                description
+                  "Its value.";
+              }
+            }
           }
         }
       }

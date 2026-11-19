@@ -261,6 +261,7 @@ data_of(const yevent *e)
 			    ARCANA_EVENTS_EVENT_ENTRY_SERVICE_STATE_STATE_RUNNING ?
 			    "running" : "stopped");
 		PUT_NUM(d, "pid", e->service_state, pid);
+		put_str(d, "jail", e->service_state->jail);
 		break;
 	case ARCANA_EVENTS_EVENT_ENTRY_DATA_MONITOR:
 		put_str(d, "id", e->monitor->id);

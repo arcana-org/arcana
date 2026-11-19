@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-events",
     "module-revision": "2026-10-15",
-    "sid-file-version": 10,
+    "sid-file-version": 11,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -2642,6 +2642,21 @@
         "namespace": "data",
         "identifier": "/arcana-events:events/read/output/event/service-state/state",
         "sid": "94921"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:event/service-state/jail",
+        "sid": "94922"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/event/service-state/jail",
+        "sid": "94923"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-events:events/read/output/event/service-state/jail",
+        "sid": "94924"
       }
     ]
   }

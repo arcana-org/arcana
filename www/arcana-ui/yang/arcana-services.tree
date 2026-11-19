@@ -90,3 +90,19 @@ module: arcana-services
                  |  +--ro value?   string
                  +--ro dropped?        string
                  +--ro differs?        string
+
+  augment /arcj:jails/arcj:jail:
+    +--ro services
+       +--ro service* [name]
+       |  +---u jail-service
+       +---x read
+          +---w input
+          |  +---w name?   string
+          +--ro output
+             +--ro service* [name]
+                +--ro jail-service
+                +--ro description?    string
+                +--ro command*        string
+                +--ro variable* [name]
+                   +--ro name     string
+                   +--ro value?   string

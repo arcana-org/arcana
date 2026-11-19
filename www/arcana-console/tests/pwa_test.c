@@ -10756,6 +10756,94 @@ ATF_TC_CLEANUP(pwa_service_told, tc)
 }
 
 /*
+ * A running jail's services on the host's Services tab: the jail gw
+ * picked, its own scripts listed (crowdsec, enabled there), started
+ * there by the service-action job with the jail, and the host's effect
+ * checked: the fake service(8) run as service -j 4, its marker in the
+ * jail's root, none on the host; the drawer says the jail.
+ */
+static void
+part_service_jail(void)
+{
+	FILE	*fp;
+	char	 line[256];
+	bool	 ran;
+
+	ATF_REQUIRE(system("mkdir -p jroot/usr/local/etc/rc.d && printf "
+	    "'#!/bin/sh\\n' > jroot/usr/local/etc/rc.d/crowdsec && chmod 755 "
+	    "jroot/usr/local/etc/rc.d/crowdsec && printf "
+	    "'crowdsec_enable=\"YES\"\\n' >> jroot/etc/rc.conf && rm -f "
+	    "jroot/running.crowdsec running.crowdsec") == 0);
+	host_open("lab");
+	click_when("button.tab[data-arg=services]", 10);
+	wait_js("document.querySelector('.svc[data-arg=sshd]') && document."
+	    "querySelector('select[data-input=svc-jail] option[value=gw]')",
+	    20);
+	run("const p = document.querySelector('select[data-input=svc-jail]'); "
+	    "p.value = 'gw'; p.dispatchEvent(new Event('input', {bubbles: "
+	    "true}));");
+	wait_js("document.querySelector('select[data-input=svc-jail]')?.value "
+	    "=== 'gw' && document.querySelector('.svc[data-arg=crowdsec]"
+	    ".s-stopped.enabled') && !document.querySelector('.svc[data-arg="
+	    "sshd]')", 20);
+	shot("6d-services-jail");
+	run("document.querySelector('.svc[data-arg=crowdsec] button[data-act="
+	    "svc][data-value=start]').click()");
+	/* Through the queue when it is on. */
+	wait_js("document.querySelector('button[data-act=queue-run]') || "
+	    "[...document.querySelectorAll('.dock .o-ok, .dock .o-running')]."
+	    "some(t => t.textContent.includes('service crowdsec start in "
+	    "gw'))", 10);
+	run("document.querySelector('button[data-act=queue-run]')?.click()");
+	wait_js("[...document.querySelectorAll('.dock .o-ok')].some(t => "
+	    "t.textContent.includes('service crowdsec start in gw'))", 30);
+	/* The host's effect: the jail's service(8), in the jail. */
+	ATF_CHECK_MSG(access("jroot/running.crowdsec", F_OK) == 0,
+	    "crowdsec was not started in the jail");
+	ATF_CHECK_MSG(access("running.crowdsec", F_OK) == -1,
+	    "crowdsec was started on the host");
+	ran = false;
+	if ((fp = fopen("svc.log", "r")) != NULL) {
+		while (fgets(line, sizeof(line), fp) != NULL)
+			if (strcmp(line, "-j 4 crowdsec start\n") == 0)
+				ran = true;
+		fclose(fp);
+	}
+	ATF_CHECK_MSG(ran, "no service -j 4 crowdsec start in svc.log");
+	wait_js("document.querySelector('.svc[data-arg=crowdsec].s-running')",
+	    20);
+	/* Its drawer: the jail's, by the jail's read action. */
+	run("document.querySelector('.svc[data-arg=crowdsec]').click()");
+	wait_js("document.querySelector('.drawer.open')?.textContent.includes("
+	    "'In the jail gw') && document.querySelector('.drawer.open')."
+	    "textContent.includes('The crowdsec daemon.') && document."
+	    "querySelector('.drawer .kv')?.textContent.includes("
+	    "'/usr/local/etc/rc.d/crowdsec')", 20);
+	shot("6e-service-jail-drawer");
+	run("document.querySelector('.drawer button[data-act=close-drawer]')"
+	    ".click()");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_service_jail);
+ATF_TC_HEAD(pwa_service_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A running jail picked on the Services tab: its own scripts listed, one started there by the job with the jail (service -j, its marker in the jail's root), its drawer the jail's");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_service_jail, tc)
+{
+
+	prologue(tc, 1);
+	part_service_jail();
+}
+ATF_TC_CLEANUP(pwa_service_jail, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * Keys typed as a hand types them, into what has the focus: "\r" is
  * Enter.
  */
@@ -15984,6 +16072,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_page_stream);
 	ATF_TP_ADD_TC(tp, pwa_follow);
 	ATF_TP_ADD_TC(tp, pwa_service_told);
+	ATF_TP_ADD_TC(tp, pwa_service_jail);
 	ATF_TP_ADD_TC(tp, pwa_terminal);
 	ATF_TP_ADD_TC(tp, pwa_terminal_mapped);
 	ATF_TP_ADD_TC(tp, pwa_tabs);

@@ -93,6 +93,20 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Services of a running jail; agent 0.324.0, console 0.468.0
+
+- arcana-services' read action on arcana-jails' jail lists a jail's
+  rc.d scripts, read in the jail by the agent attached to it, with
+  status from the jail's own service(8) (`service -j`).  The
+  service-action and service-config jobs take `jail`: the script runs
+  in the jail, and enable, disable and the variables go to the jail's
+  rc.conf (`sysrc -j`), put back in safe mode.  The event service-state
+  carries `jail`.  The Services tab picks the host or a running jail,
+  and a jail's page links to its services.  `arcanactl services -j
+  <jail>` and `service -j <jail> <name> <verb>`.
+- Update the agent and the console together (arcana-services
+  97100-97131, arcana-events 94922-94924, arcana-jobs 63116-63119).
+
 ### BMP's station reached in any FIB; agent 0.323.0
 
 - A BIRD instance's BMP station in a FIB other than 0 (on the host, or

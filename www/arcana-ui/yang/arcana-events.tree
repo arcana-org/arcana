@@ -188,6 +188,7 @@ module: arcana-events
      |           +--ro service?   string
      |           +--ro state?     enumeration
      |           +--ro pid?       uint32
+     |           +--ro jail?      string
      +---x read
         +---w input
         |  +---w after?   uint64
@@ -379,6 +380,7 @@ module: arcana-events
            |           +--ro service?   string
            |           +--ro state?     enumeration
            |           +--ro pid?       uint32
+           |           +--ro jail?      string
            +--ro kept?    uint16
 
   notifications:
@@ -567,3 +569,4 @@ module: arcana-events
                 +---- service?   string
                 +---- state?     enumeration
                 +---- pid?       uint32
+                +---- jail?      string

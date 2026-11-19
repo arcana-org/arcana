@@ -82,7 +82,7 @@ on the wire.
 | 62 100 | 100 | `arcana-jails` | `share/yang/arcana-jails@2026-10-14.sid` (56 used) |
 | 62 200 | 100 | `arcana-services` | `share/yang/arcana-services@2026-10-14.sid` (79 used) |
 | 62 300 | 100 | `arcana-packages` | `share/yang/arcana-packages@2026-10-14.sid` (100 used; its rest at 79 500) |
-| 62 400 | 1 000 | `arcana-jobs`, its submodule `arcana-jobs-kinds` | `share/yang/arcana-jobs@2026-10-14.sid` (712 used, 34 obsolete: a job's steps in the state, now its read action's, and each kind's safe, now the change's; the dry-run rpc, its changes submit's again; a job's user; room for the kinds to come; its rest at 83 200) |
+| 62 400 | 1 000 | `arcana-jobs`, its submodule `arcana-jobs-kinds` | `share/yang/arcana-jobs@2026-10-14.sid` (716 used, 34 obsolete: a job's steps in the state, now its read action's, and each kind's safe, now the change's; the dry-run rpc, its changes submit's again; a job's user; room for the kinds to come; its rest at 83 200) |
 | 63 400 | 200 | `arcana-storage` | `share/yang/arcana-storage@2026-10-14.sid` (200 used, 9 obsolete: a snapshot's send action and the receive rpc, arcana-stream's now; its rest at 79 600) |
 | 63 600 | 100 | `arcana-sysctl` | `share/yang/arcana-sysctl@2026-10-14.sid` (12 used) |
 | 63 700 | 100 | `arcana-kernel` | `share/yang/arcana-kernel@2026-10-14.sid` (37 used) |
@@ -191,7 +191,7 @@ on the wire.
 | 93 400 | 200 | `ietf-access-control-list@2019-03-04`, RFC 8519 (no IETF range): the ACLs compiled to ipfw (PLAN-SDN-YANG 6.1); `ietf-packet-fields`' groupings numbered in it, the module itself having no items but its name | `share/yang/ietf-access-control-list@2019-03-04.sid` (127 used) |
 | 94 600 | 200 | `ietf-acl-enh@2025-12-22`, RFC 9899 (no IETF range): the defined sets compiled to ipfw with RFC 8519's ACLs (PLAN-SDN-YANG 6.1.5) | `share/yang/ietf-acl-enh@2025-12-22.sid` (133 used) |
 | 94 800 | 100 | `arcana-acl-deviations`, RFC 9899's ipv4-fragment must as its Section 3.5 means it | `share/yang/arcana-acl-deviations@2026-11-18.sid` (1 used) |
-| 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed; service-state, a service started or stopped | `share/yang/arcana-events@2026-10-15.sid` (22 used) |
+| 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed; service-state, a service started or stopped, and its jail | `share/yang/arcana-events@2026-10-15.sid` (25 used) |
 | 95 200 | 200 | `ietf-i2nsf-ikeless@2021-07-14`, RFC 9061 (no IETF range): its notifications, the kernel's PF_KEY news (PLAN-SDN-YANG 6.2.3), and its SAD and SPD lists (6.2.4); `ietf-i2nsf-ikec`'s groupings numbered in it, that module having no items but its name | `share/yang/ietf-i2nsf-ikeless@2021-07-14.sid` (138 used) |
 | 95 400 | 100 | `arcana-ikeless-deviations`, the replay statistics FreeBSD does not keep per SA, no sadb-bad-spi (the lists served since 6.2.4) | `share/yang/arcana-ikeless-deviations@2026-11-19.sid` (1 used) |
 | 95 600 | 300 | `arcana-sdwan`, its fourth range: the rest of the BIRD, dnsmasq, unbound and Squid instances' forms (spec) | `share/yang/arcana-sdwan@2026-10-15.sid` (243 used) |
@@ -204,6 +204,7 @@ on the wire.
 | 96 600 | 100 | `arcana-sdwan`, its fifth range: the Suricata instances' form (spec, ids-form), SD-WAN's and the Security section's | `share/yang/arcana-sdwan@2026-10-15.sid` (39 used) |
 | 96 000 | 20 | `arcana-console`, its fifth range: a host's mapped logins (terminal-login) and its password prompt switch (terminal-prompt) | `share/yang/arcana-console@2026-11-05.sid` (7 used) |
 | 96 020 | 10 | `arcana-alarms`, its second range: empty-password | `share/yang/arcana-alarms@2026-10-27.sid` (1 used) |
+| 97 100 | 100 | `arcana-services`, its second range (listed first in its file, so that new items go there): a running jail's services, on arcana-jails' jail | `share/yang/arcana-services@2026-10-14.sid` (32 used) |
 
 cblink's modules take 60 000 to 60 999; Arcana's own follow from
 61 000. cblink's own test modules (`shapes` from 2^40 + 100 000,

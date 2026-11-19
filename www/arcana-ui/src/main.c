@@ -786,6 +786,23 @@ close_service(void)
 	app.svc_config = NULL;
 }
 
+/* The Services tab aimed at a running jail ("" the host): its list
+ * read anew, no service of the other open. */
+static void
+svc_jail_set(struct server *s, const char *jail)
+{
+
+	snprintf(app.svc_jail, sizeof(app.svc_jail), "%s", jail);
+	snprintf(app.svc_sid, sizeof(app.svc_sid), "%s", s->id);
+	close_service();
+	if (s->services != NULL)
+		ucl_object_unref(s->services);
+	s->services = NULL;
+	s->services_error[0] = '\0';
+	s->services_loading = false;
+	refresh_services(s, false);
+}
+
 static void
 close_modal(void)
 {
@@ -1056,7 +1073,11 @@ submit_form(const char *form, const ucl_object_t *f)
 			ucl_object_insert_key(set, ucl_object_fromstring(
 			    jstr(f, "value") != NULL ? jstr(f, "value") : ""),
 			    s, 0, true);
-		service_set_vars(cur_server(), app.service, set);
+		if (app.svc_jail[0] != '\0')
+			service_jail_config(cur_server(), app.service, set,
+			    NULL);
+		else
+			service_set_vars(cur_server(), app.service, set);
 		ucl_object_unref(set);
 	} else if (strcmp(form, "packages") == 0) {
 		/* Checked boxes p:<name>; the button says dry run or not. */
@@ -1925,6 +1946,8 @@ dispatch(const char *act, const char *arg, const char *value)
 		if (app.net.kind == NET_INTERFACES)
 			topo_poll(s);
 		refresh_network(s, true);
+	} else if (strcmp(act, "input:svc-jail") == 0 && s != NULL) {
+		svc_jail_set(s, value);
 	} else if (strcmp(act, "input:sy-jail") == 0 && s != NULL) {
 		sysctl_set_jail(s, value);
 	} else if (strcmp(act, "input:net-fib") == 0 && s != NULL) {
@@ -1986,6 +2009,12 @@ dispatch(const char *act, const char *arg, const char *value)
 		app.peek = false;
 		app.jail[0] = '\0';
 		close_service();
+	} else if (strcmp(act, "jail-services") == 0 && s != NULL) {
+		/* The jail's services: the host's tab, aimed at the jail. */
+		svc_jail_set(s, arg);
+		app.node = NODE_HOST;
+		app.tab = TAB_SERVICES;
+		app.jail[0] = '\0';
 	} else if (strcmp(act, "jail-packages") == 0 && s != NULL) {
 		/* The jail's packages: the host's tab, aimed at the jail. */
 		snprintf(app.pkg.jail, sizeof(app.pkg.jail), "%s", arg);
@@ -2066,7 +2095,11 @@ dispatch(const char *act, const char *arg, const char *value)
 		service_action(arg, value);
 	} else if (strcmp(act, "svc-unset") == 0 && app.service[0] != '\0' &&
 	    cur_server() != NULL) {
-		service_unset_var(cur_server(), app.service, arg);
+		if (app.svc_jail[0] != '\0')
+			service_jail_config(cur_server(), app.service, NULL,
+			    arg);
+		else
+			service_unset_var(cur_server(), app.service, arg);
 	} else if (strncmp(act, "svc-yc-", 7) == 0) {
 		(void)service_commit_action(act);
 	} else if (strncmp(act, "jail-yc-", 8) == 0) {

@@ -4,12 +4,23 @@
 
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
-  - A jail's service cannot be started, stopped or restarted by a job
-    (2026-11-19): service-action has no jail field, so a service in a
-    jail (crowdsec's, after its old daemon was stopped by the process
-    job) was started by `jexec <jail> service <name> start` over ssh.
-    The Services view of a jail and the job want a jail, run as
-    `service -j <jail>` (service(8)'s own) or jexec.
+  - Done (agent_test:services_jail, pwa_test:pwa_service_jail): a
+    jail's service by a job (2026-11-19, crowdsec's had been started
+    by `jexec <jail> service <name> start` over ssh).  service-action
+    and service-config take a jail: the jail's own service(8) runs the
+    script (`service -j <jid>`), enable, disable and the variables are
+    the jail's rc.conf by `sysrc -j`, put back as they were in safe
+    mode; a jail not running, a script it has not, and a jail's
+    pidfile are refused.  A running jail's services are read by
+    arcana-services' read action on arcana-jails' jail (the scripts
+    and whether each is enabled read by the helper attached to the
+    jail, never through a link out of its root), kept by the
+    collector and the watcher as the host's, the event service-state
+    saying the jail; the Services tab picks the host or a running
+    jail, and a jail's page links to its services; `arcanactl
+    services -j`, `service -j`.  Left: a jail's stale pidfile is not
+    looked for, and a stopped one's start is seen by its status every
+    60 s, not by its pidfile.
   - Upgrading every jail of the fleet by the panel's jobs (2026-11-18),
     all done (agent_test:pkg_watch, packages; pwa_test's Packages):
     - Done: the read of what is pending after an upgrade (ira/packages.c

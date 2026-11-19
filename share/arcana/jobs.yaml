@@ -266,12 +266,12 @@ kinds:
   - kind: service-action
     title: A service started, stopped, reloaded, enabled, disabled or its pidfile mended
     needs: service action
-    uses: safe accept
+    uses: jail safe accept
     values: action=start|stop|restart|reload|enable|disable|pidfile
   - kind: service-config
     title: A service's variables in rc.conf
     needs: service
-    uses: set unset safe accept
+    uses: jail set unset safe accept
   - kind: pkg-upgrade
     title: Packages upgraded
     uses: jail packages force pkg_ip pkg_repo no_repo_check

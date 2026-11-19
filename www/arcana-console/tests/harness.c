@@ -554,7 +554,14 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "\"address\":\"10.99.0.2\",\"prefixlen\":24}]}],\"time\":1000}' ;;\n"
 	    "exists) [ \"$4\" = epair1b ] && echo 1 || echo 0 ;;\n"
 	    "up) echo 1 ;;\ncurrent) printf '1500\\t' ;;\n"
-	    "prefix) [ \"$5\" = 10.99.0.2 ] && echo 10.99.0.2/24 ;;\nesac\n"
+	    "prefix) [ \"$5\" = 10.99.0.2 ] && echo 10.99.0.2/24 ;;\n"
+	    /* A jail's rc.d scripts, each enabled by its rc.conf, as the
+	     * helper attached to it reads them. */
+	    "rc-scripts) r=$(awk -v j=\"$2\" '$2 == j { print $4 }' jails); "
+	    "for f in $r/etc/rc.d/* $r/usr/local/etc/rc.d/*; do [ -f \"$f\" "
+	    "-a -x \"$f\" ] || continue; n=${f##*/}; e=no; grep -q "
+	    "\"^${n}_enable=\\\"YES\\\"\" $r/etc/rc.conf && e=yes; echo \"$n "
+	    "${f#$r} $e\"; done ;;\nesac\n"
 	    "exit 0\n");
 	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
 	ATF_REQUIRE(chmod("fake-helper", 0755) == 0);
@@ -615,9 +622,14 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "esac\n", cwd, cwd, cwd);
 	put("fake-sysrc", buf);
 	ATF_REQUIRE(chmod("fake-sysrc", 0755) == 0);
-	/* service(8): what it is asked, a line each in svc.log. */
+	/* service(8): what it is asked, a line each in svc.log; -j jid,
+	 * the jail's of ./jails, as jexec(8) runs it there: its rc.conf,
+	 * its markers in its root. */
 	snprintf(buf, sizeof(buf), "#!/bin/sh\nconf=%s/rc.conf\n"
 	    "echo \"$*\" >> ${conf%%/rc.conf}/svc.log\n"
+	    "if [ \"$1\" = -j ]; then r=$(awk -v j=\"$2\" '$2 == j { print $4 "
+	    "}' %s/jails); [ -n \"$r\" ] || exit 1; conf=$r/etc/rc.conf; cd "
+	    "\"$r\" || exit 1; shift 2; fi\n"
 	    "if [ \"$1\" = -e ]; then for f in %s/rc.d/*; do n=${f##*/}; "
 	    "grep -q \"^${n}_enable=\\\"YES\\\"\" \"$conf\" && echo \"$f\"; "
 	    "done; exit 0; fi\n"
@@ -638,7 +650,7 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "stop|onestop) rm -f running.$r ;;\n"
 	    "describe) echo \"The $1 daemon.\" ;;\n"
 	    "extracommands) echo reload ;;\n"
-	    "esac\n", cwd, cwd, cwd);
+	    "esac\n", cwd, cwd, cwd, cwd);
 	put("fake-service", buf);
 	ATF_REQUIRE(chmod("fake-service", 0755) == 0);
 	/* netstat -O: a group of two next hops, two shares to one. */

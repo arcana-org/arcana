@@ -438,7 +438,7 @@ exec_kill(pid_t pid, bool group)
  * The next program this thread runs ends within secs, or once it has
  * been silent for as long: killed then, with its process group, and
  * said timed out.  Once only.  A read's program run in a jail by
- * jexec(8), or sysrc -j, has JAIL_READ_SEC without asking.
+ * jexec(8), sysrc -j or service -j, has JAIL_READ_SEC without asking.
  */
 static _Thread_local int	exec_limit;
 
@@ -520,10 +520,11 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	argv = scope_argv(w, argv);
 	limit = exec_limit;
 	exec_limit = 0;
-	/* A read of the jail's own: by jexec(8), or sysrc -j (the jail's
-	 * /bin/sh, by jexec). */
+	/* A read of the jail's own: by jexec(8), or sysrc -j and service
+	 * -j (the jail's /bin/sh and scripts, by jexec). */
 	if (limit == 0 && w->nice && w->jail != NULL && (argv[0] ==
-	    opts.jexec_bin || argv[0] == opts.sysrc_bin))
+	    opts.jexec_bin || argv[0] == opts.sysrc_bin || argv[0] ==
+	    opts.service_bin))
 		limit = JAIL_READ_SEC;
 	idle = exec_idle;
 	watched = idle > 0;

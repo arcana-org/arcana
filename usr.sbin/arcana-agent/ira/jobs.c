@@ -160,6 +160,34 @@ scoped(const struct arc_job_spec *sp)
 	    sp->jail[0] != '\0'));
 }
 
+/*
+ * Does the job work on a service of the jail it names?  Its scripts are
+ * run by the jail's own service(8) and its rc.conf is the jail's,
+ * written by sysrc -j: a running jail, with or without a network of its
+ * own (scope_enter_jail()).
+ */
+static bool
+jailed(const struct arc_job_spec *sp)
+{
+
+	return ((sp->kind == ARC_JOB_KIND_SERVICE_ACTION || sp->kind ==
+	    ARC_JOB_KIND_SERVICE_CONFIG) && sp->jail != NULL &&
+	    sp->jail[0] != '\0');
+}
+
+/* Have w work where the job works: the network of the jail it names
+ * (scoped()), or a jail's services (jailed()); -1 and *errp. */
+static int
+job_scope(struct work *w, const struct arc_job_spec *sp, const char **errp)
+{
+
+	if (scoped(sp))
+		return (scope_enter(w, sp->jail, errp));
+	if (jailed(sp))
+		return (scope_enter_jail(w, sp->jail, errp, false));
+	return (0);
+}
+
 /* What the job does, in words: the activity log's line for it. */
 static char *
 title_words(const struct arc_job_spec *sp)
@@ -178,11 +206,13 @@ title_words(const struct arc_job_spec *sp)
 		    " (config)" : "");
 		break;
 	case ARC_JOB_KIND_SERVICE_ACTION:
-		rc = asprintf(&t, "service %s %s", sp->service,
-		    svc_names[sp->service_action]);
+		rc = asprintf(&t, "service %s %s%s%s", sp->service,
+		    svc_names[sp->service_action], jailed(sp) ? " in " : "",
+		    jailed(sp) ? sp->jail : "");
 		break;
 	case ARC_JOB_KIND_SERVICE_CONFIG:
-		rc = asprintf(&t, "service %s configure", sp->service);
+		rc = asprintf(&t, "service %s configure%s%s", sp->service,
+		    jailed(sp) ? " in " : "", jailed(sp) ? sp->jail : "");
 		break;
 	case ARC_JOB_KIND_IF_ADDRESS:
 		rc = asprintf(&t, "%s: %s %s", sp->interface, sp->remove ?
@@ -854,7 +884,7 @@ static const char *
 undo_prepare(struct qjob *j)
 {
 	const struct arc_job_spec	*sp;
-	const char			*e;
+	const char			*e, *rcv;
 	char				 descr[256];
 	size_t				 i;
 	bool				 running, enabled, up;
@@ -1081,7 +1111,19 @@ undo_prepare(struct qjob *j)
 		break;
 	case ARC_JOB_KIND_SERVICE_ACTION:
 		/* Enabled or disabled: the files the change keeps
-		 * (service_job_rc()) are what is put back. */
+		 * (service_job_rc()) are what is put back; in a jail, its
+		 * rcvar in the jail's rc.conf, as it is. */
+		if ((sp->service_action == ARC_SERVICE_ACTION_ENABLE ||
+		    sp->service_action == ARC_SERVICE_ACTION_DISABLE) &&
+		    jailed(sp)) {
+			e = NULL;
+			if ((rcv = service_rcvar(&j->w, sp->service, &e)) ==
+			    NULL)
+				return (wfmt(&j->w, "not changed: %s",
+				    e != NULL ? e : "no rcvar"));
+			undo_snap_rc(j, rcv);
+			break;
+		}
 		if (sp->service_action == ARC_SERVICE_ACTION_ENABLE ||
 		    sp->service_action == ARC_SERVICE_ACTION_DISABLE)
 			break;
@@ -1090,6 +1132,19 @@ undo_prepare(struct qjob *j)
 		    running) || (sp->service_action ==
 		    ARC_SERVICE_ACTION_STOP && !running))
 			j->undo_none = true;
+		break;
+	case ARC_JOB_KIND_SERVICE_CONFIG:
+		/* A jail's: its variables in the jail's rc.conf, as they
+		 * are (the host's are service_job_rc()'s files). */
+		if (!jailed(sp))
+			break;
+		if (sp->variables.n > nitems(j->undo_rc))
+			return (wfmt(&j->w, "not changed: a safe change of a "
+			    "jail's service puts back %zu variables at most",
+			    nitems(j->undo_rc)));
+		for (i = 0; i < sp->variables.n; i++)
+			if (sp->variables.v[i].key != NULL)
+				undo_snap_rc(j, sp->variables.v[i].key);
 		break;
 	case ARC_JOB_KIND_IF_SET:
 		if_current(&j->w, sp->interface, &j->undo_mtu, &j->undo_fib,
@@ -1472,6 +1527,13 @@ undo_steps(struct qjob *j, struct work *w, const char **ep)
 			rc = service_job_undo(w, j->undo_rca, &e);
 			break;
 		}
+		/* A jail's enabled or disabled: its rcvar as it was. */
+		if (jailed(sp) && (sp->service_action ==
+		    ARC_SERVICE_ACTION_ENABLE || sp->service_action ==
+		    ARC_SERVICE_ACTION_DISABLE)) {
+			rc = undo_rc_back(j, w, &e);
+			break;
+		}
 		memset(&sar, 0, sizeof(sar));
 		do_service_action(w, sp->service,
 		    svc_reverse[sp->service_action], &sar);
@@ -1480,7 +1542,7 @@ undo_steps(struct qjob *j, struct work *w, const char **ep)
 		break;
 	case ARC_JOB_KIND_SERVICE_CONFIG:
 		rc = j->undo_rca != NULL ? service_job_undo(w, j->undo_rca,
-		    &e) : 0;
+		    &e) : jailed(sp) ? undo_rc_back(j, w, &e) : 0;
 		break;
 	case ARC_JOB_KIND_ROUTE:
 		if (j->undo_gateway != NULL) {
@@ -1584,9 +1646,11 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		break;
 	case ARC_JOB_KIND_SERVICE_ACTION:
 		/* Enabled or disabled: Arcana's rc.conf file, as a commit
-		 * writes it. */
-		if (sp->service_action == ARC_SERVICE_ACTION_ENABLE ||
-		    sp->service_action == ARC_SERVICE_ACTION_DISABLE) {
+		 * writes it; a jail's, the jail's rc.conf by sysrc -j
+		 * (do_service_action()). */
+		if ((sp->service_action == ARC_SERVICE_ACTION_ENABLE ||
+		    sp->service_action == ARC_SERVICE_ACTION_DISABLE) &&
+		    !jailed(sp)) {
 			error = NULL;
 			ok = service_job_rc(w, sp, sp->safe ? &j->undo_rca :
 			    NULL, &error) == 0;
@@ -1815,6 +1879,21 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		break;
 	case ARC_JOB_KIND_SERVICE_CONFIG:
 		error = NULL;
+		if (jailed(sp)) {
+			/* The jail's rc.conf, by sysrc -j. */
+			struct service_config_req	 cq;
+			struct service_config_rsp	 cr;
+
+			memset(&cq, 0, sizeof(cq));
+			memset(&cr, 0, sizeof(cr));
+			cq.service = sp->service;
+			cq.variables.v = sp->variables.v;
+			cq.variables.n = sp->variables.n;
+			(void)do_service_config(w, &cq, &cr);
+			ok = cr.ok;
+			error = cr.error;
+			break;
+		}
 		ok = service_job_rc(w, sp, sp->safe ? &j->undo_rca : NULL,
 		    &error) == 0;
 		break;
@@ -1869,8 +1948,8 @@ run(struct qjob *j, bool lane)
 	pthread_mutex_unlock(&jobs_lock);
 	/* What changes a network works in the jail named, if one is. */
 	error = NULL;
-	inside = scoped(sp);
-	if (go && inside && scope_enter(&j->w, sp->jail, &error) != 0) {
+	inside = scoped(sp) || jailed(sp);
+	if (go && inside && job_scope(&j->w, sp, &error) != 0) {
 		ok = false;
 		go = false;
 	} else if (go && sp->safe && (error = undo_prepare(j)) != NULL) {
@@ -2666,7 +2745,7 @@ jobs_dry_run(const struct arc_job_spec *specs, size_t n, struct work *w,
 		    title);
 		error = NULL;
 		held = false;
-		if (scoped(sp) && scope_enter(w, sp->jail, &error) != 0)
+		if (job_scope(w, sp, &error) != 0)
 			ok = false;
 		else
 			ok = run_kind(dj, w, &held, &error);
