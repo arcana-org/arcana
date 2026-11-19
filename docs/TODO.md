@@ -4,6 +4,12 @@
 
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
+  - A jail's service cannot be started, stopped or restarted by a job
+    (2026-11-19): service-action has no jail field, so a service in a
+    jail (crowdsec's, after its old daemon was stopped by the process
+    job) was started by `jexec <jail> service <name> start` over ssh.
+    The Services view of a jail and the job want a jail, run as
+    `service -j <jail>` (service(8)'s own) or jexec.
   - Upgrading every jail of the fleet by the panel's jobs (2026-11-18),
     all done (agent_test:pkg_watch, packages; pwa_test's Packages):
     - Done: the read of what is pending after an upgrade (ira/packages.c
