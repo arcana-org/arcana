@@ -269,7 +269,19 @@
   an instance that does not answer on its file as it is.  rtadvd at a
   jail edge follows by the jail's own rc: rtadvd_enable and
   rtadvd_interfaces in its rc.conf (sysrc -j), its rtadvd.conf beneath
-  its root.  Left: not run yet in a real vnet jail.
+  its root.  Run in a real vnet jail of its own root since 2026-11-20
+  (agent_root_test:sdwan_jail_edge_dhcp_dns, _bird, _proxy, _ids; the
+  base by read-only nullfs, an epair to the host's side): the base's
+  local-unbound answering NXDOMAIN for a blocked name and its block an
+  event from its real log, the devenv's BIRD answering birdc on its
+  socket, dnsmasq (a DHCP stand-in: a lease to the host's side), Squid
+  and c-icap (stand-ins: a fetch through it, OPTIONS answered); each
+  started again by itself when the jail is made again.  Suricata's
+  rendered YAML is taken by the real suricata -T there; its start on
+  the jail's interface is refused in the devenv (no bpf in its devfs,
+  no divert) with pcap's reason said, so its alert and its following
+  are left for a host with bpf(4).  Left: dnsmasq, Squid, c-icap and
+  ClamAV real (none installed in the devenv).
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's

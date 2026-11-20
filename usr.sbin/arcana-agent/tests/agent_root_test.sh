@@ -6742,6 +6742,622 @@ lne_bind_cleanup()
 	cleanup
 }
 
+# An SD-WAN edge that is a vnet jail, its services run there for real:
+# the jail's root its own (never the host's: no rc runs in it), the
+# base's programs and libraries in it by read-only nullfs mounts, the
+# host's /usr/local/lib at /usr/local/hostlib (the jail's own
+# /usr/local/lib takes what a package would put there), its
+# /usr/local/bin and sbin the daemons the devenv has (copied) or
+# stand-ins; its devfs mounted by the case; an epair, the a end the
+# host's side of the edge's UNI, the b end the jail's.  Each mount is
+# listed in ./mounts, the jail's name in ./jailname, the epair in
+# ./epair, for edge_cleanup.  EDGE is the jail, NET the UNI's /24.
+
+edge_root()
+{
+	local d
+
+	jls -d -j "$EDGE" >/dev/null 2>&1 && atf_skip "a jail named $EDGE exists"
+	mkdir -p root/dev root/etc root/tmp root/root root/var/run \
+	    root/var/db root/var/log root/usr/local/bin root/usr/local/sbin \
+	    root/usr/local/etc root/usr/local/lib root/usr/local/hostlib
+	chmod 1777 root/tmp
+	# What base's mtree makes: local-unbound's default directory.
+	mkdir -p root/var/unbound
+	: > mounts
+	for d in bin sbin lib libexec usr/bin usr/sbin usr/lib usr/libexec \
+	    usr/share; do
+		mkdir -p "root/$d"
+		atf_check mount -t nullfs -o ro "/$d" "root/$d"
+		echo "root/$d" >> mounts
+	done
+	atf_check mount -t nullfs -o ro /usr/local/lib root/usr/local/hostlib
+	echo root/usr/local/hostlib >> mounts
+	atf_check mount -t devfs devfs root/dev
+	echo root/dev >> mounts
+	if [ "$(sysctl -n security.jail.jailed)" = 0 ]; then
+		atf_check devfs -m root/dev ruleset 4
+		atf_check devfs -m root/dev rule applyset
+	fi
+	# Its users: what the packages would have added.
+	cat > root/etc/master.passwd <<'EOS'
+root:*:0:0::0:0:Charlie &:/root:/bin/sh
+unbound:*:59:59::0:0:Unbound DNS Resolver:/var/unbound:/usr/sbin/nologin
+squid:*:100:100::0:0:squid caching-proxy pseudo user:/var/squid:/usr/sbin/nologin
+nobody:*:65534:65534::0:0:Unprivileged user:/nonexistent:/usr/sbin/nologin
+EOS
+	printf 'wheel:*:0:root\nunbound:*:59:\nsquid:*:100:\nnobody:*:65534:\n' \
+	    > root/etc/group
+	atf_check pwd_mkdb -p -d root/etc root/etc/master.passwd
+	cp /etc/services /etc/protocols root/etc/
+	echo '127.0.0.1 localhost' > root/etc/hosts
+	# Python for the stand-ins: its library where it looks for it.
+	cp /usr/local/bin/python3.12 root/usr/local/bin/
+	ln -s ../hostlib/python3.12 root/usr/local/lib/python3.12
+}
+
+# The jail made, its UNI's interface moved in and addressed; the host's
+# end addressed too.
+edge_jail()
+{
+	local ep
+
+	ep=$(epair_create) || atf_fail "no epair"
+	echo "$ep" > epair
+	echo "$EDGE" > jailname
+	B=${ep%a}b
+	atf_check ifconfig "$ep" inet "$NET.2/24" up
+	atf_check -o ignore jail -c name="$EDGE" vnet persist \
+	    path="$(pwd)/root" vnet.interface="$B"
+	edge_net
+}
+
+# Inside the jail: the loopback, the UNI's address, the libraries'
+# hints (the host's /usr/local/lib where the jail has it).
+edge_net()
+{
+	atf_check jexec "$EDGE" ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check jexec "$EDGE" ifconfig "$B" inet "$NET.1/24" up
+	atf_check jexec "$EDGE" ldconfig -elf /lib /usr/lib /usr/local/lib \
+	    /usr/local/hostlib
+}
+
+# The jail removed and made again, as an admin's jail(8) does: its
+# interface given back first (a vnet jail's teardown with an epair in
+# it is what panics), the removal told, its /var/run emptied as its
+# start does (the libraries' hints made again); made again, its
+# interface moved in and addressed by exec.created a second after
+# jail_set(2) made it.  Then each of its services started there by the
+# agent by itself.
+edge_remake()
+{
+	atf_check ifconfig "$B" -vnet "$EDGE"
+	atf_check jail -r "$EDGE"
+	wait_for "'$JGC' -c '$SOCK' events | grep -q '\"jail\":\"$EDGE\",\"state\":\"stopped\"'"
+	atf_check -o match:"\"jail\":\"$EDGE\",\"state\":\"stopped\"" \
+	    "$JGC" -c "$SOCK" events
+	find root/var/run -type f -delete
+	: > daemon.out.mark
+	atf_check -o ignore jail -c name="$EDGE" vnet persist \
+	    path="$(pwd)/root" exec.created="sleep 1; ifconfig $B vnet $EDGE && jexec $EDGE ifconfig lo0 inet 127.0.0.1/8 up && jexec $EDGE ifconfig $B inet $NET.1/24 up && jexec $EDGE ldconfig -elf /lib /usr/lib /usr/local/lib /usr/local/hostlib"
+}
+
+# Waits up to 40 s for the agent to say a follower started its
+# instances again in the jail.
+edge_came_back()
+{
+	local i
+
+	for i in $(seq 1 400); do
+		grep -q "$1: started again in the jail $EDGE, which came back" \
+		    daemon.out && return 0
+		sleep 0.1
+	done
+	atf_fail "$1 not started again in $EDGE: $(tail -20 daemon.out)"
+}
+
+edge_cleanup()
+{
+	local j e i m
+
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	sleep 0.5
+	[ -f lserver.pid ] && kill "$(cat lserver.pid)" 2>/dev/null
+	if [ -f jailname ]; then
+		j=$(cat jailname)
+		if [ -f epair ]; then
+			e=$(cat epair)
+			ifconfig "${e%a}b" -vnet "$j" 2>/dev/null
+		fi
+		jail -r "$j" 2>/dev/null
+		# Dying while its TCP connections wait out TIME_WAIT.
+		for i in $(seq 1 450); do
+			jls -d -j "$j" >/dev/null 2>&1 || break
+			sleep 0.2
+		done
+	fi
+	[ -f epair ] && ifconfig "$(cat epair)" destroy 2>/dev/null
+	if [ -f mounts ]; then
+		for m in $(tail -r mounts); do
+			for i in $(seq 1 25); do
+				umount "$m" 2>/dev/null && break
+				sleep 0.2
+			done
+			mount | grep -q " on $(pwd)/$m " && umount -f "$m" 2>/dev/null
+		done
+	fi
+	true
+}
+
+# dnsmasq's stand-in, in Python: --test takes the file; -C FILE -x PID
+# binds the DHCP port, then puts itself in the background, its pid in
+# PID, and answers each DISCOVER with an offer of its first range's
+# first address and each REQUEST with an ack, the lease written to
+# dhcp-leasefile as dnsmasq writes it.
+standin_dnsmasq()
+{
+	cat > root/usr/local/sbin/dnsmasq <<'EOS'
+#!/usr/local/bin/python3.12
+import os, socket, struct, sys, time
+a = sys.argv[1:]
+if '--test' in a:
+    print('dnsmasq: syntax check OK.', file=sys.stderr)
+    sys.exit(0)
+conf, pidf = a[a.index('-C') + 1], a[a.index('-x') + 1]
+rng, mask, lf = None, '255.255.255.0', None
+for l in open(conf):
+    l = l.strip()
+    if l.startswith('dhcp-range=') and rng is None:
+        f = l.split('=', 1)[1].split(',')
+        if f[0].startswith('set:'):
+            f = f[1:]
+        if '.' in f[0]:
+            rng, mask = f[0], f[2]
+    elif l.startswith('dhcp-leasefile='):
+        lf = l.split('=', 1)[1]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.bind(('0.0.0.0', 67))
+if os.fork():
+    os._exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+fd = os.open('/dev/null', os.O_RDWR)
+for i in (0, 1, 2):
+    os.dup2(fd, i)
+with open(pidf, 'w') as p:
+    p.write('%d\n' % os.getpid())
+while True:
+    m, (src, port) = s.recvfrom(2048)
+    if len(m) < 240 or m[0] != 1:
+        continue
+    opts, i = {}, 240
+    while i < len(m) and m[i] != 255:
+        if m[i] == 0:
+            i += 1
+            continue
+        opts[m[i]] = m[i + 2:i + 2 + m[i + 1]]
+        i += 2 + m[i + 1]
+    t = opts.get(53, b'\0')[0]
+    if t not in (1, 3):
+        continue
+    mac = ':'.join('%02x' % b for b in m[28:34])
+    to = (src, 68) if src != '0.0.0.0' else ('255.255.255.255', 68)
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.connect(to)
+    me = u.getsockname()[0]
+    u.close()
+    r = bytearray(m[:240])
+    r[0] = 2
+    r[16:20] = socket.inet_aton(rng)
+    r[20:24] = socket.inet_aton(me)
+    r += bytes([53, 1, 2 if t == 1 else 5, 54, 4]) + socket.inet_aton(me)
+    r += bytes([51, 4]) + struct.pack('!I', 43200)
+    r += bytes([1, 4]) + socket.inet_aton(mask) + bytes([255])
+    if t == 3 and lf:
+        with open(lf, 'a') as f:
+            f.write('%d %s %s * 01:%s\n' % (time.time() + 43200, mac, rng, mac))
+    s.sendto(bytes(r), to)
+EOS
+	chmod +x root/usr/local/sbin/dnsmasq
+}
+
+# A DHCP client of the host's, from the UNI's far end (dhcpc.py SRC
+# DST MAC): DISCOVER, then REQUEST of what was offered; the address
+# acked said.  Sent to the server's address, not broadcast: the
+# devenv's ipfw keeps state for what the host sends, and a broadcast's
+# answer from the server's address matches none.
+dhcp_client_write()
+{
+	cat > dhcpc.py <<'EOS'
+import socket, struct, sys
+src, dst, mac = sys.argv[1], sys.argv[2], bytes.fromhex(sys.argv[3].replace(':', ''))
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.bind((src, 68))
+s.settimeout(5)
+def msg(t, req=None):
+    m = struct.pack('!BBBBIHH4s4s4s4s16s192x', 1, 1, 6, 0, 0x41524341, 0, 0,
+        bytes(4), bytes(4), bytes(4), bytes(4), mac + bytes(10))
+    m += b'\x63\x82\x53\x63' + bytes([53, 1, t])
+    if req:
+        m += bytes([50, 4]) + socket.inet_aton(req)
+    return m + bytes([255])
+def answer(want):
+    while True:
+        m, _ = s.recvfrom(2048)
+        if m[0] == 2 and m[4:8] == b'ARCA' and bytes([53, 1, want]) in m[240:]:
+            return socket.inet_ntoa(m[16:20])
+s.sendto(msg(1), (dst, 67))
+offer = answer(2)
+s.sendto(msg(3, offer), (dst, 67))
+print(answer(5))
+EOS
+}
+
+atf_test_case sdwan_jail_edge_dhcp_dns cleanup
+sdwan_jail_edge_dhcp_dns_head()
+{
+	atf_set "descr" "a jail edge's DHCP (dnsmasq, a stand-in where the" \
+	    "devenv has none) and DNS filter (the base's local-unbound) run" \
+	    "for real in a vnet jail of its own root: a lease answered" \
+	    "across the epair to the host's side and read back, a blocked" \
+	    "name answered NXDOMAIN and its block an event; the jail removed" \
+	    "and made again, each started there again by itself and" \
+	    "answering"
+	atf_set "require.user" "root"
+	atf_set "timeout" "180"
+}
+sdwan_jail_edge_dhcp_dns_body()
+{
+	local dhcp dns
+
+	EDGE=arcw_jedd
+	NET=198.18.71
+	edge_root
+	if [ -x /usr/local/sbin/dnsmasq ]; then
+		cp /usr/local/sbin/dnsmasq root/usr/local/sbin/
+	else
+		standin_dnsmasq
+	fi
+	dhcp_client_write
+	edge_jail
+	start_daemon
+	# Its DHCP: the UNI on the jail's end, the provider's address and
+	# the host's end reserved.
+	dhcp="{\"jail\":\"$EDGE\",\"instances\":[{\"name\":\"dd1\",\"fib\":0,\"host\":\"edge-a/jedd\",\"spec\":{\"service\":\"acme\",\"fib\":0,\"unis\":[{\"id\":\"uni-hq\",\"interface\":\"$B\",\"ipv4\":{\"mode\":\"dhcp\",\"prefix\":\"$NET.0/24\",\"provider\":[\"$NET.1\"],\"reserved\":[\"$NET.0/28\"]}}]}}]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp "$dhcp"
+	atf_check -o match:"^interface=$B\$" \
+	    cat root/var/run/arcana-sdwan-dhcp-dd1.conf
+	atf_check -o inline:"$NET.16\n" /usr/local/bin/python3 -I dhcpc.py "$NET.2" "$NET.1" 02:00:00:00:71:02
+	atf_check -o match:"\"name\":\"dd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true,\"leases\":\[\{\"expires\":[0-9]+,\"id\":\"02:00:00:00:71:02\",\"address\":\"$NET.16\"" \
+	    "$JGC" -c "$SOCK" sdwan
+	# Its DNS filter, the base's unbound: a name of the zone's block
+	# answered NXDOMAIN, the block read from its log an event.
+	dns="{\"jail\":\"$EDGE\",\"instances\":[{\"name\":\"dd1\",\"fib\":0,\"host\":\"edge-a/jedd\",\"spec\":{\"service\":\"acme\",\"fib\":0,\"unis\":[{\"id\":\"uni-hq\",\"address\":\"$NET.1\",\"prefix\":\"$NET.0/24\"}],\"zones\":[{\"name\":\"z0\",\"prefixes\":[\"$NET.0/24\"],\"dnf\":{\"id\":\"g-dnf\",\"no-match\":\"allow\",\"block\":[\"ads.example\"]}}]}}]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns "$dns"
+	atf_check -o match:"\"dns\":\[\{\"name\":\"dd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'rcode: NXDOMAIN' drill @"$NET.1" www.ads.example A
+	wait_for "'$JGC' -c '$SOCK' events | grep -q '\"kind\":\"sdwan-block\",.*\"daemon\":\"unbound\"'"
+	atf_check -o match:"\"kind\":\"sdwan-block\",[^}]*\"name\":\"dd1\",\"daemon\":\"unbound\",\"time\":\"[0-9]+\",\"src\":\"$NET.2\",\"function\":\"dnf\"" \
+	    "$JGC" -c "$SOCK" events
+	# Removed and made again: both started there again by themselves,
+	# a lease and an answer as before.
+	edge_remake
+	edge_came_back "sdwan dhcp (dnsmasq)"
+	edge_came_back "sdwan dns (unbound)"
+	atf_check -o inline:"$NET.16\n" /usr/local/bin/python3 -I dhcpc.py "$NET.2" "$NET.1" 02:00:00:00:71:02
+	atf_check -o match:'rcode: NXDOMAIN' drill @"$NET.1" www.ads.example A
+	atf_check -o match:"\"name\":\"dd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true,\"leases\"" \
+	    -o match:"\"dns\":\[\{\"name\":\"dd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	# Emptied: neither runs, their files gone.
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp "{\"jail\":\"$EDGE\",\"instances\":[]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan dns "{\"jail\":\"$EDGE\",\"instances\":[]}"
+	atf_check -s exit:1 pgrep -j "$EDGE" -f 'dnsmasq|local-unbound'
+	test ! -e root/var/run/arcana-sdwan-dhcp-dd1.conf -a \
+	    ! -e root/var/run/arcana-sdwan-dns-dd1.conf || atf_fail "their files stayed"
+}
+sdwan_jail_edge_dhcp_dns_cleanup()
+{
+	edge_cleanup
+}
+
+atf_test_case sdwan_jail_edge_bird cleanup
+sdwan_jail_edge_bird_head()
+{
+	atf_set "descr" "a jail edge's BIRD, the devenv's own, run for real in" \
+	    "a vnet jail of its own root: its file parsed by bird -p there," \
+	    "started, its control socket answering birdc from the host and" \
+	    "the agent's read; the jail removed and made again, started" \
+	    "there again by itself"
+	atf_set "require.user" "root"
+	atf_set "timeout" "180"
+}
+sdwan_jail_edge_bird_body()
+{
+	local bird
+
+	[ -x /usr/local/sbin/bird -a -x /usr/local/sbin/birdc ] ||
+	    atf_skip "no BIRD here"
+	EDGE=arcw_jebd
+	NET=198.18.72
+	edge_root
+	cp /usr/local/sbin/bird /usr/local/sbin/birdc root/usr/local/sbin/
+	edge_jail
+	start_daemon
+	bird="{\"jail\":\"$EDGE\",\"instances\":[{\"name\":\"bd1\",\"fib\":0,\"host\":\"edge-a/jebd\",\"spec\":{\"service\":\"acme\",\"fib\":0,\"router_id\":\"$NET.1\",\"direct\":[\"$B\"]}}]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird "$bird"
+	atf_check -o match:"^router id $NET.1;\$" \
+	    cat root/var/run/arcana-sdwan-bird-bd1.conf
+	atf_check -o match:'Daemon is up and running' \
+	    birdc -s root/var/run/arcana-sdwan-bird-bd1.ctl show status
+	atf_check -o match:"\"name\":\"bd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true,\"protocols\":\[[^]]*\"proto\":\"Device\",\"state\":\"up\"" \
+	    "$JGC" -c "$SOCK" sdwan
+	edge_remake
+	edge_came_back "sdwan bird"
+	atf_check -o match:'Daemon is up and running' \
+	    birdc -s root/var/run/arcana-sdwan-bird-bd1.ctl show status
+	atf_check -o match:"\"name\":\"bd1\",\"fib\":0,\"jail\":\"$EDGE\",\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird "{\"jail\":\"$EDGE\",\"instances\":[]}"
+	atf_check -s exit:1 pgrep -j "$EDGE" bird
+	test ! -e root/var/run/arcana-sdwan-bird-bd1.conf || atf_fail "its file stayed"
+}
+sdwan_jail_edge_bird_cleanup()
+{
+	edge_cleanup
+}
+
+# Squid's stand-in, in Python: -k parse and reconfigure answered; -f
+# FILE started: a daemon whose pid is pid_filename's, on each http_port
+# of FILE, a request relayed to the server its URL or its Host names,
+# each logged to access_log.  c-icap's: -f FILE, a daemon on Port of
+# FILE answering OPTIONS, its pid PidFile's.  The certificate maker's
+# makes its directory.
+standin_proxy()
+{
+	mkdir -p root/usr/local/libexec/squid root/usr/local/lib/c_icap \
+	    root/var/db/clamav root/var/log/squid
+	cat > root/usr/local/sbin/squid <<'EOS'
+#!/usr/local/bin/python3.12
+import os, socket, socketserver, sys, threading, time
+a = sys.argv[1:]
+if '-k' in a:
+    sys.exit(0)
+conf = a[a.index('-f') + 1]
+ports, pidf, log = [], None, '/dev/null'
+for l in open(conf):
+    w = l.split()
+    if len(w) >= 2 and w[0] == 'http_port':
+        h, p = w[1].rsplit(':', 1)
+        ports.append((h.strip('[]'), int(p)))
+    elif len(w) >= 2 and w[0] == 'pid_filename':
+        pidf = w[1]
+    elif len(w) >= 2 and w[0] == 'access_log':
+        log = w[1]
+class H(socketserver.StreamRequestHandler):
+    def handle(self):
+        req = self.rfile.readline().decode()
+        hdrs = []
+        while True:
+            l = self.rfile.readline().decode()
+            if l in ('\r\n', '\n', ''):
+                break
+            hdrs.append(l.strip())
+        m, url, _ = req.split(' ', 2)
+        host = [h.split(':', 1)[1].strip() for h in hdrs if h.lower().startswith('host:')]
+        if url.startswith('http://'):
+            hp, _, path = url[7:].partition('/')
+            path = '/' + path
+        else:
+            hp, path = host[0], url
+        h, _, p = hp.partition(':')
+        c = socket.create_connection((h, int(p or 80)), 5)
+        c.sendall(('%s %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' % (m, path, hp)).encode())
+        n = 0
+        while True:
+            b = c.recv(65536)
+            if not b:
+                break
+            n += len(b)
+            self.wfile.write(b)
+        c.close()
+        with open(log, 'a') as f:
+            f.write('%.3f %s TCP_MISS/200 %s %s %d\n' % (time.time(), self.client_address[0], m, url, n))
+srv = []
+for h, p in ports:
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    srv.append(socketserver.ThreadingTCPServer((h, p), H))
+if os.fork():
+    os._exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+fd = os.open('/dev/null', os.O_RDWR)
+for i in (0, 1, 2):
+    os.dup2(fd, i)
+with open(pidf, 'w') as f:
+    f.write('%d\n' % os.getpid())
+for s in srv[1:]:
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+srv[0].serve_forever()
+EOS
+	cat > root/usr/local/bin/c-icap <<'EOS'
+#!/usr/local/bin/python3.12
+import os, socketserver, sys
+a = sys.argv[1:]
+conf = a[a.index('-f') + 1]
+port, pidf = None, None
+for l in open(conf):
+    w = l.split()
+    if len(w) >= 2 and w[0] == 'Port':
+        h, p = w[1].rsplit(':', 1)
+        port = (h, int(p))
+    elif len(w) >= 2 and w[0] == 'PidFile':
+        pidf = w[1]
+class H(socketserver.StreamRequestHandler):
+    def handle(self):
+        while self.rfile.readline() not in (b'\r\n', b'\n', b''):
+            pass
+        self.wfile.write(b'ICAP/1.0 200 OK\r\nMethods: RESPMOD\r\nISTag: "arcana-stand-in"\r\nEncapsulated: null-body=0\r\n\r\n')
+socketserver.TCPServer.allow_reuse_address = True
+s = socketserver.TCPServer(port, H)
+if os.fork():
+    os._exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+fd = os.open('/dev/null', os.O_RDWR)
+for i in (0, 1, 2):
+    os.dup2(fd, i)
+with open(pidf, 'w') as f:
+    f.write('%d\n' % os.getpid())
+s.serve_forever()
+EOS
+	printf '#!/bin/sh\nmkdir -p "$3"\n' \
+	    > root/usr/local/libexec/squid/security_file_certgen
+	chmod +x root/usr/local/sbin/squid root/usr/local/bin/c-icap \
+	    root/usr/local/libexec/squid/security_file_certgen
+	# What c-icap-modules and freshclam would have put there.
+	: > root/usr/local/lib/c_icap/clamav_mod.so
+	: > root/var/db/clamav/main.cvd
+}
+
+edge_www()
+{
+	jexec "$EDGE" /usr/local/bin/python3.12 -I -m http.server \
+	    -b 127.0.0.1 -d /www 8073 > lserver.out 2>&1 &
+	echo $! > lserver.pid
+}
+
+atf_test_case sdwan_jail_edge_proxy cleanup
+sdwan_jail_edge_proxy_head()
+{
+	atf_set "descr" "a jail edge's URL filter that scans (Squid and" \
+	    "c-icap, stand-ins where the devenv has none) run in a vnet jail" \
+	    "of its own root by its own jexec, setfib, chown and pgrep: an" \
+	    "HTTP fetch from the host's side through it to a server on the" \
+	    "jail's loopback, c-icap answering OPTIONS; the jail removed and made again, both" \
+	    "started there again by themselves and fetching"
+	atf_set "require.user" "root"
+	atf_set "timeout" "180"
+}
+sdwan_jail_edge_proxy_body()
+{
+	local px i
+
+	EDGE=arcw_jepx
+	NET=198.18.73
+	edge_root
+	if [ -x /usr/local/sbin/squid -a -x /usr/local/bin/c-icap ]; then
+		atf_skip "a real Squid and c-icap here: not written for them yet"
+	fi
+	standin_proxy
+	edge_jail
+	# The server it fetches from: the jail's own, on its loopback (the
+	# devenv's ipfw lets nothing come in to the host's side).
+	mkdir root/www
+	echo "the far server's page" > root/www/page
+	edge_www
+	start_daemon
+	px="{\"jail\":\"$EDGE\",\"instances\":[{\"name\":\"px1\",\"fib\":0,\"mode\":\"sni\",\"host\":\"edge-a/jepx\",\"spec\":{\"flavor\":\"sdwan\",\"service\":\"acme\",\"fib\":0,\"listen\":[{\"end_point\":\"hq\",\"address\":\"$NET.1\"}],\"icap\":true,\"zones\":[{\"name\":\"z0\",\"prefixes\":[\"$NET.0/24\"],\"urlf\":{\"id\":\"g-urlf\",\"no-match\":\"allow\",\"block\":[\"bad.example\"]}}]}}]}"
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "$px"
+	atf_check -o match:"\"name\":\"px1\",\"jail\":\"$EDGE\",\"fib\":0,\"mode\":\"sni\",\"running\":true,\"icap\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	# The CA's key and the certificate cache Squid's user's, by the
+	# jail's chown and its own squid user.
+	atf_check -o match:'^-[rw-]+ +1 100 ' ls -n root/var/db/arcana-sdwan/sdwan-proxy-px1.pem
+	atf_check -o match:"the far server's page" \
+	    curl -s -m 10 -x "http://$NET.1:3128" "http://127.0.0.1:8073/page"
+	atf_check -o match:'^ICAP/1.0 200 OK' sh -c \
+	    "printf 'OPTIONS icap://$NET.1:1344/avscan ICAP/1.0\r\nHost: $NET.1\r\n\r\n' | nc -w 5 $NET.1 1344"
+	edge_remake
+	edge_came_back "squid"
+	edge_www
+	for i in $(seq 1 50); do
+		curl -s -m 2 -x "http://$NET.1:3128" "http://127.0.0.1:8073/page" \
+		    >/dev/null && break
+		sleep 0.2
+	done
+	atf_check -o match:"the far server's page" \
+	    curl -s -m 10 -x "http://$NET.1:3128" "http://127.0.0.1:8073/page"
+	atf_check -o match:'^ICAP/1.0 200 OK' sh -c \
+	    "printf 'OPTIONS icap://$NET.1:1344/avscan ICAP/1.0\r\nHost: $NET.1\r\n\r\n' | nc -w 5 $NET.1 1344"
+	atf_check -o match:"\"name\":\"px1\",\"jail\":\"$EDGE\",\"fib\":0,\"mode\":\"sni\",\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan proxy "{\"jail\":\"$EDGE\",\"instances\":[]}"
+	atf_check -s exit:1 pgrep -j "$EDGE" -f 'squid|c-icap'
+}
+sdwan_jail_edge_proxy_cleanup()
+{
+	edge_cleanup
+}
+
+atf_test_case sdwan_jail_edge_ids cleanup
+sdwan_jail_edge_ids_head()
+{
+	atf_set "descr" "a jail edge's Suricata, the devenv's own, in IDS" \
+	    "mode in a vnet jail of its own root: the rendered YAML and" \
+	    "rules taken by suricata -T there; started on the jail's" \
+	    "interface, an alert logged for a crafted packet from the host's" \
+	    "side, and after the jail is removed and made again, started" \
+	    "there by itself; where the devfs has no bpf(4), its start" \
+	    "refused with pcap's reason said"
+	atf_set "require.user" "root"
+	atf_set "timeout" "240"
+}
+sdwan_jail_edge_ids_body()
+{
+	local ids i
+
+	[ -x /usr/local/bin/suricata ] || atf_skip "no Suricata here"
+	EDGE=arcw_jeid
+	NET=198.18.74
+	edge_root
+	cp /usr/local/bin/suricata root/usr/local/bin/
+	mkdir -p root/usr/local/etc/suricata root/usr/local/share
+	atf_check mount -t nullfs -o ro /usr/local/etc/suricata \
+	    root/usr/local/etc/suricata
+	echo root/usr/local/etc/suricata >> mounts
+	atf_check mount -t nullfs -o ro /usr/local/share root/usr/local/share
+	echo root/usr/local/share >> mounts
+	edge_jail
+	start_daemon
+	ids="{\"jail\":\"$EDGE\",\"instances\":[{\"name\":\"id1\",\"interfaces\":[\"$B\"],\"spec\":{\"interfaces\":[\"$B\"],\"home\":[\"$NET.0/24\"]},\"rules\":\"alert udp any any -> any 9999 (msg:\\\"ARCANA crafted\\\"; content:\\\"ARCANA-CRAFTED\\\"; sid:1000001;)\\n\"}]}"
+	if [ ! -c root/dev/bpf ]; then
+		# No capture here: the start refused, pcap's reason said.
+		atf_check -s exit:1 -o ignore -e save:stderr \
+		    "$JGC" -c "$SOCK" sdwan ids "$ids"
+		atf_check -o match:'suricata did not start: .*(pcap|bpf)' cat stderr
+		atf_check -o match:'"ids":\[\]' "$JGC" -c "$SOCK" sdwan
+		atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "{\"jail\":\"$EDGE\",\"instances\":[]}"
+		return 0
+	fi
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "$ids"
+	atf_check -o match:"\"name\":\"id1\",\"jail\":\"$EDGE\",\"interfaces\":\[\"$B\"\],\"mode\":\"detect\",[^}]*\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	for i in $(seq 1 30); do
+		printf ARCANA-CRAFTED | nc -u -w 1 "$NET.1" 9999
+		"$JGC" -c "$SOCK" sdwan | grep -q '"alerts_seen":[1-9]' && break
+	done
+	atf_check -o match:'"alerts_seen":[1-9]' "$JGC" -c "$SOCK" sdwan
+	edge_remake
+	edge_came_back "suricata"
+	atf_check -o match:"\"name\":\"id1\",\"jail\":\"$EDGE\",[^}]*\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids "{\"jail\":\"$EDGE\",\"instances\":[]}"
+	atf_check -s exit:1 pgrep -j "$EDGE" suricata
+}
+sdwan_jail_edge_ids_cleanup()
+{
+	edge_cleanup
+}
+
 atf_init_test_cases()
 {
 	atf_add_test_case lne_root
@@ -6826,4 +7442,8 @@ atf_init_test_cases()
 	atf_add_test_case jail_make
 	atf_add_test_case zfs_key
 	atf_add_test_case carp
+	atf_add_test_case sdwan_jail_edge_dhcp_dns
+	atf_add_test_case sdwan_jail_edge_bird
+	atf_add_test_case sdwan_jail_edge_proxy
+	atf_add_test_case sdwan_jail_edge_ids
 }
