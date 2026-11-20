@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.343.0"
+#define	ARCANA_AGENT_VERSION	"0.344.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1336,6 +1336,7 @@ int		 sysfile_tell(struct work *, const char *, const char **);
 /* superbia/cron.c: cron(8)'s entries, Arcana's file and its part of a
  * user's crontab. */
 void		 do_cron(struct work *, struct json_rsp *);
+int		 cron_next_helper(int, char **);
 const char	*cron_check(const struct arc_job_spec *);
 char		*cron_title(const struct arc_job_spec *);
 int		 do_cron_job(struct work *, const struct arc_job_spec *,

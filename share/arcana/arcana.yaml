@@ -556,8 +556,12 @@ definitions:
           they are.  The admin's /etc/crontab, other cron.d files and
           lines outside the markers are never changed.  The user must
           be one of the host's, or with jail of that running jail,
-          where its own crontab(1) is run.  Undone in safe mode: the
-          file or the crontab as it was.
+          where its own crontab(1) is run.  setvar (text: NAME=value)
+          and unsetvar (text: NAME) set and take away a variable of the
+          entries' environment (SHELL=, MAILTO=, PATH=) at the top of
+          Arcana's file, or of its part of the user's crontab, before
+          its entries.  Undone in safe mode: the file or the crontab as
+          it was.
       - name: crash
         doc: |
           A core the kernel dumped taken away: verb delete, args the

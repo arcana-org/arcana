@@ -284,6 +284,10 @@ rc-stale)
 	[ -n "\$r" ] || { echo "jail_attach(\$jid): no such jail" >&2; exit 1; }
 	"$JGD" --scope-helper 0 rc-stale "\$r\$1" "\$2" "\$3" "\$4" |
 	    sed "s|\$r||g" ;;
+cron-next)
+	# cron's next runs: the agent's own helper, the time zone's file
+	# on its standard input.
+	exec "$JGD" --scope-helper 0 cron-next "\$@" ;;
 carp-set)
 	echo "carp-set \$* key=\$(cat)" >> $(pwd)/carp.log ;;
 repo-reach)
@@ -17835,6 +17839,8 @@ alice:*:1001:1001:Alice:/home/alice:/bin/sh
 EOF
 	cp root/etc/crontab crontab.before
 	cp root/etc/cron.d/backup backup.before
+	# The host's time zone: India's, +05:30 and no summer time.
+	cp /usr/share/zoneinfo/Asia/Kolkata root/etc/localtime
 	DAEMON_ARGS="--root $(pwd)/root --crontab $(pwd)/fake-crontab"
 	start_daemon
 	cron_fakes
@@ -17844,13 +17850,24 @@ EOF
 	# leaves it), alice's crontab by crontab -l.
 	atf_check \
 	    -o match:'"daemon":\{"enabled":false,"running":false,"flags":"-J 15"\}' \
-	    -o match:'\{"source":"system","file":"/etc/crontab","line":5,"schedule":"\*/11 \* \* \* \*","user":"operator","command":"/usr/libexec/save-entropy","comment":"Save some entropy","arcana":false\}' \
-	    -o match:'\{"source":"system","file":"/etc/crontab","line":6,"schedule":"1,31 0-5 \* \* \*","user":"root","command":"adjkerntz -a","arcana":false\}' \
-	    -o match:'\{"source":"cron-d","file":"/etc/cron.d/backup","line":2,"schedule":"@daily","user":"root","command":"/usr/local/bin/backup","comment":"nightly","arcana":false\}' \
-	    -o match:'\{"source":"user","file":"/var/cron/tabs/alice","line":2,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false\}' \
-	    -o not-match:'hidden|SHELL|"unread"' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":5,"schedule":"\*/11 \* \* \* \*","user":"operator","command":"/usr/libexec/save-entropy","comment":"Save some entropy","arcana":false[,}]' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":6,"schedule":"1,31 0-5 \* \* \*","user":"root","command":"adjkerntz -a","arcana":false[,}]' \
+	    -o match:'\{"source":"cron-d","file":"/etc/cron.d/backup","line":2,"schedule":"@daily","user":"root","command":"/usr/local/bin/backup","comment":"nightly","arcana":false[,}]' \
+	    -o match:'\{"source":"user","file":"/var/cron/tabs/alice","line":2,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false[,}]' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":1,"name":"SHELL","value":"/bin/sh","arcana":false\}' \
+	    -o match:'"line":2,"name":"PATH","value":"/etc:/bin:/sbin:/usr/bin:/usr/sbin","arcana":false\}' \
+	    -o not-match:'hidden|"unread"' \
 	    "$JGC" -c "$SOCK" cron
 	atf_check -o match:'^crontab -l -u alice$' cat crontab.log
+	# The next runs, worked out in the host's time zone (the helper,
+	# its /etc/localtime on its standard input): three each.
+	"$JGC" -c "$SOCK" cron > read.json
+	atf_check -o match:'"timezone":"IST \+05:30"' \
+	    -o match:'"schedule":"@daily",[^}]*"next_run":\["20[0-9-]{8}T00:00:00\+05:30","20[0-9-]{8}T00:00:00\+05:30","20[0-9-]{8}T00:00:00\+05:30"\]' \
+	    -o match:'"schedule":"0 9 \* \* 1-5",[^}]*"next_run":\["20[0-9-]{8}T09:00:00\+05:30",' \
+	    -o match:'"schedule":"1,31 0-5 \* \* \*",[^}]*"next_run":\["20[0-9-]{8}T0[0-5]:[03]1:00\+05:30",' \
+	    cat read.json
+	atf_check -o match:'cron-next .*1,31 0-5 \* \* \*' cat helper.log
 	# Arcana's file: made with its head, the entry and its comment.
 	atf_check -o match:'done' "$JGC" -c "$SOCK" cron add \
 	    'comment=newsyslog, forced' '0 3 * * * root /usr/sbin/newsyslog -F'
@@ -17864,8 +17881,8 @@ EOF
 @hourly  root  /bin/date
 EOF
 	atf_check -o file:want cat root/usr/local/etc/cron.d/arcana
-	atf_check -o match:'\{"source":"cron-d","file":"/usr/local/etc/cron.d/arcana","line":4,"schedule":"0 3 \* \* \*","user":"root","command":"/usr/sbin/newsyslog -F","comment":"newsyslog, forced","arcana":true\}' \
-	    -o match:'"line":5,"schedule":"@hourly","user":"root","command":"/bin/date","arcana":true\}' \
+	atf_check -o match:'\{"source":"cron-d","file":"/usr/local/etc/cron.d/arcana","line":4,"schedule":"0 3 \* \* \*","user":"root","command":"/usr/sbin/newsyslog -F","comment":"newsyslog, forced","arcana":true[,}]' \
+	    -o match:'"line":5,"schedule":"@hourly","user":"root","command":"/bin/date","arcana":true[,}]' \
 	    "$JGC" -c "$SOCK" cron
 	# The same entry again, whatever its blanks: refused.
 	atf_check -s exit:1 -o match:'has that entry already' \
@@ -17884,6 +17901,37 @@ EOF
 30 3 * * * root /usr/sbin/newsyslog
 EOF
 	atf_check -o file:want cat root/usr/local/etc/cron.d/arcana
+	# Variables of Arcana's: at the top of its file, before its
+	# entries; one set again replaced, an empty value quoted, one
+	# unset taken away.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron setvar MAILTO=ops
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron setvar \
+	    'PATH=/bin:/usr/bin:/usr/local/bin'
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron setvar MAILTO=
+	cat > want <<'EOF'
+# Arcana's cron entries: cron(8) reads this file by itself.
+# Written by arcana-agent; changed from Arcana, not here.
+PATH=/bin:/usr/bin:/usr/local/bin
+MAILTO=""
+# at half past
+30 3 * * * root /usr/sbin/newsyslog
+EOF
+	atf_check -o file:want cat root/usr/local/etc/cron.d/arcana
+	atf_check -o match:'\{"source":"cron-d","file":"/usr/local/etc/cron.d/arcana","line":4,"name":"MAILTO","value":"","arcana":true\}' \
+	    -o match:'"line":3,"name":"PATH","value":"/bin:/usr/bin:/usr/local/bin","arcana":true\}' \
+	    "$JGC" -c "$SOCK" cron
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron unsetvar MAILTO
+	atf_check -o not-match:'MAILTO' cat root/usr/local/etc/cron.d/arcana
+	atf_check -s exit:1 -o match:'Arcana.s cron file sets no SHELL' \
+	    "$JGC" -c "$SOCK" cron unsetvar SHELL
+	atf_check -s exit:1 -e match:'LOGNAME and USER are cron.s own' \
+	    "$JGC" -c "$SOCK" cron setvar LOGNAME=x
+	atf_check -s exit:1 -e match:'is NAME=value' \
+	    "$JGC" -c "$SOCK" cron setvar MAILTO
+	atf_check -s exit:1 -e match:'cannot hold one' \
+	    "$JGC" -c "$SOCK" cron setvar 'MAILTO= "x" '
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron unsetvar PATH
+	atf_check cmp crontab.before root/etc/crontab
 	# The admin's: never written, and not Arcana's to delete.
 	atf_check -s exit:1 -o match:'Arcana.s cron file has no entry' \
 	    "$JGC" -c "$SOCK" cron delete '@daily root /usr/local/bin/backup'
@@ -17958,8 +18006,8 @@ MAILTO=alice
 EOF
 	atf_check -o file:want cat root/var/cron/tabs/alice
 	atf_check \
-	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":3,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false\}' \
-	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":7,"schedule":"\*/10 \* \* \* \*","user":"alice","command":"/home/alice/bin/sync","comment":"sync","arcana":true\}' \
+	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":3,"schedule":"0 9 \* \* 1-5","user":"alice","command":"/home/alice/bin/mail-me","comment":"mine","arcana":false[,}]' \
+	    -o match:'"source":"user","file":"/var/cron/tabs/alice","line":7,"schedule":"\*/10 \* \* \* \*","user":"alice","command":"/home/alice/bin/sync","comment":"sync","arcana":true[,}]' \
 	    "$JGC" -c "$SOCK" cron
 	# The user's own: not Arcana's to change.
 	atf_check -s exit:1 -o match:'not Arcana.s: it is outside Arcana.s markers' \
@@ -17980,6 +18028,19 @@ EOF
 	    "$JGC" -c "$SOCK" cron add crontab=alice '@reboot /home/alice/bin/start'
 	rm root/crontab.fail
 	atf_check cmp alice.mid root/var/cron/tabs/alice
+	# A variable between the markers, before Arcana's entries; the
+	# user's own MAILTO not Arcana's to unset.
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron setvar crontab=alice \
+	    SHELL=/bin/csh
+	atf_check -o match:'^SHELL=/bin/csh$' sed -n 6p root/var/cron/tabs/alice
+	atf_check -o file:alice.before head -n 3 root/var/cron/tabs/alice
+	atf_check -o match:'"source":"user","file":"/var/cron/tabs/alice","line":6,"user":"alice","name":"SHELL","value":"/bin/csh","arcana":true\}' \
+	    -o match:'"line":1,"user":"alice","name":"MAILTO","value":"alice","arcana":false\}' \
+	    "$JGC" -c "$SOCK" cron
+	atf_check -s exit:1 -o match:'MAILTO of alice.s crontab is not Arcana.s' \
+	    "$JGC" -c "$SOCK" cron unsetvar crontab=alice MAILTO
+	atf_check -o match:'done' "$JGC" -c "$SOCK" cron unsetvar crontab=alice \
+	    SHELL
 	# Its last entry deleted: its markers too, the crontab as it was.
 	atf_check -o match:'done' "$JGC" -c "$SOCK" cron delete crontab=alice \
 	    '*/15 * * * * /home/alice/bin/sync'
@@ -18040,6 +18101,12 @@ cron_jail_body()
 	    "$R/etc/passwd"
 	printf '@hourly /usr/local/www/bin/clean\n' > "$R/var/cron/tabs/www"
 	cp "$R/var/cron/tabs/www" www.before
+	# The jail's time zone, a link to its own zoneinfo as the jail sees
+	# it (Tehran's, +03:30); the host's, India's.
+	mkdir -p "$R/usr/share/zoneinfo/Asia"
+	cp /usr/share/zoneinfo/Asia/Tehran "$R/usr/share/zoneinfo/Asia/Tehran"
+	ln -s /usr/share/zoneinfo/Asia/Tehran "$R/etc/localtime"
+	cp /usr/share/zoneinfo/Asia/Kolkata root/etc/localtime
 	printf '0 0 * * * root /usr/local/bin/host-only\n' > root/etc/crontab
 	printf 'root:*:0:0::/root:/bin/sh\nalice:*:1001:1001::/home/alice:/bin/sh\n' > \
 	    root/etc/passwd
@@ -18051,9 +18118,11 @@ cron_jail_body()
 	# The jail's own, read beneath its root, www's by its crontab.
 	atf_check -o match:'"jail":"web"' \
 	    -o match:'"flags":"-s"' \
-	    -o match:'\{"source":"system","file":"/etc/crontab","line":2,"schedule":"0 4 \* \* \*","user":"root","command":"/usr/local/bin/jail-job","comment":"the jail.s","arcana":false\}' \
-	    -o match:'\{"source":"user","file":"/var/cron/tabs/www","line":1,"schedule":"@hourly","user":"www","command":"/usr/local/www/bin/clean","arcana":false\}' \
-	    -o not-match:'host-only|host-tab|alice' \
+	    -o match:'\{"source":"system","file":"/etc/crontab","line":2,"schedule":"0 4 \* \* \*","user":"root","command":"/usr/local/bin/jail-job","comment":"the jail.s","arcana":false[,}]' \
+	    -o match:'\{"source":"user","file":"/var/cron/tabs/www","line":1,"schedule":"@hourly","user":"www","command":"/usr/local/www/bin/clean","arcana":false[,}]' \
+	    -o match:'"schedule":"0 4 \* \* \*",[^}]*"next_run":\["20[0-9-]{8}T04:00:00\+03:30",' \
+	    -o match:'"timezone":"\+0330 \+03:30"' \
+	    -o not-match:'host-only|host-tab|alice|\+05:30' \
 	    "$JGC" -j web -c "$SOCK" cron
 	atf_check -o match:'^jexec 7 .*/fake-crontab -l -u www$' cat jexec.log
 	atf_check -o match:'^crontab -l -u www \(jail\)$' cat crontab.log
@@ -18071,6 +18140,13 @@ cron_jail_body()
 	    -o match:'^# poll$' cat "$R/usr/local/etc/cron.d/arcana"
 	atf_check test ! -e root/usr/local/etc/cron.d/arcana
 	atf_check -o match:'"file":"/usr/local/etc/cron.d/arcana","line":4,"schedule":"\*/5 \* \* \* \*","user":"www","command":"/usr/local/www/bin/poll","comment":"poll","arcana":true' \
+	    "$JGC" -j web -c "$SOCK" cron
+	# A variable of Arcana's file in the jail; the host's has none.
+	atf_check -o match:'done +web: cron setvar' "$JGC" -j web -c "$SOCK" \
+	    cron setvar MAILTO=www
+	atf_check -o match:'^MAILTO=www$' cat "$R/usr/local/etc/cron.d/arcana"
+	atf_check test ! -e root/usr/local/etc/cron.d/arcana
+	atf_check -o match:'"file":"/usr/local/etc/cron.d/arcana","line":3,"name":"MAILTO","value":"www","arcana":true' \
 	    "$JGC" -j web -c "$SOCK" cron
 	# A jail user's crontab by the jail's crontab.
 	atf_check -o match:'done' "$JGC" -j web -c "$SOCK" cron add \

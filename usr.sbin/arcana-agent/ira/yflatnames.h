@@ -40,7 +40,8 @@ static const char *const yfn_speeder[] = {
     "period[time,to-server,to-client,plain-to-server,plain-to-client]="
     "series", "profile?=profiles", NULL };
 /* arcana-cron's read. */
-static const char *const yfn_cron[] = { "unread?", NULL };
+static const char *const yfn_cron[] = { "unread?", "variable?",
+    "next-run?", NULL };
 /* arcana-sslproxy's read. */
 static const char *const yfn_sslproxy[] = { "rule=rules", NULL };
 

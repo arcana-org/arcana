@@ -287,7 +287,8 @@ usage(void)
 	    "    cron\n"
 	    "    cron add [crontab=user] [comment=text] line |\n"
 	    "        delete [crontab=user] line |\n"
-	    "        replace [crontab=user] [comment=text] old-line new-line\n"
+	    "        replace [crontab=user] [comment=text] old-line new-line |\n"
+	    "        setvar [crontab=user] NAME=value | unsetvar [crontab=user] NAME\n"
 	    "    sysfile file path | periodic name=YES|NO ... |\n"
 	    "        rc kern_securelevel_enable=YES|NO kern_securelevel=N |\n"
 	    "        dma smarthost=host [port=N] [tls=none|starttls|opportunistic|tls] [user=name]\n"	    "    geom class subcommand [word ...] [-P passfile]\n"
@@ -6072,7 +6073,8 @@ cmd_sslproxy(cbl_conn *conn, int argc, char **argv)
 /*
  * cron: cron's entries, read; with words, a job: add, delete or replace
  * an entry of Arcana's file (its line with a user field), or with
- * crontab=user of that user's crontab, between Arcana's markers.
+ * crontab=user of that user's crontab, between Arcana's markers; setvar
+ * and unsetvar a variable (NAME=value, NAME) there.
  */
 static int
 cmd_cron(cbl_conn *conn, int argc, char **argv)
@@ -6093,7 +6095,8 @@ cmd_cron(cbl_conn *conn, int argc, char **argv)
 	sp.kind = ARC_JOB_KIND_CRON;
 	sp.verb = argv[1];
 	if (strcmp(argv[1], "add") != 0 && strcmp(argv[1], "delete") != 0 &&
-	    strcmp(argv[1], "replace") != 0)
+	    strcmp(argv[1], "replace") != 0 && strcmp(argv[1], "setvar") !=
+	    0 && strcmp(argv[1], "unsetvar") != 0)
 		usage();
 	for (i = 2; i < argc; i++) {
 		if (strncmp(argv[i], "crontab=", 8) == 0)

@@ -503,11 +503,11 @@ kinds:
     uses: jail args text force
     values: verb=conf|enable|disable|start|stop|restart
   - kind: cron
-    title: A cron entry of Arcana's added, deleted or replaced, in its file or a user's crontab
+    title: A cron entry or variable of Arcana's added, deleted, replaced, set or unset, in its file or a user's crontab
     needs: verb text
     uses: jail user description args safe
-    values: verb=add|delete|replace
-    destroys: verb=delete
+    values: verb=add|delete|replace|setvar|unsetvar
+    destroys: verb=delete|unsetvar
   - kind: crash
     title: A core the kernel dumped taken away
     needs: verb args

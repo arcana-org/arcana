@@ -24,6 +24,16 @@
  * read and written beneath its root, never through a link out of it
  * (scope.c), its users' crontabs by its own crontab(1), through
  * jexec(8); its users are its own passwd(5)'s.
+ *
+ * Each entry's next three runs are worked out from its fields in the
+ * time zone cron has there: /etc/localtime, a jail's beneath its root
+ * (its links followed as the jail sees them).  The agent cannot change
+ * its own time zone (TZ is the process's, its threads share it), so the
+ * helper does it (cron_next_helper()): the zone's file on its standard
+ * input, the schedules its words.  The variables a file sets (SHELL=,
+ * MAILTO=) are read with its entries; Arcana sets its own at the top of
+ * its file, or just after its first marker in a crontab, before its
+ * entries, so that they are the environment of each of them.
  */
 
 #include <sys/param.h>
@@ -36,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <ucl.h>
@@ -318,11 +329,52 @@ cron_ours(const char *line)
  * crontab's owner) or each line's own (sys); Arcana's those of its file
  * (all) or between its markers.
  */
-static void
-cron_entries(struct work *w, ucl_object_t *list, const char *text,
-    const char *source, const char *file, const char *user, bool sys,
-    bool all)
+/*
+ * A variable's line taken apart as cron(8) reads it (load_env()): its
+ * name, blanks and =, its value, either quoted to keep its blanks.
+ * false when it is none.
+ */
+static bool
+cron_var(struct work *w, const char *line, const char **namep,
+    const char **valuep)
 {
+	const char	*p, *q;
+	size_t		 k;
+
+	p = line + strspn(line, " \t");
+	if (*p == '"' || *p == '\'') {
+		if ((q = strchr(p + 1, *p)) == NULL)
+			return (false);
+		*namep = wstrndup(w, p + 1, (size_t)(q - p - 1));
+		p = q + 1;
+	} else {
+		q = p + strcspn(p, "= \t");
+		*namep = wstrndup(w, p, (size_t)(q - p));
+		p = q;
+	}
+	p += strspn(p, " \t");
+	if (*p != '=' || (*namep)[0] == '\0')
+		return (false);
+	p++;
+	p += strspn(p, " \t");
+	k = strlen(p);
+	while (k > 0 && (p[k - 1] == ' ' || p[k - 1] == '\t' || p[k - 1] ==
+	    '\r'))
+		k--;
+	if (k >= 2 && (p[0] == '"' || p[0] == '\'') && p[k - 1] == p[0]) {
+		p++;
+		k -= 2;
+	}
+	*valuep = wstrndup(w, p, k);
+	return (true);
+}
+
+static void
+cron_entries(struct work *w, ucl_object_t *list, ucl_object_t *vars,
+    const char *text, const char *source, const char *file,
+    const char *user, bool sys, bool all)
+{
+	const char	*vname, *vvalue;
 	struct centry	 e;
 	ucl_object_t	*o;
 	const char	*note, *p, *nl;
@@ -349,6 +401,23 @@ cron_entries(struct work *w, ucl_object_t *list, const char *text,
 			continue;
 		case CL_ENTRY:
 			break;
+		case CL_VAR:
+			note = NULL;
+			if (vars == NULL || !cron_var(w, line, &vname, &vvalue))
+				continue;
+			o = ucl_object_typed_new(UCL_OBJECT);
+			put_s(o, "source", source);
+			put_s(o, "file", file);
+			ucl_object_insert_key(o, ucl_object_fromint(n), "line",
+			    0, false);
+			if (!sys)
+				put_s(o, "user", user);
+			put_s(o, "name", wtext(w, vname));
+			put_s(o, "value", wtext(w, vvalue));
+			ucl_object_insert_key(o, ucl_object_frombool(all ||
+			    inside), "arcana", 0, false);
+			ucl_array_append(vars, o);
+			continue;
 		default:
 			note = NULL;
 			continue;
@@ -547,11 +616,387 @@ cron_daemon(struct work *w)
 	return (o);
 }
 
+/* ---- When each entry runs next ---- */
+
+#define	CRON_NEXT	3		/* runs worked out of each entry */
+#define	CRON_NEXT_DAYS	3660		/* days looked at: ten years */
+#define	CRON_TZ_MAX	(256 * 1024)	/* of a time zone's file */
+
+/* A schedule as the times it matches. */
+struct cbits {
+	uint64_t	min;		/* 0-59 */
+	uint32_t	hour;		/* 0-23 */
+	uint32_t	dom;		/* 1-31 */
+	uint32_t	mon;		/* 1-12 */
+	uint32_t	dow;		/* 0-6, Sunday 0 (7 is 0 too) */
+	bool		domstar;	/* the day of the month's field is *... */
+	bool		dowstar;	/* the day of the week's */
+};
+
+/* What the @ strings are as five fields; NULL, ones of no time. */
+static const char *const cron_at_fields[][2] = {
+	{ "@yearly", "0 0 1 1 *" }, { "@annually", "0 0 1 1 *" },
+	{ "@monthly", "0 0 1 * *" }, { "@weekly", "0 0 * * 0" },
+	{ "@daily", "0 0 * * *" }, { "@midnight", "0 0 * * *" },
+	{ "@hourly", "0 * * * *" }, { "@every_minute", "*/1 * * * *" },
+};
+
+/* A value of a field: a number, or a name (a month's 1-12, a day's
+ * 0-6). -1 for none. */
+static int
+cron_num(const char *s, size_t len, const char *const *names, size_t nnames,
+    int base)
+{
+	size_t	i;
+	int	v;
+
+	if (len == 0 || len > 4)
+		return (-1);
+	if (isdigit((unsigned char)s[0])) {
+		for (i = 0, v = 0; i < len; i++) {
+			if (!isdigit((unsigned char)s[i]))
+				return (-1);
+			v = v * 10 + (s[i] - '0');
+		}
+		return (v);
+	}
+	for (i = 0; i < nnames; i++)
+		if (len == 3 && strncasecmp(s, names[i], 3) == 0)
+			return ((int)i + base);
+	return (-1);
+}
+
+/* A field's items as bits lo to hi: *, a value, a-b, each a /step
+ * (a value with one, from it to hi); false when it is none. */
+static bool
+cron_bits(const char *f, size_t flen, int lo, int hi,
+    const char *const *names, size_t nnames, int base, uint64_t *bits)
+{
+	const char	*item, *end, *fend, *slash, *dash;
+	size_t		 len;
+	int		 a, b, step, v;
+
+	*bits = 0;
+	fend = f + flen;
+	for (item = f; item < fend; item = end + 1) {
+		end = memchr(item, ',', (size_t)(fend - item));
+		if (end == NULL)
+			end = fend;
+		len = (size_t)(end - item);
+		step = 1;
+		if ((slash = memchr(item, '/', len)) != NULL) {
+			if ((step = cron_num(slash + 1, (size_t)(end - slash -
+			    1), NULL, 0, 0)) <= 0)
+				return (false);
+			len = (size_t)(slash - item);
+		}
+		if (len == 1 && item[0] == '*') {
+			a = lo;
+			b = hi;
+		} else if ((dash = memchr(item, '-', len)) != NULL) {
+			a = cron_num(item, (size_t)(dash - item), names,
+			    nnames, base);
+			b = cron_num(dash + 1, len - (size_t)(dash + 1 - item),
+			    names, nnames, base);
+		} else {
+			a = cron_num(item, len, names, nnames, base);
+			b = slash != NULL ? hi : a;
+		}
+		if (a < lo || b > hi || a > b)
+			return (false);
+		for (v = a; v <= b; v += step)
+			*bits |= UINT64_C(1) << v;
+		if (end == fend)
+			break;
+	}
+	return (true);
+}
+
+/* A schedule's fields as bits; false for none of a time (@reboot). */
+static bool
+cron_parse(const char *sched, struct cbits *cb)
+{
+	const char	*f[5], *p;
+	size_t		 len[5], i;
+	uint64_t	 b;
+
+	memset(cb, 0, sizeof(*cb));
+	p = sched + strspn(sched, " \t");
+	if (*p == '@') {
+		for (i = 0; i < nitems(cron_at_fields); i++)
+			if (strcmp(p, cron_at_fields[i][0]) == 0)
+				return (cron_parse(cron_at_fields[i][1], cb));
+		return (false);
+	}
+	for (i = 0; i < 5; i++) {
+		f[i] = p;
+		len[i] = strcspn(p, " \t");
+		if (len[i] == 0)
+			return (false);
+		p += len[i];
+		p += strspn(p, " \t");
+	}
+	if (*p != '\0')
+		return (false);
+	if (!cron_bits(f[0], len[0], 0, 59, NULL, 0, 0, &cb->min))
+		return (false);
+	if (!cron_bits(f[1], len[1], 0, 23, NULL, 0, 0, &b))
+		return (false);
+	cb->hour = (uint32_t)b;
+	if (!cron_bits(f[2], len[2], 1, 31, NULL, 0, 0, &b))
+		return (false);
+	cb->dom = (uint32_t)b;
+	if (!cron_bits(f[3], len[3], 1, 12, cron_months, nitems(cron_months),
+	    1, &b))
+		return (false);
+	cb->mon = (uint32_t)b;
+	if (!cron_bits(f[4], len[4], 0, 7, cron_days, nitems(cron_days), 0,
+	    &b))
+		return (false);
+	cb->dow = (uint32_t)(b | (b >> 7)) & 0x7f;
+	/* cron(8)'s rule: a day field that starts with * leaves it to the
+	 * other; both given, either day will do. */
+	cb->domstar = f[2][0] == '*';
+	cb->dowstar = f[4][0] == '*';
+	return (true);
+}
+
+/* The next runs after now, in this process's time zone: up to max of
+ * them in out, how many returned. */
+static int
+cron_next(const struct cbits *cb, time_t now, time_t *out, int max)
+{
+	struct tm	 cur, day, t;
+	time_t		 tt;
+	int		 d, h, m, n;
+	bool		 domok, dowok;
+
+	if (localtime_r(&now, &cur) == NULL)
+		return (0);
+	n = 0;
+	for (d = 0; d < CRON_NEXT_DAYS && n < max; d++) {
+		memset(&day, 0, sizeof(day));
+		day.tm_year = cur.tm_year;
+		day.tm_mon = cur.tm_mon;
+		day.tm_mday = cur.tm_mday + d;
+		day.tm_hour = 12;
+		day.tm_isdst = -1;
+		if (mktime(&day) == -1)
+			continue;
+		if ((cb->mon & (UINT32_C(1) << (day.tm_mon + 1))) == 0)
+			continue;
+		domok = (cb->dom & (UINT32_C(1) << day.tm_mday)) != 0;
+		dowok = (cb->dow & (UINT32_C(1) << day.tm_wday)) != 0;
+		if (cb->domstar || cb->dowstar ? !(domok && dowok) :
+		    !(domok || dowok))
+			continue;
+		for (h = 0; h < 24 && n < max; h++) {
+			if ((cb->hour & (UINT32_C(1) << h)) == 0)
+				continue;
+			for (m = 0; m < 60 && n < max; m++) {
+				if ((cb->min & (UINT64_C(1) << m)) == 0)
+					continue;
+				t = day;
+				t.tm_hour = h;
+				t.tm_min = m;
+				t.tm_sec = 0;
+				t.tm_isdst = -1;
+				if ((tt = mktime(&t)) == -1 || tt <= now)
+					continue;
+				/* An hour the clock skips: no such time. */
+				if (t.tm_hour != h || t.tm_min != m)
+					continue;
+				if (n > 0 && tt <= out[n - 1])
+					continue;
+				out[n++] = tt;
+			}
+		}
+	}
+	return (n);
+}
+
+/* A time as RFC 3339 has it, in this process's time zone, its offset
+ * after it. */
+static void
+cron_fmt(time_t tt, char *buf, size_t len)
+{
+	struct tm	tm;
+	long		off;
+	size_t		k;
+
+	buf[0] = '\0';
+	if (localtime_r(&tt, &tm) == NULL || (k = strftime(buf, len,
+	    "%Y-%m-%dT%H:%M:%S", &tm)) == 0)
+		return;
+	off = tm.tm_gmtoff;
+	snprintf(buf + k, len - k, "%c%02ld:%02ld", off < 0 ? '-' : '+',
+	    labs(off) / 3600, labs(off) % 3600 / 60);
+}
+
+/*
+ * The helper's cron-next (scope_helper(), of the host's alone): the time
+ * zone's file on its standard input (none: UTC, as cron has it with no
+ * /etc/localtime), the schedules its words.  It prints "zone ABBR
+ * +hh:mm", then for each schedule its index and its next runs, a space
+ * between them.  The file is written to a file of its own for TZ, this
+ * process's alone, and taken away again.
+ */
+int
+cron_next_helper(int argc, char **argv)
+{
+	struct cbits	 cb;
+	struct tm	 tm;
+	time_t		 now, t[CRON_NEXT];
+	char		*buf, path[PATH_MAX], when[40], abbr[16];
+	size_t		 len;
+	ssize_t		 r;
+	int		 fd, i, k, n;
+
+	if ((buf = malloc(CRON_TZ_MAX)) == NULL)
+		return (1);
+	for (len = 0; len < CRON_TZ_MAX && (r = read(STDIN_FILENO, buf + len,
+	    CRON_TZ_MAX - len)) > 0; len += (size_t)r)
+		;
+	path[0] = '\0';
+	if (len > 0) {
+		snprintf(path, sizeof(path), "%s/arcana-tz.XXXXXX", tmp_dir());
+		if ((fd = mkstemp(path)) == -1 || write(fd, buf, len) !=
+		    (ssize_t)len) {
+			fprintf(stderr, "%s: %s\n", path, strerror(errno));
+			if (fd != -1) {
+				close(fd);
+				unlink(path);
+			}
+			return (1);
+		}
+		close(fd);
+		setenv("TZ", path, 1);
+	} else
+		setenv("TZ", "UTC0", 1);
+	free(buf);
+	tzset();
+	now = time(NULL);
+	if (localtime_r(&now, &tm) != NULL) {
+		if (strftime(abbr, sizeof(abbr), "%Z", &tm) == 0)
+			snprintf(abbr, sizeof(abbr), "UTC");
+		cron_fmt(now, when, sizeof(when));
+		printf("zone %s %s\n", abbr, strlen(when) > 19 ? when + 19 :
+		    "+00:00");
+	}
+	for (i = 1; i < argc; i++) {
+		n = cron_parse(argv[i], &cb) ? cron_next(&cb, now, t,
+		    CRON_NEXT) : 0;
+		printf("%d", i - 1);
+		for (k = 0; k < n; k++) {
+			cron_fmt(t[k], when, sizeof(when));
+			printf(" %s", when);
+		}
+		printf("\n");
+	}
+	if (path[0] != '\0')
+		unlink(path);
+	return (fflush(stdout) == 0 ? 0 : 1);
+}
+
+/*
+ * Each entry of list given its next runs (next_run) and top the time
+ * zone they are in, by the helper: the zone's file opened here, the
+ * host's or beneath the jail's root (its links as the jail sees them),
+ * its standard input.  What goes wrong is said in unread.
+ */
+static void
+cron_next_runs(struct work *w, ucl_object_t *top, ucl_object_t *list,
+    ucl_object_t *unread)
+{
+	struct execres		 res;
+	const ucl_object_t	*e;
+	ucl_object_t		*o, *a;
+	const char		**words, *sched;
+	char			**argv, *out, *line, *v;
+	size_t			 n, i, k, nw;
+	int			 fd;
+
+	n = ucl_array_size(list);
+	if (n == 0)
+		return;
+	/* The schedules, each once. */
+	words = wcalloc(w, n, sizeof(*words));
+	nw = 0;
+	for (i = 0; i < n; i++) {
+		e = ucl_array_find_index(list, (unsigned)i);
+		if ((sched = ucl_object_tostring(ucl_object_lookup(e,
+		    "schedule"))) == NULL)
+			continue;
+		for (k = 0; k < nw && strcmp(words[k], sched) != 0; k++)
+			;
+		if (k == nw)
+			words[nw++] = sched;
+	}
+	argv = wcalloc(w, nw + 5, sizeof(*argv));
+	argv[0] = (char *)(uintptr_t)opts.helper_bin;
+	argv[1] = (char *)(uintptr_t)"--scope-helper";
+	argv[2] = (char *)(uintptr_t)"0";
+	argv[3] = (char *)(uintptr_t)"cron-next";
+	for (k = 0; k < nw; k++)
+		argv[4 + k] = (char *)(uintptr_t)words[k];
+	argv[4 + nw] = NULL;
+	errno = 0;
+	fd = scope_open_read(w, rooted(w, "/etc/localtime"));
+	if (fd == -1 && errno != ENOENT) {
+		ucl_array_append(unread, ucl_object_fromstring(wfmt(w,
+		    "/etc/localtime: %s: the next runs not worked out",
+		    strerror(errno))));
+		return;
+	}
+	exec_set_fds(fd, -1);
+	if (run_read(w, argv, &res) != 0 || res.status != 0) {
+		if (fd != -1)
+			close(fd);
+		ucl_array_append(unread, ucl_object_fromstring(wtext(w,
+		    exec_error(w, &res, "the next runs (cron-next)"))));
+		return;
+	}
+	if (fd != -1)
+		close(fd);
+	out = wstrndup(w, res.out != NULL ? res.out : "", res.outlen);
+	while ((line = strsep(&out, "\n")) != NULL) {
+		if (strncmp(line, "zone ", 5) == 0) {
+			put_s(top, "timezone", wtext(w, line + 5));
+			continue;
+		}
+		if ((v = strchr(line, ' ')) == NULL)
+			continue;
+		*v++ = '\0';
+		k = strtoul(line, NULL, 10);
+		if (k >= nw)
+			continue;
+		/* Each entry of that schedule. */
+		for (i = 0; i < n; i++) {
+			e = ucl_array_find_index(list, (unsigned)i);
+			sched = ucl_object_tostring(ucl_object_lookup(e,
+			    "schedule"));
+			if (sched == NULL || strcmp(sched, words[k]) != 0)
+				continue;
+			a = ucl_object_typed_new(UCL_ARRAY);
+			{
+				char	*vv = wstrdup(w, v), *t;
+
+				while ((t = strsep(&vv, " ")) != NULL)
+					if (t[0] != '\0')
+						ucl_array_append(a,
+						    ucl_object_fromstring(t));
+			}
+			o = (ucl_object_t *)(uintptr_t)e;
+			ucl_object_insert_key(o, a, "next_run", 0, false);
+		}
+	}
+}
+
 /* The read: arcana-cron's, of the host or of the jail w works in. */
 void
 do_cron(struct work *w, struct json_rsp *rsp)
 {
-	ucl_object_t	*top, *list, *unread;
+	ucl_object_t	*top, *list, *unread, *vars;
 	const char	*tab, *path;
 	char		*text, **names, *json;
 	size_t		 i, k, n;
@@ -562,12 +1007,13 @@ do_cron(struct work *w, struct json_rsp *rsp)
 	top = ucl_object_typed_new(UCL_OBJECT);
 	list = ucl_object_typed_new(UCL_ARRAY);
 	unread = ucl_object_typed_new(UCL_ARRAY);
+	vars = ucl_object_typed_new(UCL_ARRAY);
 	put_s(top, "jail", w->jail);
 	ucl_object_insert_key(top, cron_daemon(w), "daemon", 0, false);
 	/* The system crontab. */
 	if ((text = cron_slurp(w, CRON_SYSTAB)) != NULL)
-		cron_entries(w, list, text, "system", CRON_SYSTAB, NULL, true,
-		    false);
+		cron_entries(w, list, vars, text, "system", CRON_SYSTAB, NULL,
+		    true, false);
 	else if (errno != ENOENT)
 		ucl_array_append(unread, ucl_object_fromstring(wfmt(w, "%s: %s",
 		    CRON_SYSTAB, strerror(errno))));
@@ -587,8 +1033,8 @@ do_cron(struct work *w, struct json_rsp *rsp)
 				    wfmt(w, "%s: %s", path, strerror(errno))));
 				continue;
 			}
-			cron_entries(w, list, text, "cron-d", path, NULL, true,
-			    strcmp(path, CRON_FILE) == 0);
+			cron_entries(w, list, vars, text, "cron-d", path, NULL,
+			    true, strcmp(path, CRON_FILE) == 0);
 		}
 	}
 	/* The users' crontabs, each by crontab -l -u. */
@@ -605,10 +1051,13 @@ do_cron(struct work *w, struct json_rsp *rsp)
 			continue;
 		}
 		if (had)
-			cron_entries(w, list, tab, "user", wfmt(w, "%s/%s",
-			    CRON_TABS, names[k]), names[k], false, false);
+			cron_entries(w, list, vars, tab, "user", wfmt(w,
+			    "%s/%s", CRON_TABS, names[k]), names[k], false,
+			    false);
 	}
+	cron_next_runs(w, top, list, unread);
 	ucl_object_insert_key(top, list, "entry", 0, false);
+	ucl_object_insert_key(top, vars, "variable", 0, false);
 	if (ucl_array_size(unread) > 0)
 		ucl_object_insert_key(top, unread, "unread", 0, false);
 	else
@@ -672,6 +1121,71 @@ cron_line_check(const char *line, bool sys)
 	return (why);
 }
 
+/* Is the verb a variable's (setvar, unsetvar)? */
+static bool
+cron_isvar(const struct arc_job_spec *sp)
+{
+
+	return (strcmp(sp->verb, "setvar") == 0 || strcmp(sp->verb,
+	    "unsetvar") == 0);
+}
+
+/* A variable's name as a job gives it: letters, digits and _, not a
+ * digit first; LOGNAME and USER cron sets itself. */
+static bool
+cron_varname_ok(const char *s, size_t len)
+{
+	size_t	i;
+
+	if (len == 0 || len > 64 || isdigit((unsigned char)s[0]))
+		return (false);
+	for (i = 0; i < len; i++)
+		if (!isalnum((unsigned char)s[i]) && s[i] != '_')
+			return (false);
+	return (!(len == 7 && strncmp(s, "LOGNAME", 7) == 0) && !(len == 4 &&
+	    strncmp(s, "USER", 4) == 0));
+}
+
+/* Must a value be quoted to be read back as it is: none, blanks at an
+ * end, a quote first? */
+static bool
+cron_quoted(const char *v)
+{
+	size_t	k = strlen(v);
+
+	return (k == 0 || strchr(" \t\"'", v[0]) != NULL || v[k - 1] == ' ' ||
+	    v[k - 1] == '\t');
+}
+
+/* setvar's NAME=value, unsetvar's NAME: NULL, or what is wrong. */
+static const char *
+cron_var_check(const char *text, bool set)
+{
+	const char	*eq;
+
+	if (text == NULL)
+		return ("a cron variable is NAME=value to set, NAME to unset");
+	eq = strchr(text, '=');
+	if (!cron_varname_ok(text, eq != NULL ? (size_t)(eq - text) :
+	    strlen(text)))
+		return ("a cron variable's name is letters, digits and _, 64 at "
+		    "most, not a digit first; LOGNAME and USER are cron's own");
+	if (!set)
+		return (eq == NULL ? NULL : "a cron unsetvar takes the "
+		    "variable's name alone");
+	if (eq == NULL)
+		return ("a cron setvar is NAME=value (MAILTO= and nothing after "
+		    "it: no mail)");
+	if (!cron_one_line(eq + 1, CRON_LINE_MAX))
+		return ("a cron variable's value is one line of printable "
+		    "characters, 1000 at most");
+	if (cron_quoted(eq + 1) && strchr(eq + 1, '"') != NULL)
+		return ("a cron variable's value with blanks at an end, or a "
+		    "quote first, is written in double quotes: it cannot hold "
+		    "one");
+	return (NULL);
+}
+
 const char *
 cron_check(const struct arc_job_spec *sp)
 {
@@ -680,14 +1194,25 @@ cron_check(const struct arc_job_spec *sp)
 
 	if (sp->verb == NULL || (strcmp(sp->verb, "add") != 0 &&
 	    strcmp(sp->verb, "delete") != 0 && strcmp(sp->verb, "replace") !=
-	    0))
-		return ("a cron job's verb is add, delete or replace");
+	    0 && !cron_isvar(sp)))
+		return ("a cron job's verb is add, delete, replace, setvar or "
+		    "unsetvar");
 	if (sp->jail != NULL && sp->jail[0] != '\0' && !valid_jail(sp->jail))
 		return ("invalid jail name");
 	sys = sp->user == NULL || sp->user[0] == '\0';
 	if (!sys && !cron_user_ok(sp->user))
 		return ("a crontab's user is a name of passwd(5): letters, "
 		    "digits, ., _ and -");
+	if (cron_isvar(sp)) {
+		if ((why = cron_var_check(sp->text, strcmp(sp->verb,
+		    "setvar") == 0)) != NULL)
+			return (why);
+		if (sp->names.n != 0 || (sp->description != NULL &&
+		    sp->description[0] != '\0'))
+			return ("a cron setvar or unsetvar takes its variable as "
+			    "text, and no args nor comment");
+		return (NULL);
+	}
 	if ((why = cron_line_check(sp->text, sys)) != NULL)
 		return (why);
 	if (strcmp(sp->verb, "replace") == 0) {
@@ -838,6 +1363,73 @@ cl_find(const struct clines *l, size_t lo, size_t hi, const char *line)
 	return (-1);
 }
 
+/* Is l's line i a variable named name (len bytes)? */
+static bool
+cl_isvar(struct work *w, const struct clines *l, size_t i, const char *name,
+    size_t len)
+{
+	const char	*n, *v;
+
+	return (cron_kind(l->v[i]) == CL_VAR && cron_var(w, l->v[i], &n, &v) &&
+	    strlen(n) == len && strncmp(n, name, len) == 0);
+}
+
+/* Is the variable set in l's lines lo to hi? */
+static bool
+cl_hasvar(struct work *w, const struct clines *l, size_t lo, size_t hi,
+    const char *name, size_t len)
+{
+	size_t	i;
+
+	for (i = lo; i < hi; i++)
+		if (cl_isvar(w, l, i, name, len))
+			return (true);
+	return (false);
+}
+
+/*
+ * A variable set or unset in l's lines lo to hi (Arcana's): its lines
+ * there taken away, and set, written at the top of them, after the
+ * variables already there, so that it is the environment of each entry
+ * below.  *hip moved.  0, or -1 and *errp.
+ */
+static int
+cron_var_edit(struct work *w, const struct arc_job_spec *sp,
+    struct clines *l, size_t lo, size_t *hip, const char *where,
+    const char **errp)
+{
+	const char	*eq;
+	size_t		 hi = *hip, i, len;
+	bool		 had;
+
+	eq = strchr(sp->text, '=');
+	len = eq != NULL ? (size_t)(eq - sp->text) : strlen(sp->text);
+	had = false;
+	for (i = lo; i < hi; ) {
+		if (cl_isvar(w, l, i, sp->text, len)) {
+			cl_cut(l, i, 1);
+			hi--;
+			had = true;
+		} else
+			i++;
+	}
+	if (strcmp(sp->verb, "unsetvar") == 0) {
+		if (!had) {
+			*errp = wfmt(w, "%s sets no %.*s", where, (int)len,
+			    sp->text);
+			return (-1);
+		}
+		*hip = hi;
+		return (0);
+	}
+	for (i = lo; i < hi && cron_kind(l->v[i]) == CL_VAR; i++)
+		;
+	cl_put(w, l, i, cron_quoted(eq + 1) ? wfmt(w, "%.*s=\"%s\"", (int)len,
+	    sp->text, eq + 1) : sp->text);
+	*hip = hi + 1;
+	return (0);
+}
+
 /*
  * The change made in l's lines lo to hi (Arcana's), at end of them a new
  * entry: an add, a delete (the comment just above taken too), a replace
@@ -852,6 +1444,8 @@ cron_edit(struct work *w, const struct arc_job_spec *sp, struct clines *l,
 	ssize_t		 at;
 	size_t		 hi = *hip, i;
 
+	if (cron_isvar(sp))
+		return (cron_var_edit(w, sp, l, lo, hip, where, errp));
 	line = sp->text + strspn(sp->text, " \t");
 	if (strcmp(sp->verb, "add") == 0) {
 		if (cl_find(l, lo, hi, line) >= 0) {
@@ -921,8 +1515,8 @@ cron_file_job(struct work *w, const struct arc_job_spec *sp,
 	size_t		 lo, hi;
 	int		 step;
 
-	user = cron_line_user(w, sp->text);
-	if (user == NULL || !cron_user_there(w, user)) {
+	user = cron_isvar(sp) ? "" : cron_line_user(w, sp->text);
+	if (!cron_isvar(sp) && (user == NULL || !cron_user_there(w, user))) {
 		*errp = wfmt(w, "no user %s%s%s: an entry runs as a user of "
 		    "passwd(5)", user != NULL ? user : "", w->jail != NULL ?
 		    " in the jail " : "", w->jail != NULL ? w->jail : "");
@@ -997,7 +1591,15 @@ cron_tab_job(struct work *w, const struct arc_job_spec *sp,
 		return (-1);
 	}
 	/* Not Arcana's: the user's own, outside the markers. */
-	if (strcmp(sp->verb, "add") != 0) {
+	if (strcmp(sp->verb, "unsetvar") == 0 && (b < 0 || !cl_hasvar(w, &l,
+	    (size_t)b, (size_t)e, sp->text, strlen(sp->text))) &&
+	    cl_hasvar(w, &l, 0, l.n, sp->text, strlen(sp->text))) {
+		*errp = wfmt(w, "%s of %s's crontab is not Arcana's: it is "
+		    "outside Arcana's markers, the user's own (crontab -e -u "
+		    "%s)", sp->text, sp->user, sp->user);
+		return (-1);
+	}
+	if (strcmp(sp->verb, "add") != 0 && !cron_isvar(sp)) {
 		line = strcmp(sp->verb, "replace") == 0 ? sp->names.v[0] :
 		    sp->text;
 		if ((b < 0 || cl_find(&l, (size_t)b, (size_t)e, line) < 0) &&

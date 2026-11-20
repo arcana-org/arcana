@@ -1232,10 +1232,23 @@ and
 of each user's crontab
 .Pq Nm crontab Fl l Fl u Ar user ,
 with its source, file and line, schedule, user, command, the comment
-line above it, and whether it is Arcana's; and cron itself, running,
+line above it, whether it is Arcana's, and its next three runs; the
+variables each file sets
+.Pq Li SHELL= , MAILTO= , PATH= ,
+with their file and line and whether they are Arcana's; the time zone
+the runs are in
+.Pq Pa /etc/localtime ;
+and cron itself, running,
 .Va cron_enable
 and
 .Va cron_flags .
+cron's own log is
+.Nm Cm log Li cron ,
+cron itself
+.Nm Cm service Li cron Ar action ,
+each with
+.Fl j
+for a jail's.
 With
 .Fl j ,
 a running jail's, read beneath its root, its users' crontabs by its own
@@ -1247,7 +1260,10 @@ action.
 .It Cm cron add Oo Cm crontab= Ns Ar user Oc Oo Cm comment= Ns Ar text Oc Ar line
 .It Cm cron delete Oo Cm crontab= Ns Ar user Oc Ar line
 .It Cm cron replace Oo Cm crontab= Ns Ar user Oc Oo Cm comment= Ns Ar text Oc Ar old-line new-line
-An entry of Arcana's added, deleted or replaced, a job.
+.It Cm cron setvar Oo Cm crontab= Ns Ar user Oc Ar NAME Ns = Ns Ar value
+.It Cm cron unsetvar Oo Cm crontab= Ns Ar user Oc Ar NAME
+An entry of Arcana's added, deleted or replaced, or a variable of
+Arcana's set or unset, a job.
 Arcana's entries are in a file of its own,
 .Pa /usr/local/etc/cron.d/arcana ,
 which cron reads by itself: its
@@ -1285,6 +1301,23 @@ the user's own lines as they were; an entry of theirs is refused, and
 the markers go with Arcana's last entry.
 .Cm comment=
 is the comment line written above the entry.
+A variable
+.Po
+.Li SHELL , MAILTO , PATH
+and the like; not
+.Li LOGNAME
+nor
+.Li USER ,
+which cron sets
+.Pc
+is written at the top of Arcana's file, or just after its first marker
+in the crontab, before Arcana's entries, so that each of them runs with
+it; its value in double quotes when it is empty or has blanks at an
+end.
+.Xr cron 8
+has no
+.Li CRON_TZ :
+one is passed to the commands and changes no schedule.
 The admin's
 .Pa /etc/crontab
 and other cron.d files are never written.

@@ -4479,17 +4479,30 @@ part_system_jail(void)
  * cron in a jail picked in the System tab: an entry added from the
  * form, written to Arcana's file beneath the jail's root (gw's, jroot),
  * the host's left; then edited and deleted from its row, each written
- * there.
+ * there.  Its next runs in the jail's time zone; a variable set and
+ * unset from its form, written there; cron started and enabled in the
+ * jail by the service-action job (service -j, sysrc -j); the jail's
+ * cron log beside the entries.
  */
 static void
 part_cron_jail(void)
 {
-	int	i;
+	FILE	*fp;
+	char	 line[256];
+	bool	 ran;
+	int	 i;
 
 	put("jroot/etc/passwd", "root:*:0:0:Charlie &:/root:/bin/sh\n"
 	    "www:*:80:80:World Wide Web Owner:/nonexistent:/usr/sbin/nologin\n");
-	put("jroot/etc/crontab", "# the jail's own\n0 4 * * * root "
-	    "/usr/local/bin/jail-job\n");
+	put("jroot/etc/crontab", "SHELL=/bin/sh\n# the jail's own\n0 4 * * * "
+	    "root /usr/local/bin/jail-job\n");
+	/* The jail's time zone, Tehran's (+03:30); its log; its cron. */
+	ATF_REQUIRE(system("cp /usr/share/zoneinfo/Asia/Tehran "
+	    "jroot/etc/localtime && mkdir -p jroot/log jroot/etc/rc.d && "
+	    "printf '#!/bin/sh\\n' > jroot/etc/rc.d/cron && chmod 755 "
+	    "jroot/etc/rc.d/cron && rm -f jroot/running.cron") == 0);
+	put("jroot/log/cron", "Nov 20 12:00:00 gw /usr/sbin/cron[77]: (root) "
+	    "CMD (/usr/local/bin/jail-job)\n");
 	run("document.querySelector('button.tab[data-arg=system]').click()");
 	wait_js("document.querySelector('select[data-input=sv-jail] "
 	    "option[value=gw]')", 20);
@@ -4550,6 +4563,68 @@ part_cron_jail(void)
 	    "jroot/usr/local/etc/cron.d/arcana") == 0; i++)
 		usleep(100000);
 	ATF_CHECK_MSG(i < 300, "the jail's cron entry is not deleted");
+	dock_closed();
+	/* The jail's next runs, in its time zone; its log beside. */
+	wait_js("document.querySelector('table.cron td.next span[title$="
+	    "\"T04:00:00+03:30\"]')", 20);
+	wait_js("document.querySelector('pre.cronlog')?.textContent.includes("
+	    "'CMD (/usr/local/bin/jail-job)')", 20);
+	ATF_CHECK(js_true("document.querySelector('table.cronvars')."
+	    "textContent.includes('SHELL') && document.querySelector("
+	    "'#cron').parentNode.textContent.includes('+0330 +03:30')"));
+	/* A variable of Arcana's, set from its form. */
+	click_when("button[data-act=cr-vnew]", 10);
+	wait_js("document.querySelector('form[data-form=cr-var]')", 10);
+	run("const f = document.querySelector('form[data-form=cr-var]'); "
+	    "f.name.value = 'MAILTO'; f.value.value = 'ops'; "
+	    "f.requestSubmit();");
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^MAILTO=ops$' "
+	    "jroot/usr/local/etc/cron.d/arcana") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's cron variable is not set");
+	ATF_CHECK(system("test ! -e root/usr/local/etc/cron.d/arcana") == 0);
+	dock_closed();
+	/* Unset from its row, asked first. */
+	wait_js("document.querySelector('table.cronvars tr.ours button"
+	    "[data-act=cr-vdel]')", 20);
+	shot("7t-system-cron-jail-vars");
+	click_when("table.cronvars tr.ours button[data-act=cr-vdel]", 10);
+	wait_js("document.querySelector('form[data-form=confirm]')", 10);
+	run("document.querySelector('form[data-form=confirm]')."
+	    "requestSubmit();");
+	wait_js("!document.querySelector('form[data-form=confirm]')", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q MAILTO "
+	    "jroot/usr/local/etc/cron.d/arcana") == 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "the jail's cron variable is not unset");
+	dock_closed();
+	/* cron itself, enabled and started in the jail: its own rc.conf
+	 * and service(8) (sysrc -j, service -j), none of the host's. */
+	click_when("button[data-act=cr-svc][data-arg=enable]", 10);
+	queued_run();
+	for (i = 0; i < 300 && system("grep -q '^cron_enable=\"YES\"' "
+	    "jroot/etc/rc.conf") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "cron was not enabled in the jail's rc.conf");
+	ATF_CHECK(system("! grep -qs cron_enable rc.conf") == 0);
+	dock_closed();
+	click_when("button[data-act=cr-svc][data-arg=start]", 10);
+	queued_run();
+	for (i = 0; i < 300 && access("jroot/running.cron", F_OK) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 300, "cron was not started in the jail");
+	ATF_CHECK_MSG(access("running.cron", F_OK) == -1,
+	    "cron was started on the host");
+	ran = false;
+	if ((fp = fopen("svc.log", "r")) != NULL) {
+		while (fgets(line, sizeof(line), fp) != NULL)
+			if (strcmp(line, "-j 4 cron start\n") == 0)
+				ran = true;
+		fclose(fp);
+	}
+	ATF_CHECK_MSG(ran, "no service -j 4 cron start in svc.log");
 	dock_closed();
 }
 
@@ -13442,7 +13517,7 @@ ATF_TC_WITH_CLEANUP(pwa_cron_jail);
 ATF_TC_HEAD(pwa_cron_jail, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "cron in a jail picked in the System tab: an entry added, edited and deleted from the page, each written to Arcana's file beneath the jail's root, the host's left");
+	atf_tc_set_md_var(tc, "descr", "cron in a jail picked in the System tab: an entry added, edited and deleted from the page, each written to Arcana's file beneath the jail's root, the host's left; its next runs in the jail's time zone, a variable set and unset, cron started and enabled in the jail, its log shown");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
 ATF_TC_BODY(pwa_cron_jail, tc)

@@ -24,7 +24,9 @@ module arcana-cron {
      Arcana's own entries are in a file of its own,
      /usr/local/etc/cron.d/arcana, and in a user's crontab between
      Arcana's markers, written there by crontab(1) alone; the rest is
-     the admin's, read here and never written.  A jail's are read
+     the admin's, read here and never written: Arcana's variables
+     (SHELL=, MAILTO=) are set at the top of its file, or just after
+     its first marker, before its entries.  A jail's are read
      beneath its root, never through a link out of it, its users'
      crontabs by its own crontab(1).  Changes are jobs of kind cron (a
      jail's, the job's jail).";
@@ -142,6 +144,85 @@ module arcana-cron {
               "Arcana's own, changed by cron jobs: in Arcana's file, or
                between its markers in a user's crontab.  Otherwise the
                admin's, read-only here.";
+          }
+          leaf-list next-run {
+            type string;
+            description
+              "When it runs next, its next three times, from the five
+               fields or the @ string in the time zone of the host (or
+               of the jail: timezone), as RFC 3339 has a time, the
+               zone's offset then after it
+               (2026-11-21T03:00:00+01:00): kept a string, the host's
+               own offset with it.  None for @reboot, @every_second and
+               @ and seconds, which run at boot, each second, or that
+               long after the last run ended; none for a schedule that
+               matches no day within ten years.";
+          }
+        }
+        leaf timezone {
+          type string;
+          description
+            "The time zone the next runs are in, as cron has it: the
+             host's /etc/localtime, a jail's beneath its root (its own,
+             a link followed as the jail sees it), its abbreviation and
+             offset now (CET +01:00); UTC where there is none.";
+        }
+        list variable {
+          description
+            "A line of a file that sets a variable of the environment
+             its entries below it run in (crontab(5)), in the order of
+             the entries': SHELL=, MAILTO=, PATH= and the like.
+             FreeBSD's cron has no CRON_TZ: one is shown, and passed to
+             the commands, and changes no schedule.";
+          leaf source {
+            type enumeration {
+              enum system {
+                description
+                  "/etc/crontab.";
+              }
+              enum cron-d {
+                description
+                  "A file of a cron.d directory.";
+              }
+              enum user {
+                description
+                  "A user's crontab.";
+              }
+            }
+            description
+              "Where it is.";
+          }
+          leaf file {
+            type string;
+            description
+              "Its file, as an entry's.";
+          }
+          leaf line {
+            type uint32;
+            description
+              "Its line in the file, 1 the first.";
+          }
+          leaf user {
+            type string;
+            description
+              "Whose crontab, for a user's.";
+          }
+          leaf name {
+            type string;
+            description
+              "The variable.";
+          }
+          leaf value {
+            type string;
+            description
+              "Its value, its quotes taken off.";
+          }
+          leaf arcana {
+            type boolean;
+            description
+              "Arcana's own, set and unset by cron jobs (setvar,
+               unsetvar): in Arcana's file, or between its markers in a
+               user's crontab.  Otherwise the admin's, read-only.";
           }
         }
         leaf-list unread {

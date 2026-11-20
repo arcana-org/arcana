@@ -4,7 +4,7 @@ module: arcana-cron
         +---w input
         |  +---w jail?   string
         +--ro output
-           +--ro jail?     string
+           +--ro jail?       string
            +--ro daemon
            |  +--ro enabled?   boolean
            |  +--ro running?   boolean
@@ -18,4 +18,14 @@ module: arcana-cron
            |  +--ro command?    string
            |  +--ro comment?    string
            |  +--ro arcana?     boolean
-           +--ro unread*   string
+           |  +--ro next-run*   string
+           +--ro timezone?   string
+           +--ro variable*
+           |  +--ro source?   enumeration
+           |  +--ro file?     string
+           |  +--ro line?     uint32
+           |  +--ro user?     string
+           |  +--ro name?     string
+           |  +--ro value?    string
+           |  +--ro arcana?   boolean
+           +--ro unread*     string

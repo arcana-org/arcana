@@ -2182,12 +2182,14 @@ submodule arcana-jobs-kinds {
           presence
             "This kind of job.";
           description
-            "A cron entry of Arcana's added, deleted or replaced, in its file or a user's crontab (destroys: verb=delete)";
+            "A cron entry or variable of Arcana's added, deleted, replaced, set or unset, in its file or a user's crontab (destroys: verb=delete|unsetvar)";
           leaf verb {
             type enumeration {
               enum add;
               enum delete;
               enum replace;
+              enum setvar;
+              enum unsetvar;
             }
             mandatory true;
             description

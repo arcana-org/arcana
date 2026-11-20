@@ -1062,6 +1062,9 @@ scope_helper(int argc, char **argv)
 		return (service_detach(argc - 1, argv + 1));
 	if (jid == 0 && strcmp(argv[1], "service-replace") == 0)
 		return (service_replace(argc - 1, argv + 1));
+	/* cron's next runs in a time zone of its own (cron.c). */
+	if (jid == 0 && strcmp(argv[1], "cron-next") == 0)
+		return (cron_next_helper(argc - 1, argv + 1));
 	/* A debugger on a core, as nobody (crashes.c). */
 	if (jid == 0 && strcmp(argv[1], "debug-as-nobody") == 0)
 		return (debug_as_nobody(argc - 1, argv + 1));

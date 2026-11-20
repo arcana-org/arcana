@@ -582,10 +582,18 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "${f#$r} $e\"; done ;;\n"
 	    /* A debugger run as the helper runs it (as nobody where the
 	     * agent is root), on the core it is given. */
-	    "debug-as-nobody) shift 3; exec \"$@\" ;;\nesac\n"
+	    "debug-as-nobody) shift 3; exec \"$@\" ;;\n"
+	    /* cron's next runs: the agent's own helper (fake-cron-next),
+	     * the time zone's file on its standard input. */
+	    "cron-next) shift 3; exec \"${0%/*}/fake-cron-next\" \"$@\" ;;\n"
+	    "esac\n"
 	    "exit 0\n");
 	ATF_REQUIRE(chmod("fake-jexec", 0755) == 0);
 	ATF_REQUIRE(chmod("fake-helper", 0755) == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nexec %s --scope-helper 0 "
+	    "cron-next \"$@\"\n", jgd);
+	put("fake-cron-next", buf);
+	ATF_REQUIRE(chmod("fake-cron-next", 0755) == 0);
 	ATF_REQUIRE(mkdir("jroot", 0755) == 0 || errno == EEXIST);
 	ATF_REQUIRE(mkdir("jroot/etc", 0755) == 0 || errno == EEXIST);
 	ATF_REQUIRE(mkdir("jroot/var", 0755) == 0 || errno == EEXIST);

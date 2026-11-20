@@ -93,6 +93,23 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### cron: next runs, variables, its log, started from the section; agent 0.344.0, console 0.486.0
+
+- The System tab's cron(8) section starts, stops and enables cron itself
+  (the service-action job, with the jail picked; on the host enabling
+  is a commit, as in the Services tab), shows each entry's next three
+  runs in the host's or the jail's time zone (/etc/localtime beneath
+  its root), the variables each file sets, and cron's log
+  (/var/log/cron, the jail's beneath its root).
+- arcana-cron's read gains entry/next-run, timezone and the variable
+  list (SIDs 98621-98630).  The cron job takes two new verbs, setvar
+  (text NAME=value) and unsetvar (text NAME), which set variables at the
+  top of Arcana's /usr/local/etc/cron.d/arcana or just after Arcana's
+  first marker in a user's crontab; `arcanactl cron setvar|unsetvar
+  [crontab=user]`.  The agent's helper has a new verb, cron-next.
+- FreeBSD's cron has no CRON_TZ: one can be set and moves no schedule.
+- Update the agent and the console together.
+
 ### Jails followed by EVFILT_JAIL; agent 0.343.0
 
 - A Suricata or Squid instance that runs in a jail (the Security

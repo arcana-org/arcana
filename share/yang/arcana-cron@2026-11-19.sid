@@ -2,6 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-cron",
     "module-revision": "2026-11-19",
+    "sid-file-version": 1,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 98 600, 100.",
     "dependency-revision": [
       {
@@ -120,6 +121,56 @@
         "namespace": "data",
         "identifier": "/arcana-cron:cron/read/output/unread",
         "sid": "98620"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/entry/next-run",
+        "sid": "98621"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/timezone",
+        "sid": "98622"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable",
+        "sid": "98623"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/arcana",
+        "sid": "98624"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/file",
+        "sid": "98625"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/line",
+        "sid": "98626"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/name",
+        "sid": "98627"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/source",
+        "sid": "98628"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/user",
+        "sid": "98629"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-cron:cron/read/output/variable/value",
+        "sid": "98630"
       }
     ]
   }

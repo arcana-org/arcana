@@ -8,10 +8,20 @@
   a running jail's), cron jobs add, delete and replace in Arcana's
   /usr/local/etc/cron.d/arcana or between Arcana's markers in a user's
   crontab by crontab(1), the System tab's cron(8) section, `arcanactl
-  cron`.  Left: cron itself started or enabled from the section (a
-  service-action of cron today, from the Services tab); the entries'
-  next run times; the variables of a file (SHELL=, MAILTO=) shown and
-  set; cron's log (/var/log/cron) beside the entries.
+  cron`.  Done since (2026-11-20, same cases): cron started, stopped
+  and enabled from the section (the service-action job, with the jail
+  picked; enabled on the host by a commit, as the Services tab does);
+  each entry's next three runs (next-run, worked out by the helper in
+  the host's or the jail's time zone, its /etc/localtime on the
+  helper's standard input, beneath the jail's root); each file's
+  variables shown (variable), Arcana's set and unset by the cron job
+  (setvar, unsetvar) at the top of its file or just after its first
+  marker; cron's log beside the entries (arcana-log's read of cron,
+  the jail's log directory).  Left: FreeBSD's cron has no CRON_TZ (one
+  is shown and set, and moves no schedule); cron's -s/-o handling of
+  the hours summer time skips or repeats is not followed by the next
+  runs (a time the clock skips is left out, a repeated one counted
+  once).
 - SSL inspection in jails (the user's rule: every service feature of
   Arcana in a jail too), built 2026-11-19 (docs/notes/ssl-inspection.md,
   Jails; agent_test:sslproxy_jail, sslproxy_rc; console_test:
