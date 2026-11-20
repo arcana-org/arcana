@@ -367,8 +367,8 @@ enabled(struct work *w)
  * inside it; the host's from the kernel, or from the sysctl(8) the
  * tests give in its place.  -1 when there is none of that name.
  */
-static long
-fw_sysctl(struct work *w, const char *name)
+long
+sysctl_int_here(struct work *w, const char *name)
 {
 	const char *const words[] = { name };
 	struct execres	res;
@@ -455,7 +455,7 @@ needs_json(struct work *w, bool tables)
 	for (i = 0; i < nitems(apply_needs); i++) {
 		o = ucl_object_typed_new(UCL_OBJECT);
 		put(o, "name", apply_needs[i].name);
-		if ((v = fw_sysctl(w, apply_needs[i].name)) >= 0)
+		if ((v = sysctl_int_here(w, apply_needs[i].name)) >= 0)
 			ucl_object_insert_key(o, ucl_object_fromint(v), "value",
 			    0, false);
 		ucl_object_insert_key(o, ucl_object_fromint(1), "want", 0,
@@ -486,7 +486,7 @@ needs_unmet(struct work *w, const char *text)
 	for (i = 0; i < nitems(apply_needs); i++) {
 		if (apply_needs[i].tables && !tables)
 			continue;
-		if ((v = fw_sysctl(w, apply_needs[i].name)) == 1)
+		if ((v = sysctl_int_here(w, apply_needs[i].name)) == 1)
 			continue;
 		if (v < 0)
 			fprintf(m.fp, "Apply needs %s=1, which this kernel "

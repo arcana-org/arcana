@@ -93,6 +93,28 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### IPv6 fwd and the kernel, pkg bootstrap in a jail; agent 0.346.0, console 0.488.0
+
+- arcana-host's host says the running kernel's version line
+  (kernel-version) and net.inet6.ip6.redirect (ip6-redirect);
+  arcana-sslproxy's read says ip6-redirect where its fwd rules are (a
+  vnet jail's own).  Where IPv6 is sent by `ipfw fwd` and the redirect
+  is 0 (the sysctl hardening's), the SSL inspection tab and the SD-WAN
+  plan note a kernel before FreeBSD main fb9969ca61ca, which loses an
+  IPv6 fwd rule's next hop on ip6_tryforward(): osreldate below
+  1600031, main-n below 291371, or built before 2026-11-18 21:36 UTC; a
+  1600031 kernel built later outside main "may predate".  Only a note;
+  net.inet6.ip6.redirect=1 avoids the bug until the kernel is updated.
+- A jail's packages read says whether pkg(8) is in the jail (jail-pkg)
+  and whether the host's pkg(7) takes -j (bootstrap-jail, FreeBSD main
+  cad99ff75342).  A new job kind, pkg-bootstrap (jail, pkg_ip), runs
+  `pkg -j <jail> bootstrap -y` and is refused with an older pkg(7); the
+  Packages tab and its Install box offer it as a button the admin
+  presses, and `arcanactl pkg-bootstrap` does the same.  With such a
+  pkg(7) a jail without pkg reads as empty until it is bootstrapped.
+- Update the agent and the console together (a new job kind, new
+  leaves).
+
 ### A list entry read by its key, a cut list said; agent 0.345.0, console 0.487.0
 
 - A GET of one entry of a list the agent cuts short now returns that

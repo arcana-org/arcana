@@ -143,6 +143,9 @@ yhost_from(const struct host_facts *h, const struct host_stats *st,
 	out->machine = h->machine;
 	out->has_osreldate = h->has_osreldate;
 	out->osreldate = h->osreldate;
+	out->kernel_version = h->kernel_version;
+	out->has_ip6_redirect = h->has_ip6_redirect;
+	out->ip6_redirect = h->ip6_redirect;
 	out->has_ncpu = h->has_ncpu;
 	out->ncpu = h->ncpu;
 	out->has_physmem = h->has_physmem;

@@ -152,6 +152,7 @@ static int	cmd_fstab(cbl_conn *, int, char **);
 static int	cmd_packages(cbl_conn *, int, char **);
 static int	cmd_pkg_clean(cbl_conn *, int, char **);
 static int	cmd_pkg_audit_fetch(cbl_conn *, int, char **);
+static int	cmd_pkg_bootstrap(cbl_conn *, int, char **);
 static int	cmd_instance_restart(cbl_conn *, int, char **);
 static int	cmd_pkg_install(cbl_conn *, int, char **);
 static int	cmd_ipsec(cbl_conn *, int, char **);
@@ -396,6 +397,7 @@ usage(void)
 	    "[package ...]\n"
 	    "    pkg-clean [-a] [-j jail | -J]\n"
 	    "    pkg-audit-fetch [-j jail]\n"
+	    "    pkg-bootstrap [-4 | -6] jail\n"
 	    "    instance-restart suricata | squid name\n"
 	    "    pkg-install [-O] [-R] [-4 | -6] [-r repo] [-j jail] "
 	    "package ...\n"
@@ -7889,6 +7891,15 @@ cmd_packages(cbl_conn *conn, int argc, char **argv)
 		emit_packages(ro.package.v, ro.package.n);
 		emit_vulns(ro.package.v, ro.package.n, ro.audit_error);
 	}
+	/* A jail without pkg of its own, and whether pkg-bootstrap can
+	 * put it there (the host's pkg(7) takes -j). */
+	if (error == 0 && (inst ? io.has_jail_pkg && !io.jail_pkg :
+	    ro.has_jail_pkg && !ro.jail_pkg))
+		xo_emit("{Lwc:Pkg}{:jail-pkg/%s}\n", (inst ?
+		    io.bootstrap_jail : ro.bootstrap_jail) ? "not in the jail; "
+		    "pkg-bootstrap installs it (pkg -j bootstrap)" : "not in the "
+		    "jail; the host's pkg(7) takes no -j: bootstrap it in the "
+		    "jail by hand");
 	/* pkg's repositories there: what -r of pkg-upgrade may name. */
 	if (error == 0 && nrepos > 0) {
 		xo_open_list("repository");
@@ -8090,6 +8101,35 @@ cmd_pkg_audit_fetch(cbl_conn *conn, int argc, char **argv)
 	}
 	if (optind != argc)
 		usage();
+	return (submit(conn, &sp));
+}
+
+/* pkg-bootstrap [-4 | -6] jail: pkg(8) installed in a running jail that
+ * has none, by the host's pkg(7) (pkg -j jail bootstrap -y), a job. */
+static int
+cmd_pkg_bootstrap(cbl_conn *conn, int argc, char **argv)
+{
+	struct arc_job_spec	sp;
+	int			ch;
+
+	memset(&sp, 0, sizeof(sp));
+	sp.has_kind = true;
+	sp.kind = ARC_JOB_KIND_PKG_BOOTSTRAP;
+	optind = 1;
+	while ((ch = getopt(argc, argv, "46")) != -1) {
+		switch (ch) {
+		case '4':
+		case '6':
+			sp.has_pkg_ip = true;
+			sp.pkg_ip = ch == '4' ? 4 : 6;
+			break;
+		default:
+			usage();
+		}
+	}
+	if (optind != argc - 1)
+		usage();
+	sp.jail = argv[optind];
 	return (submit(conn, &sp));
 }
 
@@ -8711,7 +8751,8 @@ main(int argc, char *argv[])
 		    "restart", "kill", "enable", "disable", "service",
 		    "interface", "route", "sysctl", "kmod", "reboot",
 		    "job-cancel", "pkg-upgrade", "pkg-install",
-		    "pkg-audit-fetch", "instance-restart", "sslproxy", "zfs",
+		    "pkg-audit-fetch", "pkg-bootstrap", "instance-restart",
+		    "sslproxy", "zfs",
 		    "zpool" };
 
 		for (i = 0; i < (int)nitems(dryable); i++)
@@ -8945,6 +8986,8 @@ main(int argc, char *argv[])
 		rc = cmd_pkg_install(conn, argc, argv);
 	else if (strcmp(argv[0], "pkg-audit-fetch") == 0)
 		rc = cmd_pkg_audit_fetch(conn, argc, argv);
+	else if (strcmp(argv[0], "pkg-bootstrap") == 0)
+		rc = cmd_pkg_bootstrap(conn, argc, argv);
 	else if (strcmp(argv[0], "instance-restart") == 0)
 		rc = cmd_instance_restart(conn, argc, argv);
 	else if (strcmp(argv[0], "ipsec") == 0)

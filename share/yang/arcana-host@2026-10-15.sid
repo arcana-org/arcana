@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-host",
     "module-revision": "2026-10-15",
-    "sid-file-version": 7,
+    "sid-file-version": 8,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -661,6 +661,16 @@
         "namespace": "data",
         "identifier": "/arcana-host:host/agent/terminal-users",
         "sid": "82018"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-host:host/ip6-redirect",
+        "sid": "82019"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-host:host/kernel-version",
+        "sid": "82020"
       },
       {
         "namespace": "data",

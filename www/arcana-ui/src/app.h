@@ -1263,6 +1263,15 @@ void		 secpage_loc(char *, size_t);
 void		 secpage_open(const char *);
 void		 secpage_tick(double);
 void		 secpage_refresh(void);
+/* kernfix.c: the kernel fixes Arcana's features wait for, and whether a
+ * host's running kernel has one. */
+#define	KFIX_HAS	0
+#define	KFIX_BEFORE	1
+#define	KFIX_UNKNOWN	2
+int		 kernel_fwd6_fix(const struct server *);
+bool		 kernel_fwd6_note(struct html *, const struct server *,
+		    const char *);
+
 /* sslinspect.c: the Security page's SSL inspection tab (SSLproxy). */
 void		 view_sslinspect(struct html *, struct server *);
 bool		 sslinspect_form(const char *, const ucl_object_t *);

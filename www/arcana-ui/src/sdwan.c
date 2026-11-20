@@ -2496,6 +2496,96 @@ job_line(struct html *h, const ucl_object_t *j)
 	h_raw(h, "</li>");
 }
 
+/*
+ * Does a job of the plan hold an IPv6 ipfw fwd rule: SSL inspection's
+ * (its form's IPv6), an IPv6 policy's steering (fwd tablearg from a
+ * table of the family, sw<fib>_z<zone>p<policy>_6), or an fwd to an
+ * IPv6 address.
+ */
+static bool
+job_fwd6(const ucl_object_t *j)
+{
+	const char	*p, *e, *t;
+	char		*s;
+	size_t		 n;
+	bool		 v;
+
+	if (jstr(j, "kind") != NULL && strcmp(jstr(j, "kind"), "sslproxy") ==
+	    0 && (t = jstr(j, "text")) != NULL && strstr(t, "\"ipv6\":true") !=
+	    NULL)
+		return (true);
+	if ((s = (char *)ucl_object_emit(j, UCL_EMIT_JSON_COMPACT)) == NULL)
+		return (false);
+	v = false;
+	for (p = s; !v && (p = strstr(p, "fwd ")) != NULL; p += 4) {
+		/* The rule's text: to its string's end, or an escaped
+		 * newline. */
+		e = p + strcspn(p, "\"\\");
+		n = strcspn(p + 4, " ,");
+		if (memchr(p + 4, ':', n < (size_t)(e - p - 4) ? n :
+		    (size_t)(e - p - 4)) != NULL)
+			v = true;
+		else if (strncmp(p + 4, "tablearg ", 9) == 0) {
+			for (t = p; t + 3 <= e && !v; t++)
+				if (strncmp(t, "_6)", 3) == 0 || strncmp(t,
+				    " ip6 ", 5) == 0)
+					v = true;
+		}
+	}
+	free(s);
+	return (v);
+}
+
+/*
+ * The edges the plan gives IPv6 fwd rules whose net.inet6.ip6.redirect
+ * is 0 (their list's), on a kernel before FreeBSD main fb9969ca61ca:
+ * a note each, never a refusal.
+ */
+static void
+view_fwd6(struct html *h)
+{
+	const ucl_object_t	*c, *j;
+	ucl_object_iter_t	 it, jit;
+	struct server		*s;
+	const char		*last;
+	char			 what[200];
+	int			 i;
+	bool			 found;
+
+	last = "";
+	found = false;
+	it = NULL;
+	while ((c = ucl_object_iterate(jget(sd.plan, "changes"), &it, true)) !=
+	    NULL) {
+		if (jstr(c, "server") == NULL)
+			continue;
+		if (strcmp(last, jstr(c, "server")) != 0)
+			found = false;
+		last = jstr(c, "server");
+		if (found || strcmp(jstr(c, "change") != NULL ? jstr(c,
+		    "change") : "", "unmake") == 0)
+			continue;
+		jit = NULL;
+		while (!found && (j = ucl_object_iterate(jget(c, "make"), &jit,
+		    true)) != NULL)
+			found = job_fwd6(j);
+		/* A host's own: a vnet jail edge (server/jail) has its own
+		 * net.inet6.ip6.redirect, which its host's list does not
+		 * say. */
+		s = NULL;
+		for (i = 0; strchr(last, '/') == NULL && i < app.nservers; i++)
+			if (strcmp(app.servers[i].id, last) == 0)
+				s = &app.servers[i];
+		if (!found || s == NULL ||
+		    jget(s->list, "host.ip6_redirect") == NULL ||
+		    jbool(s->list, "host.ip6_redirect"))
+			continue;
+		snprintf(what, sizeof(what), "the IPv6 fwd rules the plan puts "
+		    "on %s", jstr(c, "name") != NULL ? jstr(c, "name") : s->name);
+		(void)kernel_fwd6_note(h, s, what);
+	}
+}
+
 static void
 view_tunnels(struct html *h, const ucl_object_t *tunnels)
 {
@@ -2893,6 +2983,7 @@ view_edges(struct html *h)
 			h_raw(h, "</div>");
 		}
 	}
+	view_fwd6(h);
 	view_accept(h);
 	view_applied(h);
 	view_tunnels(h, jget(sd.plan, "tunnels"));

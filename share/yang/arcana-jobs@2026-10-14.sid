@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 36,
+    "sid-file-version": 37,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -2589,6 +2589,21 @@
       },
       {
         "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-bootstrap",
+        "sid": "62905"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-bootstrap/jail",
+        "sid": "62906"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-bootstrap/pkg-ip",
+        "sid": "62907"
+      },
+      {
+        "namespace": "data",
         "identifier": "/arcana-jobs:dry-run/input/change/ipsec/child",
         "sid": "62908"
       },
@@ -3649,6 +3664,16 @@
       },
       {
         "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-bootstrap",
+        "sid": "63120"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-bootstrap/jail",
+        "sid": "63121"
+      },
+      {
+        "namespace": "data",
         "identifier": "/arcana-jobs:dry-run/input/change/sysfile/jail",
         "sid": "63122"
       },
@@ -3826,6 +3851,11 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/poudriere/jail",
         "sid": "63157"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-bootstrap/pkg-ip",
+        "sid": "63158"
       },
       {
         "namespace": "data",

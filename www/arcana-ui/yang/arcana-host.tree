@@ -5,6 +5,8 @@ module: arcana-host
      +--ro release?             string
      +--ro machine?             string
      +--ro osreldate?           uint32
+     +--ro kernel-version?      string
+     +--ro ip6-redirect?        boolean
      +--ro ncpu?                uint32
      +--ro physmem?             uint64
      +--ro boot-time?           yang:date-and-time

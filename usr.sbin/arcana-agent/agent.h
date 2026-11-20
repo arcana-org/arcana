@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.345.0"
+#define	ARCANA_AGENT_VERSION	"0.346.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -542,8 +542,14 @@ struct host_facts {
 		const char	*const *v;
 	}		 features;
 	bool		 terminal_users;	/* mapped logins' file usable */
+	const char	*kernel_version;	/* kern.version's first line */
+	bool		 has_ip6_redirect;
+	bool		 ip6_redirect;		/* net.inet6.ip6.redirect */
 };
 void		 host_info(struct work *, struct host_facts *);
+/* invidia/ipfw.c: a number sysctl of w's network (a jail's read in it),
+ * -1 when there is none of that name. */
+long		 sysctl_int_here(struct work *, const char *);
 bool		 has_feature(const char *);
 
 /* ira/jail.c: one jail record from runtime and configured state. */
@@ -2092,6 +2098,9 @@ struct pkg_read {
 	bool			 has_pkgbase;	/* a jail's base: pkgbase */
 	bool			 pkgbase;
 	const char		*audit_error;	/* why pkg audit said nothing */
+	bool			 has_jail_pkg;	/* a jail's: pkg(8) there or not */
+	bool			 jail_pkg;
+	bool			 bootstrap_jail; /* none, and pkg(7) takes -j */
 };
 struct pkg_upgrade {
 	const char		*jail;		/* NULL the host; "*" every one */
@@ -2120,6 +2129,9 @@ int		 do_pkg_upgrade(struct work *, const struct pkg_upgrade *,
 int		 do_pkg_clean(struct work *, const char *, bool, const char **);
 void		 pkg_audit(struct work *, const char *, struct pkg_read *);
 int		 do_pkg_audit_fetch(struct work *, const char *, const char **);
+int		 do_pkg_bootstrap(struct work *, const char *, uint8_t,
+		    const char **);
+bool		 pkg7_jail(struct work *);
 int		 do_jail_base(struct work *, const struct arc_job_spec *,
 		    const char **);
 const char	*pkg_repo_error(struct work *, const struct execres *,

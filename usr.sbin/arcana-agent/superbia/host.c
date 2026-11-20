@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <sys/utsname.h>
 
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -43,6 +44,37 @@ has_feature(const char *name)
 	return (false);
 }
 
+/*
+ * A text sysctl of the kernel's, its first line: from sysctl(3), or
+ * from the sysctl(8) the tests give in its place.  NULL when there is
+ * none.
+ */
+static const char *
+kern_text(struct work *w, const char *name)
+{
+	struct execres	 res;
+	char		*argv[4], *v;
+	size_t		 len;
+
+	if (strcmp(opts.sysctl_bin, "/sbin/sysctl") == 0) {
+		if (sysctlbyname(name, NULL, &len, NULL, 0) != 0 || len == 0)
+			return (NULL);
+		v = wcalloc(w, len + 1, 1);
+		if (sysctlbyname(name, v, &len, NULL, 0) != 0)
+			return (NULL);
+	} else {
+		argv[0] = (char *)(uintptr_t)opts.sysctl_bin;
+		argv[1] = (char *)(uintptr_t)"-n";
+		argv[2] = (char *)(uintptr_t)name;
+		argv[3] = NULL;
+		if (run_read(w, argv, &res) != 0 || res.out == NULL)
+			return (NULL);
+		v = wstrndup(w, res.out, res.outlen);
+	}
+	v[strcspn(v, "\n")] = '\0';
+	return (v[0] != '\0' ? wtext(w, v) : NULL);
+}
+
 /* Facts about this host, from uname(3) and sysctl(3). */
 void
 host_info(struct work *w, struct host_facts *h)
@@ -69,6 +101,27 @@ host_info(struct work *w, struct host_facts *h)
 		h->hostname = wname(w, wstrdup(w, name));
 	h->has_osreldate = true;
 	h->osreldate = (uint32_t)getosreldate();
+	/* The running kernel: its version line names its build (the
+	 * commit, "main-n291371-fb9969ca61ca", when built from git), the
+	 * console's to compare with the fixes it knows of. */
+	h->kernel_version = kern_text(w, "kern.version");
+	if (strcmp(opts.sysctl_bin, "/sbin/sysctl") != 0) {
+		const char	*od;
+		char		*end;
+		unsigned long	 n;
+
+		if ((od = kern_text(w, "kern.osreldate")) != NULL &&
+		    (n = strtoul(od, &end, 10)) > 0 && *end == '\0')
+			h->osreldate = (uint32_t)n;
+	}
+	{
+		long	r;
+
+		if ((r = sysctl_int_here(w, "net.inet6.ip6.redirect")) >= 0) {
+			h->has_ip6_redirect = true;
+			h->ip6_redirect = r != 0;
+		}
+	}
 
 	step = step_begin(w, STEP_LIB, "sysctlbyname(3)",
 	    "hw.ncpu hw.physmem kern.boottime kern.securelevel");

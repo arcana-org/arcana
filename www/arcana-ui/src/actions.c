@@ -1843,6 +1843,8 @@ host_row(const ucl_object_t *h)
 	    "sysname", "release", "release", "machine", "machine", "ncpu",
 	    "ncpu", "physmem", "physmem", "securelevel", "securelevel",
 	    "privileged", "privileged", "reboot-required", "reboot_required",
+	    "osreldate", "osreldate", "kernel-version", "kernel_version",
+	    "ip6-redirect", "ip6_redirect",
 	    "agent.version", "version", "agent.build", "build",
 	    "agent.safe-wait", "safe_wait", "agent.feature", "features", NULL };
 	const ucl_object_t	*p;
@@ -2897,7 +2899,8 @@ osversion_ask(const char *err, bool dry_run, bool read)
 
 static const char *const pkg_top_map[] = { "pkgbase", "pkgbase",
     "upgraded", "upgraded", "pkgbase-jail", "pkgbase_jails", "audit-error",
-    "audit_error", NULL };
+    "audit_error", "jail-pkg", "jail_pkg", "bootstrap-jail",
+    "bootstrap_jail", NULL };
 static const char *const pkg_map[] = { "name", "name", "installed",
     "installed", "available", "available", "origin", "origin", "comment",
     "comment", "automatic", "automatic", "size", "size", "vulnerable",

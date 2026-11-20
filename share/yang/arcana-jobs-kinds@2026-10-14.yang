@@ -187,6 +187,9 @@ submodule arcana-jobs-kinds {
       enum instance-restart {
         value 54;
       }
+      enum pkg-bootstrap {
+        value 55;
+      }
     }
     description
       "A kind of job, by its number in arcana.yaml's job-kind.";
@@ -2284,6 +2287,25 @@ submodule arcana-jobs-kinds {
             mandatory true;
             description
               "Service";
+          }
+        }
+      }
+      case pkg-bootstrap {
+        container pkg-bootstrap {
+          presence
+            "This kind of job.";
+          description
+            "pkg bootstrapped in a jail that has none (pkg -j bootstrap)";
+          leaf jail {
+            type string;
+            mandatory true;
+            description
+              "Jail";
+          }
+          leaf pkg-ip {
+            type uint32;
+            description
+              "pkg's network";
           }
         }
       }

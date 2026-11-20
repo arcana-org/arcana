@@ -20,6 +20,7 @@
 #include "qrcodegen.h"
 
 static void	pkg_repo_select(struct html *, const char *);
+static void	pkg_bootstrap_notice(struct html *);
 static const char *icon_grid =
     "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3 3h7v7H3z"
     "M14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z\"/></svg>";
@@ -3027,8 +3028,9 @@ modal(struct html *h)
 			h_txt(h, cur_server()->name);
 			h_raw(h, "</b>");
 		}
-		h_raw(h, ", from its repository, with what they need.</p>"
-		    "<label>Packages<input name=\"names\" spellcheck=\"false\" "
+		h_raw(h, ", from its repository, with what they need.</p>");
+		pkg_bootstrap_notice(h);
+		h_raw(h, "<label>Packages<input name=\"names\" spellcheck=\"false\" "
 		    "autocomplete=\"off\" placeholder=\"strongswan "
 		    "bird3\" autofocus><small>Their names, with spaces "
 		    "between them.</small></label><label class=\"toggle\"><input "
@@ -4454,6 +4456,37 @@ installed_packages(struct html *h)
 		    "in it.</p></div>");
 }
 
+/*
+ * A jail without pkg of its own, as its read says: pkg bootstrapped
+ * there by the host's pkg(7) (pkg -j <jail> bootstrap -y), a job the
+ * admin's button asks; a pkg(7) without -j said, the way by hand.
+ */
+static void
+pkg_bootstrap_notice(struct html *h)
+{
+
+	if (app.pkg.jail[0] == '\0' || jget(app.pkg.data, "jail_pkg") == NULL ||
+	    jbool(app.pkg.data, "jail_pkg"))
+		return;
+	h_raw(h, "<div class=\"notice warn pkg-bootstrap\"><span>The jail <b>");
+	h_txt(h, app.pkg.jail);
+	h_raw(h, "</b> has no pkg of its own (<code>/usr/local/sbin/pkg</code>"
+	    "): what is installed there goes through the host's pkg. ");
+	if (jbool(app.pkg.data, "bootstrap_jail"))
+		h_raw(h, "The host's <code>pkg(7)</code> can bootstrap it there "
+		    "(<code>pkg -j</code>), from the repository the jail's "
+		    "<code>pkg.conf</code> names.</span><button type=\"button\" "
+		    "class=\"primary "
+		    "small\" data-act=\"pkg-bootstrap\" title=\"pkg -j &lt;jail"
+		    "&gt; bootstrap -y, a job\">Bootstrap pkg</button></div>");
+	else
+		h_raw(h, "The host's <code>pkg(7)</code> takes no <code>-j"
+		    "</code> (FreeBSD main has it since cad99ff75342, "
+		    "2026-11-19), so it cannot be bootstrapped from here: run "
+		    "<code>pkg bootstrap</code> in the jail, or update the host's "
+		    "base.</span></div>");
+}
+
 /* The packages tab: the host or a running jail, and what pkg can upgrade. */
 void
 view_packages(struct html *h, struct server *s)
@@ -4559,6 +4592,8 @@ view_packages(struct html *h, struct server *s)
 		h_txt(h, app.pkg.result);
 		h_raw(h, "</div>");
 	}
+	if (mine)
+		pkg_bootstrap_notice(h);
 	if (!mine) {
 		h_raw(h, !app.pkg.loading ? "<div class=\"empty\"><h2>No data"
 		    "</h2><p>The host has not answered yet.</p></div>" :

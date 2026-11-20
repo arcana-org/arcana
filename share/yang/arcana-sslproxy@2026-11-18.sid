@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sslproxy",
     "module-revision": "2026-11-18",
-    "sid-file-version": 2,
+    "sid-file-version": 3,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 97 400, 20, listed first so that new items go there; 96 900, 100; 96 500, 100.",
     "dependency-revision": [
       {
@@ -329,6 +329,11 @@
         "namespace": "data",
         "identifier": "/arcana-sslproxy:sslproxy/read/output/vnet",
         "sid": "97404"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sslproxy:sslproxy/read/output/ip6-redirect",
+        "sid": "97405"
       }
     ]
   }

@@ -2746,6 +2746,13 @@ arcana_packages_packages_read_action(cbl_req *req,
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
+	if ((out->has_jail_pkg = r.has_jail_pkg)) {
+		out->jail_pkg = r.jail_pkg;
+		if (!r.jail_pkg) {
+			out->has_bootstrap_jail = true;
+			out->bootstrap_jail = r.bootstrap_jail;
+		}
+	}
 	return (ypackages_listed(&r, NULL, a, &out->package.v,
 	    &out->package.n, &out->repository.v, &out->repository.n,
 	    &out->has_pkgbase, &out->pkgbase, &out->audit_error));
@@ -2794,6 +2801,13 @@ arcana_packages_packages_refresh_action(cbl_req *req,
 	step_end(w, root, r.ok, NULL);
 	if (!r.ok)
 		return (said(req, r.error));
+	if ((out->has_jail_pkg = r.has_jail_pkg)) {
+		out->jail_pkg = r.jail_pkg;
+		if (!r.jail_pkg) {
+			out->has_bootstrap_jail = true;
+			out->bootstrap_jail = r.bootstrap_jail;
+		}
+	}
 	return (ypackages_listed(&r, NULL, a, &out->package.v,
 	    &out->package.n, &out->repository.v, &out->repository.n,
 	    &out->has_pkgbase, &out->pkgbase, &out->audit_error));

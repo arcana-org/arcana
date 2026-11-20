@@ -150,6 +150,23 @@ module arcana-packages {
          -F; never fetched by itself), or what pkg said.  Absent when
          they were.";
     }
+    leaf jail-pkg {
+      type boolean;
+      description
+        "Of a jail's read and refresh: whether pkg(8) is in the jail,
+         /usr/local/sbin/pkg beneath its root.  A jail without it has
+         no pkg of its own: an install there goes through the host's
+         pkg, and a newer pkg(7) would offer to bootstrap one.";
+    }
+    leaf bootstrap-jail {
+      type boolean;
+      description
+        "Of a jail's read and refresh where jail-pkg is false: whether
+         the host's pkg(7) takes -j (FreeBSD main from cad99ff75342),
+         so that a job of kind pkg-bootstrap (pkg -j <jail> bootstrap
+         -y) installs pkg in the jail.  False: the host's pkg(7) is
+         older, and pkg is bootstrapped in the jail by hand.";
+    }
   }
 
   grouping packages {

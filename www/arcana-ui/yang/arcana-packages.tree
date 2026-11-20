@@ -10,10 +10,12 @@ module: arcana-packages
      |  +--ro origin?          string
      |  +--ro vulnerable?      boolean
      |  +--ro vulnerability*   string
-     +--ro repository*     string
-     +--ro pkgbase?        boolean
-     +--ro pkgbase-jail*   string
-     +--ro audit-error?    string
+     +--ro repository*       string
+     +--ro pkgbase?          boolean
+     +--ro pkgbase-jail*     string
+     +--ro audit-error?      string
+     +--ro jail-pkg?         boolean
+     +--ro bootstrap-jail?   boolean
      +---x read
      |  +--ro output
      |     +--ro package* [name]
@@ -26,10 +28,12 @@ module: arcana-packages
      |     |  +--ro origin?          string
      |     |  +--ro vulnerable?      boolean
      |     |  +--ro vulnerability*   string
-     |     +--ro repository*     string
-     |     +--ro pkgbase?        boolean
-     |     +--ro pkgbase-jail*   string
-     |     +--ro audit-error?    string
+     |     +--ro repository*       string
+     |     +--ro pkgbase?          boolean
+     |     +--ro pkgbase-jail*     string
+     |     +--ro audit-error?      string
+     |     +--ro jail-pkg?         boolean
+     |     +--ro bootstrap-jail?   boolean
      +---x refresh
      |  +---w input
      |  |  +---w ip-version?         ip-version
@@ -47,10 +51,12 @@ module: arcana-packages
      |     |  +--ro origin?          string
      |     |  +--ro vulnerable?      boolean
      |     |  +--ro vulnerability*   string
-     |     +--ro repository*     string
-     |     +--ro pkgbase?        boolean
-     |     +--ro pkgbase-jail*   string
-     |     +--ro audit-error?    string
+     |     +--ro repository*       string
+     |     +--ro pkgbase?          boolean
+     |     +--ro pkgbase-jail*     string
+     |     +--ro audit-error?      string
+     |     +--ro jail-pkg?         boolean
+     |     +--ro bootstrap-jail?   boolean
      +---x upgrade
         +---w input
         |  +---w name*               string

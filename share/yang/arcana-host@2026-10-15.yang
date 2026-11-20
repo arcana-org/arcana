@@ -237,6 +237,25 @@ module arcana-host {
       description
         "kern.osreldate.";
     }
+    leaf kernel-version {
+      type string;
+      description
+        "The running kernel's version, kern.version's first line: its
+         release, build number and, for a kernel built from git, its
+         branch, commit count and commit (\"FreeBSD 16.0-CURRENT #0
+         main-n291371-fb9969ca61ca: Wed Nov 18 ...\"), and when it
+         was built.  With osreldate, what the console compares with
+         the kernel fixes Arcana's features wait for.";
+    }
+    leaf ip6-redirect {
+      type boolean;
+      description
+        "net.inet6.ip6.redirect of the host: whether it sends ICMPv6
+         redirects.  Arcana's sysctl hardening sets it to 0, which
+         puts forwarded IPv6 on ip6_tryforward()'s path, where a
+         kernel before FreeBSD main fb9969ca61ca loses the next hop
+         of an ipfw fwd rule.";
+    }
     leaf ncpu {
       type uint32;
       description

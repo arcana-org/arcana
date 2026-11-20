@@ -437,6 +437,14 @@ audit)
 	fi
 	printf 'pimd-3.1.0 is vulnerable:\n  pimd -- remote crash\n  CVE: CVE-2026-0001\n  CVE: CVE-2026-0002\n  WWW: https://vuxml.FreeBSD.org/freebsd/1111-aaaa.html\n\n  pimd -- a second issue\n  WWW: https://vuxml.FreeBSD.org/freebsd/2222-bbbb.html\n\n1 problem(s) in 1 installed package(s) found.\n'
 	exit 1 ;;
+# pkg(7) bootstrapping pkg(8) in a jail (pkg -j): pkg(8) put beneath
+# the jail's root (./jroot), each asked for logged in bootstrap.log.
+bootstrap)
+	echo "$*" >> bootstrap.log
+	R=$(cat jroot)
+	mkdir -p "$R/usr/local/sbin"
+	printf '#!/bin/sh\n' > "$R/usr/local/sbin/pkg"
+	chmod +x "$R/usr/local/sbin/pkg" ;;
 *)	exit 2 ;;
 esac
 EOS
@@ -6941,6 +6949,96 @@ packages_body()
 	atf_check -s exit:2 -e ignore "$JGC" -c "$SOCK" pkg-clean -J -j web
 }
 packages_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case pkg_bootstrap cleanup
+pkg_bootstrap_head()
+{
+	atf_set "descr" "a jail without pkg(8) of its own: its read says so" \
+	    "and whether the host's pkg(7) takes -j (its usage's [-j jail]);" \
+	    "pkg-bootstrap refused with a pkg(7) without -j, pkg not run;" \
+	    "with one, pkg -j <jail> bootstrap -y, pkg then there; the host" \
+	    "and every jail refused"
+}
+pkg_bootstrap_body()
+{
+	start_daemon
+	R=$(pwd)/jroot.d
+	mkdir -p "$R/usr/local"
+	echo "$R" > jroot
+	cat > jails <<EOS
+web 7 inherit $R 16.0-CURRENT
+EOS
+	# A pkg(7) before cad99ff75342: no -j in its usage.
+	atf_check -o match:'^Pkg: +not in the jail; the host.s pkg\(7\) takes no -j' \
+	    "$JGC" -c "$SOCK" packages -i web
+	atf_check -o match:'"jail-pkg":"not in the jail; the host' \
+	    "$JGC" --libxo json -c "$SOCK" packages -i web
+	atf_check -s exit:1 -o match:'takes no -j, which FreeBSD main has since cad99ff75342' \
+	    "$JGC" -c "$SOCK" pkg-bootstrap web
+	atf_check test ! -e bootstrap.log
+	# The host's own pkg, and every jail at once, are no bootstrap's.
+	atf_check -s exit:1 -o ignore -e match:'name the jail|invalid jail name' \
+	    "$JGC" -c "$SOCK" pkg-bootstrap ''
+	atf_check -s exit:1 -o ignore -e match:'name the jail|invalid jail name' \
+	    "$JGC" -c "$SOCK" pkg-bootstrap '*'
+	# One that takes it: offered, and done over IPv4 as told.
+	echo '# Usage: pkg [-46d] [-j jail] [-r rootdir] bootstrap [-fy]' >> fake-pkg
+	atf_check -o match:'^Pkg: +not in the jail; pkg-bootstrap installs it' \
+	    "$JGC" -c "$SOCK" packages -i web
+	atf_check -o match:'done +pkg bootstrapped in web' \
+	    "$JGC" -c "$SOCK" pkg-bootstrap -4 web
+	atf_check -o inline:'bootstrap -y\n' cat bootstrap.log
+	atf_check -o match:'fake-pkg -4 -j web bootstrap -y' \
+	    -o match:'pkg\(7\) takes -j' "$JGC" -t -c "$SOCK" job 2
+	atf_check test -x "$R/usr/local/sbin/pkg"
+	# Now there: nothing said, and a bootstrap again runs no pkg.
+	atf_check -o not-match:'^Pkg:' "$JGC" -c "$SOCK" packages -i web
+	atf_check -o match:'done +pkg bootstrapped in web' \
+	    "$JGC" -c "$SOCK" pkg-bootstrap web
+	atf_check -o inline:'bootstrap -y\n' cat bootstrap.log
+	# A jail that is not running.
+	: > jails
+	atf_check -s exit:1 -o match:"jail 'web' is not running" \
+	    "$JGC" -c "$SOCK" pkg-bootstrap web
+}
+pkg_bootstrap_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case host_kernel cleanup
+host_kernel_head()
+{
+	atf_set "descr" "the host's read: the running kernel's version line" \
+	    "and osreldate, and net.inet6.ip6.redirect, from sysctl(3), or" \
+	    "the sysctl(8) stand-in in its place"
+}
+host_kernel_body()
+{
+	start_daemon
+	v=$(/sbin/sysctl -n kern.version | head -1 | sed 's/[][\\.*^$()+?{}|]/\\&/g')
+	atf_check -o match:"\"kernel-version\":\"$v\"" \
+	    -o match:'"ip6-redirect":(true|false)' "$JGC" -c "$SOCK" get host
+	stop_daemon
+	cat > fake-sysctl <<'EOS'
+#!/bin/sh
+case "$*" in
+"-n kern.version") printf 'FreeBSD 16.0-CURRENT #0 main-n291000-0123456789ab: Mon Nov 16 10:00:00 UTC 2026\n    root@builder:/usr/obj/usr/src/amd64.amd64/sys/GENERIC\n' ;;
+"-n kern.osreldate") echo 1600031 ;;
+"-n net.inet6.ip6.redirect") echo 0 ;;
+*) exit 1 ;;
+esac
+EOS
+	chmod +x fake-sysctl
+	DAEMON_ARGS="-Q $(pwd)/fake-sysctl" start_daemon
+	atf_check -o match:'"kernel-version":"FreeBSD 16.0-CURRENT #0 main-n291000-0123456789ab: Mon Nov 16 10:00:00 UTC 2026"' \
+	    -o match:'"osreldate":1600031' -o match:'"ip6-redirect":false' \
+	    "$JGC" -c "$SOCK" get host
+}
+host_kernel_cleanup()
 {
 	stop_daemon
 }
@@ -16370,9 +16468,13 @@ EOF
 	printf '#!/bin/sh\n' > rc.d/arcana_sslproxy
 	chmod +x rc.d/arcana_sslproxy
 	atf_check -o match:'Plugins: .*sslproxy' "$JGC" -c "$SOCK" hello
+	# The host's net.inet6.ip6.redirect, where its fwd rules are: the
+	# console notes a kernel that loses IPv6 fwd with it at 0.
 	atf_check -o match:'"installed":true' -o match:'"version":"SSLproxy 0.10.0' \
 	    -o match:'"running":false' -o match:'"ca":\{"key":false,"pending":false' \
-	    -o match:'"rules_expected":0' \
+	    -o match:'"rules_expected":0' -o match:"\"ip6_redirect\":$( \
+	    [ "$(/sbin/sysctl -n net.inet6.ip6.redirect)" = 0 ] && echo false ||
+	    echo true)" \
 	    "$JGC" -c "$SOCK" sslproxy
 
 	cat > form.json <<'EOF'
@@ -25300,6 +25402,8 @@ atf_init_test_cases()
 	atf_add_test_case network
 	atf_add_test_case ipsec
 	atf_add_test_case packages
+	atf_add_test_case pkg_bootstrap
+	atf_add_test_case host_kernel
 	atf_add_test_case pkg_reach
 	atf_add_test_case pkg_watch
 	atf_add_test_case job_orphan

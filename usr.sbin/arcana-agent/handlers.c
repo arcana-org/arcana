@@ -416,6 +416,15 @@ check_spec(const struct arc_job_spec *sp)
 		if (sp->names.n > 0)
 			return ("pkg audit -F takes no names");
 		break;
+	case ARC_JOB_KIND_PKG_BOOTSTRAP:
+		if (sp->safe)
+			return ("pkg bootstrapped is not taken back by itself");
+		if (sp->jail == NULL || sp->jail[0] == '\0' || strcmp(sp->jail,
+		    "*") == 0)
+			return ("name the jail: the host's pkg is its own");
+		if (sp->names.n > 0)
+			return ("pkg bootstrap takes no names");
+		break;
 	case ARC_JOB_KIND_INSTANCE_RESTART:
 		if (sp->safe)
 			return ("a restart is not undone: not in safe mode");

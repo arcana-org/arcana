@@ -145,7 +145,7 @@ Only
 .Cm start , stop , restart , kill , enable , disable , service ,
 .Cm interface , route , sysctl Ar name Ns = Ns Ar value ,
 .Cm kmod , reboot , pkg-upgrade , pkg-install , pkg-audit-fetch ,
-.Cm instance-restart ,
+.Cm pkg-bootstrap , instance-restart ,
 .Cm sslproxy Pq not Cm conf ,
 .Cm zfs snapshot , zfs destroy , zpool scrub , zpool scrub-stop
 and
@@ -2898,6 +2898,23 @@ running
 which
 .Cm packages
 reads to mark vulnerable packages and never fetches itself.
+.It Cm pkg-bootstrap Oo Fl 4 | Fl 6 Oc Ar jail
+.Nm pkg Fl j Ar jail Cm bootstrap Fl y ,
+a job: pkg installed in the running
+.Ar jail
+that has none, by the host's
+.Xr pkg 7 ,
+from the repository the jail's
+.Pa pkg.conf
+names.
+Refused when the host's
+.Xr pkg 7
+takes no
+.Fl j
+(before FreeBSD main cad99ff75342);
+.Cm packages
+of the jail says whether pkg is there and whether it can be
+bootstrapped.
 .It Cm instance-restart Cm suricata | squid Ar name
 A job: one Suricata or Squid instance, the SD-WAN services' or the
 Security section's, stopped and started again from its files, in its

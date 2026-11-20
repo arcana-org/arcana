@@ -400,6 +400,10 @@ title_words(const struct arc_job_spec *sp)
 		    "fetched%s%s", sp->jail != NULL && sp->jail[0] != '\0' ?
 		    " in " : "", sp->jail != NULL ? sp->jail : "");
 		break;
+	case ARC_JOB_KIND_PKG_BOOTSTRAP:
+		rc = asprintf(&t, "pkg bootstrapped in %s", sp->jail != NULL ?
+		    sp->jail : "?");
+		break;
 	case ARC_JOB_KIND_INSTANCE_RESTART:
 		rc = asprintf(&t, "%s %s restarted", sp->verb != NULL ?
 		    sp->verb : "?", sp->service != NULL ? sp->service : "?");
@@ -1861,6 +1865,11 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		error = NULL;
 		ok = do_pkg_audit_fetch(w, sp->jail, &error) == 0;
 		break;
+	case ARC_JOB_KIND_PKG_BOOTSTRAP:
+		error = NULL;
+		ok = do_pkg_bootstrap(w, sp->jail, sp->has_pkg_ip ? sp->pkg_ip :
+		    0, &error) == 0;
+		break;
 	case ARC_JOB_KIND_INSTANCE_RESTART:
 		/* In the instance's own jail, which its table knows. */
 		error = NULL;
@@ -2101,6 +2110,7 @@ pkg_lane(const struct arc_job_spec *sp)
 	    sp->kind == ARC_JOB_KIND_PKG_INSTALL ||
 	    sp->kind == ARC_JOB_KIND_PKG_CLEAN ||
 	    sp->kind == ARC_JOB_KIND_PKG_AUDIT_FETCH ||
+	    sp->kind == ARC_JOB_KIND_PKG_BOOTSTRAP ||
 	    sp->kind == ARC_JOB_KIND_JAIL_BASE) && !sp->safe &&
 	    sp->jail != NULL && sp->jail[0] != '\0' &&
 	    strcmp(sp->jail, "*") != 0);
@@ -2734,6 +2744,7 @@ dry_refusal(struct work *w, const struct arc_job_spec *sp, bool undo)
 	case ARC_JOB_KIND_PKG_UPGRADE:
 	case ARC_JOB_KIND_PKG_INSTALL:
 	case ARC_JOB_KIND_PKG_AUDIT_FETCH:
+	case ARC_JOB_KIND_PKG_BOOTSTRAP:
 	case ARC_JOB_KIND_INSTANCE_RESTART:
 		return (NULL);
 	case ARC_JOB_KIND_ZFS:

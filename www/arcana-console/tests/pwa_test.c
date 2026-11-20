@@ -14010,6 +14010,11 @@ part_sslinspect(void)
 	    "ipfw$' sslproxy.conf") != 0; i++)
 		usleep(100000);
 	ATF_CHECK_MSG(i < 300, "sslproxy.conf is not written");
+	/* The fwd rules are written after sslproxy.conf: wait for them. */
+	for (i = 0; i < 100 && system("grep -q 'sslproxy:smtps$' "
+	    "ssl.d/fwd.rules 2>/dev/null && grep -q 'sslproxy:pass$' "
+	    "ssl.d/fwd.rules") != 0; i++)
+		usleep(100000);
 	ATF_CHECK(system("grep -q '^ProxySpec https ::1 8443 ipfw$' sslproxy.conf "
 	    "&& grep -q '^ProxySpec tcp 127.0.0.1 8022 ipfw$' sslproxy.conf && "
 	    "grep -q '^Divert no$' sslproxy.conf && ! grep -q ContentLog "
@@ -17232,6 +17237,171 @@ ATF_TC_CLEANUP(pwa_jail_base, tc)
 }
 
 /*
+ * A running jail without pkg of its own (web, wroot): the Packages tab
+ * says so; with a pkg(7) before -j it says to bootstrap by hand, no
+ * button; with one that takes -j, Bootstrap pkg pressed, a job: pkg -j
+ * web bootstrap -y run, pkg beneath the jail's root, the notice gone.
+ */
+static void
+part_pkg_bootstrap(void)
+{
+	FILE	*fp;
+
+	ATF_REQUIRE(mkdir("wroot", 0755) == 0);
+	ATF_REQUIRE((fp = fopen("jails", "a")) != NULL);
+	fprintf(fp, "web 21 inherit %s/wroot 16.0-CURRENT\n", cwd);
+	fclose(fp);
+	/* The harness's pkg(7) is one before cad99ff75342: no -j in its
+	 * usage. */
+	click_when("button[data-act=refresh]", 10);
+	click_when("button.tab[data-arg=packages]", 10);
+	click_when("button[data-act=pkg-target][data-arg=web]", 20);
+	wait_js("document.querySelector('.notice.pkg-bootstrap')", 20);
+	ATF_CHECK(js_true("document.querySelector('.notice.pkg-bootstrap')"
+	    ".textContent.includes('takes no -j') && !document.querySelector("
+	    "'.notice.pkg-bootstrap button[data-act=pkg-bootstrap]')"));
+	/* One that takes it: offered, in the Install box too. */
+	ATF_REQUIRE(system("printf '# Usage: pkg [-46d] [-j jail] [-r rootdir] "
+	    "bootstrap [-fy]\\n' >> fake-pkg") == 0);
+	run("document.querySelector('button[data-act=pkg-target][data-arg=\"\"]')"
+	    "?.click()");
+	click_when("button[data-act=pkg-target][data-arg=web]", 20);
+	wait_js("document.querySelector('.notice.pkg-bootstrap "
+	    "button[data-act=pkg-bootstrap]')", 20);
+	click_when("button[data-act=pkg-install]", 5);
+	wait_js("document.querySelector('form[data-form=pkg-install] "
+	    ".notice.pkg-bootstrap button[data-act=pkg-bootstrap]')", 5);
+	shot("pkg-bootstrap");
+	run("document.querySelector('form[data-form=pkg-install] "
+	    "button[data-act=pkg-bootstrap]').click()");
+	queued_run();
+	host_tool("grep -q -- '^-j web bootstrap -y$' pkg.log && test -x "
+	    "wroot/usr/local/sbin/pkg", "pkg was not bootstrapped in web");
+	/* Read again once done: pkg there, nothing said. */
+	wait_js("!document.querySelector('.notice.pkg-bootstrap') && document."
+	    "querySelector('button[data-act=pkg-target][data-arg=web].on')", 30);
+	dock_closed();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_pkg_bootstrap);
+ATF_TC_HEAD(pwa_pkg_bootstrap, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A jail without pkg: the Packages tab says so; with a pkg(7) before -j the way by hand, no button; with one that takes -j, Bootstrap pkg (in the Install box too) runs pkg -j web bootstrap -y, pkg then beneath the jail's root and the notice gone");
+	atf_tc_set_md_var(tc, "timeout", "120");
+}
+ATF_TC_BODY(pwa_pkg_bootstrap, tc)
+{
+
+	prologue(tc, 1);
+	part_pkg_bootstrap();
+}
+ATF_TC_CLEANUP(pwa_pkg_bootstrap, tc)
+{
+
+	browser_stop();
+}
+
+/*
+ * The host lab opened again, its list read with it (what its agent
+ * says of its kernel), and back to its SSL inspection tab, until cond
+ * holds there.
+ */
+static void
+tls_again(const char *cond)
+{
+	char	expr[1024];
+	int	i;
+
+	snprintf(expr, sizeof(expr), "document.querySelector('.sslview') && "
+	    "(%s)", cond);
+	for (i = 0; i < 20; i++) {
+		run("document.querySelector('.tree [data-act=select-devices]')"
+		    ".click()");
+		wait_js("document.querySelector('table.devices tr[data-act="
+		    "select-server]')", 10);
+		run("[...document.querySelectorAll('table.devices tr[data-act="
+		    "select-server]')].find(e => e.textContent.includes('lab'))"
+		    ".click()");
+		usleep(1000000);
+		click_when("li.secnode[data-act=select-security]", 10);
+		wait_js("document.querySelector('select[data-input=sec-host]')",
+		    10);
+		run("const s = document.querySelector('select[data-input="
+		    "sec-host]'); s.value = [...s.options].find(o => o."
+		    "textContent === 'lab').value; s.dispatchEvent(new Event("
+		    "'input', { bubbles: true }))");
+		click_when("button[data-act=sec-tab][data-arg=tls]", 10);
+		usleep(1000000);
+		if (js_true(expr))
+			return;
+	}
+	wait_js(expr, 1);
+}
+
+/*
+ * SSL inspection's IPv6 fwd rules on a host whose
+ * net.inet6.ip6.redirect is 0: a kernel of main before fb9969ca61ca
+ * (main-n291000) noted beside the rules; one built after it from
+ * elsewhere, of the same osreldate, may predate it, said dimmer; one
+ * built before it, older; one of main from it on, nothing.
+ */
+static void
+part_tls_fwd6(void)
+{
+
+	part_sslinspect();
+	wait_js("(() => { const n = document.querySelector('.sslview "
+	    ".kern-fwd6'); return n && n.dataset.fix === 'before' && n."
+	    "textContent.includes('predates FreeBSD main fb9969ca61ca') && n."
+	    "textContent.includes('IPv6 fwd rules'); })()", 30);
+	shot("tls-fwd6");
+	/* Built after it, not from main: it may. */
+	put("kern.version", "FreeBSD 16.0-CURRENT #3: Thu Nov 19 15:15:26 +0330 "
+	    "2026\n    root@builder:/usr/obj/usr/src/amd64.amd64/sys/LAB\n");
+	tls_again("(() => { const n = document.querySelector('.sslview "
+	    ".kern-fwd6'); return n && n.dataset.fix === 'unknown' && n."
+	    "textContent.includes('may predate') && n.textContent.includes("
+	    "'#3: Thu Nov 19'); })()");
+	/* Built before it, not from main: older. */
+	put("kern.version", "FreeBSD 16.0-CURRENT #2: Wed Nov 18 23:00:00 +0330 "
+	    "2026\n    root@builder:/usr/obj/usr/src/amd64.amd64/sys/LAB\n");
+	tls_again("document.querySelector('.sslview .kern-fwd6')?.dataset.fix "
+	    "=== 'before'");
+	/* Main from the fix on: nothing. */
+	put("kern.version", "FreeBSD 16.0-CURRENT #0 main-n291371-fb9969ca61ca: "
+	    "Thu Nov 19 10:00:00 UTC 2026\n");
+	tls_again("!document.querySelector('.sslview .kern-fwd6') && document."
+	    "querySelector('.sslview .ssl-ca')");
+}
+
+ATF_TC_WITH_CLEANUP(pwa_security_tls_fwd6);
+ATF_TC_HEAD(pwa_security_tls_fwd6, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "SSL inspection's IPv6 fwd rules with net.inet6.ip6.redirect at 0: a kernel before FreeBSD main fb9969ca61ca noted beside the rules (by its main-n count, or by its build date), one that may be said dimmer, none for a kernel from the fix on");
+	atf_tc_set_md_var(tc, "timeout", "240");
+}
+ATF_TC_BODY(pwa_security_tls_fwd6, tc)
+{
+
+	/* Read by the agent from its start: main before the fix, IPv6
+	 * redirects off. */
+	put("kern.osreldate", "1600031\n");
+	put("net.inet6.ip6.redirect", "0\n");
+	put("kern.version", "FreeBSD 16.0-CURRENT #0 main-n291000-0123456789ab: "
+	    "Mon Nov 16 10:00:00 UTC 2026\n    root@builder:/usr/obj/usr/src/"
+	    "amd64.amd64/sys/GENERIC\n");
+	prologue(tc, 2);
+	part_tls_fwd6();
+}
+ATF_TC_CLEANUP(pwa_security_tls_fwd6, tc)
+{
+
+	browser_stop();
+}
+
+/*
  * A pkg upgrade in a running jail that may not set files' flags: pkg
  * refuses, as it says it; the page asks, and once approved allows it
  * on the running jail alone and runs the same upgrade again, which is
@@ -17412,6 +17582,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_yform_sdwan);
 	ATF_TP_ADD_TC(tp, pwa_jail_runs);
 	ATF_TP_ADD_TC(tp, pwa_jail_base);
+	ATF_TP_ADD_TC(tp, pwa_pkg_bootstrap);
+	ATF_TP_ADD_TC(tp, pwa_security_tls_fwd6);
 	ATF_TP_ADD_TC(tp, pwa_jail_pkg_chflags);
 	return (atf_no_error());
 }

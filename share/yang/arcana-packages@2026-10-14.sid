@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-packages",
     "module-revision": "2026-10-14",
-    "sid-file-version": 6,
+    "sid-file-version": 7,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 300, 100, and 79 500, 100.",
     "dependency-revision": [
       {
@@ -773,6 +773,66 @@
         "namespace": "data",
         "identifier": "/arcana-packages:packages/upgrade/output/package/vulnerable",
         "sid": "79548"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/bootstrap-jail",
+        "sid": "79549"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/jail-pkg",
+        "sid": "79550"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/read/output/bootstrap-jail",
+        "sid": "79551"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/read/output/jail-pkg",
+        "sid": "79552"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/refresh/output/bootstrap-jail",
+        "sid": "79553"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/refresh/output/jail-pkg",
+        "sid": "79554"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/bootstrap-jail",
+        "sid": "79555"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/jail-pkg",
+        "sid": "79556"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/read/output/bootstrap-jail",
+        "sid": "79557"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/read/output/jail-pkg",
+        "sid": "79558"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/refresh/output/bootstrap-jail",
+        "sid": "79559"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/refresh/output/jail-pkg",
+        "sid": "79560"
       }
     ]
   }

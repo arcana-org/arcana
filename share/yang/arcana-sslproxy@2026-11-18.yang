@@ -246,6 +246,16 @@ module arcana-sslproxy {
             "Why ipfw's rules could not be read, or why they are left
              alone (another's rule in sets 26 and 27).";
         }
+        leaf ip6-redirect {
+          type boolean;
+          description
+            "net.inet6.ip6.redirect of the network whose ipfw has the
+             fwd rules: the host's, or a vnet jail's own.  At 0 (the
+             sysctl hardening's), forwarded IPv6 takes
+             ip6_tryforward(), where a kernel before FreeBSD main
+             fb9969ca61ca loses an fwd rule's next hop; the console
+             notes such a kernel beside the rules.";
+        }
         leaf connect-log {
           type string;
           description

@@ -1517,6 +1517,22 @@ dispatch(const char *act, const char *arg, const char *value)
 		snprintf(title, sizeof(title), "pkg audit -F%s%s",
 		    app.pkg.jail[0] != '\0' ? " in " : "", app.pkg.jail);
 		job_send(s, json, title, JOB_PACKAGES, app.pkg.jail);
+	} else if (strcmp(act, "pkg-bootstrap") == 0 && s != NULL &&
+	    app.pkg.jail[0] != '\0') {
+		char	*json, *qj, title[200];
+
+		/* pkg in a jail that has none, as the admin asks: never by
+		 * itself (pkg -j <jail> bootstrap -y). */
+		qj = json_quote(app.pkg.jail);
+		if (asprintf(&json, "{\"kind\":\"pkg-bootstrap\",\"jail\":%s%s}",
+		    qj, pkg_job_net()) == -1)
+			abort();
+		free(qj);
+		snprintf(title, sizeof(title), "pkg bootstrapped in %s",
+		    app.pkg.jail);
+		if (app.modal == MODAL_PKG_INSTALL)
+			app.modal = MODAL_NONE;
+		job_send(s, json, title, JOB_PACKAGES, app.pkg.jail);
 	} else if (strcmp(act, "pkg-clean-ask") == 0 && s != NULL) {
 		app.modal = MODAL_PKG_CLEAN;
 		app.modal_error[0] = '\0';

@@ -43,6 +43,7 @@ module: arcana-sslproxy
      |     +--ro rules-expected?     int32
      |     +--ro rules-file?         string
      |     +--ro rules-error?        string
+     |     +--ro ip6-redirect?       boolean
      |     +--ro connect-log?        string
      |     +--ro connect-log-size?   int64
      +---x csr

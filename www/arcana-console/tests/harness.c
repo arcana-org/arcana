@@ -710,6 +710,8 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	put("pending", "aria2-1.37.0_1 1.37.0_2\npimd-3.1.0 3.2.0\n");
 	/* With ./newer-os the repository is for a newer FreeBSD: an
 	 * upgrade is refused but past IGNORE_OSVERSION. */
+	/* A pkg(7) before -j: its usage has no "[-j jail]", which a part
+	 * adds for one that takes it. */
 	put("fake-pkg", "#!/bin/sh\necho \"$*\" >> pkg.log\nanyos=no\n"
 	    "case \"$1\" in -4|-6) shift ;; esac\n"
 	    "[ \"$1\" = -o ] && { anyos=yes; shift 2; }\n"
@@ -742,6 +744,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "rquery) printf 'FreeBSD-runtime\\nFreeBSD-set-base-jail\\n"
 	    "FreeBSD-set-minimal-jail\\n' ;;\n"
 	    "install) [ -z \"$jl\" ] || touch pkgbase.$jl ;;\n"
+	    /* pkg(7) bootstrapping pkg(8) in a jail: put beneath the root
+	     * ./jails gives it. */
+	    "bootstrap) r=$(awk -v j=\"$jl\" '$1 == j { print $4 }' jails); "
+	    "[ -n \"$r\" ] && mkdir -p \"$r/usr/local/sbin\" && printf "
+	    "'#!/bin/sh\\n' > \"$r/usr/local/sbin/pkg\" && chmod +x "
+	    "\"$r/usr/local/sbin/pkg\" ;;\n"
 	    "query) printf 'aria2\\t1.37.0_1\\t0\\t5242880\\twww/aria2\\t"
 	    "Download utility\\npimd\\t3.1.0\\t1\\t102400\\tnet/pimd\\t"
 	    "PIM-SM daemon\\n' ;;\n"
@@ -1451,7 +1459,12 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    /* IGMP's and MLD's, as -e asks them: name=value. */
 	    "[ \"$1\" = -e ] && { shift; for n; do case $n in "
 	    "*default_version) echo \"$n=3\" ;; *legacysupp) echo \"$n=0\" ;; "
-	    "net.inet*) echo \"$n=1\" ;; esac; done; }\nexit 0\n");
+	    "net.inet*) echo \"$n=1\" ;; esac; done; }\n"
+	    /* The running kernel and its IPv6 redirects, as a part puts
+	     * them in files of those names: none, nothing said. */
+	    "[ \"$1\" = -n ] && case \"$2\" in kern.version|kern.osreldate|"
+	    "net.inet6.ip6.redirect) [ -f \"$2\" ] && cat \"$2\"; exit 0 ;; "
+	    "esac\nexit 0\n");
 	/* ifmcstat(8): an interface in two groups, one with a source. */
 	put("fake-ifmcstat", "#!/bin/sh\nprintf 'em0:\\n\\tinet 10.0.0.1"
 	    "\\n\\tigmpv3 rv 2 qi 125 qri 100 uri 3\\n\\t\\tgroup 224.0.0.1 "

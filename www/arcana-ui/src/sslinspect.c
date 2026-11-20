@@ -530,6 +530,30 @@ si_bound(struct html *h, const ucl_object_t *b, const char *spec)
 	h_raw(h, "</div>");
 }
 
+/* Are IPv6 clients sent by fwd: the form's IPv6 too (on unless unticked),
+ * or an SD-WAN binding's, which always is. */
+static bool
+si_ipv6(const ucl_object_t *o)
+{
+	struct ucl_parser	*p;
+	ucl_object_t		*spec;
+	bool			 v;
+
+	if (jget(o, "bound") != NULL)
+		return (true);
+	if (jstr(o, "spec") == NULL)
+		return (false);
+	p = ucl_parser_new(UCL_PARSER_NO_TIME);
+	spec = ucl_parser_add_string(p, jstr(o, "spec"), 0) ?
+	    ucl_parser_get_object(p) : NULL;
+	ucl_parser_free(p);
+	if (spec == NULL)
+		return (false);
+	v = jget(spec, "ipv6") == NULL || jbool(spec, "ipv6");
+	ucl_object_unref(spec);
+	return (v);
+}
+
 void
 view_sslinspect(struct html *h, struct server *s)
 {
@@ -658,6 +682,12 @@ view_sslinspect(struct html *h, struct server *s)
 	it = NULL;
 	while ((e = ucl_object_iterate(jget(o, "rules"), &it, true)) != NULL)
 		n++;
+	/* IPv6 fwd rules where net.inet6.ip6.redirect is 0, on a kernel
+	 * before FreeBSD main fb9969ca61ca: said, never refused. */
+	if (si_ipv6(o) && jget(o, "ip6_redirect") != NULL && !jbool(o,
+	    "ip6_redirect"))
+		(void)kernel_fwd6_note(h, s, "the IPv6 fwd rules that send the "
+		    "clients to SSLproxy");
 	h_fmt(h, "<p class=\"dim\">%lld loaded in set 27 of %s, of %lld the "
 	    "form makes", (long long)n, jail == NULL ? "the host's ipfw" :
 	    shared ? "the host's ipfw (the jail's, tagged @jail)" : "the "

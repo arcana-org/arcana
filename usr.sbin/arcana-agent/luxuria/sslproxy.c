@@ -2237,6 +2237,29 @@ out:
 		back_to(w, &s);
 }
 
+/*
+ * net.inet6.ip6.redirect of the network whose ipfw has the fwd rules:
+ * the host's, or a vnet jail's own.  With 0, forwarded IPv6 takes
+ * ip6_tryforward(), where a kernel before FreeBSD main fb9969ca61ca
+ * loses an fwd rule's next hop: the console says so beside the rules.
+ */
+static void
+redirect_json(struct work *w, ucl_object_t *top, const struct place *pl)
+{
+	struct was	 s;
+	long		 r;
+	bool		 host;
+
+	host = pl->jailed && !pl->vnet;
+	if (host)
+		to_host(w, &s);
+	r = sysctl_int_here(w, "net.inet6.ip6.redirect");
+	if (host)
+		back_to(w, &s);
+	if (r >= 0)
+		put_bool(top, "ip6_redirect", r != 0);
+}
+
 void
 do_sslproxy(struct work *w, struct json_rsp *rsp)
 {
@@ -2282,6 +2305,7 @@ do_sslproxy(struct work *w, struct json_rsp *rsp)
 	bound_json(w, top, spec);
 	ca_json(w, top);
 	rules_json(w, top, &pl);
+	redirect_json(w, top, &pl);
 	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
 	if (json == NULL) {

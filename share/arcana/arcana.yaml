@@ -586,6 +586,14 @@ definitions:
           when it runs in one, from its files as they are (nothing is
           rendered again; an instance the admin stopped is refused).
           Squid's c-icap goes on as it is.  Never in safe mode.
+      - name: pkg-bootstrap
+        doc: |
+          pkg(8) installed in a running jail that has none, by the
+          host's pkg(7): pkg -j <jail> bootstrap -y, from the
+          repository the jail's own pkg.conf names.  Only a pkg(7)
+          that takes -j (FreeBSD main from cad99ff75342, 2026-11-19)
+          does; with an older one it is refused.  Pressed by the
+          admin, never queued by Arcana itself.  Never in safe mode.
   - name: job-state
     type: enum
     entries:

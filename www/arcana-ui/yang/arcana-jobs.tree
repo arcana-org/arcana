@@ -432,9 +432,13 @@ module: arcana-jobs
     |  |     |  |  +---w pkg-audit-fetch!
     |  |     |  |     +---w jail?   string
     |  |     |  +--:(instance-restart)
-    |  |     |     +---w instance-restart!
-    |  |     |        +---w verb       enumeration
-    |  |     |        +---w service    string
+    |  |     |  |  +---w instance-restart!
+    |  |     |  |     +---w verb       enumeration
+    |  |     |  |     +---w service    string
+    |  |     |  +--:(pkg-bootstrap)
+    |  |     |     +---w pkg-bootstrap!
+    |  |     |        +---w jail      string
+    |  |     |        +---w pkg-ip?   uint32
     |  |     +---w safe?        boolean
     |  |     +---w safe-wait?   uint32
     |  +--ro output
@@ -819,9 +823,13 @@ module: arcana-jobs
        |  |  |  |  +---w pkg-audit-fetch!
        |  |  |  |     +---w jail?   string
        |  |  |  +--:(instance-restart)
-       |  |  |     +---w instance-restart!
-       |  |  |        +---w verb       enumeration
-       |  |  |        +---w service    string
+       |  |  |  |  +---w instance-restart!
+       |  |  |  |     +---w verb       enumeration
+       |  |  |  |     +---w service    string
+       |  |  |  +--:(pkg-bootstrap)
+       |  |  |     +---w pkg-bootstrap!
+       |  |  |        +---w jail      string
+       |  |  |        +---w pkg-ip?   uint32
        |  |  +---w safe?        boolean
        |  |  +---w safe-wait?   uint32
        |  +---w undo?     uint64

@@ -24,7 +24,9 @@
  */
 
 #include <sys/param.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #include <arpa/nameser.h>
@@ -32,6 +34,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <poll.h>
@@ -73,6 +76,12 @@ static void	parse_versions(struct work *, const struct execres *,
 		    struct package **, size_t *);
 static bool	valid_pkg(const char *);
 static const char *check_jail(struct work *, const char *);
+static int	jail_pkg(struct work *, const char *, bool *);
+
+/* pkg(8) as pkg(7) looks for it, beneath a root. */
+#define	PKG8_PATH	"usr/local/sbin/pkg"
+/* What a pkg(7) that takes -j says in its usage. */
+#define	PKG7_JAIL_MARK	"[-j jail]"
 
 /*
  * "pkg [-4 | -6] [-o IGNORE_OSVERSION=yes] [-j jail] args...": with
@@ -960,6 +969,114 @@ valid_pkg(const char *s)
 	return (true);
 }
 
+/*
+ * Whether pkg(8) is in the running jail, /usr/local/sbin/pkg beneath its
+ * root (looked for through no link out of it): pkg(7) there execs it,
+ * or offers to bootstrap one.  0, or -1 where it cannot be said.
+ */
+static int
+jail_pkg(struct work *w, const char *jail, bool *there)
+{
+	struct jinfo	ji;
+	int		fd, step;
+
+	*there = false;
+	if (jail_named(w, jail, &ji) < 0 || ji.path == NULL)
+		return (-1);
+	step = step_begin(w, STEP_FILE, "faccessat(2)", "%s/" PKG8_PATH,
+	    ji.path);
+	if ((fd = open(ji.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
+		step_end(w, step, false, NULL);
+		return (-1);
+	}
+	*there = faccessat(fd, PKG8_PATH, X_OK, AT_RESOLVE_BENEATH) == 0;
+	/* A link out of the root on the way: not said either way. */
+	if (!*there && errno == ENOTCAPABLE) {
+		close(fd);
+		step_end(w, step, false, "a link out of the jail's root");
+		return (-1);
+	}
+	close(fd);
+	step_end(w, step, true, "%s", *there ? "pkg(8) there" : "no pkg(8)");
+	return (0);
+}
+
+/*
+ * Does the host's pkg(7) take -j (FreeBSD main from cad99ff75342,
+ * 2026-11-19): it attaches to the jail itself and bootstraps pkg(8)
+ * there.  One before it passes -j on to the host's pkg(8), which
+ * bootstraps nothing in a jail.  Its usage says it: "[-j jail]".
+ */
+bool
+pkg7_jail(struct work *w)
+{
+	struct stat	 sb;
+	void		*m;
+	bool		 yes;
+	int		 fd, step;
+
+	step = step_begin(w, STEP_FILE, "mmap(2)", "%s", opts.pkg_bin);
+	if ((fd = open(opts.pkg_bin, O_RDONLY | O_CLOEXEC)) == -1) {
+		step_end(w, step, false, NULL);
+		return (false);
+	}
+	yes = false;
+	if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0 &&
+	    sb.st_size < 64 * 1024 * 1024 && (m = mmap(NULL, (size_t)sb.st_size,
+	    PROT_READ, MAP_PRIVATE, fd, 0)) != MAP_FAILED) {
+		yes = memmem(m, (size_t)sb.st_size, PKG7_JAIL_MARK,
+		    strlen(PKG7_JAIL_MARK)) != NULL;
+		munmap(m, (size_t)sb.st_size);
+	}
+	close(fd);
+	step_end(w, step, true, "%s", yes ? "pkg(7) takes -j" : "pkg(7) takes "
+	    "no -j");
+	return (yes);
+}
+
+/*
+ * pkg(8) bootstrapped in a running jail that has none, by the host's
+ * pkg(7): pkg [-4 | -6] -j jail bootstrap -y, from the repository the
+ * jail's pkg.conf names (pkg(7) reads it once attached).  A pkg(7)
+ * without -j is refused, saying so; a jail that has pkg already is
+ * left as it is (bootstrap without -f does nothing).  The repository
+ * is not asked first: pkg -vv there would be the jail's pkg(8), which
+ * is what is missing.
+ */
+int
+do_pkg_bootstrap(struct work *w, const char *jail, uint8_t ip,
+    const char **errp)
+{
+	static const char *const boot[] = { "bootstrap", "-y" };
+	struct execres	 res;
+	const char	*e;
+	bool		 there;
+
+	if (jail == NULL || *jail == '\0') {
+		*errp = "name the jail";
+		return (-1);
+	}
+	if ((e = check_jail(w, jail)) != NULL) {
+		*errp = e;
+		return (-1);
+	}
+	if (jail_pkg(w, jail, &there) == 0 && there)
+		return (0);
+	if (!pkg7_jail(w)) {
+		*errp = wfmt(w, "the host's pkg(7) (%s) takes no -j, which "
+		    "FreeBSD main has since cad99ff75342 (2026-11-19): pkg is "
+		    "not bootstrapped in jail %s from here; run pkg bootstrap "
+		    "in the jail (jexec %s pkg bootstrap) or update the host's "
+		    "base", opts.pkg_bin, jail, jail);
+		return (-1);
+	}
+	if (pkg_run(w, jail, false, ip, boot, 2, &res) != 0) {
+		*errp = pkg_error(w, &res, "pkg bootstrap");
+		return (-1);
+	}
+	return (0);
+}
+
 /* A jail named in a request must be running for pkg -j. */
 static const char *
 check_jail(struct work *w, const char *jail)
@@ -1032,6 +1149,18 @@ do_packages(struct work *w, const char *jail, bool refresh, bool inst,
 	memset(rsp, 0, sizeof(*rsp));
 	if ((e = check_jail(w, jail)) != NULL) {
 		rsp->error = e;
+		return (0);
+	}
+	/*
+	 * A jail's pkg(8) of its own, or none yet: then whether the host's
+	 * pkg(7) can bootstrap it there.  One that can (it takes -j)
+	 * attaches to the jail and execs the jail's pkg(8): with none,
+	 * there is nothing to read until it is bootstrapped.
+	 */
+	if (jail != NULL && *jail != '\0' &&
+	    (rsp->has_jail_pkg = jail_pkg(w, jail, &rsp->jail_pkg) == 0) &&
+	    !rsp->jail_pkg && (rsp->bootstrap_jail = pkg7_jail(w))) {
+		rsp->ok = true;
 		return (0);
 	}
 	/* The repositories an upgrade or an install may be held to. */
@@ -1370,6 +1499,9 @@ pkg_audit(struct work *w, const char *jail, struct pkg_read *rsp)
 	const char	*sp;
 	bool		 any, cve;
 
+	/* Nothing to audit where nothing could be read (below). */
+	if (rsp->has_jail_pkg && !rsp->jail_pkg && rsp->bootstrap_jail)
+		return;
 	if (pkg_read(w, jail, audit, 1, &res) != 0 && res.status != 1) {
 		rsp->audit_error = wtext(w, exec_error(w, &res, "pkg audit"));
 		return;

@@ -33,14 +33,38 @@
     getsockname(2) there, were read from the kernel's path, not tried on
     a real one: the root suite's next round (a jail with an address of
     its own, a client in a vnet jail before it).
-- From FreeBSD main (2026-11-19, a8fd8a5a): IPv6 `ipfw fwd` was
-  dropped on the fast-forwarding path whenever net.inet6.ip6.redirect
-  is 0, which Arcana's sysctl hardening sets (fixed in fb9969ca61ca):
-  SSL inspection's IPv6 fwd rules and any IPv6 policy routing by fwd
-  went wrong on kernels before it.  To test on a kernel after it, and
-  to say in the SSL inspection tab when the host's kernel is older.
-  pkg(7) now takes -j and -r (cad99ff75342): an Install button for a
-  jail with no pkg yet can bootstrap it there.
+- From FreeBSD main (2026-11-19, a8fd8a5a):
+  - Done (agent_test:host_kernel; pwa_test:pwa_security_tls_fwd6): IPv6
+    `ipfw fwd` was lost on the fast-forwarding path whenever
+    net.inet6.ip6.redirect is 0, which Arcana's sysctl hardening sets
+    (fixed in fb9969ca61ca, 2026-11-18, at __FreeBSD_version 1600031,
+    main's commit 291371).  arcana-host's host says the running
+    kernel's version line (kernel-version) and net.inet6.ip6.redirect
+    (ip6-redirect); the SSL inspection read says the redirect of the
+    network its rules are in (a vnet jail's own).  The console notes,
+    never refuses: in the SSL inspection tab beside the rules when IPv6
+    is fwd'ed, and in the SD-WAN plan for a host edge given IPv6 fwd
+    rules (steering from an _6 table, SSL inspection's), when the
+    redirect is 0 and the kernel predates the fix (osreldate below
+    1600031, or main-n below 291371, or built before the commit) or
+    may (1600031 built after it, not from main: said dimmer).  Left:
+    a vnet jail edge's own redirect in the SD-WAN plan (its host's
+    list does not say it); the constants to move to the first
+    __FreeBSD_version after 1600031 once main bumps it; tested on a
+    kernel after the fix in the root suite.
+  - Done (agent_test:pkg_bootstrap; pwa_test:pwa_pkg_bootstrap): pkg(7)
+    takes -j and -r (cad99ff75342).  A jail's packages read says
+    whether pkg(8) is in it (jail-pkg, /usr/local/sbin/pkg beneath its
+    root) and, if not, whether the host's pkg(7) takes -j
+    (bootstrap-jail, its usage's "[-j jail]"); the Packages tab and its
+    Install box say so, with a Bootstrap pkg button the admin presses
+    (job pkg-bootstrap: pkg -j <jail> bootstrap -y; `arcanactl
+    pkg-bootstrap`), or the way by hand with an older pkg(7).  Left:
+    the other Install buttons (Security's plugins, SD-WAN's needs,
+    Mail, Relay) still install through the host's pkg -j without
+    offering the bootstrap; with a pkg(7) that takes -j, `pkg -j
+    <jail> install -y` execs the jail's own pkg(8), and bootstraps one
+    by itself (-y) where there is none.
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
   - Done (agent_test:services_jail, pwa_test:pwa_service_jail): a

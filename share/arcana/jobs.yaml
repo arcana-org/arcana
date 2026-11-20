@@ -521,3 +521,7 @@ kinds:
     title: A Suricata or Squid instance restarted
     needs: verb service
     values: verb=suricata|squid
+  - kind: pkg-bootstrap
+    title: pkg bootstrapped in a jail that has none (pkg -j bootstrap)
+    needs: jail
+    uses: pkg_ip
