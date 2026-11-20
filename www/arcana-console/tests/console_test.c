@@ -1819,6 +1819,114 @@ rc_lab(const atf_tc_t *tc, char *data, char *cand, size_t len)
 	    "arcana-fleet:fleet/host=%s", id);
 }
 
+/*
+ * RFC 8040's paths through the console: a key with "/" in it percent-
+ * encoded (section 3.5.3; libwebsockets decodes the path whole, the
+ * console finds the key again by the host's schema), a list entry at
+ * depth's end with its keys (section 4.8.2), a whole host's GET (one
+ * request of the agent's a top-level node: whole, a host's answer went
+ * past a message, 502 "Message too long").
+ */
+CONSOLE_TC(restconf_paths, "RESTCONF paths: a key's percent-encoded /, "
+    "depth on list entries, a whole host's GET")
+ATF_TC_BODY(restconf_paths, tc)
+{
+	struct resp	 r;
+	char		 data[256], cand[256], path[512];
+
+	rc_lab(tc, data, cand, sizeof(data));
+	/* The entry, its leaf, and its leaf by the key with an action's
+	 * name after it: the node ends the key. */
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "dataset=tank%%2Fdata", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("tank/data", jstr(&r, "arcana-storage:dataset.0.name"));
+	ATF_CHECK_STREQ("/tank/data",
+	    jstr(&r, "arcana-storage:dataset.0.mountpoint"));
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "dataset=tank%%2Fvault/mountpoint", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("/tank/vault", jstr(&r, "arcana-storage:mountpoint"));
+	resp_free(&r);
+	/* A snapshot's "@" and "/" both. */
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "snapshot=tank%%2Fdata%%40b/refer", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("4000000", jstr(&r, "arcana-storage:refer"));
+	resp_free(&r);
+	/* A key of one with "," in it is that key's: none such. */
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "dataset=tank%%2Cdata", data);
+	http("GET", path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* "..": folded by libwebsockets, no entry of another's named. */
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "dataset=tank%%2F..%%2F..%%2Fdata", data);
+	http("GET", path, NULL, &r);
+	ATF_CHECK_MSG(r.status == 404 || r.status == 400, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	/* A NUL: libwebsockets refuses it in the URI; a body's path, a
+	 * YANG Patch's target, is decoded by the console, which refuses
+	 * it too. */
+	snprintf(path, sizeof(path), "%s" NACM, cand);
+	http_with("PATCH", path, YANG_PATCH, "{\"ietf-yang-patch:yang-patch\":"
+	    "{\"patch-id\":\"nul\",\"edit\":[{\"edit-id\":\"e1\","
+	    "\"operation\":\"create\",\"target\":\"/rule-list=p%00x\","
+	    "\"value\":{\"ietf-netconf-acm:rule-list\":[{\"name\":\"p\"}]}}"
+	    "]}}", &r);
+	ATF_CHECK_MSG(r.status == 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+
+	/* depth: an entry at its end keeps its keys, nothing else. */
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage/"
+	    "dataset=tank%%2Fdata?depth=1", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ_MSG("{\"arcana-storage:dataset\":[{\"name\":"
+	    "\"tank/data\"}]}", r.body, "%s", r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/arcana-storage:storage?depth=2",
+	    data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("tank/vault",
+	    jstr(&r, "arcana-storage:storage.dataset.2.name"));
+	ATF_CHECK(jstr(&r, "arcana-storage:storage.dataset.2.mountpoint") ==
+	    NULL);
+	ATF_CHECK_STREQ("da0", jstr(&r, "arcana-storage:storage.disk.0.name"));
+	ATF_CHECK(jstr(&r, "arcana-storage:storage.disk.0.size") == NULL);
+	ATF_CHECK_MSG(strstr(r.body, "\"dev\":{}") != NULL, "%s", r.body);
+	resp_free(&r);
+	/* The host's entry: at depth 1 its key alone. */
+	snprintf(path, sizeof(path), "%s?depth=1", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\"") == NULL && strstr(r.body,
+	    "\"id\"") != NULL, "%s", r.body);
+	resp_free(&r);
+
+	/* A whole host: every top-level node, each asked alone. */
+	snprintf(path, sizeof(path), "%s?depth=2", data);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"arcana-storage:storage\":{}") !=
+	    NULL && strstr(r.body, "\"arcana-sysctl:sysctl\":{}") != NULL,
+	    "%s", r.body);
+	resp_free(&r);
+	http("GET", data, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_STREQ("tank/data", jstr(&r,
+	    "arcana-fleet:host.0.arcana-storage:storage.dataset.1.name"));
+	ATF_CHECK_MSG(strlen(r.body) > 65536, "%zu", strlen(r.body));
+	resp_free(&r);
+}
+
 /* method of what is below base, with headers extra (NULL: none), its
  * status and error-tag what is said. */
 static void
@@ -3566,14 +3674,15 @@ ATF_TC_BODY(restconf, tc)
 	EXPECT(&r, 200);
 	ATF_CHECK_STREQ("lo0", jstr(&r, "ietf-interfaces:name"));
 	resp_free(&r);
-	/* An entry: depth 1 is the entry alone; content=config keeps
-	 * its key and leaves out its state. */
+	/* An entry: depth 1 is the entry alone, its key (RFC 8040
+	 * section 4.8.2); content=config keeps its key and leaves out its
+	 * state. */
 	snprintf(path, sizeof(path), "%s/ietf-interfaces:interfaces/"
 	    "interface=lo0?depth=1", host);
 	http("GET", path, NULL, &r);
 	EXPECT(&r, 200);
-	ATF_CHECK_STREQ_MSG("{\"ietf-interfaces:interface\":[{}]}", r.body,
-	    "%s", r.body);
+	ATF_CHECK_STREQ_MSG("{\"ietf-interfaces:interface\":[{\"name\":"
+	    "\"lo0\"}]}", r.body, "%s", r.body);
 	resp_free(&r);
 	snprintf(path, sizeof(path), "%s/ietf-interfaces:interfaces/"
 	    "interface=lo0?content=config", host);
@@ -5195,8 +5304,10 @@ ATF_TC_BODY(jails, tc)
 	snprintf(path, sizeof(path), "%s/arcana-jails:jails/jail=web/reboot",
 	    base);
 	http("POST", path, NULL, &r);
-	ATF_CHECK_MSG(r.status == 400 || r.status == 404, "%d %s", r.status,
-	    r.body);
+	/* No such action: its name read as the key's rest ("web/reboot",
+	 * an entry no POST is for) since the key is found by the schema. */
+	ATF_CHECK_MSG(r.status == 400 || r.status == 404 || r.status == 405,
+	    "%d %s", r.status, r.body);
 	resp_free(&r);
 	snprintf(path, sizeof(path), "%s/arcana-jails:jails/jail=web/stop",
 	    base);
@@ -10015,6 +10126,18 @@ ATF_TC_BODY(restconf_keyed_get, tc)
 		ATF_CHECK(strstr(r.body, "\"name\":\"hw.pagesize\"") == NULL);
 	}
 	resp_free(&r);
+	/* A whole host's GET, each top-level node asked alone: the
+	 * sysctl list's warning still beside the data. */
+	snprintf(path, sizeof(path), FLEET "%s", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	if (strstr(r.body, "\"total\":") != NULL)
+		ATF_CHECK_MSG(strstr(r.body, "\"arcana-fleet:warnings\":[{"
+		    "\"tag\":\"list-cut\",\"text\":\"4000 of ") != NULL,
+		    "%.300s", strstr(r.body, "arcana-fleet:warnings") != NULL ?
+		    strstr(r.body, "arcana-fleet:warnings") : "no warnings");
+	ATF_CHECK(strstr(r.body, "\"arcana-fleet:host\":[{") != NULL);
+	resp_free(&r);
 }
 
 CONSOLE_TC(services, "Services listed, acted on and configured through "
@@ -10050,8 +10173,9 @@ ATF_TC_BODY(services, tc)
 	ATF_CHECK_STREQ("7", jstr(&r, "pid"));
 	resp_free(&r);
 	r3_act(id, "/arcana-services:services/service=sshd/dance", NULL, &r);
-	ATF_CHECK_MSG(r.status == 404 || r.status == 400, "%d %s", r.status,
-	    r.body);
+	/* No such action: read as the key's rest ("sshd/dance"). */
+	ATF_CHECK_MSG(r.status == 404 || r.status == 400 || r.status == 405,
+	    "%d %s", r.status, r.body);
 	resp_free(&r);
 	/* Enabled: a commit, refused for what it has not accepted, the
 	 * warning named; with it accepted, Arcana's rc.conf file has it. */
@@ -12352,8 +12476,12 @@ ATF_TC_BODY(restconf_actions, tc)
 	    "invalid-value");
 	/* Read, not POSTed; none such; not the mount's. */
 	rc_expect("GET", data, SYSCTL_READ, NULL, NULL, 405, NULL);
+	rc_expect("POST", data, "/arcana-jails:jails/nosuch", NULL, "{}", 404,
+	    NULL);
+	/* Below an entry, what names no node is its key's (a key's "/"
+	 * libwebsockets decoded): the entry "web/nosuch", not POSTed. */
 	rc_expect("POST", data, "/arcana-jails:jails/jail=web/nosuch", NULL,
-	    "{}", 404, NULL);
+	    "{}", 405, NULL);
 	rc_expect("POST", data, "/ietf-netconf:get-config", NULL, "{}", 405,
 	    NULL);
 	rc_expect("POST", cand, JAIL_START, NULL, "{}", 405, NULL);
@@ -22137,6 +22265,108 @@ ATF_TC_CLEANUP(tls_ec, tc)
 	stop();
 }
 
+/* restconf_paths_tls' host. */
+#define	R4_PATHS_ID	"0a0e0003"
+
+/*
+ * restconf_paths' over HTTPS, HTTP/2 and HTTP/1.1 each by curl: a key's
+ * percent-encoded "/" (libwebsockets decodes HTTP/2's :path as it does
+ * HTTP/1.1's request line), depth on an entry, a whole host's GET.
+ */
+ATF_TC_WITH_CLEANUP(restconf_paths_tls);
+ATF_TC_HEAD(restconf_paths_tls, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "RESTCONF paths over HTTP/2 and "
+	    "HTTP/1.1: a key's percent-encoded /, depth, a whole host");
+	atf_tc_set_md_var(tc, "require.progs", "curl openssl");
+	atf_tc_set_md_var(tc, "timeout", "60");
+}
+ATF_TC_BODY(restconf_paths_tls, tc)
+{
+	static const char *const vers[] = { "--http2", "--http1.1" };
+	static const char *const want[] = { "2", "1.1" };
+	char	cwd[MAXPATHLEN], cmd[MAXPATHLEN * 2];
+	int	port, i;
+
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	ATF_REQUIRE(system("openssl req -x509 -newkey ec -pkeyopt "
+	    "ec_paramgen_curve:P-256 -nodes -keyout ec.key -out ec.pem -days 1 "
+	    "-subj /CN=localhost 2>/dev/null") == 0);
+	snprintf(harness_server, sizeof(harness_server), "\tcertfile = "
+	    "\"%s/ec.pem\";\n\tcertkey = \"%s/ec.key\";\n", cwd, cwd);
+	port = free_port();
+	start(tc, port, NULL);
+	for (i = 0; i < 50; i++) {
+		snprintf(cmd, sizeof(cmd), "curl -sk https://127.0.0.1:%d/api/"
+		    "health | grep -q '\"ok\":true'", port);
+		if (system(cmd) == 0)
+			break;
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(i < 50, "no answer over HTTPS");
+	/* A session by an API token, the lab host added. */
+	snprintf(cmd, sizeof(cmd), "T=arcw_$(printf 'c%%.0s' $(seq 1 64)); "
+	    "printf '{\"tokens\":[{\"hash\":\"%%s\",\"name\":\"t\","
+	    "\"created\":1,\"last\":0,\"write\":true}]}' $(printf %%s $T "
+	    "| sha256 -q) > data/tokens.json && "
+	    "curl -sk -c jar -H 'content-type: application/json' -d "
+	    "\"{\\\"token\\\":\\\"$T\\\"}\" https://127.0.0.1:%d/api/auth/"
+	    "login/token -o /dev/null && "
+	    "curl -sk -b jar -H 'origin: %s' -H 'content-type: "
+	    "application/json' -d '{\"arcana-console:host\":[{\"id\":"
+	    "\"" R4_PATHS_ID "\",\"name\":\"here\",\"uri\":\"unix:%s/"
+	    "jgd.sock\"}]}' -o servers.out -w '%%{http_code}' "
+	    "https://127.0.0.1:%d" CC "hosts | grep -qx 201", port,
+	    harness_origin, cwd, port);
+	if (system(cmd) != 0) {
+		(void)system("cat servers.out; echo; tail -5 console.out");
+		atf_tc_fail("no session or no host");
+	}
+	for (i = 0; i < 2; i++) {
+		/* The entry by its encoded key, its leaf. */
+		snprintf(cmd, sizeof(cmd), "curl -sk %s -b jar -o key.out -w "
+		    "'%%{http_version} %%{http_code}' 'https://127.0.0.1:%d"
+		    FLEET R4_PATHS_ID "/arcana-storage:storage/dataset="
+		    "tank%%2Fdata/mountpoint' | grep -qx '%s 200' && "
+		    "grep -q '\"arcana-storage:mountpoint\":\"/tank/data\"' "
+		    "key.out", vers[i], port, want[i]);
+		if (system(cmd) != 0) {
+			(void)system("cat key.out; echo; tail -5 console.out");
+			atf_tc_fail("%s: no entry by a key with /", vers[i]);
+		}
+		/* depth 1 on it: its key. */
+		snprintf(cmd, sizeof(cmd), "curl -sk %s -b jar -o depth.out "
+		    "'https://127.0.0.1:%d" FLEET R4_PATHS_ID
+		    "/arcana-storage:storage/dataset=tank%%2Fvault?depth=1' && "
+		    "grep -qx '{\"arcana-storage:dataset\":\\[{\"name\":"
+		    "\"tank/vault\"}\\]}' depth.out", vers[i], port);
+		if (system(cmd) != 0) {
+			(void)system("cat depth.out; echo");
+			atf_tc_fail("%s: depth 1 without the key", vers[i]);
+		}
+		/* A whole host, at depth 2 and whole: no framing error. */
+		snprintf(cmd, sizeof(cmd), "curl -sk %s -b jar -o host2.out -w "
+		    "'%%{http_version} %%{http_code}' 'https://127.0.0.1:%d"
+		    FLEET R4_PATHS_ID "?depth=2' | grep -qx '%s 200' && "
+		    "grep -q '\"arcana-sysctl:sysctl\":{}' host2.out && "
+		    "curl -sk %s -b jar -o host.out -w '%%{http_version} "
+		    "%%{http_code}' 'https://127.0.0.1:%d" FLEET R4_PATHS_ID
+		    "' | grep -qx '%s 200' && [ $(wc -c < host.out) -gt 65536 ]",
+		    vers[i], port, want[i], vers[i], port, want[i]);
+		if (system(cmd) != 0) {
+			(void)system("head -c 300 host2.out; echo; wc -c "
+			    "host.out; tail -5 console.out");
+			atf_tc_fail("%s: no whole host", vers[i]);
+		}
+	}
+}
+ATF_TC_CLEANUP(restconf_paths_tls, tc)
+{
+
+	(void)tc;
+	stop();
+}
+
 /* h2_streams' host, and the streams a connection is allowed by default
  * (web.c's H2_STREAMS). */
 #define	R4_H2_ID	"0a0e0002"
@@ -29638,6 +29868,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, restconf_ra);
 	ATF_TP_ADD_TC(tp, restconf_boot);
 	ATF_TP_ADD_TC(tp, restconf_mount);
+	ATF_TP_ADD_TC(tp, restconf_paths);
 	ATF_TP_ADD_TC(tp, restconf_cbor);
 	ATF_TP_ADD_TC(tp, ycbor_hostile);
 	ATF_TP_ADD_TC(tp, restconf_edit);
@@ -29749,6 +29980,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, enrol);
 	ATF_TP_ADD_TC(tp, console_role);
 	ATF_TP_ADD_TC(tp, tls_ec);
+	ATF_TP_ADD_TC(tp, restconf_paths_tls);
 	ATF_TP_ADD_TC(tp, h2_streams);
 	ATF_TP_ADD_TC(tp, cyang_hosts);
 	ATF_TP_ADD_TC(tp, cyang_host_verbs);

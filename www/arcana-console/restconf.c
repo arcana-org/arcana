@@ -806,7 +806,7 @@ restconf_host(const char *path, char *sid, size_t len)
 	return (true);
 }
 
-/* %XX decoded in place; false: a bad escape. */
+/* %XX decoded in place; false: a bad escape, or a NUL. */
 static bool
 pct_decode(char *s)
 {
@@ -825,6 +825,8 @@ pct_decode(char *s)
 		    tolower((unsigned char)s[1]) - 'a' + 10;
 		lo = isdigit((unsigned char)s[2]) ? s[2] - '0' :
 		    tolower((unsigned char)s[2]) - 'a' + 10;
+		if (hi == 0 && lo == 0)
+			return (false);
 		*w++ = (char)(hi * 16 + lo);
 		s += 2;
 	}
@@ -1044,14 +1046,80 @@ restconf_free(struct rcreq *r)
 	free(r);
 }
 
+/* How many c are in s. */
+static size_t
+count_char(const char *s, char c)
+{
+	size_t	n = 0;
+
+	while ((s = strchr(s, c)) != NULL) {
+		n++;
+		s++;
+	}
+	return (n);
+}
+
+/*
+ * The segments of *rest an entry of n's last key goes on to, joined to
+ * it again: libwebsockets decodes a path whole before the console sees
+ * it (over HTTP/1.1 and HTTP/2 alike, and keeps it no other way), so a
+ * key's %2F is the path's "/" here.  Each that names no node below n
+ * (nor its action, as the last) is the key's; the first that does ends
+ * it.  A "." or ".." libwebsockets has folded already; one left is
+ * refused.  0, or *why.
+ */
+static int
+key_rest(const struct cbl_ynode *n, char **rest, const char **why)
+{
+	const char	*e, *eq, *colon;
+	char		 mod[128], name[128];
+	size_t		 len;
+	bool		 last;
+
+	while (*rest != NULL && **rest != '\0') {
+		e = strchrnul(*rest, '/');
+		last = *e == '\0';
+		len = (size_t)(e - *rest);
+		if ((len == 1 && **rest == '.') || (len == 2 &&
+		    strncmp(*rest, "..", 2) == 0)) {
+			*why = "a key's segment . or ..";
+			return (EINVAL);
+		}
+		/* The segment's node name: before "=", by ":". */
+		eq = memchr(*rest, '=', len);
+		len = eq != NULL ? (size_t)(eq - *rest) : len;
+		colon = memchr(*rest, ':', len);
+		mod[0] = '\0';
+		if (colon != NULL && (size_t)(colon - *rest) < sizeof(mod))
+			snprintf(mod, sizeof(mod), "%.*s", (int)(colon - *rest),
+			    *rest);
+		if (colon != NULL)
+			len -= (size_t)(colon + 1 - *rest);
+		if (len < sizeof(name)) {
+			snprintf(name, sizeof(name), "%.*s", (int)len,
+			    colon != NULL ? colon + 1 : *rest);
+			if (node_named(n, colon != NULL ? mod : NULL, name) !=
+			    NULL || (last && act_named(n, colon != NULL ? mod :
+			    NULL, name) != NULL))
+				return (0);
+		}
+		/* The key's: its "/" back, strsep() took it. */
+		(*rest)[-1] = '/';
+		*rest = last ? NULL : __DECONST(char *, e + 1);
+		if (*rest != NULL)
+			(*rest)[-1] = '\0';
+	}
+	return (0);
+}
+
 /*
  * The nodes of rest (an api-path's segments below the host's entry, by
  * "/"), after those r has: each a data node of the one before, the
  * first named with its module; a list's entry by all its keys, a
  * leaf-list's by its value.  With encoded (a query's, a body's), each
- * name and key %-decoded once cut out; the path's own, libwebsockets
- * has decoded, and a key with "/" or "," in it cannot be named there.
- * 0, or *why.
+ * name and key %-decoded once cut out.  The path's own libwebsockets
+ * has decoded: a key's "/" and "," found again by the schema
+ * (key_rest()).  0, or *why.
  */
 static int
 parse_segs(struct rcreq *r, char *rest, bool encoded, const char **why)
@@ -1098,6 +1166,26 @@ parse_segs(struct rcreq *r, char *rest, bool encoded, const char **why)
 			    "of the path is named with its module" :
 			    restconf_no_node;
 			return (EINVAL);
+		}
+		/* Decoded, an entry's "/" and "," are the path's: what
+		 * follows names no node below it is its last key's. */
+		if (!encoded && keys != NULL && (sg->n->kind == CBL_YN_LIST ||
+		    sg->n->kind == CBL_YN_LEAFLIST)) {
+			if (key_rest(sg->n, &rest, why) != 0)
+				return (EINVAL);
+			if (sg->n->kind == CBL_YN_LEAFLIST || sg->n->nkeys == 1)
+				k = keys, keys = NULL;
+			else if (count_char(keys, ',') + 1 > sg->n->nkeys) {
+				*why = "a key with \",\" in an entry of more "
+				    "than one key cannot be told apart";
+				return (EINVAL);
+			}
+			if (keys == NULL) {
+				if ((sg->key[sg->nkey++] = strdup(k)) == NULL) {
+					*why = "out of memory";
+					return (ENOMEM);
+				}
+			}
 		}
 		while (keys != NULL && (k = strsep(&keys, ",")) != NULL) {
 			if (sg->nkey == KEY_MAX || (encoded && !pct_decode(k))) {
@@ -1523,8 +1611,8 @@ annotations(ucl_object_t *out, const ucl_object_t *o)
 
 /*
  * The members of a container's or a list entry's object, as content and
- * depth leave them, a list entry's keys whatever content says; *any:
- * one but a key is left.
+ * depth leave them, a list entry's keys whatever content and depth say;
+ * *any: one but a key is left.
  */
 static ucl_object_t *
 shape_object(const struct cbl_ynode *n, const ucl_object_t *o, int depth,
@@ -1538,13 +1626,15 @@ shape_object(const struct cbl_ynode *n, const ucl_object_t *o, int depth,
 
 	*any = false;
 	out = ucl_object_typed_new(UCL_OBJECT);
-	if (depth == 1)
-		return (out);
 	while ((v = ucl_object_iterate(o, &it, true)) != NULL) {
 		if (ucl_object_key(v)[0] == '@')
 			continue;
 		c = child_by_member(n, ucl_object_key(v));
 		key = c != NULL && (c->flags & CBL_YNF_KEY) != 0;
+		/* At the depth's end a list entry keeps its keys alone
+		 * (section 4.8.2), a container nothing. */
+		if (depth == 1 && !key)
+			continue;
 		if ((s = shape(c, v, depth > 0 ? depth - 1 : 0, content,
 		    key)) == NULL)
 			continue;
@@ -2597,6 +2687,10 @@ refusal(int error, const char **tag)
 	case ENOSPC:
 		*tag = "resource-denied";
 		return (409);
+	case EMSGSIZE:
+		/* An answer past a message's bound. */
+		*tag = "too-big";
+		return (413);
 	default:
 		*tag = "operation-failed";
 		return (502);
@@ -3553,12 +3647,6 @@ host_tree(const struct cbl_ysids *s, const cbl_dtree *w, const char **tag,
 	return (0);
 }
 
-/*
- * r's GET over conn as RFC 7951's JSON by the host's schema: the
- * top-level node r names (its SID the host's), or each the agent has,
- * named by its .sid files and typed by the console's tables, a node
- * only the host has as YANG-CBOR's kind says.
- */
 /* The warnings of the host's answer rep (a list cut), as an edit's and
  * an action's are told: [{tag, text}], NULL for none. */
 static ucl_object_t *
@@ -3586,44 +3674,163 @@ host_warnings(const cbl_msg *rep)
 	return (ws);
 }
 
+
+/* len bytes of p appended to b. */
+static int
+buf_add(struct cbl_ybuf *b, const void *p, size_t len)
+{
+	uint8_t	*np;
+	size_t	 cap;
+
+	if (b->len + len > b->cap) {
+		cap = MAX(b->cap * 2, b->len + len);
+		if ((np = realloc(b->p, cap)) == NULL)
+			return (ENOMEM);
+		b->p = np;
+		b->cap = cap;
+	}
+	memcpy(b->p + b->len, p, len);
+	b->len += len;
+	return (0);
+}
+
+/*
+ * r's GET over conn, each reply given to each with the top-level SIDs
+ * it answers: the node r names (its SID the host's), or, for the host's
+ * entry, each of the host's top-level nodes asked alone.  Asked whole,
+ * a host's answer went past a message's bound (max_frame, and an SCTP
+ * association's send buffer below it): a reply is one message.  A node
+ * the host has nothing of, or the user may not read, is left out; one
+ * that alone is past the bound is refused, EMSGSIZE, its name in err.
+ */
+static int
+host_ask(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
+    int (*each)(cbl_msg *, const uint64_t *, size_t, void *), void *arg,
+    char *err, size_t errlen, uint64_t *errsid)
+{
+	const struct cbl_ysid_item	*it;
+	cbl_msg		*rep;
+	uint64_t	 sid, *sids;
+	size_t		 n;
+	int		 error;
+
+	if (r->nseg > 0) {
+		sid = cbl_ysids_of(s, r->seg[0].n)->sid;
+		if ((error = ytrans_get_msg(conn, &sid, 1, r->xpath, r->ds,
+		    r->origin, &rep, err, errlen, errsid)) != 0) {
+			if (error == EMSGSIZE)
+				snprintf(err, errlen, "the answer is larger "
+				    "than a message from the host (%d MiB): "
+				    "ask a path below it", CBLINK_MAX_FRAME /
+				    (1024 * 1024));
+			return (error);
+		}
+		error = each(rep, &sid, 1, arg);
+		cbl_msg_free(rep);
+		return (error);
+	}
+	if ((sids = calloc(cbl_ysids_count(s) + 1, sizeof(*sids))) == NULL)
+		return (ENOMEM);
+	n = cbl_ysids_tops(s, sids, cbl_ysids_count(s));
+	error = 0;
+	for (size_t i = 0; error == 0 && i < n; i++) {
+		error = ytrans_get_msg(conn, &sids[i], 1, NULL, r->ds,
+		    r->origin, &rep, err, errlen, errsid);
+		/* Asked whole, what the host has not, or NACM does not let
+		 * the user read (RFC 8341 section 3.4.5), was left out. */
+		if (error == ENOENT || error == EACCES || error == EPERM ||
+		    error == EOPNOTSUPP) {
+			error = 0;
+			err[0] = '\0';
+			if (errsid != NULL)
+				*errsid = 0;
+			continue;
+		}
+		if (error == EMSGSIZE && (it = cbl_ysids_sid(s, sids[i])) !=
+		    NULL)
+			snprintf(err, errlen, "the host's %s:%s alone is larger "
+			    "than a message from the host (%d MiB): ask a path "
+			    "below it", it->nmod != NULL ? it->nmod : it->module,
+			    it->name, CBLINK_MAX_FRAME / (1024 * 1024));
+		if (error != 0)
+			break;
+		error = each(rep, &sids[i], 1, arg);
+		cbl_msg_free(rep);
+	}
+	free(sids);
+	return (error);
+}
+
+struct json_acc {
+	const struct cbl_ysids	*s;
+	struct cbl_ybuf		*b;
+	ucl_object_t		*warnings;	/* each reply's, in one */
+	bool			 first;
+	char			*err;
+	size_t			 errlen;
+};
+
+/* The members of rep for sids as RFC 7951's JSON, after a's; its
+ * warnings after a's. */
+static int
+json_each(cbl_msg *rep, const uint64_t *sids, size_t n, void *arg)
+{
+	struct json_acc			*a = arg;
+	const struct cbl_ysid_item	*it;
+	const void			*v;
+	ucl_object_t			*ws, *w;
+	size_t				 len;
+	int				 error = 0;
+
+	if ((ws = host_warnings(rep)) != NULL) {
+		if (a->warnings == NULL)
+			a->warnings = ws;
+		else {
+			while ((w = ucl_array_pop_first(ws)) != NULL)
+				ucl_array_append(a->warnings, w);
+			ucl_object_unref(ws);
+		}
+	}
+
+	for (size_t i = 0; error == 0 && i < n; i++)
+		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0 &&
+		    (it = cbl_ysids_sid(a->s, sids[i])) != NULL)
+			error = cbl_yxlate_json_member(a->s, it, v, len,
+			    &a->first, a->b, a->err, a->errlen);
+	return (error);
+}
+
+/*
+ * r's GET over conn as RFC 7951's JSON by the host's schema: the
+ * top-level node r names, or each the agent has (host_ask()), named by
+ * its .sid files and typed by the console's tables, a node only the
+ * host has as YANG-CBOR's kind says; *warnings each reply's, in one
+ * (NULL: none).
+ */
 static int
 host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
     ucl_object_t **out, ucl_object_t **warnings, char *err, size_t errlen,
     uint64_t *errsid)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
-	const struct cbl_ysid_item	*it;
+	struct json_acc		 a;
 	struct ucl_parser	*p;
-	cbl_msg			*rep;
-	const void		*v;
-	uint64_t		 sid, *sids;
-	size_t			 len, n;
-	bool			 first = true;
 	int			 error;
 
 	*out = NULL;
 	*warnings = NULL;
-	sid = r->nseg > 0 ? cbl_ysids_of(s, r->seg[0].n)->sid : 0;
-	if ((error = ytrans_get_msg(conn, r->nseg > 0 ? &sid : NULL,
-	    r->nseg > 0 ? 1 : 0, r->xpath, r->ds, r->origin, &rep, err,
-	    errlen, errsid)) != 0)
-		return (error);
-	*warnings = host_warnings(rep);
-	if ((sids = calloc(cbl_ysids_count(s) + 1, sizeof(*sids))) == NULL) {
-		cbl_msg_free(rep);
-		return (ENOMEM);
-	}
-	n = cbl_ysids_tops(s, sids, cbl_ysids_count(s));
 	b.p = (uint8_t *)strdup("{");
 	b.len = b.cap = b.p != NULL ? 1 : 0;
-	error = b.p == NULL ? ENOMEM : 0;
-	for (size_t i = 0; error == 0 && i < n; i++)
-		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0 &&
-		    (it = cbl_ysids_sid(s, sids[i])) != NULL)
-			error = cbl_yxlate_json_member(s, it, v, len, &first, &b,
-			    err, errlen);
-	free(sids);
-	cbl_msg_free(rep);
+	if (b.p == NULL)
+		return (ENOMEM);
+	a.s = s;
+	a.b = &b;
+	a.warnings = NULL;
+	a.first = true;
+	a.err = err;
+	a.errlen = errlen;
+	error = host_ask(conn, s, r, json_each, &a, err, errlen, errsid);
+	*warnings = a.warnings;
 	/* And the object closed. */
 	if (error == 0 && b.len + 1 > b.cap) {
 		uint8_t *np;
@@ -3657,102 +3864,77 @@ host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
 	return (error);
 }
 
+struct cbor_acc {
+	struct cbl_ybuf	*b;
+	size_t		 cnt;
+};
+
+/* The members of rep for sids, {SID: value} as they came, after a's. */
+static int
+cbor_each(cbl_msg *rep, const uint64_t *sids, size_t n, void *arg)
+{
+	struct cbor_acc	*a = arg;
+	const void	*v;
+	size_t		 len;
+	int		 error;
+
+	for (size_t i = 0; i < n; i++) {
+		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) != 0)
+			continue;
+		if ((error = cbl_ybuf_head(a->b, 0, sids[i])) != 0 ||
+		    (error = buf_add(a->b, v, len)) != 0)
+			return (error);
+		a->cnt++;
+	}
+	return (0);
+}
+
 /*
  * A GET of r as YANG-CBOR: the agent's reply passed through, {SID:
  * value} of the top-level node r names (what the path's XPath selects
- * of it, with what is above), or of each the agent has (those of s).
+ * of it, with what is above), or of each the agent has (host_ask()).
  */
 static void
 cbor_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
     char **json, int *status)
 {
-	struct cbl_ybuf	 b = { NULL, 0, 0 };
+	struct cbl_ybuf	 m = { NULL, 0, 0 }, b = { NULL, 0, 0 };
+	struct cbor_acc	 a = { &m, 0 };
 	const char	*tag;
-	cbl_msg		*rep;
-	const void	*v;
-	uint64_t	 sid, errsid, *sids = NULL;
-	size_t		 len, n = 0, cnt = 0, cap;
+	uint64_t	 errsid;
 	char		 err[256], path[512];
 	int		 error;
 
-	sid = r->nseg > 0 ? cbl_ysids_of(s, r->seg[0].n)->sid : 0;
-	if ((error = ytrans_get_msg(conn, r->nseg > 0 ? &sid : NULL,
-	    r->nseg > 0 ? 1 : 0, r->xpath, r->ds, r->origin, &rep, err,
-	    sizeof(err), &errsid)) != 0) {
+	if ((error = host_ask(conn, s, r, cbor_each, &a, err, sizeof(err),
+	    &errsid)) != 0) {
+		cbl_ybuf_free(&m);
 		*status = refusal(error, &tag);
 		*json = errors_of(*status, tag, node_path(errsid, path,
 		    sizeof(path)), err);
 		return;
 	}
-	/* The SIDs there: the target's, or every top-level node's. */
-	if (r->nseg > 0) {
-		sids = &sid;
-		n = 1;
-	} else if ((sids = calloc(cbl_ysids_count(s) + 1,
-	    sizeof(*sids))) != NULL)
-		n = cbl_ysids_tops(s, sids, cbl_ysids_count(s));
-	for (size_t i = 0; i < n; i++)
-		cnt += cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0;
-	if (r->nseg > 0 && cnt == 0) {
+	if (r->nseg > 0 && a.cnt == 0) {
+		cbl_ybuf_free(&m);
 		*status = 404;
 		*json = restconf_errors(404, "no such resource");
-		goto done;
+		return;
 	}
-	error = sids == NULL ? ENOMEM : cbl_ybuf_head(&b, 5, cnt);
-	for (size_t i = 0; error == 0 && i < n; i++) {
-		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) != 0)
-			continue;
-		if ((error = cbl_ybuf_head(&b, 0, sids[i])) != 0)
-			break;
-		/* The value as it came. */
-		if (b.len + len > b.cap) {
-			uint8_t *np;
-
-			cap = MAX(b.cap * 2, b.len + len);
-			if ((np = realloc(b.p, cap)) == NULL) {
-				error = ENOMEM;
-				break;
-			}
-			b.p = np;
-			b.cap = cap;
-		}
-		memcpy(b.p + b.len, v, len);
-		b.len += len;
-	}
+	/* The map's head, then its members. */
+	if ((error = cbl_ybuf_head(&b, 5, a.cnt)) == 0)
+		error = buf_add(&b, m.p, m.len);
+	cbl_ybuf_free(&m);
 	if (error != 0) {
 		cbl_ybuf_free(&b);
 		*status = 500;
 		*json = restconf_errors(500, "out of memory");
-		goto done;
+		return;
 	}
 	r->out = b.p;
 	r->outlen = b.len;
 	*status = 200;
 	*json = strdup("");
-done:
-	if (r->nseg == 0)
-		free(sids);
-	cbl_msg_free(rep);
 }
 
-/* len bytes of p appended to b. */
-static int
-buf_add(struct cbl_ybuf *b, const void *p, size_t len)
-{
-	uint8_t	*np;
-	size_t	 cap;
-
-	if (b->len + len > b->cap) {
-		cap = MAX(b->cap * 2, b->len + len);
-		if ((np = realloc(b->p, cap)) == NULL)
-			return (ENOMEM);
-		b->p = np;
-		b->cap = cap;
-	}
-	memcpy(b->p + b->len, p, len);
-	b->len += len;
-	return (0);
-}
 
 /* The host's item of r's action's input or output (kind), NULL: none. */
 static const struct cbl_ysid_item *
@@ -4014,8 +4196,8 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 		h = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(h, ucl_object_fromstring(id), "id", 0,
 		    false);
-		if (r->content != CONTENT_CONFIG && (r->fields == NULL ||
-		    selected(r->fields, "name") != NULL))
+		if (r->content != CONTENT_CONFIG && r->depth != 1 &&
+		    (r->fields == NULL || selected(r->fields, "name") != NULL))
 			ucl_object_insert_key(h, ucl_object_fromstring(name),
 			    "name", 0, false);
 		while (r->depth != 1 && (v = ucl_object_iterate(doc, &it,

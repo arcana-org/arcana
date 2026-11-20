@@ -138,6 +138,7 @@ static regex_t		*route_re;
 #define	F_DELETED	0x02
 #define	F_QUEUED	0x04
 #define	F_UPGRADE	0x08
+#define	F_WAITS		0x10	/* its HTTP/2 connection kept meanwhile */
 static TAILQ_HEAD(, http_request) runq = TAILQ_HEAD_INITIALIZER(runq);
 
 /* What libwebsockets keeps per connection for us. */
@@ -1174,6 +1175,20 @@ req_run(struct http_request *req)
 	if (req->status != 0 || (req->flags & F_UPGRADE))
 		return;
 	if (rc == WEB_RETRY) {
+		/*
+		 * An answer that waits (a host's, a whole host's GET a
+		 * minute and more): over HTTP/2 the connection's idle
+		 * timer (keepalive_timeout) runs while its stream is
+		 * quiet, and libwebsockets ended the connection under it
+		 * at a minute, a framing error to the client.  Its stream
+		 * made immortal till it ends, as an event stream's is:
+		 * the headers are req's already, the timer back after.
+		 */
+		if (!(req->flags & F_WAITS) && req->wsi != NULL &&
+		    lws_get_network_wsi(req->wsi) != req->wsi) {
+			req->flags |= F_WAITS;
+			(void)lws_http_mark_sse(req->wsi);
+		}
 		if (!(req->flags & F_SLEEPING))
 			runq_add(req);
 		return;

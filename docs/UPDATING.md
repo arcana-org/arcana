@@ -93,6 +93,31 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### RESTCONF: encoded keys, keys at depth's end, a whole host's GET; agent 0.348.0, console 0.490.0
+
+- A list entry whose key has "/" or "," in it is named as RFC 8040 says,
+  percent-encoded (.../arcana-storage:storage/dataset=zroot%2FROOT%2Fdefault).
+  libwebsockets decodes the path before the console sees it, over
+  HTTP/1.1 and HTTP/2 alike, so the console finds the key again from the
+  host's schema: what follows an entry and names no node below it
+  belongs to its last key.  A key part that is also the name of a node
+  below the entry still ends the key, and a "," in a key of an entry of
+  several keys is refused.  %00 in a body's path is refused.
+- depth keeps a list entry's keys at its end (RFC 8040 section 4.8.2):
+  ?depth=1 on an entry gives its keys, not {}.
+- A GET of a host's entry asks the agent for each top-level node alone,
+  their warnings (a list cut) gathered beside the data.  Asked whole, a
+  large host's answer went past a cblink message and came back 502
+  "Message too long".  A node that alone is past it is answered 413
+  too-big, naming it.
+- Over HTTP/2 a request that waits a minute or more for its host is no
+  longer cut off by the connection's idle timer (curl reported a framing
+  error).
+- cblink 0.2.34: over SCTP, a frame larger than the socket's send buffer
+  (bounded by kern.ipc.maxsockbuf) is refused with EMSGSIZE when queued,
+  and the association stays up (it was ended).
+- Update the console and the agents (both rebuilt against cblink).
+
 ### A vnet jail's routing socket recorded; agent 0.347.0, console 0.489.0
 
 - The security record now hears what a vnet jail's own ipfw logs to the

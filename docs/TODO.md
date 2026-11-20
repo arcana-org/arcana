@@ -534,9 +534,12 @@ Written and tested with stand-ins only:
   parsing.  So a read below a host's entry takes no XPath
   filter; the filter is arcanactl get -x's and cblink's.  To look at
   in lws's parser, or read the raw query from :path ourselves. The
-  same parser decodes the path's %-escapes before the console sees it,
-  so RESTCONF cannot name a list entry whose key has "/" or "," in it
-  (RFC 8040 escapes them as %2F and %2C).
+  same parser decodes the path's %-escapes before the console sees it
+  (HTTP/2's :path too; lws 5.1 keeps no raw URI): restconf.c finds a
+  key's "/" and "," again by the host's schema (key_rest()), but a key
+  segment that is also the name of a node below its entry still ends
+  the key, and a "," in a key of an entry of several keys is refused.
+  An lws option to keep the URI undecoded would end both.
 
 - FreeBSD 16-CURRENT: an interface given an IPv6 address in FIB 0,
   moved to another FIB (ifconfig fib), then destroyed, leaves its
