@@ -93,6 +93,27 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN jail edges followed, pkg bootstrap offered by every Install; agent 0.349.0, console 0.491.0
+
+- SD-WAN at a jail edge: dnsmasq, unbound and BIRD follow their jail as
+  Squid and Suricata do (EVFILT_JAIL).  When the jail is made again, the
+  agent waits for the interfaces its UNIs name, then applies the edge's
+  kept list again, the files rendered anew in the jail's /var/run; no
+  apply from the console is needed.  rtadvd at a jail edge already
+  followed by the jail's own rc.conf.
+- A jail without pkg(8), where the host's pkg(7) takes -j: `pkg -j
+  <jail> install -y` would bootstrap pkg there by itself, so the agent
+  now refuses an install, upgrade, clean or audit fetch in that jail
+  until it is bootstrapped, saying so.  arcana-jails' jail tells pkg and
+  pkg-bootstrap (SIDs 62156-62157), and every Install button for such a
+  jail (Security, SSL inspection, SD-WAN's needs, Mail, Relay, the
+  network views' plugins, the builder) shows the Packages tab's notice
+  and Bootstrap pkg button instead; Arcana never presses it.
+- Fixed: SD-WAN's needs of a jail edge are installed in the jail, not on
+  its host; c-icap's Install did nothing; a jail picked in Where while
+  the host's read was loading showed the host's data.
+- Update the agent and the console together.
+
 ### RESTCONF: encoded keys, keys at depth's end, a whole host's GET; agent 0.348.0, console 0.490.0
 
 - A list entry whose key has "/" or "," in it is named as RFC 8040 says,

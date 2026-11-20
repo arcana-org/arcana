@@ -85,6 +85,8 @@ inst_scope(struct work *w, const struct instance *in)
 }
 
 static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
+/* An apply at a time: the console's, a start's, a jail followed's. */
+static pthread_mutex_t	apply_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 
@@ -247,11 +249,78 @@ do_sdwan_dhcp(struct work *w, const char *json, const char **errp)
 	struct was_scope	 sv;
 	int			 rc;
 
+	pthread_mutex_lock(&apply_lock);
 	scope_save(w, &sv);
 	rc = dhcp_apply(w, json, errp);
 	scope_back(w, &sv);
+	pthread_mutex_unlock(&apply_lock);
 	return (rc);
 }
+
+/*
+ * The jail edges followed (ira/jailwatch.c): one made (or running at
+ * the start) that keeps a list (sdwan-dhcp@JAIL.json), and whose
+ * instances do not run in it (another jid, or none applied), is
+ * wanted, once the interfaces its UNIs name are in it (none named: one
+ * up besides the loopback); then its kept list is applied again, its
+ * files made again beneath its root.
+ */
+static int
+dhcp_wants(const char *jail, int jid, char (*ifs)[JAIL_IFNAMSIZ], int max)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].jail, jail) == 0 &&
+		    instances[i].jid == jid)
+			break;
+	pthread_mutex_unlock(&lock);
+	return (i < ninstances ? -1 : sdwan_kept_ifs("dhcp", jail, ifs, max));
+}
+
+static int
+dhcp_follow(struct work *w, const char *jail, const char **errp)
+{
+	struct was_scope	 sv;
+	const char		*e;
+	char			*json;
+	int			 rc;
+
+	pthread_mutex_lock(&apply_lock);
+	rc = 0;
+	if ((json = sdwan_kept_read(wfmt(w, "sdwan-dhcp@%s.json", jail))) !=
+	    NULL) {
+		e = NULL;
+		scope_save(w, &sv);
+		rc = dhcp_apply(w, json, &e);
+		scope_back(w, &sv);
+		free(json);
+		if (rc != 0)
+			*errp = wfmt(w, "sdwan dhcp: %s", e);
+	}
+	pthread_mutex_unlock(&apply_lock);
+	return (rc);
+}
+
+/* A jail edge removed: its instances run in none, until it is made
+ * again (whatever jid it is given then). */
+static void
+dhcp_gone(const char *jail, int jid)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (instances[i].jid == jid && strcmp(instances[i].jail, jail) ==
+		    0)
+			instances[i].jid = 0;
+	pthread_mutex_unlock(&lock);
+}
+
+static const struct jail_follower dhcp_follower = {
+	"sdwan dhcp (dnsmasq)", dhcp_wants, dhcp_follow, dhcp_gone
+};
 
 static int
 dhcp_apply(struct work *w, const char *json, const char **errp)
@@ -441,6 +510,8 @@ sdwan_dhcp_start(void)
 	const char	*e;
 	size_t		 n;
 
+	/* The jails followed from now: jailwatch.c starts after. */
+	jail_follow(&dhcp_follower);
 	work_init(&w);
 	if ((json = sdwan_kept_read(DHCP_FILE)) != NULL) {
 		e = NULL;

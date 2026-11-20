@@ -1525,7 +1525,8 @@ atf_test_case yang_jails
 yang_jails_head()
 {
 	atf_set "descr" "the list operation's reply as arcana-jails has it" \
-	    "every field, a running vnet jail's lne," \
+	    "every field, a running vnet jail's lne, whether pkg is in it" \
+	    "and the host's pkg(7) bootstraps it," \
 	    "the cpu share in hundredths, through YANG-CBOR and back"
 }
 yang_jails_body()
@@ -1542,6 +1543,7 @@ jail web state=0 jid=yes configured=1 scope=/etc/jail.conf.d/web.conf hostname=w
   param persist
   plugin bird
   plugin wireguard
+  pkg 0 bootstrap 1
 jail db state=1 jid=- configured=1 scope=/etc/jail.conf hostname=- path=/jails/db vnet=1 osrelease=- persist=- securelevel=- nproc=- rss=- cpu=- interface=- lne=-
 EOF
 	"$(atf_get_srcdir)/yjails" > out
@@ -7091,8 +7093,10 @@ pkg_bootstrap_head()
 	atf_set "descr" "a jail without pkg(8) of its own: its read says so" \
 	    "and whether the host's pkg(7) takes -j (its usage's [-j jail]);" \
 	    "pkg-bootstrap refused with a pkg(7) without -j, pkg not run;" \
-	    "with one, pkg -j <jail> bootstrap -y, pkg then there; the host" \
-	    "and every jail refused"
+	    "with one, the jails read says so, an install, upgrade, clean" \
+	    "and audit fetch there refused (pkg -j would bootstrap by" \
+	    "itself), then pkg -j <jail> bootstrap -y, pkg then there and" \
+	    "an install going through; the host and every jail refused"
 }
 pkg_bootstrap_body()
 {
@@ -7120,14 +7124,37 @@ EOS
 	echo '# Usage: pkg [-46d] [-j jail] [-r rootdir] bootstrap [-fy]' >> fake-pkg
 	atf_check -o match:'^Pkg: +not in the jail; pkg-bootstrap installs it' \
 	    "$JGC" -c "$SOCK" packages -i web
+	# Said in the jails read too, for every Install button of the
+	# jail's (arcana-jails' pkg and pkg-bootstrap).
+	atf_check -o match:'"pkg":false,"pkg-bootstrap":true' \
+	    "$JGC" -c "$SOCK" get jails
+	# Its install, upgrade, clean and audit fetch refused until it is
+	# bootstrapped: with this pkg(7), pkg -j web install -y would
+	# bootstrap pkg there by itself.  pkg not run.
+	atf_check -s exit:1 -o match:'the jail web has no pkg of its own, and the host.s pkg\(7\) would bootstrap one there by itself for pkg install: bootstrap it first' \
+	    "$JGC" -c "$SOCK" pkg-install -j web aria2
+	atf_check -s exit:1 -o match:'the jail web has no pkg of its own.*for pkg upgrade' \
+	    sh -c '"$0" -c "$1" pkg-upgrade -j web 2>&1' "$JGC" "$SOCK"
+	atf_check -s exit:1 -o match:'the jail web has no pkg of its own.*for pkg clean' \
+	    sh -c '"$0" -c "$1" pkg-clean -j web 2>&1' "$JGC" "$SOCK"
+	atf_check -s exit:1 -o match:'the jail web has no pkg of its own.*for pkg audit -F' \
+	    sh -c '"$0" -c "$1" pkg-audit-fetch -j web 2>&1' "$JGC" "$SOCK"
+	atf_check test ! -e install.log -a ! -e audit.log -a ! -e bootstrap.log
 	atf_check -o match:'done +pkg bootstrapped in web' \
 	    "$JGC" -c "$SOCK" pkg-bootstrap -4 web
 	atf_check -o inline:'bootstrap -y\n' cat bootstrap.log
+	n=$("$JGC" -c "$SOCK" jobs | awk '$2 == "done" && /pkg bootstrapped in web/ { n = $1 } END { print n }')
 	atf_check -o match:'fake-pkg -4 -j web bootstrap -y' \
-	    -o match:'pkg\(7\) takes -j' "$JGC" -t -c "$SOCK" job 2
+	    -o match:'pkg\(7\) takes -j' "$JGC" -t -c "$SOCK" job "$n"
 	atf_check test -x "$R/usr/local/sbin/pkg"
-	# Now there: nothing said, and a bootstrap again runs no pkg.
+	# Now there: nothing said, and a bootstrap again runs no pkg; an
+	# install there goes through.
 	atf_check -o not-match:'^Pkg:' "$JGC" -c "$SOCK" packages -i web
+	atf_check -o match:'"pkg":true' -o not-match:'"pkg-bootstrap"' \
+	    "$JGC" -c "$SOCK" get jails
+	atf_check -o match:'done +pkg install aria2 in web' \
+	    "$JGC" -c "$SOCK" pkg-install -j web aria2
+	atf_check -o inline:'install -y aria2\n' cat install.log
 	atf_check -o match:'done +pkg bootstrapped in web' \
 	    "$JGC" -c "$SOCK" pkg-bootstrap web
 	atf_check -o inline:'bootstrap -y\n' cat bootstrap.log
@@ -13781,7 +13808,7 @@ sdwan_altmark_cleanup()
 atf_test_case sdwan_bird cleanup
 sdwan_bird_head()
 {
-	atf_set "descr" "BIRD instances of the SD-WAN, on the host and in a vnet jail; BFD's word in the steering, its faults; the breakout's default route steered; a jail's birdc that never ends not waited on"
+	atf_set "descr" "BIRD instances of the SD-WAN, on the host and in a vnet jail; BFD's word in the steering, its faults; the breakout's default route steered; a jail's birdc that never ends not waited on; started again there when the jail is made again (EVFILT_JAIL)"
 	atf_set "timeout" "120"
 }
 sdwan_bird_body()
@@ -13953,6 +13980,32 @@ EOS
 	    "$JGC" -c "$SOCK" sdwan
 	atf_check -o inline:'1\n' sh -c "grep -c 'fake-bird -c /var/run/arcana-sdwan-bird-sw1-gw.conf' jexec.log"
 	rm birdc.hang
+	# The edge made again (gone from ./jails, its BIRD with it, its
+	# /var/run emptied by its start): told by EVFILT_JAIL (the
+	# stand-in's), an interface up in it besides the loopback looked
+	# for (ifconfig -j 7 -l -u), then its kept list applied again: the
+	# file rendered again beneath its root, parsed, BIRD started there.
+	cat > fake-ifconfig <<EOS
+#!/bin/sh
+echo "ifconfig \$*" >> $(pwd)/ifconfig.log
+case "\$*" in "-j 7 -l -u") echo "lo0 epair0b" ;; esac
+exit 0
+EOS
+	chmod +x fake-ifconfig
+	cp jails jails.all
+	: > jails
+	wait_match '"kind":"jail-state","data":\{"jail":"gw","state":"stopped","jid":7\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "gw is not told stopped"
+	rm -f "$R"/var/run/arcana-sdwan-bird-*
+	: > jexec.log
+	: > ifconfig.log
+	cp jails.all jails
+	wait_match '^jexec 7 .*fake-bird -p -c /var/run/arcana-sdwan-bird-sw1-gw.conf$' \
+	    cat jexec.log || atf_fail "bird sw1-gw is not applied again: $(cat jexec.log)"
+	atf_check -o match:'^ifconfig -j 7 -l -u$' cat ifconfig.log
+	atf_check -o match:'^router id 100.64.0.2;$' cat "$R/var/run/arcana-sdwan-bird-sw1-gw.conf"
+	wait_match '"name":"sw1-gw","fib":1,"jail":"gw","running":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "bird sw1-gw does not run again"
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan bird '{"jail":"gw","instances":[]}'
 	atf_check -o match:'"name":"sw1","fib":1' -o not-match:'"name":"sw1-gw"' \
 	    -o match:'"type":"bird-instance","severity":"Cleared","was":"Critical","object":"sw1-gw"' \
@@ -14085,7 +14138,7 @@ sdwan_bmp_cleanup()
 atf_test_case sdwan_dhcp_dns cleanup
 sdwan_dhcp_dns_head()
 {
-	atf_set "descr" "The SD-WAN's DHCP (dnsmasq) and DNS filters (local-unbound): checked, rendered, started in their table, listed, stopped; an edge that is a vnet jail's run in it, their files beneath its root through no link, its leases and log read there"
+	atf_set "descr" "The SD-WAN's DHCP (dnsmasq) and DNS filters (local-unbound): checked, rendered, started in their table, listed, stopped; an edge that is a vnet jail's run in it, their files beneath its root through no link, its leases and log read there, started again there when the jail is made again (EVFILT_JAIL)"
 	atf_set "timeout" "120"
 }
 sdwan_dhcp_dns_body()
@@ -14253,6 +14306,43 @@ EOS
 	    -o match:'^jexec 7 .*fake-local-unbound-checkconf /var/run/arcana-sdwan-dns-sw1-gw.conf$' \
 	    cat jexec.log
 	atf_check -o match:'"name":"sw1-gw","fib":1,"jail":"gw","running":true' "$JGC" -c "$SOCK" sdwan
+	# The edge made again (gone from ./jails, its services with it, its
+	# /var/run emptied by its start): told by EVFILT_JAIL (the
+	# stand-in's), the interface its DHCP's UNI names looked for in it
+	# (ifconfig -j 7 -l), one up besides the loopback for its DNS, whose
+	# UNI names an address (-l -u); then each kept list applied again,
+	# their files made again beneath its root, dnsmasq and unbound
+	# started there by themselves.
+	cat > fake-ifconfig <<EOS
+#!/bin/sh
+echo "ifconfig \$*" >> $(pwd)/ifconfig.log
+case "\$*" in "-j 7 -l"|"-j 7 -l -u") echo "lo0 lo3 epair0b" ;; esac
+exit 0
+EOS
+	chmod +x fake-ifconfig
+	hpid=$(cat "$R/var/run/arcana-sdwan-dhcp-sw1-gw.pid")
+	upid=$(cat "$R/var/run/arcana-sdwan-dns-sw1-gw.pid")
+	cp jails jails.all
+	: > jails
+	kill "$hpid" "$upid"
+	wait_match '"kind":"jail-state","data":\{"jail":"gw","state":"stopped","jid":7\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "gw is not told stopped"
+	rm -f "$R"/var/run/arcana-sdwan-*
+	: > jexec.log
+	: > ifconfig.log
+	cp jails.all jails
+	wait_match '^jexec 7 .*fake-setfib -F 1 .*fake-dnsmasq -C /var/run/arcana-sdwan-dhcp-sw1-gw.conf -x /var/run/arcana-sdwan-dhcp-sw1-gw.pid$' \
+	    cat jexec.log || atf_fail "dnsmasq sw1-gw is not started again: $(cat jexec.log)"
+	wait_match '^jexec 7 .*fake-setfib -F 1 .*fake-local-unbound -c /var/run/arcana-sdwan-dns-sw1-gw.conf$' \
+	    cat jexec.log || atf_fail "unbound sw1-gw is not started again: $(cat jexec.log)"
+	atf_check -o match:'^ifconfig -j 7 -l$' -o match:'^ifconfig -j 7 -l -u$' cat ifconfig.log
+	atf_check -o match:'^interface=lo3$' cat "$R/var/run/arcana-sdwan-dhcp-sw1-gw.conf"
+	atf_check -o match:'^	pidfile: "/var/run/arcana-sdwan-dns-sw1-gw.pid"$' \
+	    cat "$R/var/run/arcana-sdwan-dns-sw1-gw.conf"
+	wait_match '"name":"sw1-gw","fib":1,"jail":"gw","running":true,"leases"' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "dnsmasq sw1-gw does not run again"
+	wait_match '"dns":\[\{"name":"sw1-gw","fib":1,"jail":"gw","running":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "unbound sw1-gw does not run again"
 	# Emptied: stopped, their files and kept files gone, the leases and
 	# the key kept; the host's dnsmasq as it was.
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan dhcp '{"jail":"gw","instances":[]}'

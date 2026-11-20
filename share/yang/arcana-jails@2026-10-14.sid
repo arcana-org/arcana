@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jails",
     "module-revision": "2026-10-14",
-    "sid-file-version": 3,
+    "sid-file-version": 4,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 100, 100.",
     "dependency-revision": [
       {
@@ -300,6 +300,16 @@
         "namespace": "data",
         "identifier": "/arcana-jails:jails/scope",
         "sid": "62155"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/pkg",
+        "sid": "62156"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/pkg-bootstrap",
+        "sid": "62157"
       }
     ]
   }

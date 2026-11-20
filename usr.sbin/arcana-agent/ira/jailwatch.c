@@ -60,7 +60,7 @@ static LIST_HEAD(, wj)	jails = LIST_HEAD_INITIALIZER(jails);
 
 _Static_assert(JAIL_IFNAMSIZ == IFNAMSIZ, "JAIL_IFNAMSIZ is IFNAMSIZ");
 
-#define	FOLLOWERS_MAX	4
+#define	FOLLOWERS_MAX	8
 #define	DUE_MAX		32
 #define	SETTLE_EVERY	500	/* ms, a jail made looked into again */
 #define	SETTLE_MAX	30	/* s, a jail made waited for, at most */

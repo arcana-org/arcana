@@ -15719,6 +15719,11 @@ ATF_TC_BODY(sdwan_jail, tc)
 	    "\"kind\":\"sdwan-dns\",\"instances\":[{\"name\":\"sw1\",\"fib\":1,")
 	    != NULL && strstr(r.body, "\"unis\":[{\"id\":\"uni-br\",\"address\":"
 	    "\"10.2.0.1\"") != NULL, "%s", r.body);
+	/* What the jail's edge needs is installed in the jail: its host's
+	 * server, and the jail, which the Install button passes on. */
+	snprintf(t1, sizeof(t1), "{\"server\":\"%s\",\"jail\":\"gw\","
+	    "\"name\":\"a/gw\",\"plugin\":\"strongswan\",", sa);
+	ATF_CHECK_MSG(strstr(r.body, t1) != NULL, "%s", r.body);
 	resp_free(&r);
 	/* The jail runs no BIRD here (jls lists none in a test): the
 	 * service without BFD from here on. */

@@ -12424,7 +12424,8 @@ static const struct sdwan_need {
 
 /*
  * Each edge's needs, with whether the host has each: [{server, name,
- * plugin, package, what, there}].  An edge that does not answer is
+ * jail, plugin, package, what, there}], jail a jail edge's, where it is
+ * installed.  An edge that does not answer is
  * said to have none of them.
  */
 static ucl_object_t *
@@ -12434,6 +12435,7 @@ plan_needs(const struct plan *pl)
 	ucl_object_iter_t	 it, oit, jit, pit;
 	ucl_object_t		*out, *e, *ans;
 	char			 uri[256], peer[256], name[128], *json, jail[64];
+	char			 sid[64], jail2[64];
 	bool			 want[nitems(sdwan_needs)], there;
 	size_t			 i;
 	int			 status;
@@ -12473,6 +12475,7 @@ plan_needs(const struct plan *pl)
 			}
 		}
 		ans = NULL;
+		jail[0] = '\0';
 		for (i = 0; i < nitems(sdwan_needs); i++)
 			if (want[i])
 				break;
@@ -12511,7 +12514,14 @@ plan_needs(const struct plan *pl)
 				there = there || strcmp(ucl_object_tostring_forced(
 				    p), sdwan_needs[i].plugin) == 0;
 			e = ucl_object_typed_new(UCL_OBJECT);
-			put(e, "server", S(ucl_object_key(objs)));
+			/* A jail's edge: its host's, installed in the jail by
+			 * pkg -j. */
+			if (jail[0] != '\0' && sdwan_edge_split(ucl_object_key(
+			    objs), sid, sizeof(sid), jail2, sizeof(jail2))) {
+				put(e, "server", S(sid));
+				put(e, "jail", S(jail));
+			} else
+				put(e, "server", S(ucl_object_key(objs)));
 			put(e, "name", S(server_name_of(ucl_object_key(objs))));
 			put(e, "plugin", S(sdwan_needs[i].plugin));
 			put(e, "package", S(sdwan_needs[i].package));

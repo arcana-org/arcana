@@ -2721,6 +2721,18 @@ needs_missing(void)
 	return (n);
 }
 
+/* A server of the console's, by its id; NULL for none. */
+static struct server *
+need_server(const char *id)
+{
+	int	k;
+
+	for (k = 0; id != NULL && k < app.nservers; k++)
+		if (strcmp(app.servers[k].id, id) == 0)
+			return (&app.servers[k]);
+	return (NULL);
+}
+
 /*
  * Before using SD-WAN: what it needs that is not FreeBSD's own, and of
  * it what each edge of the kept services lacks.  The apply installs
@@ -2788,13 +2800,36 @@ view_needs(struct html *h, bool brief)
 			    "<span class=\"chip ok\">yes</span>" : "<span "
 			    "class=\"chip bad\">no</span>");
 			if (!jbool(e, "there")) {
-				h_raw(h, "<code>pkg install ");
+				const char	*nj = jstr(e, "jail");
+
+				h_raw(h, "<code>pkg ");
+				if (nj != NULL) {
+					h_raw(h, "-j ");
+					h_txt(h, nj);
+					h_raw(h, " ");
+				}
+				h_raw(h, "install ");
 				h_txt(h, jstr(e, "package"));
-				h_raw(h, "</code> <button class=\"ghost small\" "
-				    "data-act=\"sd-need-install\"");
-				h_attr(h, "data-arg", jstr(e, "server"));
-				h_attr(h, "data-value", jstr(e, "package"));
-				h_raw(h, ">Install</button>");
+				h_raw(h, "</code> ");
+				/* A jail edge without pkg: bootstrapped first,
+				 * as the admin asks. */
+				if (nj == NULL || !pkg_boot_box(h, need_server(
+				    jstr(e, "server")), nj)) {
+					char	where[160];
+
+					/* The host, and the jail edge's jail
+					 * after a slash. */
+					snprintf(where, sizeof(where), "%s%s%s",
+					    jstr(e, "server") != NULL ? jstr(e,
+					    "server") : "", nj != NULL ? "/" : "",
+					    nj != NULL ? nj : "");
+					h_raw(h, "<button class=\"ghost small\" "
+					    "data-act=\"sd-need-install\"");
+					h_attr(h, "data-arg", where);
+					h_attr(h, "data-value", jstr(e,
+					    "package"));
+					h_raw(h, ">Install</button>");
+				}
 			}
 			h_raw(h, "</td></tr>");
 		}
@@ -11305,26 +11340,46 @@ sdwan_action(const char *act, const char *arg, const char *value)
 	} else if (strcmp(act, "sd-needs-check") == 0) {
 		plan_load();
 	} else if (strcmp(act, "sd-need-install") == 0) {
-		/* Asked for here, by who looks: a pkg-install job there. */
-		struct server	*s = NULL;
-		char		*q, *json;
-		int		 k;
+		/* Asked for here, by who looks: a pkg-install job there, a
+		 * jail edge's in its jail (arg: the host, "/", the jail);
+		 * the packages a blank between ("c-icap c-icap-modules
+		 * clamav"). */
+		struct server	*s;
+		struct html	 b = { 0 };
+		char		 sid[65], *q, *json, *copy, *it2, *w;
+		const char	*jail, *slash;
 
-		for (k = 0; k < app.nservers; k++)
-			if (strcmp(app.servers[k].id, arg) == 0)
-				s = &app.servers[k];
+		slash = strchr(arg, '/');
+		snprintf(sid, sizeof(sid), "%.*s", slash != NULL ? (int)(slash -
+		    arg) : (int)strlen(arg), arg);
+		jail = slash != NULL ? slash + 1 : "";
+		s = need_server(sid);
 		if (s == NULL || value[0] == '\0' || strspn(value,
-		    "abcdefghijklmnopqrstuvwxyz0123456789-_.+") !=
-		    strlen(value))
+		    "abcdefghijklmnopqrstuvwxyz0123456789-_.+ ") !=
+		    strlen(value) || strspn(jail, "abcdefghijklmnopqrstuvwxyz"
+		    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != strlen(jail) ||
+		    pkg_boot_wanted(s, jail))
 			return (true);
-		q = json_quote(value);
+		if ((copy = strdup(value)) == NULL)
+			abort();
+		for (it2 = copy; (w = strsep(&it2, " ")) != NULL; ) {
+			if (w[0] == '\0')
+				continue;
+			q = json_quote(w);
+			h_strf(&b, "%s%s", b.len > 0 ? "," : "", q);
+			free(q);
+		}
+		free(copy);
+		q = json_quote(jail);
 		if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"
-		    "[%s]}", q) == -1)
+		    "[%s]%s%s}", b.s != NULL ? b.s : "", jail[0] != '\0' ?
+		    ",\"jail\":" : "", jail[0] != '\0' ? q : "") == -1)
 			abort();
 		free(q);
-		snprintf(sd.need_title, sizeof(sd.need_title), "pkg install %s",
-		    value);
-		job_send_host(s, json, sd.need_title, JOB_PACKAGES, "");
+		free(b.s);
+		snprintf(sd.need_title, sizeof(sd.need_title), "pkg install %s%s%s",
+		    value, jail[0] != '\0' ? " in " : "", jail);
+		job_send_host(s, json, sd.need_title, JOB_PACKAGES, jail);
 	} else if (strcmp(act, "sd-apply-ask") == 0) {
 		char	body[512];
 

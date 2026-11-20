@@ -1450,12 +1450,15 @@ view_builder(struct html *h)
 		h_raw(h, ".</p><p class=\"dim\">It is a plugin: Arcana installs "
 		    "nothing by itself. This installs the package poudriere "
 		    "(pkg install -y poudriere, pkg -j in a jail); "
-		    "poudriere-devel is the newer "
-		    "one.</p><button class=\"primary\" data-act=\"bld-install\" "
-		    "data-arg=\"poudriere\">Install poudriere</button> <button "
-		    "class=\"ghost\" data-act=\"bld-install\" "
-		    "data-arg=\"poudriere-devel\">Install poudriere-devel</button>"
-		    "</div></section>");
+		    "poudriere-devel is the newer one.</p>");
+		/* A jail without pkg: bootstrapped first, as the admin asks. */
+		if (!pkg_boot_box(h, bld_server(), bld_where()))
+			h_raw(h, "<button class=\"primary\" data-act=\""
+			    "bld-install\" data-arg=\"poudriere\">Install "
+			    "poudriere</button> <button class=\"ghost\" "
+			    "data-act=\"bld-install\" data-arg=\"poudriere-devel"
+			    "\">Install poudriere-devel</button>");
+		h_raw(h, "</div></section>");
 		return;
 	}
 	switch (bld.tab) {
@@ -1948,7 +1951,8 @@ builder_action(const char *act, const char *arg, const char *value)
 		return (true);
 	}
 	if (strcmp(act, "bld-install") == 0) {
-		if ((s = bld_server()) == NULL)
+		if ((s = bld_server()) == NULL || pkg_boot_wanted(s,
+		    bld_where()))
 			return (true);
 		/* Where it runs: the host, or the jail by pkg -j. */
 		q = json_quote(bld_where());

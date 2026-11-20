@@ -100,6 +100,8 @@ was_up(const char *key, bool now_up)
 }
 
 static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
+/* An apply at a time: the console's, a start's, a jail followed's. */
+static pthread_mutex_t	apply_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 static struct bfd	bfds[BFD_MAX];
@@ -268,8 +270,86 @@ parse(const char *json)
  * those of the same edge not named any more are stopped, the other
  * edges' left as they are.  Kept for the next start, a file per edge.
  */
+static int	 bird_apply(struct work *, const char *, const char **);
+
 int
 do_sdwan_bird(struct work *w, const char *json, const char **errp)
+{
+	int	rc;
+
+	pthread_mutex_lock(&apply_lock);
+	rc = bird_apply(w, json, errp);
+	pthread_mutex_unlock(&apply_lock);
+	return (rc);
+}
+
+/*
+ * The jail edges followed (ira/jailwatch.c): one made (or running at
+ * the start) that keeps a list (sdwan-bird@JAIL.json), and whose
+ * instances do not run in it (another jid, or none applied), is
+ * wanted, once the interfaces its forms name are in it (none named:
+ * one up besides the loopback); then its kept list is applied again,
+ * each file rendered again in the jail's /var/run, which its start
+ * empties, and parsed before BIRD is started on it.  The watch's start
+ * of an instance that does not answer (protocols_watch()) runs on the
+ * file as it is, and only for one applied before.
+ */
+static int
+bird_wants(const char *jail, int jid, char (*ifs)[JAIL_IFNAMSIZ], int max)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].jail, jail) == 0 &&
+		    instances[i].jid == jid)
+			break;
+	pthread_mutex_unlock(&lock);
+	return (i < ninstances ? -1 : sdwan_kept_ifs("bird", jail, ifs, max));
+}
+
+static int
+bird_follow(struct work *w, const char *jail, const char **errp)
+{
+	const char	*e;
+	char		*json;
+	int		 rc;
+
+	pthread_mutex_lock(&apply_lock);
+	rc = 0;
+	if ((json = sdwan_kept_read(wfmt(w, "sdwan-bird@%s.json", jail))) !=
+	    NULL) {
+		e = NULL;
+		rc = bird_apply(w, json, &e);
+		free(json);
+		if (rc != 0)
+			*errp = wfmt(w, "sdwan bird: %s", e);
+	}
+	pthread_mutex_unlock(&apply_lock);
+	return (rc);
+}
+
+/* A jail edge removed: its instances run in none, until it is made
+ * again (whatever jid it is given then). */
+static void
+bird_gone(const char *jail, int jid)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (instances[i].jid == jid && strcmp(instances[i].jail, jail) ==
+		    0)
+			instances[i].jid = 0;
+	pthread_mutex_unlock(&lock);
+}
+
+static const struct jail_follower bird_follower = {
+	"sdwan bird", bird_wants, bird_follow, bird_gone
+};
+
+static int
+bird_apply(struct work *w, const char *json, const char **errp)
 {
 	ucl_object_t		*top;
 	const ucl_object_t	*in, *v;
@@ -910,6 +990,8 @@ sdwan_bird_start(void)
 	size_t		 n;
 	int		 error;
 
+	/* The jails followed from now: jailwatch.c starts after. */
+	jail_follow(&bird_follower);
 	work_init(&w);
 	if ((json = sdwan_kept_read(BIRD_FILE)) != NULL) {
 		e = NULL;

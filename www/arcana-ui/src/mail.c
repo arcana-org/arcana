@@ -765,8 +765,15 @@ view_mail(struct html *h, struct server *s)
 			    "there with pkg -j.");
 		} else
 			h_raw(h, "on this host: a plugin.");
-		h_raw(h, "</span><button class=\"primary small\" "
-		    "data-act=\"ml-install\">Install opensmtpd</button></div>");
+		/* A jail without pkg: bootstrapped first, as the admin asks. */
+		if (jstr(o, "jail") != NULL && pkg_boot_wanted(s, jstr(o,
+		    "jail"))) {
+			h_raw(h, "</span></div>");
+			(void)pkg_boot_box(h, s, jstr(o, "jail"));
+		} else
+			h_raw(h, "</span><button class=\"primary small\" "
+			    "data-act=\"ml-install\">Install opensmtpd</button>"
+			    "</div>");
 		h_raw(h, "<div class=\"empty\"><p>No mail server here.</p><p "
 		    "class=\"dim\">FreeBSD comes with sendmail(8) and dma(8) for "
 		    "the host's own mail; OpenSMTPD, a port, serves a domain's."
@@ -1341,6 +1348,9 @@ mail_action(const char *act, const char *arg, const char *value)
 	if (strcmp(act, "ml-install") == 0) {
 		char	*json, *qj;
 		const char *jail = ml_where(s);
+
+		if (pkg_boot_wanted(s, jail))
+			return (true);
 
 		/* Where the tab looks: the host, or the jail by pkg -j. */
 		qj = json_quote(jail);

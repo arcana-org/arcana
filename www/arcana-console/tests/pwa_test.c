@@ -17283,6 +17283,134 @@ part_pkg_bootstrap(void)
 	dock_closed();
 }
 
+/*
+ * Every other Install button for a jail without pkg (gw, ./jroot), once
+ * the host's pkg(7) takes -j (pkg -j gw install -y would bootstrap pkg
+ * there by itself, which the agent refuses): the Security section's
+ * Suricata, SSL inspection's SSLproxy, Mail's OpenSMTPD and the Relay's
+ * UDPspeeder each give way to the notice and Bootstrap pkg; nothing is
+ * installed.  Pressed on the Relay: pkg -j gw bootstrap -y, a job, pkg
+ * then beneath the jail's root, and the Relay's Install button back.
+ */
+/*
+ * gw picked in the page's Where (select data-input=input), again while
+ * the page has it otherwise (a read that comes after puts it back),
+ * until expr holds; what the page shows said when it times out.
+ */
+static void
+pick_gw(const char *input, const char *expr, int seconds)
+{
+	char	text[2048], set[512];
+	int	i;
+
+	snprintf(set, sizeof(set), "const s = document.querySelector("
+	    "'select[data-input=%s]'); if (s && s.value !== 'gw' && [...s."
+	    "options].some(o => o.value === 'gw')) { s.value = 'gw'; s."
+	    "dispatchEvent(new Event('input', { bubbles: true })); }", input);
+	for (i = 0; i < busy_secs(seconds) * 10; i++) {
+		if (js_true(expr))
+			return;
+		if (i % 10 == 0)
+			run(set);
+		usleep(100000);
+	}
+	js_str(text, sizeof(text), "document.body.innerText.replace(/\\s+/g, "
+	    "' ').slice(0, 1800)");
+	atf_tc_fail("timed out waiting for %s; the page shows: %s", expr, text);
+}
+
+static void
+part_pkg_bootstrap_installs(void)
+{
+	const char	*boot = "document.querySelector('.notice.pkg-bootstrap "
+	    "button[data-act=pkb-go][data-value=gw]')";
+	char		 js[1024];
+
+	ATF_REQUIRE(system("rm -f jroot/usr/local/sbin/pkg && printf '# Usage: "
+	    "pkg [-46d] [-j jail] [-r rootdir] bootstrap [-fy]\\n' >> "
+	    "fake-pkg") == 0);
+	click_when("button[data-act=refresh]", 10);
+	/* The Security section's IDS in gw: Suricata is not there. */
+	click_when("li.secnode[data-act=select-security]", 10);
+	wait_js("location.hash.startsWith('#/security/') && document."
+	    "querySelector('select[data-input=sec-host]')", 10);
+	run("const s = document.querySelector('select[data-input=sec-host]'); "
+	    "s.value = s.options[s.options.length - 1].value; s.dispatchEvent("
+	    "new Event('input', { bubbles: true }))");
+	click_when("button[data-act=sec-tab][data-arg=ids]", 10);
+	wait_js("document.querySelector('select[data-input=sec-where]') && "
+	    "[...document.querySelector('select[data-input=sec-where]')."
+	    "options].some(o => o.value === 'gw')", 20);
+	snprintf(js, sizeof(js), "document.querySelector('.sec-missing') && "
+	    "document.querySelector('.sec-missing').textContent.includes("
+	    "'Suricata') && %s && !document.querySelector('button[data-act="
+	    "sec-install]')", boot);
+	pick_gw("sec-where", js, 30);
+	ATF_CHECK(js_true("document.querySelector('.notice.pkg-bootstrap')"
+	    ".textContent.includes('would bootstrap it there by itself')"));
+	shot("pkg-bootstrap-security");
+	/* SSL inspection in gw. */
+	click_when("button[data-act=sec-tab][data-arg=tls]", 10);
+	wait_js("document.querySelector('select[data-input=ssl-where] "
+	    "option[value=gw]')", 20);
+	snprintf(js, sizeof(js), "document.querySelector('.sec-missing') && "
+	    "document.querySelector('.sec-missing').textContent.includes("
+	    "'in jail gw') && %s && !document.querySelector('button[data-act="
+	    "ssl-install]')", boot);
+	pick_gw("ssl-where", js, 30);
+	/* Mail in gw. */
+	host_open(NULL);
+	host_tab("mail");
+	wait_js("document.querySelector('select[data-input=ml-where] "
+	    "option[value=gw]')", 20);
+	snprintf(js, sizeof(js), "document.querySelector('.sec-missing') && "
+	    "document.querySelector('.sec-missing').textContent.includes("
+	    "'in jail gw') && %s && !document.querySelector('button[data-act="
+	    "ml-install]')", boot);
+	pick_gw("ml-where", js, 30);
+	/* The Relay in gw: Bootstrap pkg pressed there. */
+	host_tab("relay");
+	wait_js("document.querySelector('select[data-input=rl-where] "
+	    "option[value=gw]')", 20);
+	snprintf(js, sizeof(js), "document.querySelector('.sec-missing') && "
+	    "document.querySelector('.sec-missing').textContent.includes("
+	    "'in jail gw') && %s && !document.querySelector('button[data-act="
+	    "rl-install]')", boot);
+	pick_gw("rl-where", js, 30);
+	shot("pkg-bootstrap-relay");
+	run("document.querySelector('.notice.pkg-bootstrap button[data-act="
+	    "pkb-go]').click()");
+	queued_run();
+	host_tool("grep -q -- '^-j gw bootstrap -y$' pkg.log && test -x "
+	    "jroot/usr/local/sbin/pkg", "pkg was not bootstrapped in gw");
+	/* Its jails read again: pkg there, the Install button back. */
+	click_when("button[data-act=refresh]", 10);
+	wait_js("!document.querySelector('.notice.pkg-bootstrap') && "
+	    "document.querySelector('button[data-act=rl-install]')", 30);
+	/* Nothing was installed in gw by any of them. */
+	ATF_CHECK(system("grep -q -- '-j gw install' pkg.log") != 0);
+	dock_closed();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_pkg_bootstrap_installs);
+ATF_TC_HEAD(pwa_pkg_bootstrap_installs, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "A jail without pkg, the host's pkg(7) taking -j: the Security section's, SSL inspection's, Mail's and the Relay's Install buttons give way to the notice and Bootstrap pkg; pressed, pkg -j gw bootstrap -y runs, pkg is then beneath the jail's root and the Install button back; nothing installed");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_pkg_bootstrap_installs, tc)
+{
+
+	prologue(tc, 1);
+	part_pkg_bootstrap_installs();
+}
+ATF_TC_CLEANUP(pwa_pkg_bootstrap_installs, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_pkg_bootstrap);
 ATF_TC_HEAD(pwa_pkg_bootstrap, tc)
 {
@@ -17583,6 +17711,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_jail_runs);
 	ATF_TP_ADD_TC(tp, pwa_jail_base);
 	ATF_TP_ADD_TC(tp, pwa_pkg_bootstrap);
+	ATF_TP_ADD_TC(tp, pwa_pkg_bootstrap_installs);
 	ATF_TP_ADD_TC(tp, pwa_security_tls_fwd6);
 	ATF_TP_ADD_TC(tp, pwa_jail_pkg_chflags);
 	return (atf_no_error());

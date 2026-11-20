@@ -59,6 +59,23 @@ static const struct arc_jail jails[] = {
 	},
 };
 
+/* pkg(8) beneath a jail's root: none in web's; the host's pkg(7) takes
+ * -j (packages.c's, which this program does not link). */
+int
+pkg8_beneath(const char *root __unused, bool *there)
+{
+
+	*there = false;
+	return (0);
+}
+
+bool
+pkg7_takes_j(void)
+{
+
+	return (true);
+}
+
 static const char *
 str(const char *s)
 {
@@ -105,6 +122,10 @@ show(const struct arcana_jails *d)
 		}
 		for (size_t k = 0; k < j->plugin.n; k++)
 			printf("  plugin %s\n", j->plugin.v[k]);
+		if (j->has_pkg)
+			printf("  pkg %d bootstrap %s\n", j->pkg,
+			    j->has_pkg_bootstrap ? j->pkg_bootstrap ? "1" : "0" :
+			    "-");
 	}
 }
 

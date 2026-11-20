@@ -156,6 +156,9 @@ plugin_install(struct server *s, const char *plugin)
 	if ((pp = plugin_pkg(plugin)) == NULL)
 		return;
 	jail = net_scope();
+	/* A jail without pkg: bootstrapped first (pkg_boot_box()). */
+	if (pkg_boot_wanted(s, jail))
+		return;
 	qj = json_quote(jail);
 	if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"
 	    "[\"%s\"]%s%s}", pp->package, jail[0] != '\0' ? ",\"jail\":" :
@@ -1802,7 +1805,7 @@ jail_row(const ucl_object_t *j)
 	    "persist", "persist", "boot", "boot", "allow", "allow",
 	    "interface", "interface", "nproc", "nproc", "rss", "rss_kb", "cpu",
 	    "cpu_pct", "securelevel", "securelevel", "children", "children",
-	    NULL };
+	    "pkg", "pkg", "pkg-bootstrap", "pkg_bootstrap", NULL };
 	static const char *const pmap[] = { "name", "key", "value", "values",
 	    NULL };
 	const ucl_object_t	*p;

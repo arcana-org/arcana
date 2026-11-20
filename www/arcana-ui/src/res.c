@@ -60,7 +60,9 @@ res_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	render();
 }
 
-/* What was read, let go: the next draw asks again. */
+/* What was read, let go, and a read still on its way with it (asked
+ * before a choice the page has changed since, a jail picked): the next
+ * draw asks again. */
 void
 res_drop(struct res *r)
 {
@@ -69,6 +71,8 @@ res_drop(struct res *r)
 		ucl_object_unref(r->o);
 	r->o = NULL;
 	r->error[0] = '\0';
+	r->gen++;
+	r->loading = false;
 }
 
 /* Asked for, of a host, at a URL; another host's read is dropped first. */

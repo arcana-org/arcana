@@ -105,6 +105,17 @@ yjails_from_list(const struct jails_read *rsp, cbl_yarena *a,
 		y->allow.v = j->allow.v;
 		y->plugin.n = j->plugins.n;
 		y->plugin.v = j->plugins.v;
+		/* pkg(8) in a running jail, or not: then whether the host's
+		 * pkg(7) bootstraps it there (pkg -j), which an install there
+		 * would do by itself, and the agent refuses (packages.c). */
+		if (j->has_state && j->state == ARC_JAIL_STATE_RUNNING &&
+		    j->path != NULL && pkg8_beneath(j->path, &y->pkg) == 0) {
+			y->has_pkg = true;
+			if (!y->pkg) {
+				y->has_pkg_bootstrap = true;
+				y->pkg_bootstrap = pkg7_takes_j();
+			}
+		}
 		if (j->dying.n > 0) {
 			struct arcana_jails_jails_jail_dying *d;
 

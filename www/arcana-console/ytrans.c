@@ -952,6 +952,11 @@ jail_row(const struct arcana_jails_jails_jail *j)
 	put(o, "vnet", ucl_object_frombool(j->vnet));
 	if (j->plugin.n > 0)
 		put(o, "plugins", strings(j->plugin.n, j->plugin.v));
+	/* pkg(8) in it or not; without, whether the host bootstraps it. */
+	if (j->has_pkg)
+		put(o, "pkg", ucl_object_frombool(j->pkg));
+	if (j->has_pkg_bootstrap)
+		put(o, "pkg_bootstrap", ucl_object_frombool(j->pkg_bootstrap));
 	put_text(o, "osrelease", j->osrelease);
 	put(o, "persist", ucl_object_frombool(j->persist));
 	/* Started at boot (rc.conf's jail_list): told of a jail defined. */

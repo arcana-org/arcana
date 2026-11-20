@@ -781,11 +781,17 @@ view_relay(struct html *h, struct server *s)
 			h_txt(h, jstr(o, "jail"));
 		} else
 			h_raw(h, "on this host");
-		h_fmt(h, ": a plugin, the port net/udpspeeder.</span><button "
-		    "class=\"primary small\" data-act=\"rl-install\"%s>%s"
-		    "</button></div>", rl_installing(s, rl_where(s)) ?
-		    " disabled" : "", rl_installing(s, rl_where(s)) ?
-		    "Installing…" : "Install udpspeeder");
+		/* A jail without pkg: bootstrapped first, as the admin asks. */
+		if (pkg_boot_wanted(s, rl_where(s))) {
+			h_raw(h, ": a plugin, the port net/udpspeeder.</span>"
+			    "</div>");
+			(void)pkg_boot_box(h, s, rl_where(s));
+		} else
+			h_fmt(h, ": a plugin, the port net/udpspeeder.</span>"
+			    "<button class=\"primary small\" data-act=\""
+			    "rl-install\"%s>%s</button></div>", rl_installing(s,
+			    rl_where(s)) ? " disabled" : "", rl_installing(s,
+			    rl_where(s)) ? "Installing…" : "Install udpspeeder");
 		h_raw(h, "<div class=\"empty\"><p>No FEC relay here.</p><p "
 		    "class=\"dim\">speederv2 carries a tunnel's UDP over a lossy "
 		    "link with forward error correction: redundant packets, so a "
@@ -1167,6 +1173,8 @@ relay_action(const char *act, const char *arg, const char *value)
 	}
 	if (strcmp(act, "rl-install") == 0) {
 		jail = rl_where(s);
+		if (pkg_boot_wanted(s, jail))
+			return (true);
 		qj = json_quote(jail);
 		if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"
 		    "[\"udpspeeder\"]%s%s}", jail[0] != '\0' ? ",\"jail\":" : "",

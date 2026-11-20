@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.348.0"
+#define	ARCANA_AGENT_VERSION	"0.349.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1901,6 +1901,8 @@ struct jail_follower {
 	void		(*gone)(const char *, int);
 };
 void		 jail_follow(const struct jail_follower *);
+int		 sdwan_kept_ifs(const char *, const char *,
+		    char (*)[JAIL_IFNAMSIZ], int);
 int		 pcb_helper(int, char **);
 int		 pcb_list(FILE *, bool, int);
 int		 helper_lines(struct work *, const char *, size_t,
@@ -2139,6 +2141,8 @@ int		 do_pkg_audit_fetch(struct work *, const char *, const char **);
 int		 do_pkg_bootstrap(struct work *, const char *, uint8_t,
 		    const char **);
 bool		 pkg7_jail(struct work *);
+bool		 pkg7_takes_j(void);
+int		 pkg8_beneath(const char *, bool *);
 int		 do_jail_base(struct work *, const struct arc_job_spec *,
 		    const char **);
 const char	*pkg_repo_error(struct work *, const struct execres *,

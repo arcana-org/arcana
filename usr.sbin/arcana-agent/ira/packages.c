@@ -38,6 +38,7 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pthread.h>
 #include <resolv.h>
 #include <signal.h>
 #include <stdio.h>
@@ -970,68 +971,134 @@ valid_pkg(const char *s)
 }
 
 /*
- * Whether pkg(8) is in the running jail, /usr/local/sbin/pkg beneath its
- * root (looked for through no link out of it): pkg(7) there execs it,
- * or offers to bootstrap one.  0, or -1 where it cannot be said.
+ * Whether pkg(8) is beneath root, /usr/local/sbin/pkg (looked for
+ * through no link out of it): 0, or -1 where it cannot be said (the
+ * root not opened, a link out of it on the way).  For the jails read
+ * too (yjails.c), every jail's at each read: no step of its own.
+ */
+int
+pkg8_beneath(const char *root, bool *there)
+{
+	int	fd, error;
+
+	*there = false;
+	if (root == NULL || (fd = open(root, O_RDONLY | O_DIRECTORY |
+	    O_CLOEXEC)) == -1)
+		return (-1);
+	*there = faccessat(fd, PKG8_PATH, X_OK, AT_RESOLVE_BENEATH) == 0;
+	error = errno;
+	close(fd);
+	/* A link out of the root on the way: not said either way. */
+	return (!*there && error == ENOTCAPABLE ? -1 : 0);
+}
+
+/*
+ * Whether pkg(8) is in the running jail: pkg(7) there execs it, or
+ * offers to bootstrap one.  0, or -1 where it cannot be said.
  */
 static int
 jail_pkg(struct work *w, const char *jail, bool *there)
 {
 	struct jinfo	ji;
-	int		fd, step;
+	int		step, rc;
 
 	*there = false;
 	if (jail_named(w, jail, &ji) < 0 || ji.path == NULL)
 		return (-1);
 	step = step_begin(w, STEP_FILE, "faccessat(2)", "%s/" PKG8_PATH,
 	    ji.path);
-	if ((fd = open(ji.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
-		step_end(w, step, false, NULL);
-		return (-1);
-	}
-	*there = faccessat(fd, PKG8_PATH, X_OK, AT_RESOLVE_BENEATH) == 0;
-	/* A link out of the root on the way: not said either way. */
-	if (!*there && errno == ENOTCAPABLE) {
-		close(fd);
-		step_end(w, step, false, "a link out of the jail's root");
-		return (-1);
-	}
-	close(fd);
-	step_end(w, step, true, "%s", *there ? "pkg(8) there" : "no pkg(8)");
-	return (0);
+	rc = pkg8_beneath(ji.path, there);
+	step_end(w, step, rc == 0, "%s", rc != 0 ? "not said (no root, or a "
+	    "link out of it)" : *there ? "pkg(8) there" : "no pkg(8)");
+	return (rc);
 }
 
 /*
  * Does the host's pkg(7) take -j (FreeBSD main from cad99ff75342,
  * 2026-11-19): it attaches to the jail itself and bootstraps pkg(8)
  * there.  One before it passes -j on to the host's pkg(8), which
- * bootstraps nothing in a jail.  Its usage says it: "[-j jail]".
+ * bootstraps nothing in a jail.  Its usage says it: "[-j jail]".  Kept
+ * while the file is the same one (its device, inode, size and time):
+ * the jails read asks it of every jail without pkg.
  */
 bool
-pkg7_jail(struct work *w)
+pkg7_takes_j(void)
 {
-	struct stat	 sb;
-	void		*m;
-	bool		 yes;
-	int		 fd, step;
+	static pthread_mutex_t	 mtx = PTHREAD_MUTEX_INITIALIZER;
+	static struct stat	 was;
+	static bool		 known, takes;
+	struct stat		 sb;
+	void			*m;
+	bool			 yes;
+	int			 fd;
 
-	step = step_begin(w, STEP_FILE, "mmap(2)", "%s", opts.pkg_bin);
-	if ((fd = open(opts.pkg_bin, O_RDONLY | O_CLOEXEC)) == -1) {
-		step_end(w, step, false, NULL);
+	if ((fd = open(opts.pkg_bin, O_RDONLY | O_CLOEXEC)) == -1)
+		return (false);
+	if (fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size <= 0 ||
+	    sb.st_size >= 64 * 1024 * 1024) {
+		close(fd);
 		return (false);
 	}
+	pthread_mutex_lock(&mtx);
+	if (known && sb.st_dev == was.st_dev && sb.st_ino == was.st_ino &&
+	    sb.st_size == was.st_size && sb.st_mtim.tv_sec ==
+	    was.st_mtim.tv_sec && sb.st_mtim.tv_nsec == was.st_mtim.tv_nsec) {
+		yes = takes;
+		pthread_mutex_unlock(&mtx);
+		close(fd);
+		return (yes);
+	}
+	pthread_mutex_unlock(&mtx);
 	yes = false;
-	if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0 &&
-	    sb.st_size < 64 * 1024 * 1024 && (m = mmap(NULL, (size_t)sb.st_size,
-	    PROT_READ, MAP_PRIVATE, fd, 0)) != MAP_FAILED) {
+	if ((m = mmap(NULL, (size_t)sb.st_size, PROT_READ, MAP_PRIVATE, fd,
+	    0)) != MAP_FAILED) {
 		yes = memmem(m, (size_t)sb.st_size, PKG7_JAIL_MARK,
 		    strlen(PKG7_JAIL_MARK)) != NULL;
 		munmap(m, (size_t)sb.st_size);
+		pthread_mutex_lock(&mtx);
+		was = sb;
+		takes = yes;
+		known = true;
+		pthread_mutex_unlock(&mtx);
 	}
 	close(fd);
+	return (yes);
+}
+
+bool
+pkg7_jail(struct work *w)
+{
+	bool	yes;
+	int	step;
+
+	step = step_begin(w, STEP_FILE, "mmap(2)", "%s", opts.pkg_bin);
+	yes = pkg7_takes_j();
 	step_end(w, step, true, "%s", yes ? "pkg(7) takes -j" : "pkg(7) takes "
 	    "no -j");
 	return (yes);
+}
+
+/*
+ * A running jail without pkg(8), where the host's pkg(7) takes -j: there
+ * pkg -j <jail> install -y (upgrade, clean, audit -F) would bootstrap
+ * pkg(8) by itself, -y saying yes to its question.  Refused instead,
+ * saying so: bootstrapping is the admin's to ask (the pkg-bootstrap
+ * job, the Install boxes' Bootstrap pkg).  NULL where it may go on: the
+ * host, a jail with pkg, or a pkg(7) without -j (the host's pkg(8)
+ * works in the jail then, bootstrapping nothing).
+ */
+static const char *
+pkg_unbooted(struct work *w, const char *jail, const char *what)
+{
+	bool	there;
+
+	if (jail == NULL || *jail == '\0' || strcmp(jail, "*") == 0 ||
+	    jail_pkg(w, jail, &there) != 0 || there || !pkg7_jail(w))
+		return (NULL);
+	return (wfmt(w, "the jail %s has no pkg of its own, and the host's "
+	    "pkg(7) would bootstrap one there by itself for %s: bootstrap it "
+	    "first (Bootstrap pkg, the pkg-bootstrap job: pkg -j %s bootstrap "
+	    "-y)", jail, what, jail));
 }
 
 /*
@@ -1317,6 +1384,7 @@ do_pkg_upgrade(struct work *w, const struct pkg_upgrade *rq,
 		return (upgrade_every_jail(w, rq, rsp));
 	memset(rsp, 0, sizeof(*rsp));
 	if ((e = check_jail(w, rq->jail)) != NULL ||
+	    (e = pkg_unbooted(w, rq->jail, "pkg upgrade")) != NULL ||
 	    (e = pkg_repo_check(w, rq->jail, rq->pkg_repo)) != NULL ||
 	    (!rq->no_repo_check && (e = pkg_reach(w, rq->jail, rq->pkg_ip,
 	    rq->pkg_repo)) != NULL)) {
@@ -1391,6 +1459,7 @@ do_pkg_install(struct work *w, const struct arc_job_spec *sp,
 	size_t		 i, n;
 
 	if ((e = check_jail(w, sp->jail)) != NULL ||
+	    (e = pkg_unbooted(w, sp->jail, "pkg install")) != NULL ||
 	    (e = pkg_repo_check(w, sp->jail, sp->pkg_repo)) != NULL ||
 	    (!sp->no_repo_check && (e = pkg_reach(w, sp->jail, sp->has_pkg_ip ?
 	    sp->pkg_ip : 0, sp->pkg_repo)) != NULL)) {
@@ -1433,7 +1502,8 @@ do_pkg_clean(struct work *w, const char *jail, bool all, const char **errp)
 	struct execres	res;
 	const char	*e;
 
-	if ((e = check_jail(w, jail)) != NULL) {
+	if ((e = check_jail(w, jail)) != NULL ||
+	    (e = pkg_unbooted(w, jail, "pkg clean")) != NULL) {
 		*errp = e;
 		return (-1);
 	}
@@ -1559,7 +1629,8 @@ do_pkg_audit_fetch(struct work *w, const char *jail, const char **errp)
 	struct execres	 res;
 	const char	*e;
 
-	if ((e = check_jail(w, jail)) != NULL) {
+	if ((e = check_jail(w, jail)) != NULL ||
+	    (e = pkg_unbooted(w, jail, "pkg audit -F")) != NULL) {
 		*errp = e;
 		return (-1);
 	}

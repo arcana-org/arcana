@@ -281,6 +281,26 @@ module arcana-jails {
           "Of a running jail with a network of its own: the plugins it
            has, as a host's, by the programs installed in it.";
       }
+      leaf pkg {
+        type boolean;
+        config false;
+        description
+          "Of a running jail: whether pkg(8) is in it, /usr/local/sbin/pkg
+           beneath its root (absent where that cannot be said).  An
+           Install button for the jail offers to bootstrap it first
+           where pkg-bootstrap is true.";
+      }
+      leaf pkg-bootstrap {
+        type boolean;
+        config false;
+        description
+          "Of a running jail whose pkg is false: whether the host's
+           pkg(7) takes -j (FreeBSD main from cad99ff75342), so that a
+           job of kind pkg-bootstrap installs pkg in the jail.  With it,
+           pkg -j <jail> install -y would bootstrap pkg there by itself:
+           the agent refuses an install, upgrade, clean or audit fetch
+           in the jail until the admin bootstraps it.";
+      }
       leaf lne {
         type leafref {
           path "/lne:logical-network-elements/lne:logical-network-element"

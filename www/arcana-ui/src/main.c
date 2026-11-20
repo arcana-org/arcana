@@ -1533,6 +1533,27 @@ dispatch(const char *act, const char *arg, const char *value)
 		if (app.modal == MODAL_PKG_INSTALL)
 			app.modal = MODAL_NONE;
 		job_send(s, json, title, JOB_PACKAGES, app.pkg.jail);
+	} else if (strcmp(act, "pkb-go") == 0 && value != NULL &&
+	    value[0] != '\0') {
+		struct server	*bs = NULL;
+		char		*json, *qj, title[200];
+
+		/* pkg in a jail that has none, from an Install box elsewhere
+		 * than Packages (pkg_boot_box()), on the host it names: as
+		 * the admin asks, never by itself. */
+		for (i = 0; i < app.nservers; i++)
+			if (strcmp(app.servers[i].id, arg) == 0)
+				bs = &app.servers[i];
+		if (bs != NULL) {
+			qj = json_quote(value);
+			if (asprintf(&json, "{\"kind\":\"pkg-bootstrap\","
+			    "\"jail\":%s}", qj) == -1)
+				abort();
+			free(qj);
+			snprintf(title, sizeof(title), "pkg bootstrapped in %s",
+			    value);
+			job_send_host(bs, json, title, JOB_PACKAGES, value);
+		}
 	} else if (strcmp(act, "pkg-clean-ask") == 0 && s != NULL) {
 		app.modal = MODAL_PKG_CLEAN;
 		app.modal_error[0] = '\0';

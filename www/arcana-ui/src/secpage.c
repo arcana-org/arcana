@@ -350,16 +350,27 @@ sec_server(void)
 static void
 missing(struct html *h, const char *what, const char *pkgs)
 {
+	bool	boot;
 
-	/* Installed where the page looks: the host, or the jail (pkg -j). */
+	/* Installed where the page looks: the host, or the jail (pkg -j);
+	 * a jail without pkg, where the host's pkg(7) would bootstrap one
+	 * by itself, bootstrapped first, as the admin asks. */
+	boot = sec.where[0] != '\0' && pkg_boot_wanted(sec_server(),
+	    sec.where);
 	h_raw(h, "<div class=\"notice warn sec-missing\"><span>");
 	h_txt(h, what);
-	h_raw(h, "</span><button class=\"primary small\" data-act=\""
-	    "sec-install\"");
-	h_attr(h, "data-arg", pkgs);
-	h_raw(h, ">Install ");
-	h_txt(h, pkgs);
-	h_raw(h, "</button></div>");
+	h_raw(h, "</span>");
+	if (!boot) {
+		h_raw(h, "<button class=\"primary small\" data-act=\""
+		    "sec-install\"");
+		h_attr(h, "data-arg", pkgs);
+		h_raw(h, ">Install ");
+		h_txt(h, pkgs);
+		h_raw(h, "</button>");
+	}
+	h_raw(h, "</div>");
+	if (boot)
+		(void)pkg_boot_box(h, sec_server(), sec.where);
 }
 
 /* Has the host the plugin? Unknown, while its list is not read, is yes. */
@@ -2233,6 +2244,9 @@ secpage_action(const char *act, const char *arg, const char *value)
 		    strcmp(arg, "clamav") != 0 && strcmp(arg, "suricata") != 0 &&
 		    strcmp(arg, "sslproxy") != 0 &&
 		    strcmp(arg, "c-icap c-icap-modules clamav") != 0))
+			return (true);
+		/* A jail without pkg: bootstrapped first (pkg_boot_box()). */
+		if (sec.where[0] != '\0' && pkg_boot_wanted(s, sec.where))
 			return (true);
 		if ((json = strdup("{\"kind\":\"pkg-install\",\"packages\":["))
 		    == NULL || (copy = strdup(arg)) == NULL)

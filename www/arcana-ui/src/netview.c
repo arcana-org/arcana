@@ -733,7 +733,10 @@ plugin_missing(struct html *h, const struct server *s)
 	    "in the activity bar, and the tab comes alive once it is done."
 	    "</p>", pp->program, pp->package, net_scope()[0] != '\0' ?
 	    " in the jail" : "");
-	if (plugin_installing(s, net_scope()))
+	/* A jail without pkg: bootstrapped first, as the admin asks. */
+	if (pkg_boot_box(h, s, net_scope()))
+		(void)0;
+	else if (plugin_installing(s, net_scope()))
 		h_fmt(h, "<button class=\"primary\" disabled>Installing "
 		    "%s…</button>", pp->package);
 	else

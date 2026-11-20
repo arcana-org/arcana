@@ -4457,34 +4457,121 @@ installed_packages(struct html *h)
 }
 
 /*
- * A jail without pkg of its own, as its read says: pkg bootstrapped
- * there by the host's pkg(7) (pkg -j <jail> bootstrap -y), a job the
- * admin's button asks; a pkg(7) without -j said, the way by hand.
+ * A jail without pkg of its own: said, and with a pkg(7) that takes -j
+ * the Bootstrap pkg button the admin presses (act, with arg and value
+ * where given), a job: pkg -j <jail> bootstrap -y; a pkg(7) without -j
+ * said, the way by hand.  Arcana never bootstraps by itself, and with
+ * such a pkg(7) the agent refuses an install there until it is done:
+ * pkg -j <jail> install -y would bootstrap by itself.
  */
 static void
-pkg_bootstrap_notice(struct html *h)
+boot_box(struct html *h, const char *jail, bool can, bool busy,
+    const char *act, const char *arg, const char *value)
 {
 
-	if (app.pkg.jail[0] == '\0' || jget(app.pkg.data, "jail_pkg") == NULL ||
-	    jbool(app.pkg.data, "jail_pkg"))
-		return;
 	h_raw(h, "<div class=\"notice warn pkg-bootstrap\"><span>The jail <b>");
-	h_txt(h, app.pkg.jail);
+	h_txt(h, jail);
 	h_raw(h, "</b> has no pkg of its own (<code>/usr/local/sbin/pkg</code>"
-	    "): what is installed there goes through the host's pkg. ");
-	if (jbool(app.pkg.data, "bootstrap_jail"))
-		h_raw(h, "The host's <code>pkg(7)</code> can bootstrap it there "
-		    "(<code>pkg -j</code>), from the repository the jail's "
-		    "<code>pkg.conf</code> names.</span><button type=\"button\" "
-		    "class=\"primary "
-		    "small\" data-act=\"pkg-bootstrap\" title=\"pkg -j &lt;jail"
-		    "&gt; bootstrap -y, a job\">Bootstrap pkg</button></div>");
-	else
-		h_raw(h, "The host's <code>pkg(7)</code> takes no <code>-j"
+	    "). ");
+	if (!can) {
+		h_raw(h, "What is installed there goes through the host's pkg. "
+		    "The host's <code>pkg(7)</code> takes no <code>-j"
 		    "</code> (FreeBSD main has it since cad99ff75342, "
 		    "2026-11-19), so it cannot be bootstrapped from here: run "
 		    "<code>pkg bootstrap</code> in the jail, or update the host's "
 		    "base.</span></div>");
+		return;
+	}
+	h_raw(h, "The host's <code>pkg(7)</code> takes <code>-j</code> and "
+	    "would bootstrap it there by itself on an install, so nothing is "
+	    "installed in the jail until it is bootstrapped, from the "
+	    "repository the jail's <code>pkg.conf</code> names.</span>");
+	if (busy) {
+		h_raw(h, "<button type=\"button\" class=\"primary small\" "
+		    "disabled>Bootstrapping…</button></div>");
+		return;
+	}
+	h_raw(h, "<button type=\"button\" class=\"primary small\"");
+	h_attr(h, "data-act", act);
+	if (arg != NULL)
+		h_attr(h, "data-arg", arg);
+	if (value != NULL)
+		h_attr(h, "data-value", value);
+	h_raw(h, " title=\"pkg -j &lt;jail&gt; bootstrap -y, a job\">Bootstrap "
+	    "pkg</button></div>");
+}
+
+/* Is pkg being bootstrapped in the jail on s, a job of the page's? */
+static bool
+pkg_booting(const struct server *s, const char *jail)
+{
+	const struct op	*o;
+	int		 i;
+
+	for (i = 0; i < app.nops; i++) {
+		o = &app.ops[i];
+		if (o->state == OP_RUNNING && o->what == JOB_PACKAGES &&
+		    strcmp(o->sid, s->id) == 0 && strcmp(o->target, jail) ==
+		    0 && strncmp(o->title, "pkg bootstrapped in ", 20) == 0)
+			return (true);
+	}
+	return (false);
+}
+
+/* The Packages tab's, as the jail's packages read says. */
+static void
+pkg_bootstrap_notice(struct html *h)
+{
+	struct server	*s;
+
+	if (app.pkg.jail[0] == '\0' || jget(app.pkg.data, "jail_pkg") == NULL ||
+	    jbool(app.pkg.data, "jail_pkg"))
+		return;
+	s = cur_server();
+	boot_box(h, app.pkg.jail, jbool(app.pkg.data, "bootstrap_jail"),
+	    s != NULL && pkg_booting(s, app.pkg.jail), "pkg-bootstrap", NULL,
+	    NULL);
+}
+
+/*
+ * Has the running jail on s no pkg of its own, where the host's pkg(7)
+ * would bootstrap one by itself on an install (its row of the jails
+ * read: pkg false, pkg-bootstrap true)?  An Install button for the jail
+ * gives way to pkg_boot_box() then: the agent refuses the install.
+ */
+bool
+pkg_boot_wanted(const struct server *s, const char *jail)
+{
+	const ucl_object_t	*j;
+	ucl_object_iter_t	 it;
+
+	if (s == NULL || jail == NULL || jail[0] == '\0' || s->list == NULL)
+		return (false);
+	it = NULL;
+	while ((j = ucl_object_iterate(jget(s->list, "jails"), &it, true)) !=
+	    NULL)
+		if (jstr(j, "name") != NULL && strcmp(jstr(j, "name"), jail) ==
+		    0)
+			return (jget(j, "pkg") != NULL && !jbool(j, "pkg") &&
+			    jbool(j, "pkg_bootstrap"));
+	return (false);
+}
+
+/*
+ * The notice and the Bootstrap pkg button an Install box shows in place
+ * of its Install button, where pkg_boot_wanted(): the Security
+ * section's plugins, SSL inspection, SD-WAN's needs, Mail, the Relay,
+ * a network view's plugin, the builder.  The button's action, pkb-go,
+ * names the host and the jail.  False, nothing shown, elsewhere.
+ */
+bool
+pkg_boot_box(struct html *h, const struct server *s, const char *jail)
+{
+
+	if (!pkg_boot_wanted(s, jail))
+		return (false);
+	boot_box(h, jail, true, pkg_booting(s, jail), "pkb-go", s->id, jail);
+	return (true);
 }
 
 /* The packages tab: the host or a running jail, and what pkg can upgrade. */

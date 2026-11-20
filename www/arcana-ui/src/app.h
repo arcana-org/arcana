@@ -1191,6 +1191,9 @@ struct plugin_pkg {
 };
 const struct plugin_pkg *plugin_pkg(const char *);
 bool		 plugin_installing(const struct server *, const char *);
+bool		 pkg_boot_wanted(const struct server *, const char *);
+bool		 pkg_boot_box(struct html *, const struct server *,
+		    const char *);
 void		 plugin_install(struct server *, const char *);
 void		 refresh_transport(struct server *, bool, bool);
 void		 transport_tick(double);

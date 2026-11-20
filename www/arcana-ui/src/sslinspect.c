@@ -582,6 +582,11 @@ view_sslinspect(struct html *h, struct server *s)
 			h_raw(h, "on this host: TLS is inspected by it, "
 			    "transparently (ipfw fwd), the clients setting no "
 			    "proxy.");
+		if (jail != NULL && pkg_boot_wanted(s, jail)) {
+			h_raw(h, "</span></div>");
+			(void)pkg_boot_box(h, s, jail);
+			return;
+		}
 		h_raw(h, "</span><button class=\"primary small\" data-act=\""
 		    "ssl-install\">Install sslproxy</button></div>");
 		return;
@@ -903,7 +908,8 @@ sslinspect_action(const char *act, const char *arg, const char *value)
 		return (false);
 	sid = sec_host_id();
 	jail = si_where(si_server());
-	if (strcmp(act, "ssl-install") == 0 && si_server() != NULL) {
+	if (strcmp(act, "ssl-install") == 0 && si_server() != NULL &&
+	    !pkg_boot_wanted(si_server(), jail)) {
 		/* Where the tab looks: the host, or the jail by pkg -j. */
 		q = json_quote(jail);
 		if (asprintf(&json, "{\"kind\":\"pkg-install\",\"packages\":"

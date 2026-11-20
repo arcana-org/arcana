@@ -64,12 +64,20 @@
     (bootstrap-jail, its usage's "[-j jail]"); the Packages tab and its
     Install box say so, with a Bootstrap pkg button the admin presses
     (job pkg-bootstrap: pkg -j <jail> bootstrap -y; `arcanactl
-    pkg-bootstrap`), or the way by hand with an older pkg(7).  Left:
-    the other Install buttons (Security's plugins, SD-WAN's needs,
-    Mail, Relay) still install through the host's pkg -j without
-    offering the bootstrap; with a pkg(7) that takes -j, `pkg -j
-    <jail> install -y` execs the jail's own pkg(8), and bootstraps one
-    by itself (-y) where there is none.
+    pkg-bootstrap`), or the way by hand with an older pkg(7).  Done
+    since (agent_test:pkg_bootstrap, yang_jails;
+    pwa_test:pwa_pkg_bootstrap_installs): with a pkg(7) that takes -j,
+    `pkg -j <jail> install -y` execs the jail's own pkg(8) and
+    bootstraps one by itself (-y) where there is none, so the agent
+    refuses an install, upgrade, clean or audit fetch in a jail without
+    pkg until it is bootstrapped, saying so; arcana-jails' jail says
+    pkg and pkg-bootstrap, and every other Install button for a jail
+    (the Security section's plugins, SSL inspection, SD-WAN's needs,
+    Mail, the Relay, a network view's plugin, the builder) gives way
+    to the same notice and Bootstrap pkg button (pkb-go, a
+    pkg-bootstrap job), never pressed by Arcana.  SD-WAN's needs of a
+    jail edge install in the jail now (pkg -j), and c-icap's three
+    packages as three.
 - Found running Arcana on its own hosts (2026-11-18), each worked
   around by ssh:
   - Done (agent_test:services_jail, pwa_test:pwa_service_jail): a
@@ -249,8 +257,19 @@
   root, the MD+R's hashes its own ClamAV's, what Suricata prevents
   diverted by the edge's own rules (rule 9 in the jail's ipfw), no
   idsfw.c rule; started again from the edge's own kept files when the
-  jail is made again (jail_follow(), as the Security section's).
-  Left: not run yet in a real vnet jail.
+  jail is made again (jail_follow(), as the Security section's).  Its
+  dnsmasq, unbound and BIRD the same since 2026-11-20
+  (agent_test:sdwan_dhcp_dns, sdwan_bird): a jail made that keeps
+  their list (sdwan-dhcp@, sdwan-dns@, sdwan-bird@JAIL.json) and runs
+  none of them is waited for until the interfaces its forms name are
+  in it (a UNI's, a UCS's BIRD's; none named: one up besides the
+  loopback), then the list applied again, the files rendered again in
+  the jail's /var/run its start empties; an apply at a time each (the
+  console's, a start's, a jail followed's).  BIRD's watch still starts
+  an instance that does not answer on its file as it is.  rtadvd at a
+  jail edge follows by the jail's own rc: rtadvd_enable and
+  rtadvd_interfaces in its rc.conf (sysrc -j), its rtadvd.conf beneath
+  its root.  Left: not run yet in a real vnet jail.
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's

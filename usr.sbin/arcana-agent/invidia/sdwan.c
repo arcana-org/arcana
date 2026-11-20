@@ -675,6 +675,59 @@ sval(const ucl_object_t *o, const char *key)
 	    == UCL_STRING ? ucl_object_tostring(v) : NULL);
 }
 
+/* An interface's name added to ifs (*n of them, max at most), once. */
+static void
+if_add(const char *ifn, char (*ifs)[JAIL_IFNAMSIZ], int *n, int max)
+{
+	int	i;
+
+	if (ifn == NULL || ifn[0] == '\0' || strlen(ifn) >= JAIL_IFNAMSIZ)
+		return;
+	for (i = 0; i < *n; i++)
+		if (strcmp(ifs[i], ifn) == 0)
+			return;
+	if (*n < max)
+		snprintf(ifs[(*n)++], JAIL_IFNAMSIZ, "%s", ifn);
+}
+
+/*
+ * A jail edge's kept list of a service (sdwan-KIND@JAIL.json), for the
+ * jails followed (ira/jailwatch.c): -1 when it keeps none; else the
+ * interfaces its instances need inside the jail, those their forms
+ * name (each UNI's "interface", the form's own "interface" of a UCS's
+ * BIRD), into ifs, max at most, and how many.
+ */
+int
+sdwan_kept_ifs(const char *kind, const char *jail,
+    char (*ifs)[JAIL_IFNAMSIZ], int max)
+{
+	char			 file[MAXPATHLEN], *json;
+	ucl_object_t		*top;
+	const ucl_object_t	*in, *spec, *u;
+	ucl_object_iter_t	 it, uit;
+	int			 n;
+
+	snprintf(file, sizeof(file), "sdwan-%s@%s.json", kind, jail);
+	if ((json = sdwan_kept_read(file)) == NULL)
+		return (-1);
+	top = parse(json);
+	free(json);
+	n = 0;
+	it = NULL;
+	while ((in = ucl_object_iterate(ucl_object_lookup(top, "instances"),
+	    &it, true)) != NULL) {
+		spec = ucl_object_lookup(in, "spec");
+		if_add(sval(spec, "interface"), ifs, &n, max);
+		uit = NULL;
+		while ((u = ucl_object_iterate(ucl_object_lookup(spec, "unis"),
+		    &uit, true)) != NULL)
+			if_add(sval(u, "interface"), ifs, &n, max);
+	}
+	if (top != NULL)
+		ucl_object_unref(top);
+	return (n);
+}
+
 /* ---- The steering ---------------------------------------------------- */
 
 /* What made the choices again: the console's steering, a probe, a pin. */

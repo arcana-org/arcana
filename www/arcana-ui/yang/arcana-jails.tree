@@ -5,32 +5,34 @@ module: arcana-jails
      |  +--ro scope?     string
      |  +--ro message?   string
      +--rw jail* [name]
-        +--rw name           string
-        +--rw boot?          boolean
-        +--rw scope?         string
+        +--rw name             string
+        +--rw boot?            boolean
+        +--rw scope?           string
         +--rw param* [name]
         |  +--rw name     string
         |  +--rw value*   string
-        +--ro state?         jail-state
-        +--ro jid?           uint32
-        +--ro configured?    boolean
-        +--ro hostname?      string
-        +--ro path?          string
-        +--ro ip4*           string
-        +--ro ip6*           string
-        +--ro vnet?          boolean
-        +--ro osrelease?     string
-        +--ro persist?       boolean
-        +--ro securelevel?   int32
-        +--ro parent?        uint32
-        +--ro children?      uint32
-        +--ro nproc?         uint32
-        +--ro rss?           uint64
-        +--ro cpu?           decimal64
-        +--ro interface?     string
-        +--ro allow*         string
-        +--ro plugin*        string
-        +--ro lne?           -> /lne:logical-network-elements/lne:logical-network-element/lne:name
+        +--ro state?           jail-state
+        +--ro jid?             uint32
+        +--ro configured?      boolean
+        +--ro hostname?        string
+        +--ro path?            string
+        +--ro ip4*             string
+        +--ro ip6*             string
+        +--ro vnet?            boolean
+        +--ro osrelease?       string
+        +--ro persist?         boolean
+        +--ro securelevel?     int32
+        +--ro parent?          uint32
+        +--ro children?        uint32
+        +--ro nproc?           uint32
+        +--ro rss?             uint64
+        +--ro cpu?             decimal64
+        +--ro interface?       string
+        +--ro allow*           string
+        +--ro plugin*          string
+        +--ro pkg?             boolean
+        +--ro pkg-bootstrap?   boolean
+        +--ro lne?             -> /lne:logical-network-elements/lne:logical-network-element/lne:name
         +--ro dying* [jid]
         |  +--ro jid     uint32
         |  +--ro path?   string
