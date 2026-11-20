@@ -16,7 +16,8 @@
  * ID (a UUID), the function and its policy, the type (IOC for a list's
  * entry, OTHER for a No-match and for Suricata's rules), the event, the
  * source address, the details, the action, and the UNI where it is
- * known (D2); every domain name and URL in it neutralised, its periods
+ * known (D2), with the edge and, of a vnet jail's own rules, the jail;
+ * every domain name and URL in it neutralised, its periods
  * in brackets (R28, D3).  A Security Admin Notification (SAN, §6.3) is
  * issued for each Security Function Policy whose parameter values the
  * document kept changes (R31), one a policy, with Table 4's: the
@@ -415,7 +416,7 @@ sen_event(const char *edge_id, const char *edge_name, const ucl_object_t *e)
 	char			 id[37], when[40], iss[MAXHOSTNAMELEN + 24];
 	char			 details[1200], src[80], svc[40], pol[40];
 	char			 list[20], evt[200], ety[32];
-	const char		*kind, *fn, *action, *type, *comment;
+	const char		*kind, *fn, *action, *type, *comment, *jail;
 	char			*neutral, *text;
 	int64_t			 fib;
 
@@ -537,14 +538,19 @@ sen_event(const char *edge_id, const char *edge_name, const ucl_object_t *e)
 	put(o, "details", neutral);
 	put(o, "action", action);
 	put(o, "edge", edge_name);
+	/* Of a vnet jail's own rules (its own routing socket, agent
+	 * 0.347.0): where on the edge it was blocked. */
+	jail = str(e, "jail") != NULL ? str(e, "jail") : "";
+	put(o, "jail", jail);
 	keep(SEN_FILE, o);
 	snprintf(evt, sizeof(evt), "%s", str(o, "function"));
 	if (asprintf(&text, "Security Event Notification %s\n%s (UTC), %s\n"
 	    "Security Function: %s, policy %s, service %s\nType of SEN: %s; "
 	    "Security Event: %s\nSource: %s\nDetails: %s\nAction taken: %s\n"
-	    "UNI: %s", id, when, iss, evt, str(o, "policy"), str(o, "service"),
-	    type, ety, src, neutral, action, str(o, "uni")[0] != '\0' ? str(o,
-	    "uni") : "not known") != -1) {
+	    "UNI: %s\nEdge: %s%s%s", id, when, iss, evt, str(o, "policy"),
+	    str(o, "service"), type, ety, src, neutral, action, str(o,
+	    "uni")[0] != '\0' ? str(o, "uni") : "not known", edge_name,
+	    jail[0] != '\0' ? ", jail " : "", jail) != -1) {
 		mail_hold_notice(NOTICE_SEN, text);
 		free(text);
 	}
@@ -897,7 +903,7 @@ api_sdwan_sen(struct http_request *req)
 {
 	static const char *const keys[] = { "id", "when", "issuer", "function",
 	    "policy", "service", "type", "event", "source", "details", "action",
-	    "uni", "edge" };
+	    "uni", "edge", "jail" };
 
 	return (notices_api(req, SEN_FILE, keys, nitems(keys), "attachment; "
 	    "filename=\"sdwan-sen.csv\""));

@@ -93,6 +93,26 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SENs and the record say the jail; drift asked node by node; console 0.492.0
+
+- A Security Event Notification from a vnet jail's own rules now names
+  the jail (agent 0.347.0 already tags the event): kept with the notice,
+  the last column of sdwan/sen's CSV, and a line "Edge: <edge>, jail
+  <jail>" in its mail and Telegram text.  SENs kept before have no jail.
+- The SD-WAN Security section's record and SEN tables have a Jail
+  column; the record table sorts and filters like the console's other
+  tables and picks one jail or the hosts' own entries.  sdwan/record
+  takes ?jail=<name> (- for the hosts' own), and its CSV gains a final
+  jail column.
+- Fixed: the record's and the audit trail's filter boxes now filter.
+- A host's drift asks the agent for each top-level node alone, as a
+  whole host's GET has done since console 0.490.0: a large host's check
+  no longer fails with "Message too long".  A node too large for a
+  message alone is listed as such (kind too-large) and the rest is still
+  compared; a list the host cut that drift compares is reported in
+  warnings beside the rows.
+- Update the console; the agents are unchanged.
+
 ### SD-WAN jail edges followed, pkg bootstrap offered by every Install; agent 0.349.0, console 0.491.0
 
 - SD-WAN at a jail edge: dnsmasq, unbound and BIRD follow their jail as

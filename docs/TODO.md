@@ -32,8 +32,14 @@
     one socket a vnet jail whose ipfw logs there, made by the helper
     in the jail (rtsock-socket), followed by jailwatch.c, closed when
     the jail goes; entries and events tagged with the jail (the
-    record's last/jail in arcana-sdwan, SID 96696).  Left: the
-    console's SEN does not yet say the jail (the event has it).
+    record's last/jail in arcana-sdwan, SID 96696).  Done since
+    (console_test:sdwan_sen_jail; pwa_test:pwa_sdwan_record_jail): the
+    console's SEN says the jail (kept, its CSV's jail column, the
+    mail's and Telegram's "Edge: <edge>, jail <jail>"); the SD-WAN
+    Security section's record and SEN tables have a Jail column, the
+    record sorted and filtered by tbl.c, picked by its jail (the
+    hosts' own, "-"); sdwan/record?jail= and its CSV's jail column; the
+    host's event log says an sdwan-security event's rule.
   - The host's fwd to a jail of its network's address, and SSLproxy's
     getsockname(2) there, were read from the kernel's path, not tried on
     a real one: the root suite's next round (a jail with an address of
@@ -470,6 +476,11 @@ Written and tested with stand-ins only:
   build the tests run cannot receive from it.
 - `arcana-enrol -s` on a real host, the container image, and the update
   check against GitHub's live feed.
+- A host's drift, asked a top-level node at a time as a whole host's
+  GET is: a node too large for a message alone is a row of its own
+  (kind too-large, its path and why) and the rest compared; no stand-in's node is that large, so that row is read
+  from the code (ytrans_get_tree_warn()'s EMSGSIZE, as host_ask()'s),
+  not seen.
 
 ## Verified for real
 

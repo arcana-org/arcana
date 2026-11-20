@@ -2642,9 +2642,10 @@ connected:
 	case OP_DRIFT:
 		/* What the host has otherwise than running says. */
 		{
-			char	yerr[256];
+			ucl_object_t	*dw;
+			char		 yerr[256];
 
-			if ((error = drift_read(conn, &e, yerr,
+			if ((error = drift_read(conn, &e, &dw, yerr,
 			    sizeof(yerr))) != 0) {
 				ok = false;
 				put_str(top, "error", yerr);
@@ -2652,6 +2653,9 @@ connected:
 			}
 			ok = true;
 			put(top, "drift", e);
+			/* A list the host cut, said beside the rows. */
+			if (dw != NULL)
+				put(top, "warnings", dw);
 		}
 		break;
 	case OP_RESTCONF:

@@ -3023,3 +3023,104 @@ feeds_server(const atf_tc_t *tc)
 		}
 	}
 }
+
+/*
+ * A vnet jail's own rules logged (agent 0.347.0's record of a jail's
+ * routing socket): the harness's jail gw given SSL inspection's kept
+ * reset of cleartext HTTP beneath its root (ssl.d/fwd.rules, logdst
+ * rtsock), made again (jid 8) so that the record asks the helper for
+ * the jail's routing socket; the helper's stand-in hands over one end
+ * of a stream pair whose other end writes an RTM_IPFWLOG of rule 7 from
+ * 10.1.0.9 to 198.51.100.7 on epair0b, its comment "security svc1
+ * g-mbsf unencrypted": a record entry and an sdwan-security event, both
+ * tagged with the jail gw.  ifconfig -j says the jail is settled; the
+ * jail's ipfw (its log reset) is never the host's.  False where there
+ * is no python3 to hand the socket over.
+ */
+bool
+harness_record_jail(void)
+{
+	char	cwd[MAXPATHLEN], buf[4096];
+
+	if (access("/usr/local/bin/python3", X_OK) != 0)
+		return (false);
+	ATF_REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL);
+	snprintf(buf, sizeof(buf), "mkdir -p 'jroot%s/ssl.d'", cwd);
+	ATF_REQUIRE(system(buf) == 0);
+	snprintf(buf, sizeof(buf), "jroot%s/ssl.d/fwd.rules", cwd);
+	put(buf, "add 7 set 26 reset log logdst rtsock logamount 1000 tcp from "
+	    "any to not me 80 in recv epair0b // security svc1 g-mbsf "
+	    "unencrypted\n");
+	put("rtsock.py",
+	    "import ctypes, os, select, socket, struct, sys\n"
+	    "d = sys.argv[1]\n"
+	    "L = ctypes.sizeof(ctypes.c_ulong)\n"
+	    "class rt_msghdr(ctypes.Structure):\n"
+	    "    _fields_ = [('msglen', ctypes.c_ushort), ('version', "
+	    "ctypes.c_ubyte),\n"
+	    "        ('type', ctypes.c_ubyte), ('index', ctypes.c_ushort),\n"
+	    "        ('spare', ctypes.c_ushort), ('flags', ctypes.c_int),\n"
+	    "        ('addrs', ctypes.c_int), ('pid', ctypes.c_int), ('seq', "
+	    "ctypes.c_int),\n"
+	    "        ('errno', ctypes.c_int), ('fmask', ctypes.c_int),\n"
+	    "        ('inits', ctypes.c_ulong), ('rmx', ctypes.c_ulong * 14)]\n"
+	    "def pad(b):\n"
+	    "    return b + b'\\0' * (-len(b) % L)\n"
+	    "def sin(a):\n"
+	    "    return pad(struct.pack('=BBH4s8s', 16, socket.AF_INET, 0,\n"
+	    "        socket.inet_aton(a), b''))\n"
+	    "comment = b'security svc1 g-mbsf unencrypted'\n"
+	    "log = struct.pack('=IIBBH20s20sI', 7, 0, 47, 1, 0, b'', b'', 0)\n"
+	    "dst = pad(struct.pack('=BBHBBBB', 8 + len(log) + len(comment), 46, "
+	    "0, 0,\n"
+	    "    len(comment), 0, 0) + log + comment)\n"
+	    "ifn = b'epair0b'\n"
+	    "ifp = pad(struct.pack('=BBHBBBB', 8 + len(ifn), 18, 0, 0, len(ifn), "
+	    "0, 0) +\n"
+	    "    ifn)\n"
+	    "body = dst + sin('10.1.0.9') + sin('198.51.100.7') + ifp\n"
+	    "h = rt_msghdr()\n"
+	    "h.msglen = ctypes.sizeof(h) + len(body)\n"
+	    "h.version = 5\n"
+	    "h.type = 0x13\n"
+	    "h.index = 99\n"
+	    "h.flags = 0x8000\n"
+	    "h.addrs = 1 | 2 | 4 | 16\n"
+	    "a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+	    "if os.fork() == 0:\n"
+	    "    a.close()\n"
+	    "    os.close(1)\n"
+	    "    b.sendall(bytes(h) + body)\n"
+	    "    select.select([b], [], [], 120)\n"
+	    "    open(d + '/rtsock.closed', 'w').close()\n"
+	    "    os._exit(0)\n"
+	    "b.close()\n"
+	    "socket.send_fds(socket.socket(fileno=1), [b'x'], [a.fileno()])\n");
+	/* The stand-ins wrapped: the helper's rtsock-socket, ifconfig -j's
+	 * interfaces up, the jail's ipfw kept from the host's. */
+	ATF_REQUIRE(rename("fake-helper", "fake-helper.rj") == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\nif [ \"$3\" = rtsock-socket ]; "
+	    "then\n\techo \"$2 rtsock-socket\" >> %s/rtsock.log\n\texec "
+	    "/usr/local/bin/python3 -I %s/rtsock.py %s\nfi\nexec "
+	    "%s/fake-helper.rj \"$@\"\n", cwd, cwd, cwd, cwd);
+	put("fake-helper", buf);
+	ATF_REQUIRE(rename("fake-ifconfig", "fake-ifconfig.rj") == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\ncase \"$*\" in\n\"-j \"*\" -l "
+	    "-u\") echo \"lo0 epair0b\"; exit 0 ;;\nesac\nexec "
+	    "%s/fake-ifconfig.rj \"$@\"\n", cwd);
+	put("fake-ifconfig", buf);
+	ATF_REQUIRE(rename("fake-jexec", "fake-jexec.rj") == 0);
+	snprintf(buf, sizeof(buf), "#!/bin/sh\ncase \"$2\" in\n*ipfw) echo "
+	    "\"jexec $*\" >> %s/jexec.log; exit 0 ;;\nesac\nexec "
+	    "%s/fake-jexec.rj \"$@\"\n", cwd, cwd);
+	put("fake-jexec", buf);
+	ATF_REQUIRE(system("chmod 755 fake-helper fake-ifconfig fake-jexec") ==
+	    0);
+	/* gw gone and made again: its rules looked for as it settles. */
+	ATF_REQUIRE(system("grep -v '^gw ' jails > jails.rj; mv jails.rj "
+	    "jails") == 0);
+	usleep(1500000);
+	snprintf(buf, sizeof(buf), "echo 'gw 8 new %s/jroot' >> jails", cwd);
+	ATF_REQUIRE(system(buf) == 0);
+	return (true);
+}

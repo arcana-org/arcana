@@ -7,13 +7,15 @@
 /*
  * A host's configuration drift: what it has otherwise than its running
  * configuration says (RFC 8342 section 5.3: intended against
- * operational).  Running and the operational datastore are read whole,
- * the state taken out of the latter, and the edit that would make the
- * one the other (cbl_dtree_diff()) is the drift: a node running has
- * that is not in effect, one that differs, and one the host has that
- * running does not, said with its origin (with-origin, section 5.3.4):
- * set by hand since (unknown), learned (DHCP, SLAAC, a neighbour), or
- * the kernel's (system).
+ * operational).  Running and the operational datastore are read a
+ * top-level node at a time (one answer of them all went past a
+ * message's bound), the state taken out of the latter, and the edit
+ * that would make the one the other (cbl_dtree_diff()) is the drift: a
+ * node running has that is not in effect, one that differs, and one the
+ * host has that running does not, said with its origin (with-origin,
+ * section 5.3.4): set by hand since (unknown), learned (DHCP, SLAAC, a
+ * neighbour), or the kernel's (system).  A node too large for a message alone is a
+ * row of its own (too-large), the rest compared all the same.
  */
 
 #include <sys/param.h>
@@ -195,49 +197,133 @@ rows(ucl_object_t *arr, const cbl_dnode *n, const cbl_dtree *op,
 	}
 }
 
-int
-drift_read(cbl_conn *conn, ucl_object_t **out, char *err, size_t errlen)
+/*
+ * Top-level node t of datastore ds into *tp, alone: a request of its
+ * own, as a whole host's GET asks (restconf.c's host_ask()), since the
+ * host's answer of them all went past a message's bound.  What the host
+ * has not of it is an empty tree; 1 where the user may not read it or
+ * the host has no such model (the node left out), 0, or an errno.
+ */
+static int
+node_get(cbl_conn *conn, const struct cbl_ynode *t, int ds, bool origin,
+    cbl_dtree **tp, ucl_object_t **warnings, char *err, size_t errlen)
 {
-	const struct cbl_ynode	*tops[64];
-	cbl_dtree		*op = NULL, *run = NULL, *d;
-	uint64_t		 errsid;
-	size_t			 ntop = 0;
-	int			 error;
+	uint64_t	errsid;
+	int		error;
 
-	*out = NULL;
-	/* The top-level nodes that are configuration: what running has;
-	 * none of the console's own datastore, nor the SAP network, which
-	 * an agent has as state alone (RFC 9408, its running none). */
-	for (uint32_t i = 0; i < ymodel_schema.nmod; i++)
-		for (uint32_t k = 0; !l3nm_module(ymodel_schema.mod[i]) &&
-		    strcmp(ymodel_schema.mod[i]->name, "ietf-network") != 0 &&
-		    k < ymodel_schema.mod[i]->ntop; k++) {
-			const struct cbl_ynode *t = ymodel_schema.mod[i]->top[k];
+	error = ytrans_get_tree_warn(conn, &t, 1, ds, origin, tp, warnings,
+	    err, errlen, &errsid);
+	if (error == ENOENT) {
+		err[0] = '\0';
+		if ((*tp = cbl_dtree_new(&ymodel_schema)) == NULL)
+			return (ENOMEM);
+		return (0);
+	}
+	if (error == EACCES || error == EPERM || error == EOPNOTSUPP) {
+		err[0] = '\0';
+		return (1);
+	}
+	return (error);
+}
 
-			if ((t->kind == CBL_YN_CONTAINER || t->kind ==
-			    CBL_YN_LIST) && (t->flags & CBL_YNF_CONFIG) != 0 &&
-			    ntop < nitems(tops))
-				tops[ntop++] = t;
-		}
-	if ((error = ytrans_get_tree_origin(conn, tops, ntop,
-	    CBL_YDS_OPERATIONAL, true, &op, err, errlen, &errsid)) != 0 ||
-	    (error = ytrans_get_tree_origin(conn, tops, ntop, CBL_YDS_RUNNING,
-	    false, &run, err, errlen, &errsid)) != 0) {
-		cbl_dtree_free(op);
-		return (error);
+/* A row of a node too large for a message alone: its path and why. */
+static ucl_object_t *
+too_large(const char *module, const struct cbl_ynode *t)
+{
+	ucl_object_t	*r;
+	char		 path[256], why[256];
+
+	snprintf(path, sizeof(path), "/%s:%s", module, t->name);
+	snprintf(why, sizeof(why), "the host's %s:%s alone is larger than a "
+	    "message from the host (%d MiB): not compared", module, t->name,
+	    CBLINK_MAX_FRAME / (1024 * 1024));
+	r = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(r, ucl_object_fromstring("too-large"), "kind",
+	    0, false);
+	ucl_object_insert_key(r, ucl_object_fromstring(path), "path", 0,
+	    false);
+	ucl_object_insert_key(r, ucl_object_fromstring(why), "error", 0,
+	    false);
+	return (r);
+}
+
+/*
+ * The drift of top-level node t (of module) into arr: the operational
+ * configuration and running, each asked alone.  A node either is too
+ * large for is a row saying so; 0, or an errno of the connection.
+ */
+static int
+node_drift(cbl_conn *conn, const char *module, const struct cbl_ynode *t,
+    ucl_object_t *arr, ucl_object_t **warnings, char *err, size_t errlen)
+{
+	cbl_dtree	*op = NULL, *run = NULL, *d;
+	int		 error;
+
+	if ((error = node_get(conn, t, CBL_YDS_OPERATIONAL, true, &op,
+	    warnings, err, errlen)) == 0)
+		error = node_get(conn, t, CBL_YDS_RUNNING, false, &run,
+		    warnings, err, errlen);
+	if (error == EMSGSIZE) {
+		ucl_array_append(arr, too_large(module, t));
+		err[0] = '\0';
+		error = 0;
+		goto out;
+	}
+	if (error != 0) {
+		/* Left out: not the user's to read, or no such model. */
+		if (error == 1)
+			error = 0;
+		goto out;
 	}
 	prune_state(cbl_dtree_root(op));
 	if ((d = cbl_dtree_diff(op, run)) == NULL) {
 		error = errno != 0 ? errno : ENOMEM;
 		snprintf(err, errlen, "%s", strerror(error));
-		cbl_dtree_free(op);
-		cbl_dtree_free(run);
-		return (error);
+		goto out;
 	}
-	*out = ucl_object_typed_new(UCL_ARRAY);
-	rows(*out, cbl_dtree_root(d), op, run, 0);
+	rows(arr, cbl_dtree_root(d), op, run, 0);
 	cbl_dtree_free(d);
+out:
 	cbl_dtree_free(op);
 	cbl_dtree_free(run);
+	return (error);
+}
+
+int
+drift_read(cbl_conn *conn, ucl_object_t **out, ucl_object_t **warnings,
+    char *err, size_t errlen)
+{
+	const struct cbl_ymodule	*m;
+	const struct cbl_ynode		*t;
+	ucl_object_t			*arr;
+	int				 error = 0;
+
+	*out = NULL;
+	*warnings = NULL;
+	arr = ucl_object_typed_new(UCL_ARRAY);
+	/* The top-level nodes that are configuration: what running has;
+	 * none of the console's own datastore, nor the SAP network, which
+	 * an agent has as state alone (RFC 9408, its running none).  Each
+	 * asked alone. */
+	for (uint32_t i = 0; error == 0 && i < ymodel_schema.nmod; i++) {
+		m = ymodel_schema.mod[i];
+		if (l3nm_module(m) || strcmp(m->name, "ietf-network") == 0)
+			continue;
+		for (uint32_t k = 0; error == 0 && k < m->ntop; k++) {
+			t = m->top[k];
+			if ((t->kind == CBL_YN_CONTAINER || t->kind ==
+			    CBL_YN_LIST) && (t->flags & CBL_YNF_CONFIG) != 0)
+				error = node_drift(conn, m->name, t, arr,
+				    warnings, err, errlen);
+		}
+	}
+	if (error != 0) {
+		ucl_object_unref(arr);
+		if (*warnings != NULL)
+			ucl_object_unref(*warnings);
+		*warnings = NULL;
+		return (error);
+	}
+	*out = arr;
 	return (0);
 }

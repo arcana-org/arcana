@@ -11014,11 +11014,12 @@ identities_tick(const ucl_object_t *doc, time_t now)
 /* ---- The record: what the edges' security rules logged ----- */
 
 /*
- * GET sdwan/record[?swvc=&policy=&edge=&since=]: the edges' records
- * (each agent keeps a day of what its logged rules saw) read now and
- * put together, newest first, each with its edge; a service or a policy
- * picks by the rules' comments, since by the time.  As CSV where Accept
- * says text/csv.
+ * GET sdwan/record[?swvc=&policy=&edge=&since=&jail=]: the edges'
+ * records (each agent keeps a day of what its logged rules saw) read
+ * now and put together, newest first, each with its edge and, of a
+ * vnet jail's own rules, its jail; a service or a policy picks by the
+ * rules' comments, since by the time, jail by the jail ("-": the
+ * host's own alone).  As CSV where Accept says text/csv.
  */
 int
 api_sdwan_record(struct http_request *req)
@@ -11026,7 +11027,7 @@ api_sdwan_record(struct http_request *req)
 	ucl_object_t		*doc, *out, *all, *e2;
 	const ucl_object_t	*edge, *e, *swvc, *policy, *since, *only;
 	ucl_object_iter_t	 it, eit;
-	char			 name[128], *v;
+	char			 name[128], *v, *jv;
 	char			 want[130];
 	ucl_object_t		*ans;
 	struct buf		*b;
@@ -11047,6 +11048,8 @@ api_sdwan_record(struct http_request *req)
 	from = 0;
 	if (http_argument_get_string(req, "since", &v))
 		from = strtoll(v, NULL, 10);
+	jv = NULL;
+	(void)http_argument_get_string(req, "jail", &jv);
 	v = NULL;
 	(void)http_argument_get_string(req, "edge", &v);
 	host_refs();
@@ -11070,6 +11073,9 @@ api_sdwan_record(struct http_request *req)
 			    strncmp(str(e, "comment"), "security ", 9) != 0 ||
 			    strncmp(str(e, "comment") + 9, want, strlen(want)) != 0))
 				continue;
+			if (jv != NULL && jv[0] != '\0' && strcmp(jv, str(e,
+			    "jail") != NULL ? str(e, "jail") : "-") != 0)
+				continue;
 			e2 = ucl_object_copy(e);
 			put(e2, "edge", S(str(edge, "server")));
 			put(e2, "name", S(name));
@@ -11090,20 +11096,20 @@ api_sdwan_record(struct http_request *req)
 	}
 	b = buf_alloc(4096);
 	buf_appendf(b, "time,edge,rule,action,source,destination,interface,"
-	    "comment\n");
+	    "comment,jail\n");
 	eit = NULL;
 	while ((e = ucl_object_iterate(all, &eit, true)) != NULL) {
 		char	when[32];
 		time_t	t = (time_t)ucl_object_toint(ucl_object_lookup(e, "t"));
 
 		strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", gmtime(&t));
-		buf_appendf(b, "%s,%s,%jd,%s,%s,%s,%s,\"%s\"\n", when,
+		buf_appendf(b, "%s,%s,%jd,%s,%s,%s,%s,\"%s\",\"%s\"\n", when,
 		    str(e, "name"), (intmax_t)ucl_object_toint(ucl_object_lookup(e,
 		    "rule")), str(e, "action") != NULL ? str(e, "action") : "",
 		    str(e, "src") != NULL ? str(e, "src") : "", str(e, "dst") !=
 		    NULL ? str(e, "dst") : "", str(e, "iface") != NULL ? str(e,
 		    "iface") : "", str(e, "comment") != NULL ? str(e, "comment") :
-		    "");
+		    "", str(e, "jail") != NULL ? str(e, "jail") : "");
 	}
 	ucl_object_unref(all);
 	http_response_header(req, "content-type", "text/csv; charset=utf-8");

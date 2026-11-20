@@ -24,6 +24,7 @@ static struct {
 	char		 sid[9];	/* the host it was read for */
 	bool		 loading;
 	ucl_object_t	*o;		/* the rows */
+	ucl_object_t	*warnings;	/* a list the host cut, [{tag, text}] */
 	char		 error[256];
 } dr;
 
@@ -48,6 +49,10 @@ drift_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	if (dr.o != NULL)
 		ucl_object_unref(dr.o);
 	dr.o = ucl_object_copy(jget(o, "drift"));
+	if (dr.warnings != NULL)
+		ucl_object_unref(dr.warnings);
+	dr.warnings = jget(o, "warnings") != NULL ? ucl_object_copy(jget(o,
+	    "warnings")) : NULL;
 }
 
 static void
@@ -61,6 +66,9 @@ drift_fetch(struct server *s)
 		if (dr.o != NULL)
 			ucl_object_unref(dr.o);
 		dr.o = NULL;
+		if (dr.warnings != NULL)
+			ucl_object_unref(dr.warnings);
+		dr.warnings = NULL;
 		dr.error[0] = '\0';
 	}
 	snprintf(dr.sid, sizeof(dr.sid), "%s", s->id);
@@ -81,6 +89,8 @@ kind_text(const ucl_object_t *r)
 		return ("configured, not in effect");
 	if (k != NULL && strcmp(k, "differs") == 0)
 		return ("differs from running");
+	if (k != NULL && strcmp(k, "too-large") == 0)
+		return ("too large to compare");
 	if (o != NULL && strcmp(o, "unknown") == 0)
 		return ("set by hand");
 	if (o != NULL && strcmp(o, "learned") == 0)
@@ -98,10 +108,11 @@ view_drift(struct html *h, struct server *s)
 		{ "Node", "path", false },
 		{ "Origin", "origin", false },
 	};
-	const ucl_object_t		**rows, *r;
+	const ucl_object_t		**rows, *r, *w;
+	ucl_object_iter_t		 it;
 	char				*json;
 	unsigned			 hand = 0, learned = 0, unapplied = 0,
-					 differs = 0, n;
+					 differs = 0, large = 0, n;
 
 	h_raw(h, "<section class=\"transport\" id=\"drift\">");
 	box_head(h, "drift", "h3");
@@ -127,6 +138,14 @@ view_drift(struct html *h, struct server *s)
 		h_raw(h, "<p class=\"dim\">Reading…</p></section>");
 		return;
 	}
+	/* What the host cut short (a list past its most): rows of it
+	 * may be missing or said as not in effect. */
+	it = NULL;
+	while ((w = ucl_object_iterate(dr.warnings, &it, true)) != NULL) {
+		h_raw(h, "<div class=\"notice warn drift-warn\">");
+		h_txt(h, jstr(w, "text") != NULL ? jstr(w, "text") : "");
+		h_raw(h, "</div>");
+	}
 	for (n = 0; (r = ucl_array_find_index(dr.o, n)) != NULL; n++) {
 		if (jstr(r, "kind") != NULL && strcmp(jstr(r, "kind"),
 		    "unapplied") == 0)
@@ -134,6 +153,9 @@ view_drift(struct html *h, struct server *s)
 		else if (jstr(r, "kind") != NULL && strcmp(jstr(r, "kind"),
 		    "differs") == 0)
 			differs++;
+		else if (jstr(r, "kind") != NULL && strcmp(jstr(r, "kind"),
+		    "too-large") == 0)
+			large++;
 		else if (jstr(r, "origin") != NULL && strcmp(jstr(r, "origin"),
 		    "unknown") == 0)
 			hand++;
@@ -146,8 +168,11 @@ view_drift(struct html *h, struct server *s)
 	}
 	h_fmt(h, "<p><b>%u</b> set by hand, <b>%u</b> learned or the "
 	    "kernel's, <b>%u</b> configured but not in effect, <b>%u</b> "
-	    "differing.</p><table class=\"net drift\">", hand, learned,
-	    unapplied, differs);
+	    "differing.", hand, learned, unapplied, differs);
+	if (large > 0)
+		h_fmt(h, " <b>%u</b> too large for a message from the host, "
+		    "not compared: a path below them is read on its own.", large);
+	h_raw(h, "</p><table class=\"net drift\">");
 	tbl_head(h, "drift", cols, 3, 0);
 	h_raw(h, "<tbody>");
 	rows = tbl_rows("drift", dr.o, cols, 3, app.filter);
@@ -156,6 +181,11 @@ view_drift(struct html *h, struct server *s)
 		h_txt(h, kind_text(r));
 		h_raw(h, "</td><td class=\"mono\">");
 		h_txt(h, jstr(r, "path"));
+		if (jstr(r, "error") != NULL) {
+			h_raw(h, " <small class=\"dim\">");
+			h_txt(h, jstr(r, "error"));
+			h_raw(h, "</small>");
+		}
 		if (jget(r, "value") != NULL && (json = (char *)ucl_object_emit(
 		    jget(r, "value"), UCL_EMIT_JSON_COMPACT)) != NULL) {
 			h_raw(h, "<details class=\"wfmore\"><summary>value"

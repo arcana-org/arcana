@@ -3647,34 +3647,6 @@ host_tree(const struct cbl_ysids *s, const cbl_dtree *w, const char **tag,
 	return (0);
 }
 
-/* The warnings of the host's answer rep (a list cut), as an edit's and
- * an action's are told: [{tag, text}], NULL for none. */
-static ucl_object_t *
-host_warnings(const cbl_msg *rep)
-{
-	const struct cbl_ywarning	*w;
-	ucl_object_t			*ws = NULL, *o;
-	cbl_yarena			*a;
-	size_t				 nw;
-
-	if ((a = cbl_yarena_new()) == NULL)
-		return (NULL);
-	if (cbl_msg_ywarnings(rep, a, &w, &nw) == 0 && nw > 0) {
-		ws = ucl_object_typed_new(UCL_ARRAY);
-		for (size_t i = 0; i < nw; i++) {
-			o = ucl_object_typed_new(UCL_OBJECT);
-			ucl_object_insert_key(o, ucl_object_fromstring(
-			    w[i].tag), "tag", 0, false);
-			ucl_object_insert_key(o, ucl_object_fromstring(
-			    w[i].text), "text", 0, false);
-			ucl_array_append(ws, o);
-		}
-	}
-	cbl_yarena_free(a);
-	return (ws);
-}
-
-
 /* len bytes of p appended to b. */
 static int
 buf_add(struct cbl_ybuf *b, const void *p, size_t len)
@@ -3778,20 +3750,10 @@ json_each(cbl_msg *rep, const uint64_t *sids, size_t n, void *arg)
 	struct json_acc			*a = arg;
 	const struct cbl_ysid_item	*it;
 	const void			*v;
-	ucl_object_t			*ws, *w;
 	size_t				 len;
 	int				 error = 0;
 
-	if ((ws = host_warnings(rep)) != NULL) {
-		if (a->warnings == NULL)
-			a->warnings = ws;
-		else {
-			while ((w = ucl_array_pop_first(ws)) != NULL)
-				ucl_array_append(a->warnings, w);
-			ucl_object_unref(ws);
-		}
-	}
-
+	ytrans_warnings_add(&a->warnings, ytrans_warnings(rep));
 	for (size_t i = 0; error == 0 && i < n; i++)
 		if (cbl_msg_sid_raw(rep, sids[i], &v, &len) == 0 &&
 		    (it = cbl_ysids_sid(a->s, sids[i])) != NULL)
@@ -4071,7 +4033,7 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s, char **json,
 		goto done;
 	}
 	/* What the host says it did, which needs telling. */
-	ws = host_warnings(rep);
+	ws = ytrans_warnings(rep);
 	/* No output: null, an empty map, or none at all. */
 	if (cbl_msg_sid_raw(rep, ai->sid, (const void **)&v, &len) != 0 ||
 	    len == 0 || (len == 1 && (v[0] == 0xf6 || v[0] == 0xa0))) {

@@ -14705,6 +14705,140 @@ ATF_TC_BODY(sdwan_notices, tc)
 }
 
 /*
+ * A vnet jail's own rules logged (agent 0.347.0, the record of the
+ * jail's routing socket): the event's jail in its Security Event
+ * Notification (kept, as CSV and mailed with the edge) and the record's
+ * entry with its jail, picked by ?jail= (the host's own alone, "-",
+ * none of it) and in the CSV's column.
+ */
+CONSOLE_TC(sdwan_sen_jail, "SD-WAN: a SEN and a record entry of a vnet "
+    "jail's own rules say the jail; the record picked by it")
+ATF_TC_BODY(sdwan_sen_jail, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sb[16];
+	char		doc[12288], t1[12288];
+	int		i;
+
+	snprintf(harness_webconf, sizeof(harness_webconf), "mail_tick = 1;\n");
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_ab(sa, sb, sizeof(sa));
+	r3_settings("\"mail-sen\":\"soc@example.org\"", 204);
+	snprintf(doc, sizeof(doc), "%s", sdwan_good);
+	while (swap_in(doc, "@A", sa, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	while (swap_in(doc, "@B", sb, t1, sizeof(t1)))
+		snprintf(doc, sizeof(doc), "%s", t1);
+	r3_keep(doc);
+	/* The hosts' events read once (a first read tells nothing). */
+	usleep(2500000);
+	if (!harness_record_jail())
+		atf_tc_skip("no python3 to hand a socket over");
+	for (i = 0; i < 300; i++) {
+		r3_sdwan("sen?q=svc1", &r);
+		if (r.status == 200 && jstr(&r, "notices.0.id") != NULL)
+			break;
+		resp_free(&r);
+		usleep(100000);
+	}
+	ATF_REQUIRE_MSG(r.status == 200 && jstr(&r, "notices.0.id") != NULL,
+	    "no SEN of the jail's rule: %s", r.body);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "notices.0.jail"), "gw") == 0 &&
+	    (strcmp(jstr(&r, "notices.0.edge"), "a") == 0 || strcmp(jstr(&r,
+	    "notices.0.edge"), "b") == 0) && strcmp(jstr(&r,
+	    "notices.0.source"), "10.1.0.9") == 0 && strcmp(jstr(&r,
+	    "notices.0.event"), "unencrypted HTTP, blocked") == 0, "%s",
+	    r.body);
+	resp_free(&r);
+	http_with("GET", CC "sdwan/sen", "Accept: text/csv\r\n", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, ",uni,edge,jail\n") != NULL &&
+	    strstr(r.body, "\",\"gw\"\n") != NULL, "%s", r.body);
+	resp_free(&r);
+	for (i = 0; i < 100 && system("grep -q '^Edge: .*, jail gw$' "
+	    "mail.out") != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(system("grep -q '^Edge: [ab], jail gw$' mail.out") == 0,
+	    "no mail of the SEN with its jail");
+	/* The record: the entry with its jail; picked by it. */
+	r3_sdwan("record?jail=gw", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(jstr(&r, "record.0.jail") != NULL && strcmp(jstr(&r,
+	    "record.0.jail"), "gw") == 0 && strcmp(jstr(&r, "record.0.comment"),
+	    "security svc1 g-mbsf unencrypted") == 0, "%s", r.body);
+	resp_free(&r);
+	r3_sdwan("record?jail=-", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"jail\":\"gw\"") == NULL, "%s",
+	    r.body);
+	resp_free(&r);
+	r3_sdwan("record?jail=other", &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"record\":[]") != NULL, "%s", r.body);
+	resp_free(&r);
+	http_with("GET", CC "sdwan/record?jail=gw", "Accept: text/csv\r\n",
+	    NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strncmp(r.body, "time,edge,rule,action,source,destination,"
+	    "interface,comment,jail\n", 64) == 0 && strstr(r.body, ",7,reject,"
+	    "10.1.0.9,198.51.100.7,epair0b,\"security svc1 g-mbsf unencrypted\","
+	    "\"gw\"\n") != NULL, "%s", r.body);
+	resp_free(&r);
+}
+
+/*
+ * The drift asked a top-level node at a time, as a whole host's GET is
+ * (one answer of them all went past cblink's message bound, 502
+ * "Message too long"): every node compared, each row with its path; a
+ * cut of the state (the sysctl values past the agent's most) is not
+ * said beside them, being none of the configuration.
+ */
+CONSOLE_TC(drift_nodes, "a host's drift asked node by node: its rows, no "
+    "warning of the state's cut")
+ATF_TC_BODY(drift_nodes, tc)
+{
+	struct authn		 a;
+	struct resp		 r;
+	const ucl_object_t	*d, *e;
+	ucl_object_iter_t	 it;
+	char			 id[16], path[128];
+	int			 n;
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_host("lab", "jgd.sock", id, sizeof(id));
+	snprintf(path, sizeof(path), CC "hosts/host=%s/drift", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(resp_unwrap(&r, "arcana-console:drift"));
+	ATF_CHECK_MSG(jstr(&r, "ok") != NULL && strcmp(jstr(&r, "ok"),
+	    "true") == 0 && jstr(&r, "error") == NULL, "%.600s", r.body);
+	/* Rows of more than one top-level node: each asked. */
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"extra\"") != NULL &&
+	    strstr(r.body, "\"path\":\"/ietf-interfaces:interfaces") != NULL,
+	    "%.900s", r.body);
+	n = 0;
+	it = NULL;
+	d = ucl_object_lookup(r.json, "drift");
+	while ((e = ucl_object_iterate(d, &it, true)) != NULL) {
+		const ucl_object_t *k = ucl_object_lookup(e, "kind");
+
+		n++;
+		ATF_CHECK(ucl_object_lookup(e, "path") != NULL &&
+		    ucl_object_tostring(ucl_object_lookup(e, "path"))[0] == '/');
+		ATF_CHECK(k != NULL && strcmp(ucl_object_tostring(k),
+		    "too-large") != 0);
+	}
+	ATF_CHECK(n > 0);
+	ATF_CHECK_MSG(strstr(r.body, "list-cut") == NULL, "%.600s",
+	    strstr(r.body, "warnings") != NULL ? strstr(r.body, "warnings") :
+	    r.body);
+	resp_free(&r);
+}
+
+/*
  * An apply's input (arcana-console's sdwan/apply) accepting every
  * warning the plan lists now (each a host's device edit's:
  * rc-conf-files, the tests' hosts naming no Arcana rc.conf file), as the
@@ -19059,7 +19193,7 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	http_with("GET", CC "sdwan/record", "Accept: text/csv\r\n", NULL, &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(strncmp(r.body, "time,edge,rule,action,source,destination,"
-	    "interface,comment\n", 60) == 0, "%s", r.body);
+	    "interface,comment,jail\n", 64) == 0, "%s", r.body);
 	resp_free(&r);
 
 	/* A policy that requires encryption always: the private tunnel
@@ -29961,6 +30095,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_neigh);
 	ATF_TP_ADD_TC(tp, sdwan_lists);
 	ATF_TP_ADD_TC(tp, sdwan_notices);
+	ATF_TP_ADD_TC(tp, sdwan_sen_jail);
+	ATF_TP_ADD_TC(tp, drift_nodes);
 	ATF_TP_ADD_TC(tp, sdwan_sfp);
 	ATF_TP_ADD_TC(tp, sdwan_inspect);
 	ATF_TP_ADD_TC(tp, sdwan_inspect_jail);

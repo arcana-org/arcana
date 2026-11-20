@@ -62,9 +62,25 @@ int	ytrans_get_tree_origin(cbl_conn *conn,
 	    const struct cbl_ynode *const *tops, size_t ntop, int ds,
 	    bool origin, struct cbl_dtree **tp, char *err, size_t errlen,
 	    uint64_t *errsid);
-/* drift.c: what the host has otherwise than running says. */
-int	drift_read(cbl_conn *conn, ucl_object_t **out, char *err,
-	    size_t errlen);
+/* The same, the warnings of the reply about configuration (a list cut,
+ * [{tag, text}]; a cut of the state is not said) appended to *warnings,
+ * made where it is NULL. */
+int	ytrans_get_tree_warn(cbl_conn *conn,
+	    const struct cbl_ynode *const *tops, size_t ntop, int ds,
+	    bool origin, struct cbl_dtree **tp, ucl_object_t **warnings,
+	    char *err, size_t errlen, uint64_t *errsid);
+/* A reply's warnings, [{tag, text}], NULL for none; _add: ws appended
+ * to *acc (made where it is NULL), ws let go. */
+ucl_object_t *ytrans_warnings(const cbl_msg *rep);
+void	ytrans_warnings_add(ucl_object_t **acc, ucl_object_t *ws);
+/*
+ * drift.c: what the host has otherwise than running says, the rows into
+ * *out, the replies' warnings into *warnings (NULL: none).  Each
+ * top-level node asked alone, as a whole host's GET is (restconf.c's
+ * host_ask()): one too large for a message alone is a row of its own.
+ */
+int	drift_read(cbl_conn *conn, ucl_object_t **out, ucl_object_t **warnings,
+	    char *err, size_t errlen);
 
 /*
  * The pages' /sysctl and /kernel from arcana-sysctl and arcana-kernel

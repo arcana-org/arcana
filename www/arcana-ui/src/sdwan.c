@@ -94,6 +94,7 @@ static struct {
 	ucl_object_t	*altmark;	/* sdwan/alt-marking: loss, clusters */
 	ucl_object_t	*lists;		/* sdwan/lists: the feeds and lists */
 	char		 record_filter[80];	/* the record's filter text */
+	char		 record_jail[256];	/* its jail picked, "-" none */
 	ucl_object_t	*identities;	/* sdwan/identities */
 	ucl_object_t	*audit;		/* sdwan/audit */
 	char		 audit_filter[64];
@@ -5467,6 +5468,7 @@ view_notices(struct html *h)
 		{ "Type", "type", false }, { "Event", "event", false },
 		{ "Source", "source", false }, { "Details", "details", false },
 		{ "Action", "action", false }, { "UNI", "uni", false },
+		{ "Edge", "edge", false }, { "Jail", "jail", false },
 	};
 	static const struct tcol	acols[] = {
 		{ "When", "when", false }, { "SAN ID", "id", false },
@@ -5488,7 +5490,8 @@ view_notices(struct html *h)
 	for (k = 0; k < 2; k++) {
 		const ucl_object_t	*n = k == 0 ? sd.sen : sd.san;
 		const struct tcol	*cols = k == 0 ? scols : acols;
-		int			 ncols = k == 0 ? 10 : 7;
+		int			 ncols = k == 0 ? (int)nitems(scols) :
+					     (int)nitems(acols);
 
 		h_fmt(h, "<h4>Security %s Notifications<span class=\"pane-actions"
 		    "\"><button type=\"button\" class=\"ghost small\" data-act=\""
@@ -5513,7 +5516,7 @@ view_notices(struct html *h)
 			h_raw(h, "<tr>");
 			for (i = 0; i < ncols; i++) {
 				h_fmt(h, "<td class=\"%s\">", i == 0 || i == 1 ? "mono" :
-				    "");
+				    strcmp(cols[i].key, "jail") == 0 ? "sd-jail" : "");
 				h_txt(h, jstr(a, cols[i].key) != NULL ? jstr(a,
 				    cols[i].key) : "");
 				h_raw(h, "</td>");
@@ -6009,80 +6012,134 @@ view_security(struct html *h)
 		h_raw(h, "<tr><td colspan=\"6\" class=\"dim\">None yet.</td></tr>");
 	h_raw(h, "</tbody></table></div>");
 	/* The record: what the edges' logged security rules saw, as each
-	 * agent keeps a day of it, the latest first; a filter on the text,
-	 * a CSV of what is shown. */
+	 * agent keeps a day of it, the latest first; each entry of a vnet
+	 * jail's own rules (its own routing socket) with its jail.  Sorted
+	 * and filtered as every table is (tbl.c), the filter typed and the
+	 * jail picked; a CSV from the console. */
 	{
-		struct html	csvb;
-		int		shown = 0;
+		static const struct tcol	rcols[] = {
+			{ "When", "t", true }, { "Edge", "edge", false },
+			{ "Jail", "jail", false }, { "Rule", "rule", true },
+			{ "Action", "action", false }, { "From", "src", false },
+			{ "To", "dst", false }, { "Interface", "iface", false },
+			{ "Policy", "comment", false },
+		};
+		const ucl_object_t	**rows, *re;
+		ucl_object_t		*all, *jails, *c;
+		ucl_object_iter_t	 rit;
+		int			 shown = 0, r;
+		bool			 hostonly;
 
-		memset(&csvb, 0, sizeof(csvb));
-		h_strf(&csvb, "time,edge,rule,action,source,destination,interface,"
-		    "comment\n");
-		h_raw(h, "<div class=\"sd-block\"><h3>Record <small class=\"dim\">"
-		    "what the policies' deny rules logged on each edge (ipfw's "
-		    "log to the routing socket, read by the agent, a day kept); "
-		    "the latest first</small><span class=\"pane-actions\"><input "
-		    "type=\"search\" data-input=\"sd-record-filter\" placeholder=\""
-		    "filter: an address, a policy, an edge\"");
-		h_attr(h, "value", sd.record_filter);
-		h_raw(h, "><button type=\"button\" class=\"ghost small\" "
-		    "data-act=\"sd-csv\" data-arg=\"record\" title=\"Every edge's "
-		    "record of the day as CSV, from the console\">CSV</button>"
-		    "</span></h3><table "
-		    "class=\"net sd\"><thead><tr><th>When</th><th>Edge</th><th>Rule"
-		    "</th><th>Action</th><th>From</th><th>To</th><th>Interface</th>"
-		    "<th>Policy</th></tr></thead><tbody>");
+		all = ucl_object_typed_new(UCL_ARRAY);
+		jails = ucl_object_typed_new(UCL_OBJECT);
+		hostonly = strcmp(sd.record_jail, "-") == 0;
 		it = NULL;
 		while (sd.paths != NULL && (v = ucl_object_iterate(sd.paths, &it,
 		    true)) != NULL) {
-			const ucl_object_t	*re;
-			ucl_object_iter_t	 rit = NULL;
-			char			 line[400];
+			const char	*k = ucl_object_key(v), *sl;
+			char		 hk[64];
 
+			/* A jail edge's read is its host's: its record
+			 * once, where the host is an edge too. */
+			if ((sl = strchr(k, '/')) != NULL) {
+				snprintf(hk, sizeof(hk), "%.*s", (int)(sl - k), k);
+				if (jget(sd.paths, hk) != NULL)
+					continue;
+			}
+			rit = NULL;
 			while ((re = ucl_object_iterate(jget(jget(v, "record"),
 			    "last"), &rit, true)) != NULL) {
-				snprintf(line, sizeof(line), "%s %lld %s %s %s %s %s",
-				    host_name(ucl_object_key(v)), jint(re, "rule", 0),
-				    jstr(re, "action") != NULL ? jstr(re, "action") : "",
-				    jstr(re, "src") != NULL ? jstr(re, "src") : "",
-				    jstr(re, "dst") != NULL ? jstr(re, "dst") : "",
-				    jstr(re, "iface") != NULL ? jstr(re, "iface") : "",
-				    jstr(re, "comment") != NULL ? jstr(re, "comment") :
-				    "");
-				if (sd.record_filter[0] != '\0' && strcasestr(line,
-				    sd.record_filter) == NULL)
+				const char	*jn = jstr(re, "jail") != NULL ?
+				    jstr(re, "jail") : "";
+
+				if (jn[0] != '\0' && jget(jails, jn) == NULL)
+					ucl_object_insert_key(jails,
+					    ucl_object_frombool(true), jn, 0, true);
+				/* The jail picked: its entries, or the
+				 * hosts' own alone. */
+				if ((hostonly && jn[0] != '\0') || (!hostonly &&
+				    sd.record_jail[0] != '\0' && strcmp(jn,
+				    sd.record_jail) != 0))
 					continue;
-				if (++shown > 500)
-					break;
-				fmt_age(age, sizeof(age), (double)jint(re, "t", 0) *
-				    1000);
-				h_raw(h, "<tr><td class=\"dim\">");
-				h_txt(h, age);
-				h_raw(h, "</td><td><b>");
-				h_txt(h, host_name(ucl_object_key(v)));
-				h_fmt(h, "</b></td><td class=\"mono\">%lld</td><td>",
-				    jint(re, "rule", 0));
-				h_txt(h, jstr(re, "action") != NULL ? jstr(re, "action") :
-				    "");
-				h_raw(h, "</td><td class=\"mono\">");
-				h_txt(h, jstr(re, "src") != NULL ? jstr(re, "src") : "");
-				h_raw(h, "</td><td class=\"mono\">");
-				h_txt(h, jstr(re, "dst") != NULL ? jstr(re, "dst") : "");
-				h_raw(h, "</td><td class=\"mono dim\">");
-				h_txt(h, jstr(re, "iface") != NULL ? jstr(re, "iface") :
-				    "");
-				h_raw(h, "</td><td class=\"dim\">");
-				h_txt(h, jstr(re, "comment") != NULL ? jstr(re, "comment")
-				    : "");
-				h_raw(h, "</td></tr>");
+				c = ucl_object_copy(re);
+				ucl_object_replace_key(c, ucl_object_fromstring(
+				    host_name(ucl_object_key(v))), "edge", 0, false);
+				ucl_object_replace_key(c, ucl_object_fromstring(jn),
+				    "jail", 0, false);
+				ucl_array_append(all, c);
 			}
 		}
+		h_raw(h, "<div class=\"sd-block\"><h3>Record <small class=\"dim\">"
+		    "what the policies' deny rules logged on each edge (ipfw's "
+		    "log to the routing socket, read by the agent, a day kept; "
+		    "a vnet jail's own rules to the jail's own socket, said with "
+		    "the jail); the latest first</small><span class=\""
+		    "pane-actions\"><input type=\"search\" data-input=\""
+		    "sd-record-filter\" placeholder=\"filter: an address, a "
+		    "policy, an edge, a jail\"");
+		h_attr(h, "value", sd.record_filter);
+		h_raw(h, "><select class=\"srj-jail\" data-input=\"srj-jail\" "
+		    "title=\"The entries of a jail's own rules, or the hosts' "
+		    "own\"><option value=\"\">every jail and host</option>");
+		h_fmt(h, "<option value=\"-\"%s>the hosts' own</option>",
+		    hostonly ? " selected" : "");
+		/* A jail picked that has no entries now stays pickable. */
+		if (sd.record_jail[0] != '\0' && !hostonly && jget(jails,
+		    sd.record_jail) == NULL)
+			ucl_object_insert_key(jails, ucl_object_frombool(true),
+			    sd.record_jail, 0, true);
+		rit = NULL;
+		while ((re = ucl_object_iterate(jails, &rit, true)) != NULL) {
+			h_raw(h, "<option");
+			h_attr(h, "value", ucl_object_key(re));
+			if (strcmp(ucl_object_key(re), sd.record_jail) == 0)
+				h_raw(h, " selected");
+			h_raw(h, ">jail ");
+			h_txt(h, ucl_object_key(re));
+			h_raw(h, "</option>");
+		}
+		h_raw(h, "</select><button type=\"button\" class=\"ghost small\" "
+		    "data-act=\"sd-csv\" data-arg=\"record\" title=\"Every edge's "
+		    "record of the day as CSV, from the console\">CSV</button>"
+		    "</span></h3><table class=\"net sd sd-record\">");
+		tbl_head(h, "sd-record", rcols, (int)nitems(rcols), 0);
+		h_raw(h, "<tbody>");
+		rows = tbl_rows("sd-record", all, rcols, (int)nitems(rcols),
+		    sd.record_filter);
+		for (r = 0; (re = rows[r]) != NULL && shown < 500; r++) {
+			shown++;
+			fmt_age(age, sizeof(age), (double)jint(re, "t", 0) * 1000);
+			h_raw(h, "<tr><td class=\"dim\">");
+			h_txt(h, age);
+			h_raw(h, "</td><td><b>");
+			h_txt(h, jstr(re, "edge"));
+			h_raw(h, "</b></td><td class=\"mono sd-jail\">");
+			h_txt(h, jstr(re, "jail") != NULL ? jstr(re, "jail") : "");
+			h_fmt(h, "</td><td class=\"mono\">%lld</td><td>",
+			    jint(re, "rule", 0));
+			h_txt(h, jstr(re, "action") != NULL ? jstr(re, "action") :
+			    "");
+			h_raw(h, "</td><td class=\"mono\">");
+			h_txt(h, jstr(re, "src") != NULL ? jstr(re, "src") : "");
+			h_raw(h, "</td><td class=\"mono\">");
+			h_txt(h, jstr(re, "dst") != NULL ? jstr(re, "dst") : "");
+			h_raw(h, "</td><td class=\"mono dim\">");
+			h_txt(h, jstr(re, "iface") != NULL ? jstr(re, "iface") : "");
+			h_raw(h, "</td><td class=\"dim\">");
+			h_txt(h, jstr(re, "comment") != NULL ? jstr(re, "comment") :
+			    "");
+			h_raw(h, "</td></tr>");
+		}
+		free(rows);
 		if (shown == 0)
-			h_raw(h, "<tr><td colspan=\"8\" class=\"dim\">Nothing logged "
-			    "yet: a policy with log sends what it denies here.</td>"
-			    "</tr>");
+			h_fmt(h, "<tr><td colspan=\"%d\" class=\"dim\">%s</td>"
+			    "</tr>", (int)nitems(rcols), ucl_array_size(all) > 0 ||
+			    sd.record_jail[0] != '\0' ? "None of what is picked." :
+			    "Nothing logged yet: a policy with log sends what it "
+			    "denies here.");
 		h_raw(h, "</tbody></table></div>");
-		free(csvb.s);
+		ucl_object_unref(all);
+		ucl_object_unref(jails);
 	}
 	/* The DNS filters on the edges: each edge's unbound instances, a
 	 * service each, as the edges' reads tell them. */
@@ -11185,8 +11242,12 @@ sdwan_action(const char *act, const char *arg, const char *value)
 		sd_remove("link", arg, value);
 		return (true);
 	}
+	/* The Security section's filters and the record's jail come
+	 * this way too (they were stopped here before). */
 	if (strncmp(act, "sd-", 3) != 0 && strcmp(act, "input:sd-swvc") != 0 &&
-	    strcmp(act, "do-sd-apply-fresh") != 0 && strcmp(act,
+	    strcmp(act, "input:sd-audit-filter") != 0 && strcmp(act,
+	    "input:sd-record-filter") != 0 && strcmp(act, "input:srj-jail") !=
+	    0 && strcmp(act, "do-sd-apply-fresh") != 0 && strcmp(act,
 	    "file:sd-import") != 0)
 		return (false);
 	if (strcmp(act, "sd-tab") == 0) {
@@ -11232,6 +11293,8 @@ sdwan_action(const char *act, const char *arg, const char *value)
 		snprintf(sd.audit_filter, sizeof(sd.audit_filter), "%s", value);
 	else if (strcmp(act, "input:sd-record-filter") == 0)
 		snprintf(sd.record_filter, sizeof(sd.record_filter), "%s", value);
+	else if (strcmp(act, "input:srj-jail") == 0)
+		snprintf(sd.record_jail, sizeof(sd.record_jail), "%s", value);
 	else if (strcmp(act, "sd-example") == 0)
 		example();
 	else if (strcmp(act, "sd-export") == 0 && sd.doc != NULL) {
@@ -11313,6 +11376,10 @@ sdwan_action(const char *act, const char *arg, const char *value)
 
 		/* RESTCONF's CSV: the node read with text/csv in Accept. */
 		snprintf(url, sizeof(url), RC_C "sdwan/%s", arg);
+		/* The record's of the jail picked alone. */
+		if (strcmp(arg, "record") == 0 && sd.record_jail[0] != '\0')
+			snprintf(url, sizeof(url), RC_C "sdwan/record?jail=%s",
+			    rc_key(sd.record_jail));
 		snprintf(name, sizeof(name), "sdwan-%s.csv", arg);
 		arc_download(url, "text/csv", name);
 	} else if (strcmp(act, "sd-lists-fetch") == 0) {

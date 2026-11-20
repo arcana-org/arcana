@@ -151,6 +151,17 @@ event_line(const ucl_object_t *e)
 		    (long long)jint(d, "prefixlen", 0), kind[8] == 'd' ?
 		    "taken off" : "on", jstr(d, "interface") != NULL ?
 		    jstr(d, "interface") : "?");
+	else if (strcmp(kind, "sdwan-security") == 0)
+		/* A security rule's log (the record's entry); of a vnet
+		 * jail's own rules, the jail is the Host column's. */
+		snprintf(buf, sizeof(buf), "rule %lld %s: %s to %s on %s%s%s",
+		    (long long)jint(d, "rule", 0), jstr(d, "action") != NULL ?
+		    jstr(d, "action") : "?", jstr(d, "source") != NULL ?
+		    jstr(d, "source") : "?", jstr(d, "destination") != NULL ?
+		    jstr(d, "destination") : "?", jstr(d, "interface") != NULL ?
+		    jstr(d, "interface") : "?", jstr(d, "comment") != NULL ?
+		    ", " : "", jstr(d, "comment") != NULL ? jstr(d, "comment") :
+		    "");
 	else if (strcmp(kind, "undo-failed") == 0) {
 		/* A commit not confirmed that the host could not take back:
 		 * its report, the failure's alone, for the admin to file. */

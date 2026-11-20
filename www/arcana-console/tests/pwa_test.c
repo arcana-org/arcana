@@ -15055,6 +15055,28 @@ ATF_TC_CLEANUP(pwa_security_tls_jail, tc)
 	browser_stop();
 }
 
+static void	part_sdwan_record_jail(void);
+
+ATF_TC_WITH_CLEANUP(pwa_sdwan_record_jail);
+ATF_TC_HEAD(pwa_sdwan_record_jail, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "SD-WAN's Security section: a vnet jail's own rules logged, the record's entry and the SEN of it with the jail, the record picked by its jail and filtered by it");
+	atf_tc_set_md_var(tc, "timeout", "180");
+}
+ATF_TC_BODY(pwa_sdwan_record_jail, tc)
+{
+
+	snprintf(harness_webconf, sizeof(harness_webconf), "mail_tick = 1;\n");
+	prologue(tc, 2);
+	part_sdwan_record_jail();
+}
+ATF_TC_CLEANUP(pwa_sdwan_record_jail, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_security_jail);
 ATF_TC_HEAD(pwa_security_jail, tc)
 {
@@ -16039,6 +16061,91 @@ part_sdwan_bmp(void)
 	wait_js("document.querySelector('section.sdwan input[data-input="
 	    "filter]')?.value === '' && document.querySelector('.sd-bmp') && "
 	    "window.bmpRows(0).length === 4", 20);
+}
+
+/*
+ * A vnet jail's own rules logged on an edge (the agent's record of the
+ * jail's routing socket, by the stand-ins): the Security section's
+ * record says the jail in its Jail column, picked by the jail's select
+ * (a jail, the hosts' own) and found by the filter; the Security Event
+ * Notification of it says the jail too.
+ */
+static void
+part_sdwan_record_jail(void)
+{
+	int	i;
+
+	/* SENs kept: told to someone. */
+	run("window.unset = false; fetch('/restconf/data/arcana-console:"
+	    "settings', { method: 'PATCH', headers: { 'Content-Type': "
+	    "'application/yang-data+json', 'X-Arcana': '1' }, body: "
+	    "JSON.stringify({ 'arcana-console:settings': { 'mail-sen': "
+	    "'soc@example.org' } }) }).then(r => { window.unset = r.ok; });");
+	wait_js("window.unset", 10);
+	run("document.querySelector('li[data-act=select-sdwan]').click()");
+	click_when("button[data-act=sd-tab][data-arg=document]", 20);
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')", 10);
+	run("document.querySelector('button[data-act=sd-example]').click()");
+	wait_js("document.querySelector('form[data-form=sd-doc] textarea')"
+	    ".value.includes('\"office\"')", 10);
+	run("document.querySelector('form[data-form=sd-doc] button[value="
+	    "keep]').click()");
+	wait_js("/version [0-9]+/.test((document.querySelector('section."
+	    "sdwan .notice') || {}).textContent)", 20);
+	/* The hosts' events read once (a first read tells nothing). */
+	usleep(2500000);
+	if (!harness_record_jail())
+		atf_tc_skip("no python3 to hand a socket over");
+	/* The record read as the tab opens: opened until the entry is
+	 * there. */
+	for (i = 0; i < 40; i++) {
+		click_when("button[data-act=sd-tab][data-arg=security]", 10);
+		usleep(1000000);
+		if (js_true("[...document.querySelectorAll('table.sd-record "
+		    "tbody tr')].some(tr => tr.querySelector('td.sd-jail')?."
+		    "textContent === 'gw' && tr.textContent.includes('security "
+		    "svc1 g-mbsf unencrypted'))") && js_true("[...document."
+		    "querySelectorAll('table.sd-sen tbody td.sd-jail')].some(td => "
+		    "td.textContent === 'gw')"))
+			break;
+	}
+	ATF_CHECK_MSG(i < 40, "no record entry or SEN of the jail shown");
+	ATF_CHECK(js_true("[...document.querySelectorAll('table.sd-record "
+	    "thead th')].some(th => th.textContent === 'Jail') && document."
+	    "querySelector('select[data-input=srj-jail] option[value=gw]')"));
+	/* The jail picked: its entries alone. */
+	run("const s = document.querySelector('select[data-input=srj-jail]'); "
+	    "s.value = 'gw'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('select[data-input=srj-jail]').value "
+	    "=== 'gw' && [...document.querySelectorAll('table.sd-record tbody "
+	    "tr')].length > 0 && [...document.querySelectorAll('table.sd-record "
+	    "tbody tr')].every(tr => tr.querySelector('td.sd-jail')?.textContent "
+	    "=== 'gw')", 10);
+	shot("9-sdwan-record-jail");
+	/* The hosts' own: none of the jail's. */
+	run("const s = document.querySelector('select[data-input=srj-jail]'); "
+	    "s.value = '-'; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true }))");
+	wait_js("document.querySelector('select[data-input=srj-jail]').value "
+	    "=== '-' && ![...document.querySelectorAll('table.sd-record tbody "
+	    "td.sd-jail')].some(td => td.textContent === 'gw')", 10);
+	/* Every one again, the filter typed: the jail's name finds its
+	 * entries (the Jail column is filtered too). */
+	run("const s = document.querySelector('select[data-input=srj-jail]'); "
+	    "s.value = ''; s.dispatchEvent(new Event('input', { bubbles: "
+	    "true })); const f = document.querySelector('input[data-input="
+	    "sd-record-filter]'); f.value = 'gw'; f.dispatchEvent(new Event("
+	    "'input', { bubbles: true }))");
+	wait_js("[...document.querySelectorAll('table.sd-record tbody tr')]"
+	    ".length > 0 && [...document.querySelectorAll('table.sd-record "
+	    "tbody tr')].every(tr => tr.querySelector('td.sd-jail')?.textContent "
+	    "=== 'gw')", 10);
+	/* Sorted by the Jail column, as every table is. */
+	run("[...document.querySelectorAll('table.sd-record thead th')].find("
+	    "th => th.textContent === 'Jail').click()");
+	wait_js("document.querySelector('table.sd-record thead th.asc')?."
+	    "textContent === 'Jail'", 10);
 }
 
 /*
@@ -17621,6 +17728,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_security_rules_jail);
 	ATF_TP_ADD_TC(tp, pwa_security_tls);
 	ATF_TP_ADD_TC(tp, pwa_security_tls_jail);
+	ATF_TP_ADD_TC(tp, pwa_sdwan_record_jail);
 	ATF_TP_ADD_TC(tp, pwa_plugins_netpaths);
 	ATF_TP_ADD_TC(tp, pwa_plugins_wg);
 	ATF_TP_ADD_TC(tp, pwa_storage_relay);

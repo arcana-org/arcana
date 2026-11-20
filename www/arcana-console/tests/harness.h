@@ -90,6 +90,9 @@ void		 agent_restart(void);
 void		 agent_restart_with(const char *, const char *);
 void		 need_fibs(int);
 void		 need_kmod(const char *, const char *);
+/* A record entry and an sdwan-security event of the vnet jail gw's own
+ * rules, by the stand-ins (agent 0.347.0); false: no python3. */
+bool		 harness_record_jail(void);
 void		 agent_jailed(const char *, const char *);
 void		 console_stop(void);
 void		 console_start(void);

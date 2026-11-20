@@ -342,10 +342,78 @@ ytrans_get_tree(cbl_conn *conn, const struct cbl_ynode *const *tops,
 	    errlen, errsid));
 }
 
+/* The warnings of the host's answer rep (a list cut), as an edit's and
+ * an action's are told: [{tag, text}], NULL for none; with config_only,
+ * those of configuration alone (a cut of the state is none of it). */
+static ucl_object_t *
+warnings_of(const cbl_msg *rep, bool config_only)
+{
+	const struct cbl_ywarning	*w;
+	const struct cbl_ynode		*n;
+	ucl_object_t			*ws = NULL, *o;
+	cbl_yarena			*a;
+	size_t				 nw;
+
+	if ((a = cbl_yarena_new()) == NULL)
+		return (NULL);
+	if (cbl_msg_ywarnings(rep, a, &w, &nw) == 0 && nw > 0) {
+		for (size_t i = 0; i < nw; i++) {
+			if (config_only && w[i].sid != 0 && (n =
+			    cbl_yschema_node(&ymodel_schema, w[i].sid)) != NULL &&
+			    (n->flags & CBL_YNF_CONFIG) == 0)
+				continue;
+			if (ws == NULL)
+				ws = ucl_object_typed_new(UCL_ARRAY);
+			o = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    w[i].tag), "tag", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    w[i].text), "text", 0, false);
+			ucl_array_append(ws, o);
+		}
+	}
+	cbl_yarena_free(a);
+	return (ws);
+}
+
+ucl_object_t *
+ytrans_warnings(const cbl_msg *rep)
+{
+
+	return (warnings_of(rep, false));
+}
+
+/* The warnings ws appended to *acc (made where it is NULL), ws let go. */
+void
+ytrans_warnings_add(ucl_object_t **acc, ucl_object_t *ws)
+{
+	ucl_object_t	*w;
+
+	if (ws == NULL)
+		return;
+	if (*acc == NULL) {
+		*acc = ws;
+		return;
+	}
+	while ((w = ucl_array_pop_first(ws)) != NULL)
+		ucl_array_append(*acc, w);
+	ucl_object_unref(ws);
+}
+
 int
 ytrans_get_tree_origin(cbl_conn *conn, const struct cbl_ynode *const *tops,
     size_t ntop, int ds, bool origin, cbl_dtree **tp, char *err,
     size_t errlen, uint64_t *errsid)
+{
+
+	return (ytrans_get_tree_warn(conn, tops, ntop, ds, origin, tp, NULL,
+	    err, errlen, errsid));
+}
+
+int
+ytrans_get_tree_warn(cbl_conn *conn, const struct cbl_ynode *const *tops,
+    size_t ntop, int ds, bool origin, cbl_dtree **tp, ucl_object_t **warnings,
+    char *err, size_t errlen, uint64_t *errsid)
 {
 	uint64_t	 sids[32];
 	cbl_msg		*req, *rep = NULL;
@@ -379,6 +447,8 @@ ytrans_get_tree_origin(cbl_conn *conn, const struct cbl_ynode *const *tops,
 		cbl_msg_free(rep);
 		return (error);
 	}
+	if (warnings != NULL)
+		ytrans_warnings_add(warnings, warnings_of(rep, true));
 	if ((t = cbl_dtree_new(&ymodel_schema)) == NULL) {
 		cbl_msg_free(rep);
 		return (ENOMEM);
