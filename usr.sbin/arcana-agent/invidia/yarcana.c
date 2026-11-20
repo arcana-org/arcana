@@ -4523,6 +4523,24 @@ arcana_storage_storage_fstab_replace_action(cbl_req *req,
 	return (0);
 }
 
+/* A list of arcana-storage's cut at what a GET gives: a warning. */
+static void
+storage_cut(cbl_req *req, const char *list, size_t n, uint64_t total)
+{
+	const struct cbl_ynode	*t;
+	uint64_t		 sid = 0;
+	char			 why[200];
+
+	if ((t = ynode_named("arcana-storage", "storage")) != NULL)
+		for (uint32_t i = 0; i < t->nchild; i++)
+			if (strcmp(t->child[i]->name, list) == 0)
+				sid = t->child[i]->sid;
+	snprintf(why, sizeof(why), "%zu of %ju %ss listed: one by its name "
+	    "(%s=<name>), the rest by the read action's filter", n,
+	    (uintmax_t)total, list, list);
+	(void)cbl_req_ywarn(req, sid, "list-cut", why);
+}
+
 int
 arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
     cbl_yarena *a)
@@ -4534,8 +4552,11 @@ arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
 	struct storage_rsp		 r;
 	struct arcana_storage_storage	*o;
 	struct work			*w;
+	const char			*key, *filter = NULL;
+	char				 buf[1024], *at;
 	size_t				 i;
 	int				 error;
+	uint8_t				 one;
 	bool				 mask;
 
 	if ((w = ywork(a)) == NULL)
@@ -4546,6 +4567,40 @@ arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
 	if ((o = cbl_yarena_alloc(a, sizeof(*o))) == NULL)
 		return (ENOMEM);
 	memset(o, 0, sizeof(*o));
+	/* A dataset or a snapshot by its name: that kind alone, under
+	 * that dataset (zfs list -r), so that it is there however many
+	 * the host has past the first STORAGE_ROWS. */
+	if ((key = ytarget_key(req, "arcana-storage", "storage", "dataset",
+	    "name", buf, sizeof(buf))) != NULL) {
+		one = ARC_STORAGE_KIND_DATASETS;
+		filter = key;
+	} else if ((key = ytarget_key(req, "arcana-storage", "storage",
+	    "snapshot", "name", buf, sizeof(buf))) != NULL &&
+	    (at = strchr(buf, '@')) != NULL) {
+		*at = '\0';
+		one = ARC_STORAGE_KIND_SNAPSHOTS;
+		filter = buf;
+	}
+	if (filter != NULL) {
+		memset(&r, 0, sizeof(r));
+		(void)do_storage(w, one, filter, &r);
+		/* None of that name: nothing, for the filter to find none. */
+		if (!r.ok && r.error != NULL && (strstr(r.error,
+		    "does not exist") != NULL || strstr(r.error,
+		    "a dataset is named") != NULL)) {
+			data->storage = o;
+			return (0);
+		}
+		if (!r.ok)
+			return (failed("storage", r.error));
+		if (mask && (r.json = wjson_mask(w, r.json)) == NULL)
+			return (EIO);
+		if ((error = ystorage_from_json(one, r.json, r.total,
+		    r.truncated, a, o)) != 0)
+			return (error);
+		data->storage = o;
+		return (0);
+	}
 	/* Each kind the storage operation reads, but the pools a scan
 	 * finds to import (zpool import, slow): one struct of them all. */
 	for (i = 0; i < nitems(kinds); i++) {
@@ -4560,6 +4615,12 @@ arcana_storage_storage_get(cbl_req *req, struct arcana_storage *data,
 			return (error);
 	}
 	data->storage = o;
+	/* Cut: said, and how the rest is read. */
+	if (o->has_datasets_total)
+		storage_cut(req, "dataset", o->dataset.n, o->datasets_total);
+	if (o->has_snapshots_total)
+		storage_cut(req, "snapshot", o->snapshot.n,
+		    o->snapshots_total);
 	return (0);
 }
 

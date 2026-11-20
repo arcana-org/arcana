@@ -1009,6 +1009,18 @@ cmd_get(cbl_conn *conn, int argc, char **argv)
 		    NULL ? ": " : "", txe(rep != NULL && cbl_msg_err_str(rep) !=
 		    NULL ? cbl_msg_err_str(rep) : strerror(error)));
 	}
+	/* What the agent says of what it read (a list cut), on stderr:
+	 * stdout is the data's. */
+	if ((a = cbl_yarena_new()) != NULL) {
+		const struct cbl_ywarning	*yw;
+		size_t				 nw;
+
+		if (cbl_msg_ywarnings(rep, a, &yw, &nw) == 0)
+			for (size_t iw = 0; iw < nw; iw++)
+				xo_warnx("get: %s: %s", txe(yw[iw].tag),
+				    txe(yw[iw].text));
+		cbl_yarena_free(a);
+	}
 	/* Annotated: as an instance tree, which has them. */
 	if (origin || wd == CBL_YWD_REPORT_ALL_TAGGED) {
 		if ((t = cbl_dtree_new(&ymodel_schema)) == NULL)

@@ -45,13 +45,19 @@ module arcana-sysctl {
       type uint64;
       config false;
       description
-        "How many values there are, when fewer are listed.";
+        "How many values there are, when fewer are listed: a GET
+         lists the first 4000 in the kernel's order, the answer's
+         warning list-cut saying so; the rest are read by the read
+         action.";
     }
     list value {
       key "name";
       config false;
       description
-        "A value of the kernel's, where the tree was asked from.";
+        "A value of the kernel's, where the tree was asked from.  An
+         entry asked for by its name (a GET of value=<name>, a filter
+         with its key) is read by that name, wherever the tree has
+         it.";
       leaf name {
         type string;
         description

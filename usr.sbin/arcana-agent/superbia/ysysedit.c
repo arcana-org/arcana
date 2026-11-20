@@ -7,9 +7,10 @@
 /*
  * Superbia: arcana-sysctl and arcana-kernel served (PLAN-SDN-YANG
  * 3.1.6).  The kernel's values are read from the kernel (sysctl.c), a
- * GET's the first SYSCTL_GET of them, the read action's a part at a time
- * from where the one before ended; its modules and memory as do_kernel()
- * has them (kernel.c).  Running is what sysctl.conf(5) sets at boot and
+ * GET's the first SYSCTL_GET of them (a warning, list-cut, saying so),
+ * one its filter names by key read by that name, the read action's a
+ * part at a time from where the one before ended; its modules and
+ * memory as do_kernel() has them (kernel.c).  Running is what sysctl.conf(5) sets at boot and
  * what rc.conf(5)'s kld_list loads, read from the files rc(8) reads
  * (libvarconf).
  *
@@ -29,6 +30,7 @@
 #include <sys/param.h>
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -197,7 +199,8 @@ arcana_sysctl_sysctl_get(cbl_req *req, struct arcana_sysctl *data,
 	struct arcana_sysctl_sysctl	*o;
 	struct values			 c;
 	struct work			*w;
-	const char			*e, *next;
+	const char			*e, *next, *name;
+	char				 key[257], why[200];
 	uint64_t			 total;
 	int				 error;
 
@@ -207,13 +210,29 @@ arcana_sysctl_sysctl_get(cbl_req *req, struct arcana_sysctl *data,
 	if ((error = sysctl_kept(a, o)) != 0)
 		return (error);
 	data->sysctl = o;
-	/* Running, the candidate: the configuration alone. */
-	if (cbl_req_ydatastore(req) != CBL_YDS_OPERATIONAL)
+	/* Running, the candidate: the configuration alone; a GET of kept
+	 * alone, no more. */
+	if (cbl_req_ydatastore(req) != CBL_YDS_OPERATIONAL ||
+	    ytarget_is(req, "arcana-sysctl", "sysctl", "kept"))
 		return (0);
 	if ((w = ywork(a)) == NULL)
 		return (ENOMEM);
 	memset(&c, 0, sizeof(c));
 	c.a = a;
+	/* A value by its name: that one alone, read by its name, wherever
+	 * the tree has it (past the first SYSCTL_GET too). */
+	if ((name = ytarget_key(req, "arcana-sysctl", "sysctl", "value",
+	    "name", key, sizeof(key))) != NULL) {
+		c.cap = 1;
+		if ((c.v = cbl_yarena_alloc(a, sizeof(*c.v))) == NULL)
+			return (ENOMEM);
+		(void)sysctl_read_name(w, name, value_in, &c);
+		if (c.error != 0)
+			return (c.error);
+		o->value.n = c.n;
+		o->value.v = c.v;
+		return (0);
+	}
 	c.cap = SYSCTL_GET;
 	if ((c.v = cbl_yarena_alloc(a, c.cap * sizeof(*c.v))) == NULL)
 		return (ENOMEM);
@@ -225,8 +244,15 @@ arcana_sysctl_sysctl_get(cbl_req *req, struct arcana_sysctl *data,
 		return (c.error);
 	o->value.n = c.n;
 	o->value.v = c.v;
-	if ((o->has_total = total > c.n))
+	/* Cut: said, and how the rest is read. */
+	if ((o->has_total = total > c.n)) {
 		o->total = total;
+		snprintf(why, sizeof(why), "%zu of %ju values listed: one by "
+		    "its name (value=<name>), the rest by the read action's "
+		    "prefix, after and count", c.n, (uintmax_t)total);
+		(void)cbl_req_ywarn(req, sid_of("arcana-sysctl", "sysctl",
+		    "value"), "list-cut", why);
+	}
 	return (0);
 }
 

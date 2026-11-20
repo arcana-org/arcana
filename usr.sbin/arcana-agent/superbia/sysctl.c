@@ -412,6 +412,30 @@ sysctl_read(struct work *w, const char *prefix, const char *after,
 }
 
 /*
+ * The one value named name, as sysctl_read() gives it, to fn: 1, or 0
+ * where there is none (no such name, a node, an opaque one); a name the
+ * kernel leaves out of its list (an old name for another) found too.
+ */
+int
+sysctl_read_name(struct work *w, const char *name, sysctl_value_f *fn,
+    void *arg)
+{
+	struct sysctl_value	 v;
+	unsigned char		*val;
+	int			 oid[CTL_MAXNAME + 2];
+	size_t			 nlen = CTL_MAXNAME;
+
+	if (!sysctl_name_ok(name) || strlen(name) > 256 ||
+	    sysctlnametomib(name, oid + 2, &nlen) == -1)
+		return (0);
+	val = wcalloc(w, SYSCTL_VALUE + 1, 1);
+	if (!one(w, oid, nlen, name, val, &v))
+		return (0);
+	fn(arg, &v);
+	return (1);
+}
+
+/*
  * A vnet jail's, under prefix, as its own sysctl(8) prints them (w is
  * in the jail's scope, so that sysctl runs there): what its network has
  * is its own; name and value each.  -1 with *errp: sysctl not run.

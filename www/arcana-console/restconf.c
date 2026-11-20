@@ -3559,9 +3559,37 @@ host_tree(const struct cbl_ysids *s, const cbl_dtree *w, const char **tag,
  * named by its .sid files and typed by the console's tables, a node
  * only the host has as YANG-CBOR's kind says.
  */
+/* The warnings of the host's answer rep (a list cut), as an edit's and
+ * an action's are told: [{tag, text}], NULL for none. */
+static ucl_object_t *
+host_warnings(const cbl_msg *rep)
+{
+	const struct cbl_ywarning	*w;
+	ucl_object_t			*ws = NULL, *o;
+	cbl_yarena			*a;
+	size_t				 nw;
+
+	if ((a = cbl_yarena_new()) == NULL)
+		return (NULL);
+	if (cbl_msg_ywarnings(rep, a, &w, &nw) == 0 && nw > 0) {
+		ws = ucl_object_typed_new(UCL_ARRAY);
+		for (size_t i = 0; i < nw; i++) {
+			o = ucl_object_typed_new(UCL_OBJECT);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    w[i].tag), "tag", 0, false);
+			ucl_object_insert_key(o, ucl_object_fromstring(
+			    w[i].text), "text", 0, false);
+			ucl_array_append(ws, o);
+		}
+	}
+	cbl_yarena_free(a);
+	return (ws);
+}
+
 static int
 host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
-    ucl_object_t **out, char *err, size_t errlen, uint64_t *errsid)
+    ucl_object_t **out, ucl_object_t **warnings, char *err, size_t errlen,
+    uint64_t *errsid)
 {
 	struct cbl_ybuf		 b = { NULL, 0, 0 };
 	const struct cbl_ysid_item	*it;
@@ -3574,11 +3602,13 @@ host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
 	int			 error;
 
 	*out = NULL;
+	*warnings = NULL;
 	sid = r->nseg > 0 ? cbl_ysids_of(s, r->seg[0].n)->sid : 0;
 	if ((error = ytrans_get_msg(conn, r->nseg > 0 ? &sid : NULL,
 	    r->nseg > 0 ? 1 : 0, r->xpath, r->ds, r->origin, &rep, err,
 	    errlen, errsid)) != 0)
 		return (error);
+	*warnings = host_warnings(rep);
 	if ((sids = calloc(cbl_ysids_count(s) + 1, sizeof(*sids))) == NULL) {
 		cbl_msg_free(rep);
 		return (ENOMEM);
@@ -3620,6 +3650,10 @@ host_get(cbl_conn *conn, const struct cbl_ysids *s, const struct rcreq *r,
 		}
 	}
 	cbl_ybuf_free(&b);
+	if (error != 0 && *warnings != NULL) {
+		ucl_object_unref(*warnings);
+		*warnings = NULL;
+	}
 	return (error);
 }
 
@@ -3780,16 +3814,14 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s, char **json,
     int *status)
 {
 	const struct cbl_ysid_item	*ai, *ii, *oi, *ei;
-	const struct cbl_ywarning	*w;
 	const ucl_object_t		*in;
 	struct cbl_ybuf			 b = { NULL, 0, 0 }, t = { NULL, 0, 0 };
 	struct ucl_parser		*p;
 	ucl_object_t			*top = NULL, *ws = NULL;
-	cbl_yarena			*a;
 	cbl_msg				*m = NULL, *rep = NULL;
 	const uint8_t			*v;
 	const char			*tag;
-	size_t				 len, nw;
+	size_t				 len;
 	char				 err[512], apptag[80], key[160], *itext;
 	bool				 first = true;
 	int				 error;
@@ -3857,22 +3889,7 @@ act_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s, char **json,
 		goto done;
 	}
 	/* What the host says it did, which needs telling. */
-	if ((a = cbl_yarena_new()) != NULL) {
-		if (cbl_msg_ywarnings(rep, a, &w, &nw) == 0 && nw > 0) {
-			ws = ucl_object_typed_new(UCL_ARRAY);
-			for (size_t i = 0; i < nw; i++) {
-				ucl_object_t *o = ucl_object_typed_new(
-				    UCL_OBJECT);
-
-				ucl_object_insert_key(o, ucl_object_fromstring(
-				    w[i].tag), "tag", 0, false);
-				ucl_object_insert_key(o, ucl_object_fromstring(
-				    w[i].text), "text", 0, false);
-				ucl_array_append(ws, o);
-			}
-		}
-		cbl_yarena_free(a);
-	}
+	ws = host_warnings(rep);
 	/* No output: null, an empty map, or none at all. */
 	if (cbl_msg_sid_raw(rep, ai->sid, (const void **)&v, &len) != 0 ||
 	    len == 0 || (len == 1 && (v[0] == 0xf6 || v[0] == 0xa0))) {
@@ -3951,7 +3968,7 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 	const struct fsel	*f;
 	const ucl_object_t	*v;
 	ucl_object_iter_t	 it = NULL;
-	ucl_object_t		*doc, *top, *h, *arr, *s;
+	ucl_object_t		*doc, *top, *h, *arr, *s, *ws;
 	uint64_t		 errsid;
 	char			 err[256], path[512];
 	int			 error;
@@ -3972,7 +3989,7 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 		return;
 	}
 	*status = 200;
-	if ((error = host_get(conn, ys, r, &doc, err, sizeof(err),
+	if ((error = host_get(conn, ys, r, &doc, &ws, err, sizeof(err),
 	    &errsid)) != 0) {
 		/* The agent's refusal as RFC 8040 section 7 has it. */
 		const char	*tag;
@@ -3986,6 +4003,8 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 		top = select_node(r, doc, status);
 		ucl_object_unref(doc);
 		if (top == NULL) {
+			if (ws != NULL)
+				ucl_object_unref(ws);
 			*json = restconf_errors(*status, "no such resource");
 			return;
 		}
@@ -4032,6 +4051,11 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 		top = ucl_object_typed_new(UCL_OBJECT);
 		ucl_object_insert_key(top, arr, "arcana-fleet:host", 0, false);
 	}
+	/* What the host said of what it read (a list cut short of its
+	 * total), beside the data, as an edit's and an action's are. */
+	if (ws != NULL)
+		ucl_object_insert_key(top, ws, "arcana-fleet:warnings", 0,
+		    false);
 	*json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
 	ucl_object_unref(top);
 	if (*json == NULL) {

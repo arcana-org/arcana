@@ -9946,6 +9946,77 @@ r3_safe_timer(const char *id, const char *addr)
 	return (timer);
 }
 
+CONSOLE_TC(restconf_keyed_get, "A list's entry by its key through the "
+    "fleet mount: a sysctl past the first 4000 a GET lists read by its "
+    "name, alone, a dotted name whole; one the kernel has not, 404; the "
+    "whole list said cut beside its data")
+ATF_TC_BODY(restconf_keyed_get, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	const char	*p;
+	char		id[16], path[512], want[64];
+	int		n;
+	size_t		len = sizeof(n);
+
+	start(tc, 0, NULL);
+	enrol(&a);
+	r3_host("here", "jgd.sock", id, sizeof(id));
+	/* hw.pagesize: hw is the sixth of the tree's roots, past the first
+	 * 4000 (kern's, vm's, vfs's, net's) wherever there are more; not
+	 * one the agent's libfakejail fakes. */
+	ATF_REQUIRE(sysctlbyname("hw.pagesize", &n, &len, NULL, 0) == 0);
+	snprintf(path, sizeof(path), FLEET "%s/arcana-sysctl:sysctl/"
+	    "value=hw.pagesize", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	snprintf(want, sizeof(want), "\"value\":\"%d\"", n);
+	ATF_CHECK_MSG(strncmp(r.body, "{\"arcana-sysctl:value\":[{", 25) ==
+	    0 && strstr(r.body, "\"name\":\"hw.pagesize\"") != NULL &&
+	    strstr(r.body, want) != NULL, "%.600s", r.body);
+	/* That one alone. */
+	p = strstr(r.body, "\"name\":");
+	ATF_CHECK_MSG(p != NULL && strstr(p + 1, "\"name\":") == NULL,
+	    "%.600s", r.body);
+	ATF_CHECK(strstr(r.body, "arcana-fleet:warnings") == NULL);
+	resp_free(&r);
+	/* A leaf of it. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-sysctl:sysctl/"
+	    "value=hw.pagesize/value", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	snprintf(want, sizeof(want), "{\"arcana-sysctl:value\":\"%d\"}", n);
+	ATF_CHECK_STREQ(want, r.body);
+	resp_free(&r);
+	/* None of that name: 404. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-sysctl:sysctl/"
+	    "value=no.such.sysctl", id);
+	http("GET", path, NULL, &r);
+	ATF_CHECK_EQ_MSG(404, r.status, "%s", r.body);
+	resp_free(&r);
+	/* kept by its key, a dotted name, as sysctl.conf has it. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-sysctl:sysctl/"
+	    "kept=kern.ipc.somaxconn", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"kern.ipc.somaxconn\"") !=
+	    NULL, "%.600s", r.body);
+	resp_free(&r);
+	/* The whole list: cut at 4000, the total and a warning beside the
+	 * data, where the kernel has more. */
+	snprintf(path, sizeof(path), FLEET "%s/arcana-sysctl:sysctl", id);
+	http("GET", path, NULL, &r);
+	EXPECT(&r, 200);
+	if (strstr(r.body, "\"total\":") != NULL) {
+		ATF_CHECK_MSG(strstr(r.body, "\"arcana-fleet:warnings\":[{"
+		    "\"tag\":\"list-cut\",\"text\":\"4000 of ") != NULL,
+		    "%.300s", strstr(r.body, "arcana-fleet:warnings") != NULL ?
+		    strstr(r.body, "arcana-fleet:warnings") : r.body);
+		ATF_CHECK(strstr(r.body, "\"name\":\"hw.pagesize\"") == NULL);
+	}
+	resp_free(&r);
+}
+
 CONSOLE_TC(services, "Services listed, acted on and configured through "
     "arcana-services: a GET, its actions, its configuration committed with "
     "the warnings accepted")
@@ -29615,6 +29686,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, server_readdress);
 	ATF_TP_ADD_TC(tp, nacm_console);
 	ATF_TP_ADD_TC(tp, job_user);
+	ATF_TP_ADD_TC(tp, restconf_keyed_get);
 	ATF_TP_ADD_TC(tp, services);
 	ATF_TP_ADD_TC(tp, agent_update);
 	ATF_TP_ADD_TC(tp, agent_build);

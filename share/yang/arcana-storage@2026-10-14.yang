@@ -412,7 +412,9 @@ module arcana-storage {
     leaf datasets-total {
       type uint64;
       description
-        "How many datasets there are, when fewer are listed.";
+        "How many datasets there are, when fewer are listed (the
+         answer's warning list-cut); one asked for by its name is
+         read under its dataset, wherever it is.";
     }
     list dataset {
       key "name";
@@ -526,7 +528,9 @@ module arcana-storage {
     leaf snapshots-total {
       type uint64;
       description
-        "How many snapshots there are, when fewer are listed.";
+        "How many snapshots there are, when fewer are listed (the
+         answer's warning list-cut); one asked for by its name is
+         read under its dataset, wherever it is.";
     }
     list snapshot {
       key "name";

@@ -93,6 +93,26 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A list entry read by its key, a cut list said; agent 0.345.0, console 0.487.0
+
+- A GET of one entry of a list the agent cuts short now returns that
+  entry wherever it is, and 404 when there is none: arcana-sysctl's
+  value (the first 4000 of some 30000 values), arcana-storage's dataset
+  and snapshot (4000 each); e.g.
+  .../arcana-sysctl:sysctl/value=net.inet.ip.forwarding.  Before, an
+  entry past the first 4000 answered "no such resource".  A GET of kept
+  alone no longer reads the kernel's values.
+- A GET of the whole list, when cut, says so: the console's answer
+  carries "arcana-fleet:warnings":[{"tag":"list-cut",...}] beside the
+  data, and `arcanactl get` prints it on stderr.  The rest is read with
+  the read action (prefix, after, count), or one entry by its key.
+- cblink 0.2.33: get handlers see a GET's XPath filter
+  (cbl_req_yxpath()), and the warnings they give go into the GET's
+  answer.
+- A key containing / (a ZFS dataset) still cannot be named in a
+  RESTCONF path (libwebsockets decodes %2F): read it with an XPath
+  filter through arcanactl.
+
 ### cron: next runs, variables, its log, started from the section; agent 0.344.0, console 0.486.0
 
 - The System tab's cron(8) section starts, stops and enables cron itself

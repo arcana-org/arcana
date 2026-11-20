@@ -6207,7 +6207,7 @@ yang_get_body()
 	    -o match:'"in-octets":"[0-9]+"' cat get.json
 	# Every top-level node when none is named; the deprecated
 	# interfaces-state not among them.
-	atf_check -o match:'"ietf-interfaces:interfaces"' \
+	atf_check -o match:'"ietf-interfaces:interfaces"' -e ignore \
 	    -o not-match:'"ietf-interfaces:interfaces-state"' "$JGC" -c "$SOCK" get
 	# The host's routes, RFC 8349's RIBs: the loopback's own address
 	# is received; and what an address goes by.
@@ -6248,18 +6248,63 @@ yang_get_body()
 	# Arcana's own modules, each the operation that reads the same:
 	# the kernel's settings, the jobs, the agent's listeners.
 	atf_check -o match:'^\{"arcana-sysctl:sysctl":\{' \
-	    -o match:'"name":"kern.ostype"' "$JGC" -c "$SOCK" get sysctl
+	    -o match:'"name":"kern.ostype"' -e ignore "$JGC" -c "$SOCK" get sysctl
 	atf_check -o match:'^\{"arcana-jobs:jobs":\{' "$JGC" -c "$SOCK" get jobs
 	atf_check -o match:'"arcana-agent:agent":\{"transport":\{"listener":\[' \
 	    -o match:'"transport":"unix"' "$JGC" -c "$SOCK" get agent
 	# Every module at once: what the agent cannot read (BIRD not
 	# running, netgraph not root's) left out, not a failure of all.
 	atf_check -o match:'"arcana-sysctl:sysctl"' -o match:'"arcana-processes:processes"' \
-	    "$JGC" -c "$SOCK" get
+	    -e ignore "$JGC" -c "$SOCK" get
 	atf_check -s exit:1 -e match:'nowhere is no node the agent serves' \
 	    -o ignore "$JGC" -c "$SOCK" get nowhere
 }
 yang_get_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case yang_sysctl_key cleanup
+yang_sysctl_key_head()
+{
+	atf_set "descr" "arcana-sysctl's value by its key: read by that name " \
+	    "past the first 4000 a GET lists, alone; none for a name the " \
+	    "kernel has not; kept alone reads no value; the whole list " \
+	    "said cut"
+}
+yang_sysctl_key_body()
+{
+	start_daemon
+	# The whole list: the first 4000 in the kernel's order (kern, vm,
+	# vfs, net, debug, hw, ...), the total, and said cut.
+	total=$(/sbin/sysctl -aN 2>/dev/null | wc -l | tr -d ' ')
+	[ "$total" -gt 4000 ] || atf_skip "4000 sysctls or fewer: none past the cut"
+	atf_check -o save:all.json \
+	    -e match:'list-cut: 4000 of [0-9]+ values listed' \
+	    "$JGC" -c "$SOCK" get sysctl
+	atf_check -o match:'"total":"?[0-9]+' cat all.json
+	# hw.ncpu, past the cut (hw is the sixth of the tree's roots).
+	last=hw.ncpu
+	! grep -q "\"name\":\"$last\"" all.json ||
+	    atf_skip "$last is among the first 4000 here"
+	# By its key: that one alone, though past the cut.
+	atf_check -o save:one.json "$JGC" -c "$SOCK" get \
+	    -x "/arcana-sysctl:sysctl/value[name='$last']" sysctl
+	atf_check -o match:"\"name\":\"$last\"" -o not-match:'"total"' \
+	    -o match:"\"value\":\"$(/sbin/sysctl -n $last)\"" \
+	    -o not-match:'"kept"' cat one.json
+	atf_check -o inline:'1\n' sh -c "grep -o '\"name\":' one.json | wc -l | tr -d ' '"
+	# A leaf of it, the same; with the module named on the list too.
+	atf_check -o match:"\"name\":\"$last\"" "$JGC" -c "$SOCK" get \
+	    -x "/arcana-sysctl:sysctl/arcana-sysctl:value[name=\"$last\"]/value" sysctl
+	# One the kernel has not: nothing.
+	atf_check -o not-match:'"value"' "$JGC" -c "$SOCK" get \
+	    -x "/arcana-sysctl:sysctl/value[name='no.such.sysctl']" sysctl
+	# kept alone: no value read, nothing said.
+	atf_check -o not-match:'"value":\[' "$JGC" -c "$SOCK" get \
+	    -x "/arcana-sysctl:sysctl/kept" sysctl
+}
+yang_sysctl_key_cleanup()
 {
 	stop_daemon
 }
@@ -21201,6 +21246,20 @@ EOS
 	# from where it is kept, and forgotten; given to a jail, taken back.
 	atf_check -o match:'"name":"fakepool/data",[^}]*"encryption":"aes-256-gcm","keystatus":"unavailable","keylocation":"file:///k","jailed":"on"' \
 	    "$JGC" -c "$SOCK" storage datasets
+	# arcana-storage's snapshot and dataset by their keys: that kind
+	# alone read, under the dataset (past the first 4000 a GET lists).
+	n=$(wc -l < storage.log)
+	atf_check -o match:'"name":"fakepool/data@a"' -o not-match:'data@b' \
+	    -o not-match:'"dataset"' -o not-match:'"pool"' "$JGC" -c "$SOCK" get \
+	    -x "/arcana-storage:storage/snapshot[name='fakepool/data@a']" storage
+	atf_check -o match:'^zfs list -j -p -t snapshot .* -r fakepool/data$' \
+	    -o not-match:'filesystem|zpool' tail -n +$((n + 1)) storage.log
+	n=$(wc -l < storage.log)
+	atf_check -o match:'"name":"fakepool/data"' -o not-match:'fakepool/vol' \
+	    -o not-match:'"snapshot"' "$JGC" -c "$SOCK" get \
+	    -x "/arcana-storage:storage/dataset[name='fakepool/data']/used" storage
+	atf_check -o match:'^zfs list -j -p -t filesystem,volume .* -r fakepool/data$' \
+	    -o not-match:'snapshot|zpool' tail -n +$((n + 1)) storage.log
 	atf_check -o match:'done +zfs load-key fakepool/data$' "$JGC" -c "$SOCK" zfs load-key fakepool/data
 	atf_check -o match:'done +zfs unload-key -r fakepool/data$' "$JGC" -c "$SOCK" zfs unload-key -r fakepool/data
 	atf_check -o match:'done +zfs jail web fakepool/data$' "$JGC" -c "$SOCK" zfs jail fakepool/data web
@@ -25187,6 +25246,7 @@ atf_init_test_cases()
 	atf_add_test_case stop
 	atf_add_test_case hello
 	atf_add_test_case yang_get
+	atf_add_test_case yang_sysctl_key
 	atf_add_test_case yang_actions
 	atf_add_test_case yang_subscribe
 	atf_add_test_case yang_subscribe_subtree

@@ -1421,6 +1421,78 @@ ynode_named(const char *mod, const char *name)
 	return (NULL);
 }
 
+/*
+ * What a GET's filter (cbl_req_yxpath()) names below mod:top: its child
+ * child, "/mod:top/child" (the child's module said or not) and what is
+ * below or after it, *rest past the name; false for any other filter,
+ * or none.  A hint alone: cblink takes what the filter selects after,
+ * so a handler that reads less for it reads no less than is selected.
+ */
+static bool
+ytarget(cbl_req *req, const char *mod, const char *top, const char *child,
+    const char **rest)
+{
+	const char	*x, *p;
+	size_t		 ml, tl, cl;
+
+	if ((x = cbl_req_yxpath(req)) == NULL)
+		return (false);
+	ml = strlen(mod);
+	tl = strlen(top);
+	cl = strlen(child);
+	if (x[0] != '/' || strncmp(x + 1, mod, ml) != 0 || x[ml + 1] != ':' ||
+	    strncmp(x + ml + 2, top, tl) != 0 || x[ml + 2 + tl] != '/')
+		return (false);
+	p = x + ml + 3 + tl;
+	if (strncmp(p, mod, ml) == 0 && p[ml] == ':')
+		p += ml + 1;
+	if (strncmp(p, child, cl) != 0 || (p[cl] != '\0' && p[cl] != '/' &&
+	    p[cl] != '['))
+		return (false);
+	*rest = p + cl;
+	return (true);
+}
+
+bool
+ytarget_is(cbl_req *req, const char *mod, const char *top, const char *child)
+{
+	const char	*rest;
+
+	return (ytarget(req, mod, top, child, &rest));
+}
+
+const char *
+ytarget_key(cbl_req *req, const char *mod, const char *top, const char *list,
+    const char *key, char *buf, size_t len)
+{
+	const char	*p, *e, *c;
+	size_t		 kl = strlen(key);
+	char		 q;
+
+	if (!ytarget(req, mod, top, list, &p) || *p++ != '[')
+		return (NULL);
+	p += strspn(p, " ");
+	if (strncmp(p, key, kl) != 0)
+		return (NULL);
+	p += kl;
+	p += strspn(p, " ");
+	if (*p++ != '=')
+		return (NULL);
+	p += strspn(p, " ");
+	if ((q = *p++) != '\'' && q != '"')
+		return (NULL);
+	if ((e = strchr(p, q)) == NULL || (size_t)(e - p) >= len)
+		return (NULL);
+	/* The predicate closed, the entry's only one, and what follows a
+	 * path below the entry, or nothing. */
+	c = e + 1 + strspn(e + 1, " ");
+	if (c[0] != ']' || (c[1] != '\0' && c[1] != '/'))
+		return (NULL);
+	memcpy(buf, p, (size_t)(e - p));
+	buf[e - p] = '\0';
+	return (buf);
+}
+
 /* yang:date-and-time of t, in the arena. */
 static const char *
 ytime(cbl_yarena *a, time_t t)

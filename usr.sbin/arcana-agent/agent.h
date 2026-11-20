@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.344.0"
+#define	ARCANA_AGENT_VERSION	"0.345.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1595,6 +1595,8 @@ int		 sysctl_read(struct work *, const char *, const char *,
 		    const char **, const char **);
 int		 sysctl_read_jail(struct work *, const char *,
 		    sysctl_value_f *, void *, const char **);
+int		 sysctl_read_name(struct work *, const char *,
+		    sysctl_value_f *, void *);
 bool		 sysctl_flags(const char *, bool *, bool *);
 bool		 sysctl_tunable(struct work *, const char *,
 		    struct sysctl_value *, unsigned int *);
@@ -1939,6 +1941,13 @@ void		 yang_steer_changed(const char *, const char *, const char *,
 void		 yang_event_changed(const char *, bool);
 struct cbl_ynode;
 const struct cbl_ynode *ynode_named(const char *, const char *);
+/* What a GET's filter names below a module's top-level node (yserve.c),
+ * a hint for a get handler that lists fewer than there are: its child
+ * alone; the key of that list's entry, into buf (NULL: none named). */
+bool		 ytarget_is(cbl_req *, const char *, const char *,
+		    const char *);
+const char	*ytarget_key(cbl_req *, const char *, const char *,
+		    const char *, const char *, char *, size_t);
 /* A logical network element's root, by a helper attached to its jail
  * (invidia/lneroot.c). */
 void		 yang_lne_failed(const char *, const char *, const char *);
