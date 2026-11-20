@@ -10,6 +10,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/module.h>
 #include <sys/procctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -103,6 +104,21 @@ need_fibs(int n)
 		atf_tc_skip("net.fibs is %d here, the plan wants %d tables: "
 		    "net.fibs=%d (loader.conf; a vnet jail's own by sysctl)",
 		    fibs, n, n);
+}
+
+/*
+ * A kernel module the agent asks the kernel for itself (modfind(2)),
+ * which no stand-in answers: skipped where it is not loaded, saying
+ * why (a jail cannot kldload).
+ */
+void
+need_kmod(const char *name, const char *why)
+{
+
+	if (modfind(name) == -1)
+		atf_tc_skip("%s is not loaded in this kernel, and %s: kldload "
+		    "%s on the host (or %s_load=\"YES\" in loader.conf)",
+		    name, why, name, name);
 }
 
 /*

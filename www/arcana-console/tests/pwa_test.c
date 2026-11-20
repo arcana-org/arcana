@@ -14981,6 +14981,11 @@ ATF_TC_BODY(pwa_flows_sdwan, tc)
 {
 
 	need_fibs(2);
+	/* The service's flow records: the agent refuses their ngtee rules
+	 * unless ng_ipfw is in the kernel (netflow_ready), and the rules
+	 * step and the whole apply are rolled back. */
+	need_kmod("ng_ipfw", "the edges' flow records (ipfw ngtee) need it, "
+	    "or their rules step is refused and the apply rolled back");
 	/* BIRD watched: its BGP session that never came up an alarm for
 	 * the Paths tab to shelve. */
 	harness_bird_watch = true;

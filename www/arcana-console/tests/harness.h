@@ -89,6 +89,7 @@ void		 restart_console(void);
 void		 agent_restart(void);
 void		 agent_restart_with(const char *, const char *);
 void		 need_fibs(int);
+void		 need_kmod(const char *, const char *);
 void		 agent_jailed(const char *, const char *);
 void		 console_stop(void);
 void		 console_start(void);
