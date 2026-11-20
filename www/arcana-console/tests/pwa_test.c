@@ -14283,6 +14283,17 @@ part_security_jail(void)
 	    "/var/db/arcana-security/sdwan-ids-sec-lan.yaml ' jexec.log") == 0);
 	ATF_CHECK(access("sdwan-ids-sec-lan.yaml", F_OK) != 0);
 	wait_js("document.querySelector('table.secids .chip.st-up')", 30);
+	/* Its form and the YAML beneath the jail's root, as the jail's
+	 * Suricata reads it, folded below its row. */
+	click_when("table.secids tr.sd-inst summary", 10);
+	wait_js("(() => { const d = document.querySelector('table.secids "
+	    "tr.sd-inst details'); const c = d && d.querySelector("
+	    "'pre[data-file=conf]'); return d && d.open && [...d."
+	    "querySelectorAll('dl.sd-form dt')].some(t => t.textContent === "
+	    "'interfaces') && d.querySelector('dl.sd-form').textContent."
+	    "includes('lo0') && c && c.textContent.includes('default-log-dir: "
+	    "/var/db/arcana-security/sdwan-ids-sec-lan.d') && d.textContent."
+	    "includes('beneath the jail gw\\'s root'); })()", 20);
 	shot("9w-security-jail");
 	/* The host's own place: none of the jail's there. */
 	run("const s = document.querySelector('select[data-input=sec-where]'); "
@@ -14417,6 +14428,22 @@ part_security(void)
 	wait_js("document.querySelector('table.secproxy .chip.st-up') && "
 	    "document.querySelector('table.secproxy details pre.cert')", 30);
 	shot("9u-security-url");
+	/* Its form as arcana-sdwan says it and the files the agent
+	 * rendered of it, folded below its row: Squid's, and c-icap's
+	 * where it scans. */
+	click_when("table.secproxy tr.sd-inst summary", 10);
+	wait_js("(() => { const d = document.querySelector('table.secproxy "
+	    "tr.sd-inst details'); const c = d && d.querySelector("
+	    "'pre[data-file=conf]'), i = d && d.querySelector("
+	    "'pre[data-file=icap_conf]'); return d && d.open && [...d."
+	    "querySelectorAll('dl.sd-form dt')].some(t => t.textContent === "
+	    "'deny') && d.querySelector('dl.sd-form').textContent.includes("
+	    "'worse.example') && d.querySelector('dl.sd-form').textContent."
+	    "includes('inspect') && c && c.textContent.includes('http_port "
+	    "127.0.0.1:3128') && i && i.textContent.includes('Service avscan "
+	    "virus_scan.so') && d.textContent.includes('squid.conf') && d."
+	    "textContent.includes('c-icap.conf'); })()", 20);
+	shot("9u-security-url-fold");
 	/* Its form again, as it was saved. */
 	click_when("table.secproxy button[data-act=sec-edit]", 10);
 	wait_js("document.querySelector('form[data-form=sec-proxy]') && "
@@ -14471,6 +14498,17 @@ part_security(void)
 	    "document.querySelector('table.secids').textContent.includes("
 	    "'detects')", 30);
 	shot("9v-security-ids");
+	/* Its form and Suricata's YAML, its places filled, folded. */
+	click_when("table.secids tr.sd-inst summary", 10);
+	wait_js("(() => { const d = document.querySelector('table.secids "
+	    "tr.sd-inst details'); const c = d && d.querySelector("
+	    "'pre[data-file=conf]'); return d && d.open && [...d."
+	    "querySelectorAll('dl.sd-form dt')].some(t => t.textContent === "
+	    "'interfaces') && d.querySelector('dl.sd-form').textContent."
+	    "includes('lo0') && c && c.textContent.includes('HOME_NET') && "
+	    "c.textContent.includes('sdwan-ids-sec-lan.d') && !c.textContent."
+	    "includes('@LOGDIR@') && d.textContent.includes('suricata.yaml') "
+	    "&& !d.textContent.includes('beneath the jail'); })()", 20);
 	/* Its alert as the host tells it: when, the rule, from and to;
 	 * suppressed from its source, a line of its thresholds. */
 	wait_js("document.querySelector('ul.secalerts') && document."

@@ -3457,18 +3457,31 @@ sd_conf(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	return (0);
 }
 
+/* text copied into the arena; NULL: none. */
+static const char *
+sd_arena(cbl_yarena *a, const char *text)
+{
+	char	*p;
+
+	if (text == NULL || (p = cbl_yarena_alloc(a, strlen(text) + 1)) ==
+	    NULL)
+		return (NULL);
+	memcpy(p, text, strlen(text) + 1);
+	return (p);
+}
+
 /* A rendered file of an instance's, the arena's; NULL: none. */
 static const char *
 sd_rendered(struct work *w, cbl_yarena *a, const char *kind,
     const char *name, const char *ext)
 {
-	char	*text, *p;
+	const char	*p;
+	char		*text;
 
 	if (name == NULL || (text = sdwan_kept_read(wfmt(w, "sdwan-%s-%s.%s",
 	    kind, name, ext))) == NULL)
 		return (NULL);
-	if ((p = cbl_yarena_alloc(a, strlen(text) + 1)) != NULL)
-		memcpy(p, text, strlen(text) + 1);
+	p = sd_arena(a, text);
 	free(text);
 	return (p);
 }
@@ -3487,6 +3500,36 @@ sd_rendered(struct work *w, cbl_yarena *a, const char *kind,
 	}								\
 } while (0)
 
+/*
+ * Squid's and c-icap's files and Suricata's YAML of the instances of
+ * a list, where each runs: the host's beside the agent's kept files, a
+ * jail's (the Security section's own jail, or the jail edge's, jail)
+ * beneath its root.
+ */
+static void
+sd_sec_rendered(struct work *w, cbl_yarena *a, const char *jail,
+    size_t npx, const struct arcana_sdwan_proxy_instance *pxv, size_t nids,
+    const struct arcana_sdwan_ids_instance *idsv)
+{
+	struct arcana_sdwan_proxy_instance	*px;
+	struct arcana_sdwan_ids_instance	*ids;
+	const char				*j;
+
+	for (size_t i = 0; i < npx; i++) {
+		px = (void *)(uintptr_t)&pxv[i];
+		j = jail != NULL ? jail : px->jail;
+		px->conf = sd_arena(a, sdwan_proxy_rendered(w, j, px->name,
+		    false));
+		px->icap_conf = sd_arena(a, sdwan_proxy_rendered(w, j,
+		    px->name, true));
+	}
+	for (size_t i = 0; i < nids; i++) {
+		ids = (void *)(uintptr_t)&idsv[i];
+		j = jail != NULL ? jail : ids->jail;
+		ids->conf = sd_arena(a, sdwan_ids_rendered(w, j, ids->name));
+	}
+}
+
 static void
 sd_conf_rendered(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 {
@@ -3497,11 +3540,12 @@ sd_conf_rendered(struct work *w, cbl_yarena *a, struct arcana_sdwan_sdwan *o)
 	    "dhcp", "conf");
 	SD_RENDERED(w, a, o, dns_instance, arcana_sdwan_dns_instance,
 	    "dns", "conf");
-	SD_RENDERED(w, a, o, proxy_instance, arcana_sdwan_proxy_instance,
-	    "proxy", "conf");
-	/* Suricata's YAML, its places filled. */
-	SD_RENDERED(w, a, o, ids_instance, arcana_sdwan_ids_instance,
-	    "ids", "yaml");
+	sd_sec_rendered(w, a, NULL, o->proxy_instance.n, o->proxy_instance.v,
+	    o->ids_instance.n, o->ids_instance.v);
+	for (size_t k = 0; k < o->jail.n; k++)
+		sd_sec_rendered(w, a, o->jail.v[k].name,
+		    o->jail.v[k].proxy_instance.n, o->jail.v[k].proxy_instance.v,
+		    o->jail.v[k].ids_instance.n, o->jail.v[k].ids_instance.v);
 }
 
 int

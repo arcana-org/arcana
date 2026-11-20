@@ -93,6 +93,21 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Security instances' forms and files; agent 0.350.0, console 0.493.0
+
+- The Security page's URL filters and Suricata instances fold, below
+  each row, the instance's form as arcana-sdwan says it (its spec) and
+  the files the agent rendered of it: Squid's squid.conf and, where it
+  scans for malware, c-icap.conf, or Suricata's YAML; the SD-WAN page's
+  fold, shared.
+- An instance in a jail (the Security section's, or a jail edge's Squid
+  and Suricata) now has its rendered files read beneath the jail's root;
+  before, its conf leaf was empty.
+- arcana-sdwan's proxy-instance has a new state leaf, icap-conf: c-icap's
+  file (SIDs 96697 and 96698).
+- Nothing to do on deployed hosts: the files appear once the updated
+  agent runs.
+
 ### SENs and the record say the jail; drift asked node by node; console 0.492.0
 
 - A Security Event Notification from a vnet jail's own rules now names

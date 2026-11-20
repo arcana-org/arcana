@@ -531,7 +531,8 @@ bmp_json(const ucl_object_t *b)
 /*
  * What an instance that runs was made of, into o: its form as the
  * module says it (spec, of sd's list key, a jail's for one of a jail)
- * and the text the agent rendered of it (conf), for its view.
+ * and the text the agent rendered of it (conf, and a Squid's c-icap's
+ * icap_conf), for its view.
  */
 static void
 inst_form(ucl_object_t *o, const ucl_object_t *sd, const char *key,
@@ -559,6 +560,8 @@ inst_form(ucl_object_t *o, const ucl_object_t *sd, const char *key,
 			continue;
 		cp(o, "spec", e, "spec");
 		cp(o, "conf", e, "conf");
+		/* A URL filter's c-icap, where it scans for malware. */
+		cp(o, "icap_conf", e, "icap-conf");
 		return;
 	}
 }

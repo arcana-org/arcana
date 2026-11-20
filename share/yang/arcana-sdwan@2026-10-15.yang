@@ -2349,6 +2349,13 @@ module arcana-sdwan {
         description
           "Stopped by the admin: kept, not run, nor its c-icap.";
       }
+      leaf icap-conf {
+        type string;
+        config false;
+        description
+          "c-icap's configuration text, where it scans for malware, as
+           the agent rendered it from spec.";
+      }
     }
     list ids-instance {
       cg:struct "ids-instance";

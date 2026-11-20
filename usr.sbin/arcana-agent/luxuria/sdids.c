@@ -2650,6 +2650,20 @@ irqs_json(struct work *w)
 	return (arr);
 }
 
+/* Suricata's YAML the agent rendered of an instance, where it runs:
+ * beside the agent's kept files or beneath its jail's root; NULL for
+ * none.  w's. */
+char *
+sdwan_ids_rendered(struct work *w, const char *jail, const char *name)
+{
+	char	*text = NULL;
+
+	if (name_ok(name) && inst_in(w, jail, NULL) == 0)
+		text = scope_slurp(w, inst_path(w, name, "yaml"), NULL);
+	(void)inst_in(w, "", NULL);
+	return (text);
+}
+
 /* The instances as they are, into the sdwan reply: each its name, its
  * interfaces, whether it runs, how many alerts were read, the latest. */
 void

@@ -1258,6 +1258,8 @@ void		 sdwan_open(void);
 void		 sdwan_tick(double);
 void		 view_sdwan(struct html *);
 bool		 sdwan_action(const char *, const char *, const char *);
+void		 sd_inst_fold(struct html *, const ucl_object_t *, int,
+		    const char *const *);
 /* secpage.c: the Security page. */
 void		 view_secpage(struct html *);
 bool		 secpage_form(const char *, const ucl_object_t *);

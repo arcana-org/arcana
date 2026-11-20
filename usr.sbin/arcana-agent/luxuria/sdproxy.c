@@ -1571,6 +1571,25 @@ clamav_obj(struct work *w)
 	return (o);
 }
 
+/*
+ * A file the agent rendered of an instance, where the instance runs:
+ * Squid's (icap false) or its c-icap's, beside the agent's kept files
+ * or beneath its jail's root; NULL for none (not rendered, or its jail
+ * not running).  w's.
+ */
+char *
+sdwan_proxy_rendered(struct work *w, const char *jail, const char *name,
+    bool icap)
+{
+	char	*text = NULL;
+
+	if (name_ok(name) && inst_in(w, jail, NULL) == 0)
+		text = scope_slurp(w, icap ? icap_path(w, name, "conf") :
+		    inst_path(w, name, "conf"), NULL);
+	(void)inst_in(w, "", NULL);
+	return (text);
+}
+
 /* The instances as they are, into the sdwan reply: each its name, fib,
  * mode, whether its process is there, and its CA's certificate. */
 void

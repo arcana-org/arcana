@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.349.0"
+#define	ARCANA_AGENT_VERSION	"0.350.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1253,6 +1253,8 @@ void		 sdwan_proxy_json(struct work *, struct ucl_object_s *);
 int		 squid_restart(struct work *, const char *, const char **);
 void		 clamav_mirrors_json(struct work *, struct ucl_object_s *);
 void		 security_specs(const char *, struct ucl_object_s *, const char *);
+char		*sdwan_proxy_rendered(struct work *, const char *, const char *,
+		    bool);
 int		 do_sdwan_ids(struct work *, const char *, const char **);
 /*
  * luxuria/sdconf.c: dnsmasq's, unbound's, Squid's, c-icap's and BIRD's files
@@ -1324,6 +1326,7 @@ char		*ids_conf_sdwan(struct work *, const struct ucl_object_s *,
 int		 do_notify(struct work *, const char *, const char *,
 		    const char *, const char **);
 void		 sdwan_ids_start(void);
+char		*sdwan_ids_rendered(struct work *, const char *, const char *);
 /* superbia/geomjob.c: GEOM's classes at work. */
 const char	*geom_check(const struct arc_job_spec *);
 char		*geom_title(const struct arc_job_spec *);

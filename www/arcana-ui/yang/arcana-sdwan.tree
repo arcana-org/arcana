@@ -228,11 +228,11 @@ module: arcana-sdwan
      |              +--rw quarantine*   string
      |              +--rw allow*        string
      +--rw proxy-instance* [name]
-     |  +--rw name       string
-     |  +--rw fib?       uint16
-     |  +--ro conf?      string
-     |  +--rw host?      string
-     |  +--rw jail?      string
+     |  +--rw name         string
+     |  +--rw fib?         uint16
+     |  +--ro conf?        string
+     |  +--rw host?        string
+     |  +--rw jail?        string
      |  +--rw spec
      |  |  +--rw flavor?     enumeration
      |  |  +--rw service?    string
@@ -287,11 +287,12 @@ module: arcana-sdwan
      |  |  +--rw allow*      string
      |  |  +--rw deny*       string
      |  |  +--rw malware?    boolean
-     |  +--rw mode?      enumeration
+     |  +--rw mode?        enumeration
      |  +--rw named-list* [name]
      |  |  +--rw name    string
      |  |  +--rw text?   string
-     |  +--rw stopped?   boolean
+     |  +--rw stopped?     boolean
+     |  +--ro icap-conf?   string
      +--rw ids-instance* [name]
      |  +--rw name          string
      |  +--rw interface*    string
@@ -578,11 +579,11 @@ module: arcana-sdwan
      |  |              +--rw quarantine*   string
      |  |              +--rw allow*        string
      |  +--rw proxy-instance* [name]
-     |  |  +--rw name       string
-     |  |  +--rw fib?       uint16
-     |  |  +--ro conf?      string
-     |  |  +--rw host?      string
-     |  |  +--rw jail?      string
+     |  |  +--rw name         string
+     |  |  +--rw fib?         uint16
+     |  |  +--ro conf?        string
+     |  |  +--rw host?        string
+     |  |  +--rw jail?        string
      |  |  +--rw spec
      |  |  |  +--rw flavor?     enumeration
      |  |  |  +--rw service?    string
@@ -637,11 +638,12 @@ module: arcana-sdwan
      |  |  |  +--rw allow*      string
      |  |  |  +--rw deny*       string
      |  |  |  +--rw malware?    boolean
-     |  |  +--rw mode?      enumeration
+     |  |  +--rw mode?        enumeration
      |  |  +--rw named-list* [name]
      |  |  |  +--rw name    string
      |  |  |  +--rw text?   string
-     |  |  +--rw stopped?   boolean
+     |  |  +--rw stopped?     boolean
+     |  |  +--ro icap-conf?   string
      |  +--rw ids-instance* [name]
      |     +--rw name          string
      |     +--rw interface*    string

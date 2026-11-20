@@ -490,6 +490,38 @@ static const struct tcol pcols[] = {
 	{ "Malware", "malware", false }, { "State", NULL, false },
 };
 
+/*
+ * A URL filter's or an intrusion detection's form as arcana-sdwan says
+ * it and the files the agent rendered of it, folded below its row (the
+ * SD-WAN page's fold): l its entry in the host's read, a jail's files
+ * beneath the jail's root.
+ */
+static void
+inst_fold(struct html *h, const ucl_object_t *l, bool ids, int cols)
+{
+	char		 by[160], squid[256], icap[256], yaml[256];
+	const char	*jail = jstr(l, "jail");
+	const char *const pf[] = { "conf", "squid.conf", squid, "icap_conf",
+	    "c-icap.conf", icap, NULL, NULL, NULL };
+	const char *const idf[] = { "conf", "suricata.yaml", yaml, NULL, NULL,
+	    NULL };
+
+	if (l == NULL)
+		return;
+	if (jail != NULL && jail[0] != '\0')
+		snprintf(by, sizeof(by), "by the agent, beneath the jail %s's "
+		    "root", jail);
+	else
+		snprintf(by, sizeof(by), "by the agent");
+	snprintf(squid, sizeof(squid), "%s, checked by squid -k parse before "
+	    "it runs", by);
+	snprintf(icap, sizeof(icap), "%s, where it scans for malware: c-icap "
+	    "says what it refuses as it starts", by);
+	snprintf(yaml, sizeof(yaml), "%s, its places filled, checked by "
+	    "suricata -T before it runs", by);
+	sd_inst_fold(h, l, cols, ids ? idf : pf);
+}
+
 static void
 view_url(struct html *h, bool malware_only)
 {
@@ -585,6 +617,7 @@ view_url(struct html *h, bool malware_only)
 			h_raw(h, ">Remove</button>");
 		}
 		h_raw(h, "</td></tr>");
+		inst_fold(h, l, false, 7);
 		/* The CA the clients are to trust, where TLS is opened. */
 		if (!malware_only && l != NULL && jstr(l, "ca") != NULL &&
 		    jstr(f, "mode") != NULL && strcmp(jstr(f, "mode"),
@@ -1388,6 +1421,7 @@ view_ids(struct html *h)
 		    "data-act=\"sec-remove\" data-value=\"ids\"");
 		h_attr(h, "data-arg", jstr(f, "name"));
 		h_raw(h, ">Remove</button></td></tr>");
+		inst_fold(h, l, true, 6);
 		if (ucl_array_size(jget(l, "alerts")) == 0)
 			continue;
 		h_raw(h, "<tr class=\"sub\"><td colspan=\"6\"><ul class=\""

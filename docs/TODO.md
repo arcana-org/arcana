@@ -362,9 +362,13 @@
 - arcana-sdwan's instances all have their form as the module says it
   (spec, a container of bird-form, dhcp-form, dns-form, proxy-form or
   ids-form) and the text the agent rendered of it as the conf state
-  leaf (Suricata's YAML whole is no longer taken).  The SD-WAN page
-  folds each instance's form and file below its row; the Security
-  page's URL filters and Suricata instances do not show theirs yet.
+  leaf (Suricata's YAML whole is no longer taken), a Squid's c-icap
+  file as icap-conf.  The SD-WAN page and the Security page's URL
+  filters and Suricata instances fold each instance's form and files
+  below its row (sd_inst_fold(), pwa_flows_security,
+  pwa_security_jail); a Security instance in a jail, and a jail edge's
+  Squid and Suricata, have the files beneath the jail's root.  A jail
+  edge's BIRD, dnsmasq and unbound instances have no conf yet.
 - Done (agent_test:probe_steer_burst, probe_jail_sockets): the
   steering is made again on the prober's worker when a target's state
   changes or a BFD session's, a burst of both in one run (BFD's reader,

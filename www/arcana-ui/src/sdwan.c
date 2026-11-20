@@ -4562,28 +4562,51 @@ inst_jail(struct html *h, const ucl_object_t *e)
 }
 
 /*
- * An instance's form (spec, as arcana-sdwan says it) and the file the
- * agent rendered of it (conf), a row of cols below its own, folded.
+ * An instance's form (spec, as arcana-sdwan says it) and the files the
+ * agent rendered of it, a row of cols below its own, folded: files
+ * triples of e's key of a file, its name and a note on it, NULL-ended;
+ * NULL for conf alone.  The SD-WAN page's instances and the Security
+ * page's.
  */
-static void
-inst_details(struct html *h, const ucl_object_t *e, int cols)
+void
+sd_inst_fold(struct html *h, const ucl_object_t *e, int cols,
+    const char *const *files)
 {
+	static const char *const conf[] = { "conf", NULL, NULL, NULL };
+	const char	*const *f;
+	int		 n = 0;
 
-	if (jget(e, "spec") == NULL && jstr(e, "conf") == NULL)
+	if (files == NULL)
+		files = conf;
+	for (f = files; f[0] != NULL; f += 3)
+		if (jstr(e, f[0]) != NULL)
+			n++;
+	if (ucl_object_type(jget(e, "spec")) != UCL_OBJECT && n == 0)
 		return;
 	h_fmt(h, "<tr class=\"sd-inst\"><td></td><td colspan=\"%d\"><details "
-	    "class=\"sd-more\"><summary>Its form and the file rendered of "
-	    "it</summary>", cols - 1);
+	    "class=\"sd-more\"><summary>Its form and the %s rendered of "
+	    "it</summary>", cols - 1, n > 1 ? "files" : "file");
 	if (ucl_object_type(jget(e, "spec")) == UCL_OBJECT) {
 		h_raw(h, "<h4>Form <small class=\"dim\">arcana-sdwan's spec"
 		    "</small></h4>");
 		form_fields(h, jget(e, "spec"), 0);
 	}
-	if (jstr(e, "conf") != NULL) {
-		h_raw(h, "<h4>Rendered <small class=\"dim\">by the agent, "
-		    "checked by the daemon before it runs</small></h4><pre "
-		    "class=\"sd-conf\">");
-		h_txt(h, jstr(e, "conf"));
+	for (f = files; f[0] != NULL; f += 3) {
+		if (jstr(e, f[0]) == NULL)
+			continue;
+		h_raw(h, "<h4>Rendered");
+		if (f[1] != NULL) {
+			h_raw(h, " <code>");
+			h_txt(h, f[1]);
+			h_raw(h, "</code>");
+		}
+		h_raw(h, " <small class=\"dim\">");
+		h_txt(h, f[2] != NULL ? f[2] : "by the agent, checked by the "
+		    "daemon before it runs");
+		h_raw(h, "</small></h4><pre class=\"sd-conf\"");
+		h_attr(h, "data-file", f[0]);
+		h_raw(h, ">");
+		h_txt(h, jstr(e, f[0]));
 		h_raw(h, "</pre>");
 	}
 	h_raw(h, "</details></td></tr>");
@@ -4981,7 +5004,7 @@ view_paths(struct html *h)
 					h_txt(h, age);
 				h_raw(h, "</td></tr>");
 			}
-			inst_details(h, di, 7);
+			sd_inst_fold(h, di, 7, NULL);
 		}
 	}
 	if (n == 0)
@@ -5045,7 +5068,7 @@ view_paths(struct html *h)
 				if (pr == NULL)
 					break;
 			}
-			inst_details(h, e, 5);
+			sd_inst_fold(h, e, 5, NULL);
 		}
 	}
 	if (n == 0)
@@ -5117,7 +5140,7 @@ view_ids(struct html *h)
 			    "</td><td>%lld</td></tr>", jbool(di, "running") ? "up" :
 			    "down", jbool(di, "running") ? "running" : "not running",
 			    (long long)jint(di, "alerts_seen", 0));
-			inst_details(h, di, 6);
+			sd_inst_fold(h, di, 6, NULL);
 			ait = NULL;
 			while ((a = ucl_object_iterate(jget(di, "alerts"), &ait,
 			    true)) != NULL) {
@@ -6180,7 +6203,7 @@ view_security(struct html *h)
 			else
 				h_raw(h, "<span class=\"dim\">—</span>");
 			h_raw(h, "</td></tr>");
-			inst_details(h, di, 4);
+			sd_inst_fold(h, di, 4, NULL);
 		}
 	}
 	if (n == 0)
@@ -6227,7 +6250,7 @@ view_security(struct html *h)
 			else
 				h_raw(h, "<span class=\"dim\">—</span>");
 			h_raw(h, "</td></tr>");
-			inst_details(h, pi, 5);
+			sd_inst_fold(h, pi, 5, NULL);
 		}
 	}
 	if (n == 0)
