@@ -46,6 +46,7 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 
+#include <net/if.h>
 #include <net/pfkeyv2.h>
 #include <netinet/in.h>
 
@@ -299,6 +300,8 @@ jail_next(int jid)
 	return (next);
 }
 
+static int	helper_socket_st(int, const char *, const char *, int *);
+
 /*
  * A socket in a jail's own network: the helper attaches to the jail,
  * makes it there with verb (and word), and hands it over on a socket
@@ -306,6 +309,15 @@ jail_next(int jid)
  */
 static int
 helper_socket(int jid, const char *verb, const char *word)
+{
+
+	return (helper_socket_st(jid, verb, word, NULL));
+}
+
+/* The same; *stp the helper's exit status (-1 where it did not exit),
+ * when asked: what it says by it where it hands nothing over. */
+static int
+helper_socket_st(int jid, const char *verb, const char *word, int *stp)
 {
 	static char *const		 noenv[] = { NULL };
 	posix_spawn_file_actions_t	 fa;
@@ -320,7 +332,10 @@ helper_socket(int jid, const char *verb, const char *word)
 	char				 js[16], one, *argv[6];
 	pid_t				 pid;
 	int				 sp[2], fd, rc, status;
+	bool				 heard;
 
+	if (stp != NULL)
+		*stp = -1;
 	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sp) == -1)
 		return (-1);
 	snprintf(js, sizeof(js), "%d", jid);
@@ -344,7 +359,7 @@ helper_socket(int jid, const char *verb, const char *word)
 	fd = -1;
 	pfd.fd = sp[0];
 	pfd.events = POLLIN;
-	if (poll(&pfd, 1, 5000) == 1) {
+	if ((heard = poll(&pfd, 1, 5000) == 1)) {
 		memset(&msg, 0, sizeof(msg));
 		iov.iov_base = &one;
 		iov.iov_len = 1;
@@ -359,10 +374,14 @@ helper_socket(int jid, const char *verb, const char *word)
 			memcpy(&fd, CMSG_DATA(cm), sizeof(int));
 	}
 	close(sp[0]);
-	if (fd == -1)
+	/* Nothing handed over: killed, unless its status is asked and it
+	 * ended (its end closed) rather than kept us waiting. */
+	if (fd == -1 && (stp == NULL || !heard))
 		(void)kill(pid, SIGKILL);
 	while (waitpid(pid, &status, 0) == -1 && errno == EINTR)
 		;
+	if (stp != NULL)
+		*stp = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 	return (fd);
 }
 
@@ -486,6 +505,23 @@ helper_unix_socket(int jid, const char *path)
 {
 
 	return (helper_socket(jid, "unix-socket", path));
+}
+
+/*
+ * A routing socket in a vnet jail's own network, made only where its
+ * ipfw has a rule that logs there (logdst rtsock): the record's of that
+ * jail (gula/record.c).  -1 when none is made, *none true where it is
+ * not wanted (no such rule, or no ipfw in the jail) rather than failed.
+ */
+int
+helper_rtsock_socket(int jid, bool *none)
+{
+	int	fd, st;
+
+	st = -1;
+	fd = helper_socket_st(jid, "rtsock-socket", NULL, &st);
+	*none = fd == -1 && st == 3;
+	return (fd);
 }
 
 /* The helper's side: fd handed over on its standard output. */
@@ -1140,6 +1176,33 @@ scope_helper(int argc, char **argv)
 		if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1 ||
 		    connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
 			fprintf(stderr, "%s: %s\n", argv[2], strerror(errno));
+			return (1);
+		}
+		return (fd_send(fd));
+	}
+	/* The name of an interface of the jail's, by its index. */
+	if (strcmp(argv[1], "if-name") == 0 && argc == 3) {
+		char		name[IFNAMSIZ];
+		unsigned long	index;
+		char		*end;
+
+		index = strtoul(argv[2], &end, 10);
+		if (*end != '\0' || index == 0 || index > UINT_MAX)
+			return (2);
+		if (if_indextoname((unsigned)index, name) == NULL)
+			return (1);
+		printf("%s\n", name);
+		return (0);
+	}
+	/* The jail's routing socket, where its ipfw logs there; 3 where
+	 * no rule does (nothing wanted). */
+	if (strcmp(argv[1], "rtsock-socket") == 0 && argc == 2 && jid > 0) {
+		int	fd;
+
+		if (rtsock_logged() != 1)
+			return (3);
+		if ((fd = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC)) == -1) {
+			fprintf(stderr, "socket: %s\n", strerror(errno));
 			return (1);
 		}
 		return (fd_send(fd));

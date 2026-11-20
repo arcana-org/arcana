@@ -4942,6 +4942,138 @@ probe_jail_sockets_cleanup()
 	stop_daemon
 }
 
+atf_test_case record_jail cleanup
+record_jail_head()
+{
+	atf_set "descr" "the security record listens on a vnet jail's own" \
+	    "routing socket where an Arcana feature's rules log there (SSL" \
+	    "inspection's kept reset of cleartext HTTP): made by the helper" \
+	    "in the jail as the jail settles, handed over, its log an entry" \
+	    "and an event tagged with the jail, its rule's log reset by the" \
+	    "jail's ipfw; closed when the jail goes; a vnet jail without such" \
+	    "rules never asked, one whose ipfw logs nothing there (the" \
+	    "helper's 3) listened on by nothing, said as no failure"
+	atf_set "timeout" "90"
+}
+record_jail_body()
+{
+	local d="$(pwd)"
+
+	command -v python3 >/dev/null || atf_skip "no python3 to hand a socket over"
+	mkdir -p gw gw2
+	# SSL inspection's kept rules in gw, beneath its root: a bound
+	# MBSF's reset of cleartext HTTP, logged to the routing socket.
+	mkdir -p "gw$d/ssl/arcana"
+	echo "add 7 set 26 reset log logdst rtsock logamount 1000 tcp from any to not me 80 in recv epair0b // security svc1 g-mbsf unencrypted" \
+	    > "gw$d/ssl/arcana/fwd.rules"
+	echo "gw2 5 new $d/gw2" > jails
+	# The jails settle: an interface up besides the loopback.
+	cat > fake-ifconfig <<EOS
+#!/bin/sh
+echo "ifconfig \$*" >> $d/ifconfig.log
+case "\$*" in "-j "*" -l -u") echo "lo0 epair0b" ;; esac
+exit 0
+EOS
+	chmod +x fake-ifconfig
+	cat > fake-jexec <<EOS
+#!/bin/sh
+echo "jexec \$*" >> $d/jexec.log
+exit 0
+EOS
+	chmod +x fake-jexec
+	# The jail's routing socket, as the helper hands it over: one end
+	# of a stream pair, the other kept by a child that writes it an
+	# RTM_IPFWLOG of rule 7 (RTF_PROTO1: near its logamount) and says
+	# when the agent closed it (./closed).
+	cat > rtsock.py <<'EOF'
+import ctypes, os, select, socket, struct, sys
+d = sys.argv[1]
+L = ctypes.sizeof(ctypes.c_ulong)
+class rt_msghdr(ctypes.Structure):
+    _fields_ = [("msglen", ctypes.c_ushort), ("version", ctypes.c_ubyte),
+        ("type", ctypes.c_ubyte), ("index", ctypes.c_ushort),
+        ("spare", ctypes.c_ushort), ("flags", ctypes.c_int),
+        ("addrs", ctypes.c_int), ("pid", ctypes.c_int), ("seq", ctypes.c_int),
+        ("errno", ctypes.c_int), ("fmask", ctypes.c_int),
+        ("inits", ctypes.c_ulong), ("rmx", ctypes.c_ulong * 14)]
+def pad(b):
+    return b + b"\0" * (-len(b) % L)
+def sin(a):
+    return pad(struct.pack("=BBH4s8s", 16, socket.AF_INET, 0,
+        socket.inet_aton(a), b""))
+comment = b"security svc1 g-mbsf unencrypted"
+log = struct.pack("=IIBBH20s20sI", 7, 0, 47, 1, 0, b"", b"", 0)
+dst = pad(struct.pack("=BBHBBBB", 8 + len(log) + len(comment), 46, 0, 0,
+    len(comment), 0, 0) + log + comment)
+ifn = b"epair0b"
+ifp = pad(struct.pack("=BBHBBBB", 8 + len(ifn), 18, 0, 0, len(ifn), 0, 0) +
+    ifn)
+body = dst + sin("10.1.0.9") + sin("198.51.100.7") + ifp
+h = rt_msghdr()
+h.msglen = ctypes.sizeof(h) + len(body)
+h.version = 5
+h.type = 0x13
+h.index = 99
+h.flags = 0x8000
+h.addrs = 1 | 2 | 4 | 16
+a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+if os.fork() == 0:
+    a.close()
+    os.close(1)
+    b.sendall(bytes(h) + body)
+    select.select([b], [], [], 80)
+    open(d + "/closed", "w").close()
+    os._exit(0)
+b.close()
+socket.send_fds(socket.socket(fileno=1), [b"x"], [a.fileno()])
+EOF
+	DAEMON_ARGS="--sslproxy-dir $d/ssl/arcana" start_daemon
+	mv fake-helper fake-helper.real
+	cat > fake-helper <<EOS
+#!/bin/sh
+if [ "\$3" = rtsock-socket ]; then
+	echo "\$2 rtsock-socket" >> $d/rtsock.log
+	[ -f $d/norules ] && exit 3
+	exec python3 -I $d/rtsock.py $d
+fi
+exec $d/fake-helper.real "\$@"
+EOS
+	chmod +x fake-helper
+	# gw made: settled, its socket asked for and listened on.
+	printf 'gw2 5 new %s/gw2\ngw 4 new %s/gw\n' "$d" "$d" > jails
+	wait_match 'listening on the routing socket of the jail gw$' \
+	    cat daemon.out || atf_fail "not listened on: $(cat daemon.out)"
+	wait_match '"jail":"gw"' "$JGC" -c "$SOCK" sdwan ||
+	    atf_fail "no entry of the jail: $(cat daemon.out)"
+	atf_check -o match:'"rule":7,"action":"reject","src":"10.1.0.9","dst":"198.51.100.7","iface":"epair0b","comment":"security svc1 g-mbsf unencrypted","jail":"gw"' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"kind":"sdwan-security","jail":"gw","data":\{"seq":[0-9]+,"rule":7,"action":"reject","src":"10.1.0.9","dst":"198.51.100.7","iface":"epair0b","comment":"security svc1 g-mbsf unencrypted"\}' \
+	    "$JGC" -c "$SOCK" events
+	# Its log reset by the jail's own ipfw.
+	wait_match '^jexec 4 .*ipfw -q resetlog 7$' cat jexec.log ||
+	    atf_fail "not reset in the jail: $(cat jexec.log 2>&1)"
+	# gw2 has no such rules: never asked.
+	atf_check -o inline:'4 rtsock-socket\n' cat rtsock.log
+	atf_check test ! -e closed
+	# gw removed: its socket closed.
+	echo "gw2 5 new $d/gw2" > jails
+	wait_match . ls closed || atf_fail "the jail's socket not closed"
+	# Made again, its ipfw logging nothing there: asked, nothing
+	# listened on, no failure said.
+	touch norules
+	printf 'gw2 5 new %s/gw2\ngw 8 new %s/gw\n' "$d" "$d" > jails
+	wait_match '^8 rtsock-socket$' cat rtsock.log ||
+	    atf_fail "not asked: $(cat rtsock.log)"
+	sleep 1
+	atf_check -o inline:'1\n' grep -c 'listening on the routing socket' \
+	    daemon.out
+	atf_check -o not-match:'no routing socket in the jail' cat daemon.out
+}
+record_jail_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case probe_steer_burst cleanup
 probe_steer_burst_head()
 {
@@ -25268,6 +25400,7 @@ atf_init_test_cases()
 	atf_add_test_case probe_echo_ids
 	atf_add_test_case probe_open_backoff
 	atf_add_test_case probe_jail_sockets
+	atf_add_test_case record_jail
 	atf_add_test_case probe_steer_burst
 	atf_add_test_case probe_echo_demux
 	atf_add_test_case probe_views_swap

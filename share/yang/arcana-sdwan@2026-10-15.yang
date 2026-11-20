@@ -3361,6 +3361,12 @@ module arcana-sdwan {
             description
               "The rule's comment: the policy.";
           }
+          leaf jail {
+            type string;
+            description
+              "The vnet jail whose own ipfw logged it, to its own
+               routing socket; none for the host's.";
+          }
         }
       }
       list key {

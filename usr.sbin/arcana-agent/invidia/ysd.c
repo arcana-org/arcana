@@ -1744,6 +1744,7 @@ ysd_state_from_json(const char *json, cbl_yarena *a,
 			rl[k].destination = yj_str(a, e, "dst");
 			rl[k].interface = yj_str(a, e, "iface");
 			rl[k].comment = yj_str(a, e, "comment");
+			rl[k].jail = yj_str(a, e, "jail");
 			k++;
 		}
 		re->last.n = k;

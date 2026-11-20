@@ -93,6 +93,19 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### A vnet jail's routing socket recorded; agent 0.347.0, console 0.489.0
+
+- The security record now hears what a vnet jail's own ipfw logs to the
+  jail's routing socket (logdst rtsock), such as a bound MBSF's reset of
+  cleartext HTTP in a vnet jail's SSLproxy: the agent opens one routing
+  socket inside each vnet jail whose rules log there (made by its helper
+  in the jail) and closes it when the jail is removed or its rules stop
+  logging there.
+- Entries and sdwan-security events from a jail carry its name (the
+  event's jail; arcana-sdwan's record/last/jail, SID 96696).
+- Nothing to do on deployed hosts; a jail's SSL inspection rules start
+  being recorded once the agent sees the jail running.
+
 ### IPv6 fwd and the kernel, pkg bootstrap in a jail; agent 0.346.0, console 0.488.0
 
 - arcana-host's host says the running kernel's version line

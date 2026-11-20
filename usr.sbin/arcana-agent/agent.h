@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.346.0"
+#define	ARCANA_AGENT_VERSION	"0.347.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1391,6 +1391,7 @@ size_t		 speeder_rates(struct speeder_rate *, size_t, unsigned int);
 /* luxuria/sslproxy.c: SSL inspection by SSLproxy, a plugin. */
 void		 do_sslproxy(struct work *, struct json_rsp *);
 void		 sslproxy_watch_start(void);
+bool		 sslproxy_jail_rtsock(int);
 const char	*sslproxy_check(const struct arc_job_spec *);
 int		 sslproxy_category_hosts(const struct ucl_object_s *,
 		    const char **, size_t);
@@ -1587,6 +1588,11 @@ char		*faults_control_json(void);
 /* gula/record.c: what the security rules logged, a day of it. */
 void		 record_start(void);
 void		 record_json(struct ucl_object_s *);
+/* A vnet jail's routing socket listened on too, where its ipfw logs
+ * there (recheck: asked again while listened on); closed when it goes. */
+int		 record_jail_sync(const char *, int, bool);
+void		 record_jail_gone(int);
+int		 rtsock_logged(void);		/* the helper's, in the jail */
 int		 do_process(struct work *, uint32_t, struct json_rsp *);
 
 /* superbia/sysctl.c: the kernel's values, as sysctl_read() gives them
@@ -1866,6 +1872,7 @@ int		 helper_ipfw_socket(int);
 int		 helper_bmp_socket(int, int, int);
 int		 helper_pfkey_socket(int);
 int		 helper_unix_socket(int, const char *);
+int		 helper_rtsock_socket(int, bool *);
 unsigned int	 plugins_here(void);
 int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);

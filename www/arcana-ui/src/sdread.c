@@ -742,6 +742,7 @@ read_json(const ucl_object_t *sd, const ucl_object_t *pr,
 			cp(c, "dst", w, "destination");
 			cp(c, "iface", w, "interface");
 			cp(c, "comment", w, "comment");
+			cp(c, "jail", w, "jail");
 			ucl_array_append(arr, c);
 		}
 		put(o, "last", arr);

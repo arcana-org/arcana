@@ -1423,6 +1423,10 @@ rules_load(struct work *w, const char *const *files, size_t nf,
 	(void)ipfw(w, NULL, "set", "enable", SET(FW_SET), NULL);
 	(void)ipfw(w, NULL, "-f", "delete", "set", SET(FW_STAGE));
 	rc = 0;
+	/* A vnet jail's reset of cleartext HTTP logs to its own routing
+	 * socket: the record listens there too. */
+	if (w->jail != NULL)
+		(void)record_jail_sync(w->jail, w->jid, false);
 out:
 	if (rc == 0)
 		step_end(w, step, true, NULL);
@@ -1459,6 +1463,10 @@ rules_unload(struct work *w, const char **errp)
 	if (ipfw(w, errp, "-f", "delete", "set", SET(FW_SET)) != 0)
 		return (-1);
 	(void)ipfw(w, NULL, "-f", "delete", "set", SET(FW_STAGE));
+	/* A vnet jail's: its routing socket no longer listened on, unless
+	 * another of its rules logs there. */
+	if (w->jail != NULL)
+		(void)record_jail_sync(w->jail, w->jid, true);
 	return (0);
 }
 
@@ -1729,7 +1737,7 @@ watch_vnets(struct work *w)
 	struct krule	*k;
 	const char	*file, *e;
 	size_t		 n, j, nk, i;
-	bool		 ours, any;
+	bool		 ours, any, logs;
 
 	if (jails_running(w, &list, &n, &e) != 0)
 		return;
@@ -1742,8 +1750,17 @@ watch_vnets(struct work *w)
 		w->jroot = list[j].path;
 		file = dir_file(w, "fwd.rules");
 		if (size_of(w, file) > 0 && kernel_rules(w, &k, &nk) == 0) {
-			for (ours = false, i = 0; i < nk; i++)
+			for (ours = logs = false, i = 0; i < nk; i++) {
 				ours |= k[i].set == FW_SET && k[i].ours;
+				logs |= k[i].set == FW_SET && strstr(k[i].text,
+				    " logdst ") != NULL && strstr(k[i].text,
+				    "rtsock") != NULL;
+			}
+			/* Its reset of cleartext HTTP logged where the
+			 * record listens (the jail's rc loaded it). */
+			if (logs)
+				(void)record_jail_sync(list[j].name,
+				    list[j].jid, false);
 			if (!ours && kernel_free(w, k, nk, &any) == NULL &&
 			    running(w)) {
 				if (rules_load(w, &file, 1, &e) == 0) {
@@ -1763,6 +1780,31 @@ watch_vnets(struct work *w)
 		w->jail = w->jroot = NULL;
 		w->jid = 0;
 	}
+}
+
+/*
+ * Whether the vnet jail jid's kept rules (its fwd.rules, beneath its
+ * root) log to its routing socket: a bound MBSF's reset of cleartext
+ * HTTP, which the record listens for there (gula/record.c).
+ */
+bool
+sslproxy_jail_rtsock(int jid)
+{
+	struct work	 w;
+	const char	*e;
+	char		 name[MAXHOSTNAMELEN], vnet[16], *text;
+	bool		 logs;
+
+	if (jail_jid_name(jid, name, sizeof(name), vnet, sizeof(vnet)) != 0 ||
+	    strcmp(vnet, "new") != 0)
+		return (false);
+	work_init(&w);
+	e = NULL;
+	logs = scope_enter(&w, name, &e) == 0 && (text = scope_slurp(&w,
+	    dir_file(&w, "fwd.rules"), NULL)) != NULL && strstr(text,
+	    " log logdst rtsock ") != NULL;
+	work_free(&w);
+	return (logs);
 }
 
 /*

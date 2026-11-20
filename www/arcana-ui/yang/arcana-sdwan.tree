@@ -967,6 +967,7 @@ module: arcana-sdwan
      |  |     +--ro destination?   string
      |  |     +--ro interface?     string
      |  |     +--ro comment?       string
+     |  |     +--ro jail?          string
      |  +--ro key* [interface]
      |  |  +--ro interface      string
      |  |  +--ro public?        string

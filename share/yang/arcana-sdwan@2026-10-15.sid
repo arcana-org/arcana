@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-sdwan",
     "module-revision": "2026-10-15",
-    "sid-file-version": 15,
+    "sid-file-version": 16,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 72 100, 200, 81 000, 200, 93 200, 100, 95 600, 300, 96 600, 100, and 97 200, 100 (listed first, so that new items go there).",
     "dependency-revision": [
       {
@@ -4532,6 +4532,11 @@
         "namespace": "data",
         "identifier": "/arcana-sdwan:sdwan/proxy-instance/spec/zones/mbsf/pass-ports",
         "sid": "96695"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-sdwan:sdwan/state/record/last/jail",
+        "sid": "96696"
       },
       {
         "namespace": "data",

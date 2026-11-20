@@ -196,9 +196,12 @@ One SSLproxy a jail, beside the host's: a host may run several.
   `pwa_security_tls_jail` (a jail picked, its CA, the form, the jail's
   files and its ipfw's rules).
 
-Left: a vnet jail's cleartext-HTTP reset logs to the jail's own
-routing socket, which the agent's record does not listen on (no SEN
-from it yet); the fwd to a jail's address and getsockname(2) there were
+A vnet jail's cleartext-HTTP reset logs to the jail's own routing
+socket: the agent's record listens there too (gula/record.c), on a
+socket the helper makes in the jail where its ipfw has a rule logging
+there, and tags the entry and the event with the jail.
+
+Left: the fwd to a jail's address and getsockname(2) there were
 read from the kernel, not tried on one.
 
 ## The URL filter's move (planned)

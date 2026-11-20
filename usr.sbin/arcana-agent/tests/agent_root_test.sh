@@ -3214,6 +3214,73 @@ sdwan_record_cleanup()
 	true
 }
 
+atf_test_case sdwan_record_jail cleanup
+sdwan_record_jail_head()
+{
+	atf_set "descr" "what a vnet jail's own ipfw logs to its routing socket is the agent's record too: SSL inspection's rules kept for the jail (its fwd.rules beneath its root), the jail settled (an epair end up in it), the helper's socket made in its network where its ipfw logs there, a ping in the jail, the entry and the event tagged with the jail; the socket closed when the jail is removed, which then leaves (a socket held would keep it dying)"
+	atf_set "require.user" "root"
+	atf_set "is.exclusive" "true"
+}
+sdwan_record_jail_body()
+{
+	local e
+
+	ipfw list >/dev/null 2>&1 || atf_skip "no ipfw here"
+	jls -d -j arcw_rj >/dev/null 2>&1 && atf_skip "a jail arcw_rj is there already"
+	# The jail's root is the host's: SSL inspection's kept rules, at
+	# the directory the agent is given, are the jail's.
+	mkdir -p ssl
+	echo "add 7 set 26 reset log logdst rtsock logamount 1000 tcp from any to not me 80 in recv lo0 // security svc1 g-mbsf unencrypted" \
+	    > ssl/fwd.rules
+	DAEMON_ARGS="--sslproxy-dir $(pwd)/ssl --sslproxy-watch 0" start_daemon
+	atf_check -o ignore jail -c name=arcw_rj vnet persist path=/
+	jexec arcw_rj ipfw list >/dev/null 2>&1 || atf_skip "no ipfw in a vnet jail"
+	atf_check jexec arcw_rj ifconfig lo0 inet 127.0.0.1/8 up
+	atf_check -o ignore jexec arcw_rj ipfw -q add 100 count log logdst rtsock logamount 100 icmp from 127.0.0.1 to 127.0.0.1 // security lab guard jail
+	atf_check -o ignore jexec arcw_rj ipfw -q add 200 allow ip from any to any
+	e=$(ifconfig epair create) || atf_skip "no epair"
+	e=${e%a}
+	echo "$e" > epair
+	atf_check ifconfig ${e}b vnet arcw_rj
+	atf_check jexec arcw_rj ifconfig ${e}b up
+	ok=false
+	for i in $(seq 1 100); do
+		grep -q 'listening on the routing socket of the jail arcw_rj$' \
+		    daemon.out && { ok=true; break; }
+		sleep 0.2
+	done
+	$ok || atf_fail "the jail's routing socket not listened on: $(cat daemon.out)"
+	last=$("$JGC" -c "$SOCK" events | sed -E 's/^\{"last":([0-9]+).*/\1/')
+	atf_check -o ignore jexec arcw_rj ping -c 1 -q 127.0.0.1
+	sleep 1
+	atf_check -o match:'"rule":100,"action":"count","src":"127.0.0.1","dst":"127.0.0.1","iface":"lo0","comment":"security lab guard jail","jail":"arcw_rj"' \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o match:'"kind":"sdwan-security","jail":"arcw_rj","data":\{"seq":[0-9]+,"rule":100,"action":"count","src":"127.0.0.1","dst":"127.0.0.1","iface":"lo0","comment":"security lab guard jail"\}' \
+	    "$JGC" -c "$SOCK" events "$last"
+	# Interfaces stripped first (vnet teardown), then removed: gone,
+	# not held dying by the agent's socket.
+	atf_check ifconfig ${e}b -vnet arcw_rj
+	atf_check ifconfig ${e}a destroy
+	rm -f epair
+	atf_check jail -r arcw_rj
+	for i in $(seq 1 100); do
+		jls -d -j arcw_rj >/dev/null 2>&1 || return 0
+		sleep 0.2
+	done
+	atf_fail "the jail stays dying: $(jls -d -j arcw_rj 2>&1)"
+}
+sdwan_record_jail_cleanup()
+{
+	if [ -f epair ]; then
+		e=$(cat epair)
+		ifconfig ${e}b -vnet arcw_rj 2>/dev/null
+		ifconfig ${e}a destroy 2>/dev/null
+	fi
+	jail -r arcw_rj 2>/dev/null
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	true
+}
+
 atf_test_case resnapshot cleanup
 resnapshot_head()
 {
@@ -6755,6 +6822,7 @@ atf_init_test_cases()
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback
 	atf_add_test_case sdwan_record
+	atf_add_test_case sdwan_record_jail
 	atf_add_test_case jail_make
 	atf_add_test_case zfs_key
 	atf_add_test_case carp

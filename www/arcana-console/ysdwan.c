@@ -2054,6 +2054,7 @@ read_json(const struct arcana_sdwan_sdwan *sd,
 			put_str(c, "dst", l->destination);
 			put_str(c, "iface", l->interface);
 			put_str(c, "comment", l->comment);
+			put_str(c, "jail", l->jail);
 			ucl_array_append(arr, c);
 		}
 		put(o, "last", arr);
