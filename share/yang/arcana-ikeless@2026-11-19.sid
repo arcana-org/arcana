@@ -1,0 +1,91 @@
+{
+  "ietf-sid-file:sid-file": {
+    "module-name": "arcana-ikeless",
+    "module-revision": "2026-11-19",
+    "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 98 800, 100.",
+    "dependency-revision": [
+      {
+        "module-name": "ietf-i2nsf-ikeless",
+        "module-revision": "2021-07-14"
+      }
+    ],
+    "assignment-range": [
+      {
+        "entry-point": "98800",
+        "size": "100"
+      }
+    ],
+    "item": [
+      {
+        "namespace": "module",
+        "identifier": "arcana-ikeless",
+        "sid": "98800"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs",
+        "sid": "98801"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair",
+        "sid": "98802"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair/generation",
+        "sid": "98803"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair/name",
+        "sid": "98804"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair/public",
+        "sid": "98805"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/arcana-ikeless:jail",
+        "sid": "98806"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived",
+        "sid": "98807"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived/direction",
+        "sid": "98808"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived/epoch",
+        "sid": "98809"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived/key-pair",
+        "sid": "98810"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived/lifetime",
+        "sid": "98811"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry/ipsec-sa-config/arcana-ikeless:derived/peer",
+        "sid": "98812"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/ietf-i2nsf-ikeless:ipsec-ikeless/spd/spd-entry/arcana-ikeless:jail",
+        "sid": "98813"
+      }
+    ]
+  }
+}

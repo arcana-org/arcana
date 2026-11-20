@@ -15037,7 +15037,7 @@ ATF_TC_BODY(sdwan_uswe, tc)
 {
 	struct authn	a;
 	struct resp	r;
-	char		sa[16], sb[16], doc[8192], t1[8192], t2[400];
+	char		sa[16], sb[16], doc[8192], t1[8192], t2[800];
 
 	need_fibs(2);
 	uswe_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc));
@@ -15050,8 +15050,11 @@ ATF_TC_BODY(sdwan_uswe, tc)
 	resp_free(&r);
 	r3_keep(doc);
 	/* The plan: ipsec100 and ipsec101 with their reqid, a key pair each
-	 * before, the SAs derived after from the far end's public half,
-	 * GCM without a separate authentication, ESN and UDP by default. */
+	 * before (a key-pairs entry of RFC 9061's lists), the SAs after,
+	 * entries the agent derives from the pair and the far end's public
+	 * half (PLAN-SDN-YANG 6.2.5), GCM without a separate integrity, a
+	 * window of 1024 packets, ESN and UDP by default; taken out by a
+	 * YANG Patch, a rotation's half done too. */
 	r3_sdwan("plan", &r);
 	EXPECT(&r, 200);
 	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"if-create\",\"interface\":"
@@ -15060,21 +15063,35 @@ ATF_TC_BODY(sdwan_uswe, tc)
 	    "\"reqid\":100") != NULL, "%s", r.body);
 	ATF_CHECK(strstr(r.body, "\"key\":\"uswekey:ipsec100\",\"phase\":2") !=
 	    NULL);
-	ATF_CHECK(strstr(r.body, "\"kind\":\"ipsec-sa\",\"verb\":\"key\","
-	    "\"interface\":\"ipsec101\"") != NULL);
-	snprintf(t2, sizeof(t2), "\"kind\":\"ipsec-sa\",\"verb\":\"derive\","
-	    "\"interface\":\"ipsec100\",\"reqid\":100,\"tunnel_local\":"
-	    "\"192.0.2.1\",\"tunnel_remote\":\"192.0.2.2\",\"args\":[\"peer\","
-	    "\"${uswe:%s:ipsec101}\",\"enc\",\"aes-gcm-16\",\"encap\",\"esn\","
-	    "\"epoch\",\"0\",\"lifetime\",\"86400\"]", sb);
+	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"edit\",\"method\":\"PATCH\","
+	    "\"path\":\"ietf-i2nsf-ikeless:ipsec-ikeless\",\"body\":{"
+	    "\"ietf-i2nsf-ikeless:ipsec-ikeless\":{\"arcana-ikeless:key-pairs\":"
+	    "{\"key-pair\":[{\"name\":\"ipsec101\"}]}}}") != NULL, "%s", r.body);
+	snprintf(t2, sizeof(t2), "{\"name\":\"uswe.ipsec100.out\",\"reqid\":"
+	    "100,\"ipsec-sa-config\":{\"ext-seq-num\":true,"
+	    "\"anti-replay-window-size\":1024,\"traffic-selector\":{"
+	    "\"local-prefix\":\"0.0.0.0/0\",\"remote-prefix\":\"0.0.0.0/0\"},"
+	    "\"mode\":\"tunnel\",\"esp-sa\":{"
+	    "\"encryption\":{\"encryption-algorithm\":20}},\"tunnel\":{"
+	    "\"local\":\"192.0.2.1\",\"remote\":\"192.0.2.2\"},"
+	    "\"encapsulation-type\":{\"espencap\":\"espinudp\",\"sport\":4500,"
+	    "\"dport\":4500},\"arcana-ikeless:derived\":{\"key-pair\":"
+	    "\"ipsec100\",\"peer\":\"${uswe:%s:ipsec101}\",\"epoch\":0,"
+	    "\"direction\":\"outbound\",\"lifetime\":86400}}}", sb);
 	ATF_CHECK_MSG(strstr(r.body, t2) != NULL, "%s", r.body);
-	ATF_CHECK(strstr(r.body, "\"verb\":\"clear\",\"interface\":\"ipsec100\"")
-	    != NULL);
+	ATF_CHECK(strstr(r.body, "\"name\":\"uswe.ipsec100.in\",\"reqid\":100,"
+	    "\"ipsec-sa-config\":{") != NULL);
+	ATF_CHECK(strstr(r.body, "\"tunnel\":{\"local\":\"192.0.2.2\","
+	    "\"remote\":\"192.0.2.1\"}") != NULL);
+	ATF_CHECK(strstr(r.body, "\"operation\":\"remove\",\"target\":"
+	    "\"/sad/sad-entry=uswe.ipsec100.in.next\"") != NULL);
+	ATF_CHECK(strstr(r.body, "\"kind\":\"ipsec-sa\"") == NULL);
 	ATF_CHECK(strstr(r.body, "\"kind\":\"ipsec\",\"verb\":\"conn\"") == NULL);
 	resp_free(&r);
 	/* Applied: the pairs made (one agent stands for both ends, so two
-	 * files), the far halves read from the sdwan read, the two SAs each
-	 * way set by PF_KEY, mirrored. */
+	 * files), the far halves read from the sdwan read, the SAs put in
+	 * by PF_KEY; each end's out the other's in, derived the same on
+	 * this one agent, so one SA each way. */
 	http("POST", CC "sdwan/apply", accepting(false), &r);
 	EXPECT(&r, 200);
 	resp_free(&r);
@@ -15087,14 +15104,23 @@ ATF_TC_BODY(sdwan_uswe, tc)
 	ATF_CHECK(system("grep -q '^ipsec100 create reqid 100' ifconfig.log && "
 	    "grep -q '^ipsec101 create reqid 101' ifconfig.log") == 0);
 	ATF_CHECK(system("grep -c '^add 192.0.2.1 192.0.2.2 esp 0x[0-9a-f]* -m "
-	    "tunnel -u 10[01] -r 128 -esn -natt 192.0.2.1\\[4500\\] 192.0.2.2"
-	    "\\[4500\\] -E aes-gcm-16 0x[0-9a-f]*' setkey.conf | grep -q '^2$'")
+	    "tunnel -u 10[01] -r 128 -esn .*-natt 192.0.2.1\\[4500\\] 192.0.2.2"
+	    "\\[4500\\] -E aes-gcm-16 0x[0-9a-f]*' setkey.conf | grep -q '^1$'")
 	    == 0);
-	ATF_CHECK(system("grep '^add 192.0.2.1 192.0.2.2 ' setkey.conf | sed "
-	    "'s/-u 10[01]/-u N/' | sort -u | wc -l | grep -q '^ *1$'") == 0);
-	/* Its SPIs are the same both ways: what a derive on each end set. */
-	ATF_CHECK(system("grep '^add 192.0.2.2 192.0.2.1 ' setkey.conf | sed "
-	    "'s/-u 10[01]/-u N/' | sort -u | wc -l | grep -q '^ *1$'") == 0);
+	ATF_CHECK(system("grep -c '^add 192.0.2.2 192.0.2.1 esp 0x[0-9a-f]* -m "
+	    "tunnel -u 10[01] -r 128 -esn .*-E aes-gcm-16 ' setkey.conf | "
+	    "grep -q '^1$'") == 0);
+	/* Kept by the agent with the keys it derived; its lists tell the
+	 * SAs by their names, the pairs with their halves, no key. */
+	ATF_CHECK(system("test -f ikeless.cbor") == 0);
+	snprintf(t2, sizeof(t2), FLEET "%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    sa);
+	rc_get(t2, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"uswe.ipsec100.out\"") !=
+	    NULL && strstr(r.body, "\"name\":\"ipsec101\",\"public\":\"") !=
+	    NULL && strstr(r.body, "\"key\":") == NULL, "%s", r.body);
+	resp_free(&r);
 }
 
 CONSOLE_TC(sdwan_uswe_rekey, "SD-WAN with a uswe tunnel: its keys turned "
@@ -15109,12 +15135,15 @@ ATF_TC_BODY(sdwan_uswe_rekey, tc)
 	need_fibs(2);
 	uswe_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc));
 	uswe_apply(doc);
-	/* The keys turned by hand (Mplify 119 R110, R112): a next pair on
-	 * each end, the new SAs from them put in inbound on both, then
-	 * outbound, then the old taken out and the next pair made the pair;
-	 * the apply refused meanwhile; the rotation's state kept. */
+	/* The keys turned by hand (Mplify 119 R110, R112, RFC 9061 Appendix
+	 * D.2), by edits of the lists: a new pair on each end, the new
+	 * inbound SAs on both beside the old, then the outbound, then the
+	 * old taken out and the new made the tunnel's own; the apply
+	 * refused meanwhile; the rotation's state kept. */
 	ATF_CHECK(system("cp sdwan-key-ipsec100.pem k100.was && cp "
 	    "sdwan-key-ipsec101.pem k101.was") == 0);
+	ATF_CHECK(system("grep '^add ' setkey.conf | awk '{print $5}' | sort "
+	    "> spi.was") == 0);
 	rc_act(CC "sdwan/rekey", "\"tunnel\":\"acme/none\"", &r);
 	EXPECT(&r, 404);
 	resp_free(&r);
@@ -15140,26 +15169,202 @@ ATF_TC_BODY(sdwan_uswe_rekey, tc)
 	ATF_CHECK(jstr(&r, "rekeying") != NULL && strcmp(jstr(&r, "rekeying"),
 	    "false") == 0);
 	resp_free(&r);
-	/* Eight SAs added in all (four, then the new four: the two inbound
-	 * ones, then the two outbound, each with the old outbound taken
-	 * out after it), then the two old inbound taken out: in that
-	 * order; the new SPIs not the old; the next pairs made the pairs. */
-	ATF_CHECK(system("grep -c '^add ' setkey.conf | grep -q '^8$'") == 0);
-	ATF_CHECK(system("grep -c '^delete ' setkey.conf | grep -q '^4$'") == 0);
-	ATF_CHECK(system("grep '^add \\|^delete ' setkey.conf | sed -n '5,12p' | "
-	    "cut -c1-3 | tr -d '\\n' | grep -q '^addaddadddeladddeldeldel$'") ==
-	    0);
-	ATF_CHECK(system("grep '^add \\|^delete ' setkey.conf | sed -n '5,6p' | "
-	    "grep -c '^add 192.0.2.2 192.0.2.1 .* -u 100 \\|^add 192.0.2.1 "
+	/* The two SAs of the apply, then the new inbound ones, one each way
+	 * (from the far end to this one: the out of either end is the in of
+	 * the other on this one agent), before anything is taken out; the
+	 * new SPIs not the old; the pairs made anew, the ones before kept. */
+	ATF_CHECK(system("grep '^add \\|^delete ' setkey.conf | sed -n '3,4p' "
+	    "| cut -c1-3 | tr -d '\\n' | grep -q '^addadd$'") == 0);
+	ATF_CHECK(system("grep '^add \\|^delete ' setkey.conf | sed -n '3,4p' "
+	    "| grep -c '^add 192.0.2.2 192.0.2.1 .* -u 100 \\|^add 192.0.2.1 "
 	    "192.0.2.2 .* -u 101 ' | grep -q '^2$'") == 0);
-	ATF_CHECK(system("grep '^add \\|^delete ' setkey.conf | sed -n '8p;10p' | "
-	    "grep -c '^delete 192.0.2.1 192.0.2.2 \\|^delete 192.0.2.2 192.0.2.1 "
-	    "' | grep -q '^2$'") == 0);
-	ATF_CHECK(system("grep '^add ' setkey.conf | sed 's/-u 10[01]//' | awk "
-	    "'{print $5}' | sort -u | wc -l | grep -q '^ *4$'") == 0);
-	ATF_CHECK(system("test ! -e sdwan-key-ipsec100-next.pem && ! cmp -s "
+	ATF_CHECK(system("grep '^add ' setkey.conf | sed -n '3,4p' | awk "
+	    "'{print $5}' | sort > spi.new && ! grep -qxFf spi.was spi.new") ==
+	    0);
+	ATF_CHECK(system("grep -c '^delete ' setkey.conf | grep -q '^0$'") !=
+	    0);
+	ATF_CHECK(system("test -f sdwan-key-ipsec100-prev.pem && ! cmp -s "
 	    "k100.was sdwan-key-ipsec100.pem && ! cmp -s k101.was "
-	    "sdwan-key-ipsec101.pem") == 0);
+	    "sdwan-key-ipsec101.pem && cmp -s k100.was "
+	    "sdwan-key-ipsec100-prev.pem") == 0);
+	/* The tunnel's own names again, no rotation's left. */
+	snprintf(doc, sizeof(doc), FLEET "%s/ietf-i2nsf-ikeless:"
+	    "ipsec-ikeless", sa);
+	rc_get(doc, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"uswe.ipsec100.out\"") !=
+	    NULL && strstr(r.body, ".next\"") == NULL, "%s", r.body);
+	resp_free(&r);
+}
+
+/*
+ * A far end that lies: a stand-in between the console and the agent on
+ * ./liar.sock, passing every byte but the 44 of each public half the
+ * agent tells (each CBOR text of 44 bytes of base64), which it makes a
+ * crafted one of the same length (so no frame changes): one that would
+ * close the string and open members of its own, were it put in an
+ * edit's text.
+ */
+static pid_t
+liar_agent(void)
+{
+	static const char	 crafted[] = "x\",\"spi\":1,\"a\":\""
+	    "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+	struct sockaddr_un	 sun;
+	struct pollfd		 pf[2];
+	char			 buf[65536], *p, *q;
+	ssize_t			 n;
+	pid_t			 pid;
+	int			 s, c, u;
+
+	ATF_REQUIRE(strlen(crafted) == 44);
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	strlcpy(sun.sun_path, "liar.sock", sizeof(sun.sun_path));
+	ATF_REQUIRE((s = socket(AF_UNIX, SOCK_STREAM, 0)) != -1);
+	ATF_REQUIRE(bind(s, (struct sockaddr *)&sun, sizeof(sun)) == 0);
+	ATF_REQUIRE(listen(s, 64) == 0);
+	ATF_REQUIRE((pid = fork()) != -1);
+	if (pid != 0) {
+		close(s);
+		return (pid);
+	}
+	for (;;) {
+		if ((c = accept(s, NULL, NULL)) == -1)
+			continue;
+		if (fork() != 0) {
+			close(c);
+			continue;
+		}
+		strlcpy(sun.sun_path, "jgd.sock", sizeof(sun.sun_path));
+		if ((u = socket(AF_UNIX, SOCK_STREAM, 0)) == -1 || connect(u,
+		    (struct sockaddr *)&sun, sizeof(sun)) == -1)
+			_exit(1);
+		pf[0].fd = c;
+		pf[1].fd = u;
+		pf[0].events = pf[1].events = POLLIN;
+		while (poll(pf, 2, -1) > 0) {
+			if (pf[0].revents != 0) {
+				if ((n = read(c, buf, sizeof(buf))) <= 0 ||
+				    write(u, buf, (size_t)n) != n)
+					_exit(0);
+			}
+			if (pf[1].revents != 0) {
+				if ((n = read(u, buf, sizeof(buf))) <= 0)
+					_exit(0);
+				/* Each text of 44 bytes that is base64 (a
+				 * CBOR text string's head 0x78 0x2c). */
+				for (p = buf; (q = memmem(p, (size_t)(buf + n - p),
+				    "\x78\x2c", 2)) != NULL; p = q + 1)
+					if (buf + n - q >= 46 && q[45] == '=' &&
+					    strspn(q + 2, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+					    "abcdefghijklmnopqrstuvwxyz0123456789+/") ==
+					    43)
+						memcpy(q + 2, crafted, 44);
+				if (write(c, buf, (size_t)n) != n)
+					_exit(0);
+			}
+		}
+		_exit(0);
+	}
+}
+
+CONSOLE_TC(sdwan_uswe_liar, "SD-WAN with a uswe tunnel whose far end tells "
+    "a public half that is none: the apply refuses, nothing sent")
+ATF_TC_BODY(sdwan_uswe_liar, tc)
+{
+	struct authn	a;
+	struct resp	r;
+	char		sa[16], sb[16], doc[8192];
+	pid_t		liar;
+
+	need_fibs(2);
+	start(tc, 0, NULL);
+	enrol(&a);
+	liar = liar_agent();
+	/* b by the liar: its halves read through it. */
+	r3_host("a", "jgd.sock", sa, sizeof(sa));
+	r3_host("b", "liar.sock", sb, sizeof(sb));
+	uswe_doc(sa, sb, doc, sizeof(doc));
+	r3_keep(doc);
+	http("POST", CC "sdwan/apply", accepting(false), &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	sdwan_wait(&r);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "done") != 0 &&
+	    strstr(r.body, "that is none") != NULL, "%s", r.body);
+	resp_free(&r);
+	(void)kill(liar, SIGKILL);
+	/* No SA left, none named in the lists (what the other end's step
+	 * put in, the rollback took out), and no crafted member anywhere. */
+	ATF_CHECK(system("[ \"$(grep -c '^add ' setkey.conf)\" = "
+	    "\"$(grep -c '^delete ' setkey.conf)\" ]") == 0);
+	ATF_CHECK(system("! grep -q 'esp 0x1 ' setkey.conf") == 0);	snprintf(doc, sizeof(doc), FLEET "%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    sa);
+	rc_get(doc, &r);
+	ATF_CHECK_MSG(strstr(r.body, "uswe.ipsec") == NULL && strstr(r.body,
+	    "AAAAAAAAAAAAAAAAAAAAA") == NULL, "%s", r.body);
+	resp_free(&r);
+}
+
+/*
+ * RFC 9061's keys are nacm:default-deny-all: an SA's keys, a derived
+ * SA's the agent put in running among them, reach no viewer of the host
+ * through the console, in running or the operational datastore; the
+ * entry itself does.
+ */
+CONSOLE_TC(ikeless_keys_viewer, "the IKE-less lists' keys: none to a "
+    "viewer, in running or the operational datastore")
+ATF_TC_BODY(ikeless_keys_viewer, tc)
+{
+	struct authn	 b;
+	struct resp	 r;
+	char		 data[256], cand[256], path[512], rpc[300];
+
+	rc_lab(tc, data, cand, sizeof(cand));
+	/* An SA with its keys, put in and committed by the owner. */
+	snprintf(path, sizeof(path), "%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    cand);
+	http("PUT", path, "{\"ietf-i2nsf-ikeless:ipsec-ikeless\":{\"sad\":{"
+	    "\"sad-entry\":[{\"name\":\"k1\",\"reqid\":\"0\",\"ipsec-sa-config\":"
+	    "{\"spi\":4660,\"ext-seq-num\":false,\"anti-replay-window-size\":64,"
+	    "\"traffic-selector\":{\"local-prefix\":\"192.0.2.1/32\","
+	    "\"remote-prefix\":\"192.0.2.2/32\"},\"mode\":\"transport\","
+	    "\"esp-sa\":{\"encryption\":{\"encryption-algorithm\":12,\"key\":"
+	    "\"00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff\"},"
+	    "\"integrity\":{\"integrity-algorithm\":2,\"key\":"
+	    "\"01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67\"}}}}]"
+	    "}}}", &r);
+	ATF_REQUIRE_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	snprintf(rpc, sizeof(rpc), "%s/ietf-netconf:commit", data);
+	http("POST", rpc, "{\"ietf-netconf:input\":{}}", &r);
+	ATF_REQUIRE_MSG(r.status == 204 || r.status == 200, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	/* The owner reads its entry. */
+	snprintf(path, sizeof(path), "/restconf/ds/ietf-datastores:running/"
+	    "arcana-fleet:fleet/host=%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    data + strlen(FLEET));
+	rc_get(path, &r);
+	ATF_REQUIRE_MSG(r.status == 200 && strstr(r.body, "\"k1\"") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* A viewer: the entry, never a key. */
+	r1_role("look", "member", "viewer");
+	cc_user(&b, "vic", "\"role\":[\"look\"]", -8);
+	rc_get(path, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "\"k1\"") != NULL &&
+	    strstr(r.body, "\"key\"") == NULL && strstr(r.body, "00:11:22") ==
+	    NULL, "%d %s", r.status, r.body);
+	resp_free(&r);
+	snprintf(path, sizeof(path), "%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    data);
+	rc_get(path, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "\"key\"") == NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
 }
 
 /* Two edges on one agent: the host, and its vnet jail gw (@A/gw). */
@@ -15435,10 +15640,13 @@ ATF_TC_BODY(sdwan_jail, tc)
 	r3_keep(doc);
 	r3_sdwan("plan", &r);
 	EXPECT(&r, 200);
+	/* The jail's end's pair and SAs the host's lists', of the jail's
+	 * network: the pair ipsec101@gw, the entries named by it. */
 	ATF_CHECK_MSG(strstr(r.body, "\"kind\":\"rtadvd\",\"interface\":"
-	    "\"epair1b\"") != NULL && strstr(r.body, "\"kind\":\"ipsec-sa\","
-	    "\"verb\":\"key\",\"interface\":\"ipsec101\"") != NULL, "%s",
-	    r.body);
+	    "\"epair1b\"") != NULL && strstr(r.body, "\"key-pair\":[{"
+	    "\"name\":\"ipsec101@gw\"}]") != NULL && strstr(r.body,
+	    "{\"name\":\"uswe.ipsec101@gw.out\",\"reqid\":101,"
+	    "\"arcana-ikeless:jail\":\"gw\",") != NULL, "%s", r.body);
 	resp_free(&r);
 	ATF_REQUIRE(system("mkdir -p jroot$(pwd)") == 0);
 	(void)unlink("jexec.log");
@@ -15460,7 +15668,15 @@ ATF_TC_BODY(sdwan_jail, tc)
 	 * the host's by its own; the SAs derived from each other's half. */
 	ATF_CHECK_MSG(system("test -f sdwan-key-ipsec100.pem && test -f "
 	    "sdwan-key-ipsec101@gw.pem && ! test -f sdwan-key-ipsec101.pem") ==
-	    0, "the jail's key pair is not its own");
+	    0, "the jail's key pair is not its own");	/* The jail's SAs by its name, the jail's in the host's lists. */
+	snprintf(t1, sizeof(t1), FLEET "%s/ietf-i2nsf-ikeless:ipsec-ikeless",
+	    sa);
+	rc_get(t1, &r);
+	ATF_CHECK_MSG(strstr(r.body, "\"name\":\"uswe.ipsec101@gw.out\"") !=
+	    NULL || strstr(r.body, "\"name\":\"uswe.ipsec101@gw.in\"") !=
+	    NULL, "%s", r.body);
+	ATF_CHECK(strstr(r.body, "\"arcana-ikeless:jail\":\"gw\"") != NULL);
+	resp_free(&r);
 }
 
 /*
@@ -18157,9 +18373,11 @@ ATF_TC_BODY(sdwan_apply_plan, tc)
 	ATF_CHECK_MSG(strstr(r.body, t2) != NULL, "%s", r.body);
 	ATF_CHECK_MSG(strstr(r.body, "\"key\":\"stampkey:gif102\",\"phase\":2,"
 	    "\"title\":\"gif102: its key pair, X25519, kept by the agent: its "
-	    "authenticated STAMP's key\",\"make\":[{\"kind\":\"ipsec-sa\","
-	    "\"verb\":\"key\",\"interface\":\"gif102\"}]") != NULL, "%s",
-	    r.body);
+	    "authenticated STAMP's key\",\"make\":[{\"kind\":\"edit\","
+	    "\"method\":\"PATCH\",\"path\":\"ietf-i2nsf-ikeless:ipsec-ikeless\","
+	    "\"body\":{\"ietf-i2nsf-ikeless:ipsec-ikeless\":{"
+	    "\"arcana-ikeless:key-pairs\":{\"key-pair\":[{\"name\":"
+	    "\"gif102\"}]}}}}]") != NULL, "%s", r.body);
 	/* The rules: the UNI's packets to their zone's block, each flow
 	 * with its policy's table, the rest dropped; and the steering. */
 	ATF_CHECK_MSG(strstr(r.body, "\"10 skipto tablearg ip from table("
@@ -19903,9 +20121,8 @@ ATF_TC_BODY(sdwan_apply_stamp_half, tc)
 	struct authn	a;
 	struct resp	r;
 	char		sa[16], sb[16], doc[8192], lifn[32], laddr[64];
-	char		refa[80], refb[80], ha[64], hb[64], now[64], jid[24];
+	char		refa[80], refb[80], ha[64], hb[64], now[64];
 	char		path[200];
-	const char	*st;
 
 	need_fibs(2);
 	sdwan_apply_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc), lifn,
@@ -19920,25 +20137,24 @@ ATF_TC_BODY(sdwan_apply_stamp_half, tc)
 	ATF_REQUIRE_MSG(strlen(hb) == 44 && strlen(ha) == 44 && strcmp(ha, hb)
 	    != 0, "%s %s", ha, hb);
 
-	/* By its agent: b's pair made again (its file gone, a key job by
-	 * hand), told as sdwan-key; a's probes made again with the new half
-	 * by the console, b's left as they were. */
+	/* By its agent: b's pair made again (its generation turned by
+	 * hand, an edit of its lists), told as sdwan-key; a's probes made
+	 * again with the new half by the console, b's left as they were. */
 	/* The manager's first look at b first (its halves read, its events
 	 * from then on): two of its ticks. */
 	sleep(11);
-	ATF_REQUIRE(system("f=$(find . -name sdwan-key-gif103.pem | head -1) && "
-	    "[ -n \"$f\" ] && rm \"$f\"") == 0);
-	(void)r1_job(sb, "{\"ipsec-sa\":{\"verb\":\"key\",\"interface\":"
-	    "\"gif103\"}}", &r, jid, sizeof(jid));
-	st = jstr(&r, "arcana-jobs:output.state");
-	ATF_REQUIRE_MSG(st != NULL && (strcmp(st, "done") == 0 || strcmp(st,
-	    "unconfirmed") == 0), "%s", r.body);
-	if (strcmp(st, "unconfirmed") == 0) {
-		resp_free(&r);
-		snprintf(path, sizeof(path), FLEET "%s/arcana-jobs:jobs/job=%s/"
-		    "confirm", sb, jid);
-		http("POST", path, NULL, &r);
-	}
+	snprintf(path, sizeof(path), "/restconf/ds/ietf-datastores:candidate/"
+	    "arcana-fleet:fleet/host=%s/ietf-i2nsf-ikeless:ipsec-ikeless", sb);
+	http("PATCH", path, "{\"ietf-i2nsf-ikeless:ipsec-ikeless\":{"
+	    "\"arcana-ikeless:key-pairs\":{\"key-pair\":[{\"name\":\"gif103\","
+	    "\"generation\":1}]}}}", &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/ietf-netconf:commit", sb);
+	http("POST", path, "{\"ietf-netconf:input\":{}}", &r);
+	/* Committed, with what the host warns of elsewhere (200). */
+	ATF_REQUIRE_MSG(r.status == 204 || r.status == 200, "%d %s", r.status,
+	    r.body);
 	resp_free(&r);
 	ATF_REQUIRE_MSG(stamp_given(sa, refb, hb, now, sizeof(now)),
 	    "a's targets not given b's new half");
@@ -19957,11 +20173,23 @@ ATF_TC_BODY(sdwan_apply_stamp_half, tc)
 	ATF_CHECK(system("grep 'policies-applied' data/sdwan-audit.jsonl | "
 	    "grep -q 'its agent told that its pair changed'") == 0);
 
-	/* By the apply: a's pair made again (its file gone, the state's
-	 * stampkey forgotten), the user's apply making it alone; b's probes
-	 * given the new half after, by the console's own apply. */
-	ATF_REQUIRE(system("f=$(find . -name sdwan-key-gif102.pem | head -1) && "
-	    "[ -n \"$f\" ] && rm \"$f\"") == 0);
+	/* By the apply: a's pair made again (its key-pairs entry gone, as a
+	 * host reinstalled has none, the state's stampkey forgotten), the
+	 * user's apply making it alone; b's probes given the new half after,
+	 * by the console's own apply. */
+	snprintf(path, sizeof(path), "/restconf/ds/ietf-datastores:candidate/"
+	    "arcana-fleet:fleet/host=%s/ietf-i2nsf-ikeless:ipsec-ikeless/"
+	    "arcana-ikeless:key-pairs/key-pair=gif102", sa);
+	http("DELETE", path, NULL, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(path, sizeof(path), FLEET "%s/ietf-netconf:commit", sa);
+	http("POST", path, "{\"ietf-netconf:input\":{}}", &r);
+	ATF_REQUIRE_MSG(r.status == 204 || r.status == 200, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	ATF_REQUIRE(system("test -z \"$(find . -name sdwan-key-gif102.pem)\"") ==
+	    0);
 	stamp_forget(sa, "stampkey:gif102");
 	r4_read("plan", &r);
 	EXPECT(&r, 200);
@@ -29167,6 +29395,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, sdwan_apply);
 	ATF_TP_ADD_TC(tp, feeds_local);
 	ATF_TP_ADD_TC(tp, sdwan_uswe);
+	ATF_TP_ADD_TC(tp, sdwan_uswe_liar);
+	ATF_TP_ADD_TC(tp, ikeless_keys_viewer);
 	ATF_TP_ADD_TC(tp, feeds_alarm);
 	ATF_TP_ADD_TC(tp, feeds_redirect);
 	ATF_TP_ADD_TC(tp, sdwan_list_urls);

@@ -193,7 +193,7 @@ on the wire.
 | 94 800 | 100 | `arcana-acl-deviations`, RFC 9899's ipv4-fragment must as its Section 3.5 means it | `share/yang/arcana-acl-deviations@2026-11-18.sid` (1 used) |
 | 94 900 | 100 | `arcana-events`, its third range: sdwan-key's data, a tunnel interface's pair changed; service-state, a service started or stopped, and its jail | `share/yang/arcana-events@2026-10-15.sid` (25 used) |
 | 95 200 | 200 | `ietf-i2nsf-ikeless@2021-07-14`, RFC 9061 (no IETF range): its notifications, the kernel's PF_KEY news (PLAN-SDN-YANG 6.2.3), and its SAD and SPD lists (6.2.4); `ietf-i2nsf-ikec`'s groupings numbered in it, that module having no items but its name | `share/yang/ietf-i2nsf-ikeless@2021-07-14.sid` (138 used) |
-| 95 400 | 100 | `arcana-ikeless-deviations`, the replay statistics FreeBSD does not keep per SA, no sadb-bad-spi (the lists served since 6.2.4) | `share/yang/arcana-ikeless-deviations@2026-11-19.sid` (1 used) |
+| 95 400 | 100 | `arcana-ikeless-deviations`, the replay statistics FreeBSD does not keep per SA, no sadb-bad-spi (the lists served since 6.2.4), a derived SA's SPI not mandatory (6.2.5) | `share/yang/arcana-ikeless-deviations@2026-11-19.sid` (1 used) |
 | 95 600 | 300 | `arcana-sdwan`, its fourth range: the rest of the BIRD, dnsmasq, unbound and Squid instances' forms (spec), then the jails' edges' dnsmasq instances and the first of their unbound instances | `share/yang/arcana-sdwan@2026-10-15.sid` (300 used; its rest at 96 600) |
 | 96 500 | 100 | `arcana-sslproxy`, SSL inspection by SSLproxy: its read, the edge's CA key's request and certificate | `share/yang/arcana-sslproxy@2026-11-18.sid` (48 used) |
 | 96 800 | 100 | `arcana-acl`, the ACLs' named counters: RFC 9899's counter-action read back (PLAN-SDN-YANG 6.1.7) | `share/yang/arcana-acl@2026-11-19.sid` (7 used) |
@@ -210,6 +210,7 @@ on the wire.
 | 97 100 | 100 | `arcana-services`, its second range (listed first in its file, so that new items go there): a running jail's services, on arcana-jails' jail | `share/yang/arcana-services@2026-10-14.sid` (32 used) |
 | 98 000 | 20 | `arcana-system`, its second range (listed first in its file, so that new items go there): the read's jail, in and out | `share/yang/arcana-system@2026-10-29.sid` (2 used) |
 | 98 020 | 30 | `arcana-syslog`, each running jail's syslogd, its root a mount point of `ietf-syslog` | `share/yang/arcana-syslog@2026-11-19.sid` (5 used) |
+| 98 800 | 100 | `arcana-ikeless`, RFC 9061's IKE-less lists' augments: the SD-WAN tunnels' key pairs, the SAs the agent derives, an entry's jail (PLAN-SDN-YANG 6.2.5) | `share/yang/arcana-ikeless@2026-11-19.sid` (14 used) |
 | 97 800 | 10 | `arcana-netstore`, its second range (listed first in its file): a jail's NFS server read, why it may not serve | `share/yang/arcana-netstore@2026-10-29.sid` (3 used) |
 | 98 600 | 100 | `arcana-cron`, cron(8)'s entries of the host or a running jail and its daemon, read | `share/yang/arcana-cron@2026-11-19.sid` (21 used) |
 

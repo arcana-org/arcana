@@ -93,6 +93,41 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### SD-WAN keys as IKE-less entries, ipsec-sa retired (6.2.5); agent 0.341.0, console 0.484.0
+
+- The ipsec-sa job is gone (PLAN-SDN-YANG 6.2.5).  The job kinds after
+  it are renumbered on the wire: update the agent and the console
+  together; a console and an agent of different releases misread each
+  other's job kinds.
+- An SD-WAN uswe tunnel's SAs and every tunnel end's X25519 pair are now
+  entries of RFC 9061's IKE-less lists, with the new module
+  arcana-ikeless (SIDs from 98 800):
+  - key-pairs: made with their entry, made anew when the generation
+    changes, the one before kept as sdwan-key-<if>-prev.pem;
+  - derived sad-entries: the agent derives the SPI and keys with the
+    same derivation as before, keeps them in ikeless.cbor and never
+    shows them (a viewer's read has no key);
+  - a jail leaf on sad- and spd-entries: a vnet jail's pair is
+    <if>@<jail> and its SAs are put in the jail's network, so a vnet
+    jail's SD-WAN edge has uswe tunnels.
+- arcana-ikeless-deviations no longer requires an SPI.  arcanactl
+  ipsec-sa and the page's manual SAs form are gone: set the lists
+  instead (arcanactl set /ietf-i2nsf-ikeless:ipsec-ikeless ...).  The
+  sdwan read's keys lose next and gain generation.
+- A far end's public half is taken only as 44 characters of base64,
+  put into the near end's edit as a value, never as text; a host that
+  tells anything else fails the apply.
+- After updating the console and every SD-WAN agent, apply SD-WAN once.
+  Each uswe tunnel's pair is kept (the job's sdwan-key-<if>.pem is taken
+  as it is), its SAs are derived again to the same SPIs and keys, and
+  the agent takes over the kernel's SAs as they are, so no packet is
+  lost; the plan shows them remade.  A plain tunnel's STAMP pair is kept
+  the same way.
+- A rotation the job left half done (an sdwan-key-<if>-next.pem) is not
+  carried over: delete that file.  If setkey -D still shows SAs on the
+  tunnel's reqid beyond the two the lists name, delete them with setkey
+  (delete <src> <dst> esp <spi>).
+
 ### poudriere in a jail; agent 0.340.0, console 0.483.0
 
 - The poudriere job and arcana-builder's read take a jail (job SIDs

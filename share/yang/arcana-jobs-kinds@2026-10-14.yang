@@ -115,74 +115,71 @@ submodule arcana-jobs-kinds {
       enum rtadvd {
         value 30;
       }
-      enum ipsec-sa {
+      enum jail-conf {
         value 31;
       }
-      enum jail-conf {
+      enum neighbour {
         value 32;
       }
-      enum neighbour {
+      enum cert {
         value 33;
       }
-      enum cert {
+      enum ssh {
         value 34;
       }
-      enum ssh {
+      enum carp {
         value 35;
       }
-      enum carp {
+      enum poudriere {
         value 36;
       }
-      enum poudriere {
+      enum clamav {
         value 37;
       }
-      enum clamav {
+      enum suricata {
         value 38;
       }
-      enum suricata {
+      enum nfs {
         value 39;
       }
-      enum nfs {
+      enum iscsi {
         value 40;
       }
-      enum iscsi {
+      enum hast {
         value 41;
       }
-      enum hast {
+      enum sysfile {
         value 42;
       }
-      enum sysfile {
+      enum geom {
         value 43;
       }
-      enum geom {
+      enum smtpd {
         value 44;
       }
-      enum smtpd {
+      enum jail-allow {
         value 45;
       }
-      enum jail-allow {
+      enum jail-base {
         value 46;
       }
-      enum jail-base {
+      enum reboot {
         value 47;
       }
-      enum reboot {
+      enum speeder {
         value 48;
       }
-      enum speeder {
+      enum monitor {
         value 49;
       }
-      enum monitor {
+      enum sslproxy {
         value 50;
       }
-      enum sslproxy {
+      enum cron {
         value 51;
       }
-      enum cron {
-        value 52;
-      }
       enum crash {
-        value 53;
+        value 52;
       }
     }
     description
@@ -923,60 +920,6 @@ submodule arcana-jobs-kinds {
             type boolean;
             description
               "Kept for a boot";
-          }
-        }
-      }
-      case ipsec-sa {
-        container ipsec-sa {
-          presence
-            "This kind of job.";
-          description
-            "Manually keyed IPsec security associations and policies (destroys: verb=clear|unpolicy)";
-          leaf verb {
-            type enumeration {
-              enum key;
-              enum set;
-              enum derive;
-              enum commit;
-              enum clear;
-              enum policy;
-              enum unpolicy;
-            }
-            mandatory true;
-            description
-              "Verb";
-          }
-          leaf interface {
-            type string;
-            mandatory true;
-            description
-              "Interface";
-          }
-          leaf reqid {
-            type uint32;
-            description
-              "reqid";
-          }
-          leaf tunnel-local {
-            type string;
-            description
-              "Tunnel, this end";
-          }
-          leaf tunnel-remote {
-            type string;
-            description
-              "Tunnel, the far end";
-          }
-          leaf-list args {
-            type string;
-            ordered-by user;
-            description
-              "Arguments";
-          }
-          leaf jail {
-            type string;
-            description
-              "Jail";
           }
         }
       }

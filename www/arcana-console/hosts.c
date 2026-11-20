@@ -4890,7 +4890,6 @@ spec_from_json(const ucl_object_t *o, struct arc_job_spec *sp)
 	case ARC_JOB_KIND_PROCESS:
 	case ARC_JOB_KIND_NTP:
 	case ARC_JOB_KIND_RTADVD:
-	case ARC_JOB_KIND_IPSEC_SA:
 	case ARC_JOB_KIND_JAIL_CONF:
 	case ARC_JOB_KIND_JAIL_ALLOW:
 	case ARC_JOB_KIND_SSH:
@@ -4918,18 +4917,6 @@ spec_from_json(const ucl_object_t *o, struct arc_job_spec *sp)
 				    "value as its args");
 			free((void *)(uintptr_t)sp->verb);
 			sp->verb = NULL;
-		} else if (sp->kind == ARC_JOB_KIND_IPSEC_SA) {
-			/* The verb and the interface; but for key, its reqid and
-			 * the outer addresses too; the words of the SAs; the
-			 * host checks. */
-			if (sp->verb == NULL || sp->interface == NULL ||
-			    ucl_array_size(names) > 24 || (strcmp(sp->verb, "key")
-			    != 0 && (!sp->has_reqid || sp->tunnel_local == NULL ||
-			    sp->tunnel_remote == NULL)))
-				return ("an ipsec-sa job needs a verb and an "
-				    "interface, and but for key its reqid, "
-				    "tunnel_local and tunnel_remote, and the SAs' "
-				    "words as args");
 		} else if (sp->kind == ARC_JOB_KIND_JAIL_ALLOW) {
 			/* The jail and its allow.* words; live, persist; no verb. */
 			if (sp->jail == NULL || ucl_array_size(names) == 0 ||

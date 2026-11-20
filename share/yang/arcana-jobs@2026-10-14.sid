@@ -733,41 +733,6 @@
       },
       {
         "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa",
-        "sid": "62537"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/args",
-        "sid": "62538"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/interface",
-        "sid": "62539"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/reqid",
-        "sid": "62540"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/tunnel-local",
-        "sid": "62541"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/tunnel-remote",
-        "sid": "62542"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/verb",
-        "sid": "62543"
-      },
-      {
-        "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/ipsec/child",
         "sid": "62544"
       },
@@ -1617,12 +1582,6 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/ipfw/text",
         "sid": "62712"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/safe",
-        "status": "obsolete",
-        "sid": "62713"
       },
       {
         "namespace": "data",
@@ -2567,41 +2526,6 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:dry-run/input/change/ipsec",
         "sid": "62900"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa",
-        "sid": "62901"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/args",
-        "sid": "62902"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/interface",
-        "sid": "62903"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/reqid",
-        "sid": "62904"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/tunnel-local",
-        "sid": "62905"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/tunnel-remote",
-        "sid": "62906"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/verb",
-        "sid": "62907"
       },
       {
         "namespace": "data",
@@ -3662,16 +3586,6 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/service-config/jail",
         "sid": "63119"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:dry-run/input/change/ipsec-sa/jail",
-        "sid": "63120"
-      },
-      {
-        "namespace": "data",
-        "identifier": "/arcana-jobs:submit/input/change/ipsec-sa/jail",
-        "sid": "63121"
       },
       {
         "namespace": "data",

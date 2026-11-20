@@ -4483,7 +4483,8 @@ whose first part is served.
   agent's files, 0600, the keys in it), each put in by PF_KEY as it is
   configured; the job keeps the ipsec(4) interfaces' SAs and policies
   (uswe, derived keys, the console's rotation) until 6.2.5 makes uswe's
-  keys `esp-sa/key` entries, and its clear leaves the lists' SAs.  The
+  keys `esp-sa/key` entries (done: the job retired), and its clear
+  leaves the lists' SAs.  The
   operational datastore is the kernel's: every ESP SA (SADB_DUMP) and
   every policy (SADB_X_SPDDUMP) of the host's network, the controller's
   by their names with their state (age, bytes, packets, the window, the
@@ -4575,6 +4576,87 @@ whose first part is served.
   by a YANG Patch, Edit is off for it).
 - 6.2.5 A, C: uswe's keys as `esp-sa/key` from the agent's own
   derivation; Appendix D.2's rekey order; check: the rekey test.
+  Design (decided here): the ipsec-sa job retires; an SD-WAN tunnel's
+  keys are the lists'.  `arcana-ikeless` (98 800, 100) augments them:
+  `key-pairs/key-pair` (name the interface, a vnet jail's
+  `<if>@<jail>`; `generation`; `public` config false), the X25519 pair
+  kept as `sdwan-key-<name>.pem` (0600) beside the agent's files, made
+  with its entry, made anew when the generation changes (the one before
+  kept as `-prev.pem` and put back when the generation goes back: a
+  commit not confirmed), a pair there already (the job's) taken as it
+  is, its files gone with the entry, each change told as sdwan-key;
+  `sad-entry/ipsec-sa-config/derived` (presence: `key-pair`, `peer` the
+  far half, `epoch`, `direction`, `lifetime`), whose SPI and keys the
+  agent derives by the job's HKDF-SHA256 (same salt, info and layout,
+  so a deployed tunnel derives the SPIs and keys it has) and keeps in
+  running, never given (an entry not in running given an SPI or keys is
+  refused) nor shown in the operational datastore; the same entry set
+  again (a console's merge or replace without the keys) keeps them; and
+  `jail` on sad- and spd-entries: an entry of a vnet jail's network, by
+  PF_KEY there, the jails changed after the host and a refused one
+  putting back those before it, a jail not running or without vnet
+  refused before anything changes.  `arcana-ikeless-deviations` makes
+  the SPI not mandatory (a derived SA's).  Three rules in the edit: an
+  SA the same in all under another name is no change to the kernel (a
+  rotation's `.next` made the tunnel's own without a packet lost); two
+  derived entries of one SA but for their reqid are one (both ends in
+  one network, the console's tests); a derived SA the kernel already
+  has of its reqid, mode, cipher and ends (the job's) is taken over as
+  it is, so the update re-applies a tunnel without a gap.  The sdwan
+  read's `keys` tell each pair's derived SAs (keyed_at, lifetime,
+  spi_in, spi_out, pending: two of a direction) and its generation, from
+  `sdwan-sa-<name>.json` the edit writes; the key-rotation fault is set
+  on a pair whose SAs an edit could not change and cleared when one
+  leaves it one SA each way.  The console: a uswe end's pair is a
+  key-pairs edit (no unmake, as before), its SAs one edit of two derived
+  entries `uswe.<if>.out` and `.in` (ESP in tunnel mode on the reqid, a
+  window of 1024 packets, ESN, ESP in UDP, GCM or CBC with
+  HMAC-SHA2-256, the selector all of the family: the interface's own
+  policies select), the far half `${uswe:SID:IF}` resolved in the
+  edit's body; taken out by a YANG Patch of the two and their `.next`; a
+  plain tunnel's STAMP pair a key-pairs edit.  The rotation (R110, R112,
+  Appendix D.2) is edits of each end: the generation turned on both,
+  the new halves read, `.in.next` on both, `.out.next` on both each
+  followed by the old out's removal, the old in removed on both, then
+  `out` and `in` set again from the new halves and the `.next` removed
+  (the same SAs: no kernel change).  The kind goes from the wire (the
+  kinds after it renumbered: agent and console updated together);
+  `arcanactl ipsec-sa`, the page's manual SAs form and the job's policy
+  verbs go (policies are spd-entries, 6.2.4).  A far end's half is
+  taken only as a key of 32 bytes in base64 and put in an edit's body as
+  a value (the body walked, never its text), so a far host that lies
+  can put nothing else in the near end's edit.  A vnet jail's edge's
+  pair is `<if>@<jail>` and its entries carry the jail, the edits sent
+  to its host's datastore (no other edit of a jail's edge is taken).
+  Done.  Checked: agent_test:ikeless_lists (two ends' pairs on one
+  agent, their four derived entries put in as two SAs, AES-GCM-16's 36
+  bytes, ESN, ESP in UDP, a window of 1024; running with the SPIs and
+  keys, the operational lists and no key; the sdwan read's keyed_at,
+  lifetime, SPIs; set again unchanged; an SPI given refused; the pairs
+  turned and the `.next` SAs in, the old out; renamed with no kernel
+  change; AES-CBC with HMAC-SHA2-256; all out, the pairs' files gone),
+  agent_test:ikeless_jail (a jail's derived SAs by the jail's socket,
+  its pair `ipsec0@gw` on the host, nothing in the jail; the host's pair
+  for a jail's SA, a jail without vnet and one not running refused,
+  nothing changed), agent_test:sdwan_key_event (made, turned, put back,
+  one there kept and told by none, taken out), faults_owners_gone,
+  stampd_keys, stampd_keys_bounded, stamp_rekey, sadb_news, sysfiles;
+  console_test:sdwan_uswe (the plan's key-pairs and derived edits, the
+  apply's two SAs, the lists read back), sdwan_uswe_rekey (the rotation
+  by edits: the new inbound SAs first, new SPIs, the pairs turned, the
+  ones before kept, the tunnel's own names again),
+  sdwan_apply_stamp_half (a pair turned by an edit, the far end given
+  the new half), sdwan_uswe_liar (a far end whose read tells a crafted
+  half: the apply refused, no SA left, nothing of it in the lists),
+  ikeless_keys_viewer (no key to a viewer, running or operational).
+  Written, not run here (root, vnet jails):
+  agent_root_test:uswe_vnet (two vnet jails, ipsec(4) interfaces of
+  reqid 100, the pairs and derived SAs through the model, setkey -D
+  showing the same SPIs on both ends, a ping through; the rotation's
+  edits under a ping that loses nothing, two new SAs left; all out).
+  console_test:sdwan_jail (a uswe tunnel at the jail gw: its pair
+  ipsec101@gw, its entries the jail's).  Not checked: a deployed
+  job-keyed tunnel taken over for real.
 - 6.3.1 A: VICI for `list-sas`, `stats` and events in place of
   `--list-sas --pretty`; check: the state leaves.
 - 6.3.2 A: `ietf-i2nsf-ike` over the swanctl files: pad entries,

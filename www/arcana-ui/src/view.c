@@ -2815,10 +2815,6 @@ modal(struct html *h)
 		if (!ipsec_modal(h))
 			return;
 		break;
-	case MODAL_IPSEC_SA:
-		if (!ipsecbase_modal(h))
-			return;
-		break;
 	case MODAL_SD_UCS:
 	case MODAL_SD_EDGE:
 	case MODAL_SD_LINK:
@@ -3308,9 +3304,6 @@ modal(struct html *h)
 		case MODAL_WG_PEER:
 		case MODAL_IPSEC_CONN:
 			h_raw(h, "<button class=\"primary\">Add</button>");
-			break;
-		case MODAL_IPSEC_SA:
-			h_raw(h, "<button class=\"primary\">Send</button>");
 			break;
 		case MODAL_JAIL_ALLOW:
 			h_raw(h, "<button class=\"primary\">Change</button>");

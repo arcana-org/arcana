@@ -524,7 +524,6 @@ enum modal {
 	MODAL_BIRD_FORM,	/* a BGP, OSPF or BFD protocol as a form */
 	MODAL_IPSEC_CONN,
 	MODAL_IPSEC_CHILD,
-	MODAL_IPSEC_SA,
 	MODAL_SD_UCS,
 	MODAL_SD_EDGE,
 	MODAL_SD_LINK,
@@ -975,8 +974,6 @@ bool		 ipsec_modal(struct html *);
 /* ipsecbase.c: a host's IPsec without IKE: PF_KEY, ipsec(4), setkey(8). */
 void		 view_ipsecbase(struct html *, struct server *);
 bool		 ipsecbase_action(const char *, const char *, const char *);
-bool		 ipsecbase_form(const char *, const ucl_object_t *);
-bool		 ipsecbase_modal(struct html *);
 void		 ipsecbase_tick(double);
 void		 vpn_age(char *, size_t, int64_t);
 void		 qr_svg(struct html *, const char *, const char *);

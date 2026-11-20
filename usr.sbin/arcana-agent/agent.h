@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.340.0"
+#define	ARCANA_AGENT_VERSION	"0.341.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1515,15 +1515,24 @@ bool		 ikeless_sa_name(const struct sockaddr_storage *, uint32_t,
 		    char *, size_t);
 bool		 ikeless_sp_name(const struct pfkey_sp *, char *, size_t);
 void		 ikeless_lifetimes(struct work *, int, const struct pfkey_sa *);
-/* invidia/sa.c: manually keyed SAs, by PF_KEY. */
-const char	*sa_check(const struct arc_job_spec *);
-int		 do_sa_job(struct work *, const struct arc_job_spec *,
-		    const char **);
-void		 sa_files(struct work *, const char *, const char **,
-		    const char **, const char **);
-const char	*sa_undo_check(struct work *, const struct arc_job_spec *);
-int		 sa_undo(struct work *, const struct arc_job_spec *,
-		    const char **);
+/* invidia/sa.c: the SD-WAN tunnels' key pairs (ikeless.c's key-pairs)
+ * and what is derived from them. */
+#define	SA_PUB_LEN	32	/* an X25519 public half */
+#define	SA_PAIR_KEPT	0	/* sa_pair_set(): the pair as it was */
+#define	SA_PAIR_MADE	1	/* made, none there */
+#define	SA_PAIR_TURNED	2	/* made anew, the one before kept */
+#define	SA_PAIR_BACK	3	/* the one before put back */
+int		 sa_pair_set(const char *, bool, uint32_t, uint32_t, int *,
+		    char *, size_t);
+void		 sa_pair_unset(const char *, int, uint32_t, uint32_t);
+void		 sa_pair_drop(const char *);
+bool		 sa_pair_public(const char *, unsigned char *);
+int		 sa_pair_derive(const char *, const unsigned char *, uint32_t,
+		    bool, size_t, size_t, uint32_t *, unsigned char *,
+		    unsigned char *, char *, size_t);
+void		 sa_pair_state(const char *, uint32_t, uint32_t, uint32_t,
+		    bool);
+void		 sa_rotation_fault(const char *, const char *);
 void		 sa_keys_json(struct work *, struct ucl_object_s *);
 void		 sa_faults_start(void);
 int		 tunnel_key_derive(struct work *, const char *, const char *,

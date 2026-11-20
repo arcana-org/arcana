@@ -21,16 +21,15 @@
  * The operational datastore is the kernel's: every ESP SA (SADB_DUMP) and
  * every policy (SADB_X_SPDDUMP) of the host's network.  The controller's
  * are named as it named them; the rest, setkey(8)'s and so ipsec.conf's,
- * an IKE daemon's, an ipsec(4) interface's own, the agent's manual SAs
- * and their policies (arcana-jobs' ipsec-sa, sa.c), by the kernel's own
+ * an IKE daemon's, an ipsec(4) interface's own, by the kernel's own
  * key: an SA "esp/<destination>/0x<SPI>", a policy "spd/<id>".  Those
  * are never in running, so no edit touches them: an entry of the
  * controller's that would take one's SPI and destination, or one's
  * selector and direction, is refused (in-use) before anything is
  * changed.  A policy is the controller's by its priority, from
  * IKL_SP_BASE in the list's order (ordered-by user: the first wins),
- * after setkey's (0) and before the ipsec-sa job's (PFKEY_SP_MARK); an
- * SA by its SPI and destination being one of running's.
+ * after setkey's (0); an SA by its SPI and destination being one of
+ * running's.
  *
  * The mapping.  An SA is from its local end to its remote one: in tunnel
  * mode the tunnel's local and remote, in transport mode the traffic
@@ -72,7 +71,24 @@
  * plain; its SAs gone with a reboot are not (their sequence numbers
  * would start again under the old keys), they leave running, and the
  * controller sends new ones (sadb-acquire tells it which are wanted).
- * The host's network only: no jail's.
+ *
+ * Arcana's augments (arcana-ikeless, PLAN-SDN-YANG 6.2.5).  An SD-WAN
+ * tunnel's SAs are derived by the agent: each end has an X25519 key pair
+ * (key-pairs, sa.c), made with its entry and anew when its generation
+ * changes; a derived sad-entry names its pair, the far end's public half,
+ * an epoch and its direction and is given no SPI and no keys, which the
+ * agent derives (HKDF-SHA256 of the agreement, as the ipsec-sa job did)
+ * and keeps in running, so the same entry set again is no change and an
+ * undone commit puts back keys it has.  An SA the same in all under
+ * another name is no change to the kernel (a rotation's ".next" made the
+ * tunnel's own); two derived entries of one SA but for their reqid (both
+ * ends in one network, as the console's tests have them) are one; a
+ * derived SA the kernel has already, of its reqid, mode and cipher (the
+ * job's, before the update), is taken over as it is.  An entry with a
+ * jail is of that vnet jail's network, by PF_KEY there: the jails are
+ * changed after the host, a refused one putting back those before it;
+ * the news, the counters and the kernel's own entries are the host's
+ * network's alone.
  */
 
 #include <sys/param.h>
@@ -155,6 +171,10 @@ typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_spd_spd_entry_ipsec_policy_confi
     ysacfg2;
 typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_spd_spd_entry_ipsec_policy_config_processing_info_ipsec_sa_cfg_tunnel
     ysptun;
+typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_sad_sad_entry_ipsec_sa_config_arcikl_derived
+    yderived;
+typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_arcikl_key_pairs ykps;
+typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_arcikl_key_pairs_key_pair ykp;
 
 #define	SA_MODE_TUNNEL	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SAD_SAD_ENTRY_IPSEC_SA_CONFIG_MODE_TUNNEL
 #define	SP_MODE_TUNNEL	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SPD_SPD_ENTRY_IPSEC_POLICY_CONFIG_PROCESSING_INFO_IPSEC_SA_CFG_MODE_TUNNEL
@@ -171,6 +191,7 @@ typedef struct ietf_i2nsf_ikeless_ipsec_ikeless_spd_spd_entry_ipsec_policy_confi
 #define	ENCAP_TCP	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SAD_SAD_ENTRY_IPSEC_SA_CONFIG_ENCAPSULATION_TYPE_ESPENCAP_ESPINTCP
 #define	SA_DF_CLEAR	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SAD_SAD_ENTRY_IPSEC_SA_CONFIG_TUNNEL_DF_BIT_CLEAR
 #define	SP_DF_CLEAR	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SPD_SPD_ENTRY_IPSEC_POLICY_CONFIG_PROCESSING_INFO_IPSEC_SA_CFG_TUNNEL_DF_BIT_CLEAR
+#define	DERIVED_OUT	IETF_I2NSF_IKELESS_IPSEC_IKELESS_SAD_SAD_ENTRY_IPSEC_SA_CONFIG_ARCIKL_DERIVED_DIRECTION_OUTBOUND
 
 /* IANA's IKEv2 transform numbers (RFC 9061's encr-alg-t, intr-alg-t). */
 #define	IANA_ENCR_AES_CBC	12
@@ -211,15 +232,21 @@ static const struct {
 /* An sad-entry as the kernel is given it. */
 struct ikl_sa {
 	const char	*name;
+	const char	*jail;		/* a vnet jail's network, or NULL */
+	size_t		 idx;		/* its place in the list */
 	struct pfkey_sa	 sa;
 	unsigned char	 ek[IKL_KEY], ak[IKL_KEY];
 	uint32_t	 idle_soft, idle_hard;	/* the agent's, seconds */
+	const char	*pair;		/* derived: from this key pair */
+	uint32_t	 lifetime;	/* derived: its keys' */
+	bool		 out;		/* derived: outbound */
 	bool		 aead;
 };
 
 /* An spd-entry as the kernel is given it. */
 struct ikl_sp {
 	const char	*name;
+	const char	*jail;
 	struct pfkey_sp	 sp;
 };
 
@@ -514,6 +541,7 @@ sa_compile(const ysa *e, struct ikl_sa *k, struct iklerr *ie)
 
 	memset(k, 0, sizeof(*k));
 	k->name = name;
+	k->jail = e->arcikl_jail;
 	if (strlen(name) >= IKL_NAME || name[0] == '\0')
 		return (fault(ie, EINVAL, "sad/sad-entry/name", "sad-entry "
 		    "\"%.40s\": a name of 1 to %d characters", name,
@@ -521,6 +549,13 @@ sa_compile(const ysa *e, struct ikl_sa *k, struct iklerr *ie)
 	if (name_kernels(name))
 		return (fault(ie, EINVAL, "sad/sad-entry/name", "%s: esp/ and "
 		    "spd/ name the kernel's own entries", name));
+	if (c != NULL && c->arcikl_derived != NULL) {
+		k->pair = c->arcikl_derived->key_pair;
+		k->out = !c->arcikl_derived->has_direction ||
+		    c->arcikl_derived->direction == DERIVED_OUT;
+		k->lifetime = c->arcikl_derived->has_lifetime ?
+		    c->arcikl_derived->lifetime : 0;
+	}
 	if (c == NULL || !c->has_spi)
 		return (fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config/spi",
 		    "%s: no SPI", name));
@@ -692,6 +727,7 @@ sp_compile(const ysp *e, size_t i, struct ikl_sp *k, struct iklerr *ie)
 
 	memset(k, 0, sizeof(*k));
 	k->name = name;
+	k->jail = e->arcikl_jail;
 	if (strlen(name) >= IKL_NAME || name[0] == '\0')
 		return (fault(ie, EINVAL, "spd/spd-entry/name", "spd-entry "
 		    "\"%.40s\": a name of 1 to %d characters", name,
@@ -828,6 +864,28 @@ sa_same(const struct ikl_sa *a, const struct ikl_sa *b)
 	    a->idle_soft == b->idle_soft && a->idle_hard == b->idle_hard);
 }
 
+/* Whether two derived SAs are one but for their reqid: of one
+ * derivation, the same ends, SPI and keys. */
+static bool
+sa_twin(const struct ikl_sa *a, const struct ikl_sa *b)
+{
+	struct ikl_sa	x = *b;
+	bool		same;
+
+	x.sa.reqid = a->sa.reqid;
+	same = sa_same(a, &x);
+	OPENSSL_cleanse(&x, sizeof(x));
+	return (same);
+}
+
+/* Whether two entries are of one network: the host's (NULL) or a jail's. */
+static bool
+jail_same(const char *a, const char *b)
+{
+
+	return (a == NULL ? b == NULL : b != NULL && strcmp(a, b) == 0);
+}
+
 static void
 set_free(struct ikl_set *s)
 {
@@ -845,6 +903,7 @@ set_compile(const yikl *c, struct ikl_set *s, struct iklerr *ie)
 {
 	const ysad	*sad = c != NULL ? c->sad : NULL;
 	const yspd	*spd = c != NULL ? c->spd : NULL;
+	struct ikl_sa	*k;
 	size_t		 nsa, nsp, i, j;
 
 	memset(s, 0, sizeof(*s));
@@ -858,24 +917,41 @@ set_compile(const yikl *c, struct ikl_set *s, struct iklerr *ie)
 		set_free(s);
 		return (fault(ie, ENOMEM, NULL, "out of memory"));
 	}
-	for (i = 0; i < nsa; i++, s->nsa++) {
-		if (sa_compile(&sad->sad_entry.v[i], &s->sa[i], ie) != 0)
+	for (i = 0; i < nsa; i++) {
+		k = &s->sa[s->nsa];
+		if (sa_compile(&sad->sad_entry.v[i], k, ie) != 0) {
+			OPENSSL_cleanse(k, sizeof(*k));
 			goto bad;
-		for (j = 0; j < i; j++)
-			if (s->sa[j].sa.spi == s->sa[i].sa.spi &&
-			    addr_same(&s->sa[j].sa.dst, &s->sa[i].sa.dst)) {
-				fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config/"
-				    "spi", "%s and %s: one SA, the same SPI to "
-				    "the same destination", s->sa[j].name,
-				    s->sa[i].name);
-				goto bad;
-			}
+		}
+		k->idx = i;
+		for (j = 0; j < s->nsa; j++)
+			if (jail_same(s->sa[j].jail, k->jail) &&
+			    s->sa[j].sa.spi == k->sa.spi &&
+			    addr_same(&s->sa[j].sa.dst, &k->sa.dst))
+				break;
+		/* Both ends of a tunnel in one network derive one SA
+		 * twice, the same but each on its own interface's reqid:
+		 * it is one, the first's. */
+		if (j < s->nsa && s->sa[j].pair != NULL && k->pair != NULL &&
+		    sa_twin(&s->sa[j], k)) {
+			OPENSSL_cleanse(k, sizeof(*k));
+			continue;
+		}
+		if (j < s->nsa) {
+			fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config/spi",
+			    "%s and %s: one SA, the same SPI to the same "
+			    "destination", s->sa[j].name, k->name);
+			s->nsa++;
+			goto bad;
+		}
+		s->nsa++;
 	}
 	for (i = 0; i < nsp; i++, s->nsp++) {
 		if (sp_compile(&spd->spd_entry.v[i], i, &s->sp[i], ie) != 0)
 			goto bad;
 		for (j = 0; j < i; j++)
-			if (sp_sel_same(&s->sp[j].sp, &s->sp[i].sp)) {
+			if (jail_same(s->sp[j].jail, s->sp[i].jail) &&
+			    sp_sel_same(&s->sp[j].sp, &s->sp[i].sp)) {
 				fault(ie, EINVAL, "spd/spd-entry/"
 				    "ipsec-policy-config/traffic-selector", "%s "
 				    "and %s: one selector and direction, which "
@@ -1366,12 +1442,13 @@ undo(struct work *w, int fd, struct journal *j, const char **errp)
 	return (ok);
 }
 
+/* The SA of s the same in all as k, whatever its name. */
 static const struct ikl_sa *
-set_sa(const struct ikl_set *s, const char *name)
+set_sa_like(const struct ikl_set *s, const struct ikl_sa *k)
 {
 
 	for (size_t i = 0; i < s->nsa; i++)
-		if (strcmp(s->sa[i].name, name) == 0)
+		if (jail_same(s->sa[i].jail, k->jail) && sa_same(&s->sa[i], k))
 			return (&s->sa[i]);
 	return (NULL);
 }
@@ -1395,18 +1472,17 @@ set_sp(const struct ikl_set *s, const char *name)
  */
 static int
 apply(struct work *w, int fd, const struct ikl_set *b, const struct ikl_set *n,
-    struct iklerr *ie, size_t *nadd, size_t *ndel)
+    const struct ikl_set *all, struct iklerr *ie, size_t *nadd, size_t *ndel)
 {
 	struct kstate		 k;
 	struct journal		 j;
 	struct ikl_step		 st;
-	const struct ikl_sa	*o;
 	const struct ikl_sp	*op;
 	const struct pfkey_sa	*ksa;
 	const struct pfkey_sp	*ksp;
 	struct pfkey_sp		 sp;
 	const char		*e = NULL, *ue = NULL;
-	size_t			 i, m;
+	size_t			 i, m, m2 = 0;
 	bool			*sa_new, *sp_new, *sa_gone, *sp_gone;
 	int			 rc = -1;
 
@@ -1426,13 +1502,12 @@ apply(struct work *w, int fd, const struct ikl_set *b, const struct ikl_set *n,
 		fault(ie, ENOMEM, NULL, "out of memory");
 		goto out;
 	}
-	/* What differs. */
+	/* What differs: an SA the same in all under another name (a
+	 * rotation's next made the one) is no change to the kernel. */
 	for (i = 0; i < b->nsa; i++)
-		sa_gone[i] = (o = set_sa(n, b->sa[i].name)) == NULL ||
-		    !sa_same(o, &b->sa[i]);
+		sa_gone[i] = set_sa_like(n, &b->sa[i]) == NULL;
 	for (i = 0; i < n->nsa; i++)
-		sa_new[i] = (o = set_sa(b, n->sa[i].name)) == NULL ||
-		    !sa_same(o, &n->sa[i]);
+		sa_new[i] = set_sa_like(b, &n->sa[i]) == NULL;
 	for (i = 0; i < b->nsp; i++)
 		sp_gone[i] = (op = set_sp(n, b->sp[i].name)) == NULL ||
 		    !sp_same(&op->sp, &b->sp[i].sp);
@@ -1447,6 +1522,31 @@ apply(struct work *w, int fd, const struct ikl_set *b, const struct ikl_set *n,
 			if (sa_gone[m] && b->sa[m].sa.spi == ksa->spi &&
 			    addr_same(&b->sa[m].sa.dst, &ksa->dst))
 				break;
+		/* A derived SA the kernel has as derived, of its reqid, mode
+		 * and cipher: the ipsec-sa job's before 6.2.5, the same
+		 * derivation's.  Taken over as it is, never sent plain. */
+		/* One derived in another network the same but its reqid:
+		 * a kernel the two networks share (the agent's stand-in for
+		 * PF_KEY), the SA there already. */
+		for (m2 = 0; m == b->nsa && n->sa[i].pair != NULL && all !=
+		    NULL && m2 < all->nsa; m2++)
+			if (all->sa[m2].pair != NULL && !jail_same(all->sa[m2].jail,
+			    n->sa[i].jail) && sa_twin(&all->sa[m2], &n->sa[i]))
+				break;
+		if (all != NULL && m == b->nsa && m2 < all->nsa) {
+			sa_new[i] = false;
+			continue;
+		}
+		if (m == b->nsa && n->sa[i].pair != NULL && ksa->reqid ==
+		    n->sa[i].sa.reqid && ksa->mode == n->sa[i].sa.mode &&
+		    ksa->ealg == n->sa[i].sa.ealg && addr_same(&ksa->src,
+		    &n->sa[i].sa.src)) {
+			sa_new[i] = false;
+			logmsg(LOG_NOTICE, "ipsec-ikeless: %s: SA %#x, derived "
+			    "before, taken over as it is", n->sa[i].name,
+			    ksa->spi);
+			continue;
+		}
 		if (m == b->nsa) {
 			char	a[INET6_ADDRSTRLEN];
 
@@ -1454,7 +1554,7 @@ apply(struct work *w, int fd, const struct ikl_set *b, const struct ikl_set *n,
 			fault(ie, EBUSY, "sad/sad-entry/ipsec-sa-config/spi",
 			    "%s: the SA of SPI %#x to %s is the kernel's "
 			    "already and not the controller's (setkey's, an "
-			    "IKE daemon's, an ipsec-sa job's): left as it is",
+			    "IKE daemon's): left as it is",
 			    n->sa[i].name, ksa->spi, a);
 			goto out;
 		}
@@ -1466,8 +1566,8 @@ apply(struct work *w, int fd, const struct ikl_set *b, const struct ikl_set *n,
 		fault(ie, EBUSY, "spd/spd-entry/ipsec-policy-config/"
 		    "traffic-selector", "%s: the kernel has a policy of its "
 		    "selector and direction already, spd/%u, not the "
-		    "controller's (setkey's, an IKE daemon's, an ipsec-sa "
-		    "job's): left as it is", n->sp[i].name, ksp->id);
+		    "controller's (setkey's, an IKE daemon's): left as it "
+		    "is", n->sp[i].name, ksp->id);
 		goto out;
 	}
 	/* Policies out, but those another takes the place of. */
@@ -1597,23 +1697,461 @@ out:
 	return (rc);
 }
 
+/* ---- Networks ------------------------------------------------------- */
+
+/* s's entries of the network jail (NULL: the host's) into out. */
+static int
+set_jail(const struct ikl_set *s, const char *jail, struct ikl_set *out)
+{
+	size_t	i;
+
+	memset(out, 0, sizeof(*out));
+	if ((out->sa = calloc(s->nsa + 1, sizeof(*out->sa))) == NULL ||
+	    (out->sp = calloc(s->nsp + 1, sizeof(*out->sp))) == NULL) {
+		set_free(out);
+		return (-1);
+	}
+	for (i = 0; i < s->nsa; i++)
+		if (jail_same(s->sa[i].jail, jail))
+			out->sa[out->nsa++] = s->sa[i];
+	for (i = 0; i < s->nsp; i++)
+		if (jail_same(s->sp[i].jail, jail))
+			out->sp[out->nsp++] = s->sp[i];
+	return (0);
+}
+
+/* The jails the entries of b and n are of, each once, into v (room for
+ * every entry); the host's not among them.  How many. */
+static size_t
+set_jails(const struct ikl_set *b, const struct ikl_set *n, const char **v)
+{
+	const struct ikl_set	*s;
+	const char		*j;
+	size_t			 i, k, m, nv = 0;
+
+	for (k = 0; k < 2; k++) {
+		s = k == 0 ? b : n;
+		for (i = 0; i < s->nsa + s->nsp; i++) {
+			j = i < s->nsa ? s->sa[i].jail : s->sp[i - s->nsa].jail;
+			if (j == NULL)
+				continue;
+			for (m = 0; m < nv && strcmp(v[m], j) != 0; m++)
+				;
+			if (m == nv)
+				v[nv++] = j;
+		}
+	}
+	return (nv);
+}
+
+/* A PF_KEY socket in the network of jail (NULL: the host's), w working
+ * there; -1 and why. */
+static int
+jail_pfkey(struct work *w, const char *jail, const char **errp)
+{
+
+	if (jail != NULL && scope_enter(w, jail, errp) != 0)
+		return (-1);
+	return (pfkey_open(w, errp));
+}
+
+/* The kernel of jail moved from b's entries of it to n's. */
+static int
+apply_jail(const char *jail, const struct ikl_set *b, const struct ikl_set *n,
+    struct iklerr *ie, size_t *nadd, size_t *ndel)
+{
+	struct ikl_set	 bj, nj;
+	struct work	 w;
+	const char	*e = NULL;
+	int		 fd, rc = -1;
+
+	work_init(&w);
+	if (set_jail(b, jail, &bj) != 0 || set_jail(n, jail, &nj) != 0) {
+		set_free(&bj);
+		work_free(&w);
+		return (fault(ie, ENOMEM, NULL, "out of memory"));
+	}
+	if (bj.nsa + bj.nsp + nj.nsa + nj.nsp == 0)
+		rc = 0;
+	else if ((fd = jail_pfkey(&w, jail, &e)) == -1) {
+		/* A jail gone has none of its SAs and policies left to
+		 * take out. */
+		if (jail != NULL && nj.nsa + nj.nsp == 0)
+			rc = 0;
+		else
+			fault(ie, EIO, NULL, "%s%s%s", jail != NULL ? jail :
+			    "", jail != NULL ? ": " : "", e);
+	} else {
+		rc = apply(&w, fd, &bj, &nj, n, ie, nadd, ndel);
+		close(fd);
+	}
+	/* The entries' copies: their keys cleansed by set_free(). */
+	set_free(&bj);
+	set_free(&nj);
+	work_free(&w);
+	return (rc);
+}
+
+/* ---- Key pairs and derived SAs ------------------------------------- */
+
+static void	*aalloc(cbl_yarena *, size_t, bool *);
+static const char *astr(cbl_yarena *, const char *, bool *);
+
+/* A pair as an edit changed it, for undoing it. */
+struct kp_step {
+	const char	*name;
+	int		 how;
+	uint32_t	 was, gen;
+};
+
+static const ykp *
+kp_find(const yikl *c, const char *name)
+{
+	const ykps	*k = c != NULL ? c->arcikl_key_pairs : NULL;
+
+	for (size_t i = 0; k != NULL && i < k->key_pair.n; i++)
+		if (strcmp(k->key_pair.v[i].name, name) == 0)
+			return (&k->key_pair.v[i]);
+	return (NULL);
+}
+
+/* The jail a pair's name says, "ipsec0@web", or NULL. */
+static const char *
+kp_jail(const char *name)
+{
+	const char	*at;
+
+	return ((at = strchr(name, '@')) != NULL ? at + 1 : NULL);
+}
+
+/* The pairs of n made, turned or put back as running (b) had them,
+ * each step into v (room for n's); -1 and why, those before undone. */
+static int
+kp_apply(const yikl *b, const yikl *n, struct kp_step *v, size_t *nv,
+    struct iklerr *ie)
+{
+	const ykps	*k = n != NULL ? n->arcikl_key_pairs : NULL;
+	const ykp	*p, *o;
+	char		 err[256];
+
+	*nv = 0;
+	for (size_t i = 0; k != NULL && i < k->key_pair.n; i++) {
+		p = &k->key_pair.v[i];
+		o = kp_find(b, p->name);
+		v[*nv].name = p->name;
+		v[*nv].was = o != NULL && o->has_generation ? o->generation : 0;
+		v[*nv].gen = p->has_generation ? p->generation : 0;
+		if (sa_pair_set(p->name, o != NULL, v[*nv].was, v[*nv].gen,
+		    &v[*nv].how, err, sizeof(err)) != 0) {
+			while (*nv > 0) {
+				(*nv)--;
+				sa_pair_unset(v[*nv].name, v[*nv].how,
+				    v[*nv].was, v[*nv].gen);
+			}
+			return (fault(ie, EIO, NULL, "key-pair %s: %s", p->name,
+			    err));
+		}
+		(*nv)++;
+	}
+	return (0);
+}
+
+/* A derived SA's lengths: its encryption key (AES-GCM's salt after it)
+ * and its integrity key, as its algorithms take them; -1 and why. */
+static int
+derived_lens(const ysa *e, size_t *enclen, size_t *authlen,
+    struct iklerr *ie)
+{
+	const yespsa	*es = e->ipsec_sa_config->esp_sa;
+	uint16_t	 ealg, aalg;
+
+	ealg = es != NULL && es->encryption != NULL &&
+	    es->encryption->has_encryption_algorithm ?
+	    es->encryption->encryption_algorithm : IANA_ENCR_AES_CBC;
+	aalg = es != NULL && es->integrity != NULL &&
+	    es->integrity->has_integrity_algorithm ?
+	    es->integrity->integrity_algorithm : 12;
+	*authlen = 0;
+	if (ealg == IANA_ENCR_AES_GCM_16) {
+		*enclen = 36;
+		return (0);
+	}
+	if (ealg != IANA_ENCR_AES_CBC)
+		return (fault(ie, EOPNOTSUPP, "sad/sad-entry/ipsec-sa-config/"
+		    "esp-sa/encryption/encryption-algorithm", "%s: encryption "
+		    "%u: a derived SA's are 12 (AES-CBC) and 20 (AES-GCM-16)",
+		    e->name, ealg));
+	*enclen = 32;
+	for (size_t j = 0; j < nitems(ints); j++)
+		if (ints[j].iana == aalg)
+			*authlen = ints[j].keylen[0];
+	if (*authlen == 0)
+		return (fault(ie, EOPNOTSUPP, "sad/sad-entry/ipsec-sa-config/"
+		    "esp-sa/integrity/integrity-algorithm", "%s: integrity %u: "
+		    "taken are 2, 12, 13 and 14", e->name, aalg));
+	return (0);
+}
+
+/* Whether running's entry r was derived from what e is to be, its SPI
+ * and keys in it. */
+static bool
+derived_kept(const ysa *e, const ysa *r)
+{
+	const yderived	*d = e->ipsec_sa_config->arcikl_derived, *rd;
+	const ysacfg	*c = e->ipsec_sa_config, *rc;
+	const yespsa	*x, *y;
+
+	if (r == NULL || (rc = r->ipsec_sa_config) == NULL || !rc->has_spi ||
+	    (rd = rc->arcikl_derived) == NULL || !jail_same(e->arcikl_jail,
+	    r->arcikl_jail) || strcmp(d->key_pair, rd->key_pair) != 0 ||
+	    d->peer.len != rd->peer.len || memcmp(d->peer.p, rd->peer.p,
+	    d->peer.len) != 0 || (d->has_epoch ? d->epoch : 0) !=
+	    (rd->has_epoch ? rd->epoch : 0) || (d->has_direction ?
+	    d->direction : DERIVED_OUT) != (rd->has_direction ?
+	    rd->direction : DERIVED_OUT))
+		return (false);
+	x = c->esp_sa;
+	y = rc->esp_sa;
+	if (y == NULL || y->encryption == NULL || y->encryption->key == NULL)
+		return (false);
+	return ((x != NULL && x->encryption != NULL &&
+	    x->encryption->has_encryption_algorithm ?
+	    x->encryption->encryption_algorithm : IANA_ENCR_AES_CBC) ==
+	    (y->encryption->has_encryption_algorithm ?
+	    y->encryption->encryption_algorithm : IANA_ENCR_AES_CBC) &&
+	    (x != NULL && x->integrity != NULL &&
+	    x->integrity->has_integrity_algorithm ?
+	    x->integrity->integrity_algorithm : 12) == (y->integrity != NULL &&
+	    y->integrity->has_integrity_algorithm ?
+	    y->integrity->integrity_algorithm : 12));
+}
+
+static const char *
+ahex(cbl_yarena *a, const unsigned char *raw, size_t n, bool *nomem)
+{
+	static const char	digits[] = "0123456789abcdef";
+	char			*s;
+
+	/* yang:hex-string's, the bytes by colons. */
+	if ((s = aalloc(a, 3 * n + 1, nomem)) == NULL)
+		return (NULL);
+	for (size_t i = 0; i < n; i++) {
+		s[3 * i] = digits[raw[i] >> 4];
+		s[3 * i + 1] = digits[raw[i] & 15];
+		s[3 * i + 2] = i + 1 < n ? ':' : '\0';
+	}
+	return (s);
+}
+
+/*
+ * c with each derived sad-entry's SPI and keys: running's (was) where
+ * it was derived there from the same, else derived now from its pair
+ * and the far half.  An entry not in running given an SPI or keys is
+ * refused: they are the agent's.  *out is c itself when nothing is
+ * derived; -1 and why.
+ */
+static int
+derive_fill(cbl_yarena *a, const yikl *was, const yikl *c, const yikl **out,
+    struct iklerr *ie)
+{
+	const ysad	*rs = was != NULL ? was->sad : NULL;
+	const ysa	*e, *r;
+	const yderived	*d;
+	yikl		*nc;
+	ysad		*ns;
+	ysa		*nv;
+	ysacfg		*cfg;
+	yespsa		*es;
+	yenc		*en;
+	yint		*in;
+	unsigned char	 ek[IKL_KEY], ak[IKL_KEY];
+	char		 err[256];
+	size_t		 i, m, enclen, authlen;
+	uint32_t	 spi;
+	bool		 nomem = false, any = false;
+
+	*out = c;
+	for (i = 0; c != NULL && c->sad != NULL && i < c->sad->sad_entry.n; i++)
+		if (c->sad->sad_entry.v[i].ipsec_sa_config != NULL &&
+		    c->sad->sad_entry.v[i].ipsec_sa_config->arcikl_derived !=
+		    NULL)
+			any = true;
+	if (!any)
+		return (0);
+	nc = aalloc(a, sizeof(*nc), &nomem);
+	ns = aalloc(a, sizeof(*ns), &nomem);
+	nv = aalloc(a, c->sad->sad_entry.n * sizeof(*nv), &nomem);
+	if (nomem)
+		return (fault(ie, ENOMEM, NULL, "out of memory"));
+	*nc = *c;
+	*ns = *c->sad;
+	for (i = 0; i < c->sad->sad_entry.n; i++) {
+		e = &c->sad->sad_entry.v[i];
+		nv[i] = *e;
+		if (e->ipsec_sa_config == NULL || (d =
+		    e->ipsec_sa_config->arcikl_derived) == NULL)
+			continue;
+		if (d->key_pair == NULL || kp_find(c, d->key_pair) == NULL)
+			return (fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config",
+			    "%s: derived from key pair %s, which is not among "
+			    "the key-pairs", e->name, d->key_pair != NULL ?
+			    d->key_pair : "(none)"));
+		if (!jail_same(kp_jail(d->key_pair), e->arcikl_jail))
+			return (fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config",
+			    "%s: key pair %s is %s, the SA %s%s", e->name,
+			    d->key_pair, kp_jail(d->key_pair) != NULL ?
+			    "a jail's" : "the host's", e->arcikl_jail != NULL ?
+			    "the jail " : "the host's", e->arcikl_jail != NULL ?
+			    e->arcikl_jail : ""));
+		if (d->peer.len != SA_PUB_LEN)
+			return (fault(ie, EINVAL, "sad/sad-entry/ipsec-sa-config",
+			    "%s: peer is the far end's public half, %d bytes",
+			    e->name, SA_PUB_LEN));
+		if (derived_lens(e, &enclen, &authlen, ie) != 0)
+			return (-1);
+		for (m = 0, r = NULL; rs != NULL && m < rs->sad_entry.n; m++)
+			if (strcmp(rs->sad_entry.v[m].name, e->name) == 0)
+				r = &rs->sad_entry.v[m];
+		cfg = aalloc(a, sizeof(*cfg), &nomem);
+		es = aalloc(a, sizeof(*es), &nomem);
+		en = aalloc(a, sizeof(*en), &nomem);
+		in = aalloc(a, sizeof(*in), &nomem);
+		if (nomem)
+			return (fault(ie, ENOMEM, NULL, "out of memory"));
+		*cfg = *e->ipsec_sa_config;
+		if (cfg->esp_sa != NULL)
+			*es = *cfg->esp_sa;
+		if (es->encryption != NULL)
+			*en = *es->encryption;
+		if (es->integrity != NULL)
+			*in = *es->integrity;
+		if (derived_kept(e, r)) {
+			/* As derived before: running's. */
+			cfg->spi = r->ipsec_sa_config->spi;
+			en->key = r->ipsec_sa_config->esp_sa->encryption->key;
+			in->key = r->ipsec_sa_config->esp_sa->integrity != NULL ?
+			    r->ipsec_sa_config->esp_sa->integrity->key : NULL;
+		} else {
+			if (r == NULL && (cfg->has_spi || en->key != NULL ||
+			    en->iv != NULL || in->key != NULL))
+				return (fault(ie, EINVAL, "sad/sad-entry/"
+				    "ipsec-sa-config/spi", "%s: a derived SA is "
+				    "given no SPI and no keys: they are the "
+				    "agent's", e->name));
+			if (sa_pair_derive(d->key_pair, d->peer.p, d->has_epoch ?
+			    d->epoch : 0, !d->has_direction || d->direction ==
+			    DERIVED_OUT, enclen, authlen, &spi, ek, ak, err,
+			    sizeof(err)) != 0)
+				return (fault(ie, EINVAL, "sad/sad-entry/"
+				    "ipsec-sa-config", "%s: %s", e->name, err));
+			cfg->spi = spi;
+			en->key = ahex(a, ek, enclen, &nomem);
+			in->key = authlen > 0 ? ahex(a, ak, authlen, &nomem) :
+			    NULL;
+			OPENSSL_cleanse(ek, sizeof(ek));
+			OPENSSL_cleanse(ak, sizeof(ak));
+			if (nomem)
+				return (fault(ie, ENOMEM, NULL, "out of memory"));
+		}
+		cfg->has_spi = true;
+		en->iv = NULL;
+		es->encryption = en;
+		es->integrity = in->key != NULL || in->has_integrity_algorithm ?
+		    in : NULL;
+		cfg->esp_sa = es;
+		nv[i].ipsec_sa_config = cfg;
+	}
+	ns->sad_entry.v = nv;
+	nc->sad = ns;
+	*out = nc;
+	return (0);
+}
+
+/* Whether a pair's derived SAs differ between b and n. */
+static bool
+pair_moved(const struct ikl_set *b, const struct ikl_set *n, const char *pair)
+{
+	const struct ikl_set	*s, *o;
+
+	for (size_t k = 0; k < 2; k++) {
+		s = k == 0 ? b : n;
+		o = k == 0 ? n : b;
+		for (size_t i = 0; i < s->nsa; i++)
+			if (s->sa[i].pair != NULL && strcmp(s->sa[i].pair,
+			    pair) == 0 && set_sa_like(o, &s->sa[i]) == NULL)
+				return (true);
+	}
+	return (false);
+}
+
+/*
+ * After an edit (ok, or refused why): each pair's derived SAs kept for
+ * the sdwan read (the last of each direction in the list's order, the
+ * newest; two of one direction, a rotation half done), and the
+ * key-rotation faults: a pair whose SAs an edit could not change has
+ * one, until an edit leaves it one SA a direction.
+ */
+static void
+pairs_told(const yikl *c, const struct ikl_set *b, const struct ikl_set *n,
+    const char *why)
+{
+	const ykps	*k = c != NULL ? c->arcikl_key_pairs : NULL;
+	const char	*name;
+	uint32_t	 spi_out, spi_in, life;
+	size_t		 i, j, nout, nin;
+
+	for (i = 0; k != NULL && i < k->key_pair.n; i++) {
+		name = k->key_pair.v[i].name;
+		spi_out = spi_in = life = 0;
+		nout = nin = 0;
+		for (j = 0; j < n->nsa; j++) {
+			if (n->sa[j].pair == NULL || strcmp(n->sa[j].pair,
+			    name) != 0)
+				continue;
+			if (n->sa[j].out) {
+				nout++;
+				spi_out = n->sa[j].sa.spi;
+				life = n->sa[j].lifetime;
+			} else {
+				nin++;
+				spi_in = n->sa[j].sa.spi;
+			}
+		}
+		if (why != NULL) {
+			if (pair_moved(b, n, name))
+				sa_rotation_fault(name, why);
+			continue;
+		}
+		sa_pair_state(name, spi_out, spi_in, life, nout > 1 || nin > 1);
+		if (nout == 1 && nin == 1 && pair_moved(b, n, name))
+			sa_rotation_fault(name, NULL);
+	}
+	if (why == NULL)
+		sa_rotation_fault(NULL, NULL);
+}
+
 /*
  * after's entries made the kernel's, then kept; refused, an errno, why
  * in err and the node at fault in *sid (0: the container), the kernel
- * and running as they were.
+ * and running as they were.  The key pairs first (made, turned, put
+ * back), then the derived SAs' SPIs and keys, then each network's SAs
+ * and policies, the host's and each jail's; a jail's refused puts back
+ * those done before it.
  */
 int
 ikeless_edit(const struct ietf_i2nsf_ikeless *after, char *err,
     size_t errlen, uint64_t *sid)
 {
-	struct ietf_i2nsf_ikeless	 kept;
-	struct ikl_set			 b, n;
-	struct iklerr			 ie;
-	struct work			 w;
+	struct ietf_i2nsf_ikeless	 kept, filled;
+	struct ikl_set			 b, n, host;
+	struct iklerr			 ie, ue;
+	struct kp_step			*kv = NULL;
 	cbl_yarena			*a;
-	const char			*e = NULL;
-	size_t				 nadd, ndel;
-	int				 fd, rc = -1;
+	const yikl			*was, *now;
+	const char			**jails = NULL;
+	const ykps			*kps;
+	size_t				 nadd, ndel, nkv = 0, nj, i, done, x;
+	int				 rc = -1;
 
 	memset(&ie, 0, sizeof(ie));
 	memset(&b, 0, sizeof(b));
@@ -1623,7 +2161,6 @@ ikeless_edit(const struct ietf_i2nsf_ikeless *after, char *err,
 		snprintf(err, errlen, "out of memory");
 		return (ENOMEM);
 	}
-	work_init(&w);
 	pthread_mutex_lock(&ikl_lock);
 	memset(&kept, 0, sizeof(kept));
 	if (kept_read(&kept, a) != 0 || set_compile(kept.ipsec_ikeless, &b,
@@ -1633,31 +2170,109 @@ ikeless_edit(const struct ietf_i2nsf_ikeless *after, char *err,
 		    "be read: %s", ie.msg);
 		memset(&b, 0, sizeof(b));
 		memset(&ie, 0, sizeof(ie));
+		kept.ipsec_ikeless = NULL;
 	}
-	if (set_compile(after != NULL ? after->ipsec_ikeless : NULL, &n,
-	    &ie) != 0)
-		goto out;
-	if ((fd = pfkey_open(&w, &e)) == -1) {
-		fault(&ie, EIO, NULL, "%s", e);
+	was = kept.ipsec_ikeless;
+	now = after != NULL ? after->ipsec_ikeless : NULL;
+	kps = now != NULL ? now->arcikl_key_pairs : NULL;
+	if ((kv = calloc((kps != NULL ? kps->key_pair.n : 0) + 1,
+	    sizeof(*kv))) == NULL) {
+		fault(&ie, ENOMEM, NULL, "out of memory");
 		goto out;
 	}
-	rc = apply(&w, fd, &b, &n, &ie, &nadd, &ndel);
-	close(fd);
-	if (rc != 0)
+	if (kp_apply(was, now, kv, &nkv, &ie) != 0)
 		goto out;
-	if (kept_write(after, ie.msg, sizeof(ie.msg)) != 0) {
+	if (derive_fill(a, was, now, &now, &ie) != 0 ||
+	    set_compile(now, &n, &ie) != 0)
+		goto undo_pairs;
+	/* The host's network, then each jail's. */
+	if ((jails = calloc(b.nsa + b.nsp + n.nsa + n.nsp + 1,
+	    sizeof(*jails))) == NULL) {
+		fault(&ie, ENOMEM, NULL, "out of memory");
+		goto undo_pairs;
+	}
+	nj = set_jails(&b, &n, jails);
+	/* A jail the new entries are of, running with a network of its
+	 * own, or nothing is done. */
+	for (i = 0; i < nj; i++) {
+		struct ikl_set	 t;
+		struct work	 w;
+		const char	*e = NULL;
+		bool		 some;
+
+		if (set_jail(&n, jails[i], &t) != 0) {
+			fault(&ie, ENOMEM, NULL, "out of memory");
+			goto undo_pairs;
+		}
+		some = t.nsa + t.nsp > 0;
+		set_free(&t);
+		work_init(&w);
+		if (some && scope_enter(&w, jails[i], &e) != 0) {
+			fault(&ie, EINVAL, NULL, "%s", e);
+			work_free(&w);
+			goto undo_pairs;
+		}
+		work_free(&w);
+	}
+	nadd = ndel = 0;
+	for (done = 0; done <= nj; done++)
+		if (apply_jail(done == 0 ? NULL : jails[done - 1], &b, &n, &ie,
+		    &x, &x) != 0)
+			break;
+	if (done <= nj) {
+		/* Those done before put back as running has them. */
+		for (i = done; i > 0; i--) {
+			memset(&ue, 0, sizeof(ue));
+			if (apply_jail(i == 1 ? NULL : jails[i - 2], &n, &b, &ue,
+			    &x, &x) != 0)
+				snprintf(ie.msg + strlen(ie.msg), sizeof(ie.msg) -
+				    strlen(ie.msg), "; %s not put back: %s", i ==
+				    1 ? "the host" : jails[i - 2], ue.msg);
+		}
+		goto undo_pairs;
+	}
+	filled.ipsec_ikeless = now;
+	if (kept_write(&filled, ie.msg, sizeof(ie.msg)) != 0) {
 		ie.error = EIO;
-		rc = -1;
-		goto out;
+		for (i = nj + 1; i > 0; i--) {
+			memset(&ue, 0, sizeof(ue));
+			(void)apply_jail(i == 1 ? NULL : jails[i - 2], &n, &b, &ue,
+			    &x, &x);
+		}
+		goto undo_pairs;
 	}
-	live_set(&n);
-	logmsg(LOG_NOTICE, "ipsec-ikeless: %zu SAs and %zu policies; %zu put "
-	    "in, %zu taken out", n.nsa, n.nsp, nadd, ndel);
+	/* The pairs no entry has any more. */
+	kps = was != NULL ? was->arcikl_key_pairs : NULL;
+	for (i = 0; kps != NULL && i < kps->key_pair.n; i++)
+		if (kp_find(now, kps->key_pair.v[i].name) == NULL)
+			sa_pair_drop(kps->key_pair.v[i].name);
+	if (set_jail(&n, NULL, &host) == 0) {
+		live_set(&host);
+		set_free(&host);
+	}
+	pairs_told(now, &b, &n, NULL);
+	for (i = 0; i < n.nsa; i++)
+		nadd += set_sa_like(&b, &n.sa[i]) == NULL;
+	for (i = 0; i < b.nsa; i++)
+		ndel += set_sa_like(&n, &b.sa[i]) == NULL;
+	logmsg(LOG_NOTICE, "ipsec-ikeless: %zu SAs and %zu policies in %zu "
+	    "networks; %zu SAs put in, %zu taken out", n.nsa, n.nsp, nj + 1,
+	    nadd, ndel);
+	rc = 0;
+	goto out;
+undo_pairs:
+	pairs_told(was, &b, n.nsa > 0 ? &n : &b, ie.msg);
+	while (nkv > 0) {
+		nkv--;
+		sa_pair_unset(kv[nkv].name, kv[nkv].how, kv[nkv].was,
+		    kv[nkv].gen);
+	}
 out:
 	pthread_mutex_unlock(&ikl_lock);
+	free(kv);
+	free(jails);
 	set_free(&b);
 	set_free(&n);
-	work_free(&w);
 	cbl_yarena_free(a);
 	snprintf(err, errlen, "%s", ie.msg);
 	*sid = ie.sid;
@@ -1751,7 +2366,8 @@ sa_state(cbl_yarena *a, const struct pfkey_sa *sa, bool *nomem)
 }
 
 /* An SA of the controller's: its entry as running has it, the keys
- * left out, and the kernel's state of it. */
+ * left out, and the kernel's state of it (none read, sa NULL: a jail's
+ * network not there). */
 static void
 sa_ours(cbl_yarena *a, const ysa *e, const struct pfkey_sa *sa, ysa *out,
     bool *nomem)
@@ -1762,7 +2378,7 @@ sa_ours(cbl_yarena *a, const ysa *e, const struct pfkey_sa *sa, ysa *out,
 	yint	*in;
 
 	*out = *e;
-	out->ipsec_sa_state = sa_state(a, sa, nomem);
+	out->ipsec_sa_state = sa != NULL ? sa_state(a, sa, nomem) : NULL;
 	if (e->ipsec_sa_config == NULL || e->ipsec_sa_config->esp_sa == NULL)
 		return;
 	if ((c = aalloc(a, sizeof(*c), nomem)) == NULL || (es = aalloc(a,
@@ -1966,66 +2582,147 @@ sp_foreign(cbl_yarena *a, const struct pfkey_sp *sp, ysp *out, bool *nomem)
 	return (true);
 }
 
+/* The kernel of jail's SAD and SPD (NULL: the host's) into k; false
+ * when there is none (no PF_KEY, the jail not running). */
+static bool
+oper_read(const char *jail, struct kstate *k)
+{
+	struct work	 w;
+	const char	*e = NULL;
+	int		 fd;
+	bool		 ok;
+
+	memset(k, 0, sizeof(*k));
+	work_init(&w);
+	w.nice = true;
+	if ((fd = jail_pfkey(&w, jail, &e)) == -1) {
+		work_free(&w);
+		return (false);
+	}
+	ok = ks_read(&w, fd, k, &e) == 0;
+	if (!ok)
+		logmsg(LOG_INFO, "a read of ipsec-ikeless%s%s failed: %s", jail !=
+		    NULL ? " in " : "", jail != NULL ? jail : "", e);
+	close(fd);
+	work_free(&w);
+	return (ok);
+}
+
+/* The key pairs as running has them, each with its public half. */
+static const ykps *
+oper_pairs(cbl_yarena *a, const yikl *kept, bool *nomem)
+{
+	const ykps	*k = kept != NULL ? kept->arcikl_key_pairs : NULL;
+	ykps		*o;
+	ykp		*v;
+	unsigned char	*pub;
+
+	if (k == NULL)
+		return (NULL);
+	o = aalloc(a, sizeof(*o), nomem);
+	v = aalloc(a, (k->key_pair.n + 1) * sizeof(*v), nomem);
+	if (*nomem)
+		return (NULL);
+	for (size_t i = 0; i < k->key_pair.n; i++) {
+		v[i] = k->key_pair.v[i];
+		if ((pub = aalloc(a, SA_PUB_LEN, nomem)) != NULL &&
+		    sa_pair_public(v[i].name, pub)) {
+			v[i].public.p = pub;
+			v[i].public.len = SA_PUB_LEN;
+		}
+	}
+	o->key_pair.n = k->key_pair.n;
+	o->key_pair.v = v;
+	return (o);
+}
+
 /* The kernel's SAD and SPD as the lists, the controller's entries
- * by their names. */
+ * by their names: the host's every SA and policy, a jail's the
+ * controller's alone (without their state where its network is not
+ * there); the key pairs with their public halves. */
 static int
 operational(cbl_yarena *a, const yikl *kept, const struct ikl_set *s,
     const yikl **out)
 {
-	struct kstate		 k;
-	struct work		 w;
+	struct kstate		*ks, k;
+	const char		**jails;
 	yikl			*c;
 	ysad			*sad;
 	yspd			*spd;
 	ysa			*sv;
 	ysp			*pv;
-	const char		*e = NULL;
-	size_t			 i, m, ns, np;
-	int			 fd;
-	bool			 nomem = false;
+	const char		*jail;
+	size_t			 i, m, ns, np, nj, jx, tsa, tsp;
+	bool			 nomem = false, *got;
 
 	*out = NULL;
-	work_init(&w);
-	w.nice = true;
-	if ((fd = pfkey_open(&w, &e)) == -1) {
-		/* No PF_KEY (no ipsec.ko): no SAs, no policies. */
-		work_free(&w);
-		return (0);
+	jails = calloc(s->nsa + s->nsp + 1, sizeof(*jails));
+	ks = calloc(s->nsa + s->nsp + 2, sizeof(*ks));
+	got = calloc(s->nsa + s->nsp + 2, sizeof(*got));
+	if (jails == NULL || ks == NULL || got == NULL) {
+		free(jails);
+		free(ks);
+		free(got);
+		return (ENOMEM);
 	}
-	if (ks_read(&w, fd, &k, &e) == -1) {
-		close(fd);
-		logmsg(LOG_INFO, "a read of ipsec-ikeless failed: %s", e);
-		work_free(&w);
-		return (EIO);
+	nj = set_jails(s, s, jails);
+	tsa = s->nsa;
+	tsp = s->nsp;
+	for (jx = 0; jx <= nj; jx++) {
+		got[jx] = oper_read(jx == 0 ? NULL : jails[jx - 1], &ks[jx]);
+		tsa += ks[jx].nsa;
+		tsp += ks[jx].nsp;
 	}
-	close(fd);
 	c = aalloc(a, sizeof(*c), &nomem);
 	sad = aalloc(a, sizeof(*sad), &nomem);
 	spd = aalloc(a, sizeof(*spd), &nomem);
-	sv = aalloc(a, (k.nsa + 1) * sizeof(*sv), &nomem);
-	pv = aalloc(a, (k.nsp + 1) * sizeof(*pv), &nomem);
-	for (i = ns = 0; !nomem && i < k.nsa; i++) {
-		for (m = 0; m < s->nsa; m++)
-			if (s->sa[m].sa.spi == k.sa[i].spi &&
-			    addr_same(&s->sa[m].sa.dst, &k.sa[i].dst))
-				break;
-		if (m < s->nsa)
-			sa_ours(a, &kept->sad->sad_entry.v[m], &k.sa[i], &sv[ns++],
-			    &nomem);
-		else
-			sa_foreign(a, &k.sa[i], &sv[ns++], &nomem);
+	sv = aalloc(a, (tsa + 1) * sizeof(*sv), &nomem);
+	pv = aalloc(a, (tsp + 1) * sizeof(*pv), &nomem);
+	ns = np = 0;
+	for (jx = 0; !nomem && jx <= nj; jx++) {
+		jail = jx == 0 ? NULL : jails[jx - 1];
+		k = ks[jx];
+		for (i = 0; !nomem && i < k.nsa; i++) {
+			for (m = 0; m < s->nsa; m++)
+				if (jail_same(s->sa[m].jail, jail) &&
+				    s->sa[m].sa.spi == k.sa[i].spi &&
+				    addr_same(&s->sa[m].sa.dst, &k.sa[i].dst))
+					break;
+			if (m < s->nsa)
+				sa_ours(a, &kept->sad->sad_entry.v[s->sa[m].idx],
+				    &k.sa[i], &sv[ns++], &nomem);
+			else if (jail == NULL)
+				sa_foreign(a, &k.sa[i], &sv[ns++], &nomem);
+		}
+		for (i = 0; !nomem && i < k.nsp; i++) {
+			for (m = 0; sp_ours(&k.sp[i]) && m < s->nsp; m++)
+				if (jail_same(s->sp[m].jail, jail) &&
+				    sp_sel_same(&s->sp[m].sp, &k.sp[i]))
+					break;
+			if (sp_ours(&k.sp[i]) && m < s->nsp)
+				pv[np++] = kept->spd->spd_entry.v[m];
+			else if (jail == NULL && sp_foreign(a, &k.sp[i], &pv[np],
+			    &nomem))
+				np++;
+		}
+		/* A jail not there: its entries as running has them (no
+		 * PF_KEY on the host, no ipsec.ko: none). */
+		for (m = 0; !got[jx] && jail != NULL && !nomem && m < s->nsa;
+		    m++)
+			if (jail_same(s->sa[m].jail, jail))
+				sa_ours(a, &kept->sad->sad_entry.v[s->sa[m].idx],
+				    NULL, &sv[ns++], &nomem);
+		for (m = 0; !got[jx] && jail != NULL && !nomem && m < s->nsp;
+		    m++)
+			if (jail_same(s->sp[m].jail, jail))
+				pv[np++] = kept->spd->spd_entry.v[m];
 	}
-	for (i = np = 0; !nomem && i < k.nsp; i++) {
-		for (m = 0; sp_ours(&k.sp[i]) && m < s->nsp; m++)
-			if (sp_sel_same(&s->sp[m].sp, &k.sp[i]))
-				break;
-		if (sp_ours(&k.sp[i]) && m < s->nsp)
-			pv[np++] = kept->spd->spd_entry.v[m];
-		else if (sp_foreign(a, &k.sp[i], &pv[np], &nomem))
-			np++;
-	}
-	ks_free(&k);
-	work_free(&w);
+	for (jx = 0; jx <= nj; jx++)
+		ks_free(&ks[jx]);
+	free(ks);
+	free(got);
+	free(jails);
+	c->arcikl_key_pairs = oper_pairs(a, kept, &nomem);
 	if (nomem)
 		return (ENOMEM);
 	sad->sad_entry.n = ns;
@@ -2071,10 +2768,12 @@ ikeless_get(bool oper, cbl_yarena *a, struct ietf_i2nsf_ikeless *data)
 /* ---- The start --------------------------------------------------------- */
 
 /*
- * At the start: running's policies put back where the kernel has not
- * got them; its SAs the kernel has not got (a reboot's state loss, RFC
- * 9061 4.2, or a hard lifetime reached) taken out of running, for the
- * controller to send new ones.
+ * At the start, in each network (the host's, each jail's): running's
+ * policies put back where the kernel has not got them; its SAs the
+ * kernel has not got (a reboot's state loss, RFC 9061 4.2, a hard
+ * lifetime reached, a jail stopped) taken out of running, for the
+ * controller to send new ones.  A jail not running has none of its SAs,
+ * and its policies are not put back.
  */
 void
 ikeless_start(void)
@@ -2084,23 +2783,28 @@ ikeless_start(void)
 		yikl	c;
 		ysad	sad;
 	}				*r;
-	struct ikl_set			 s;
+	struct ikl_set			 s, host;
 	struct iklerr			 ie;
 	struct kstate			 k;
 	struct work			 w;
 	const struct pfkey_sp		*ksp;
 	struct pfkey_sp			 sp;
 	cbl_yarena			*a;
+	const char			**jails = NULL, *jail;
 	ysa				*keep;
 	const char			*e = NULL;
 	char				 lost[512], err[256];
-	size_t				 i, nk, nput;
-	int				 fd;
+	const ykps			*kps;
+	bool				*found = NULL;
+	size_t				 i, nk, nput, nj, jx;
+	uint32_t			 gen;
+	int				 fd, how;
 
 	if ((a = cbl_yarena_new()) == NULL)
 		return;
 	memset(&kept, 0, sizeof(kept));
 	memset(&ie, 0, sizeof(ie));
+	memset(&s, 0, sizeof(s));
 	pthread_mutex_lock(&ikl_lock);
 	if (kept_read(&kept, a) != 0 || kept.ipsec_ikeless == NULL ||
 	    set_compile(kept.ipsec_ikeless, &s, &ie) != 0) {
@@ -2109,38 +2813,74 @@ ikeless_start(void)
 			    "cannot be put in: %s", ie.msg);
 		goto out;
 	}
-	live_set(&s);
-	work_init(&w);
-	if ((fd = pfkey_open(&w, &e)) == -1 || ks_read(&w, fd, &k, &e) == -1) {
-		logmsg(LOG_WARNING, "ipsec-ikeless: running's entries not put "
-		    "back: %s", e);
-		if (fd != -1)
-			close(fd);
-		work_free(&w);
-		set_free(&s);
-		goto out;
+	/* A pair running names and its file gone (a host reinstalled, its
+	 * configuration kept): made anew, told. */
+	if ((kps = kept.ipsec_ikeless->arcikl_key_pairs) != NULL)
+		for (i = 0; i < kps->key_pair.n; i++) {
+			gen = kps->key_pair.v[i].has_generation ?
+			    kps->key_pair.v[i].generation : 0;
+			if (sa_pair_set(kps->key_pair.v[i].name, true, gen, gen,
+			    &how, err, sizeof(err)) != 0)
+				logmsg(LOG_WARNING, "ipsec-ikeless: %s", err);
+		}
+	if (set_jail(&s, NULL, &host) == 0) {
+		live_set(&host);
+		set_free(&host);
 	}
-	for (i = nput = 0; i < s.nsp; i++) {
-		sp = s.sp[i].sp;
-		if ((ksp = ks_find_sp(&k, &sp)) != NULL && sp_same(ksp, &sp))
-			continue;
-		if (ksp != NULL && !sp_ours(ksp)) {
-			logmsg(LOG_WARNING, "ipsec-ikeless: policy %s not put "
-			    "back: spd/%u, not the controller's, has its "
-			    "selector", s.sp[i].name, ksp->id);
+	jails = calloc(s.nsa + s.nsp + 1, sizeof(*jails));
+	found = calloc(s.nsa + 1, sizeof(*found));
+	if (jails == NULL || found == NULL)
+		goto out;
+	nj = set_jails(&s, &s, jails);
+	for (jx = 0; jx <= nj; jx++) {
+		jail = jx == 0 ? NULL : jails[jx - 1];
+		work_init(&w);
+		if ((fd = jail_pfkey(&w, jail, &e)) == -1 || ks_read(&w, fd, &k,
+		    &e) == -1) {
+			logmsg(LOG_WARNING, "ipsec-ikeless: running's entries%s%s "
+			    "not put back: %s", jail != NULL ? " of " : "",
+			    jail != NULL ? jail : "", e);
+			if (fd != -1)
+				close(fd);
+			work_free(&w);
+			/* The host's left as they are; a jail's SAs gone. */
+			for (i = 0; jail == NULL && i < s.nsa; i++)
+				if (s.sa[i].jail == NULL)
+					found[i] = true;
 			continue;
 		}
-		if ((ksp != NULL ? pfkey_spdupdate(&w, fd, &sp, &e) :
-		    pfkey_spdadd(&w, fd, &sp, &e)) == -1)
-			logmsg(LOG_WARNING, "ipsec-ikeless: policy %s not put "
-			    "back: %s", s.sp[i].name, e);
-		else
-			nput++;
+		for (i = nput = 0; i < s.nsp; i++) {
+			if (!jail_same(s.sp[i].jail, jail))
+				continue;
+			sp = s.sp[i].sp;
+			if ((ksp = ks_find_sp(&k, &sp)) != NULL && sp_same(ksp,
+			    &sp))
+				continue;
+			if (ksp != NULL && !sp_ours(ksp)) {
+				logmsg(LOG_WARNING, "ipsec-ikeless: policy %s not "
+				    "put back: spd/%u, not the controller's, has "
+				    "its selector", s.sp[i].name, ksp->id);
+				continue;
+			}
+			if ((ksp != NULL ? pfkey_spdupdate(&w, fd, &sp, &e) :
+			    pfkey_spdadd(&w, fd, &sp, &e)) == -1)
+				logmsg(LOG_WARNING, "ipsec-ikeless: policy %s not "
+				    "put back: %s", s.sp[i].name, e);
+			else
+				nput++;
+		}
+		if (nput > 0)
+			logmsg(LOG_NOTICE, "ipsec-ikeless: %zu policies%s%s put "
+			    "back", nput, jail != NULL ? " of " : "", jail !=
+			    NULL ? jail : "");
+		close(fd);
+		for (i = 0; i < s.nsa; i++)
+			if (jail_same(s.sa[i].jail, jail) && ks_find_sa(&k,
+			    &s.sa[i].sa) != NULL)
+				found[i] = true;
+		ks_free(&k);
+		work_free(&w);
 	}
-	if (nput > 0)
-		logmsg(LOG_NOTICE, "ipsec-ikeless: %zu policies put back",
-		    nput);
-	close(fd);
 	/* The SAs the kernel has not got leave running. */
 	lost[0] = '\0';
 	keep = NULL;
@@ -2148,16 +2888,15 @@ ikeless_start(void)
 	if (s.nsa > 0 && (keep = cbl_yarena_alloc(a, s.nsa *
 	    sizeof(*keep))) != NULL)
 		for (i = 0; i < s.nsa; i++) {
-			if (ks_find_sa(&k, &s.sa[i].sa) != NULL) {
+			if (found[i]) {
 				keep[nk++] = kept.ipsec_ikeless->sad->
-				    sad_entry.v[i];
+				    sad_entry.v[s.sa[i].idx];
 				continue;
 			}
 			snprintf(lost + strlen(lost), sizeof(lost) -
 			    strlen(lost), "%s%s", lost[0] != '\0' ? ", " : "",
 			    s.sa[i].name);
 		}
-	ks_free(&k);
 	if (keep != NULL && nk < s.nsa &&
 	    (r = cbl_yarena_alloc(a, sizeof(*r))) != NULL) {
 		memset(r, 0, sizeof(*r));
@@ -2175,13 +2914,17 @@ ikeless_start(void)
 			    s.nsa - nk, lost);
 			set_free(&s);
 			memset(&ie, 0, sizeof(ie));
-			if (set_compile(&r->c, &s, &ie) == 0)
-				live_set(&s);
+			if (set_compile(&r->c, &s, &ie) == 0 &&
+			    set_jail(&s, NULL, &host) == 0) {
+				live_set(&host);
+				set_free(&host);
+			}
 		}
 	}
-	work_free(&w);
-	set_free(&s);
 out:
 	pthread_mutex_unlock(&ikl_lock);
+	free(jails);
+	free(found);
+	set_free(&s);
 	cbl_yarena_free(a);
 }

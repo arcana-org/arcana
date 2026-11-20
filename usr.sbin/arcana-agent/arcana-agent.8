@@ -568,6 +568,35 @@ At the start the controller's policies are put back where the kernel
 has not got them; its SAs the kernel has lost leave running, for the
 controller to send new ones (RFC 9061 section 4.2).
 .Pp
+An SD-WAN tunnel's SAs are keyed by the agent itself
+.Pq Li arcana-ikeless :
+a key pair
+.Pq Li key-pairs/key-pair ,
+X25519, kept as
+.Pa sdwan-key- Ns Ar interface Ns Pa .pem
+beside the agent's files (0600), made with its entry, made anew when
+its generation changes (the one before kept, put back when the
+generation is), its public half in the operational datastore, the
+.Cm sdwan
+read and the
+.Li sdwan-key
+event; a derived sad-entry names its pair, the far end's public half,
+an epoch and its direction and is given no SPI and no keys: the agent
+derives them by HKDF-SHA256 of the X25519 agreement, the same on both
+ends, and keeps them in running.
+An SA the same in all under another name is no change to the kernel,
+so a rotation's next SAs become the tunnel's own without a packet
+lost; a derived SA the kernel has already from the same derivation is
+taken over as it is.
+An entry with a
+.Li jail
+is of that vnet jail's network, by PF_KEY there; a jail's pair is
+named
+.Ar interface Ns @ Ns Ar jail .
+A pair whose SAs an edit could not change is a fault
+.Pq Li key-rotation
+until an edit leaves it one SA each way.
+.Pp
 Every request has a trace: the library calls, system calls, files and
 programs it used, with the output of every program, told to the peer
 that asked as it runs (arcana-jobs'
@@ -1146,9 +1175,8 @@ beside
 .It Fl -pfkey Ar socket
 A unix socket
 .Pq Dv SOCK_SEQPACKET
-that answers the PF_KEY messages of the manually keyed SAs and their
-policies
-.Pq Ql ipsec-sa ,
+that answers the PF_KEY messages of RFC 9061's IKE-less lists
+.Pq Ql ipsec-ikeless ,
 the SPD's read of
 .Pa ipsec.conf
 and the registered socket the kernel's news come to,
@@ -1600,7 +1628,7 @@ WireGuard protects) is measured in STAMP's authenticated mode (RFC 8762
 section 4.4, HMAC-SHA-256 truncated to 128 bits): the console names
 this end's tunnel and the far end's public half of its pair, and the
 key and SSID are derived from the tunnel's X25519 pair
-.Pq Ql ipsec-sa key
+(its key-pair entry of the IKE-less lists, arcana-ikeless)
 and that half by HKDF-SHA256, the same at both ends, never sent nor
 known to the console; a reply that does not authenticate is no reply,
 so a far end of another key, or a probe tampered with on the way,

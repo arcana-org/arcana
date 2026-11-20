@@ -10883,16 +10883,15 @@ part_suricata_forms(void)
 }
 
 /*
- * Manually keyed SAs of an ipsec(4) interface by the form of the base
- * system's IPsec, on a host without strongSwan: a part of the Network
- * tab's base system, in its row, not a section of its own, there all
- * the same while strongSwan's section says it is not installed; its
- * address leads back to it.  Set from keys given, not in safe mode
- * (keys set by hand cannot be put back): PF_KEY was sent both SAs with
- * their SPIs and reqid; then a selector's two policies on them.
+ * The base system's IPsec on a host without strongSwan: a part of the
+ * Network tab's base system, in its row, not a section of its own,
+ * there all the same while strongSwan's section says it is not
+ * installed, the SAD and SPD of RFC 9061's lists in it (manual SAs are
+ * the lists' since PLAN-SDN-YANG 6.2.5: no form of their own); its
+ * address leads back to it.
  */
 static void
-part_ipsec_sa(void)
+part_ipsec_base(void)
 {
 
 	host_tabs();
@@ -10905,8 +10904,9 @@ part_ipsec_sa(void)
 	    "button.tab')].some(b => b.dataset.arg.endsWith('ipsec'))"));
 	click_when("nav.hsects button.tab[data-arg='network/base']", 10);
 	click_when("nav.sub button[data-arg='network/base/ipsec']", 10);
-	wait_js("document.querySelector('.pane.ipsec-base button[data-act="
-	    "ipsec-sa-add]') && location.hash.endsWith('/network/base/ipsec')"
+	wait_js("document.querySelector('.pane.ipsec-base') && "
+	    "document.querySelector('.pane.ipsec-ikeless button[data-act="
+	    "ikl-new]') && location.hash.endsWith('/network/base/ipsec')"
 	    " && document.querySelector('nav.hsects button.tab.on[data-arg="
 	    "\"network/base\"]') && document.querySelector('nav.sub button.on"
 	    "[data-arg=\"network/base/ipsec\"]') && document.querySelector("
@@ -10914,41 +10914,8 @@ part_ipsec_sa(void)
 	ATF_CHECK(js_true("!document.querySelector('.plugin-missing') && "
 	    "document.querySelector('.pane.ipsec-base').textContent.includes("
 	    "'PF_KEY') && document.querySelector('.pane.ipsec-base')."
-	    "textContent.includes('rc.d/ipsec')"));
-	run("document.querySelector('.pane.ipsec-base button[data-act="
-	    "ipsec-sa-add]').click()");
-	wait_js("document.querySelector('form[data-form=ipsec-sa]')", 5);
-	run("const f = document.querySelector('form[data-form=ipsec-sa]'); "
-	    "f.verb.value = 'set'; f.interface.value = 'ipsec0'; "
-	    "f.reqid.value = '100'; f.local.value = '192.0.2.1'; "
-	    "f.remote.value = '192.0.2.2'; f.words.value = 'spi-in 0x1001 "
-	    "spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in "
-	    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff "
-	    "key-out "
-	    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff "
-	    "akey-in 0011223344556677889900112233445566778899 akey-out "
-	    "0011223344556677889900112233445566778899'; f.safe.checked = "
-	    "false; f.requestSubmit();");
-	queued_run();
-	ATF_CHECK_MSG(host_has("grep -q '^add 192.0.2.2 192.0.2.1 esp 0x1001 "
-	    "-m tunnel -u 100 ' setkey.conf && grep -q '^add 192.0.2.1 "
-	    "192.0.2.2 esp 0x1002 -m tunnel -u 100 ' setkey.conf"),
-	    "the SAs are not set");
-	dock_closed();
-	run("document.querySelector('.pane.ipsec-base button[data-act="
-	    "ipsec-sa-add]').click()");
-	wait_js("document.querySelector('form[data-form=ipsec-sa]')", 5);
-	run("const f = document.querySelector('form[data-form=ipsec-sa]'); "
-	    "f.verb.value = 'policy'; f.interface.value = 'ipsec0'; "
-	    "f.reqid.value = '100'; f.local.value = '192.0.2.1'; "
-	    "f.remote.value = '192.0.2.2'; f.words.value = 'src 10.1.0.0/24 "
-	    "dst 10.2.0.0/24'; f.safe.checked = false; f.requestSubmit();");
-	queued_run();
-	ATF_CHECK_MSG(host_has("grep -q '^spdadd 10.1.0.0/24\\[any\\] "
-	    "10.2.0.0/24\\[any\\] any ' setkey.conf && grep -q '^spdadd "
-	    "10.2.0.0/24\\[any\\] 10.1.0.0/24\\[any\\] any ' setkey.conf"),
-	    "the policies are not in");
-	dock_closed();
+	    "textContent.includes('rc.d/ipsec') && !document.querySelector("
+	    "'[data-act=ipsec-sa-add]')"));
 	/* The row's other views from it, and back by its address. */
 	run("document.querySelector('nav.sub button[data-act=net-kind]"
 	    "[data-arg=routes]').click()");
@@ -10962,20 +10929,20 @@ part_ipsec_sa(void)
 	ATF_REQUIRE(rename("fake-swanctl.off", "fake-swanctl") == 0);
 }
 
-ATF_TC_WITH_CLEANUP(pwa_ipsec_sa);
-ATF_TC_HEAD(pwa_ipsec_sa, tc)
+ATF_TC_WITH_CLEANUP(pwa_ipsec_base);
+ATF_TC_HEAD(pwa_ipsec_base, tc)
 {
 
-	atf_tc_set_md_var(tc, "descr", "Manually keyed SAs and policies set by the base system's IPsec, a part of Network's Base system, on a host without strongSwan, found in what PF_KEY was sent");
+	atf_tc_set_md_var(tc, "descr", "The base system's IPsec, a part of Network's Base system, on a host without strongSwan, its SAD and SPD there, found by its address");
 	atf_tc_set_md_var(tc, "timeout", "180");
 }
-ATF_TC_BODY(pwa_ipsec_sa, tc)
+ATF_TC_BODY(pwa_ipsec_base, tc)
 {
 
 	prologue(tc, 1);
-	part_ipsec_sa();
+	part_ipsec_base();
 }
-ATF_TC_CLEANUP(pwa_ipsec_sa, tc)
+ATF_TC_CLEANUP(pwa_ipsec_base, tc)
 {
 
 	browser_stop();
@@ -17251,7 +17218,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_aaa_forms);
 	ATF_TP_ADD_TC(tp, pwa_if_forms);
 	ATF_TP_ADD_TC(tp, pwa_address_job);
-	ATF_TP_ADD_TC(tp, pwa_ipsec_sa);
+	ATF_TP_ADD_TC(tp, pwa_ipsec_base);
 	ATF_TP_ADD_TC(tp, pwa_ipsec_ikeless);
 	ATF_TP_ADD_TC(tp, pwa_console_forms);
 	ATF_TP_ADD_TC(tp, pwa_macdo_paths);

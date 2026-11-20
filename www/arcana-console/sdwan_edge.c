@@ -709,6 +709,193 @@ patch_remove(const char *path, const char *const *targets, int n)
 	return (rc_warns(edit("PATCH", path, body)));
 }
 
+/*
+ * RFC 9061's IKE-less lists (PLAN-SDN-YANG 6.2.5): a uswe tunnel end's
+ * SAs are sad-entries the agent derives (arcana-ikeless' derived) from
+ * its key pair (key-pairs) and the far end's public half, which the
+ * console names and never sees the keys of.  Each end's two SAs are
+ * USWE_SA(ifn, out|in), a rotation's next ones the same with ".next".
+ */
+#define	IKL_PATH	"ietf-i2nsf-ikeless:ipsec-ikeless"
+#define	USWE_SA		"uswe.%s.%s"
+
+/* The name of an edge's pair of interface ifn: a vnet jail's
+ * "ifn@jail", into buf. */
+static const char *
+edge_pair(const char *sid, const char *ifn, char *buf, size_t len)
+{
+	char	hsid[64], jail[64];
+
+	jail[0] = '\0';
+	(void)sdwan_edge_split(sid, hsid, sizeof(hsid), jail, sizeof(jail));
+	snprintf(buf, len, "%s%s%s", ifn, jail[0] != '\0' ? "@" : "", jail);
+	return (buf);
+}
+
+/* The edit merging inner into the lists. */
+static ucl_object_t *
+ikl_edit(ucl_object_t *inner)
+{
+	ucl_object_t	*body;
+
+	body = ucl_object_typed_new(UCL_OBJECT);
+	put(body, IKL_PATH, inner);
+	return (edit("PATCH", IKL_PATH, body));
+}
+
+/* The edit making name's key pair, of generation gen (-1: the default,
+ * a pair kept as it is). */
+static ucl_object_t *
+pair_edit(const char *name, int64_t gen)
+{
+	ucl_object_t	*kp, *list, *c, *inner;
+
+	kp = ucl_object_typed_new(UCL_OBJECT);
+	put(kp, "name", S(name));
+	if (gen >= 0)
+		put(kp, "generation", I(gen));
+	list = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(list, kp);
+	c = ucl_object_typed_new(UCL_OBJECT);
+	put(c, "key-pair", list);
+	inner = ucl_object_typed_new(UCL_OBJECT);
+	put(inner, "arcana-ikeless:key-pairs", c);
+	return (ikl_edit(inner));
+}
+
+/*
+ * One direction's SA of a uswe tunnel end, named name: ESP in tunnel
+ * mode from the local end to the remote one (the far end's to this
+ * one's, inbound) on the interface's reqid, a window of 1024 packets
+ * (R47), ESN, ESP in UDP, AES-GCM-16 or AES-CBC with HMAC-SHA2-256; its
+ * SPI and keys derived by the agent from pair and peer (a far half or
+ * its reference); a vnet jail's in its own network.
+ */
+static ucl_object_t *
+uswe_sa(const char *name, const char *pair, const char *jail, int64_t reqid,
+    const char *me, const char *far, const char *peer, bool out, bool gcm,
+    bool encap, bool esn, int64_t lifetime)
+{
+	ucl_object_t	*e, *c, *es, *x, *d;
+
+	e = ucl_object_typed_new(UCL_OBJECT);
+	put(e, "name", S(name));
+	put(e, "reqid", I(reqid));
+	if (jail != NULL && jail[0] != '\0')
+		put(e, "arcana-ikeless:jail", S(jail));
+	c = ucl_object_typed_new(UCL_OBJECT);
+	put(c, "ext-seq-num", B(esn));
+	put(c, "anti-replay-window-size", I(1024));
+	/* All of the family: the interface's own policies select what goes
+	 * by its SAs (a tunnel mode SA's selector the kernel is not given). */
+	x = ucl_object_typed_new(UCL_OBJECT);
+	put(x, "local-prefix", S(family(me) == AF_INET6 ? "::/0" :
+	    "0.0.0.0/0"));
+	put(x, "remote-prefix", S(family(me) == AF_INET6 ? "::/0" :
+	    "0.0.0.0/0"));
+	put(c, "traffic-selector", x);
+	put(c, "mode", S("tunnel"));
+	es = ucl_object_typed_new(UCL_OBJECT);
+	x = ucl_object_typed_new(UCL_OBJECT);
+	put(x, "encryption-algorithm", I(gcm ? 20 : 12));
+	put(es, "encryption", x);
+	if (!gcm) {
+		x = ucl_object_typed_new(UCL_OBJECT);
+		put(x, "integrity-algorithm", I(12));
+		put(es, "integrity", x);
+	}
+	put(c, "esp-sa", es);
+	x = ucl_object_typed_new(UCL_OBJECT);
+	put(x, "local", S(out ? me : far));
+	put(x, "remote", S(out ? far : me));
+	put(c, "tunnel", x);
+	if (encap) {
+		x = ucl_object_typed_new(UCL_OBJECT);
+		put(x, "espencap", S("espinudp"));
+		put(x, "sport", I(4500));
+		put(x, "dport", I(4500));
+		put(c, "encapsulation-type", x);
+	}
+	d = ucl_object_typed_new(UCL_OBJECT);
+	put(d, "key-pair", S(pair));
+	put(d, "peer", S(peer));
+	put(d, "epoch", I(0));
+	put(d, "direction", S(out ? "outbound" : "inbound"));
+	if (lifetime > 0)
+		put(d, "lifetime", I(lifetime));
+	put(c, "arcana-ikeless:derived", d);
+	put(e, "ipsec-sa-config", c);
+	return (e);
+}
+
+/* The edit merging the sad-entries of list (consumed) into the lists. */
+static ucl_object_t *
+sad_edit(ucl_object_t *list)
+{
+	ucl_object_t	*sad, *inner;
+
+	sad = ucl_object_typed_new(UCL_OBJECT);
+	put(sad, "sad-entry", list);
+	inner = ucl_object_typed_new(UCL_OBJECT);
+	put(inner, "sad", sad);
+	return (ikl_edit(inner));
+}
+
+/* A YANG Patch of the lists removing the sad-entries named, n of them:
+ * what is not there is no error. */
+static ucl_object_t *
+sad_remove(const char *const *names, int n)
+{
+	ucl_object_t	*ed, *edits, *p, *body;
+	char		 id[8], t[160];
+	int		 i;
+
+	edits = ucl_object_typed_new(UCL_ARRAY);
+	for (i = 0; i < n; i++) {
+		ed = ucl_object_typed_new(UCL_OBJECT);
+		snprintf(id, sizeof(id), "%d", i + 1);
+		snprintf(t, sizeof(t), "/sad/sad-entry=%s", names[i]);
+		put(ed, "edit-id", S(id));
+		put(ed, "operation", S("remove"));
+		put(ed, "target", S(t));
+		ucl_array_append(edits, ed);
+	}
+	p = ucl_object_typed_new(UCL_OBJECT);
+	put(p, "patch-id", S("sdwan"));
+	put(p, "edit", edits);
+	body = ucl_object_typed_new(UCL_OBJECT);
+	put(body, "ietf-yang-patch:yang-patch", p);
+	return (edit("PATCH", IKL_PATH, body));
+}
+
+/* The sad-entries of a uswe end's edit (out, then in), or false. */
+static bool
+uswe_entries(const ucl_object_t *j, const ucl_object_t **out,
+    const ucl_object_t **in)
+{
+	const ucl_object_t	*list;
+
+	if (j == NULL || str(j, "kind") == NULL || strcmp(str(j, "kind"),
+	    "edit") != 0)
+		return (false);
+	list = at_path(at_path(ucl_object_lookup(j, "body"), IKL_PATH, "sad"),
+	    "sad-entry", NULL);
+	*out = ucl_array_find_index(list, 0);
+	*in = ucl_array_find_index(list, 1);
+	return (*out != NULL && *in != NULL && at_path(at_path(*out,
+	    "ipsec-sa-config", "arcana-ikeless:derived"), "key-pair", NULL) !=
+	    NULL);
+}
+
+/* An entry's derived leaf. */
+static const char *
+uswe_derived(const ucl_object_t *e, const char *leaf)
+{
+
+	return (str(at_path(e, "ipsec-sa-config", "arcana-ikeless:derived"),
+	    leaf));
+}
+
 /* Interface ifn given back to the host's table: its binding, and its
  * families', taken out in one commit. */
 static ucl_object_t *
@@ -1513,19 +1700,31 @@ tvc_end(struct plan *pl, const ucl_object_t *t, int me)
 		    B(true), NULL));
 
 	/* A USWE tunnel (Mplify 119 §10): this end's key pair before the
-	 * interface, the SAs of both directions derived from the far end's
-	 * public half after it, as ${uswe:SID:IF} once that end has one. */
+	 * interface, the SAs of both directions after it, entries of RFC
+	 * 9061's lists the agent derives from the pair and the far end's
+	 * public half, ${uswe:SID:IF} once that end has one. */
 	if (strcmp(kind, "uswe") == 0) {
 		const ucl_object_t	*tt;
-		ucl_object_t		*args;
+		ucl_object_t		*list;
 		const char		*alg;
+		char			 n1[160], n2[160], n3[160], n4[160];
+		char			 pair[96], hsid[64], jail[64];
+		const char		*gone[4] = { n1, n2, n3, n4 };
+		int64_t			 life;
+		bool			 gcm, encap, esn;
 
+		/* A vnet jail's edge: its pair and SAs the host's lists',
+		 * of the jail's network, the pair named ipsec0@jail. */
+		jail[0] = '\0';
+		(void)sdwan_edge_split(sid, hsid, sizeof(hsid), jail,
+		    sizeof(jail));
+		snprintf(pair, sizeof(pair), "%s%s%s", ifn, jail[0] != '\0' ?
+		    "@" : "", jail);
 		snprintf(key, sizeof(key), "uswekey:%s", ifn);
 		o = object(pl, sid, key, PH_IPSEC, "%s: its key pair, X25519, "
 		    "kept by the agent", ifn);
 		if (o != NULL)
-			make(o, job("ipsec-sa", "verb", S("key"), "interface",
-			    S(ifn), NULL));
+			make(o, pair_edit(pair, -1));
 		snprintf(key, sizeof(key), "peer:%s", id);
 		o = object(pl, sid, key, PH_PEER, "%s: the far end, %s, its "
 		    "keys from the two halves", ifn, str(b, "underlay"));
@@ -1534,42 +1733,35 @@ tvc_end(struct plan *pl, const ucl_object_t *t, int me)
 		tt = ucl_object_lookup(t, "tunnel");
 		alg = str(tt, "algorithms") != NULL ? str(tt, "algorithms") :
 		    "aes-cbc-hmac-sha2-256";
-		args = ucl_object_typed_new(UCL_ARRAY);
-		ucl_array_append(args, S("peer"));
-		snprintf(key, sizeof(key), "${uswe:%s:%s}", str(b, "edge"), str(b,
-		    "ifname"));
-		ucl_array_append(args, S(key));
-		ucl_array_append(args, S("enc"));
-		ucl_array_append(args, S(strcmp(alg, "aes-gcm-16") == 0 ?
-		    "aes-gcm-16" : "aes-cbc"));
-		if (strcmp(alg, "aes-gcm-16") != 0) {
-			ucl_array_append(args, S("auth"));
-			ucl_array_append(args, S("hmac-sha2-256"));
-		}
-		if (tt == NULL || ucl_object_lookup(tt, "encap") == NULL ||
-		    ucl_flag(tt, "encap"))
-			ucl_array_append(args, S("encap"));
-		if (tt == NULL || ucl_object_lookup(tt, "esn") == NULL ||
-		    ucl_flag(tt, "esn"))
-			ucl_array_append(args, S("esn"));
-		ucl_array_append(args, S("epoch"));
-		ucl_array_append(args, S("0"));
+		gcm = strcmp(alg, "aes-gcm-16") == 0;
+		encap = tt == NULL || ucl_object_lookup(tt, "encap") == NULL ||
+		    ucl_flag(tt, "encap");
+		esn = tt == NULL || ucl_object_lookup(tt, "esn") == NULL ||
+		    ucl_flag(tt, "esn");
 		/* The lifetime, kept with the SAs: the manager turns the keys
 		 * at its half (R110, R112). */
-		ucl_array_append(args, S("lifetime"));
-		snprintf(key, sizeof(key), "%jd", (intmax_t)(tt != NULL &&
-		    ucl_object_lookup(tt, "lifetime") != NULL ? ucl_object_toint(
-		    ucl_object_lookup(tt, "lifetime")) : USWE_LIFETIME_S));
-		ucl_array_append(args, S(key));
-		p = job("ipsec-sa", "verb", S("derive"), "interface", S(ifn),
-		    "reqid", I(unit), "tunnel_local", S(str(a, "underlay")),
-		    "tunnel_remote", S(str(b, "underlay")), "args", args, NULL);
+		life = tt != NULL && ucl_object_lookup(tt, "lifetime") != NULL ?
+		    ucl_object_toint(ucl_object_lookup(tt, "lifetime")) :
+		    USWE_LIFETIME_S;
+		snprintf(key, sizeof(key), "${uswe:%s:%s}", str(b, "edge"), str(b,
+		    "ifname"));
+		snprintf(n1, sizeof(n1), USWE_SA, pair, "out");
+		snprintf(n2, sizeof(n2), USWE_SA, pair, "in");
+		list = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(list, uswe_sa(n1, pair, jail, unit, str(a,
+		    "underlay"), str(b, "underlay"), key, true, gcm, encap, esn,
+		    life));
+		ucl_array_append(list, uswe_sa(n2, pair, jail, unit, str(a,
+		    "underlay"), str(b, "underlay"), key, false, gcm, encap, esn,
+		    life));
+		p = sad_edit(list);
 		/* Made again when the far end's interface is: a new pair. */
 		put(p, "_after", S(digest(t, h, sizeof(h))));
 		make(o, p);
-		unmake(o, job("ipsec-sa", "verb", S("clear"), "interface", S(ifn),
-		    "reqid", I(unit), "tunnel_local", S(str(a, "underlay")),
-		    "tunnel_remote", S(str(b, "underlay")), NULL));
+		/* Taken out, a rotation's half done too. */
+		snprintf(n3, sizeof(n3), USWE_SA ".next", pair, "out");
+		snprintf(n4, sizeof(n4), USWE_SA ".next", pair, "in");
+		unmake(o, sad_remove(gone, 4));
 		return;
 	}
 	/* The far end, as it is known: its key, made again with it. */
@@ -7790,7 +7982,7 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 			it2 = NULL;
 			while ((e = ucl_object_iterate(ucl_object_lookup(t,
 			    "ends"), &it2, true)) != NULL) {
-				char	k2[64];
+				char	k2[64], pn[160];
 
 				snprintf(k2, sizeof(k2), "stampkey:%s", str(e,
 				    "ifname"));
@@ -7798,8 +7990,9 @@ plan_build(struct plan *pl, const ucl_object_t *y, const ucl_object_t *st)
 				    "%s: its key pair, X25519, kept by the agent: "
 				    "its authenticated STAMP's key", str(e,
 				    "ifname"))) != NULL)
-					make(o, job("ipsec-sa", "verb", S("key"),
-					    "interface", S(str(e, "ifname")), NULL));
+					make(o, pair_edit(edge_pair(str(e,
+					    "edge"), str(e, "ifname"), pn,
+					    sizeof(pn)), -1));
 			}
 		}
 	}
@@ -8567,11 +8760,21 @@ at_path(const ucl_object_t *o, const char *a, const char *b)
 	return (b != NULL ? ucl_object_lookup(v, b) : v);
 }
 
+/* A public key of 32 bytes as base64: 43 characters and its pad. */
+static bool
+half_ok(const char *s)
+{
+
+	return (strlen(s) == 44 && strspn(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	    "abcdefghijklmnopqrstuvwxyz0123456789+/") == 43 && s[43] == '=');
+}
+
 /*
  * ${wg:SID:IF}, the public key of that host's wg interface; ${ipsec:SID},
  * that host's IPsec key; ${uswe:SID:IF} and ${stamp:SID:IF}, the public
  * half of that host's tunnel end's pair (a uswe tunnel's SAs, a plain
- * tunnel's STAMP key): read once, kept for the rest of the run.
+ * tunnel's STAMP key): read once, kept for the rest of the run, a key
+ * of 32 bytes only.
  */
 static char *
 resolve(struct run *r, const char *ref, char *why, size_t wlen)
@@ -8635,8 +8838,86 @@ resolve(struct run *r, const char *ref, char *why, size_t wlen)
 		    ifn : "IPsec");
 		return (NULL);
 	}
+	/* A far host's word: an X25519 or WireGuard public key, 32 bytes
+	 * as base64, or nothing of it is used. */
+	if ((wg || uswe) && !half_ok(out)) {
+		snprintf(why, wlen, "%s tells a public key of %s that is none "
+		    "(not 44 characters of base64): not used", name, ifn);
+		free(out);
+		return (NULL);
+	}
 	ucl_object_insert_key(r->keys, S(out), ref, 0, true);
 	return (out);
+}
+
+/* A string leaf that is a reference to a far end's half, or NULL. */
+static const char *
+half_ref(const ucl_object_t *v)
+{
+	const char	*s;
+
+	if (ucl_object_type(v) != UCL_STRING)
+		return (NULL);
+	s = ucl_object_tostring(v);
+	return (strncmp(s, "${uswe:", 7) == 0 || strncmp(s, "${stamp:", 8) ==
+	    0 ? s : NULL);
+}
+
+/*
+ * Each string of an edit's body that is a reference to a far end's half
+ * (${uswe:...}, ${stamp:...}) made that half, a string leaf of its own:
+ * the body walked, never its text, so what a far host tells is a value
+ * and nothing more.  False and why when one could not be.
+ */
+static bool
+body_ready(struct run *r, ucl_object_t *o, char *why, size_t wlen)
+{
+	ucl_object_t		*v, *repl;
+	ucl_object_iter_t	 it;
+	const char		*s;
+	char			*val;
+	unsigned int		 k;
+
+	if (ucl_object_type(o) == UCL_ARRAY) {
+		for (k = 0; k < ucl_array_size(o); k++) {
+			v = (ucl_object_t *)(uintptr_t)ucl_array_find_index(o, k);
+			if ((s = half_ref(v)) != NULL) {
+				if ((val = resolve(r, s, why, wlen)) == NULL)
+					return (false);
+				ucl_object_unref(ucl_array_replace_index(o, S(val),
+				    k));
+				free(val);
+			} else if (!body_ready(r, v, why, wlen))
+				return (false);
+		}
+		return (true);
+	}
+	if (ucl_object_type(o) != UCL_OBJECT)
+		return (true);
+	/* Its references' halves gathered, then each put in its key's
+	 * place: an object is not changed while it is walked. */
+	repl = ucl_object_typed_new(UCL_OBJECT);
+	it = NULL;
+	while ((v = (ucl_object_t *)(uintptr_t)ucl_object_iterate(o, &it,
+	    true)) != NULL) {
+		if ((s = half_ref(v)) != NULL) {
+			if ((val = resolve(r, s, why, wlen)) == NULL) {
+				ucl_object_unref(repl);
+				return (false);
+			}
+			put(repl, ucl_object_key(v), S(val));
+			free(val);
+		} else if (!body_ready(r, v, why, wlen)) {
+			ucl_object_unref(repl);
+			return (false);
+		}
+	}
+	it = NULL;
+	while ((v = (ucl_object_t *)(uintptr_t)ucl_object_iterate(repl, &it,
+	    true)) != NULL)
+		put(o, ucl_object_key(v), ucl_object_copy(v));
+	ucl_object_unref(repl);
+	return (true);
 }
 
 /* A job's ${...} made what they say, and our own fields taken out. */
@@ -8716,6 +8997,14 @@ job_ready(struct run *r, const ucl_object_t *j, char *why, size_t wlen)
 		}
 		put(c, ucl_object_key(v), S(val));
 		free(val);
+	}
+	/* An edit's body: its far halves wherever they are (a derived SA's
+	 * peer), by their text. */
+	if (ucl_object_lookup(c, "body") != NULL && !body_ready(r,
+	    (ucl_object_t *)(uintptr_t)ucl_object_lookup(c, "body"), why,
+	    wlen)) {
+		ucl_object_unref(c);
+		return (NULL);
 	}
 	return (c);
 }
@@ -8810,6 +9099,14 @@ ni_fill(const char *sid, const char *uri, const char *peer,
 			snprintf(why, wlen, "%s has no network instance of FIB "
 			    "%ld%s", name, fib, nis == NULL ? " (its instances "
 			    "were not read)" : "");
+			goto done;
+		}
+		/* Put in the text of a path and a body: a name of nothing a
+		 * path or JSON would read otherwise. */
+		if (strpbrk(ni, "\"\\/,=%?#") != NULL) {
+			snprintf(why, wlen, "%s names FIB %ld's network instance "
+			    "with one of \" \\ / , = %% ? #, which a path or a "
+			    "body would read otherwise: not used", name, fib);
 			goto done;
 		}
 		buf_appendf(b, "%s", ni);
@@ -8963,9 +9260,24 @@ job_run(const char *sid, const ucl_object_t *j, char *why, size_t wlen)
 		snprintf(why, wlen, "no server %s", sid);
 		return (false);
 	}
-	/* A device edit, by RESTCONF (never a jail's). */
-	if (strcmp(str(j, "kind"), "edit") == 0)
-		return (edit_run(sid, uri, peer, name, j, why, wlen));
+	/* A device edit, by RESTCONF, of the host's datastore: a vnet
+	 * jail's edge's only the IKE-less lists', its entries the jail's
+	 * (a uswe tunnel's SAs, a tunnel end's pair). */
+	if (strcmp(str(j, "kind"), "edit") == 0) {
+		char	hsid[64], hj[64];
+
+		if (jail[0] == '\0')
+			return (edit_run(sid, uri, peer, name, j, why, wlen));
+		if (str(j, "path") == NULL || strcmp(str(j, "path"),
+		    IKL_PATH) != 0 || !sdwan_edge_split(sid, hsid, sizeof(hsid),
+		    hj, sizeof(hj))) {
+			snprintf(why, wlen, "an edge that is a vnet jail takes no "
+			    "edit of %s", str(j, "path") != NULL ? str(j,
+			    "path") : "the host");
+			return (false);
+		}
+		return (edit_run(hsid, uri, peer, name, j, why, wlen));
+	}
 	/* SSL inspection's CA, the console's own ask (inspect_build()): a
 	 * jail's edge's its own SSLproxy's. */
 	if (strcmp(str(j, "kind"), "inspection-ca") == 0) {
@@ -9218,7 +9530,8 @@ stamp_read(const char *sid, const char *ifn, const char *why)
 
 	if ((keys = rekey_keys_of(sid, ifn, w2, sizeof(w2))) == NULL)
 		return (false);
-	if ((ok = str(keys, "public") != NULL)) {
+	if ((ok = str(keys, "public") != NULL && half_ok(str(keys,
+	    "public")))) {
 		snprintf(ref, sizeof(ref), "${stamp:%s:%s}", sid, ifn);
 		stamp_known(ref, str(keys, "public"), why);
 	}
@@ -11045,14 +11358,14 @@ sent_of(const ucl_object_t *st, const char *sid)
 #define	MGR_REKEY_RETRY_S	120	/* a rotation that failed, tried again after */
 
 /*
- * The derive job of one end of a uswe tunnel, as applied, and the
+ * The edit of one end of a uswe tunnel's SAs, as applied, and the
  * server it is on (not the one to skip); NULL when there is none.
  */
 static ucl_object_t *
 rekey_end(const ucl_object_t *ap, const char *id, const char *skip,
     char *sid, size_t slen)
 {
-	const ucl_object_t	*s, *d, *j;
+	const ucl_object_t	*s, *d, *j, *eo, *ei;
 	ucl_object_iter_t	 it;
 	ucl_object_t		*spec, *c;
 	char			 key[200];
@@ -11066,9 +11379,7 @@ rekey_end(const ucl_object_t *ap, const char *id, const char *skip,
 		    str(d, "spec"))) == NULL)
 			continue;
 		j = ucl_array_find_index(ucl_object_lookup(spec, "make"), 0);
-		if (j != NULL && str(j, "kind") != NULL && strcmp(str(j, "kind"),
-		    "ipsec-sa") == 0 && str(j, "verb") != NULL && strcmp(str(j,
-		    "verb"), "derive") == 0) {
+		if (uswe_entries(j, &eo, &ei)) {
 			c = ucl_object_copy(j);
 			ucl_object_unref(spec);
 			(void)ucl_object_delete_key(c, "_after");
@@ -11136,23 +11447,74 @@ rekey_set(ucl_object_t *st, const char *id, const char *state,
 	pthread_mutex_unlock(&st_lock);
 }
 
+/* One step of a rotation on an end: an edit of its lists, run and
+ * freed; false and why. */
+static bool
+rekey_step(const char *sid, ucl_object_t *j, const char *what, char *why,
+    size_t wlen)
+{
+	char	w2[300];
+	bool	ok;
+
+	if (!(ok = job_run(sid, j, w2, sizeof(w2))))
+		snprintf(why, wlen, "%s, %s: %s", server_name_of(sid), what, w2);
+	ucl_object_unref(j);
+	return (ok);
+}
+
+/* A uswe SA entry e copied, its name with suffix after it ("": its own),
+ * derived from the far half peer; the copy's name into nm. */
+static ucl_object_t *
+rekey_sa(const ucl_object_t *e, const char *suffix, const char *peer,
+    char *nm, size_t nlen)
+{
+	ucl_object_t	*c, *d;
+
+	c = ucl_object_copy(e);
+	snprintf(nm, nlen, "%s%s", str(e, "name"), suffix);
+	put(c, "name", S(nm));
+	d = (ucl_object_t *)(uintptr_t)at_path(c, "ipsec-sa-config",
+	    "arcana-ikeless:derived");
+	if (d != NULL)
+		put(d, "peer", S(peer));
+	return (c);
+}
+
+/* The edit merging one sad-entry e (consumed). */
+static ucl_object_t *
+rekey_put(ucl_object_t *e)
+{
+	ucl_object_t	*list;
+
+	list = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(list, e);
+	return (sad_edit(list));
+}
+
 /*
- * One tunnel's keys turned, both ends in step (Mplify 119 R110, R112):
- * the next pair made on each, its public half read, the new SAs from
- * the two put in inbound on both, then outbound, then committed on
- * both; so neither end ever sends on keys the other has not got, and
- * no packet is lost.  What goes wrong is kept here, and the end it
- * went wrong on says so as a fault.
+ * One tunnel's keys turned, both ends in step (Mplify 119 R110, R112,
+ * RFC 9061 Appendix D.2), by edits of each end's lists: a new pair on
+ * each (its generation turned), its public half read; the new inbound
+ * SA on both, from the two new halves, beside the old (".next"); then
+ * the new outbound one on both, the old outbound taken out after it (the
+ * kernel sends on the newest, net.key.preferred_oldsa 0); then the old
+ * inbound taken out on both; then committed: each new SA put in under
+ * the tunnel's own name and its ".next" taken out, the same SA, no
+ * change to the kernel.  Neither end ever sends on keys the other has
+ * not got, and no packet is lost.  What goes wrong is kept here, and
+ * the end it went wrong on says so as a fault (key-rotation).
  */
 static bool
 rekey_run(ucl_object_t *st, const char *id, char *why, size_t wlen)
 {
-	static const char *const dirs[] = { "in", "out" };
-	ucl_object_t		*end[2], *j, *args, *keys;
-	const ucl_object_t	*a;
-	char			 sid[2][40], *next[2], w2[300];
-	const char		*ifn[2], *stage;
-	size_t			 k, d, i, n;
+	ucl_object_t		*end[2], *keys;
+	const ucl_object_t	*eo[2], *ei[2];
+	char			 sid[2][40], *next[2], *was[2], w2[300];
+	char			 nm[2][96], nn[2][96];
+	const char		*pair[2], *stage, *gone[2];
+	char			 kif[2][64];
+	int64_t			 gen;
+	size_t			 k;
 	bool			 ok;
 
 	pthread_mutex_lock(&st_lock);
@@ -11173,88 +11535,104 @@ rekey_run(ucl_object_t *st, const char *id, char *why, size_t wlen)
 		pthread_mutex_unlock(&st_lock);
 		return (false);
 	}
-	ifn[0] = str(end[0], "interface");
-	ifn[1] = str(end[1], "interface");
-	next[0] = next[1] = NULL;
+	for (k = 0; k < 2; k++) {
+		(void)uswe_entries(end[k], &eo[k], &ei[k]);
+		pair[k] = uswe_derived(eo[k], "key-pair");
+		/* As its edge's sdwan read names it: a jail's without @. */
+		snprintf(kif[k], sizeof(kif[k]), "%.*s", (int)strcspn(pair[k],
+		    "@"), pair[k]);
+	}
+	next[0] = next[1] = was[0] = was[1] = NULL;
 	ok = true;
 	stage = "keys";
 	rekey_set(st, id, "running", stage, NULL);
-	/* The next pair on each end. */
+	/* A new pair on each end: its generation turned. */
 	for (k = 0; ok && k < 2; k++) {
-		args = ucl_object_typed_new(UCL_ARRAY);
-		ucl_array_append(args, S("next"));
-		j = job("ipsec-sa", "verb", S("key"), "interface", S(ifn[k]),
-		    "args", args, NULL);
-		if (!job_run(sid[k], j, w2, sizeof(w2))) {
-			snprintf(why, wlen, "%s: %s", server_name_of(sid[k]), w2);
+		if ((keys = rekey_keys_of(sid[k], kif[k], w2, sizeof(w2))) ==
+		    NULL) {
+			snprintf(why, wlen, "%s", w2);
 			ok = false;
+			break;
 		}
-		ucl_object_unref(j);
+		was[k] = str(keys, "public") != NULL ? strdup(str(keys,
+		    "public")) : NULL;
+		gen = ucl_object_toint(ucl_object_lookup(keys, "generation"));
+		ucl_object_unref(keys);
+		ok = rekey_step(sid[k], pair_edit(pair[k], (gen + 1) &
+		    0xffffffff), "a new pair", why, wlen);
 	}
-	/* Its public half, read from each. */
+	/* Its public half, read from each: another than before. */
 	for (k = 0; ok && k < 2; k++) {
-		keys = rekey_keys_of(sid[k], ifn[k], w2, sizeof(w2));
-		if (keys == NULL || str(keys, "next") == NULL) {
+		keys = rekey_keys_of(sid[k], kif[k], w2, sizeof(w2));
+		if (keys == NULL || str(keys, "public") == NULL ||
+		    !half_ok(str(keys, "public")) || (was[k] != NULL &&
+		    strcmp(was[k], str(keys, "public")) == 0)) {
 			if (keys != NULL)
-				snprintf(w2, sizeof(w2), "%s has no next half for "
-				    "%s", server_name_of(sid[k]), ifn[k]);
+				snprintf(w2, sizeof(w2), "%s has no new half for "
+				    "%s (or one that is no key)",
+				    server_name_of(sid[k]), pair[k]);
 			snprintf(why, wlen, "%s", w2);
 			ok = false;
 		} else
-			next[k] = strdup(str(keys, "next"));
+			next[k] = strdup(str(keys, "public"));
 		if (keys != NULL)
 			ucl_object_unref(keys);
 	}
-	/* The new SAs in, then out, on both: each end's derive as applied,
-	 * the far half the far end's next one. */
-	for (d = 0; ok && d < 2; d++) {
-		stage = dirs[d];
+	/* The new SAs in on both, beside the old. */
+	if (ok) {
+		stage = "in";
 		rekey_set(st, id, "running", stage, NULL);
-		for (k = 0; ok && k < 2; k++) {
-			j = ucl_object_copy(end[k]);
-			args = (ucl_object_t *)(uintptr_t)ucl_object_lookup(j,
-			    "args");
-			n = args != NULL ? ucl_array_size(args) : 0;
-			for (i = 0; i < n; i++) {
-				a = ucl_array_find_index(args, (unsigned int)i);
-				if (ucl_object_type(a) == UCL_STRING && strncmp(
-				    ucl_object_tostring(a), "${uswe:", 7) == 0)
-					ucl_object_unref(ucl_array_replace_index(
-					    args, S(next[!k]), (unsigned int)i));
-			}
-			ucl_array_append(args, S("next"));
-			ucl_array_append(args, S("install"));
-			ucl_array_append(args, S(dirs[d]));
-			if (!job_run(sid[k], j, w2, sizeof(w2))) {
-				snprintf(why, wlen, "%s, %s: %s", server_name_of(
-				    sid[k]), dirs[d], w2);
-				ok = false;
-			}
-			ucl_object_unref(j);
-		}
 	}
-	/* Committed on both: the old out, the next pair the pair. */
+	for (k = 0; ok && k < 2; k++)
+		ok = rekey_step(sid[k], rekey_put(rekey_sa(ei[k], ".next",
+		    next[!k], nn[k], sizeof(nn[k]))), "in", why, wlen);
+	/* Then out on both, the old out taken out after the new is in. */
+	if (ok) {
+		stage = "out";
+		rekey_set(st, id, "running", stage, NULL);
+	}
+	for (k = 0; ok && k < 2; k++) {
+		ok = rekey_step(sid[k], rekey_put(rekey_sa(eo[k], ".next",
+		    next[!k], nn[k], sizeof(nn[k]))), "out", why, wlen);
+		gone[0] = str(eo[k], "name");
+		if (ok)
+			ok = rekey_step(sid[k], sad_remove(gone, 1), "the old "
+			    "out", why, wlen);
+	}
+	/* The old in taken out on both; the next made the tunnel's own. */
 	if (ok) {
 		stage = "commit";
 		rekey_set(st, id, "running", stage, NULL);
 	}
 	for (k = 0; ok && k < 2; k++) {
-		j = job("ipsec-sa", "verb", S("commit"), "interface", S(ifn[k]),
-		    "reqid", I(ucl_object_toint(ucl_object_lookup(end[k],
-		    "reqid"))), "tunnel_local", S(str(end[k], "tunnel_local")),
-		    "tunnel_remote", S(str(end[k], "tunnel_remote")), NULL);
-		if (!job_run(sid[k], j, w2, sizeof(w2))) {
-			snprintf(why, wlen, "%s, commit: %s", server_name_of(sid[k]),
-			    w2);
-			ok = false;
-		}
-		ucl_object_unref(j);
+		gone[0] = str(ei[k], "name");
+		ok = rekey_step(sid[k], sad_remove(gone, 1), "the old in", why,
+		    wlen);
+	}
+	for (k = 0; ok && k < 2; k++) {
+		ucl_object_t	*list;
+
+		list = ucl_object_typed_new(UCL_ARRAY);
+		ucl_array_append(list, rekey_sa(eo[k], "", next[!k], nm[0],
+		    sizeof(nm[0])));
+		ucl_array_append(list, rekey_sa(ei[k], "", next[!k], nm[1],
+		    sizeof(nm[1])));
+		ok = rekey_step(sid[k], sad_edit(list), "commit", why, wlen);
+		snprintf(nn[0], sizeof(nn[0]), "%s.next", nm[0]);
+		snprintf(nn[1], sizeof(nn[1]), "%s.next", nm[1]);
+		gone[0] = nn[0];
+		gone[1] = nn[1];
+		if (ok)
+			ok = rekey_step(sid[k], sad_remove(gone, 2), "commit",
+			    why, wlen);
 	}
 	rekey_set(st, id, ok ? "done" : "failed", stage, ok ? NULL : why);
 	thread_log(ok ? LOG_INFO : LOG_WARNING, "sdwan: the keys of %s %s", id,
 	    ok ? "turned" : why);
 	free(next[0]);
 	free(next[1]);
+	free(was[0]);
+	free(was[1]);
 	ucl_object_unref(end[0]);
 	ucl_object_unref(end[1]);
 	pthread_mutex_lock(&st_lock);
@@ -11290,11 +11668,11 @@ rekey_due(const char *sid, const char *ifn, time_t now)
 static void
 rekey_tick(ucl_object_t *st, time_t now)
 {
-	const ucl_object_t	*ap, *s, *d, *rk, *j, *a;
-	ucl_object_iter_t	 it, dit, ait;
+	const ucl_object_t	*ap, *s, *d, *rk, *j, *eo, *ei;
+	ucl_object_iter_t	 it, dit;
 	ucl_object_t		*spec, *seen;
-	char			 far[16], farif[32], why[300];
-	const char		*id;
+	char			 far[16], farif[32], why[300], kif[64];
+	const char		*id, *peer;
 
 	ap = ucl_object_lookup(st, "applied");
 	seen = ucl_object_typed_new(UCL_OBJECT);
@@ -11307,10 +11685,8 @@ rekey_tick(ucl_object_t *st, time_t now)
 				continue;
 			id = ucl_object_key(d) + 5;
 			j = ucl_array_find_index(ucl_object_lookup(spec, "make"), 0);
-			if (j == NULL || str(j, "kind") == NULL || strcmp(str(j,
-			    "kind"), "ipsec-sa") != 0 || str(j, "verb") == NULL ||
-			    strcmp(str(j, "verb"), "derive") != 0 ||
-			    ucl_object_lookup(seen, id) != NULL) {
+			if (!uswe_entries(j, &eo, &ei) || ucl_object_lookup(seen,
+			    id) != NULL) {
 				ucl_object_unref(spec);
 				continue;
 			}
@@ -11324,16 +11700,17 @@ rekey_tick(ucl_object_t *st, time_t now)
 				ucl_object_unref(spec);
 				continue;
 			}
-			/* The far end, from the reference in the words. */
+			/* The far end, from the reference to its half. */
 			far[0] = farif[0] = '\0';
-			ait = NULL;
-			while ((a = ucl_object_iterate(ucl_object_lookup(j, "args"),
-			    &ait, true)) != NULL)
-				if (ucl_object_type(a) == UCL_STRING)
-					(void)sscanf(ucl_object_tostring(a),
-					    "${uswe:%15[^:]:%31[^}]}", far, farif);
-			if (rekey_due(ucl_object_key(s), str(j, "interface"), now) ||
-			    (far[0] != '\0' && rekey_due(far, farif, now)))
+			if ((peer = uswe_derived(eo, "peer")) != NULL)
+				(void)sscanf(peer, "${uswe:%15[^:]:%31[^}]}", far,
+				    farif);
+			snprintf(kif, sizeof(kif), "%.*s", (int)strcspn(
+			    uswe_derived(eo, "key-pair"), "@"), uswe_derived(eo,
+			    "key-pair"));
+			if (rekey_due(ucl_object_key(s), kif, now) ||
+			    (far[0] != '\0' &&
+			    rekey_due(far, farif, now)))
 				(void)rekey_run(st, id, why, sizeof(why));
 			ucl_object_unref(spec);
 		}
@@ -11421,6 +11798,7 @@ stamp_tick(const ucl_object_t *st, time_t now, ucl_object_t *due)
 			    "sdwan-key") != 0 || (str(e, "jail") != NULL &&
 			    str(e, "jail")[0] != '\0') || str(h, "interface") ==
 			    NULL || str(h, "public") == NULL ||
+			    !half_ok(str(h, "public")) ||
 			    ucl_object_lookup(ifs, str(h, "interface")) == NULL)
 				continue;
 			snprintf(ref, sizeof(ref), "${stamp:%s:%s}", fsid, str(h,
@@ -11989,12 +12367,13 @@ sdwan_read(const char *edge, char *name, size_t nlen, int *status)
 /*
  * What an edge that is a vnet jail is not given, said: the jail's own
  * network takes its interfaces, routes, tunnels (gre, gif, GENEVE,
- * WireGuard, IKEv2, a uswe tunnel's manual SAs by PF_KEY in the jail),
- * BIRD (run in the jail by the host's agent, with BFD), dnsmasq,
- * unbound, rtadvd, Squid with c-icap, and Suricata (run there the same
- * way, what Suricata prevents diverted by the jail's own rules), ipfw
- * rules and steering, probes and net.* sysctls; NTP is the host's by
- * nature: the clock is the kernel's, which no jail sets.
+ * WireGuard, IKEv2, a uswe tunnel's SAs: entries of the host's IKE-less
+ * lists of the jail's network, job_run()), BIRD (run in the jail by the
+ * host's agent, with BFD), dnsmasq, unbound, rtadvd, Squid with c-icap,
+ * and Suricata (run there the same way, what Suricata prevents diverted
+ * by the jail's own rules), ipfw rules and steering, probes and net.*
+ * sysctls; NTP is the host's by nature: the clock is the kernel's, which
+ * no jail sets.
  */
 static bool
 jail_kind_ok(const char *kind, char *why, size_t wlen)

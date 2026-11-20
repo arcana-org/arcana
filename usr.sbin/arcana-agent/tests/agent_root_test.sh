@@ -2103,56 +2103,55 @@ acl_actions_vnet_cleanup()
 	true
 }
 
-atf_test_case ipsec_sa_vnet cleanup
-ipsec_sa_vnet_head()
+atf_test_case uswe_vnet cleanup
+uswe_vnet_head()
 {
-	atf_set "descr" "manually keyed SAs by PF_KEY for real (PLAN-SDN-YANG" \
-	    "6.2.1): an agent in each of two vnet jails, its PF_KEY socket" \
-	    "the jail's; the SAs of an ipsec(4) interface on each end set," \
-	    "read back by setkey -D in the jail (the reqid, a window of 128" \
-	    "bytes, ESN), ESP between the jails over the interfaces; set" \
-	    "anew with other SPIs and AES-GCM with ESN (the window R47 needs" \
-	    "for it), the old SAs gone and the ping through again; cleared," \
-	    "none left and the ping not through"
+	atf_set "descr" "an SD-WAN tunnel's derived SAs for real (PLAN-SDN-YANG" \
+	    "6.2.5): an agent in each of two vnet jails, an ipsec(4)" \
+	    "interface of reqid 100 on each; a key pair each (arcana-ikeless)," \
+	    "each end's SAs entries of RFC 9061's lists derived from its pair" \
+	    "and the other's half, no key given; setkey -D in the jails" \
+	    "showing the same SPIs both ends, reqid 100, a window of 1024" \
+	    "packets, ESN, AES-GCM-16; ESP over the interfaces; the keys" \
+	    "turned as the console turns them (new pairs, the next inbound" \
+	    "SAs on both, the next outbound and the old out, the old in, the" \
+	    "next made the tunnel's own) under a ping that loses nothing, the" \
+	    "kernel left with the two new SAs alone; all taken out, the" \
+	    "tunnel not through"
 	atf_set "require.user" "root"
-	atf_set "timeout" "120"
+	atf_set "timeout" "180"
 }
-ipsec_sa_vnet_body()
+uswe_vnet_body()
 {
-	local d="$(pwd)" e j i K1 K2 A1 A2
+	local d="$(pwd)" e j i h me far pa pb qa qb
 
 	programs
 	kldstat -q -m ipsec || atf_skip "ipsec(4) is not loaded"
-	for j in arcw_saa arcw_sab; do
+	for j in arcw_uwa arcw_uwb; do
 		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
 	done
-	atf_check -o ignore jail -c name=arcw_saa vnet persist path=/
-	atf_check -o ignore jail -c name=arcw_sab vnet persist path=/
+	atf_check -o ignore jail -c name=arcw_uwa vnet persist path=/
+	atf_check -o ignore jail -c name=arcw_uwb vnet persist path=/
 	e=$(epair_create) || atf_fail "no epair"
 	e=${e%a}
 	echo "$e" > epair
-	atf_check ifconfig ${e}a vnet arcw_saa
-	atf_check ifconfig ${e}b vnet arcw_sab
-	atf_check jexec arcw_saa ifconfig ${e}a inet 192.0.2.1/24 up
-	atf_check jexec arcw_sab ifconfig ${e}b inet 192.0.2.2/24 up
-	# The ipsec(4) interfaces, reqid 100 on both: their own policies
-	# take the SAs of that reqid.
-	atf_check -o ignore jexec arcw_saa ifconfig ipsec0 create reqid 100
-	atf_check jexec arcw_saa ifconfig ipsec0 inet tunnel 192.0.2.1 192.0.2.2
-	atf_check jexec arcw_saa ifconfig ipsec0 inet 10.95.0.1/32 10.95.0.2 up
-	atf_check -o ignore jexec arcw_sab ifconfig ipsec0 create reqid 100
-	atf_check jexec arcw_sab ifconfig ipsec0 inet tunnel 192.0.2.2 192.0.2.1
-	atf_check jexec arcw_sab ifconfig ipsec0 inet 10.95.0.2/32 10.95.0.1 up
-	# Under the epair, the jails reach each other; over the tunnel, not
-	# without SAs.
-	atf_check -o ignore jexec arcw_saa ping -c 1 -t 2 192.0.2.2
+	atf_check ifconfig ${e}a vnet arcw_uwa
+	atf_check ifconfig ${e}b vnet arcw_uwb
+	atf_check jexec arcw_uwa ifconfig ${e}a inet 192.0.2.1/24 up
+	atf_check jexec arcw_uwb ifconfig ${e}b inet 192.0.2.2/24 up
+	atf_check -o ignore jexec arcw_uwa ifconfig ipsec0 create reqid 100
+	atf_check jexec arcw_uwa ifconfig ipsec0 inet tunnel 192.0.2.1 192.0.2.2
+	atf_check jexec arcw_uwa ifconfig ipsec0 inet 10.95.0.1/32 10.95.0.2 up
+	atf_check -o ignore jexec arcw_uwb ifconfig ipsec0 create reqid 100
+	atf_check jexec arcw_uwb ifconfig ipsec0 inet tunnel 192.0.2.2 192.0.2.1
+	atf_check jexec arcw_uwb ifconfig ipsec0 inet 10.95.0.2/32 10.95.0.1 up
+	atf_check -o ignore jexec arcw_uwa ping -c 1 -t 2 192.0.2.2
 	atf_check -s not-exit:0 -o ignore -e ignore \
-	    jexec arcw_saa ping -c 1 -t 2 10.95.0.2
-	# An agent in each jail.
+	    jexec arcw_uwa ping -c 1 -t 2 10.95.0.2
 	for j in a b; do
 		mkdir -p $j/etc/jail.conf.d
 		: > $j/etc/jail.conf
-		jexec arcw_sa$j "$JGD" -F -l "unix:$d/$j/s.sock" \
+		jexec arcw_uw$j "$JGD" -F -l "unix:$d/$j/s.sock" \
 		    -f "$d/$j/etc/jail.conf" -D "$d/$j/etc/jail.conf.d" \
 		    -1 "$d/$j/history.conf" --nacm "$d/$j/nacm.cbor" \
 		    > $j/daemon.out 2>&1 &
@@ -2162,260 +2161,155 @@ ipsec_sa_vnet_body()
 			sleep 0.05
 		done
 		grep -q 'ready' $j/daemon.out ||
-		    atf_fail "the agent in arcw_sa$j did not start: $(cat $j/daemon.out)"
+		    atf_fail "the agent in arcw_uw$j did not start: $(cat $j/daemon.out)"
 	done
-	K1=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-	K2=ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100
-	A1=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-	A2=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
-	# Set: AES-CBC with HMAC-SHA2-256 and ESN, each end the other's
-	# mirror; each SA read back by the agent.
-	atf_check -o save:a.out "$JGC" -t -c "unix:$d/a/s.sock" ipsec-sa set \
-	    ipsec0 100 192.0.2.1 192.0.2.2 spi-in 0x1001 spi-out 0x1002 \
-	    enc aes-cbc auth hmac-sha2-256 key-in $K2 key-out $K1 \
-	    akey-in $A2 akey-out $A1 esn
-	atf_check -o match:'read back: mature, a window of 1024 packets, ESN' \
-	    -o not-match:"$K1" -o not-match:"$A1" cat a.out
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa set \
-	    ipsec0 100 192.0.2.2 192.0.2.1 spi-in 0x1002 spi-out 0x1001 \
-	    enc aes-cbc auth hmac-sha2-256 key-in $K1 key-out $K2 \
-	    akey-in $A1 akey-out $A2 esn
-	atf_check -o save:sad jexec arcw_saa setkey -D
-	atf_check -o match:'^192.0.2.1 192.0.2.2 *$' \
-	    -o match:'esp mode=tunnel spi=4098\(0x00001002\) reqid=100\(0x00000064\)' \
-	    -o match:'esp mode=tunnel spi=4097\(0x00001001\) reqid=100\(0x00000064\)' \
-	    -o match:'E: aes-cbc' -o match:'A: hmac-sha2-256' \
-	    -o match:'replay=128 flags=0x00000440 state=mature' \
-	    -o not-match:'state=(larval|dying|dead)' cat sad
-	# ESP between the jails: the ping over the tunnel through, the SAs'
-	# counters moved on both ends.
-	atf_check -o match:' 0.0% packet loss' \
-	    jexec arcw_saa ping -c 3 -i 0.2 -t 5 10.95.0.2
-	atf_check -o match:'allocated: [1-9]' jexec arcw_saa setkey -D
-	atf_check -o match:'allocated: [1-9]' jexec arcw_sab setkey -D
-	# Set anew: other SPIs, AES-GCM with ESN (R47: without a window the
-	# two ends disagree on its AAD and every packet fails); the SAs set
-	# before taken out first.
-	atf_check -o ignore "$JGC" -c "unix:$d/a/s.sock" ipsec-sa set \
-	    ipsec0 100 192.0.2.1 192.0.2.2 spi-in 0x2001 spi-out 0x2002 \
-	    enc aes-gcm-16 key-in ${K2}00112233 key-out ${K1}44556677 esn
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa set \
-	    ipsec0 100 192.0.2.2 192.0.2.1 spi-in 0x2002 spi-out 0x2001 \
-	    enc aes-gcm-16 key-in ${K1}44556677 key-out ${K2}00112233 esn
+	# An end's key pair, of a generation; its public half.
+	pair() {
+		atf_check -o match:'committed and confirmed' "$JGC" -c \
+		    "unix:$d/$1/s.sock" set \
+		    "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair=ipsec0" \
+		    "{\"name\":\"ipsec0\",\"generation\":$2}"
+	}
+	half() {
+		"$JGC" -c "unix:$d/$1/s.sock" sdwan | sed -E 's/.*"keys":\[//' |
+		    tr '}' '\n' | grep '"interface":"ipsec0"' |
+		    sed -E 's/.*"public":"([^"]*)".*/\1/'
+	}
+	# An end's SA of a direction, its name, the far half.
+	sa() {
+		local l r
+
+		if [ $3 = outbound ]; then l=$4 r=$5; else l=$5 r=$4; fi
+		printf '{"name":"%s","reqid":"100","ipsec-sa-config":{"ext-seq-num":true,"anti-replay-window-size":1024,"traffic-selector":{"local-prefix":"0.0.0.0/0","remote-prefix":"0.0.0.0/0"},"mode":"tunnel","esp-sa":{"encryption":{"encryption-algorithm":20}},"tunnel":{"local":"%s","remote":"%s"},"arcana-ikeless:derived":{"key-pair":"ipsec0","peer":"%s","direction":"%s","lifetime":86400}}}' \
+		    "$1" "$l" "$r" "$2" "$3"
+	}
+	# Each sad-entry given put in beside the rest, as the console's
+	# merge puts it; each named taken out.
+	put() {
+		local j=$1 e n
+
+		shift
+		for e in "$@"; do
+			n=$(printf '%s' "$e" | sed -E 's/^\{"name":"([^"]*)".*/\1/')
+			printf '%s\n' "$e" > put.json
+			atf_check -o match:'committed and confirmed' "$JGC" -c \
+			    "unix:$d/$j/s.sock" set \
+			    "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry=$n" \
+			    @put.json
+		done
+	}
+	drop() {
+		local j=$1 n
+
+		shift
+		for n in "$@"; do
+			atf_check -o match:'committed and confirmed' "$JGC" -c \
+			    "unix:$d/$j/s.sock" set -x \
+			    "/ietf-i2nsf-ikeless:ipsec-ikeless/sad/sad-entry=$n"
+		done
+	}
+	ends() {
+		if [ $1 = a ]; then me=192.0.2.1 far=192.0.2.2; else
+			me=192.0.2.2 far=192.0.2.1; fi
+	}
+	pair a 0
+	pair b 0
+	pa=$(half a)
+	pb=$(half b)
+	[ -n "$pa" ] && [ -n "$pb" ] || atf_fail "no halves"
 	for j in a b; do
-		atf_check -o save:sad jexec arcw_sa$j setkey -D
-		atf_check -o match:'spi=8193\(0x00002001\) reqid=100' \
-		    -o match:'spi=8194\(0x00002002\) reqid=100' \
-		    -o match:'E: aes-gcm-16' \
-		    -o not-match:'spi=409[78]' \
-		    -o match:'replay=128 flags=0x00000440 state=mature' cat sad
+		ends $j
+		[ $j = a ] && h=$pb || h=$pa
+		put $j "$(sa uswe.out "$h" outbound $me $far)" \
+		    "$(sa uswe.in "$h" inbound $me $far)"
 	done
-	atf_check -o match:' 0.0% packet loss' \
-	    jexec arcw_saa ping -c 3 -i 0.2 -t 5 10.95.0.2
-	# Cleared: none left on either end, the tunnel not through.
-	atf_check -o match:'SADB_DUMP.*SPI 0x' "$JGC" -t -c "unix:$d/a/s.sock" \
-	    ipsec-sa clear ipsec0 100 192.0.2.1 192.0.2.2
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa clear \
-	    ipsec0 100 192.0.2.2 192.0.2.1
+	# The same SPIs on both ends: each end's out the other's in.
 	for j in a b; do
-		atf_check -o match:'No SAD entries' -e ignore jexec arcw_sa$j setkey -D
+		atf_check -o save:sad.$j jexec arcw_uw$j setkey -D
+		atf_check -o match:'esp mode=tunnel spi=[0-9]+\(0x[0-9a-f]+\) reqid=100\(0x00000064\)' \
+		    -o match:'E: aes-gcm-16' -o match:'replay=128 ' \
+		    -o match:'state=mature' cat sad.$j
+		grep -o 'spi=[0-9]*' sad.$j | sort > spi.$j
+	done
+	atf_check cmp spi.a spi.b
+	atf_check -o inline:'2\n' sh -c 'wc -l < spi.a | tr -d " "'
+	atf_check -o match:' 0.0% packet loss' \
+	    jexec arcw_uwa ping -c 3 -i 0.2 -t 5 10.95.0.2
+	atf_check -o match:'"name":"uswe.out"' -o not-match:'"key":' \
+	    "$JGC" -c "unix:$d/a/s.sock" get ipsec-ikeless
+	# The keys turned as the console turns them, a ping all along.
+	jexec arcw_uwa ping -c 150 -i 0.05 10.95.0.2 > ping.out 2>&1 &
+	echo $! > ping.pid
+	sleep 0.5
+	pair a 1
+	pair b 1
+	qa=$(half a)
+	qb=$(half b)
+	[ "$qa" != "$pa" ] && [ "$qb" != "$pb" ] || atf_fail "no new halves"
+	for j in a b; do
+		ends $j
+		[ $j = a ] && h=$qb || h=$qa
+		put $j "$(sa uswe.in.next "$h" inbound $me $far)"
+	done
+	for j in a b; do
+		ends $j
+		[ $j = a ] && h=$qb || h=$qa
+		put $j "$(sa uswe.out.next "$h" outbound $me $far)"
+		drop $j uswe.out
+	done
+	for j in a b; do
+		drop $j uswe.in
+	done
+	for j in a b; do
+		ends $j
+		[ $j = a ] && h=$qb || h=$qa
+		put $j "$(sa uswe.out "$h" outbound $me $far)" \
+		    "$(sa uswe.in "$h" inbound $me $far)"
+		drop $j uswe.out.next uswe.in.next
+	done
+	wait "$(cat ping.pid)"
+	atf_check -o match:' 0.0% packet loss' cat ping.out
+	# Two SAs on each end, the new, none of the old.
+	for j in a b; do
+		atf_check -o save:sad.$j jexec arcw_uw$j setkey -D
+		grep -o 'spi=[0-9]*' sad.$j | sort > now.$j
+		atf_check -o inline:'2\n' sh -c "wc -l < now.$j | tr -d ' '"
+		atf_check -s exit:1 grep -qxFf spi.a now.$j
+	done
+	atf_check cmp now.a now.b
+	atf_check -o match:' 0.0% packet loss' \
+	    jexec arcw_uwa ping -c 3 -i 0.2 -t 5 10.95.0.2
+	# All taken out: none left, the tunnel not through.
+	for j in a b; do
+		atf_check -o match:'committed and confirmed' "$JGC" -c \
+		    "unix:$d/$j/s.sock" set -x /ietf-i2nsf-ikeless:ipsec-ikeless
+		atf_check -o match:'No SAD entries' -e ignore jexec arcw_uw$j setkey -D
 	done
 	atf_check -s not-exit:0 -o ignore -e ignore \
-	    jexec arcw_saa ping -c 1 -t 2 10.95.0.2
+	    jexec arcw_uwa ping -c 1 -t 2 10.95.0.2
 }
-ipsec_sa_vnet_cleanup()
+uswe_vnet_cleanup()
 {
 	local e j
 
+	[ -f ping.pid ] && kill "$(cat ping.pid)" 2>/dev/null
 	for j in a b; do
 		[ -f $j/daemon.pid ] && kill "$(cat $j/daemon.pid)" 2>/dev/null
 	done
 	sleep 0.5
 	# Every interface out of the jails before they go: a vnet torn down
 	# with an interface in it can panic.
-	for j in arcw_saa arcw_sab; do
+	for j in arcw_uwa arcw_uwb; do
 		jexec $j ifconfig ipsec0 destroy 2>/dev/null
 	done
 	if [ -f epair ]; then
 		e=$(cat epair)
-		ifconfig ${e}a -vnet arcw_saa 2>/dev/null
-		ifconfig ${e}b -vnet arcw_sab 2>/dev/null
+		ifconfig ${e}a -vnet arcw_uwa 2>/dev/null
+		ifconfig ${e}b -vnet arcw_uwb 2>/dev/null
 		ifconfig ${e}a destroy 2>/dev/null
 	fi
-	jail -r arcw_saa 2>/dev/null
-	jail -r arcw_sab 2>/dev/null
-	true
-}
-
-atf_test_case ipsec_sp_vnet cleanup
-ipsec_sp_vnet_head()
-{
-	atf_set "descr" "Arcana's policies by PF_KEY for real (PLAN-SDN-YANG" \
-	    "6.2.2): an agent in each of two vnet jails; an ipsec(4)" \
-	    "interface of reqid 100 on each end, SAs on another reqid refused" \
-	    "by its own policies' mapping; a policy both ways on its SAs for" \
-	    "two addresses routed under the tunnel, read back, ESP between" \
-	    "the jails by it; a selector of ipsec.conf's refused and left;" \
-	    "taken out and cleared, the interfaces' own policies and" \
-	    "ipsec.conf's still there"
-	atf_set "require.user" "root"
-	atf_set "timeout" "120"
-}
-ipsec_sp_vnet_body()
-{
-	local d="$(pwd)" e j i K1 K2
-
-	programs
-	kldstat -q -m ipsec || atf_skip "ipsec(4) is not loaded"
-	for j in arcw_spa arcw_spb; do
-		jls -j $j >/dev/null 2>&1 && atf_skip "a jail $j is there already"
-	done
-	atf_check -o ignore jail -c name=arcw_spa vnet persist path=/
-	atf_check -o ignore jail -c name=arcw_spb vnet persist path=/
-	e=$(epair_create) || atf_fail "no epair"
-	e=${e%a}
-	echo "$e" > epair
-	atf_check ifconfig ${e}a vnet arcw_spa
-	atf_check ifconfig ${e}b vnet arcw_spb
-	atf_check jexec arcw_spa ifconfig ${e}a inet 192.0.2.1/24 up
-	atf_check jexec arcw_spb ifconfig ${e}b inet 192.0.2.2/24 up
-	atf_check -o ignore jexec arcw_spa ifconfig ipsec0 create reqid 100
-	atf_check jexec arcw_spa ifconfig ipsec0 inet tunnel 192.0.2.1 192.0.2.2
-	atf_check jexec arcw_spa ifconfig ipsec0 inet 10.95.0.1/32 10.95.0.2 up
-	atf_check -o ignore jexec arcw_spb ifconfig ipsec0 create reqid 100
-	atf_check jexec arcw_spb ifconfig ipsec0 inet tunnel 192.0.2.2 192.0.2.1
-	atf_check jexec arcw_spb ifconfig ipsec0 inet 10.95.0.2/32 10.95.0.1 up
-	# An address of each end's own, routed under the tunnel (the epair),
-	# not over it: only a global policy sends it through the SAs.
-	atf_check jexec arcw_spa ifconfig lo0 inet 127.0.0.1/8 up
-	atf_check jexec arcw_spa ifconfig lo0 inet 10.96.1.1/32 alias
-	atf_check jexec arcw_spb ifconfig lo0 inet 127.0.0.1/8 up
-	atf_check jexec arcw_spb ifconfig lo0 inet 10.96.2.1/32 alias
-	atf_check -o ignore jexec arcw_spa route add 10.96.2.1/32 192.0.2.2
-	atf_check -o ignore jexec arcw_spb route add 10.96.1.1/32 192.0.2.1
-	atf_check -o ignore jexec arcw_spa ping -c 1 -t 2 -S 10.96.1.1 10.96.2.1
-	# ipsec.conf's own policy on one end, as setkey(8) puts it in.
-	printf 'spdadd 10.96.1.9/32 10.96.2.9/32 any -P out none;\n' > admin.conf
-	atf_check jexec arcw_spa setkey -f "$d/admin.conf"
-	for j in a b; do
-		mkdir -p $j/etc/jail.conf.d
-		: > $j/etc/jail.conf
-		jexec arcw_sp$j "$JGD" -F -l "unix:$d/$j/s.sock" \
-		    -f "$d/$j/etc/jail.conf" -D "$d/$j/etc/jail.conf.d" \
-		    -1 "$d/$j/history.conf" --nacm "$d/$j/nacm.cbor" \
-		    > $j/daemon.out 2>&1 &
-		echo $! > $j/daemon.pid
-		for i in $(seq 1 100); do
-			grep -q 'ready' $j/daemon.out 2>/dev/null && break
-			sleep 0.05
-		done
-		grep -q 'ready' $j/daemon.out ||
-		    atf_fail "the agent in arcw_sp$j did not start: $(cat $j/daemon.out)"
-	done
-	K1=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-	K2=ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100
-	# The reqid mapping: ipsec0's own policies take reqid 100, so SAs
-	# on 101 are refused before anything is put in.
-	atf_check -s exit:1 -o match:"ipsec0's own policies take reqid 100, not 101" \
-	    -e ignore "$JGC" -c "unix:$d/a/s.sock" ipsec-sa set ipsec0 101 \
-	    192.0.2.1 192.0.2.2 spi-in 0x3001 spi-out 0x3002 enc aes-gcm-16 \
-	    key-in ${K2}00112233 key-out ${K1}44556677 esn
-	atf_check -o match:'No SAD entries' -e ignore jexec arcw_spa setkey -D
-	atf_check -o match:'its own policies on reqid 100' "$JGC" -t \
-	    -c "unix:$d/a/s.sock" ipsec-sa set ipsec0 100 192.0.2.1 192.0.2.2 \
-	    spi-in 0x3001 spi-out 0x3002 enc aes-gcm-16 \
-	    key-in ${K2}00112233 key-out ${K1}44556677 esn
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa set \
-	    ipsec0 100 192.0.2.2 192.0.2.1 spi-in 0x3002 spi-out 0x3001 \
-	    enc aes-gcm-16 key-in ${K1}44556677 key-out ${K2}00112233 esn
-	# Nothing over the SAs yet: the addresses go under the tunnel.
-	atf_check -o ignore jexec arcw_spa ping -c 2 -i 0.2 -t 3 -S 10.96.1.1 10.96.2.1
-	atf_check -o not-match:'allocated: [1-9]' jexec arcw_spa setkey -D
-	# A policy both ways on each end, each read back by the agent.
-	atf_check -o save:a.out "$JGC" -t -c "unix:$d/a/s.sock" ipsec-sa policy \
-	    ipsec0 100 192.0.2.1 192.0.2.2 src 10.96.1.1 dst 10.96.2.1
-	atf_check -o match:'SADB_X_SPDADD: out 10.96.1.1/32 to 10.96.2.1/32' \
-	    -o match:'out, [0-9]+ in: global, priority 0x7fa2c000, ESP in tunnel mode 192.0.2.1 to 192.0.2.2, out unique:100, in use' \
-	    cat a.out
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa policy \
-	    ipsec0 100 192.0.2.2 192.0.2.1 src 10.96.2.1 dst 10.96.1.1
-	# As setkey -DP in the jail has them: Arcana's two, global; the
-	# interface's own four (in and out, inet and inet6) and ipsec.conf's
-	# beside them.
-	atf_check -o save:spd jexec arcw_spa setkey -DP
-	atf_check -o match:'^10.96.1.1\[any\] 10.96.2.1\[any\] any$' \
-	    -o match:'^10.96.2.1\[any\] 10.96.1.1\[any\] any$' \
-	    -o match:'esp/tunnel/192.0.2.1-192.0.2.2/unique:100' \
-	    -o match:'esp/tunnel/192.0.2.2-192.0.2.1/use$' \
-	    -o match:'^10.96.1.9\[any\] 10.96.2.9\[any\] any$' cat spd
-	atf_check -o inline:'4\n' sh -c "grep -c 'scope=ifnet ifname=ipsec0' spd"
-	atf_check -o inline:'3\n' sh -c "grep -c 'scope=global' spd"
-	# ESP between the jails by the policies: the ping through, the SAs'
-	# counters moved on both ends.
-	atf_check -o match:' 0.0% packet loss' \
-	    jexec arcw_spa ping -c 3 -i 0.2 -t 5 -S 10.96.1.1 10.96.2.1
-	atf_check -o match:'allocated: [1-9]' jexec arcw_spa setkey -D
-	atf_check -o match:'allocated: [1-9]' jexec arcw_spb setkey -D
-	# The agent's read of the SPD, by PF_KEY: whose each policy is.
-	atf_check -o match:'10.96.1.1/32\[any\] 10.96.2.1/32\[any\] any\\n\\tout ipsec\\n\\tesp/tunnel/192.0.2.1-192.0.2.2/unique:100\\n\\tspid=[0-9]+ scope=global priority=2141372416 \(Arcana.s\)' \
-	    -o match:'scope=ifnet ifname=ipsec0' \
-	    -o match:'10.96.1.9/32\[any\] 10.96.2.9/32\[any\] any\\n\\tout none\\n\\tspid=[0-9]+ scope=global priority=0' \
-	    "$JGC" -c "unix:$d/a/s.sock" system ipsec.conf
-	# ipsec.conf's selector: refused, its policy left.
-	atf_check -s exit:1 -o match:"not Arcana's" -e ignore \
-	    "$JGC" -c "unix:$d/a/s.sock" ipsec-sa policy ipsec0 100 \
-	    192.0.2.1 192.0.2.2 src 10.96.1.9 dst 10.96.2.9
-	atf_check -o match:'^10.96.1.9\[any\] 10.96.2.9\[any\] any$' \
-	    -o not-match:'^10.96.2.9\[any\] 10.96.1.9\[any\] any$' \
-	    jexec arcw_spa setkey -DP
-	# Taken out on both ends: the interface's own and ipsec.conf's
-	# stay; the addresses under the tunnel again, plainly.
-	atf_check -o match:'2 taken out' "$JGC" -t -c "unix:$d/a/s.sock" \
-	    ipsec-sa unpolicy ipsec0 100 192.0.2.1 192.0.2.2
-	atf_check -o ignore "$JGC" -c "unix:$d/b/s.sock" ipsec-sa unpolicy \
-	    ipsec0 100 192.0.2.2 192.0.2.1 src 10.96.2.1 dst 10.96.1.1
-	atf_check -o save:spd jexec arcw_spa setkey -DP
-	atf_check -o inline:'4\n' sh -c "grep -c 'scope=ifnet ifname=ipsec0' spd"
-	atf_check -o inline:'1\n' sh -c "grep -c 'scope=global' spd"
-	atf_check -o match:'^10.96.1.9\[any\] 10.96.2.9\[any\] any$' cat spd
-	atf_check -o inline:'4\n' sh -c "jexec arcw_spb setkey -DP | grep -c 'scope=ifnet ifname=ipsec0'"
-	atf_check -o not-match:'scope=global' jexec arcw_spb setkey -DP
-	atf_check -o match:' 0.0% packet loss' \
-	    jexec arcw_spa ping -c 2 -i 0.2 -t 5 -S 10.96.1.1 10.96.2.1
-	# Put in again and cleared: the SAs, then Arcana's policies; the
-	# rest as they were.
-	atf_check -o ignore "$JGC" -c "unix:$d/a/s.sock" ipsec-sa policy \
-	    ipsec0 100 192.0.2.1 192.0.2.2 src 10.96.1.1 dst 10.96.2.1
-	atf_check -o inline:'3\n' sh -c "jexec arcw_spa setkey -DP | grep -c 'scope=global'"
-	atf_check -o match:'SADB_X_SPDDELETE2' "$JGC" -t -c "unix:$d/a/s.sock" \
-	    ipsec-sa clear ipsec0 100 192.0.2.1 192.0.2.2
-	atf_check -o match:'No SAD entries' -e ignore jexec arcw_spa setkey -D
-	atf_check -o save:spd jexec arcw_spa setkey -DP
-	atf_check -o inline:'4\n' sh -c "grep -c 'scope=ifnet ifname=ipsec0' spd"
-	atf_check -o inline:'1\n' sh -c "grep -c 'scope=global' spd"
-	atf_check -o match:'^10.96.1.9\[any\] 10.96.2.9\[any\] any$' cat spd
-}
-ipsec_sp_vnet_cleanup()
-{
-	local e j
-
-	for j in a b; do
-		[ -f $j/daemon.pid ] && kill "$(cat $j/daemon.pid)" 2>/dev/null
-	done
-	sleep 0.5
-	# Every interface out of the jails before they go: a vnet torn down
-	# with an interface in it can panic.
-	for j in arcw_spa arcw_spb; do
-		jexec $j ifconfig ipsec0 destroy 2>/dev/null
-	done
-	if [ -f epair ]; then
-		e=$(cat epair)
-		ifconfig ${e}a -vnet arcw_spa 2>/dev/null
-		ifconfig ${e}b -vnet arcw_spb 2>/dev/null
-		ifconfig ${e}a destroy 2>/dev/null
-	fi
-	jail -r arcw_spa 2>/dev/null
-	jail -r arcw_spb 2>/dev/null
+	jail -r arcw_uwa 2>/dev/null
+	jail -r arcw_uwb 2>/dev/null
 	true
 }
 
@@ -4693,9 +4587,13 @@ stamp_auth_body()
 	chmod +x fake-service
 	DAEMON_ARGS="-d --stamp-port $P --root $(pwd)/root -R $(pwd)/rc.d -s $(pwd)/fake-service" \
 	    start_daemon
-	# This end's pair, as the console has it made (ipsec-sa key).
-	atf_check -o save:sta.key "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	A=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' sta.key | head -1)
+	# This end's pair, as the console has it made (a key-pairs entry).
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair=gre9 \
+	    '{"name":"gre9"}'
+	"$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' |
+	    grep '"interface":"gre9"' > sta.key
+	A=$(sed -nE 's/.*"public":"([A-Za-z0-9+/]{43}=)".*/\1/p' sta.key | head -1)
 	[ -n "$A" ] || atf_fail "no public half: $(cat sta.key)"
 	# Two far ends: the jail's, and another.
 	sta_pair far1
@@ -4842,8 +4740,12 @@ stamp_unauthenticated_body()
 	chmod +x fake-service
 	DAEMON_ARGS="-d --stamp-port $P --root $(pwd)/root -R $(pwd)/rc.d -s $(pwd)/fake-service" \
 	    start_daemon
-	atf_check -o save:ua.key "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	A=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' ua.key | head -1)
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair=gre9 \
+	    '{"name":"gre9"}'
+	"$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' |
+	    grep '"interface":"gre9"' > ua.key
+	A=$(sed -nE 's/.*"public":"([A-Za-z0-9+/]{43}=)".*/\1/p' ua.key | head -1)
 	[ -n "$A" ] || atf_fail "no public half: $(cat ua.key)"
 	sta_pair far
 	far=$(cat far.pub)
@@ -6747,10 +6649,9 @@ atf_init_test_cases()
 	atf_add_test_case sctp_multihome
 	atf_add_test_case acl_vnet
 	atf_add_test_case acl_actions_vnet
-	atf_add_test_case ipsec_sa_vnet
-	atf_add_test_case ipsec_sp_vnet
 	atf_add_test_case sadb_vnet
 	atf_add_test_case ikeless_vnet
+	atf_add_test_case uswe_vnet
 	atf_add_test_case pkg_lanes
 	atf_add_test_case sctp_loopback
 	atf_add_test_case sdwan_record

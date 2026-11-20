@@ -236,7 +236,9 @@ interfaces the termination points
 RFC 8519's access control lists with RFC 9899's defined sets,
 compiled to the host's ipfw
 .Pq Cm acls ,
-RFC 9061's IKE-less SAD and SPD, the kernel's by PF_KEY
+RFC 9061's IKE-less SAD and SPD, the kernel's by PF_KEY, with the
+SD-WAN tunnels' key pairs and the SAs the agent derives from them, and
+a vnet jail's entries in its own network
 .Pq Cm ipsec-ikeless ,
 and Arcana's own modules, each read as the operation that reads the
 same:
@@ -2051,117 +2053,6 @@ on it by Arcana: its two
 lines, DHCP and SLAAC as they were, and a static line's address; the
 agent keeps that in addressing-was.json beside its other state, and
 does nothing when it has none.
-.It Cm ipsec-sa set Ar interface reqid local remote Ar words ...
-Manually keyed security associations for an
-.Xr ipsec 4
-interface (Mplify 119 §10): ESP in tunnel mode between the outer
-addresses, on the interface's reqid, put in by PF_KEY and read back,
-the keys never in the trace.
-The interface's own policies, when it has a tunnel, say its reqid: SAs
-on another fail the job.
-The words:
-.Cm spi-in Ar n ,
-.Cm spi-out Ar n
-(256 or more, 0x for hex),
-.Cm enc aes-cbc | aes-gcm-16 ,
-.Cm auth hmac-sha1 | hmac-sha2-256 | hmac-sha2-512
-(not with gcm),
-.Cm key-in Ar hex ,
-.Cm key-out Ar hex ,
-.Cm akey-in Ar hex ,
-.Cm akey-out Ar hex ,
-and the flags
-.Cm encap
-(ESP in UDP, port 4500) and
-.Cm esn .
-.It Cm ipsec-sa key Ar interface Op Cm next
-A key pair for the interface (X25519), made once and kept 0600 beside
-the agent's files; its public half is in the
-.Cm sdwan
-read.
-With
-.Cm next ,
-the pair to come is made anew, its public half told as
-.Va next
-there (Mplify 119 R110).
-.It Cm ipsec-sa derive Ar interface reqid local remote Cm peer Ar key Ar words ...
-The SAs of both directions derived from the pair and the far end's
-public half
-.Ar key
-(HKDF-SHA256 of the X25519 agreement), the same on both ends; the
-words
-.Cm enc ,
-.Cm auth ,
-.Cm encap
-and
-.Cm esn
-as for set,
-.Cm epoch Ar n
-for another set of keys from the same pair,
-.Cm lifetime Ar seconds
-kept with the SAs for the manager to turn the keys by, and for a
-rotation
-.Cm next
-(from the next pair, the SPIs kept as the next ones) with
-.Cm install in | out | both
-(the directions put in: a rotation puts in the inbound SAs on both
-ends, then the outbound, each end's old outbound SA taken out as the
-new goes in, so neither end sends on keys the other has not got).
-The SAs set before by the same interface are taken out first.
-.It Cm ipsec-sa commit Ar interface reqid local remote
-The old inbound SA taken out, the next pair made the pair and the
-next SPIs the SPIs: the last step of a rotation.
-A rotation that fails is a fault
-.Pq Va key-rotation
-until one is done.
-.It Cm ipsec-sa clear Ar interface reqid local remote
-Every SA between the two addresses deleted, then Arcana's policies on
-them (policy), the next pair and what was kept of the SAs with them.
-.It Cm ipsec-sa policy Ar interface reqid local remote Cm src Ar prefix Cm dst Ar prefix Op Ar words ...
-A selector's traffic sent through the interface's SAs as well, both
-ways: two policies put in by PF_KEY
-.Pq Dv SADB_X_SPDADD ,
-out from
-.Ar src
-to
-.Ar dst
-and in the other way, ESP in tunnel mode between the outer addresses,
-read back by a dump: out at level unique on the reqid, so it leaves by
-those SAs or not at all; in at level use, since the kernel hands ESP
-of the interface's reqid to the interface and a unique in policy would
-refuse what came through.
-The words:
-.Cm proto Ar p
-(a number, or any, tcp, udp, sctp, icmp, ipv6-icmp),
-.Cm sport Ar n
-and
-.Cm dport Ar n
-(single ports, with tcp, udp or sctp).
-They are global policies of a priority of Arcana's own, after those of
-.Xr setkey 8
-and
-.Pa ipsec.conf ;
-a policy of the same selector and direction already there, not
-Arcana's, fails the job and is left as it is.
-.It Cm ipsec-sa unpolicy Ar interface reqid local remote Op Cm src Ar prefix Cm dst Ar prefix Op Ar words ...
-That selector's policies taken out, or without one every policy of
-Arcana's on the interface's SAs; never an
-.Xr ipsec 4
-interface's own,
-.Pa ipsec.conf Ns 's
-or an IKE daemon's.
-.Pp
-With
-.Fl j ,
-each
-.Cm ipsec-sa
-is of a vnet jail's interface: its SAs and policies the jail's own
-network's, by PF_KEY there; its key pair and what was set kept on the
-host, named
-.Ar interface Ns @ Ns Ar jail
-as its faults and its public half in the
-.Cm sdwan
-read are.
 .It Cm allow Oo Fl n Oc Ar jail Ar allow.name=0|1|unset ...
 The jail's permissions, the
 .Va allow.*

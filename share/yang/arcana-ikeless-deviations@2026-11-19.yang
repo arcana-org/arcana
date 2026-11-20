@@ -28,6 +28,9 @@ module arcana-ikeless-deviations {
      never changed by an edit.  The notifications name the
      controller's entries by their names.
 
+     A derived SA (arcana-ikeless) is given no SPI: the agent's
+     derivation gives it.
+
      FreeBSD's SAs carry no replay statistics but their window and
      sequence counter, and its PF_KEY tells no packet of an unknown
      SPI, so there is no sadb-bad-spi.";
@@ -35,7 +38,8 @@ module arcana-ikeless-deviations {
   revision 2026-11-19 {
     description
       "The SAD and SPD lists served; the replay statistics FreeBSD
-       does not keep per SA taken away.";
+       does not keep per SA taken away; the SPI of a derived SA not
+       given.";
   }
   revision 2026-11-18 {
     description
@@ -73,6 +77,17 @@ module arcana-ikeless-deviations {
     description
       "As are the packets failing the window's check.";
     deviate not-supported;
+  }
+
+  deviation "/nsfikels:ipsec-ikeless/nsfikels:sad/nsfikels:sad-entry/"
+          + "nsfikels:ipsec-sa-config/nsfikels:spi" {
+    description
+      "An SA the agent derives (arcana-ikeless' derived) is given no
+       SPI: the derivation's is put in running.  Any other SA needs
+       one, or is refused.";
+    deviate replace {
+      mandatory false;
+    }
   }
 
   deviation "/nsfikels:sadb-bad-spi" {

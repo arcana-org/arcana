@@ -451,6 +451,25 @@ stop_pfkey()
 	true
 }
 
+# A tunnel end's key pair made, an entry of the IKE-less lists' key-pairs
+# (arcana-ikeless), of generation $2 (0 unless given).
+key_pair()
+{
+
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    "/ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair=$1" \
+	    "{\"name\":\"$1\",\"generation\":${2:-0}}"
+}
+
+# The public half of a pair, as the sdwan read tells it.
+key_public()
+{
+
+	"$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' |
+	    grep "\"interface\":\"$1\"" |
+	    sed -E 's/.*"public":"([^"]*)".*/\1/'
+}
+
 # Start arcana-agent on ./s.sock and wait until it answers.
 start_daemon()
 {
@@ -2905,7 +2924,7 @@ faults_owners_gone_body()
 	programs
 	# gre9's pair, with no rotation pending.
 	start_daemon
-	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre9
+	key_pair gre9
 	stop_daemon
 	f=$(find . -name 'sdwan-key-gre9.pem' | head -1)
 	[ -n "$f" ] || atf_fail "no pair for gre9"
@@ -2940,37 +2959,60 @@ faults_owners_gone_cleanup()
 atf_test_case sdwan_key_event cleanup
 sdwan_key_event_head()
 {
-	atf_set "descr" "an interface's key pair made, or made again, told as" \
+	atf_set "descr" "a tunnel end's key pair (arcana-ikeless' key-pairs)" \
+	    "made, made anew by its generation and put back, told as" \
 	    "sdwan-key with its public half (the console gives it to the" \
-	    "far end); one there already, kept, told by none"
+	    "far end); one there already, kept, told by none; taken out"
 	atf_set "timeout" "120"
 }
 sdwan_key_event_body()
 {
-	local f p1 p2
+	local f p1 p2 p3
 
 	programs
 	start_daemon
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key gre9
+	key_pair gre9
 	f=$(find . -name 'sdwan-key-gre9.pem' | head -1)
 	[ -n "$f" ] || atf_fail "no pair for gre9"
-	p1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"gre9"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
+	atf_check -o inline:'-rw-------\n' stat -f %Sp "$f"
+	p1=$(key_public gre9)
 	[ -n "$p1" ] || atf_fail "no public half for gre9"
 	"$JGC" -c "$SOCK" events > ev1.json
 	atf_check -o inline:'1\n' sh -c "grep -o '\"kind\":\"sdwan-key\"' ev1.json | wc -l | tr -d ' '"
 	# Base64 has + in it: matched as it is, not as a regular expression.
 	atf_check grep -qF "\"interface\":\"gre9\",\"public\":\"$p1\"" ev1.json
-	# Asked again: the pair kept, nothing told.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key gre9
-	"$JGC" -c "$SOCK" events > ev2.json
-	atf_check -o inline:'1\n' sh -c "grep -o '\"kind\":\"sdwan-key\"' ev2.json | wc -l | tr -d ' '"
-	# Made again (its file gone): the new half told.
-	rm -f "$f"
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key gre9
-	p2=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"gre9"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
+	# The operational key-pairs tell the same half.
+	"$JGC" -c "$SOCK" get ipsec-ikeless > op1.json
+	atf_check grep -qF "\"name\":\"gre9\",\"public\":\"$p1\"" op1.json
+	# Its generation turned (R110): a new pair, its half told, the one
+	# before kept.
+	key_pair gre9 1
+	p2=$(key_public gre9)
 	[ -n "$p2" ] && [ "$p2" != "$p1" ] || atf_fail "gre9's pair not made again"
+	"$JGC" -c "$SOCK" events > ev2.json
+	atf_check grep -qF "\"interface\":\"gre9\",\"public\":\"$p2\"" ev2.json
+	atf_check test -f "${f%.pem}-prev.pem"
+	# Back to the generation before (a commit not confirmed): the pair
+	# before put back, told.
+	key_pair gre9 0
+	p3=$(key_public gre9)
+	atf_check_equal "$p1" "$p3"
 	"$JGC" -c "$SOCK" events > ev3.json
-	atf_check grep -qF "\"interface\":\"gre9\",\"public\":\"$p2\"" ev3.json
+	atf_check -o inline:'2\n' sh -c "grep -oF '\"interface\":\"gre9\",\"public\":\"$p1\"' ev3.json | wc -l | tr -d ' '"
+	# A pair there already, an entry of none (the ipsec-sa job's before):
+	# kept, told by none.
+	stop_daemon
+	cp "$f" "${f%gre9.pem}gre8.pem"
+	start_daemon
+	key_pair gre8
+	atf_check_equal "$p1" "$(key_public gre8)"
+	"$JGC" -c "$SOCK" events > ev4.json
+	atf_check -s exit:1 grep -qF '"interface":"gre8"' ev4.json
+	# Taken out: its files gone, gre9's kept.
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless/arcana-ikeless:key-pairs/key-pair=gre8
+	atf_check test ! -e "${f%gre9.pem}gre8.pem"
+	atf_check test -f "$f"
 }
 sdwan_key_event_cleanup()
 {
@@ -10470,208 +10512,6 @@ safe_ipsec_cleanup()
 	stop_daemon
 }
 
-atf_test_case safe_ipsec_sa cleanup
-safe_ipsec_sa_head()
-{
-	atf_set "descr" "Manually keyed SAs in safe mode: not confirmed, the key files and what was set go back and the SAs derived again as they were; set by hand, they cannot be and the job is refused before the change"
-}
-safe_ipsec_sa_body()
-{
-	write_rc
-	start_pfkey
-	start_daemon
-	K=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-	A=0011223344556677889900112233445566778899
-	wait_jobs() {
-		for i in $(seq 1 200); do
-			"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
-			    break
-			sleep 0.1
-		done
-	}
-	last_job() {
-		"$JGC" -c "$SOCK" jobs | awk '$1 ~ /^[0-9]+$/ {print $1}' | sort -n | tail -1
-	}
-
-	# Set by hand where nothing was, not confirmed: the SAs put in are
-	# taken out again and nothing is kept.
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A
-	wait_jobs
-	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
-	    -o match:'none were in: none put in' "$JGC" -c "$SOCK" job $(last_job)
-	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x1002 ' \
-	    -o match:'^dump esp ;$' \
-	    -o match:'^delete 10.202.0.1 10.202.0.2 esp 0x1002 ;$' \
-	    -o match:'^delete 10.202.0.2 10.202.0.1 esp 0x1001 ;$' cat pfkey.log
-	test -z "$(find . -name sdwan-sa-ipsec0.json)" || atf_fail "the state kept"
-
-	# Set by hand and confirmed, it stays; on top of it, a safe derive
-	# is refused before it changes anything: the keys set by hand are
-	# nowhere to put back.
-	atf_check -o match:'confirmed: it stays' "$JGC" -s -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1
-	P0=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec0"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
-	P1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
-	rm -f pfkey.log
-	atf_check -s exit:1 -o match:'set by hand, not derived' -o match:'not in safe mode' "$JGC" -s -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256
-	test ! -e pfkey.log || atf_fail "changed before the refusal"
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa clear ipsec0 100 10.202.0.1 10.202.0.2
-
-	# Derived and confirmed; derived again at another epoch and not
-	# confirmed: the SAs of the first epoch put in again, the same
-	# SPIs, and what was set as it was.
-	atf_check -o match:'confirmed: it stays' "$JGC" -s -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256 encap esn
-	S_IN=$(grep '^add 10.202.0.2 10.202.0.1 .* -u 100 ' pfkey.log | tail -1 | sed -E 's/.*esp (0x[0-9a-f]+).*/\1/')
-	S_OUT=$(grep '^add 10.202.0.1 10.202.0.2 .* -u 100 ' pfkey.log | tail -1 | sed -E 's/.*esp (0x[0-9a-f]+).*/\1/')
-	KEY_OUT=$(grep '^add 10.202.0.1 10.202.0.2 .* -u 100 ' pfkey.log | tail -1 | sed -E 's/.*-E aes-cbc (0x[0-9a-f]+).*/\1/')
-	STATE=$(find . -name sdwan-sa-ipsec0.json)
-	cp "$STATE" state.was
-	atf_check -o match:'"derive":\{"peer":"' -o match:'"install":"both"' -o match:'"encap":true' cat state.was
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-gcm-16 epoch 1
-	wait_jobs
-	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
-	    -o match:'sdwan-sa-ipsec0.json, as it was' \
-	    -o match:'derived again as kept' "$JGC" -c "$SOCK" job $(last_job)
-	# The new SAs in, then everything out, then the old ones in again:
-	# the same SPIs and keys as the first time.
-	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 -r 128 -E aes-gcm-16 ' cat pfkey.log
-	atf_check -o inline:'1\n' sh -c "grep -c '^dump esp' pfkey.log"
-	atf_check -o match:"^add 10.202.0.1 10.202.0.2 esp $S_OUT -m tunnel -u 100 -r 128 -esn -natt .* -E aes-cbc $KEY_OUT -A hmac-sha2-256 " \
-	    -o match:"^add 10.202.0.2 10.202.0.1 esp $S_IN -m tunnel -u 100 " cat pfkey.log
-	atf_check -o inline:'1\n' sh -c "grep '^add ' pfkey.log | tail -1 | grep -c '^add 10.202.0.2 10.202.0.1 esp $S_IN '"
-	atf_check -o match:"\"spi_in\":$((S_IN)),\"spi_out\":$((S_OUT))" -o match:'"interface":"ipsec0",.*"pending":false' "$JGC" -c "$SOCK" sdwan
-
-	# A key pair made over the one there, not confirmed: the file as
-	# it was, the SAs untouched.
-	cp "$(dirname "$STATE")/sdwan-key-ipsec0.pem" key.was
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa key ipsec0
-	wait_jobs
-	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
-	    -o match:'sdwan-key-ipsec0.pem, as it was' "$JGC" -c "$SOCK" job $(last_job)
-	atf_check cmp key.was "$(dirname "$STATE")/sdwan-key-ipsec0.pem"
-	test ! -e pfkey.log || atf_fail "the SAs touched for a key"
-
-	# A rotation under way (the next pair, its SAs in and out), then
-	# committed in safe mode and not confirmed: the next pair back, the
-	# state back to pending, the pair's SAs and the next ones derived
-	# again.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0 next
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1 next
-	N1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"next":"([^"]*)".*/\1/')
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$N1" enc aes-cbc auth hmac-sha2-256 next install in
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$N1" enc aes-cbc auth hmac-sha2-256 next install out
-	atf_check -o match:'"next_derive":\{"peer":"' -o match:'"install":"both"' cat "$STATE"
-	cp "$STATE" state.pending
-	cp "$(dirname "$STATE")/sdwan-key-ipsec0-next.pem" next.was
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa commit ipsec0 100 10.202.0.1 10.202.0.2
-	wait_jobs
-	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
-	    -o match:'sdwan-key-ipsec0-next.pem, as it was' \
-	    -o match:'derived again as kept' "$JGC" -c "$SOCK" job $(last_job)
-	atf_check cmp next.was "$(dirname "$STATE")/sdwan-key-ipsec0-next.pem"
-	atf_check -o match:'"interface":"ipsec0",.*"pending":true' "$JGC" -c "$SOCK" sdwan
-	# Four SAs in again after they were all taken out: the pair's two,
-	# the next's two.
-	atf_check -o inline:'4\n' sh -c "sed -n '/^dump esp/,\$p' pfkey.log | grep -c '^add '"
-	# Committed and confirmed: done.
-	atf_check -o match:'confirmed: it stays' "$JGC" -s -c "$SOCK" ipsec-sa commit ipsec0 100 10.202.0.1 10.202.0.2
-	test ! -e "$(dirname "$STATE")/sdwan-key-ipsec0-next.pem" || atf_fail "the next pair still there"
-	atf_check -o match:'"derive":\{"peer":"' -o not-match:'next_derive' cat "$STATE"
-}
-safe_ipsec_sa_cleanup()
-{
-	stop_daemon
-	stop_pfkey
-}
-
-atf_test_case ipsec_sa_jail cleanup
-ipsec_sa_jail_head()
-{
-	atf_set "descr" "A vnet jail's manually keyed SAs: by PF_KEY in the jail's network (the stand-in's here), its key pair and what was set kept on the host as <interface>@<jail>, apart from the host's own, nothing in the jail; a safe derive not confirmed put back, the state on the host as it was and the SAs derived again in the jail; a jail with no network of its own, or none, refused"
-}
-ipsec_sa_jail_body()
-{
-	local h
-
-	write_rc
-	start_pfkey
-	h=$(pwd)
-	mkdir jroot jroot2
-	printf 'gw 4 new %s/jroot\nweb 7 inherit %s/jroot2\n' "$h" "$h" > jails
-	start_daemon
-	wait_jobs() {
-		for i in $(seq 1 200); do
-			"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
-			    break
-			sleep 0.1
-		done
-	}
-	last_job() {
-		"$JGC" -c "$SOCK" jobs | awk '$1 ~ /^[0-9]+$/ {print $1}' | sort -n | tail -1
-	}
-
-	# The jail's ipsec0 and the host's: two pairs, told apart.
-	atf_check -o ignore "$JGC" -j gw -c "$SOCK" ipsec-sa key ipsec0
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1
-	KEY=$(find . -path ./jroot -prune -o -name 'sdwan-key-ipsec0@gw.pem' -print)
-	test -n "$KEY" || atf_fail "no pair for gw's ipsec0"
-	test -n "$(find . -name sdwan-key-ipsec0.pem)" || atf_fail "no pair for the host's ipsec0"
-	! cmp -s "$KEY" "$(dirname "$KEY")/sdwan-key-ipsec0.pem" || atf_fail "one pair for both"
-	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
-	atf_check -o match:'"interface":"ipsec0@gw","public":"' "$JGC" -c "$SOCK" sdwan
-	P1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
-
-	# Derived in the jail and confirmed: its SAs in, what was set kept
-	# as gw's, the host's ipsec0 having none.
-	rm -f pfkey.log
-	atf_check -o match:'confirmed: it stays' "$JGC" -j gw -s -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256
-	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 ' \
-	    -o match:'^add 10.202.0.2 10.202.0.1 esp ' cat pfkey.log
-	STATE="$(dirname "$KEY")/sdwan-sa-ipsec0@gw.json"
-	atf_check -o match:'"derive":\{"peer":"' cat "$STATE"
-	test ! -e "$(dirname "$KEY")/sdwan-sa-ipsec0.json" || atf_fail "kept as the host's"
-	cp "$STATE" state.was
-
-	# At another epoch, not confirmed: the state on the host as it was,
-	# the SAs of the first derived again; the job the jail's.
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -j gw -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-gcm-16 epoch 1
-	wait_jobs
-	atf_check -s exit:1 -o match:'not confirmed within 2 s: undone' \
-	    -o match:'gw: ipsec sa derive ipsec0' \
-	    -o match:'sdwan-sa-ipsec0@gw.json, as it was' \
-	    -o match:'derived again as kept' "$JGC" -c "$SOCK" job $(last_job)
-	# The same SPIs and words; derived again just now.
-	spis() {
-		grep -o '"spi_[a-z]*":[0-9]*\|"enc":"[^"]*"' "$1"
-	}
-	spis state.was > spis.was
-	spis "$STATE" > spis.now
-	atf_check cmp spis.was spis.now
-	atf_check -o match:'"enc":"aes-cbc"' cat spis.was
-	atf_check -o match:'-E aes-gcm-16 ' -o match:'-E aes-cbc ' cat pfkey.log
-	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
-
-	# A jail without a network of its own, or not running: refused.
-	! "$JGC" -j web -c "$SOCK" ipsec-sa key ipsec0 > out 2>&1 ||
-	    atf_fail "a jail without vnet taken"
-	atf_check -o match:'the jail web has no network of its own' cat out
-	! "$JGC" -j nosuch -c "$SOCK" ipsec-sa key ipsec0 > out 2>&1 ||
-	    atf_fail "a jail not running taken"
-	atf_check -o match:'the jail nosuch is not running' cat out
-}
-ipsec_sa_jail_cleanup()
-{
-	stop_daemon
-	stop_pfkey
-}
-
 atf_test_case safe_sysfile cleanup
 safe_sysfile_head()
 {
@@ -12182,7 +12022,7 @@ atf_test_case stampd_keys cleanup
 stampd_keys_head()
 {
 	atf_set "descr" "A plain tunnel's target authenticates its STAMP: its" \
-	    "key derived from its end's pair (ipsec-sa key) and the far" \
+	    "key derived from its end's pair (its key-pair entry) and the far" \
 	    "end's public half, written after Arcana's marker in stampd's" \
 	    "key file, 0600, in place (the admin's lines kept), stampd told;" \
 	    "another far end, rewritten; no pair yet, said; a half that is" \
@@ -12201,8 +12041,9 @@ stampd_keys_body()
 	k=root/usr/local/etc/stampd.keys
 	printf '# the admin'"'"'s\n42 %s\n' "$(openssl rand -hex 16)" > $k
 	ino=$(stat -f %i $k)
-	atf_check -o save:key.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	atf_check -o match:'public [A-Za-z0-9+/]{43}=' cat key.out
+	key_pair gre9
+	key_public gre9 > key.out
+	atf_check -o match:'^[A-Za-z0-9+/]{43}=$' cat key.out
 	openssl genpkey -algorithm X25519 -out far1.pem 2>/dev/null
 	openssl genpkey -algorithm X25519 -out far2.pem 2>/dev/null
 	F1=$(openssl pkey -in far1.pem -pubout -outform DER | tail -c 32 |
@@ -12227,7 +12068,7 @@ stampd_keys_body()
 	wait_match '^stampd reload$' cat service.log ||
 	    atf_fail "not told: $(cat service.log)"
 	# gre7 has no pair: said (its target pinged until there is one).
-	atf_check -o match:'probe: t2 \(::1\): no STAMP key: gre7 has no key pair yet: ipsec-sa key first' \
+	atf_check -o match:'probe: t2 \(::1\): no STAMP key: gre7 has no key pair yet: its key-pair entry first' \
 	    cat daemon.out
 	# Another far end: another key, in place, told again.
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan probes \
@@ -12276,8 +12117,8 @@ stampd_keys_bounded_body()
 	k=root/usr/local/etc/stampd.keys
 	admin='# the admin'"'"'s'
 	printf '%s\n42 %s\n' "$admin" "$(openssl rand -hex 16)" > $k
-	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	atf_check -o ignore "$JGC" -t -c "$SOCK" ipsec-sa key gre8
+	key_pair gre9
+	key_pair gre8
 	openssl genpkey -algorithm X25519 -out far1.pem 2>/dev/null
 	openssl genpkey -algorithm X25519 -out far2.pem 2>/dev/null
 	F1=$(openssl pkey -in far1.pem -pubout -outform DER | tail -c 32 |
@@ -12610,9 +12451,9 @@ stamp_rekey_body()
 	P=$(jot -r 1 20000 59999)
 	DAEMON_ARGS="$DAEMON_ARGS --stamp-port $P" start_daemon
 	# This end's pair, as the console has it made; the far end's.
-	atf_check -o save:key1.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	A1=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' key1.out | head -1)
-	[ -n "$A1" ] || atf_fail "no public half: $(cat key1.out)"
+	key_pair gre9
+	A1=$(key_public gre9)
+	[ -n "$A1" ] || atf_fail "no public half"
 	openssl genpkey -algorithm X25519 -out far.pem 2>/dev/null
 	F=$(openssl pkey -in far.pem -pubout -outform DER | tail -c 32 |
 	    openssl base64 -A)
@@ -12635,16 +12476,12 @@ stamp_rekey_body()
 	# Both ends derived the same: the agent's key file has the far's.
 	k=root/usr/local/etc/stampd.keys
 	wait_match "^$K1\$" cat $k || atf_fail "$(cat $k)"
-	# This end's pair made again (lost, as a host reinstalled loses it);
-	# the far end given its new half, as the console's apply gives it,
-	# and its key under it read again; this end told nothing.
-	f=$(find . -name sdwan-key-gre9.pem)
-	[ -n "$f" ] || atf_fail "no pair of gre9's"
-	rm "$f"
-	atf_check -o save:key2.out "$JGC" -t -c "$SOCK" ipsec-sa key gre9
-	A2=$(sed -nE 's/.*public ([A-Za-z0-9+/]{43}=).*/\1/p' key2.out | head -1)
-	[ -n "$A2" ] && [ "$A2" != "$A1" ] ||
-	    atf_fail "no new public half: $(cat key2.out)"
+	# This end's pair made again (its generation turned); the far end
+	# given its new half, as the console's apply gives it, and its key
+	# under it read again; this end told nothing.
+	key_pair gre9 1
+	A2=$(key_public gre9)
+	[ -n "$A2" ] && [ "$A2" != "$A1" ] || atf_fail "no new public half"
 	K2=$(stamp_derive far.pem "$A2")
 	printf '%s\n' "$K2" > far.keys
 	kill -HUP "$(cat sd.spid)"
@@ -21392,231 +21229,6 @@ ntp_cleanup()
 	stop_daemon
 }
 
-atf_test_case ipsec_sa cleanup
-ipsec_sa_head()
-{
-	atf_set "descr" "Manually keyed SAs of an ipsec(4) interface by PF_KEY, each read back; the keys never in the trace; a refusal; cleared again"
-}
-ipsec_sa_body()
-{
-	write_rc
-	start_pfkey
-	start_daemon
-	K=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-	A=0011223344556677889900112233445566778899
-	atf_check -s exit:1 -e match:'an ipsec\(4\) one' -o ignore "$JGC" -c "$SOCK" ipsec-sa set gre0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002
-	atf_check -s exit:1 -e match:'from 256' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 10 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A
-	atf_check -s exit:1 -e match:'32, 48 or 64' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in 0011 key-out $K akey-in $A akey-out $A
-	atf_check -s exit:1 -e match:'authenticates by itself' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-gcm-16 auth hmac-sha1 key-in ${K}00112233 key-out ${K}00112233
-	atf_check -s exit:1 -e match:'of one family' -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 fd00::2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A
-	# Set: the two SAs, out then in, on the reqid, ESN and ESP in UDP,
-	# each read back; the trace without the keys, the title too.
-	atf_check -o save:sa.out "$JGC" -t -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-cbc auth hmac-sha1 key-in $K key-out $K akey-in $A akey-out $A encap esn
-	atf_check -o match:'ipsec sa set ipsec0 reqid 100' -o not-match:"$K" -o not-match:"$A" \
-	    -o match:'PF_KEY SADB_ADD: 10.202.0.1 to 10.202.0.2, SPI 0x1002, reqid 100: read back: mature, a window of 1024 packets, ESN, ESP in UDP' \
-	    -o match:'PF_KEY SADB_ADD: 10.202.0.2 to 10.202.0.1, SPI 0x1001, reqid 100: read back' cat sa.out
-	atf_check -o match:'^get 10.202.0.1 10.202.0.2 esp 0x1002 ;$' \
-	    -o match:'^get 10.202.0.2 10.202.0.1 esp 0x1001 ;$' \
-	    -o not-match:'^(malformed|unexpected|not esp)' -o not-match:' -flags ' cat pfkey.log
-	atf_check -o match:"^add 10.202.0.1 10.202.0.2 esp 0x1002 -m tunnel -u 100 -r 128 -esn -natt 10.202.0.1\[4500\] 10.202.0.2\[4500\] -E aes-cbc 0x$K -A hmac-sha1 0x$A ;\$" \
-	    -o match:"^add 10.202.0.2 10.202.0.1 esp 0x1001 -m tunnel -u 100 -r 128 -esn -natt 10.202.0.2\[4500\] 10.202.0.1\[4500\] -E aes-cbc 0x$K -A hmac-sha1 0x$A ;\$" cat pfkey.log
-	# GCM: no auth; neither flag.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec1 101 10.202.0.1 10.202.0.2 spi-in 0x2001 spi-out 0x2002 enc aes-gcm-16 key-in ${K}00112233 key-out ${K}00112233
-	atf_check -o match:"^add 10.202.0.1 10.202.0.2 esp 0x2002 -m tunnel -u 101 -r 128 -E aes-gcm-16 0x${K}00112233 ;\$" cat pfkey.log
-	# Refused by the kernel: the job fails and says why, nothing kept.
-	touch pfkey.refuse
-	atf_check -s exit:1 -o match:'10.202.0.1 to 10.202.0.2, SPI 0x3002: SADB_ADD: Invalid argument' -e ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec2 102 10.202.0.1 10.202.0.2 spi-in 0x3001 spi-out 0x3002 enc aes-gcm-16 key-in ${K}00112233 key-out ${K}00112233
-	rm pfkey.refuse
-	test ! -e "./sdwan-sa-ipsec2.json" || atf_fail "a refused SA kept"
-	# Cleared: every SA the kernel has between the two, both ways, each
-	# by its SPI.
-	atf_check -o match:'ipsec sa clear ipsec0 reqid 100' -o match:'SADB_DUMP.*SPI 0x' "$JGC" -t -c "$SOCK" ipsec-sa clear ipsec0 100 10.202.0.1 10.202.0.2
-	atf_check -o match:'^dump esp ;$' -o match:'^delete 10.202.0.1 10.202.0.2 esp 0x1002 ;$' \
-	    -o match:'^delete 10.202.0.2 10.202.0.1 esp 0x1001 ;$' \
-	    -o match:'^delete 10.202.0.1 10.202.0.2 esp 0x2002 ;$' \
-	    -o match:'^delete 10.202.0.2 10.202.0.1 esp 0x2001 ;$' cat pfkey.log
-	# A key pair an interface's own, 0600, made once; its public half
-	# in the sdwan read; derived SAs: the two ends (two interfaces of
-	# this one host standing for them) each take the other's public
-	# half and come out with the same SAs, mirrored.
-	atf_check -s exit:1 -o match:'no key pair yet' -e ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= enc aes-cbc auth hmac-sha2-256
-	atf_check -o match:'ipsec sa key ipsec0' -o match:'public [A-Za-z0-9+/]{43}=' "$JGC" -t -c "$SOCK" ipsec-sa key ipsec0
-	atf_check -o match:'^600$' stat -f %Lp "./sdwan-key-ipsec0.pem"
-	atf_check -o match:'BEGIN PRIVATE KEY' cat "./sdwan-key-ipsec0.pem"
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1
-	P0=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec0"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
-	P1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"public":"([^"]*)".*/\1/')
-	test ${#P0} -eq 44 -a ${#P1} -eq 44 -a "$P0" != "$P1" || atf_fail "the public halves: $P0 $P1"
-	# Made again: the same pair.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0
-	atf_check -o match:"\"public\":\"$(echo "$P0" | sed 's|/|\\/|g; s|+|\\+|g')\"" "$JGC" -c "$SOCK" sdwan
-	atf_check -s exit:1 -o match:'own public half' -e ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P0" enc aes-cbc auth hmac-sha2-256
-	atf_check -s exit:1 -e match:'no SPIs or keys' -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256 spi-in 0x1001
-	rm -f pfkey.log
-	atf_check -o not-match:'0x[0-9a-f]{40}' "$JGC" -t -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-cbc auth hmac-sha2-256 encap esn
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec1 101 10.202.0.2 10.202.0.1 peer "$P0" enc aes-cbc auth hmac-sha2-256 encap esn
-	atf_check -o inline:'4\n' sh -c "grep -c '^add ' pfkey.log"
-	# The SA from .1 to .2 as ipsec0 set it out and as ipsec1 set it in:
-	# one and the same but for the reqid; the other way too.
-	atf_check -o inline:'1\n' sh -c "grep '^add 10.202.0.1 10.202.0.2 ' pfkey.log | sed 's/-u 10[01]/-u N/' | sort -u | wc -l | tr -d ' '"
-	atf_check -o inline:'1\n' sh -c "grep '^add 10.202.0.2 10.202.0.1 ' pfkey.log | sed 's/-u 10[01]/-u N/' | sort -u | wc -l | tr -d ' '"
-	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 -r 128 -esn -natt 10.202.0.1\[4500\] 10.202.0.2\[4500\] -E aes-cbc 0x[0-9a-f]{64} -A hmac-sha2-256 0x[0-9a-f]{64} ;$' cat pfkey.log
-	# Another epoch: other keys; the SAs set before taken out first.
-	S_IN=$(grep '^add 10.202.0.2 10.202.0.1 .* -u 100 ' pfkey.log | sed -E 's/.*esp (0x[0-9a-f]+).*/\1/')
-	S_OUT=$(grep '^add 10.202.0.1 10.202.0.2 .* -u 100 ' pfkey.log | sed -E 's/.*esp (0x[0-9a-f]+).*/\1/')
-	rm -f pfkey.log
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-gcm-16 epoch 1 lifetime 3600
-	atf_check -o match:"^delete 10.202.0.2 10.202.0.1 esp $S_IN ;\$" -o match:"^delete 10.202.0.1 10.202.0.2 esp $S_OUT ;\$" -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 -r 128 -E aes-gcm-16 0x[0-9a-f]{72} ;$' cat pfkey.log
-	# What was set, kept and told: the SPIs, when, the lifetime.
-	atf_check -o match:'"interface":"ipsec0","public":"[^"]*","keyed_at":[0-9]{10},"lifetime":3600,"spi_in":[0-9]+,"spi_out":[0-9]+,"pending":false' "$JGC" -c "$SOCK" sdwan
-	# A rotation (R110, R112): the next pair on each end, its public
-	# half told; the new SAs from the next pairs put in inbound on
-	# both ends, then outbound, beside the old; then committed: the
-	# old taken out, the next pair the pair.
-	atf_check -s exit:1 -e match:'next at most' -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec0 soon
-	atf_check -s exit:1 -e match:"next is derive's" -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-gcm-16 key-in ${K}00112233 key-out ${K}00112233 next
-	atf_check -s exit:1 -o match:'nothing to commit' -e ignore "$JGC" -c "$SOCK" ipsec-sa commit ipsec0 100 10.202.0.1 10.202.0.2
-	atf_check -s exit:1 -o match:'no next pair yet' -e ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$P1" enc aes-gcm-16 next install in
-	atf_check -o match:'"type":"key-rotation"' -o match:'"object":"ipsec0"' "$JGC" -c "$SOCK" sdwan
-	atf_check -o match:'sdwan-key-ipsec0-next.pem' "$JGC" -t -c "$SOCK" ipsec-sa key ipsec0 next
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1 next
-	atf_check -o match:'^600$' stat -f %Lp "./sdwan-key-ipsec0-next.pem"
-	N0=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec0"' | sed -E 's/.*"next":"([^"]*)".*/\1/')
-	N1=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec1"' | sed -E 's/.*"next":"([^"]*)".*/\1/')
-	test ${#N0} -eq 44 -a ${#N1} -eq 44 -a "$N0" != "$P0" -a "$N0" != "$N1" || atf_fail "the next halves: $N0 $N1"
-	# ipsec1's SAs, derived plainly, as the ones to turn.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec1 101 10.202.0.2 10.202.0.1 peer "$P0" enc aes-gcm-16 epoch 1
-	rm -f pfkey.log
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$N1" enc aes-gcm-16 next install in
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec1 101 10.202.0.2 10.202.0.1 peer "$N0" enc aes-gcm-16 next install in
-	# Inbound only: on ipsec0 the SA from .2, on ipsec1 the one from .1.
-	atf_check -o inline:'2\n' sh -c "grep -c '^add ' pfkey.log"
-	atf_check -o match:'^add 10.202.0.2 10.202.0.1 esp 0x[0-9a-f]+ -m tunnel -u 100 ' -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 101 ' -o not-match:'^delete ' cat pfkey.log
-	atf_check -o match:'"interface":"ipsec0",.*"pending":true' "$JGC" -c "$SOCK" sdwan
-	# Run again, the same inbound SA: taken out and put in again.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$N1" enc aes-gcm-16 next install in
-	atf_check -o match:'^delete 10.202.0.2 10.202.0.1 esp 0x[0-9a-f]+ ;$' cat pfkey.log
-	# Outbound: the new SA in, and the old outbound one out with it.
-	O_OUT=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec0"' | sed -E 's/.*"spi_out":([0-9]+).*/\1/')
-	rm -f pfkey.log
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec0 100 10.202.0.1 10.202.0.2 peer "$N1" enc aes-gcm-16 next install out
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa derive ipsec1 101 10.202.0.2 10.202.0.1 peer "$N0" enc aes-gcm-16 next install out
-	atf_check -o inline:'2\n' sh -c "grep -c '^add ' pfkey.log"
-	atf_check -o inline:'2\n' sh -c "grep -c '^delete ' pfkey.log"
-	atf_check -o match:'^add 10.202.0.1 10.202.0.2 esp 0x[0-9a-f]+ -m tunnel -u 100 ' -o match:'^add 10.202.0.2 10.202.0.1 esp 0x[0-9a-f]+ -m tunnel -u 101 ' -o match:"^delete 10.202.0.1 10.202.0.2 esp $(printf '0x%x' "$O_OUT") ;\$" cat pfkey.log
-	# The new SAs the same on both, mirrored, and not the old ones.
-	atf_check -o inline:'1\n' sh -c "grep '^add 10.202.0.1 10.202.0.2 ' pfkey.log | sed 's/-u 10[01]/-u N/' | sort -u | wc -l | tr -d ' '"
-	# Committed: the old inbound SPI out, the next pair the pair, the
-	# fault cleared.
-	O_IN=$("$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' | grep '"interface":"ipsec0"' | sed -E 's/.*"spi_in":([0-9]+).*/\1/')
-	rm -f pfkey.log
-	atf_check -o match:'ipsec sa commit ipsec0 reqid 100' -o match:'spi in 0x' "$JGC" -t -c "$SOCK" ipsec-sa commit ipsec0 100 10.202.0.1 10.202.0.2
-	atf_check -o inline:'1\n' sh -c "grep -c '^delete ' pfkey.log"
-	atf_check -o match:"^delete 10.202.0.2 10.202.0.1 esp $(printf '0x%x' "$O_IN") ;\$" -o not-match:'^add ' cat pfkey.log
-	test ! -e "./sdwan-key-ipsec0-next.pem" || atf_fail "the next pair still there"
-	atf_check -o match:"\"interface\":\"ipsec0\",\"public\":\"$(echo "$N0" | sed 's|/|\\/|g; s|+|\\+|g')\"" -o match:'"interface":"ipsec0",.*"pending":false' -o match:'"type":"key-rotation",.*"cleared":true' "$JGC" -c "$SOCK" sdwan
-	atf_check -s exit:1 -o match:'nothing to commit' -e ignore "$JGC" -c "$SOCK" ipsec-sa commit ipsec0 100 10.202.0.1 10.202.0.2
-	# Cleared: the next pair and what was kept go with the SAs.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa key ipsec1 next
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa clear ipsec1 101 10.202.0.2 10.202.0.1
-	test ! -e "./sdwan-key-ipsec1-next.pem" -a ! -e "./sdwan-sa-ipsec1.json" || atf_fail "ipsec1 not cleared"
-}
-ipsec_sa_cleanup()
-{
-	stop_daemon
-	stop_pfkey
-}
-
-atf_test_case ipsec_sp cleanup
-ipsec_sp_head()
-{
-	atf_set "descr" "Arcana's policies on an ipsec(4) interface's SAs by PF_KEY (SPDADD both ways, read back by SPDDUMP, SPDDELETE2 by id); a selector of ipsec.conf's refused and left; the interface's own and ipsec.conf's never taken out; the SPD read; a clear and a safe job's undo"
-}
-ipsec_sp_body()
-{
-	write_rc
-	start_pfkey seed
-	start_daemon
-	K=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-	OUT='-P out prio 0x7fa2c000 ipsec esp/tunnel/10.202.0.1-10.202.0.2/unique:100'
-	IN='-P in prio 0x7fa2c000 ipsec esp/tunnel/10.202.0.2-10.202.0.1/use'
-	atf_check -s exit:1 -e match:'src and dst, the selector' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2
-	atf_check -s exit:1 -e match:"the selector's prefixes" -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/33 dst 10.2.0.0/24
-	atf_check -s exit:1 -e match:'say proto' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24 dport 443
-	atf_check -s exit:1 -e match:'no ranges' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24 proto tcp dport 1-2
-	atf_check -s exit:1 -e match:'of one family' -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst fd00::/64
-	# A policy both ways: out from src to dst, in the other way, ESP in
-	# tunnel mode between the ends, out unique on the reqid, in use,
-	# Arcana's priority; each read back by a dump.
-	atf_check -o save:sp.out "$JGC" -t -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24
-	atf_check -o match:'ipsec sa policy ipsec0 reqid 100' \
-	    -o match:'PF_KEY SADB_X_SPDADD: out 10.1.0.0/24 to 10.2.0.0/24, any protocol, ESP in tunnel mode 10.202.0.1 to 10.202.0.2, unique:100: spid 3' \
-	    -o match:'PF_KEY SADB_X_SPDADD: in the other way of 10.1.0.0/24 to 10.2.0.0/24, any protocol, ESP in tunnel mode 10.202.0.2 to 10.202.0.1, use: spid 4' \
-	    -o match:'spid 3 out, 4 in: global, priority 0x7fa2c000' cat sp.out
-	atf_check -o match:"^spdadd 10.1.0.0/24\[any\] 10.2.0.0/24\[any\] any $OUT ;\$" \
-	    -o match:"^spdadd 10.2.0.0/24\[any\] 10.1.0.0/24\[any\] any $IN ;\$" \
-	    -o match:'^spddump ;$' -o not-match:'^(malformed|unexpected)' cat pfkey.log
-	# A port and a protocol: the in policy's ports the other way.
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.9 proto tcp dport 443
-	atf_check -o match:"^spdadd 10.1.0.0/24\[any\] 10.2.0.9/32\[443\] 6 $OUT ;\$" \
-	    -o match:"^spdadd 10.2.0.9/32\[443\] 10.1.0.0/24\[any\] 6 $IN ;\$" cat pfkey.log
-	# Run again: its two taken out by id first, then put in anew.
-	rm -f pfkey.log
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.0/24
-	atf_check -o match:'^spddelete2 3 ;$' -o match:'^spddelete2 4 ;$' cat pfkey.log
-	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
-	atf_check -o inline:'2\n' sh -c "grep -c '^spdadd ' pfkey.log"
-	# ipsec.conf's selector: refused by the kernel (EEXIST), the job
-	# fails, that policy left.
-	rm -f pfkey.log
-	atf_check -s exit:1 -o match:"not Arcana's \\(ipsec.conf, an IKE daemon\\): left as it is" -e ignore "$JGC" -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.77.0.0/24 dst 10.78.0.0/24
-	atf_check -o not-match:'^spddelete2 ' cat pfkey.log
-	# The SPD read with ipsec.conf: each policy, whose it is.
-	atf_check -o match:'"shows":"10.77.0.0/24\[any\] 10.78.0.0/24\[any\] any\\n\\tout ipsec\\n[^"]*spid=1 scope=global priority=0\\n' \
-	    -o match:'spid=2 scope=ifnet ifname=' \
-	    -o match:'10.1.0.0/24\[any\] 10.2.0.9/32\[443\] tcp\\n\\tout ipsec\\n\\tesp/tunnel/10.202.0.1-10.202.0.2/unique:100\\n\\tspid=5 scope=global priority=2141372416 \(Arcana.s\)' \
-	    "$JGC" -c "$SOCK" system ipsec.conf
-	# Kept with the SPIs, for a safe job to put back.
-	atf_check -o match:'"policies":\[\{"src":"10.1.0.0/24","dst":"10.2.0.9/32","proto":6,"dport":443\},\{"src":"10.1.0.0/24","dst":"10.2.0.0/24","proto":255\}\]' cat sdwan-sa-ipsec0.json
-	# unpolicy of a selector: its two alone.
-	rm -f pfkey.log
-	atf_check -o match:'2 taken out' "$JGC" -t -c "$SOCK" ipsec-sa unpolicy ipsec0 100 10.202.0.1 10.202.0.2 src 10.1.0.0/24 dst 10.2.0.9 proto tcp dport 443
-	atf_check -o match:'^spddelete2 5 ;$' -o match:'^spddelete2 6 ;$' cat pfkey.log
-	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
-	# Not confirmed in safe mode: the policies as they were.
-	wait_jobs() {
-		for i in $(seq 1 200); do
-			"$JGC" -c "$SOCK" jobs | grep -q 'unconfirmed\|queued\|running' ||
-			    break
-			sleep 0.1
-		done
-	}
-	rm -f pfkey.log
-	atf_check -o match:'queued' "$JGC" -q -s -c "$SOCK" ipsec-sa policy ipsec0 100 10.202.0.1 10.202.0.2 src 10.3.0.0/24 dst 10.4.0.0/24
-	wait_jobs
-	atf_check -o match:"^spdadd 10.3.0.0/24\[any\] 10.4.0.0/24\[any\] any $OUT ;\$" cat pfkey.log
-	atf_check -o match:'"policies":\[\{"src":"10.1.0.0/24","dst":"10.2.0.0/24","proto":255\}\]' cat sdwan-sa-ipsec0.json
-	atf_check -o match:'10.1.0.0/24\[any\] 10.2.0.0/24\[any\] any' -o not-match:'10.3.0.0/24' "$JGC" -c "$SOCK" system ipsec.conf
-	# SAs on the interface and its policy; cleared: the SAs, then
-	# Arcana's policies on them, never ipsec.conf's (1) or the
-	# interface's own (2).
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa set ipsec0 100 10.202.0.1 10.202.0.2 spi-in 0x1001 spi-out 0x1002 enc aes-gcm-16 key-in ${K}00112233 key-out ${K}00112233
-	rm -f pfkey.log
-	atf_check -o ignore "$JGC" -c "$SOCK" ipsec-sa clear ipsec0 100 10.202.0.1 10.202.0.2
-	atf_check -o match:'^delete 10.202.0.1 10.202.0.2 esp 0x1002 ;$' cat pfkey.log
-	atf_check -o inline:'2\n' sh -c "grep -c '^spddelete2 ' pfkey.log"
-	atf_check -o not-match:'^spddelete2 [12] ;$' cat pfkey.log
-	atf_check -o match:'spid=1 scope=global priority=0' -o match:'spid=2 scope=ifnet' -o not-match:"Arcana's" "$JGC" -c "$SOCK" system ipsec.conf
-	test ! -e sdwan-sa-ipsec0.json || atf_fail "the state kept"
-	# unpolicy with nothing there: none taken out, no error.
-	atf_check -o match:'0 taken out' "$JGC" -t -c "$SOCK" ipsec-sa unpolicy ipsec0 100 10.202.0.1 10.202.0.2
-}
-ipsec_sp_cleanup()
-{
-	stop_daemon
-	stop_pfkey
-}
-
 atf_test_case sadb_news cleanup
 sadb_news_head()
 {
@@ -21684,7 +21296,11 @@ ikeless_lists_head()
 	    "place); the agent's packets lifetime told soft by the name, then" \
 	    "hard and the SA taken out; the policies put back at the start" \
 	    "and the SAs gone with the kernel's state out of running; all" \
-	    "taken out, ipsec.conf's left"
+	    "taken out, ipsec.conf's left; SD-WAN's derived SAs (6.2.5):" \
+	    "two ends' key pairs, their SAs derived, each way once, no key" \
+	    "given or shown, the same set again no change, an SPI given" \
+	    "refused, a rotation's next SAs in and the old out, then made" \
+	    "the tunnel's own with no change to the kernel, AES-CBC too"
 	atf_set "timeout" "180"
 }
 ikeless_lists_body()
@@ -21819,10 +21435,190 @@ EOF
 	atf_check -o not-match:'spddelete2 [12] ' cat pfkey.log
 	atf_check -o match:'"name":"spd/1"' -o not-match:'trans/' \
 	    "$JGC" -c "$SOCK" get ipsec-ikeless
+
+	# SD-WAN's tunnels (6.2.5): SAs the agent derives from each end's
+	# key pair and the far end's public half, the controller naming no
+	# SPI and no key.  Both ends on this one agent, as the console's
+	# tests have them: ipsec7 at 192.0.2.1 and ipsec8 at 192.0.2.2, each
+	# end's outbound SA the other's inbound one, derived the same: one
+	# SA, put in once.
+	key_pair ipsec7
+	key_pair ipsec8
+	P7=$(key_public ipsec7)
+	P8=$(key_public ipsec8)
+	[ -n "$P7" ] && [ -n "$P8" ] || atf_fail "no public halves"
+	usa() {
+		printf '{"name":"%s","reqid":"%s","ipsec-sa-config":{"ext-seq-num":true,"anti-replay-window-size":1024,"traffic-selector":{"local-prefix":"0.0.0.0/0","remote-prefix":"0.0.0.0/0"},"mode":"tunnel","esp-sa":{"encryption":{"encryption-algorithm":%s}%s},"tunnel":{"local":"%s","remote":"%s"},"encapsulation-type":{"espencap":"espinudp","sport":4500,"dport":4500},"arcana-ikeless:derived":{"key-pair":"%s","peer":"%s","direction":"%s","lifetime":86400}}}' \
+		    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+	}
+	uswe() {
+		local alg=20 int=''
+
+		[ "$1" = cbc ] && alg=12 int=',"integrity":{"integrity-algorithm":12}'
+		printf '{"arcana-ikeless:key-pairs":{"key-pair":[{"name":"ipsec7"},{"name":"ipsec8"}]},"sad":{"sad-entry":[%s,%s,%s,%s%s]}}\n' \
+		    "$(usa uswe.ipsec7.out 7 $alg "$int" 192.0.2.1 192.0.2.2 ipsec7 "$P8" outbound)" \
+		    "$(usa uswe.ipsec7.in 7 $alg "$int" 192.0.2.2 192.0.2.1 ipsec7 "$P8" inbound)" \
+		    "$(usa uswe.ipsec8.out 8 $alg "$int" 192.0.2.2 192.0.2.1 ipsec8 "$P7" outbound)" \
+		    "$(usa uswe.ipsec8.in 8 $alg "$int" 192.0.2.1 192.0.2.2 ipsec8 "$P7" inbound)" \
+		    "$2"
+	}
+	uswe gcm > u.json
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @u.json
+	# ESP in tunnel mode on the reqid, a window of 1024 packets, ESN,
+	# ESP in UDP, AES-GCM-16's 288 bits; each way once.
+	atf_check -o inline:'2\n' sh -c "grep -c '^add ' pfkey.log"
+	atf_check -o match:'^add 192\.0\.2\.1 192\.0\.2\.2 esp 0x[0-9a-f]+ -m tunnel -u 7 -r 128 -esn .*-natt 192\.0\.2\.1\[4500\] 192\.0\.2\.2\[4500\] -E aes-gcm-16 0x[0-9a-f]{72} ;$' \
+	    -o match:'^add 192\.0\.2\.2 192\.0\.2\.1 esp 0x[0-9a-f]+ -m tunnel -u 7 -r 128 -esn .*-E aes-gcm-16 0x[0-9a-f]{72} ;$' \
+	    cat pfkey.log
+	# The two ways of other SPIs and other keys.
+	atf_check -o inline:'2\n' sh -c "grep '^add ' pfkey.log | awk '{print \$5, \$NF}' | sort -u | wc -l | tr -d ' '"
+	# Running has the SPIs and keys the agent derived; the kernel's
+	# lists no key; the sdwan read the SAs of each pair.
+	atf_check -o match:'"name":"uswe.ipsec7.out","reqid":"7"' \
+	    -o match:'"spi":[0-9]+' \
+	    -o match:'"encryption":\{"encryption-algorithm":20,"key":"[0-9a-f]{2}(:[0-9a-f]{2}){35}"' \
+	    "$JGC" -c "$SOCK" get -d running ipsec-ikeless
+	atf_check -o match:'"name":"uswe.ipsec7.out"' -o not-match:'"key":' \
+	    "$JGC" -c "$SOCK" get ipsec-ikeless
+	"$JGC" -c "$SOCK" sdwan | sed -E 's/.*"keys":\[//' | tr '}' '\n' |
+	    grep '"interface":"ipsec7"' > k7
+	atf_check -o match:'"keyed_at":[0-9]+' -o match:'"lifetime":86400' \
+	    -o match:'"spi_in":[0-9]+' -o match:'"spi_out":[0-9]+' \
+	    -o match:'"pending":false' cat k7
+	# Set again as the console sends it, no keys: as derived before,
+	# nothing changed.
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @u.json
+	atf_check -o not-match:'^(add|delete) ' cat pfkey.log
+	# A derived SA given an SPI: refused, the agent's.
+	uswe gcm ",$(usa uswe.x 9 20 '' 192.0.2.1 192.0.2.2 ipsec7 "$P8" outbound | sed 's/"ext-seq-num"/"spi":4660,&/')" > ux.json
+	atf_check -s exit:1 -e match:'uswe.x: a derived SA is given no SPI and no keys' \
+	    -o ignore "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @ux.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	# A rotation's next SAs (the pairs turned, the new halves; in, then
+	# out, the old out taken out) and then made the tunnel's own under
+	# its own names: the same SAs, no change to the kernel.
+	key_pair ipsec7 1
+	key_pair ipsec8 1
+	Q7=$(key_public ipsec7)
+	Q8=$(key_public ipsec8)
+	[ "$Q7" != "$P7" ] && [ "$Q8" != "$P8" ] || atf_fail "no new halves"
+	# The new halves; the pairs of generation 1 (base64 is no pattern).
+	P7=$Q7 P8=$Q8
+	uswe gcm | sed -E \
+	    -e 's/"name":"(ipsec[78])"/"name":"\1","generation":1/g' \
+	    -e 's/"uswe\.ipsec([78])\.(out|in)"/"uswe.ipsec\1.\2.next"/g' \
+	    > un.json
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @un.json
+	# Two new SAs, the old two out: none of the old SPIs again.
+	atf_check -o inline:'2\n' sh -c "grep -c '^add ' pfkey.log"
+	atf_check -o inline:'2\n' sh -c "grep -c '^delete ' pfkey.log"
+	atf_check -o match:'"pending":false' "$JGC" -c "$SOCK" sdwan
+	sed -e 's/\.next"/"/g' un.json > uo.json
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @uo.json
+	atf_check -o not-match:'^(add|delete) ' cat pfkey.log
+	atf_check -o match:'"name":"uswe.ipsec7.out"' -o not-match:'\.next"' \
+	    "$JGC" -c "$SOCK" get -d running ipsec-ikeless
+	# AES-CBC with HMAC-SHA2-256: its 256-bit key and the HMAC's.
+	uswe cbc | sed -E \
+	    -e 's/"name":"(ipsec[78])"/"name":"\1","generation":1/g' > uc.json
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @uc.json
+	atf_check -o match:'^add 192\.0\.2\.1 192\.0\.2\.2 esp 0x[0-9a-f]+ -m tunnel -u 7 .*-E aes-cbc 0x[0-9a-f]{64} -A [a-z0-9-]+ 0x[0-9a-f]{64} ;$' \
+	    cat pfkey.log
+	# All taken out: the SAs, then the pairs' files.
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless
+	atf_check -o inline:'2\n' sh -c "grep -c '^delete ' pfkey.log"
+	atf_check -o empty find . -name 'sdwan-key-ipsec[78]*'
 }
 ikeless_lists_cleanup()
 {
 	[ -f notif.pid ] && kill "$(cat notif.pid)" 2>/dev/null
+	stop_daemon
+	stop_pfkey
+}
+
+atf_test_case ikeless_jail cleanup
+ikeless_jail_head()
+{
+	atf_set "descr" "A vnet jail's entries of the IKE-less lists" \
+	    "(arcana-ikeless' jail): its derived SAs put in by PF_KEY in the" \
+	    "jail's network (the stand-in's here), its key pair kept on the" \
+	    "host as <interface>@<jail> apart from the host's, nothing in the" \
+	    "jail; a pair of another network's refused; a jail with no" \
+	    "network of its own, or none, refused, nothing changed"
+	atf_set "timeout" "120"
+}
+ikeless_jail_body()
+{
+	local h P0 PG
+
+	write_rc
+	start_pfkey
+	h=$(pwd)
+	mkdir jroot jroot2
+	printf 'gw 4 new %s/jroot\nweb 7 inherit %s/jroot2\n' "$h" "$h" > jails
+	start_daemon
+	key_pair ipsec0@gw
+	key_pair ipsec1
+	KEY=$(find . -path ./jroot -prune -o -name 'sdwan-key-ipsec0@gw.pem' -print)
+	test -n "$KEY" || atf_fail "no pair for gw's ipsec0"
+	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
+	PG=$(key_public ipsec0@gw)
+	P1=$(key_public ipsec1)
+	jsa() {
+		printf '{"name":"%s",%s"reqid":"100","ipsec-sa-config":{"anti-replay-window-size":1024,"traffic-selector":{"local-prefix":"0.0.0.0/0","remote-prefix":"0.0.0.0/0"},"mode":"tunnel","esp-sa":{"encryption":{"encryption-algorithm":20}},"tunnel":{"local":"%s","remote":"%s"},"arcana-ikeless:derived":{"key-pair":"%s","peer":"%s","direction":"%s"}}}' \
+		    "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+	}
+	printf '{"arcana-ikeless:key-pairs":{"key-pair":[{"name":"ipsec0@gw"},{"name":"ipsec1"}]},"sad":{"sad-entry":[%s,%s]}}\n' \
+	    "$(jsa gw.out '"arcana-ikeless:jail":"gw",' 10.202.0.1 10.202.0.2 ipsec0@gw "$P1" outbound)" \
+	    "$(jsa gw.in '"arcana-ikeless:jail":"gw",' 10.202.0.2 10.202.0.1 ipsec0@gw "$P1" inbound)" > j.json
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless @j.json
+	atf_check -o match:'^add 10\.202\.0\.1 10\.202\.0\.2 esp 0x[0-9a-f]+ -m tunnel -u 100 ' \
+	    -o match:'^add 10\.202\.0\.2 10\.202\.0\.1 esp ' cat pfkey.log
+	atf_check -o match:'"arcana-ikeless:jail":"gw"' -o match:'"name":"gw.out"' \
+	    "$JGC" -c "$SOCK" get ipsec-ikeless
+	atf_check -o match:'"interface":"ipsec0@gw","public":"[^"]*","keyed_at":' \
+	    "$JGC" -c "$SOCK" sdwan
+	test -z "$(find jroot -name 'sdwan-*')" || atf_fail "a file in the jail"
+	# The host's pair for a jail's SA: refused, nothing changed.
+	sed -e 's/"key-pair":"ipsec0@gw"/"key-pair":"ipsec1"/' j.json > jx.json
+	: > pfkey.log
+	atf_check -s exit:1 -e match:'gw.out: key pair ipsec1 is the host.s, the SA the jail gw' \
+	    -o ignore "$JGC" -c "$SOCK" set /ietf-i2nsf-ikeless:ipsec-ikeless @jx.json
+	atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	# A jail with no network of its own, or not running: refused, the
+	# SAs the jail had left as they were.
+	for j in web nosuch; do
+		sed -e "s/\"arcana-ikeless:jail\":\"gw\"/\"arcana-ikeless:jail\":\"$j\"/" \
+		    -e "s/ipsec0@gw/ipsec0@$j/g" j.json > jn.json
+		atf_check -s exit:1 -e match:"$j" -o ignore "$JGC" -c "$SOCK" set \
+		    /ietf-i2nsf-ikeless:ipsec-ikeless @jn.json
+		atf_check -o ignore "$JGC" -c "$SOCK" action discard-changes
+	done
+	atf_check -o not-match:'^delete ' cat pfkey.log
+	atf_check -o match:'"name":"gw.out"' "$JGC" -c "$SOCK" get -d running \
+	    ipsec-ikeless
+	# Taken out in the jail's network.
+	: > pfkey.log
+	atf_check -o match:'committed and confirmed' "$JGC" -c "$SOCK" set -x \
+	    /ietf-i2nsf-ikeless:ipsec-ikeless
+	atf_check -o inline:'2\n' sh -c "grep -c '^delete 10\\.202\\.0\\.' pfkey.log"
+}
+ikeless_jail_cleanup()
+{
 	stop_daemon
 	stop_pfkey
 }
@@ -24988,10 +24784,9 @@ atf_init_test_cases()
 	atf_add_test_case ntp
 	atf_add_test_case rtadvd
 	atf_add_test_case rtadvd_jail
-	atf_add_test_case ipsec_sa
-	atf_add_test_case ipsec_sp
 	atf_add_test_case sadb_news
 	atf_add_test_case ikeless_lists
+	atf_add_test_case ikeless_jail
 	atf_add_test_case interfaces
 	atf_add_test_case network_more
 	atf_add_test_case sdwan_forms
@@ -25041,8 +24836,6 @@ atf_init_test_cases()
 	atf_add_test_case safe_bird
 	atf_add_test_case safe_wireguard
 	atf_add_test_case safe_ipsec
-	atf_add_test_case safe_ipsec_sa
-	atf_add_test_case ipsec_sa_jail
 	atf_add_test_case safe_sysfile
 	atf_add_test_case safe_if_destroy
 	atf_add_test_case safe_l2

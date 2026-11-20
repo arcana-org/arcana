@@ -1,0 +1,175 @@
+module arcana-ikeless {
+  yang-version 1.1;
+  namespace "urn:arcana:yang:arcana-ikeless";
+  prefix arcikl;
+
+  import ietf-i2nsf-ikeless {
+    prefix nsfikels;
+    reference
+      "RFC 9061: A YANG Data Model for IPsec Flow Protection
+                 Based on Software-Defined Networking (SDN)";
+  }
+
+  organization
+    "Arcana";
+  contact
+    "Pouria Mousavizadeh Tehrani <pouria@FreeBSD.org>";
+  description
+    "Arcana's augments of RFC 9061's IKE-less lists.
+
+     An SD-WAN tunnel's SAs whose keys the agent derives itself
+     (Mplify 119 section 10, R51-R54): each tunnel end has an X25519
+     key pair, kept by the agent, its private half never leaving the
+     host; the SAs of both directions come from the agreement of this
+     end's pair with the far end's public half by HKDF-SHA256 (NIST
+     SP 800-56A), the same on both ends.  An sad-entry so derived
+     names its pair and the far half and is given no SPI and no keys:
+     the agent puts them in running, where they are kept as an SA's
+     keys are, and no controller ever sees them.
+
+     A vnet jail's SAs and policies are its own network's: an entry
+     naming a jail is put in there, by PF_KEY in the jail's network.";
+
+  revision 2026-11-19 {
+    description
+      "Initial revision: key pairs, derived SAs, the jail of an
+       entry.";
+  }
+
+  augment "/nsfikels:ipsec-ikeless" {
+    description
+      "The key pairs the derived SAs are derived from.";
+    container key-pairs {
+      description
+        "The X25519 key pairs the agent keeps.";
+      list key-pair {
+        key "name";
+        description
+          "A tunnel end's pair: made when the entry is, made anew
+           when its generation changes (Mplify 119 R110: a new pair
+           for the keys to come), its private half gone with the
+           entry.  A plain tunnel's end (gre, gif, geneve) has one
+           too: its authenticated STAMP's key is derived from it.";
+        leaf name {
+          type string {
+            length "1..96";
+            pattern '[a-z][a-z0-9_.]*[0-9]+(@[^@/]+)?';
+          }
+          description
+            "The tunnel interface whose pair it is, as ipsec0; a vnet
+             jail's as ipsec0@web.";
+        }
+        leaf generation {
+          type uint32;
+          default "0";
+          description
+            "Changed, the pair is made anew; changed back at once (a
+             confirmed commit not confirmed), the pair before is put
+             back.  The SAs derived from the pair before keep their
+             keys.";
+        }
+        leaf public {
+          type binary {
+            length "32";
+          }
+          config false;
+          description
+            "The pair's public half, for the far end's SAs.";
+        }
+      }
+    }
+  }
+
+  augment "/nsfikels:ipsec-ikeless/nsfikels:sad/nsfikels:sad-entry/"
+        + "nsfikels:ipsec-sa-config" {
+    description
+      "An SA whose SPI and keys the agent derives.";
+    container derived {
+      presence
+        "The SPI and the keys are derived by the agent, not given.";
+      description
+        "The SA's SPI, encryption key (with AES-GCM's salt) and
+         integrity key from HKDF-SHA256 of the X25519 agreement of
+         key-pair with peer, salted 'arcana uswe v1', with both public
+         halves in order and the epoch as the info: the end whose half
+         sorts lower is A, the material is laid out A to B first, then
+         B to A, then the two SPIs.  Given an SPI or keys, the entry
+         is refused; kept, they are in running alone.";
+      leaf key-pair {
+        type leafref {
+          path "/nsfikels:ipsec-ikeless/arcikl:key-pairs/"
+             + "arcikl:key-pair/arcikl:name";
+        }
+        mandatory true;
+        description
+          "This end's pair; a jail's for an entry of that jail.";
+      }
+      leaf peer {
+        type binary {
+          length "32";
+        }
+        mandatory true;
+        description
+          "The far end's public half.";
+      }
+      leaf epoch {
+        type uint32;
+        default "0";
+        description
+          "Which keys of the two halves.";
+      }
+      leaf direction {
+        type enumeration {
+          enum outbound {
+            description
+              "From this end to the far one: the tunnel's local is
+               this end.";
+          }
+          enum inbound {
+            description
+              "From the far end to this one.";
+          }
+        }
+        mandatory true;
+        description
+          "Which of the two directions' material the SA takes.";
+      }
+      leaf lifetime {
+        type uint32 {
+          range "60..max";
+        }
+        units "seconds";
+        description
+          "How long the keys are good for: the controller turns them
+           at the half (Mplify 119 R110, R112).  The kernel is not
+           given it: the SA lasts until the controller replaces it.";
+      }
+    }
+  }
+
+  augment "/nsfikels:ipsec-ikeless/nsfikels:sad/nsfikels:sad-entry" {
+    description
+      "The jail an SA is of.";
+    leaf jail {
+      type string {
+        length "1..255";
+      }
+      description
+        "A running vnet jail whose network has the SA; none, the
+         host's.";
+    }
+  }
+
+  augment "/nsfikels:ipsec-ikeless/nsfikels:spd/nsfikels:spd-entry" {
+    description
+      "The jail a policy is of.";
+    leaf jail {
+      type string {
+        length "1..255";
+      }
+      description
+        "A running vnet jail whose network has the policy; none, the
+         host's.";
+    }
+  }
+}

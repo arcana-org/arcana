@@ -826,7 +826,7 @@ submit(const char *form, const ucl_object_t *f)
 	if (topo_form(form, f) || tq_form(form, f) || bird_form(form, f) || vpn_form(form, f) ||
 	    jailmk_form(form, f) || neigh_form(form, f) || carp_form(form, f) ||
 	    ca_form(form, f) || certs_form(form, f) || ssh_form(form, f) || span_form(form, f) ||
-	    ipsecbase_form(form, f) || ipsec_form(form, f) ||
+	    ipsec_form(form, f) ||
 	    workflows_form(form, f) || sdwan_form(form, f) ||
 	    trouble_form(form, f) || secpage_form(form, f) ||
 	    naspage_form(form, f) || sysview_form(form, f) || cron_form(form, f) || mail_form(form, f) || relay_form(form, f) || monitor_form(form, f) ||

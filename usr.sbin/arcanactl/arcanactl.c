@@ -241,16 +241,6 @@ usage(void)
 	    "    ipsec child conn name tunnel | transport [reqid n] [local-ts list]\n"
 	    "        [remote-ts list] [start start | trap | none]\n"
 	    "    ipsec unchild conn name\n"
-	    "    ipsec-sa set interface reqid local remote spi-in n spi-out n\n"
-	    "        enc alg [auth alg] key-in hex key-out hex [akey-in hex\n"
-	    "        akey-out hex] [encap] [esn]\n"
-	    "    ipsec-sa key interface [next]\n"
-	    "    ipsec-sa derive interface reqid local remote peer key enc alg\n"
-	    "        [auth alg] [epoch n] [encap] [esn] [lifetime s] [next]\n"
-	    "        [install both | in | out]\n"
-	    "    ipsec-sa commit | clear interface reqid local remote\n"
-	    "    ipsec-sa policy | unpolicy interface reqid local remote\n"
-	    "        [src prefix dst prefix [proto p] [sport n] [dport n]]\n"
 	    "    ipsec unconn | up | down name\n"
 	    "    bird enable | disable | restart | reload protocol\n"
 	    "    bird configure\n"
@@ -423,7 +413,7 @@ usage(void)
 	    "reaches the host again, -F names a routing table,\n-j a running "
 	    "jail to work in instead of the host: its network (vnet) for\n"
 	    "net, route, interface, ng, wg, bird, ipfw, bridge, geneve, "
-	    "ipsec, ipsec-sa,\nneigh, carp, capture, path-check, monitor, "
+	    "ipsec,\nneigh, carp, capture, path-check, monitor, "
 	    "rtadvd, nfs, netstore and sysctl;\nits own daemons and files "
 	    "for sshd, cert, smtpd, speeder, sslproxy, clamav,\nps, signal, "
 	    "renice, log, storage, system, sysfile, cron, and get and edit of\n"
@@ -5359,41 +5349,6 @@ cmd_ntp(cbl_conn *conn, int argc, char **argv)
 }
 
 /*
- * ipsec-sa set|clear|policy|... interface reqid local remote [words]:
- * manually keyed SAs of an ipsec(4) interface and Arcana's policies on
- * them; the words as the job takes them.
- */
-static int
-cmd_ipsec_sa(cbl_conn *conn, int argc, char **argv)
-{
-	struct arc_job_spec	 sp;
-	const char		*errstr;
-
-	if (argc < 3 || (strcmp(argv[1], "key") != 0 && argc < 6))
-		usage();
-	memset(&sp, 0, sizeof(sp));
-	sp.has_kind = true;
-	sp.kind = ARC_JOB_KIND_IPSEC_SA;
-	sp.jail = netjail;
-	sp.verb = argv[1];
-	sp.interface = argv[2];
-	if (strcmp(argv[1], "key") == 0) {
-		sp.names.v = (const char **)(uintptr_t)&argv[3];
-		sp.names.n = (size_t)argc - 3;
-		return (submit(conn, &sp));
-	}
-	sp.has_reqid = true;
-	sp.reqid = (uint32_t)strtonum(argv[3], 1, 16383, &errstr);
-	if (errstr != NULL)
-		xo_errx(2, "reqid %s: %s", argv[3], errstr);
-	sp.tunnel_local = argv[4];
-	sp.tunnel_remote = argv[5];
-	sp.names.v = (const char **)(uintptr_t)&argv[6];
-	sp.names.n = (size_t)argc - 6;
-	return (submit(conn, &sp));
-}
-
-/*
  * rtadvd interface prefix [dns ...]; rtadvd interface remove: router
  * advertisements on an interface, for SLAAC.
  */
@@ -8792,8 +8747,6 @@ main(int argc, char *argv[])
 		rc = cmd_rtadvd(conn, argc, argv);
 	else if (strcmp(argv[0], "allow") == 0)
 		rc = cmd_allow(conn, argc, argv);
-	else if (strcmp(argv[0], "ipsec-sa") == 0)
-		rc = cmd_ipsec_sa(conn, argc, argv);
 	else if (strcmp(argv[0], "kmod") == 0)
 		rc = cmd_kmod(conn, argc, argv);
 	else if (strcmp(argv[0], "jailconf") == 0)
