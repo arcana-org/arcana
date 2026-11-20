@@ -555,6 +555,7 @@ run_exec_max(struct work *w, char *const argv[], struct execres *res,
 	cmdline = traced(w, cmdline);
 	step = step_begin(w, STEP_EXEC, cmdline,
 	    "posix_spawn(3), no shell");
+	step_argv(w, step, targv);
 	/* A dry run's: what would be run, said, and taken as done. */
 	if (w->dry && !reads) {
 		res->out = res->err = "";
@@ -928,6 +929,7 @@ run_exec_lines(struct work *w, char *const argv[],
 	cmdline = traced(w, cmdline);
 	step = step_begin(w, STEP_EXEC, cmdline,
 	    "posix_spawn(3), no shell; read line by line");
+	step_argv(w, step, targv);
 	if (w->dry) {
 		step_notrun(w, step, targv);
 		step_end(w, step, true, "not run: a dry run");

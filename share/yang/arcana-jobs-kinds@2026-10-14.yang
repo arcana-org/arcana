@@ -181,6 +181,12 @@ submodule arcana-jobs-kinds {
       enum crash {
         value 52;
       }
+      enum pkg-audit-fetch {
+        value 53;
+      }
+      enum instance-restart {
+        value 54;
+      }
     }
     description
       "A kind of job, by its number in arcana.yaml's job-kind.";
@@ -2240,6 +2246,42 @@ submodule arcana-jobs-kinds {
             type string;
             description
               "Jail";
+          }
+        }
+      }
+      case pkg-audit-fetch {
+        container pkg-audit-fetch {
+          presence
+            "This kind of job.";
+          description
+            "The vulnerability database fetched (pkg audit -F)";
+          leaf jail {
+            type string;
+            description
+              "Jail";
+          }
+        }
+      }
+      case instance-restart {
+        container instance-restart {
+          presence
+            "This kind of job.";
+          description
+            "A Suricata or Squid instance restarted";
+          leaf verb {
+            type enumeration {
+              enum suricata;
+              enum squid;
+            }
+            mandatory true;
+            description
+              "Verb";
+          }
+          leaf service {
+            type string;
+            mandatory true;
+            description
+              "Service";
           }
         }
       }

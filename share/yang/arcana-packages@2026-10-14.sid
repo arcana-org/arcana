@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-packages",
     "module-revision": "2026-10-14",
-    "sid-file-version": 5,
+    "sid-file-version": 6,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 300, 100, and 79 500, 100.",
     "dependency-revision": [
       {
@@ -663,6 +663,116 @@
         "namespace": "data",
         "identifier": "/arcana-packages:packages/refresh/output/pkgbase-jail",
         "sid": "79526"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/audit-error",
+        "sid": "79527"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/package/vulnerability",
+        "sid": "79528"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/package/vulnerable",
+        "sid": "79529"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/read/output/audit-error",
+        "sid": "79530"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/read/output/package/vulnerability",
+        "sid": "79531"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/read/output/package/vulnerable",
+        "sid": "79532"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/refresh/output/audit-error",
+        "sid": "79533"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/refresh/output/package/vulnerability",
+        "sid": "79534"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/refresh/output/package/vulnerable",
+        "sid": "79535"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/upgrade/output/package/vulnerability",
+        "sid": "79536"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jails:jails/jail/arcana-packages:packages/upgrade/output/package/vulnerable",
+        "sid": "79537"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/audit-error",
+        "sid": "79538"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/package/vulnerability",
+        "sid": "79539"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/package/vulnerable",
+        "sid": "79540"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/read/output/audit-error",
+        "sid": "79541"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/read/output/package/vulnerability",
+        "sid": "79542"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/read/output/package/vulnerable",
+        "sid": "79543"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/refresh/output/audit-error",
+        "sid": "79544"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/refresh/output/package/vulnerability",
+        "sid": "79545"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/refresh/output/package/vulnerable",
+        "sid": "79546"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/upgrade/output/package/vulnerability",
+        "sid": "79547"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-packages:packages/upgrade/output/package/vulnerable",
+        "sid": "79548"
       }
     ]
   }

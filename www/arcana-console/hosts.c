@@ -4656,6 +4656,7 @@ job_object(struct call *c, const struct arc_job *j,
 		put(o, "confirm_by", ucl_object_fromint(j->confirm_by));
 	put_str(o, "peer", j->peer);
 	put_str(o, "user", j->user);
+	put_str(o, "jail", j->jail);
 	put(o, "created", ucl_object_fromint(j->created));
 	put(o, "started", j->has_started ? ucl_object_fromint(j->started) :
 	    ucl_object_typed_new(UCL_NULL));

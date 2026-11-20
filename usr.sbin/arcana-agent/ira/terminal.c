@@ -801,6 +801,24 @@ term_users_open(struct stat *sb, int *errp, char *why, size_t len)
 }
 
 /*
+ * Whether mapped logins can work here: the users' file there and taken
+ * as term_users_open() takes it (its StrictModes check), its lines not
+ * read.  For the host's read, so that a client knows before trying.
+ */
+bool
+terminal_users_usable(void)
+{
+	struct stat	 sb;
+	char		 why[256];
+	int		 fd, error;
+
+	if ((fd = term_users_open(&sb, &error, why, sizeof(why))) == -1)
+		return (false);
+	(void)close(fd);
+	return (true);
+}
+
+/*
  * The host's file, --terminal-users: may console user user become
  * account in scope ("host" or "jail:<name>")?  Its lines,
  *

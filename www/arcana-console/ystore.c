@@ -169,6 +169,10 @@ pools_of(const yread *r)
 		put_str(o, "status", p->status);
 		put_str(o, "action", p->action);
 		put_str(o, "scan", p->scan);
+		PUT_NUM(o, "scan_percent", p, scan_percent);
+		PUT_NUM(o, "scan_examined", p, scan_examined);
+		PUT_NUM(o, "scan_issued", p, scan_issued);
+		PUT_NUM(o, "scan_total", p, scan_total);
 		put_str(o, "errors", p->errors);
 		put_str(o, "see", p->see);
 		vd = ucl_object_typed_new(UCL_ARRAY);

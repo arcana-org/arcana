@@ -859,8 +859,10 @@ job_finished(struct op *op, bool ok, const char *err)
 		if (strcmp(app.pkg.sid, s->id) == 0 &&
 		    strcmp(app.pkg.jail, op->target) == 0) {
 			snprintf(app.pkg.result, sizeof(app.pkg.result),
-			    "%s: pkg upgrade %s", op->target[0] != '\0' ?
-			    op->target : "host", ok ? "finished" : "failed");
+			    "%s: %s %s", op->target[0] != '\0' ? op->target :
+			    "host", strncmp(op->title, "pkg audit -F", 12) == 0 ?
+			    "the vulnerability database fetched:" : "pkg upgrade",
+			    ok ? "finished" : "failed");
 			refresh_packages(s, false);
 		}
 		if (!ok)
@@ -2894,10 +2896,12 @@ osversion_ask(const char *err, bool dry_run, bool read)
 }
 
 static const char *const pkg_top_map[] = { "pkgbase", "pkgbase",
-    "upgraded", "upgraded", "pkgbase-jail", "pkgbase_jails", NULL };
+    "upgraded", "upgraded", "pkgbase-jail", "pkgbase_jails", "audit-error",
+    "audit_error", NULL };
 static const char *const pkg_map[] = { "name", "name", "installed",
     "installed", "available", "available", "origin", "origin", "comment",
-    "comment", "automatic", "automatic", "size", "size", NULL };
+    "comment", "automatic", "automatic", "size", "size", "vulnerable",
+    "vulnerable", "vulnerability", "vulnerability", NULL };
 
 /* How the repository is reached, as input's members, or "": over
  * which family; and whether it is asked first that it answers. */

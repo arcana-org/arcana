@@ -630,6 +630,42 @@ part_pad(void)
 	    "textContent !== window.tab0", 10);
 	run("window.padUp(5)");
 	shot("0p-game-mode");
+	/*
+	 * A Nintendo pad (a stand-in's id): confirm is its right button
+	 * (1, its A), back its bottom one (0, its B), and the words say
+	 * so; a plugin may set the bottom one instead, kept for that
+	 * device, and auto again.
+	 */
+	ATF_CHECK(js_true("window.Arcana.pad.button === 0 && document."
+	    "querySelector('.padhint .pad-ok b').textContent === 'A'"));
+	run("window.__pad.id = 'Nintendo Switch Pro Controller (STANDARD "
+	    "GAMEPAD Vendor: 057e Product: 2009)'; window.backs = 0; "
+	    "history.back = () => { window.backs++; }; window.okd = 0; "
+	    "const t = document.createElement('button'); t.id = 'padprobe'; "
+	    "t.textContent = 'probe'; t.style = 'position:fixed;top:0;"
+	    "left:0;z-index:99999'; t.onclick = () => { window.okd++; }; "
+	    "document.documentElement.appendChild(t); t.focus();");
+	wait_js("window.Arcana.pad.button === 1 && window.Arcana.pad.confirm "
+	    "=== 'auto' && document.querySelector('.padhint .pad-ok b')."
+	    "textContent === 'A' && document.querySelector('.padhint "
+	    ".pad-back b').textContent === 'B'", 5);
+	run("document.getElementById('padprobe').focus(); window.padPress(1)");
+	wait_js("window.okd === 1", 5);
+	run("window.padUp(1)");
+	ATF_CHECK(js_true("window.backs === 0"));
+	run("document.getElementById('padprobe').focus(); window.padPress(0)");
+	wait_js("window.backs === 1", 5);
+	run("window.padUp(0)");
+	ATF_CHECK(js_true("window.okd === 1"));
+	run("window.Arcana.pad.confirm = 'bottom'");
+	ATF_CHECK(js_true("window.Arcana.pad.button === 0 && localStorage."
+	    "getItem('arc_pad_confirm:' + window.__pad.id) === 'bottom' && "
+	    "document.querySelector('.padhint .pad-ok b').textContent === "
+	    "'B'"));
+	run("window.Arcana.pad.confirm = 'auto'");
+	ATF_CHECK(js_true("window.Arcana.pad.button === 1 && localStorage."
+	    "getItem('arc_pad_confirm:' + window.__pad.id) === null"));
+	run("document.getElementById('padprobe').remove()");
 }
 
 static void
@@ -11730,6 +11766,61 @@ part_pkg_selected(void)
 	dock_closed();
 }
 
+/*
+ * Vulnerable packages: the database never fetched is said, with the
+ * button that fetches it (pkg audit -F, a job); pressed, the job runs
+ * on the host, and the list read again has pimd first, marked, with
+ * its CVE; aria2 not.
+ */
+static void
+part_pkg_vulnerable(void)
+{
+
+	run("document.querySelector('button.tab[data-arg=packages]').click()");
+	wait_js("document.querySelector('.notice.pkg-audit button[data-act="
+	    "pkg-audit-fetch]') && document.querySelector('table."
+	    "pkg-installed tbody tr')", 20);
+	ATF_CHECK(js_true("!document.querySelector('.pkg-vuln') && document."
+	    "querySelector('.notice.pkg-audit').textContent.includes('not "
+	    "fetched')"));
+	ATF_CHECK(system("test ! -e vulndb") == 0);
+	run("document.querySelector('.notice.pkg-audit button[data-act="
+	    "pkg-audit-fetch]').click()");
+	queued_run();
+	ATF_CHECK_MSG(host_has("grep -q '^audit -F$' pkg.log && test -e "
+	    "vulndb"), "pkg audit -F was not run on the host");
+	wait_js("(() => { const r = document.querySelector('table."
+	    "pkg-installed tbody tr'); return !!r && r.classList.contains("
+	    "'vulnerable') && r.textContent.includes('pimd') && r."
+	    "querySelector('.pkg-vuln-ids')?.textContent === 'CVE-2026-0001';"
+	    " })()", 20);
+	ATF_CHECK(js_true("[...document.querySelectorAll('table.pkg-installed "
+	    "tbody tr')].find(r => r.textContent.includes('aria2'))?.classList"
+	    ".contains('vulnerable') === false && !document.querySelector("
+	    "'.notice.pkg-audit button[data-act=pkg-audit-fetch]')"));
+	shot("pkg-vulnerable");
+	dock_closed();
+}
+
+ATF_TC_WITH_CLEANUP(pwa_pkg_vulnerable);
+ATF_TC_HEAD(pwa_pkg_vulnerable, tc)
+{
+
+	atf_tc_set_md_var(tc, "descr", "The Packages tab: the vulnerability database not fetched said, fetched by its button (pkg audit -F on the host), then the vulnerable package first with its CVE");
+	atf_tc_set_md_var(tc, "timeout", "120");
+}
+ATF_TC_BODY(pwa_pkg_vulnerable, tc)
+{
+
+	prologue(tc, 1);
+	part_pkg_vulnerable();
+}
+ATF_TC_CLEANUP(pwa_pkg_vulnerable, tc)
+{
+
+	browser_stop();
+}
+
 ATF_TC_WITH_CLEANUP(pwa_pkg_selected);
 ATF_TC_HEAD(pwa_pkg_selected, tc)
 {
@@ -13798,6 +13889,10 @@ part_sslinspect(void)
 	    access("data/inspection-roots.json", F_OK) != 0); i++)
 		usleep(100000);
 	ATF_CHECK_MSG(i < 300, "the edge's CA is not issued");
+	/* The key is put in place after the certificate: wait for it. */
+	for (i = 0; i < 100 && (access("ssl.d/ca.key", F_OK) != 0 ||
+	    access("ssl.d/ca.key.next", F_OK) == 0); i++)
+		usleep(100000);
 	ATF_CHECK(access("ssl.d/ca.key", F_OK) == 0 &&
 	    access("ssl.d/ca.key.next", F_OK) != 0);
 	/* The root is the cluster's document's (the fleet's), its key
@@ -14003,7 +14098,10 @@ part_sslinspect_jail(void)
 	    "jroot/usr/local/etc/rc.d/arcana_sslproxy && grep -q "
 	    "'^arcana_sslproxy_fwd=\"%s/ssl.d/fwd.rules\"$' jroot/etc/rc.conf",
 	    dir, dir);
-	ATF_CHECK_MSG(system(cmd) == 0, "the jail's rules, rc script or "
+	/* The rules, rc script and rc.conf follow sslproxy.conf. */
+	for (i = 0; i < 100 && system(cmd) != 0; i++)
+		usleep(100000);
+	ATF_CHECK_MSG(i < 100, "the jail's rules, rc script or "
 	    "rc.conf are not there");
 	/* Never opened, in the jail: its Pass rules and skips beneath its
 	 * root. */
@@ -17223,6 +17321,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, pwa_console_forms);
 	ATF_TP_ADD_TC(tp, pwa_macdo_paths);
 	ATF_TP_ADD_TC(tp, pwa_pkg_selected);
+	ATF_TP_ADD_TC(tp, pwa_pkg_vulnerable);
 	ATF_TP_ADD_TC(tp, pwa_forms_storage);
 	ATF_TP_ADD_TC(tp, pwa_forms_system);
 	ATF_TP_ADD_TC(tp, pwa_forms_mail);

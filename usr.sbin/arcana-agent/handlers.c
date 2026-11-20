@@ -408,6 +408,26 @@ check_spec(const struct arc_job_spec *sp)
 		    sp->release[0] == '\0'))
 			return ("name the release to go to: 16, or 15.2");
 		break;
+	case ARC_JOB_KIND_PKG_AUDIT_FETCH:
+		if (sp->safe)
+			return ("a fetched database is not taken back by itself");
+		if (sp->jail != NULL && strcmp(sp->jail, "*") == 0)
+			return ("name the jail, or none for the host");
+		if (sp->names.n > 0)
+			return ("pkg audit -F takes no names");
+		break;
+	case ARC_JOB_KIND_INSTANCE_RESTART:
+		if (sp->safe)
+			return ("a restart is not undone: not in safe mode");
+		if (sp->verb == NULL || (strcmp(sp->verb, "suricata") != 0 &&
+		    strcmp(sp->verb, "squid") != 0))
+			return ("verb suricata or squid");
+		if (sp->service == NULL || sp->service[0] == '\0')
+			return ("name the instance (service)");
+		if (sp->jail != NULL && sp->jail[0] != '\0')
+			return ("an instance runs where its table says: no jail "
+			    "is named");
+		break;
 	case ARC_JOB_KIND_PKG_CLEAN:
 		if (sp->safe)
 			return ("a clean is not taken back by itself");

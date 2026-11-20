@@ -165,6 +165,8 @@ yhost_from(const struct host_facts *h, const struct host_stats *st,
 	ag->feature.v = h->features.v;
 	ag->has_safe_wait = h->has_safe_wait;
 	ag->safe_wait = h->safe_wait;
+	ag->has_terminal_users = true;
+	ag->terminal_users = h->terminal_users;
 	out->agent = ag;
 	/* A plugin the model does not know is left out. */
 	for (i = n = 0; i < h->plugins.n; i++)

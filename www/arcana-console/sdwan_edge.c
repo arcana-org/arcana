@@ -50,11 +50,13 @@
  * cluster, one node at a time (the cluster's lock sdwan.apply, its token
  * checked again before each step's jobs).
  *
- *	GET  sdwan/plan		what an apply would do, edge by edge
+ *	GET  sdwan/plan		what an apply would do, edge by edge;
+ *				?edges=a,b those edges' alone
  *	POST sdwan/apply	do it; {"fresh": true} takes everything
  *				made away first and makes it again; "accept"
  *				the warnings of the plan's the operator
- *				accepts for their steps' edits
+ *				accepts for their steps' edits; "edges" those
+ *				edges alone, the others' changes left waiting
  *	GET  sdwan/apply-state	how the last apply went, the history, and
  *				the tunnels
  *
@@ -13088,11 +13090,69 @@ steer_pin(struct http_request *req)
 	return (reply_json(req, 200, body));
 }
 
+/* Is edge sid one of only's (its id, host or host/jail, or its name)? */
+static bool
+edge_named(const ucl_object_t *only, const char *sid)
+{
+	const ucl_object_t	*e;
+	ucl_object_iter_t	 it = NULL;
+	const char		*v;
+
+	while ((e = ucl_object_iterate(only, &it, true)) != NULL)
+		if ((v = ucl_object_tostring(e)) != NULL && (strcmp(v, sid) ==
+		    0 || strcmp(v, server_name_of(sid)) == 0))
+			return (true);
+	return (false);
+}
+
+/*
+ * The changes of the edges only names (an apply's or a plan's edges),
+ * the others' left waiting; NULL and why when one named is no edge of
+ * the plan.  chg is consumed.
+ */
+static ucl_object_t *
+changes_only(const struct plan *pl, ucl_object_t *chg,
+    const ucl_object_t *only, char *why, size_t wlen)
+{
+	const ucl_object_t	*e, *objs, *o;
+	ucl_object_iter_t	 it, eit;
+	ucl_object_t		*out, *one;
+	bool			 found;
+
+	it = NULL;
+	while ((e = ucl_object_iterate(only, &it, true)) != NULL) {
+		found = false;
+		eit = NULL;
+		while (!found && (objs = ucl_object_iterate(pl->edges, &eit,
+		    true)) != NULL) {
+			one = ucl_object_typed_new(UCL_ARRAY);
+			ucl_array_append(one, ucl_object_copy(e));
+			found = edge_named(one, ucl_object_key(objs));
+			ucl_object_unref(one);
+		}
+		if (!found) {
+			snprintf(why, wlen, "%s is no edge of the plan",
+			    ucl_object_tostring(e) != NULL ?
+			    ucl_object_tostring(e) : "an edge named");
+			ucl_object_unref(chg);
+			return (NULL);
+		}
+	}
+	out = ucl_object_typed_new(UCL_ARRAY);
+	it = NULL;
+	while ((o = ucl_object_iterate(chg, &it, true)) != NULL)
+		if (str(o, "server") != NULL && edge_named(only, str(o,
+		    "server")))
+			ucl_array_append(out, ucl_object_copy(o));
+	ucl_object_unref(chg);
+	return (out);
+}
+
 int
 api_sdwan_edges(struct http_request *req)
 {
 	ucl_object_t		*doc, *st, *chg, *body, *needs;
-	ucl_object_t		*acc, *listed;
+	ucl_object_t		*acc, *listed, *only;
 	struct plan		 pl;
 	char			 why[300];
 	bool			 apply, fresh, invalid;
@@ -13161,17 +13221,50 @@ api_sdwan_edges(struct http_request *req)
 	}
 	fresh = false;
 	acc = NULL;
+	only = NULL;
 	if (apply && (body = read_json(req)) != NULL) {
 		fresh = ucl_flag(body, "fresh");
 		if (ucl_object_lookup(body, "accept") != NULL)
 			acc = ucl_object_copy(ucl_object_lookup(body,
 			    "accept"));
+		/* One edge, or some, alone: the others' changes wait. */
+		if (ucl_object_type(ucl_object_lookup(body, "edges")) ==
+		    UCL_ARRAY && ucl_array_size(ucl_object_lookup(body,
+		    "edges")) > 0)
+			only = ucl_object_copy(ucl_object_lookup(body,
+			    "edges"));
 		ucl_object_unref(body);
+	} else if (!apply) {
+		const char	*q;
+		char		*copy, *it, *e;
+
+		/* ?edges=a,b: the plan of those alone. */
+		if (http_argument_get_string(req, "edges", &q) && q[0] !=
+		    '\0') {
+			only = ucl_object_typed_new(UCL_ARRAY);
+			copy = xstrdup(q);
+			for (it = copy; (e = strsep(&it, ",")) != NULL; )
+				if (*e != '\0')
+					ucl_array_append(only, S(e));
+			free(copy);
+		}
 	}
 	chg = changes(&pl, st, fresh);
+	if (only != NULL && (chg = changes_only(&pl, chg, only, why,
+	    sizeof(why))) == NULL) {
+		ucl_object_unref(only);
+		if (acc != NULL)
+			ucl_object_unref(acc);
+		plan_free(&pl);
+		ucl_object_unref(doc);
+		ucl_object_unref(st);
+		return (reply_error(req, 404, "no-edge", "%s", why));
+	}
 	if (!apply) {
 		body = plan_reply(&pl, chg);
 		ucl_object_unref(chg);
+		if (only != NULL)
+			ucl_object_unref(only);
 		plan_free(&pl);
 		ucl_object_unref(doc);
 		ucl_object_unref(st);
@@ -13187,6 +13280,8 @@ api_sdwan_edges(struct http_request *req)
 		ucl_object_unref(listed);
 		if (acc != NULL)
 			ucl_object_unref(acc);
+		if (only != NULL)
+			ucl_object_unref(only);
 		ucl_object_unref(chg);
 		plan_free(&pl);
 		ucl_object_unref(doc);
@@ -13196,10 +13291,14 @@ api_sdwan_edges(struct http_request *req)
 	}
 	ucl_object_unref(needs);
 	ucl_object_unref(listed);
-	n = apply_begin(&pl, doc, st, chg, fresh, acc, why, sizeof(why),
-	    &status);
+	/* Some edges alone: the document is not all applied, so not kept
+	 * as the one applied. */
+	n = apply_begin(&pl, only == NULL ? doc : NULL, st, chg, fresh, acc,
+	    why, sizeof(why), &status);
 	if (acc != NULL)
 		ucl_object_unref(acc);
+	if (only != NULL)
+		ucl_object_unref(only);
 	ucl_object_unref(doc);
 	if (n < 0)
 		return (reply_error(req, status, status == 409 ? "busy" :

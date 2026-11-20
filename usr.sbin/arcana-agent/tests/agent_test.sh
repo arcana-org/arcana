@@ -420,6 +420,19 @@ upgrade|install)
 			[ $dry = yes ] || mv pending.new pending
 		fi
 	done < pending ;;
+# pkg audit: from ./vulndb, which audit -F makes (logged in audit.log);
+# none, pkg's words for a database never fetched.
+audit)
+	if [ "$2" = -F ]; then
+		echo "audit -F" >> audit.log
+		touch vulndb
+	fi
+	if [ ! -e vulndb ]; then
+		echo "pkg: vulnxml file /var/db/pkg/vuln.xml does not exist. Try running 'pkg audit -F' first" >&2
+		exit 1
+	fi
+	printf 'pimd-3.1.0 is vulnerable:\n  pimd -- remote crash\n  CVE: CVE-2026-0001\n  CVE: CVE-2026-0002\n  WWW: https://vuxml.FreeBSD.org/freebsd/1111-aaaa.html\n\n  pimd -- a second issue\n  WWW: https://vuxml.FreeBSD.org/freebsd/2222-bbbb.html\n\n1 problem(s) in 1 installed package(s) found.\n'
+	exit 1 ;;
 *)	exit 2 ;;
 esac
 EOS
@@ -2196,7 +2209,7 @@ pool zroot size=107374182400 allocated=10737418240 free=96636764160 ONLINE
 certificates localbase=/usr/local added=/usr/local/etc/ssl/certs distrusted=/usr/local/etc/ssl/untrusted certctl=yes now=2026-10-14T16:25:10Z
 trusted /etc/ssl/certs/abc123.0 cn=Example Root CA org=Example country=US issuer=CN=Example Root CA,O=Example,C=US from=2020-09-13T12:26:40Z until=2030-03-17T17:46:40Z sha256=aa11 key=RSA 4096 ca=yes self=yes local=/usr/local/etc/ssl/certs/example.pem
 untrusted /etc/ssl/untrusted/bad.0 cn=Bad CA org=- country=- issuer=CN=Bad CA from=2020-09-13T12:26:40Z until=2023-11-14T22:13:20Z sha256=bb22 key=RSA 2048 ca=yes self=yes local=-
-yang-cbor 328 bytes, the same back
+yang-cbor 332 bytes, the same back
 yang-cbor 454 bytes, the same back
 EOT
 	atf_check -o file:want "$y" host certs.json
@@ -4408,6 +4421,34 @@ EOF
 	    cat al.json
 }
 alarms_by_key_cleanup()
+{
+	stop_daemon
+}
+
+atf_test_case alarms_jail cleanup
+alarms_jail_head()
+{
+	atf_set "descr" "an alarm whose resource names a jail" \
+	    "(jail:<name>/...) has it in arcana-alarms' jail leaf; one of" \
+	    "the host's has none"
+}
+alarms_jail_body()
+{
+	local now
+
+	now=$(date +%s)
+	cat > sdwan-faults.json <<EOF
+[{"t":$((now - 100)),"type":"crash","was":"Major","object":"jail:web/sshd","by":"kernel","description":"sshd died of SIGSEGV","cleared":false},{"t":$((now - 50)),"type":"crash","was":"Major","object":"host:ntpd","by":"kernel","description":"ntpd died of SIGSEGV","cleared":false}]
+EOF
+	start_daemon
+	atf_check -o save:al.json "$JGC" -c "$SOCK" get alarms
+	atf_check -o match:'"number-of-alarms":2' cat al.json
+	atf_check -o inline:'jail:web/sshd web\nhost:ntpd -\n' python3 -I -c 'import json
+d = json.load(open("al.json"))
+for a in d["ietf-alarms:alarms"]["alarm-list"]["alarm"]:
+    print(a["resource"], a.get("arcana-alarms:jail", "-"))'
+}
+alarms_jail_cleanup()
 {
 	stop_daemon
 }
@@ -6789,6 +6830,26 @@ packages_body()
 	    -o match:'^pimd +3\.1\.0 +automatic' -o match:'fake-pkg query' \
 	    -o not-match:'fake-pkg (version|update)' \
 	    "$JGC" -t -c "$SOCK" packages -i
+	# Vulnerable packages: the database never fetched is said, and
+	# not fetched by the read; fetched as a job (pkg audit -F), each
+	# vulnerable package with its CVE ids, an issue without one by its
+	# VuXML id.
+	atf_check -o match:'Vulnerabilities: the vulnerability database is not fetched \(pkg audit -F\)' \
+	    -o match:'fake-pkg audit$' "$JGC" -t -c "$SOCK" packages -i
+	atf_check -s exit:1 test -e audit.log
+	atf_check -o match:'done +pkg audit -F: the vulnerability database fetched$' \
+	    "$JGC" -c "$SOCK" pkg-audit-fetch
+	atf_check -o inline:'audit -F\n' cat audit.log
+	atf_check -o match:'^Vulnerable: pimd: CVE-2026-0001 CVE-2026-0002 2222-bbbb$' \
+	    -o not-match:'Vulnerable: aria2' -o not-match:'Vulnerabilities:' \
+	    "$JGC" -c "$SOCK" packages -i
+	atf_check -o match:'"vulnerable": \[\{"name":"pimd", "vulnerability": \["CVE-2026-0001","CVE-2026-0002","2222-bbbb"\]\}\]' \
+	    "$JGC" --libxo json -c "$SOCK" packages -i
+	# A refresh marks those it lists: pimd, upgraded above, is not.
+	atf_check -o not-match:'Vulnerab' "$JGC" -c "$SOCK" packages
+	atf_check -s exit:1 -e match:'invalid jail name' \
+	    "$JGC" -q -c "$SOCK" pkg-audit-fetch -j '*'
+	rm vulndb audit.log
 	# Over IPv6 only; past OSVERSION.
 	atf_check -o match:'fake-pkg -6 version -vRl <' "$JGC" -t -c "$SOCK" packages -6
 	atf_check -o match:'fake-pkg -4 -o IGNORE_OSVERSION=yes upgrade -n' \
@@ -7276,6 +7337,14 @@ jobs_body()
 	atf_check -o match:'^ +1 running ' cat running.out
 	atf_check -o match:'job 1: service sshd restart' cat running.out
 	atf_check -o match:'fake-service sshd restart.*incomplete' cat running.out
+	# A running program's step has its argv already, as a finished
+	# one's, no exit status yet.
+	atf_check -o save:running.json "$JGC" --libxo json -c "$SOCK" job 1
+	atf_check -o inline:'sshd restart\n' python3 -I -c 'import json
+for s in json.load(open("running.json"))["arcana"].get("step", []):
+    if s.get("kind") == "exec" and s.get("status") == "incomplete":
+        assert "exit" not in s, s
+        print(" ".join(s["argv"][1:]))'
 	atf_check -o match:'^ +2 queued ' -o match:'^ +3 queued ' \
 	    "$JGC" -c "$SOCK" jobs
 	# One still queued can be taken back; a running one cannot.
@@ -7287,6 +7356,11 @@ jobs_body()
 	atf_check -o match:'fake-jail .* -c web' cat done.out
 	atf_check -o match:'^ +1 done ' -o match:'^ +2 done ' \
 	    -o match:'^ +3 cancelled ' "$JGC" -c "$SOCK" jobs
+	# The jail a job acted on, its spec's; none for the host's.
+	atf_check -o save:jobs1.json "$JGC" --libxo json -c "$SOCK" jobs
+	atf_check -o match:'"id":2,[^}]*"jail":"web"' -o not-match:'"id":1,[^}]*"jail"' \
+	    cat jobs1.json
+	atf_check -o match:'"jail":"web"' "$JGC" --libxo json -c "$SOCK" job 2
 	atf_check test -f running.sshd
 	atf_check -s exit:1 test -e root/usr/local/etc/rc.conf.d/arcana
 	rm slow
@@ -7834,10 +7908,14 @@ EOF
 	    -e match:"^ended: 13 the host's terminal-users no longer allows it" \
 	    "$YTC" -u tester -j gw -a jdev -f 192.0.2.7 "$SOCK" < script
 	cp tu.saved terminal-users
+	# The host's read says whether mapped logins can work: the file
+	# there and taken as StrictModes would.
+	atf_check -o match:'"terminal-users":true' "$JGC" -c "$SOCK" get host
 	# The file's owner and mode, as StrictModes would.
 	chmod 640 terminal-users
 	atf_check -s exit:1 -e match:'terminal-users is refused: it must be root.s, mode 0600' \
 	    "$YTC" -u tester -a alice -f 192.0.2.7 "$SOCK" < /dev/null
+	atf_check -o match:'"terminal-users":false' "$JGC" -c "$SOCK" get host
 	chmod 600 terminal-users
 	# Its directories, each from / down: one another may write refuses
 	# it (a sticky one of root's, /tmp, does not).
@@ -8056,6 +8134,22 @@ dry_run_body()
 	    "$JGC" -n -c "$SOCK" service ntpd enable
 	atf_check -s exit:1 test -e root/usr/local/etc/rc.conf.d/arcana
 	atf_check -o inline:'ntpd_enable="NO"\n' cat root/etc/rc.conf
+	# pkg's jobs: pkg upgrade said, not run, the repository's check
+	# named and not asked (no meta.conf fetched), what only reads
+	# (pkg -vv) run; an install and pkg audit -F the same.
+	: > reach.log
+	atf_check -o save:dry.out "$JGC" -n -c "$SOCK" pkg-upgrade pimd
+	atf_check -o match:'fake-pkg upgrade -y pimd: not run: a dry run' \
+	    -o match:'does the repository FreeBSD-ports answer from this host\? not asked: a dry run \(it would fetch pkg\+https://pkg.FreeBSD.org/FreeBSD:16:amd64/latest/meta.conf\)' \
+	    -o match:'\[exec\] .*fake-pkg -vv' cat dry.out
+	atf_check -o inline:'' cat reach.log
+	atf_check -o match:'^pimd-3.1.0 ' cat pending
+	atf_check -o match:'fake-pkg install -r builder -y aria2: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" pkg-install -r builder aria2
+	atf_check -s exit:1 test -e install.log
+	atf_check -o match:'fake-pkg audit -F: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" pkg-audit-fetch
+	atf_check -s exit:1 test -e audit.log
 	# What cannot be said without being done is refused, nothing run;
 	# arcanactl takes -n with jobs alone.
 	atf_check -s exit:1 -e match:'lo0: set mtu: not previewable' \
@@ -11233,6 +11327,14 @@ EOS
 	rm staled.pid
 	atf_check -o match:'staled.pid is not there, while' \
 	    "$JGC" -c "$SOCK" service staled config
+	# Run dry: the stale look done all the same (it only reads), the
+	# write named with the pid, nothing written; a dry restart looks
+	# at nothing (no probe of its script).
+	echo $$ > staled.pid
+	atf_check -o match:"write: .*/staled.pid: pid $sp; not done: a dry run" \
+	    -o not-match:'would fail' "$JGC" -n -c "$SOCK" service staled pidfile
+	atf_check -o inline:"$$\n" cat staled.pid
+	atf_check -o not-match:'/bin/sh -c' "$JGC" -n -c "$SOCK" service staled restart
 	# Mended: the one process's pid, in a file of the same name.
 	echo $$ > staled.pid
 	chmod 640 staled.pid
@@ -14222,6 +14324,28 @@ sdwan_ids_body()
 	    '{"group":"security","instances":[{"name":"sec-lan","interfaces":["wg5"],"spec":{"interfaces":["wg5"],"home":["any"]}}]}'
 	atf_check -o match:'"ids":\[\{"name":"sw1",.*"alerts_seen":1,.*\{"name":"sec-lan",' \
 	    -o match:'"security_ids":\[\{"home":\["any"\],"interfaces":\["wg5"\],"name":"sec-lan"\}\]' "$JGC" -c "$SOCK" sdwan
+	# One instance restarted alone (instance-restart): dry, its stop
+	# and its start's command said, neither done; then stopped and
+	# started again from its files, a new process; one there is not,
+	# refused.
+	spid=$(cat "$(dirname "$f")/sdwan-ids-sw1.pid")
+	atf_check -o match:'arcana-agent: suricata sw1 stopped; not done: a dry run' \
+	    -o match:'suricata -c .*sdwan-ids-sw1.yaml --pidfile .*sdwan-ids-sw1.pid --pcap -D: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" instance-restart suricata sw1
+	atf_check -o inline:"$spid\n" cat "$(dirname "$f")/sdwan-ids-sw1.pid"
+	alive "$spid" || atf_fail "a dry restart stopped suricata sw1"
+	lpid=$(cat "$(dirname "$f")/sdwan-ids-sec-lan.pid")
+	atf_check -o match:'done +suricata sec-lan restarted' \
+	    "$JGC" -c "$SOCK" instance-restart suricata sec-lan
+	npid=$(cat "$(dirname "$f")/sdwan-ids-sec-lan.pid")
+	[ "$npid" != "$lpid" ] || atf_fail "sec-lan was not started again"
+	alive "$npid" || atf_fail "sec-lan does not run after its restart"
+	alive "$lpid" && atf_fail "the sec-lan before still runs"
+	alive "$spid" || atf_fail "sw1 was restarted with sec-lan"
+	atf_check -s exit:1 -o match:'no Suricata instance nosuch' \
+	    "$JGC" -c "$SOCK" instance-restart suricata nosuch
+	atf_check -s exit:1 -e match:'verb is suricata or squid' \
+	    "$JGC" -q -c "$SOCK" instance-restart bird sw1
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"instances":[]}'
 	atf_check -o match:'"ids":\[\{"name":"sec-lan"' "$JGC" -c "$SOCK" sdwan
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
@@ -14459,6 +14583,16 @@ EOS
 	atf_check -o match:'"name":"sec-w","jail":"web"' -o not-match:'"name":"sec-j"' "$JGC" -c "$SOCK" sdwan
 	test ! -e "$J/sdwan-ids-sec-j.yaml" || atf_fail "its files stayed in the jail"
 	atf_check -o match:"^jexec 7 $(pwd)/fake-ipfw -q -f delete set 25\$" cat jexec.log
+	# Restarted alone (instance-restart), in its jail: stopped from
+	# inside it, started there again.
+	wpid=$(cat "$W/var/db/arcana-security/sdwan-ids-sec-w.pid")
+	: > jexec.log
+	atf_check -o match:'done +suricata sec-w restarted' \
+	    "$JGC" -c "$SOCK" instance-restart suricata sec-w
+	atf_check -o match:'^jexec 8 /bin/kill -15 '"$wpid"'$' \
+	    -o match:'^jexec 8 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-w.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-w.pid --pcap -D$' \
+	    cat jexec.log
+	alive "$wpid" && atf_fail "the sec-w before still runs"
 	spid=$(cat "$W/var/db/arcana-security/sdwan-ids-sec-w.pid")
 	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
 	alive "$spid" && atf_fail "suricata sec-w still runs"
@@ -14496,6 +14630,28 @@ EOS
 	qpid=$(cat "$K/sdwan-proxy-sec-jw.pid")
 	ipid=$(cat "$K/sdwan-icap-sec-jw.pid")
 	alive "$qpid" && alive "$ipid" || atf_fail "squid or c-icap does not run in the jail"
+	# Squid restarted alone, in its jail: dry, its stop and start said,
+	# neither done; then stopped from inside the jail and started there
+	# again, its c-icap left running.
+	: > jexec.log
+	atf_check -o match:'squid sec-jw stopped in the jail web; not done: a dry run' \
+	    -o match:'/usr/local/sbin/squid -f /var/db/arcana-security/sdwan-proxy-sec-jw.conf: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" instance-restart squid sec-jw
+	atf_check -o not-match:'kill' -o not-match:'squid -f' cat jexec.log
+	alive "$qpid" || atf_fail "a dry restart stopped squid sec-jw"
+	atf_check -o match:'done +squid sec-jw restarted' \
+	    "$JGC" -c "$SOCK" instance-restart squid sec-jw
+	atf_check -o match:'^jexec 8 /bin/kill -15 '"$qpid"'$' \
+	    -o match:'^jexec 8 /usr/local/sbin/squid -f /var/db/arcana-security/sdwan-proxy-sec-jw.conf$' \
+	    cat jexec.log
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ "$(cat "$K/sdwan-proxy-sec-jw.pid")" != "$qpid" ] && break
+		sleep 0.3
+	done
+	nq=$(cat "$K/sdwan-proxy-sec-jw.pid")
+	[ "$nq" != "$qpid" ] && alive "$nq" || atf_fail "squid sec-jw was not started again"
+	alive "$ipid" || atf_fail "its c-icap was stopped with it"
+	qpid=$nq
 	# freshclam's mirrors, the jail's own freshclam.conf.
 	printf 'Example\nDatabaseMirror database.clamav.net\n' > "$W/usr/local/etc/freshclam.conf.sample"
 	atf_check -o match:'done' "$JGC" -c "$SOCK" -j web clamav mirrors https://mirror.example.org/clamav
@@ -16206,6 +16362,20 @@ EOF
 	atf_check -o match:'"running":true' -o match:'"enabled":true' \
 	    -o match:'\{"number":7,"set":27,"text":"fwd 127.0.0.1,8443 tcp from 192.0.2.0/24' \
 	    -o match:'"rules_expected":6' -o not-match:'rules_error' "$JGC" -c "$SOCK" sslproxy
+
+	# Run dry (arcana-jobs' dry-run): the restart and the ipfw sets
+	# said, not done, what only reads (its status, ipfw list) run;
+	# conf, which writes its files, refused.
+	: > ipfw.log
+	cp fw.state fw.before
+	atf_check -o match:'arcana_sslproxy onerestart: not run: a dry run' \
+	    -o match:'ipfw -q set swap 26 27: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" sslproxy restart
+	atf_check -o not-match:'ipfw -q' cat ipfw.log
+	atf_check cmp -s fw.before fw.state
+	atf_check test -f running.arcana_sslproxy
+	atf_check -s exit:1 -e match:'SSL inspection: conf: not previewable' \
+	    "$JGC" -n -c "$SOCK" sslproxy conf form.json
 
 	# An admin's rule in set 27: told, and a restart refused, the
 	# admin's rule left; one at rule 7 of set 0 the same.
@@ -20844,7 +21014,7 @@ case "\$*" in
 "list -j -p -o name,size,allocated"*) printf '%s\n' '{"output_version":{"command":"zpool list","vers_major":0,"vers_minor":1},"pools":{"fakepool":{"name":"fakepool","type":"POOL","state":"DEGRADED","properties":{"size":{"value":"14000"},"allocated":{"value":"5000"},"free":{"value":"9000"},"fragmentation":{"value":"12"},"capacity":{"value":"35"},"dedupratio":{"value":"1.00"},"health":{"value":"DEGRADED"}}}}}' ;;
 "get -H -o value bootfs fakepool") echo fakepool/be ;;
 import) printf '   pool: spare\n     id: 1234567890\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\tspare       ONLINE\n\t  ada7p1    ONLINE\n' ;;
-"status -j") printf '%s\n' '{"output_version":{"command":"zpool status","vers_major":0,"vers_minor":1},"pools":{"fakepool":{"name":"fakepool","state":"DEGRADED","pool_guid":"1","txg":"1","spa_version":"5000","zpl_version":"5","status":"One or more devices has been taken offline by the administrator. Sufficient replicas exist for the pool to continue functioning.","action":"Online the device using '\''zpool online'\''.","msgid":"ZFS-8000-2Q","moreinfo":"https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-2Q","scan_stats":{"function":"SCRUB","state":"FINISHED","start_time":"Sun Oct  4 02:49:49 2026","end_time":"Sun Oct  4 03:00:00 2026","errors":"0"},"vdevs":{"fakepool":{"name":"fakepool","vdev_type":"root","guid":"1","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"mirror-0":{"name":"mirror-0","vdev_type":"mirror","guid":"2","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"ada1p1":{"name":"ada1p1","vdev_type":"disk","guid":"3","path":"/dev/ada1p1","class":"normal","state":"ONLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"},"ada2p1":{"name":"ada2p1","vdev_type":"disk","guid":"4","path":"/dev/ada2p1","class":"normal","state":"OFFLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"}}}}}},"error_count":"0","errlist":[]}}}' ;;
+"status -j") printf '%s\n' '{"output_version":{"command":"zpool status","vers_major":0,"vers_minor":1},"pools":{"fakepool":{"name":"fakepool","state":"DEGRADED","pool_guid":"1","txg":"1","spa_version":"5000","zpl_version":"5","status":"One or more devices has been taken offline by the administrator. Sufficient replicas exist for the pool to continue functioning.","action":"Online the device using '\''zpool online'\''.","msgid":"ZFS-8000-2Q","moreinfo":"https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-2Q","scan_stats":{"function":"SCRUB","state":"FINISHED","start_time":"Sun Oct  4 02:49:49 2026","end_time":"Sun Oct  4 03:00:00 2026","errors":"0"},"vdevs":{"fakepool":{"name":"fakepool","vdev_type":"root","guid":"1","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"mirror-0":{"name":"mirror-0","vdev_type":"mirror","guid":"2","class":"normal","state":"DEGRADED","read_errors":"0","write_errors":"0","checksum_errors":"0","vdevs":{"ada1p1":{"name":"ada1p1","vdev_type":"disk","guid":"3","path":"/dev/ada1p1","class":"normal","state":"ONLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"},"ada2p1":{"name":"ada2p1","vdev_type":"disk","guid":"4","path":"/dev/ada2p1","class":"normal","state":"OFFLINE","read_errors":"0","write_errors":"0","checksum_errors":"0"}}}}}},"error_count":"0","errlist":[]}}}' | { [ -f $(pwd)/scanning ] && sed 's/"state":"FINISHED","start_time"/"state":"SCANNING","to_examine":"4.00K","examined":"3.00K","issued":"1.00K","start_time"/' || cat; } ;;
 esac
 exit 0
 EOS
@@ -21065,6 +21235,31 @@ zfs rename fakepool/data@b.resnap fakepool/data@b
 	atf_check -o match:'done +zpool scrub fakepool' "$JGC" -c "$SOCK" zpool scrub fakepool
 	atf_check -o match:'done +zpool scrub -s fakepool' \
 	    "$JGC" -c "$SOCK" zpool scrub-stop fakepool
+	# A scrub running: how far it is, from zpool status's sizes.
+	touch scanning
+	atf_check -o match:'"scan":"scrub in progress since Sun Oct  4 02:49:49 2026"' \
+	    -o match:'"scan_total":4096' -o match:'"scan_percent":25' \
+	    -o match:'"scan_examined":3072' -o match:'"scan_issued":1024' \
+	    "$JGC" -c "$SOCK" storage pools
+	atf_check -o match:'"scan-percent":25' "$JGC" -c "$SOCK" get storage
+	rm scanning
+	atf_check -o not-match:'scan_percent' "$JGC" -c "$SOCK" storage pools
+	# Run dry: a scrub, its stop, a snapshot and a destroy said, not
+	# run; what the job refuses (the system's datasets) refused alike.
+	: > storage.log
+	atf_check -o match:'fake-zpool scrub fakepool: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" zpool scrub fakepool
+	atf_check -o match:'fake-zpool scrub -s fakepool: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" zpool scrub-stop fakepool
+	atf_check -o match:'fake-zfs snapshot -r fakepool/data@d: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" zfs snapshot -r fakepool/data@d
+	atf_check -o match:'fake-zfs destroy fakepool/data@a: not run: a dry run' \
+	    "$JGC" -n -c "$SOCK" zfs destroy fakepool/data@a
+	atf_check -s exit:1 -e match:'boot environments' -o ignore \
+	    "$JGC" -n -c "$SOCK" zfs destroy fakepool/ROOT/default
+	atf_check -s exit:1 -e match:'not previewable' \
+	    "$JGC" -n -c "$SOCK" zfs rollback fakepool/data@a
+	atf_check -o not-match:'^zpool scrub|^zfs (snapshot|destroy|rollback)' cat storage.log
 	atf_check -o match:'done +zpool offline fakepool ada2p1' \
 	    "$JGC" -c "$SOCK" zpool offline fakepool ada2p1
 	atf_check -o match:'done +zpool online fakepool gpt/disk2' \
@@ -24764,6 +24959,7 @@ atf_init_test_cases()
 	atf_add_test_case faults_store
 	atf_add_test_case faults_held
 	atf_add_test_case alarms_by_key
+	atf_add_test_case alarms_jail
 	atf_add_test_case alarm_control_bad
 	atf_add_test_case history_samples_bad
 	atf_add_test_case history_slots

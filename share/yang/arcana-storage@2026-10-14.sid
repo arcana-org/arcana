@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-storage",
     "module-revision": "2026-10-14",
-    "sid-file-version": 5,
+    "sid-file-version": 6,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 63 400, 200, and 79 600, 200.",
     "dependency-revision": [
       {
@@ -1453,6 +1453,46 @@
         "namespace": "data",
         "identifier": "/arcana-storage:storage/read/output/dev/hidden",
         "sid": "79683"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/pool/scan-examined",
+        "sid": "79684"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/pool/scan-issued",
+        "sid": "79685"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/pool/scan-percent",
+        "sid": "79686"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/pool/scan-total",
+        "sid": "79687"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/pool/scan-examined",
+        "sid": "79688"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/pool/scan-issued",
+        "sid": "79689"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/pool/scan-percent",
+        "sid": "79690"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-storage:storage/read/output/pool/scan-total",
+        "sid": "79691"
       }
     ]
   }

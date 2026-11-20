@@ -4311,6 +4311,84 @@ pkg_size(char *buf, size_t len, int64_t n)
 		snprintf(buf, len, "%lld KiB", (long long)(n + 1023) / 1024);
 }
 
+/* Vulnerable packages first (pkg audit's), the order otherwise kept. */
+static void
+vulnerable_first(const ucl_object_t **rows)
+{
+	const ucl_object_t	*t;
+	int			 i, k, n;
+
+	for (n = 0; rows[n] != NULL; n++)
+		;
+	for (i = k = 0; i < n; i++) {
+		if (!jbool(rows[i], "vulnerable"))
+			continue;
+		t = rows[i];
+		memmove(&rows[k + 1], &rows[k], (size_t)(i - k) * sizeof(*rows));
+		rows[k++] = t;
+	}
+}
+
+/* A vulnerable package's mark and its advisories' ids, in its row. */
+static void
+vulnerable_mark(struct html *h, const ucl_object_t *p)
+{
+	const ucl_object_t	*id;
+	ucl_object_iter_t	 it;
+	bool			 first;
+
+	if (!jbool(p, "vulnerable"))
+		return;
+	h_raw(h, " <span class=\"chip bad pkg-vuln\" title=\"pkg audit: the "
+	    "vulnerability database has an advisory for this version; "
+	    "upgrade it\">vulnerable</span> <span class=\"dim pkg-vuln-ids\">");
+	it = NULL;
+	first = true;
+	while ((id = ucl_object_iterate(jget(p, "vulnerability"), &it, true))
+	    != NULL) {
+		if (ucl_object_tostring(id) == NULL)
+			continue;
+		if (!first)
+			h_raw(h, ", ");
+		h_txt(h, ucl_object_tostring(id));
+		first = false;
+	}
+	h_raw(h, "</span>");
+}
+
+/*
+ * What pkg audit said of the packages read: how many are vulnerable,
+ * or that its database is not fetched (or could not be read), with the
+ * button that fetches it, a job (pkg audit -F): never by itself.
+ */
+static void
+audit_notice(struct html *h)
+{
+	const ucl_object_t	*p;
+	ucl_object_iter_t	 it;
+	int			 n;
+
+	if (jstr(app.pkg.data, "audit_error") != NULL) {
+		h_raw(h, "<div class=\"notice pkg-audit\">");
+		h_txt(h, jstr(app.pkg.data, "audit_error"));
+		h_raw(h, " <button class=\"ghost small\" data-act=\""
+		    "pkg-audit-fetch\" title=\"pkg audit -F, a job: the "
+		    "vulnerability database (VuXML) fetched\">Fetch the "
+		    "vulnerability database</button></div>");
+		return;
+	}
+	n = 0;
+	it = NULL;
+	while ((p = ucl_object_iterate(jget(app.pkg.data, "packages"), &it,
+	    true)) != NULL)
+		if (jbool(p, "vulnerable"))
+			n++;
+	if (n > 0)
+		h_fmt(h, "<div class=\"notice bad pkg-audit\"><b>%d</b> "
+		    "vulnerable package%s, by pkg audit's database: listed "
+		    "first, with their advisories.</div>", n, n == 1 ? "" : "s");
+}
+
 /*
  * The packages installed: each with its version, whether it was asked
  * for by name or came as what another needs, its size, its port and
@@ -4341,14 +4419,18 @@ installed_packages(struct html *h)
 	    "by name, <b>%d</b> automatically, as what another needs. "
 	    "<b>Upgrades</b> asks the repository what is newer.</p>", all,
 	    all - autos, autos);
+	audit_notice(h);
 	h_raw(h, "<table class=\"net pkg-installed\">");
 	tbl_head(h, "pkginst", cols, 6, 0);
 	h_raw(h, "<tbody>");
 	rows = tbl_rows("pkginst", jget(app.pkg.data, "packages"), cols, 6,
 	    app.filter);
+	vulnerable_first(rows);
 	for (r = 0; (p = rows[r]) != NULL; r++) {
-		h_raw(h, "<tr><td>");
+		h_raw(h, jbool(p, "vulnerable") ? "<tr class=\"vulnerable\">"
+		    "<td>" : "<tr><td>");
 		h_txt(h, jstr(p, "name"));
+		vulnerable_mark(h, p);
 		h_raw(h, "</td><td>");
 		h_txt(h, jstr(p, "installed"));
 		h_fmt(h, "</td><td><span class=\"chip%s\" title=\"%s\">%s"
@@ -4420,6 +4502,12 @@ view_packages(struct html *h, struct server *s)
 	h_raw(h, "<button class=\"ghost small\" data-act=\"pkg-clean-ask\" "
 	    "title=\"pkg clean: the cache of downloaded packages, of this "
 	    "host, its jails, or both\">Clean…</button>");
+	/* The vulnerability database, fetched as the admin asks (pkg audit
+	 * -F, a job): the reads only read it. */
+	h_raw(h, "<button class=\"ghost small pkg-audit-fetch\" data-act=\""
+	    "pkg-audit-fetch\" title=\"pkg audit -F: the vulnerability "
+	    "database (VuXML) fetched again, which the lists read to mark "
+	    "vulnerable packages\">Fetch vulnerabilities</button>");
 	/* A jail's base system by pkg: to pkgbase while it is not on it;
 	 * once it is, to a newer release.  The read says which. */
 	if (app.pkg.jail[0] != '\0' && mine && jget(app.pkg.data, "pkgbase") !=
@@ -4486,6 +4574,7 @@ view_packages(struct html *h, struct server *s)
 		return;
 	}
 	n = 0;
+	audit_notice(h);
 	h_raw(h, "<form data-form=\"packages\" class=\"pkgs\">"
 	    "<table class=\"net\">");
 	{
@@ -4499,6 +4588,7 @@ view_packages(struct html *h, struct server *s)
 		h_raw(h, "<tbody>");
 		prows = tbl_rows("pkgs", jget(app.pkg.data, "packages"),
 		    pcols, 4, app.filter);
+		vulnerable_first(prows);
 	}
 	for (pr = 0; (p = prows[pr]) != NULL; pr++) {
 		if (jstr(p, "name") == NULL)
@@ -4513,6 +4603,7 @@ view_packages(struct html *h, struct server *s)
 		h_raw(h, "\"");
 		h_raw(h, "></td><td>");
 		h_txt(h, jstr(p, "name"));
+		vulnerable_mark(h, p);
 		h_raw(h, "</td><td>");
 		h_txt(h, jstr(p, "installed"));
 		h_raw(h, "</td><td class=\"c-run\">");

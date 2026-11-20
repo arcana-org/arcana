@@ -568,6 +568,20 @@ definitions:
           no core's, a core elsewhere (/, /tmp, a home), a corefile
           pattern that names no directory of its own.  Not undone, so
           never in safe mode.
+      - name: pkg-audit-fetch
+        doc: |
+          pkg audit -F on the host or in a running jail: the
+          vulnerability database fetched (VuXML), which the packages'
+          read and refresh read (pkg audit) and never fetch themselves.
+          Never in safe mode.
+      - name: instance-restart
+        doc: |
+          One Suricata or Squid instance restarted (verb suricata or
+          squid), the SD-WAN services' or the Security section's, by
+          service its name: stopped and started again, in its jail
+          when it runs in one, from its files as they are (nothing is
+          rendered again; an instance the admin stopped is refused).
+          Squid's c-icap goes on as it is.  Never in safe mode.
   - name: job-state
     type: enum
     entries:
@@ -1332,3 +1346,6 @@ attribute-sets:
       - name: user
         type: text
         doc: Who asked for it, the request's NACM user; none for the recovery session.
+      - name: jail
+        type: text
+        doc: The jail it acted on, its spec's; none for the host's.

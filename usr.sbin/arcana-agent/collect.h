@@ -403,7 +403,8 @@ int	yservices_release(cbl_req *req, const char *const *names, size_t n,
  * jail's alike (a jail's structs have the host's layout):
  * ypackages_listed() the packages installed (pkg query's read), each
  * with its newer version from the outdated read (NULL: not asked), the
- * repositories and pkgbase beside, as the container and the read and
+ * repositories, pkgbase and why pkg audit said nothing beside, each
+ * package's vulnerabilities, as the container and the read and
  * refresh actions' outputs have them; ypackages_from() the container;
  * ypackages_upgraded() an upgrade's outcome as the upgrade action's
  * output.
@@ -414,7 +415,7 @@ int	ypackages_listed(const struct pkg_read *installed,
 	    const struct pkg_read *outdated, cbl_yarena *a,
 	    const struct arcana_packages_package **vp, size_t *np,
 	    const char *const **rp, size_t *nrp, bool *has_pkgbase,
-	    bool *pkgbase);
+	    bool *pkgbase, const char **audit_error);
 int	ypackages_from(const struct pkg_read *installed,
 	    const struct pkg_read *outdated, cbl_yarena *a,
 	    struct arcana_packages_packages *out);

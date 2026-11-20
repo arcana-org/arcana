@@ -395,6 +395,15 @@ title_words(const struct arc_job_spec *sp)
 		    sp->jail != NULL && sp->jail[0] != '\0' ? " in " : "",
 		    sp->jail != NULL ? sp->jail : "");
 		break;
+	case ARC_JOB_KIND_PKG_AUDIT_FETCH:
+		rc = asprintf(&t, "pkg audit -F: the vulnerability database "
+		    "fetched%s%s", sp->jail != NULL && sp->jail[0] != '\0' ?
+		    " in " : "", sp->jail != NULL ? sp->jail : "");
+		break;
+	case ARC_JOB_KIND_INSTANCE_RESTART:
+		rc = asprintf(&t, "%s %s restarted", sp->verb != NULL ?
+		    sp->verb : "?", sp->service != NULL ? sp->service : "?");
+		break;
 	case ARC_JOB_KIND_REBOOT:
 		rc = asprintf(&t, "reboot, a minute after");
 		break;
@@ -1848,6 +1857,17 @@ run_kind(struct qjob *j, struct work *w, bool *heldp, const char **errorp)
 		error = NULL;
 		ok = do_pkg_clean(w, sp->jail, sp->force, &error) == 0;
 		break;
+	case ARC_JOB_KIND_PKG_AUDIT_FETCH:
+		error = NULL;
+		ok = do_pkg_audit_fetch(w, sp->jail, &error) == 0;
+		break;
+	case ARC_JOB_KIND_INSTANCE_RESTART:
+		/* In the instance's own jail, which its table knows. */
+		error = NULL;
+		ok = (strcmp(sp->verb, "suricata") == 0 ?
+		    suricata_restart(w, sp->service, &error) :
+		    squid_restart(w, sp->service, &error)) == 0;
+		break;
 	case ARC_JOB_KIND_JAIL_BASE:
 		error = NULL;
 		ok = do_jail_base(w, sp, &error) == 0;
@@ -2080,6 +2100,7 @@ pkg_lane(const struct arc_job_spec *sp)
 	return ((sp->kind == ARC_JOB_KIND_PKG_UPGRADE ||
 	    sp->kind == ARC_JOB_KIND_PKG_INSTALL ||
 	    sp->kind == ARC_JOB_KIND_PKG_CLEAN ||
+	    sp->kind == ARC_JOB_KIND_PKG_AUDIT_FETCH ||
 	    sp->kind == ARC_JOB_KIND_JAIL_BASE) && !sp->safe &&
 	    sp->jail != NULL && sp->jail[0] != '\0' &&
 	    strcmp(sp->jail, "*") != 0);
@@ -2408,6 +2429,9 @@ fill(struct work *w, struct arc_job *o, struct qjob *j)
 	o->peer = wtext(w, wstrdup(w, j->peer));
 	if (j->user != NULL)
 		o->user = wtext(w, wstrdup(w, j->user));
+	/* The jail it acted on: its spec's. */
+	if (j->spec.jail != NULL && j->spec.jail[0] != '\0')
+		o->jail = wtext(w, wstrdup(w, j->spec.jail));
 	if (j->state != ARC_JOB_STATE_QUEUED &&
 	    j->state != ARC_JOB_STATE_CANCELLED) {
 		o->has_started = true;
@@ -2705,6 +2729,30 @@ dry_refusal(struct work *w, const struct arc_job_spec *sp, bool undo)
 	case ARC_JOB_KIND_ROUTE:
 	case ARC_JOB_KIND_SYSCTL:
 	case ARC_JOB_KIND_KMOD:
+	/* pkg's: its run said, the repository's check named, not asked
+	 * (pkg_reach()); what only reads (pkg -vv) is done. */
+	case ARC_JOB_KIND_PKG_UPGRADE:
+	case ARC_JOB_KIND_PKG_INSTALL:
+	case ARC_JOB_KIND_PKG_AUDIT_FETCH:
+	case ARC_JOB_KIND_INSTANCE_RESTART:
+		return (NULL);
+	case ARC_JOB_KIND_ZFS:
+	case ARC_JOB_KIND_ZPOOL:
+		/* Those that only build an argv (storage_argv()), checked
+		 * as the job checks them, its guard's reads done. */
+		if (undo || sp->verb == NULL)
+			break;
+		if (sp->kind == ARC_JOB_KIND_ZFS ? strcmp(sp->verb,
+		    "snapshot") == 0 || strcmp(sp->verb, "destroy") == 0 :
+		    strcmp(sp->verb, "scrub") == 0 || strcmp(sp->verb,
+		    "scrub-stop") == 0)
+			return (NULL);
+		break;
+	case ARC_JOB_KIND_SSLPROXY:
+		/* Its service and its ipfw sets said; conf renders and
+		 * writes its files, which a dry run would not say. */
+		if (undo || sp->verb == NULL || strcmp(sp->verb, "conf") == 0)
+			break;
 		return (NULL);
 	default:
 		break;

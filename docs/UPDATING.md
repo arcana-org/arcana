@@ -93,6 +93,33 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Dry runs, vulnerable packages, instance restart, a job's jail; agent 0.342.0, console 0.485.0
+
+- Dry runs (arcanactl -n, arcana-jobs dry-run) take pkg-upgrade,
+  pkg-install, pkg-audit-fetch, sslproxy (not conf), zfs
+  snapshot/destroy and zpool scrub/scrub-stop; pkg's repository check is
+  named, not asked.  The Mend pidfile dry run names the pid it would
+  write.  A running step's read has its argv.
+- Packages read and refresh report vulnerable packages (vulnerable,
+  vulnerability) from pkg audit's database, or audit-error when it was
+  never fetched; a new job kind, pkg-audit-fetch (pkg audit -F, jail),
+  fetches it.  The Packages tab lists vulnerable packages first, with a
+  fetch button.  pkg audit runs niced, never with -F but by that job.
+- A new job kind, instance-restart (verb suricata|squid, service NAME),
+  restarts one Suricata or Squid instance, in its jail when it has one.
+- Jobs carry their jail; ietf-alarms entries carry arcana-alarms:jail
+  for jail:<name>/... resources.  arcana-host agent/terminal-users says
+  whether mapped logins can work.  arcana-storage pools report
+  scan-percent, -examined, -issued and -total while a scrub or resilver
+  runs (the Storage page shows "NN% done").
+- sdwan/apply takes edges, and sdwan/plan ?edges=, to apply or preview
+  some edges alone; the others' changes stay waiting.
+- The console's Permissions-Policy allows screen-wake-lock for itself.
+  A Nintendo controller confirms with its right button
+  (window.Arcana.pad.confirm overrides it).
+- Update the agent and the console together (new job kinds, a job's
+  jail on the wire).
+
 ### SD-WAN keys as IKE-less entries, ipsec-sa retired (6.2.5); agent 0.341.0, console 0.484.0
 
 - The ipsec-sa job is gone (PLAN-SDN-YANG 6.2.5).  The job kinds after

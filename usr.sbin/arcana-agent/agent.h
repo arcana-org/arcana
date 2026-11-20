@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.341.0"
+#define	ARCANA_AGENT_VERSION	"0.342.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -281,8 +281,9 @@ struct step {
 	bool		 ok;
 	uint64_t	 start;
 	uint64_t	 dur;
-	const char	**argv;
+	const char	**argv;	/* from its start (step_argv()) */
 	size_t		 argc;
+	bool		 ran;		/* its status and output attached */
 	int		 status;
 	const char	*out;
 	size_t		 outlen;
@@ -373,6 +374,7 @@ int		 step_begin(struct work *, uint8_t, const char *,
 		    const char *, ...) __printflike(4, 5);
 void		 step_end(struct work *, int, bool, const char *, ...)
 		    __printflike(4, 5);
+void		 step_argv(struct work *, int, char *const []);
 void		 step_exec(struct work *, int, char *const [], int,
 		    const char *, size_t, const char *, size_t);
 void		 step_notrun(struct work *, int, char *const []);
@@ -539,6 +541,7 @@ struct host_facts {
 		size_t		 n;
 		const char	*const *v;
 	}		 features;
+	bool		 terminal_users;	/* mapped logins' file usable */
 };
 void		 host_info(struct work *, struct host_facts *);
 bool		 has_feature(const char *);
@@ -1241,6 +1244,7 @@ void		 sdwan_dns_json(struct work *, struct ucl_object_s *);
 int		 do_sdwan_proxy(struct work *, const char *, const char **);
 void		 sdwan_proxy_start(void);
 void		 sdwan_proxy_json(struct work *, struct ucl_object_s *);
+int		 squid_restart(struct work *, const char *, const char **);
 void		 clamav_mirrors_json(struct work *, struct ucl_object_s *);
 void		 security_specs(const char *, struct ucl_object_s *, const char *);
 int		 do_sdwan_ids(struct work *, const char *, const char **);
@@ -1419,6 +1423,7 @@ const char	*suricata_check(const struct arc_job_spec *);
 char		*suricata_title(const struct arc_job_spec *);
 int		 do_suricata_job(struct work *, const struct arc_job_spec *,
 		    const char **);
+int		 suricata_restart(struct work *, const char *, const char **);
 void		 sdwan_ids_json(struct work *, struct ucl_object_s *);
 int		 suricata_inst_in(struct work *, const char *, const char **);
 const char	*suricata_inst_file(struct work *, const char *, const char *);
@@ -1721,6 +1726,7 @@ int		 terminal_open(cbl_req *, const struct arcana_stream_open *,
 int		 terminal_as_open(cbl_req *, const struct arcana_stream_open *,
 		    cbl_stream *);
 void		 terminal_findings(void);
+bool		 terminal_users_usable(void);
 void		 terminal_findings_start(void);
 #define	TERM_EMPTY_PW_FAULT	"empty-password"
 /* superbia/tlsfiles.c: the agent's own TLS files renewed */
@@ -2039,6 +2045,9 @@ struct package {
 	bool		 has_size;
 	uint64_t	 size;
 	const char	*origin;
+	bool		 vulnerable;	/* pkg audit's database says so */
+	const char	**vulns;	/* its CVE (or VuXML) ids */
+	size_t		 nvulns;
 };
 struct pkg_read {
 	bool			 ok;
@@ -2049,6 +2058,7 @@ struct pkg_read {
 	size_t			 nrepos;
 	bool			 has_pkgbase;	/* a jail's base: pkgbase */
 	bool			 pkgbase;
+	const char		*audit_error;	/* why pkg audit said nothing */
 };
 struct pkg_upgrade {
 	const char		*jail;		/* NULL the host; "*" every one */
@@ -2075,6 +2085,8 @@ int		 do_packages(struct work *, const char *, bool, bool, uint8_t,
 int		 do_pkg_upgrade(struct work *, const struct pkg_upgrade *,
 		    struct pkg_upgraded *);
 int		 do_pkg_clean(struct work *, const char *, bool, const char **);
+void		 pkg_audit(struct work *, const char *, struct pkg_read *);
+int		 do_pkg_audit_fetch(struct work *, const char *, const char **);
 int		 do_jail_base(struct work *, const struct arc_job_spec *,
 		    const char **);
 const char	*pkg_repo_error(struct work *, const struct execres *,

@@ -14537,6 +14537,60 @@ accepting(bool fresh)
 	return (json);
 }
 
+/*
+ * The input of an apply of edge alone: the warnings its plan
+ * (sdwan/plan?edges=) lists accepted, the edge named.
+ */
+static const char *
+accepting_edge(const char *edge)
+{
+	static char	*json;
+	struct resp	 r;
+	ucl_object_t	*o, *top, *e;
+	char		 url[256];
+
+	free(json);
+	snprintf(url, sizeof(url), CC "sdwan/plan?edges=%s", edge);
+	http("GET", url, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(resp_unwrap(&r, "arcana-console:plan"));
+	o = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(o, ucl_object_copy(ucl_object_lookup(r.json,
+	    "accept")), "accept", 0, false);
+	e = ucl_object_typed_new(UCL_ARRAY);
+	ucl_array_append(e, ucl_object_fromstring(edge));
+	ucl_object_insert_key(o, e, "edges", 0, false);
+	top = ucl_object_typed_new(UCL_OBJECT);
+	ucl_object_insert_key(top, o, "arcana-console:input", 0, false);
+	json = (char *)ucl_object_emit(top, UCL_EMIT_JSON_COMPACT);
+	ucl_object_unref(top);
+	resp_free(&r);
+	return (json);
+}
+
+/* How many of the plan's changes (r's, unwrapped) are of server sid,
+ * and how many of those are not kept as they are. */
+static int
+changes_at(const struct resp *r, const char *sid, int *notkept)
+{
+	const ucl_object_t	*c;
+	ucl_object_iter_t	 it = NULL;
+	int			 n = 0;
+
+	*notkept = 0;
+	while ((c = ucl_object_iterate(ucl_object_lookup(r->json, "changes"),
+	    &it, true)) != NULL) {
+		if (strcmp(ucl_object_tostring_forced(ucl_object_lookup(c,
+		    "server")), sid) != 0)
+			continue;
+		n++;
+		if (strcmp(ucl_object_tostring_forced(ucl_object_lookup(c,
+		    "change")), "keep") != 0)
+			(*notkept)++;
+	}
+	return (n);
+}
+
 /* The apply's end: done or failed; its state (arcana-console's
  * sdwan/apply-state, unwrapped), into r. */
 static void
@@ -18243,17 +18297,61 @@ sdwan_apply_done(void)
 }
 
 CONSOLE_TC_LONG(sdwan_apply_fresh, "SD-WAN applied, then made all again "
-    "(fresh): the tunnels kept in rc.conf made again, the agents alive")
+    "(fresh): the tunnels kept in rc.conf made again, the agents alive; "
+    "a change of both edges applied to one alone (edges), the other's "
+    "left waiting")
 ATF_TC_BODY(sdwan_apply_fresh, tc)
 {
 	struct authn	a;
 	struct resp	r;
-	char		sa[16], sb[16];
-	char		doc[8192], lifn[32], laddr[64];
+	char		sa[16], sb[16], url[256];
+	char		doc[8192], t1[8192], lifn[32], laddr[64];
+	int		na, nb, wa, wb;
 
 	need_fibs(2);
 	sdwan_apply_start(tc, &a, sa, sb, sizeof(sa), doc, sizeof(doc), lifn,
 	    sizeof(lifn), laddr, sizeof(laddr));
+	sdwan_apply_done();
+	/*
+	 * A threshold of the probes changed, which both edges' probes
+	 * have: the plan of one edge (edges) its changes alone; applied
+	 * to it alone, its changes kept, the other edge's left waiting;
+	 * one that is no edge refused.
+	 */
+	ATF_REQUIRE(swap_in(doc, "\"delay\":30", "\"delay\":31", t1,
+	    sizeof(t1)));
+	ATF_REQUIRE(swap_in(t1, "\"version\":0", "\"version\":1", doc,
+	    sizeof(doc)));
+	r4_keep(doc, &r);
+	EXPECT(&r, 204);
+	resp_free(&r);
+	snprintf(url, sizeof(url), CC "sdwan/plan?edges=%s", sa);
+	http("GET", url, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(resp_unwrap(&r, "arcana-console:plan"));
+	na = changes_at(&r, sa, &wa);
+	nb = changes_at(&r, sb, &wb);
+	ATF_CHECK_MSG(na > 0 && wa > 0 && nb == 0, "%s", r.body);
+	resp_free(&r);
+	http("GET", CC "sdwan/plan?edges=nosuch", NULL, &r);
+	ATF_CHECK_MSG(r.status == 404 && strstr(r.body, "nosuch is no edge "
+	    "of the plan") != NULL, "%s", r.body);
+	resp_free(&r);
+	http("POST", CC "sdwan/apply", accepting_edge(sa), &r);
+	EXPECT(&r, 200);
+	resp_free(&r);
+	sdwan_wait(&r);
+	ATF_CHECK_MSG(strcmp(jstr(&r, "apply.state"), "done") == 0, "%s",
+	    r.body);
+	resp_free(&r);
+	http("GET", CC "sdwan/plan", NULL, &r);
+	EXPECT(&r, 200);
+	ATF_REQUIRE(resp_unwrap(&r, "arcana-console:plan"));
+	na = changes_at(&r, sa, &wa);
+	nb = changes_at(&r, sb, &wb);
+	ATF_CHECK_MSG(na > 0 && wa == 0 && nb > 0 && wb > 0, "%d of %d at "
+	    "a waiting, %d of %d at b: %s", wa, na, wb, nb, r.body);
+	resp_free(&r);
 	sdwan_apply_done();
 	/* ifconfig_gif102 holds its tunnel's ends and more: replaced, the
 	 * rest kept (the agent once read the words it had dropped). */

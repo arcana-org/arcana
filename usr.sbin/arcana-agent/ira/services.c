@@ -995,7 +995,9 @@ svc_pidfile(struct work *w, const struct script *sc,
 		    "pidfile is not stale", sc->name);
 		return;
 	}
-	pid = s.pidfile_stale != NULL ? svc_stale(w, &s, &rp) : 0;
+	/* Looked at here in a dry run too, where svc_status() does not
+	 * look: it only reads, and is what the pidfile is written from. */
+	pid = s.has_running && s.path != NULL ? svc_stale(w, &s, &rp) : 0;
 	if (s.pidfile_stale == NULL) {
 		rsp->error = wfmt(w, "%s does not run, as far as its pidfile "
 		    "and its processes tell: nothing to write; start it",

@@ -746,6 +746,15 @@ start(const atf_tc_t *tc, int port, const char *webroot)
 	    "grep -q \" $n \"; then echo \"Upgrading $n to $r\"; [ $d = yes ] || "
 	    "{ grep -v \"^$nv \" pending > p.new; mv p.new pending; }; fi; "
 	    "done < pending ;;\n"
+	    /* pkg audit: from ./vulndb, which audit -F makes; none, pkg's
+	     * words for a database never fetched. */
+	    "audit) [ \"$2\" = -F ] && touch vulndb; [ -f vulndb ] || { "
+	    "echo 'pkg: vulnxml file /var/db/pkg/vuln.xml does not exist. "
+	    "Try running pkg audit -F first' >&2; exit 1; }; printf "
+	    "'pimd-3.1.0 is vulnerable:\\n  pimd -- remote crash\\n  CVE: "
+	    "CVE-2026-0001\\n  WWW: https://vuxml.FreeBSD.org/freebsd/"
+	    "1111-aaaa.html\\n\\n1 problem(s) in 1 installed package(s) "
+	    "found.\\n'; exit 1 ;;\n"
 	    "esac\n");
 	ATF_REQUIRE(chmod("fake-pkg", 0755) == 0);
 

@@ -120,6 +120,57 @@ addToLibrary({
 	 */
 	$arcPlug__deps: ["$arcStr"],
 	$arcPlug: {
+		/*
+		 * Which face button confirms on the controller in use (id):
+		 * "auto" follows its family, a Nintendo one's the right
+		 * button (its A), the others' the bottom one; "bottom" or
+		 * "right" as a plugin or its user set it, kept per device
+		 * (arc_pad_confirm:<id>).  confirm, its button's index.
+		 */
+		pad: { id: "", pref: null, confirm: 0, words: null },
+		padNintendo: function (id) {
+			return (/nintendo|pro controller|joy-con/i.test(id));
+		},
+		padPref: function (id) {
+			var v = null;
+
+			try {
+				v = localStorage.getItem("arc_pad_confirm:" + id);
+			} catch (e) {
+			}
+			return (v === "bottom" || v === "right" ? v : "auto");
+		},
+		/* The controller in use now, its choice read once. */
+		padUse: function (id) {
+			var p;
+
+			if (id === arcPlug.pad.id && arcPlug.pad.pref !== null)
+				return;
+			arcPlug.pad.id = id;
+			p = arcPlug.pad.pref = arcPlug.padPref(id);
+			arcPlug.pad.confirm = p === "right" || (p === "auto" &&
+			    arcPlug.padNintendo(id)) ? 1 : 0;
+			if (arcPlug.pad.words !== null)
+				arcPlug.pad.words();
+		},
+		padSet: function (v) {
+			var id = arcPlug.pad.id;
+
+			if (v !== "auto" && v !== "bottom" && v !== "right")
+				throw new Error("Arcana.pad.confirm: auto, bottom "
+				    + "or right");
+			try {
+				if (v === "auto")
+					localStorage.removeItem("arc_pad_confirm:" +
+					    id);
+				else
+					localStorage.setItem("arc_pad_confirm:" + id,
+					    v);
+			} catch (e) {
+			}
+			arcPlug.pad.pref = null;
+			arcPlug.padUse(id);
+		},
 		plugins: {},	/* by id: { pending, reg, failed, code } */
 		listed: null,	/* the list as last given */
 		ev: {},		/* event: [{ id, fn }] */
@@ -967,6 +1018,24 @@ addToLibrary({
 					arcPlug.act("plugin-toast", bad ? "1" : "",
 					    String(text).slice(0, 300));
 				},
+				/* The controller in use: which face button
+				 * confirms (auto, bottom, right; kept per
+				 * device), its index, its id. */
+				pad: Object.freeze({
+					get confirm() {
+						return (arcPlug.padPref(
+						    arcPlug.pad.id));
+					},
+					set confirm(v) {
+						arcPlug.padSet(v);
+					},
+					get button() {
+						return (arcPlug.pad.confirm);
+					},
+					get id() {
+						return (arcPlug.pad.id);
+					}
+				}),
 				fullscreen: function (on) {
 					var d = document;
 
@@ -1504,6 +1573,7 @@ addToLibrary({
 				padOff();
 				return;
 			}
+			arcPlug.padUse(g.id || "");
 			/* A plugin's screen: its input, and nothing here until
 			 * every button is let go after it. */
 			if (arcPlug.shown !== null) {
@@ -1557,9 +1627,11 @@ addToLibrary({
 				padMove(-1, 0);
 			if (padEdge("right", b(15) || ax(0) > 0, now))
 				padMove(1, 0);
-			if (padOnce("a", b(0)))
+			/* Confirm and back by the controller's family, or
+			 * as set (Arcana.pad.confirm). */
+			if (padOnce("a", b(arcPlug.pad.confirm)))
 				padPress();
-			if (padOnce("b", b(1)))
+			if (padOnce("b", b(1 - arcPlug.pad.confirm)))
 				padBack();
 			if (padOnce("lb", b(4)))
 				padTab(-1);
@@ -1578,6 +1650,28 @@ addToLibrary({
 			}
 			pad.frame = requestAnimationFrame(padTick);
 		}
+		/*
+		 * The buttons' words: confirm and back named as the
+		 * controller names them (a Nintendo one's right button is
+		 * its A, its bottom one its B; the others' the other way).
+		 */
+		function padWords() {
+			var nin = arcPlug.padNintendo(arcPlug.pad.id),
+			    ok = arcPlug.pad.confirm === 1 ?
+			    (nin ? "A" : "B") : (nin ? "B" : "A"),
+			    no = ok === "A" ? "B" : "A";
+
+			if (pad.hint === null)
+				return;
+			pad.hint.innerHTML = "<span><b>D-pad</b> Move</span>" +
+			    "<span class=\"pad-ok\"><b>" + ok + "</b> Press" +
+			    "</span><span class=\"pad-back\"><b>" + no +
+			    "</b> Back</span><span><b>LB RB</b> Tabs</span>" +
+			    "<span><b>R stick</b> Scroll</span><span><b>" +
+			    "LT RT</b> Sections, or zoom the map</span><span><b>" +
+			    "Steam + X</b> Keyboard</span>";
+		}
+		arcPlug.pad.words = padWords;
 		/* A controller's look, and the buttons' words, on or off. */
 		function padShow(on) {
 			pad.shown = on;
@@ -1586,13 +1680,8 @@ addToLibrary({
 				pad.hint = document.createElement("div");
 				pad.hint.className = "padhint";
 				pad.hint.setAttribute("aria-hidden", "true");
-				pad.hint.innerHTML = "<span><b>D-pad</b> Move</span>" +
-				    "<span><b>A</b> Press</span><span><b>B</b> " +
-				    "Back</span><span><b>LB RB</b> Tabs</span>" +
-				    "<span><b>R stick</b> Scroll</span><span><b>" +
-				    "LT RT</b> Sections, or zoom the map</span><span><b>Steam + " +
-				    "X</b> Keyboard</span>";
 				document.body.appendChild(pad.hint);
+				padWords();
 			} else if (!on && pad.hint !== null) {
 				pad.hint.remove();
 				pad.hint = null;

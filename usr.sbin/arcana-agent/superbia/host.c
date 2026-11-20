@@ -100,6 +100,7 @@ host_info(struct work *w, struct host_facts *h)
 	h->privileged = geteuid() == 0;
 	h->has_safe_wait = true;
 	h->safe_wait = (uint32_t)opts.safe_wait;
+	h->terminal_users = terminal_users_usable();
 	h->version = ARCANA_AGENT_VERSION;
 	if (opts.build[0] != '\0')
 		h->build = opts.build;

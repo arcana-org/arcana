@@ -1552,3 +1552,59 @@ sdwan_proxy_json(struct work *w, ucl_object_t *top)
 	else
 		ucl_object_unref(arr);
 }
+
+/*
+ * One instance restarted, the job instance-restart's: Squid stopped and
+ * started again from its file as it is, in its table, in its jail when
+ * it runs in one; its c-icap goes on as it is.  One the admin stopped
+ * is refused.  A dry run says the stop and the start's command, neither
+ * done.
+ */
+int
+squid_restart(struct work *w, const char *name, const char **errp)
+{
+	struct instance	 in;
+	pid_t		 pid;
+	int		 i, step, rc;
+	bool		 found;
+
+	pthread_mutex_lock(&lock);
+	found = false;
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].name, name) == 0) {
+			in = instances[i];
+			found = true;
+			break;
+		}
+	pthread_mutex_unlock(&lock);
+	if (!found) {
+		*errp = wfmt(w, "no Squid instance %s (the SD-WAN services' or "
+		    "the Security section's)", name);
+		return (-1);
+	}
+	if (in.stopped) {
+		*errp = wfmt(w, "Squid %s is stopped by the admin: start it "
+		    "(stopped false), not restart it", name);
+		return (-1);
+	}
+	if (inst_in(w, in.jail, errp) != 0)
+		return (-1);
+	step = step_begin(w, STEP_DAEMON, "arcana-agent", "squid %s stopped%s%s",
+	    name, in.jail[0] != '\0' ? " in the jail " : "", in.jail);
+	if (!work_dry(w, step)) {
+		pid = inst_pid(w, name);
+		inst_stop(w, name);
+		if (pid != 0)
+			step_end(w, step, true, "pid %d", (int)pid);
+		else
+			step_end(w, step, true, "it was not running");
+	}
+	step = step_begin(w, STEP_DAEMON, "arcana-agent", "squid %s started",
+	    name);
+	if ((rc = inst_start(w, &in, false, errp)) != 0)
+		step_end(w, step, false, "%s", *errp);
+	else if (!work_dry(w, step))
+		step_end(w, step, true, NULL);
+	(void)inst_in(w, "", NULL);
+	return (rc);
+}

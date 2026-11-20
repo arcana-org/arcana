@@ -39,20 +39,24 @@ module: arcana-storage
      |     +--ro media-wearout?      uint64
      |     +--ro note?               string
      +--ro pool* [name]
-     |  +--ro name      string
-     |  +--ro size?     bytes
-     |  +--ro alloc?    bytes
-     |  +--ro free?     bytes
-     |  +--ro frag?     uint32
-     |  +--ro cap?      uint32
-     |  +--ro dedup?    string
-     |  +--ro health?   string
-     |  +--ro state?    string
-     |  +--ro status?   string
-     |  +--ro action?   string
-     |  +--ro scan?     string
-     |  +--ro errors?   string
-     |  +--ro see?      string
+     |  +--ro name             string
+     |  +--ro size?            bytes
+     |  +--ro alloc?           bytes
+     |  +--ro free?            bytes
+     |  +--ro frag?            uint32
+     |  +--ro cap?             uint32
+     |  +--ro dedup?           string
+     |  +--ro health?          string
+     |  +--ro state?           string
+     |  +--ro status?          string
+     |  +--ro action?          string
+     |  +--ro scan?            string
+     |  +--ro scan-percent?    uint8
+     |  +--ro scan-examined?   uint64
+     |  +--ro scan-issued?     uint64
+     |  +--ro scan-total?      uint64
+     |  +--ro errors?          string
+     |  +--ro see?             string
      |  +--ro vdev*
      |     +--ro name?    string
      |     +--ro depth?   uint32
@@ -186,20 +190,24 @@ module: arcana-storage
            |     +--ro media-wearout?      uint64
            |     +--ro note?               string
            +--ro pool* [name]
-           |  +--ro name      string
-           |  +--ro size?     bytes
-           |  +--ro alloc?    bytes
-           |  +--ro free?     bytes
-           |  +--ro frag?     uint32
-           |  +--ro cap?      uint32
-           |  +--ro dedup?    string
-           |  +--ro health?   string
-           |  +--ro state?    string
-           |  +--ro status?   string
-           |  +--ro action?   string
-           |  +--ro scan?     string
-           |  +--ro errors?   string
-           |  +--ro see?      string
+           |  +--ro name             string
+           |  +--ro size?            bytes
+           |  +--ro alloc?           bytes
+           |  +--ro free?            bytes
+           |  +--ro frag?            uint32
+           |  +--ro cap?             uint32
+           |  +--ro dedup?           string
+           |  +--ro health?          string
+           |  +--ro state?           string
+           |  +--ro status?          string
+           |  +--ro action?          string
+           |  +--ro scan?            string
+           |  +--ro scan-percent?    uint8
+           |  +--ro scan-examined?   uint64
+           |  +--ro scan-issued?     uint64
+           |  +--ro scan-total?      uint64
+           |  +--ro errors?          string
+           |  +--ro see?             string
            |  +--ro vdev*
            |     +--ro name?    string
            |     +--ro depth?   uint32

@@ -17,7 +17,9 @@
  * the alarms by severity, each once.  An alarm on a shelf of the
  * control's (gula/faults.c) is a shelved alarm, in neither the list nor
  * the summary; the control itself, running's, goes to and comes from
- * faults.c as RFC 7951's JSON, its alarm types named.
+ * faults.c as RFC 7951's JSON, its alarm types named.  An alarm whose
+ * resource names a jail ("jail:<name>/...") has it in arcana-alarms'
+ * jail leaf.
  */
 
 #include <sys/param.h>
@@ -113,6 +115,26 @@ datetime(cbl_yarena *a, int64_t t)
 	if ((p = cbl_yarena_alloc(a, strlen(buf) + 1)) != NULL)
 		memcpy(p, buf, strlen(buf) + 1);
 	return (p);
+}
+
+/* The jail a resource names ("jail:<name>/...", "jail:<name>"), in
+ * a; NULL for the host's. */
+static const char *
+resource_jail(cbl_yarena *a, const char *object)
+{
+	const char	*p;
+	char		*j;
+	size_t		 len;
+
+	if (object == NULL || strncmp(object, "jail:", 5) != 0)
+		return (NULL);
+	p = object + 5;
+	if ((len = strcspn(p, "/")) == 0 || (j = cbl_yarena_alloc(a, len +
+	    1)) == NULL)
+		return (NULL);
+	memcpy(j, p, len);
+	j[len] = '\0';
+	return (j);
 }
 
 /* The alarm inventory: every kind, as the agent raises it. */
@@ -360,6 +382,8 @@ yalarms_from_json(const char *json, cbl_yarena *a, struct ietf_alarms *out)
 		memset(&x, 0, sizeof(x));
 		x.resource.which = 2;	/* its string member */
 		x.resource.v.m2 = r->object;
+		/* arcana-alarms' jail: what clients would read from it. */
+		x.arcal_jail = resource_jail(a, r->object);
 		x.alarm_type_id = ident_sid("arcana-alarms", r->type);
 		x.alarm_type_qualifier = "";
 		x.time_created = datetime(a, recs[first[g]].t);

@@ -118,27 +118,59 @@ step_end(struct work *w, int idx, bool ok, const char *fmt, ...)
 	tell(w, idx);
 }
 
+/* argv as the step keeps it, in w's pool; *np its length. */
+static const char **
+step_av(struct work *w, char *const argv[], size_t *np)
+{
+	const char	**av;
+	size_t		  n, i;
+
+	for (n = 0; argv[n] != NULL; n++)
+		;
+	av = wcalloc(w, n, sizeof(char *));
+	for (i = 0; i < n; i++)
+		av[i] = wvis(w, argv[i]);
+	*np = n;
+	return (av);
+}
+
+/* What a program is run with, as it starts: a running step's read has
+ * it before what it printed is attached (step_exec()). */
+void
+step_argv(struct work *w, int idx, char *const argv[])
+{
+	struct step	*s;
+	const char	**av;
+	size_t		  n;
+
+	if (idx < 0 || idx >= w->nsteps)
+		return;
+	av = step_av(w, argv, &n);
+	pthread_mutex_lock(&w->lock);
+	s = &w->steps[idx];
+	s->argv = av;
+	s->argc = n;
+	pthread_mutex_unlock(&w->lock);
+}
+
 /* Attach what a program was run with and what it printed. */
 void
 step_exec(struct work *w, int idx, char *const argv[], int status,
     const char *out, size_t outlen, const char *errout, size_t errlen)
 {
 	struct step	*s;
-	size_t		 n, i;
+	size_t		 n;
 
 	const char	**av;
 
 	if (idx < 0 || idx >= w->nsteps)
 		return;
-	for (n = 0; argv[n] != NULL; n++)
-		;
-	av = wcalloc(w, n, sizeof(char *));
-	for (i = 0; i < n; i++)
-		av[i] = wvis(w, argv[i]);
+	av = step_av(w, argv, &n);
 	pthread_mutex_lock(&w->lock);
 	s = &w->steps[idx];
 	s->argv = av;
 	s->argc = n;
+	s->ran = true;
 	s->status = status;
 	s->out = out;
 	s->outlen = outlen;
@@ -202,6 +234,7 @@ step_fill(struct work *dst, const struct step *s, int i, bool copy,
 	    s->ok ? ARCANA_JOBS_STEP_STATUS_OK : ARCANA_JOBS_STEP_STATUS_FAILED;
 	v->has_duration = s->done;
 	v->duration = s->dur;
+	/* A running program's too, from its start. */
 	if (s->kind == STEP_EXEC && s->argv != NULL) {
 		av = s->argv;
 		if (copy) {
@@ -211,6 +244,8 @@ step_fill(struct work *dst, const struct step *s, int i, bool copy,
 		}
 		v->argv.n = s->argc;
 		v->argv.v = av;
+	}
+	if (s->kind == STEP_EXEC && s->ran) {
 		/* Not run, a dry run's: no exit status. */
 		v->has_exit = !s->notrun;
 		v->exit = s->status;

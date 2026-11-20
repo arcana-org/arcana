@@ -18,7 +18,8 @@ module arcana-alarms {
      its faults (gula/faults.c) are the alarm list, each fault's
      object its resource, its kind the alarm type, no qualifier.  A
      fault is raised once and cleared once; its severity is Warning,
-     Minor, Major or Critical.";
+     Minor, Major or Critical.  An alarm whose resource names a jail
+     (jail:<name>/...) says which in its jail leaf.";
 
   revision 2026-10-27 {
     description
@@ -170,5 +171,17 @@ module arcana-alarms {
       "A confirmed commit that was not confirmed could not be undone:
        what is left stays as committed, its report sent to the
        console to be filed as a bug.";
+  }
+
+  augment "/al:alarms/al:alarm-list/al:alarm" {
+    description
+      "The jail an alarm is of.";
+    leaf jail {
+      type string;
+      description
+        "The jail its resource names (jail:<name>/...): the jail whose
+         process crashed, whose smtpd stopped, ...; absent for the
+         host's.";
+    }
   }
 }

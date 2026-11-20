@@ -3050,7 +3050,9 @@ module arcana-console {
       description
         "What the edges are to be made: each edge's jobs in their
          order, the changes from what was applied, the warnings an
-         apply must accept.";
+         apply must accept.  The query parameter edges (ids, host or
+         host/jail, or names, by commas) keeps those edges' changes
+         alone.";
     }
     anydata ledger {
       config false;
@@ -3154,6 +3156,13 @@ module arcana-console {
           type string;
           description
             "The warnings accepted, as the plan names them.";
+        }
+        leaf-list edges {
+          type string;
+          description
+            "Only these edges (ids, host or host/jail, or names): their
+             changes applied, the other edges' left waiting; none, every
+             edge's.  One may apply only edges one may change.";
         }
       }
       output {

@@ -144,10 +144,14 @@ waiting.
 Only
 .Cm start , stop , restart , kill , enable , disable , service ,
 .Cm interface , route , sysctl Ar name Ns = Ns Ar value ,
-.Cm kmod , reboot
+.Cm kmod , reboot , pkg-upgrade , pkg-install , pkg-audit-fetch ,
+.Cm instance-restart ,
+.Cm sslproxy Pq not Cm conf ,
+.Cm zfs snapshot , zfs destroy , zpool scrub , zpool scrub-stop
 and
 .Cm job-cancel
-are taken; the agent refuses a kind of job whose work cannot be said
+are taken; pkg's repository is then named, not asked.
+The agent refuses a kind of job whose work cannot be said
 without doing it.
 .It Fl q
 Queue the change as a job; see the end of the command list.
@@ -2853,6 +2857,18 @@ With
 .Fl J ,
 in every running jail instead, one batch of a job each, so that a jail
 whose pkg refuses fails alone.
+.It Cm pkg-audit-fetch Op Fl j Ar jail
+.Nm pkg audit Fl F ,
+a job: the vulnerability database fetched on the host or in the
+running
+.Ar jail ,
+which
+.Cm packages
+reads to mark vulnerable packages and never fetches itself.
+.It Cm instance-restart Cm suricata | squid Ar name
+A job: one Suricata or Squid instance, the SD-WAN services' or the
+Security section's, stopped and started again from its files, in its
+jail when it runs in one; one the admin stopped is refused.
 .It Cm pkg-install Oo Fl O Oc Oo Fl R Oc Oo Fl 4 | Fl 6 Oc Oo Fl r Ar repo Oc Oo Fl j Ar jail Oc Ar package ...
 .Nm pkg install Fl y ,
 a job, on the host or in the running

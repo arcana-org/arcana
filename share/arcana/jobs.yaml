@@ -514,3 +514,10 @@ kinds:
     uses: jail
     values: verb=delete
     destroys: always
+  - kind: pkg-audit-fetch
+    title: The vulnerability database fetched (pkg audit -F)
+    uses: jail
+  - kind: instance-restart
+    title: A Suricata or Squid instance restarted
+    needs: verb service
+    values: verb=suricata|squid

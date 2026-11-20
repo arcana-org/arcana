@@ -219,7 +219,7 @@ storage_conv(int k, const ucl_object_t *o, bool *cut)
 	    "alloc", "alloc", "free", "free", "frag", "frag", "cap", "cap",
 	    "dedup", "dedup", "health", "health", "state", "state", "status",
 	    "status", "action", "action", "scan", "scan", "errors", "errors",
-	    "see", "see", NULL };
+	    "see", "see", "scan-percent", "scan_percent", NULL };
 	static const char *const vdev[] = { "name", "name", "depth", "depth",
 	    "state", "state", "read", "read", "write", "write", "cksum",
 	    "cksum", "note", "note", NULL };
@@ -555,8 +555,12 @@ view_pools(struct html *h)
 		h_txt(h, jstr(p, "dedup"));
 		h_raw(h, "</span></div>");
 		if (jstr(p, "scan") != NULL) {
-			h_raw(h, "<p class=\"mono dim\">");
+			h_raw(h, "<p class=\"mono dim scan\">");
 			h_txt(h, jstr(p, "scan"));
+			/* A scrub or resilver running: how far it is. */
+			if (jget(p, "scan_percent") != NULL)
+				h_fmt(h, ", %lld%% done", (long long)jint(p,
+				    "scan_percent", 0));
 			h_raw(h, "</p>");
 		}
 		if (jstr(p, "status") != NULL) {

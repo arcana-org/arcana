@@ -137,6 +137,13 @@ module arcana-jobs {
          RFC 8341's, the console's user it acted for or the console
          itself; absent for the recovery session, which peer names.";
     }
+    leaf jail {
+      type string;
+      description
+        "The jail it acted on, its job spec's: the jail whose network,
+         services or packages it changed, \"*\" every running jail
+         (an upgrade of each in turn); absent for the host's.";
+    }
   }
 
   grouping step {

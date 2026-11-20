@@ -1504,6 +1504,19 @@ dispatch(const char *act, const char *arg, const char *value)
 		app.pkg.base_up = strcmp(arg, "upgrade") == 0;
 		app.modal = MODAL_JAIL_BASE;
 		app.modal_error[0] = '\0';
+	} else if (strcmp(act, "pkg-audit-fetch") == 0 && s != NULL) {
+		char	*json, *qj, title[200];
+
+		/* pkg audit -F, as the admin asks: never by itself. */
+		qj = json_quote(app.pkg.jail);
+		if (asprintf(&json, "{\"kind\":\"pkg-audit-fetch\"%s%s}",
+		    app.pkg.jail[0] != '\0' ? ",\"jail\":" : "",
+		    app.pkg.jail[0] != '\0' ? qj : "") == -1)
+			abort();
+		free(qj);
+		snprintf(title, sizeof(title), "pkg audit -F%s%s",
+		    app.pkg.jail[0] != '\0' ? " in " : "", app.pkg.jail);
+		job_send(s, json, title, JOB_PACKAGES, app.pkg.jail);
 	} else if (strcmp(act, "pkg-clean-ask") == 0 && s != NULL) {
 		app.modal = MODAL_PKG_CLEAN;
 		app.modal_error[0] = '\0';

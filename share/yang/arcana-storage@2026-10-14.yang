@@ -306,6 +306,33 @@ module arcana-storage {
         description
           "Its scan line: the last scrub or resilver.";
       }
+      leaf scan-percent {
+        type uint8 {
+          range "0..100";
+        }
+        units "percent";
+        description
+          "A scrub or resilver running: how much of it is done, as
+           zpool status says it (issued of the total to examine).";
+      }
+      leaf scan-examined {
+        type uint64;
+        units "bytes";
+        description
+          "A scan running: what it has examined (scanned).";
+      }
+      leaf scan-issued {
+        type uint64;
+        units "bytes";
+        description
+          "A scan running: what it has issued (read and checked).";
+      }
+      leaf scan-total {
+        type uint64;
+        units "bytes";
+        description
+          "A scan running: all it has to examine.";
+      }
       leaf errors {
         type string;
         description

@@ -1331,7 +1331,8 @@ done(struct lws *wsi, const char *why)
  * <script> of another origin), nor is one read as other than its type
  * says; no window of another site shares the page's; nothing of the
  * address is sent on; and of the browser's features only those the page
- * uses: passkeys, fullscreen and the clipboard.  The page's WebAssembly
+ * uses: passkeys, fullscreen, the clipboard and the screen wake lock (a
+ * plugin's ambient screen, kept on when asked).  The page's WebAssembly
  * runs under 'wasm-unsafe-eval'; browsers before Chrome 97, Firefox 102
  * and Safari 16 do not know it and drop it, refusing the wasm then, so
  * those (and a browser not known by its User-Agent) are given
@@ -1356,7 +1357,7 @@ static const struct {
 	  "publickey-credentials-create=(self), fullscreen=(self), "
 	  "clipboard-write=(self), camera=(), microphone=(), geolocation=(), "
 	  "payment=(), usb=(), serial=(), bluetooth=(), hid=(), midi=(), "
-	  "display-capture=(), screen-wake-lock=(), xr-spatial-tracking=(), "
+	  "display-capture=(), screen-wake-lock=(self), xr-spatial-tracking=(), "
 	  "browsing-topics=()" },
 };
 

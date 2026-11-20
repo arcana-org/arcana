@@ -435,7 +435,7 @@ swaps(struct work *w)
 	argv[0] = (char *)(uintptr_t)opts.swapinfo_bin;
 	argv[1] = (char *)(uintptr_t)"-k";
 	argv[2] = NULL;
-	if (run_exec(w, argv, &res) != 0 || res.out == NULL)
+	if (run_read(w, argv, &res) != 0 || res.out == NULL)
 		return ("");
 	return (res.out);
 }
@@ -489,7 +489,7 @@ storage_protected(struct work *w, const char *name, bool provider)
 		argv[1] = (char *)(uintptr_t)"status";
 		argv[2] = (char *)(uintptr_t)"-j";
 		argv[3] = NULL;
-		if (run_exec(w, argv, &res) != 0 || (top = json_of(&res)) ==
+		if (run_read(w, argv, &res) != 0 || (top = json_of(&res)) ==
 		    NULL)
 			return (NULL);
 		has = false;
@@ -529,7 +529,7 @@ storage_protected(struct work *w, const char *name, bool provider)
 	argv[5] = (char *)(uintptr_t)"bootfs";
 	argv[6] = (char *)(uintptr_t)pool;
 	argv[7] = NULL;
-	if (run_exec(w, argv, &res) == 0 && res.out != NULL) {
+	if (run_read(w, argv, &res) == 0 && res.out != NULL) {
 		v = wstrndup(w, res.out, strcspn(res.out, "\t\n"));
 		if (strncmp(v, ds, len) == 0 && (v[len] == '\0' || v[len] == '/'))
 			return (wfmt(w, "%s is the pool's bootfs %s, or holds it", ds,
@@ -539,7 +539,7 @@ storage_protected(struct work *w, const char *name, bool provider)
 	argv[4] = (char *)(uintptr_t)"value";
 	argv[5] = (char *)(uintptr_t)"mountpoint";
 	argv[6] = (char *)(uintptr_t)ds;
-	if (run_exec(w, argv, &res) == 0 && res.out != NULL) {
+	if (run_read(w, argv, &res) == 0 && res.out != NULL) {
 		v = wstrndup(w, res.out, strcspn(res.out, "\t\n"));
 		if (strcmp(v, "none") == 0 || strcmp(v, "legacy") == 0)
 			return (wfmt(w, "%s has mountpoint %s: whose it is is not "
@@ -555,8 +555,28 @@ storage_protected(struct work *w, const char *name, bool provider)
 }
 
 /*
+ * A size as zpool status -j says it, a number or one with its unit
+ * (1.50G, 512K, 0B), in bytes; -1 none.
+ */
+static int64_t
+zsize(const char *s)
+{
+	const char	*units = "BKMGTPE", *u;
+	double		 v;
+	char		*e;
+
+	if (s == NULL || (v = strtod(s, &e)) < 0 || e == s)
+		return (-1);
+	if (*e != '\0' && (u = strchr(units, *e)) != NULL)
+		for (; u > units; u--)
+			v *= 1024;
+	return ((int64_t)v);
+}
+
+/*
  * What zpool status -j says of each pool, into the pool's object: its
- * state, status, action, scan (said in a line, as the text has it),
+ * state, status, action, scan (said in a line, as the text has it, and
+ * a running one's progress: scan_percent, _examined, _issued, _total),
  * errors and see lines, and under "vdevs" the devices as they are
  * nested.
  */
@@ -616,6 +636,26 @@ pool_status(struct work *w, ucl_object_t *pools)
 			    != NULL ? jtext(sc, "start_time") : "?"), strcmp(st,
 			    "FINISHED") == 0 ? (jtext(sc, "end_time") != NULL ?
 			    jtext(sc, "end_time") : "?") : "", ""));
+		}
+		/* A scan running: how far, as zpool status's "% done"
+		 * (issued of what it has to examine). */
+		if (sc != NULL && jtext(sc, "state") != NULL && strcmp(jtext(sc,
+		    "state"), "SCANNING") == 0) {
+			int64_t	tot, ex, is;
+
+			tot = zsize(jtext(sc, "to_examine"));
+			ex = zsize(jtext(sc, "examined"));
+			is = zsize(jtext(sc, "issued"));
+			if (tot > 0) {
+				putn(cur, "scan_total", tot);
+				if (is >= 0)
+					putn(cur, "scan_percent", is >= tot ?
+					    100 : is * 100 / tot);
+			}
+			if (ex >= 0)
+				putn(cur, "scan_examined", ex);
+			if (is >= 0)
+				putn(cur, "scan_issued", is);
 		}
 		if (jtext(jp, "error_count") != NULL)
 			put(cur, "errors", strcmp(jtext(jp, "error_count"), "0")

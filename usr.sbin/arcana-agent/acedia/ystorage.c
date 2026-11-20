@@ -164,6 +164,10 @@ pools(const ucl_object_t *top, cbl_yarena *a, ystorage *st)
 		y->status = yj_str(a, p, "status");
 		y->action = yj_str(a, p, "action");
 		y->scan = yj_str(a, p, "scan");
+		YJ_NUM(p, "scan_percent", y, scan_percent);
+		YJ_NUM(p, "scan_examined", y, scan_examined);
+		YJ_NUM(p, "scan_issued", y, scan_issued);
+		YJ_NUM(p, "scan_total", y, scan_total);
 		y->errors = yj_str(a, p, "errors");
 		y->see = yj_str(a, p, "see");
 		if (yj_count(vd) > 0 && (dv = cbl_yarena_alloc(a, yj_count(vd) *

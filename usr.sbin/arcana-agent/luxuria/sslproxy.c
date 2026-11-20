@@ -1616,8 +1616,11 @@ rules_set(struct work *w, const struct place *p, bool up, const char **errp)
 			text = "";
 			len = 0;
 		}
-		if (file_replace(jail_file(w, s.jail, ".rules"), text, len,
-		    0600) != 0) {
+		if (w->dry)
+			(void)work_dry(w, step_begin(w, STEP_FILE, "write",
+			    "%s", jail_file(w, s.jail, ".rules")));
+		else if (file_replace(jail_file(w, s.jail, ".rules"), text,
+		    len, 0600) != 0) {
 			*errp = wfmt(w, "%s: %s", jail_file(w, s.jail,
 			    ".rules"), strerror(errno));
 			rc = -1;
@@ -1625,7 +1628,7 @@ rules_set(struct work *w, const struct place *p, bool up, const char **errp)
 	}
 	if (rc == 0)
 		rc = host_load(w, running(w), up ? NULL : s.jail, errp);
-	if (rc == 0 && !up)
+	if (rc == 0 && !up && !w->dry)
 		(void)unlink(jail_file(w, s.jail, ".rules"));
 	back_to(w, &s);
 	return (rc);
@@ -2416,6 +2419,12 @@ script_put(struct work *w, const char **errp)
 	if ((cur = scope_slurp(w, JAIL_RC, NULL)) != NULL && strcmp(cur, text)
 	    == 0)
 		return (0);
+	/* A dry run's: the write said, not done. */
+	if (w->dry) {
+		(void)work_dry(w, step_begin(w, STEP_FILE, "write", JAIL_RC
+		    " in the jail %s", w->jail));
+		return (0);
+	}
 	if (scope_mkdirs(w, "/usr/local/etc/rc.d") != 0 || scope_replace(w,
 	    JAIL_RC, text, len, 0555, NULL) != 0) {
 		*errp = wfmt(w, JAIL_RC " in the jail %s: %s", w->jail,

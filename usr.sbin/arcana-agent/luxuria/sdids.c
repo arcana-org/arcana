@@ -881,24 +881,13 @@ divert_ready(struct work *w, const char **errp)
 	return (0);
 }
 
-static int
-inst_start(struct work *w, const char *name, int divert, bool netmap,
-    const char **errp)
+/* What an instance is started with, in argv (10 at most). */
+static void
+inst_argv(struct work *w, const char *name, int divert, bool netmap,
+    char **argv)
 {
-	struct execres	 res;
-	char		*argv[10];
-	long		 from;
-	int		 n, i, started;
+	int	n;
 
-	started = 0;
-	inst_mkdir(w, inst_path(w, name, "d"));
-	if (divert > 0 && divert_ready(w, errp) != 0)
-		return (-1);
-	/* A pid file of one that is not running (a start that failed, a
-	 * crash) keeps Suricata from starting: it is not ours to keep. */
-	if (inst_pid(w, name) == 0)
-		(void)scope_unlink(w, inst_path(w, name, "pid"));
-	from = log_size(w, name);
 	n = 0;
 	argv[n++] = (char *)(uintptr_t)suricata_bin(w);
 	argv[n++] = (char *)(uintptr_t)"-c";
@@ -912,6 +901,27 @@ inst_start(struct work *w, const char *name, int divert, bool netmap,
 		argv[n++] = (char *)(uintptr_t)(netmap ? "--netmap" : "--pcap");
 	argv[n++] = (char *)(uintptr_t)"-D";
 	argv[n] = NULL;
+}
+
+static int
+inst_start(struct work *w, const char *name, int divert, bool netmap,
+    const char **errp)
+{
+	struct execres	 res;
+	char		*argv[10];
+	long		 from;
+	int		 i, started;
+
+	started = 0;
+	inst_mkdir(w, inst_path(w, name, "d"));
+	if (divert > 0 && divert_ready(w, errp) != 0)
+		return (-1);
+	/* A pid file of one that is not running (a start that failed, a
+	 * crash) keeps Suricata from starting: it is not ours to keep. */
+	if (inst_pid(w, name) == 0)
+		(void)scope_unlink(w, inst_path(w, name, "pid"));
+	from = log_size(w, name);
+	inst_argv(w, name, divert, netmap, argv);
 	if (run_exec(w, scope_jexec(w, argv), &res) != 0) {
 		/* Daemonized, it says why in its own log, not here. */
 		if ((*errp = log_errors(w, name, from)) != NULL)
@@ -3179,4 +3189,81 @@ suricata_replay(struct work *w, const struct arc_job_spec *sp,
 	step_end(w, step, true, "%jd alert%s", (intmax_t)total, total == 1 ?
 	    "" : "s");
 	return (0);
+}
+
+/*
+ * One instance restarted, the job instance-restart's: stopped and
+ * started again from its files as they are, in its jail when it runs in
+ * one, as an apply would (one apply at a time, no fault while it is
+ * down).  One the admin stopped is refused: started, it would not stay
+ * as the admin left it.  A dry run says the stop and the start's
+ * command, neither done.
+ */
+int
+suricata_restart(struct work *w, const char *name, const char **errp)
+{
+	struct execres	 res;
+	char		 jail[64], *argv[10];
+	pid_t		 pid;
+	int		 i, step, divert, rc;
+	bool		 found, stopped, netmap;
+
+	pthread_mutex_lock(&apply_lock);
+	pthread_mutex_lock(&lock);
+	found = stopped = netmap = false;
+	divert = 0;
+	jail[0] = '\0';
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].name, name) == 0) {
+			found = true;
+			stopped = instances[i].stopped;
+			netmap = instances[i].netmap;
+			divert = instances[i].divert;
+			snprintf(jail, sizeof(jail), "%s", instances[i].jail);
+			break;
+		}
+	if (found && !stopped && !w->dry)
+		applying = true;
+	pthread_mutex_unlock(&lock);
+	rc = -1;
+	if (!found) {
+		*errp = wfmt(w, "no Suricata instance %s (the SD-WAN services' "
+		    "or the Security section's)", name);
+		goto out;
+	}
+	if (stopped) {
+		*errp = wfmt(w, "Suricata %s is stopped by the admin: start it "
+		    "(stopped false), not restart it", name);
+		goto out;
+	}
+	if (inst_in(w, jail, errp) != 0)
+		goto out;
+	step = step_begin(w, STEP_DAEMON, "arcana-agent", "suricata %s "
+	    "stopped%s%s", name, jail[0] != '\0' ? " in the jail " : "", jail);
+	if (!work_dry(w, step)) {
+		pid = inst_pid(w, name);
+		inst_stop(w, name);
+		if (pid != 0)
+			step_end(w, step, true, "pid %d", (int)pid);
+		else
+			step_end(w, step, true, "it was not running");
+	}
+	step = step_begin(w, STEP_DAEMON, "arcana-agent", "suricata %s "
+	    "started", name);
+	if (w->dry) {
+		inst_argv(w, name, divert, netmap, argv);
+		(void)run_exec(w, scope_jexec(w, argv), &res);
+		step_end(w, step, true, "not done: a dry run");
+		rc = 0;
+	} else if ((rc = inst_start(w, name, divert, netmap, errp)) != 0)
+		step_end(w, step, false, "%s", *errp);
+	else
+		step_end(w, step, true, NULL);
+	(void)inst_in(w, "", NULL);
+out:
+	pthread_mutex_lock(&lock);
+	applying = false;
+	pthread_mutex_unlock(&lock);
+	pthread_mutex_unlock(&apply_lock);
+	return (rc);
 }

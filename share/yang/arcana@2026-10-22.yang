@@ -228,10 +228,10 @@ module arcana {
        structure for the agent's queue.";
     leaf kind {
       type uint8 {
-        range "0..52";
+        range "0..54";
       }
       description
-        "One of job-kind: 0 jail-action 1 address 2 service-action 3 service-config 4 pkg-upgrade 5 if-address 6 if-state 7 route 8 if-set 9 if-create 10 if-destroy 11 netgraph 12 wireguard 13 bird 14 if-vnet 15 kmod 16 zfs 17 zpool 18 mount 19 gpart 20 cam 21 sysctl 22 ipfw 23 bridge 24 geneve 25 process 26 pkg-clean 27 ipsec 28 pkg-install 29 ntp 30 rtadvd 31 jail-conf 32 neighbour 33 cert 34 ssh 35 carp 36 poudriere 37 clamav 38 suricata 39 nfs 40 iscsi 41 hast 42 sysfile 43 geom 44 smtpd 45 jail-allow 46 jail-base 47 reboot 48 speeder 49 monitor 50 sslproxy 51 cron 52 crash.";
+        "One of job-kind: 0 jail-action 1 address 2 service-action 3 service-config 4 pkg-upgrade 5 if-address 6 if-state 7 route 8 if-set 9 if-create 10 if-destroy 11 netgraph 12 wireguard 13 bird 14 if-vnet 15 kmod 16 zfs 17 zpool 18 mount 19 gpart 20 cam 21 sysctl 22 ipfw 23 bridge 24 geneve 25 process 26 pkg-clean 27 ipsec 28 pkg-install 29 ntp 30 rtadvd 31 jail-conf 32 neighbour 33 cert 34 ssh 35 carp 36 poudriere 37 clamav 38 suricata 39 nfs 40 iscsi 41 hast 42 sysfile 43 geom 44 smtpd 45 jail-allow 46 jail-base 47 reboot 48 speeder 49 monitor 50 sslproxy 51 cron 52 crash 53 pkg-audit-fetch 54 instance-restart.";
     }
     leaf jail {
       type string {
@@ -690,10 +690,10 @@ module arcana {
     }
     leaf kind {
       type uint8 {
-        range "0..52";
+        range "0..54";
       }
       description
-        "One of job-kind: 0 jail-action 1 address 2 service-action 3 service-config 4 pkg-upgrade 5 if-address 6 if-state 7 route 8 if-set 9 if-create 10 if-destroy 11 netgraph 12 wireguard 13 bird 14 if-vnet 15 kmod 16 zfs 17 zpool 18 mount 19 gpart 20 cam 21 sysctl 22 ipfw 23 bridge 24 geneve 25 process 26 pkg-clean 27 ipsec 28 pkg-install 29 ntp 30 rtadvd 31 jail-conf 32 neighbour 33 cert 34 ssh 35 carp 36 poudriere 37 clamav 38 suricata 39 nfs 40 iscsi 41 hast 42 sysfile 43 geom 44 smtpd 45 jail-allow 46 jail-base 47 reboot 48 speeder 49 monitor 50 sslproxy 51 cron 52 crash.";
+        "One of job-kind: 0 jail-action 1 address 2 service-action 3 service-config 4 pkg-upgrade 5 if-address 6 if-state 7 route 8 if-set 9 if-create 10 if-destroy 11 netgraph 12 wireguard 13 bird 14 if-vnet 15 kmod 16 zfs 17 zpool 18 mount 19 gpart 20 cam 21 sysctl 22 ipfw 23 bridge 24 geneve 25 process 26 pkg-clean 27 ipsec 28 pkg-install 29 ntp 30 rtadvd 31 jail-conf 32 neighbour 33 cert 34 ssh 35 carp 36 poudriere 37 clamav 38 suricata 39 nfs 40 iscsi 41 hast 42 sysfile 43 geom 44 smtpd 45 jail-allow 46 jail-base 47 reboot 48 speeder 49 monitor 50 sslproxy 51 cron 52 crash 53 pkg-audit-fetch 54 instance-restart.";
     }
     leaf title {
       type string;
@@ -740,6 +740,11 @@ module arcana {
       type string;
       description
         "Who asked for it, the request's NACM user; none for the recovery session.";
+    }
+    leaf jail {
+      type string;
+      description
+        "The jail it acted on, its spec's; none for the host's.";
     }
   }
 

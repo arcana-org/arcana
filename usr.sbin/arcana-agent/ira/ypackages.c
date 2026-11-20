@@ -8,8 +8,9 @@
  * Ira: the packages as arcana-packages has them, the host's or a
  * jail's alike: those installed, as pkg query reads them, each with
  * the version the repository has where that is newer, as pkg version
- * -vRl '<' reads them (packages.c); the repositories pkg has and
- * whether a jail's base is pkgbase beside; and an upgrade's output.
+ * -vRl '<' reads them (packages.c), and the vulnerabilities pkg audit
+ * knows of each; the repositories pkg has and whether a jail's base is
+ * pkgbase beside; and an upgrade's output.
  * The container's and the read and refresh actions' outputs have the
  * same leaves: one filler, ypackages_listed().
  */
@@ -39,6 +40,13 @@ pkg_of(ypkg *y, const struct package *p)
 	if ((y->has_size = p->has_size))
 		y->size = p->size;
 	y->origin = p->origin;
+	/* Of a read that asked pkg audit. */
+	if (p->vulnerable) {
+		y->has_vulnerable = true;
+		y->vulnerable = true;
+		y->vulnerability.n = p->nvulns;
+		y->vulnerability.v = p->vulns;
+	}
 }
 
 /*
@@ -50,7 +58,7 @@ int
 ypackages_listed(const struct pkg_read *installed,
     const struct pkg_read *outdated, cbl_yarena *a, const ypkg **vp,
     size_t *np, const char *const **rp, size_t *nrp, bool *has_pkgbase,
-    bool *pkgbase)
+    bool *pkgbase, const char **audit_error)
 {
 	size_t n = installed->npackages, max;
 	ypkg *v;
@@ -60,6 +68,7 @@ ypackages_listed(const struct pkg_read *installed,
 	*nrp = installed->nrepos;
 	if ((*has_pkgbase = installed->has_pkgbase))
 		*pkgbase = installed->pkgbase;
+	*audit_error = installed->audit_error;
 	*vp = NULL;
 	*np = 0;
 	max = n + (outdated != NULL ? outdated->npackages : 0);
@@ -96,7 +105,7 @@ ypackages_from(const struct pkg_read *installed,
 	memset(out, 0, sizeof(*out));
 	return (ypackages_listed(installed, outdated, a, &out->package.v,
 	    &out->package.n, &out->repository.v, &out->repository.n,
-	    &out->has_pkgbase, &out->pkgbase));
+	    &out->has_pkgbase, &out->pkgbase, &out->audit_error));
 }
 
 /* An upgrade's outcome as the upgrade action's output. */

@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-jobs",
     "module-revision": "2026-10-14",
-    "sid-file-version": 34,
+    "sid-file-version": 36,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md): 62 400, 1 000.",
     "dependency-revision": [
       {
@@ -730,6 +730,41 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/ipsec",
         "sid": "62536"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:jobs/job/jail",
+        "sid": "62537"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:jobs/job/read/output/jail",
+        "sid": "62538"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/instance-restart",
+        "sid": "62539"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/instance-restart/service",
+        "sid": "62540"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/instance-restart/verb",
+        "sid": "62541"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-audit-fetch",
+        "sid": "62542"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:dry-run/input/change/pkg-audit-fetch/jail",
+        "sid": "62543"
       },
       {
         "namespace": "data",
@@ -1582,6 +1617,11 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:submit/input/change/ipfw/text",
         "sid": "62712"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/instance-restart",
+        "sid": "62713"
       },
       {
         "namespace": "data",
@@ -2526,6 +2566,26 @@
         "namespace": "data",
         "identifier": "/arcana-jobs:dry-run/input/change/ipsec",
         "sid": "62900"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/instance-restart/service",
+        "sid": "62901"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/instance-restart/verb",
+        "sid": "62902"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-audit-fetch",
+        "sid": "62903"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-jobs:submit/input/change/pkg-audit-fetch/jail",
+        "sid": "62904"
       },
       {
         "namespace": "data",

@@ -67,6 +67,8 @@ struct pkgconf {
 
 static int	pkg_run(struct work *, const char *, bool, uint8_t,
 		    const char *const *, size_t, struct execres *);
+static int	pkg_read(struct work *, const char *, const char *const *,
+		    size_t, struct execres *);
 static void	parse_versions(struct work *, const struct execres *,
 		    struct package **, size_t *);
 static bool	valid_pkg(const char *);
@@ -78,8 +80,8 @@ static const char *check_jail(struct work *, const char *);
  * or 6, the repository reached over that only.
  */
 static int
-pkg_run(struct work *w, const char *jail, bool anyos, uint8_t ip,
-    const char *const *args, size_t n, struct execres *res)
+pkg_exec(struct work *w, const char *jail, bool anyos, uint8_t ip,
+    const char *const *args, size_t n, struct execres *res, bool reads)
 {
 	char	**argv;
 	size_t	 i, k;
@@ -104,10 +106,28 @@ pkg_run(struct work *w, const char *jail, bool anyos, uint8_t ip,
 	/* Watched: a pkg that hangs (a stalled fetch) is stopped, its
 	 * child in the jail with it. */
 	pkg_watch(true);
-	rc = run_exec(w, argv, res);
+	rc = reads ? run_read(w, argv, res) : run_exec(w, argv, res);
 	pkg_watch(false);
 	pkg_stalled(w, res, jail, ip, NULL);
 	return (rc);
+}
+
+static int
+pkg_run(struct work *w, const char *jail, bool anyos, uint8_t ip,
+    const char *const *args, size_t n, struct execres *res)
+{
+
+	return (pkg_exec(w, jail, anyos, ip, args, n, res, false));
+}
+
+/* What only reads pkg's database or configuration (pkg -vv, query,
+ * audit): a dry run runs it too, as a job's would be. */
+static int
+pkg_read(struct work *w, const char *jail, const char *const *args,
+    size_t n, struct execres *res)
+{
+
+	return (pkg_exec(w, jail, false, 0, args, n, res, true));
 }
 
 /*
@@ -335,7 +355,7 @@ pkg_conf(struct work *w, const char *jail, struct pkgconf *c)
 
 	memset(c, 0, sizeof(*c));
 	c->env = "";
-	if (pkg_run(w, jail, false, 0, vv, 1, &res) != 0 || res.out == NULL)
+	if (pkg_read(w, jail, vv, 1, &res) != 0 || res.out == NULL)
 		return;
 	r = wcalloc(w, 65, sizeof(*r));
 	n = 0;
@@ -743,6 +763,14 @@ reach(struct work *w, const char *jail, uint8_t ip, const char *repo)
 	    "repository %s answer from %s%s?", r->name, jail != NULL &&
 	    jail[0] != '\0' ? "jail " : "this host", jail != NULL ? jail :
 	    "");
+	/* A dry run's: the check named, the repository not asked. */
+	if (w->dry) {
+		step_end(w, step, true, "does the repository %s answer from "
+		    "%s%s? not asked: a dry run (it would fetch %s/meta.conf)",
+		    r->name, jail != NULL && jail[0] != '\0' ? "jail " :
+		    "this host", jail != NULL ? jail : "", r->url);
+		return (NULL);
+	}
 	if (c.env[0] != '\0')
 		exec_set_stdin(c.env, strlen(c.env));
 	/* Its own deadline, a little past the fetch's. */
@@ -1113,8 +1141,7 @@ upgrade_every_jail(struct work *w, const struct pkg_upgrade *rq,
 	for (i = 0; i < n; i++) {
 		if (list[i].dying || list[i].name == NULL)
 			continue;
-		if (pkg_run(w, list[i].name, false, rq->pkg_ip, bootstrapped,
-		    1, &res) != 0) {
+		if (pkg_read(w, list[i].name, bootstrapped, 1, &res) != 0) {
 			skipped = skipped == NULL ? list[i].name : wfmt(w,
 			    "%s, %s", skipped, list[i].name);
 			continue;
@@ -1212,8 +1239,8 @@ do_pkg_upgrade(struct work *w, const struct pkg_upgrade *rq,
 			rsp->upgraded++;
 	}
 	/* What is still pending, for the reply. */
-	if (pkg_run(w, rq->jail, false, rq->pkg_ip, version, nv, &res) == 0 ||
-	    res.status == 1) {
+	if (pkg_exec(w, rq->jail, false, rq->pkg_ip, version, nv, &res,
+	    true) == 0 || res.status == 1) {
 		parse_versions(w, &res, &v, &n);
 		rsp->packages = v;
 		rsp->npackages = n;
@@ -1288,3 +1315,127 @@ do_pkg_clean(struct work *w, const char *jail, bool all, const char **errp)
 	return (0);
 }
 
+
+/* pkg's words when its vulnerability database was never fetched. */
+#define	PKG_NO_VULNXML	"does not exist"
+
+/* A package of rsp's by name, or NULL. */
+static struct package *
+listed_pkg(struct pkg_read *rsp, const char *name, size_t len)
+{
+	size_t	i;
+
+	for (i = 0; i < rsp->npackages; i++)
+		if (strlen(rsp->packages[i].name) == len &&
+		    strncmp(rsp->packages[i].name, name, len) == 0)
+			return (&rsp->packages[i]);
+	return (NULL);
+}
+
+/* An id more of p's, once. */
+static void
+vuln_add(struct work *w, struct package *p, const char *id)
+{
+	const char	**v;
+	size_t		  i;
+
+	for (i = 0; i < p->nvulns; i++)
+		if (strcmp(p->vulns[i], id) == 0)
+			return;
+	v = wcalloc(w, p->nvulns + 1, sizeof(*v));
+	if (p->nvulns > 0)
+		memcpy(v, p->vulns, p->nvulns * sizeof(*v));
+	v[p->nvulns++] = wtext(w, id);
+	p->vulns = v;
+}
+
+/*
+ * The vulnerabilities of rsp's packages, there or in a running jail, as
+ * pkg audit reads them from the database fetched before (VuXML's,
+ * /var/db/pkg/vuln.xml): never fetched here, that is a job the admin
+ * asks for (pkg audit -F, do_pkg_audit_fetch()).  pkg says, of each
+ * vulnerable package, "name-version is vulnerable:", then each issue:
+ * its line, its "CVE: id" lines, its "WWW: .../<vuxml id>.html"; an
+ * issue with no CVE is named by its VuXML id.  pkg exits 1 when one is
+ * vulnerable.  rsp->audit_error: the database not fetched, or what pkg
+ * said when it could not read it.
+ */
+void
+pkg_audit(struct work *w, const char *jail, struct pkg_read *rsp)
+{
+	static const char *const audit[] = { "audit" };
+	struct execres	 res;
+	struct package	*p;
+	char		*copy, *it, *line, *t, *e;
+	const char	*sp;
+	bool		 any, cve;
+
+	if (pkg_read(w, jail, audit, 1, &res) != 0 && res.status != 1) {
+		rsp->audit_error = wtext(w, exec_error(w, &res, "pkg audit"));
+		return;
+	}
+	if (res.err != NULL && memmem(res.err, res.errlen, PKG_NO_VULNXML,
+	    strlen(PKG_NO_VULNXML)) != NULL) {
+		rsp->audit_error = "the vulnerability database is not fetched "
+		    "(pkg audit -F): fetch it to know which packages are "
+		    "vulnerable";
+		return;
+	}
+	p = NULL;
+	any = cve = false;
+	copy = wstrndup(w, res.out != NULL ? res.out : "", res.outlen);
+	for (it = copy; (line = strsep(&it, "\n")) != NULL; ) {
+		sp = line + strspn(line, " \t");
+		if (line[0] != ' ' && (t = strstr(line, " is vulnerable:")) !=
+		    NULL) {
+			*t = '\0';
+			any = true;
+			p = (e = strrchr(line, '-')) != NULL ? listed_pkg(rsp,
+			    line, (size_t)(e - line)) : NULL;
+			if (p != NULL)
+				p->vulnerable = true;
+			cve = false;
+		} else if (p != NULL && strncmp(sp, "CVE: ", 5) == 0) {
+			vuln_add(w, p, sp + 5);
+			cve = true;
+		} else if (p != NULL && strncmp(sp, "WWW: ", 5) == 0) {
+			/* The issue ends: one without a CVE by its VuXML id. */
+			if (!cve && (t = strrchr(sp, '/')) != NULL) {
+				t = wstrdup(w, t + 1);
+				if ((e = strstr(t, ".html")) != NULL)
+					*e = '\0';
+				if (*t != '\0')
+					vuln_add(w, p, t);
+			}
+			cve = false;
+		}
+	}
+	/* Exited 1 with nothing vulnerable said: it failed. */
+	if (res.status == 1 && !any)
+		rsp->audit_error = wtext(w, exec_error(w, &res, "pkg audit"));
+}
+
+/*
+ * pkg audit -F: the vulnerability database fetched there, or in a
+ * running jail (the jail's own), as the admin asked.  pkg audits the
+ * packages after, and exits 1 when one is vulnerable: fetched still.
+ */
+int
+do_pkg_audit_fetch(struct work *w, const char *jail, const char **errp)
+{
+	static const char *const fetch[] = { "audit", "-F" };
+	struct execres	 res;
+	const char	*e;
+
+	if ((e = check_jail(w, jail)) != NULL) {
+		*errp = e;
+		return (-1);
+	}
+	if (pkg_run(w, jail, false, 0, fetch, 2, &res) != 0 &&
+	    !(res.status == 1 && res.out != NULL && memmem(res.out,
+	    res.outlen, " is vulnerable:", 15) != NULL)) {
+		*errp = wtext(w, exec_error(w, &res, "pkg audit -F"));
+		return (-1);
+	}
+	return (0);
+}

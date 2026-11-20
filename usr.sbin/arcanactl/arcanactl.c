@@ -151,6 +151,8 @@ static int	cmd_storage_job(cbl_conn *, int, char **);
 static int	cmd_fstab(cbl_conn *, int, char **);
 static int	cmd_packages(cbl_conn *, int, char **);
 static int	cmd_pkg_clean(cbl_conn *, int, char **);
+static int	cmd_pkg_audit_fetch(cbl_conn *, int, char **);
+static int	cmd_instance_restart(cbl_conn *, int, char **);
 static int	cmd_pkg_install(cbl_conn *, int, char **);
 static int	cmd_ipsec(cbl_conn *, int, char **);
 static int	cmd_pkg_upgrade(cbl_conn *, int, char **);
@@ -392,6 +394,8 @@ usage(void)
 	    "    pkg-upgrade [-n] [-O] [-R] [-4 | -6] [-r repo] [-j jail | -J] "
 	    "[package ...]\n"
 	    "    pkg-clean [-a] [-j jail | -J]\n"
+	    "    pkg-audit-fetch [-j jail]\n"
+	    "    instance-restart suricata | squid name\n"
 	    "    pkg-install [-O] [-R] [-4 | -6] [-r repo] [-j jail] "
 	    "package ...\n"
 	    "    jail-base jail convert [-O] [-R] [-4 | -6] [-r repo] "
@@ -716,7 +720,7 @@ emit_trace(const struct arcana_jobs_step *v, size_t n)
 			xo_emit("{e:status/ok}");
 		xo_emit("\n");
 		xo_emit("{e:id/%u}{e:parent/%d}", s->id, s->parent);
-		/* A program still running: no argv yet, its output so far. */
+		/* A program still running: its argv, its output so far. */
 		if (s->argv.n > 0 || s->output.len > 0) {
 			for (k = 0; k < s->argv.n; k++)
 				xo_emit("{el:argv/%s}", s->argv.v[k]);
@@ -7723,6 +7727,33 @@ emit_packages(const ypkg *v, size_t n)
 	xo_close_list("package");
 }
 
+/* What pkg audit said of them: each vulnerable package with its
+ * advisories' ids, or why it said nothing (its database not fetched). */
+static void
+emit_vulns(const ypkg *v, size_t n, const char *audit_error)
+{
+	size_t	i, k;
+
+	if (audit_error != NULL) {
+		xo_emit("{Lwc:Vulnerabilities}{:audit-error/%s}\n",
+		    tx(audit_error));
+		return;
+	}
+	xo_open_list("vulnerable");
+	for (i = 0; i < n; i++) {
+		if (!v[i].vulnerable)
+			continue;
+		xo_open_instance("vulnerable");
+		xo_emit("{Lwc:Vulnerable}{k:name/%s}:", tx(v[i].name));
+		for (k = 0; k < v[i].vulnerability.n; k++)
+			xo_emit("{P: }{l:vulnerability/%s}",
+			    tx(v[i].vulnerability.v[k]));
+		xo_emit("\n");
+		xo_close_instance("vulnerable");
+	}
+	xo_close_list("vulnerable");
+}
+
 /* The installed packages: by hand or automatic, size, what each is. */
 static void
 emit_installed(const ypkg *v, size_t n)
@@ -7836,10 +7867,13 @@ cmd_packages(cbl_conn *conn, int argc, char **argv)
 	ytold_end(false);
 	repos = inst ? io.repository.v : ro.repository.v;
 	nrepos = inst ? io.repository.n : ro.repository.n;
-	if (error == 0 && inst)
+	if (error == 0 && inst) {
 		emit_installed(io.package.v, io.package.n);
-	else if (error == 0)
+		emit_vulns(io.package.v, io.package.n, io.audit_error);
+	} else if (error == 0) {
 		emit_packages(ro.package.v, ro.package.n);
+		emit_vulns(ro.package.v, ro.package.n, ro.audit_error);
+	}
 	/* pkg's repositories there: what -r of pkg-upgrade may name. */
 	if (error == 0 && nrepos > 0) {
 		xo_open_list("repository");
@@ -8016,6 +8050,50 @@ cmd_pkg_clean(cbl_conn *conn, int argc, char **argv)
 	cbl_yarena_free(a);
 	free(v);
 	return (0);
+}
+
+/* pkg-audit-fetch [-j jail]: the vulnerability database fetched (pkg
+ * audit -F), a job: what the packages' read and refresh read. */
+static int
+cmd_pkg_audit_fetch(cbl_conn *conn, int argc, char **argv)
+{
+	struct arc_job_spec	sp;
+	int			ch;
+
+	memset(&sp, 0, sizeof(sp));
+	sp.has_kind = true;
+	sp.kind = ARC_JOB_KIND_PKG_AUDIT_FETCH;
+	optind = 1;
+	while ((ch = getopt(argc, argv, "j:")) != -1) {
+		switch (ch) {
+		case 'j':
+			sp.jail = optarg;
+			break;
+		default:
+			usage();
+		}
+	}
+	if (optind != argc)
+		usage();
+	return (submit(conn, &sp));
+}
+
+/* instance-restart suricata | squid name: one instance of the SD-WAN
+ * services' or the Security section's restarted, in its jail when it
+ * has one, a job. */
+static int
+cmd_instance_restart(cbl_conn *conn, int argc, char **argv)
+{
+	struct arc_job_spec	sp;
+
+	if (argc != 3)
+		usage();
+	memset(&sp, 0, sizeof(sp));
+	sp.has_kind = true;
+	sp.kind = ARC_JOB_KIND_INSTANCE_RESTART;
+	sp.verb = argv[1];
+	sp.service = argv[2];
+	return (submit(conn, &sp));
 }
 
 /* pkg-install [-O] [-R] [-4 | -6] [-r repo] [-j jail] package ...: a
@@ -8272,6 +8350,8 @@ emit_job(const struct arc_job *j)
 		xo_emit(": {:error/%s}", tx(j->error));
 	if (j->user != NULL)
 		xo_emit("{e:user/%s}", j->user);
+	if (j->jail != NULL)
+		xo_emit("{e:jail/%s}", j->jail);
 	xo_emit("{e:peer/%s}{e:created/%jd}\n", j->peer != NULL ? j->peer : "",
 	    (intmax_t)j->created);
 	xo_close_instance("job");
@@ -8615,7 +8695,9 @@ main(int argc, char *argv[])
 		static const char *const dryable[] = { "start", "stop",
 		    "restart", "kill", "enable", "disable", "service",
 		    "interface", "route", "sysctl", "kmod", "reboot",
-		    "job-cancel" };
+		    "job-cancel", "pkg-upgrade", "pkg-install",
+		    "pkg-audit-fetch", "instance-restart", "sslproxy", "zfs",
+		    "zpool" };
 
 		for (i = 0; i < (int)nitems(dryable); i++)
 			if (strcmp(argv[0], dryable[i]) == 0)
@@ -8846,6 +8928,10 @@ main(int argc, char *argv[])
 		rc = cmd_pkg_clean(conn, argc, argv);
 	else if (strcmp(argv[0], "pkg-install") == 0)
 		rc = cmd_pkg_install(conn, argc, argv);
+	else if (strcmp(argv[0], "pkg-audit-fetch") == 0)
+		rc = cmd_pkg_audit_fetch(conn, argc, argv);
+	else if (strcmp(argv[0], "instance-restart") == 0)
+		rc = cmd_instance_restart(conn, argc, argv);
 	else if (strcmp(argv[0], "ipsec") == 0)
 		rc = cmd_ipsec(conn, argc, argv);
 	else if (strcmp(argv[0], "pkg-upgrade") == 0)

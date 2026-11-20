@@ -24,8 +24,9 @@ module arcana-packages {
     "FreeBSD's packages (pkg(8)): those installed on the host, or in a
      running jail, as pkg's own database has them (pkg query), each
      with the version its repository has where that is newer (pkg
-     version -vRl '<'); the catalogue refreshed (pkg update) and
-     packages upgraded (pkg upgrade) as actions.
+     version -vRl '<') and the vulnerabilities pkg audit knows of it
+     from a database fetched before; the catalogue refreshed (pkg
+     update) and packages upgraded (pkg upgrade) as actions.
 
      A jail's packages are the jail's: arcana-jails's jail has them.";
 
@@ -96,6 +97,19 @@ module arcana-packages {
       description
         "Its port, category/name.";
     }
+    leaf vulnerable {
+      type boolean;
+      description
+        "Of a read or a refresh: whether the vulnerability database
+         (pkg audit's, fetched before) has an advisory for the version
+         installed.";
+    }
+    leaf-list vulnerability {
+      type string;
+      description
+        "Of a vulnerable package: its advisories' CVE ids, or the
+         VuXML id of one that names no CVE.";
+    }
   }
 
   grouping listed {
@@ -126,6 +140,15 @@ module arcana-packages {
         "Of the host's read and refresh: its running jails whose base
          system is pkgbase, where a plain pkg upgrade (every-jail's)
          upgrades the FreeBSD base packages too.";
+    }
+    leaf audit-error {
+      type string;
+      description
+        "Of a read or a refresh: why the packages' vulnerabilities
+         were not read (pkg audit): the vulnerability database not
+         fetched (a job of kind pkg-audit-fetch fetches it, pkg audit
+         -F; never fetched by itself), or what pkg said.  Absent when
+         they were.";
     }
   }
 

@@ -1,29 +1,35 @@
 module: arcana-packages
   +--ro packages
      +--ro package* [name]
-     |  +--ro name         string
-     |  +--ro installed?   string
-     |  +--ro available?   string
-     |  +--ro automatic?   boolean
-     |  +--ro comment?     string
-     |  +--ro size?        uint64
-     |  +--ro origin?      string
+     |  +--ro name             string
+     |  +--ro installed?       string
+     |  +--ro available?       string
+     |  +--ro automatic?       boolean
+     |  +--ro comment?         string
+     |  +--ro size?            uint64
+     |  +--ro origin?          string
+     |  +--ro vulnerable?      boolean
+     |  +--ro vulnerability*   string
      +--ro repository*     string
      +--ro pkgbase?        boolean
      +--ro pkgbase-jail*   string
+     +--ro audit-error?    string
      +---x read
      |  +--ro output
      |     +--ro package* [name]
-     |     |  +--ro name         string
-     |     |  +--ro installed?   string
-     |     |  +--ro available?   string
-     |     |  +--ro automatic?   boolean
-     |     |  +--ro comment?     string
-     |     |  +--ro size?        uint64
-     |     |  +--ro origin?      string
+     |     |  +--ro name             string
+     |     |  +--ro installed?       string
+     |     |  +--ro available?       string
+     |     |  +--ro automatic?       boolean
+     |     |  +--ro comment?         string
+     |     |  +--ro size?            uint64
+     |     |  +--ro origin?          string
+     |     |  +--ro vulnerable?      boolean
+     |     |  +--ro vulnerability*   string
      |     +--ro repository*     string
      |     +--ro pkgbase?        boolean
      |     +--ro pkgbase-jail*   string
+     |     +--ro audit-error?    string
      +---x refresh
      |  +---w input
      |  |  +---w ip-version?         ip-version
@@ -32,16 +38,19 @@ module: arcana-packages
      |  |  +---w no-repo-check?      boolean
      |  +--ro output
      |     +--ro package* [name]
-     |     |  +--ro name         string
-     |     |  +--ro installed?   string
-     |     |  +--ro available?   string
-     |     |  +--ro automatic?   boolean
-     |     |  +--ro comment?     string
-     |     |  +--ro size?        uint64
-     |     |  +--ro origin?      string
+     |     |  +--ro name             string
+     |     |  +--ro installed?       string
+     |     |  +--ro available?       string
+     |     |  +--ro automatic?       boolean
+     |     |  +--ro comment?         string
+     |     |  +--ro size?            uint64
+     |     |  +--ro origin?          string
+     |     |  +--ro vulnerable?      boolean
+     |     |  +--ro vulnerability*   string
      |     +--ro repository*     string
      |     +--ro pkgbase?        boolean
      |     +--ro pkgbase-jail*   string
+     |     +--ro audit-error?    string
      +---x upgrade
         +---w input
         |  +---w name*               string
@@ -54,13 +63,15 @@ module: arcana-packages
         +--ro output
            +--ro upgraded?   uint32
            +--ro package* [name]
-              +--ro name         string
-              +--ro installed?   string
-              +--ro available?   string
-              +--ro automatic?   boolean
-              +--ro comment?     string
-              +--ro size?        uint64
-              +--ro origin?      string
+              +--ro name             string
+              +--ro installed?       string
+              +--ro available?       string
+              +--ro automatic?       boolean
+              +--ro comment?         string
+              +--ro size?            uint64
+              +--ro origin?          string
+              +--ro vulnerable?      boolean
+              +--ro vulnerability*   string
 
   augment /arcj:jails/arcj:jail:
     +---u packages

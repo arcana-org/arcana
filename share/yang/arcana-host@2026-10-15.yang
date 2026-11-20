@@ -301,6 +301,15 @@ module arcana-host {
            before the agent undoes it, when the change does not say:
            the agent's own (-w).";
       }
+      leaf terminal-users {
+        type boolean;
+        description
+          "Whether mapped logins (terminal-as) can work here: the
+           agent's file of them (/usr/local/etc/arcana/terminal-users,
+           or --terminal-users') is there and taken by the agent's
+           StrictModes check (root's, 0600, no link, in directories
+           only root writes).  Its lines are not read for it.";
+      }
     }
     leaf-list plugin {
       type identityref {

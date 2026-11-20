@@ -17,6 +17,7 @@ module: arcana-jobs
         +--ro peer?         string
         +--ro confirm-by?   int64
         +--ro user?         string
+        +--ro jail?         string
         +---x cancel
         |  +--ro output
         |     +--ro state?   job-state
@@ -36,6 +37,7 @@ module: arcana-jobs
               +--ro peer?         string
               +--ro confirm-by?   int64
               +--ro user?         string
+              +--ro jail?         string
               +--ro step* [id]
                  +--ro id              uint32
                  +--ro parent?         int32
@@ -422,10 +424,17 @@ module: arcana-jobs
     |  |     |  |     +---w description?   string
     |  |     |  |     +---w args*          string
     |  |     |  +--:(crash)
-    |  |     |     +---w crash!
-    |  |     |        +---w verb    enumeration
-    |  |     |        +---w args*   string
-    |  |     |        +---w jail?   string
+    |  |     |  |  +---w crash!
+    |  |     |  |     +---w verb    enumeration
+    |  |     |  |     +---w args*   string
+    |  |     |  |     +---w jail?   string
+    |  |     |  +--:(pkg-audit-fetch)
+    |  |     |  |  +---w pkg-audit-fetch!
+    |  |     |  |     +---w jail?   string
+    |  |     |  +--:(instance-restart)
+    |  |     |     +---w instance-restart!
+    |  |     |        +---w verb       enumeration
+    |  |     |        +---w service    string
     |  |     +---w safe?        boolean
     |  |     +---w safe-wait?   uint32
     |  +--ro output
@@ -802,10 +811,17 @@ module: arcana-jobs
        |  |  |  |     +---w description?   string
        |  |  |  |     +---w args*          string
        |  |  |  +--:(crash)
-       |  |  |     +---w crash!
-       |  |  |        +---w verb    enumeration
-       |  |  |        +---w args*   string
-       |  |  |        +---w jail?   string
+       |  |  |  |  +---w crash!
+       |  |  |  |     +---w verb    enumeration
+       |  |  |  |     +---w args*   string
+       |  |  |  |     +---w jail?   string
+       |  |  |  +--:(pkg-audit-fetch)
+       |  |  |  |  +---w pkg-audit-fetch!
+       |  |  |  |     +---w jail?   string
+       |  |  |  +--:(instance-restart)
+       |  |  |     +---w instance-restart!
+       |  |  |        +---w verb       enumeration
+       |  |  |        +---w service    string
        |  |  +---w safe?        boolean
        |  |  +---w safe-wait?   uint32
        |  +---w undo?     uint64
