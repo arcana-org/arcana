@@ -1145,6 +1145,105 @@ sdwan_jail_edge_cleanup()
 	true
 }
 
+atf_test_case security_jail_follow cleanup
+security_jail_follow_head()
+{
+	atf_set "descr" "the Security section's Suricata in a real vnet jail" \
+	    "follows it: the jail removed and made again is told by" \
+	    "EVFILT_JAIL, and the instance started there again once the" \
+	    "jail has settled, its interface moved in by exec.created" \
+	    "seconds after jail_set(2) made it"
+	atf_set "require.user" "root"
+	atf_set "timeout" "120"
+}
+# The jail followed, of this case alone.
+FJAIL=arcf_secids
+
+security_jail_follow_body()
+{
+	local ep b i
+
+	jls -j "$FJAIL" >/dev/null 2>&1 && atf_skip "a jail named $FJAIL exists"
+	ep=$(epair_create) || atf_fail "no epair"
+	b=${ep%a}b
+	echo "$ep" > epair
+	# The jail's root of its own (never the host's: no rc runs in it),
+	# its programs /rescue's: sh, sleep, sed, pgrep, kill and ifconfig;
+	# its devfs (pgrep reads the processes through /dev/null).
+	mkdir -p root/bin root/sbin root/usr/bin root/usr/local/bin \
+	    root/var/db root/dev
+	cp /rescue/rescue root/bin/sh
+	for p in bin/sleep bin/sed bin/pgrep bin/kill sbin/ifconfig \
+	    usr/bin/sed usr/bin/pgrep; do
+		ln root/bin/sh "root/$p"
+	done
+	# Suricata's stand-in: -T takes anything; started (-c yaml
+	# --pidfile p ...), it says its pid, its engine started in its log,
+	# and the interfaces the jail has as it starts.
+	cat > root/usr/local/bin/suricata <<'EOS'
+#!/bin/sh
+[ "$1" = --hold ] && { echo $$ > "$2"; /sbin/ifconfig -l > /var/db/started.ifs; echo "Notice: threads: Engine started." >> "$3/suricata.log"; while :; do sleep 1; done; }
+[ "$1" = -T ] && exit 0
+[ "$1" = --build-info ] && { echo 'This is Suricata version 8.0.7 RELEASE'; exit 0; }
+d=$(sed -n 's/^default-log-dir: //p' "$2")
+"$0" --hold "$4" "$d" < /dev/null > /dev/null 2>&1 &
+exit 0
+EOS
+	: > root/var/db/started.ifs
+	chmod +x root/usr/local/bin/suricata
+	# Its devfs, mounted by the case for both of the jail's lives: jail
+	# -r of a jail made on the command line would leave one of
+	# mount.devfs behind.  Within a jail (a devenv) it has that jail's
+	# rules; on a host, the jails' (4).
+	atf_check mount -t devfs devfs root/dev
+	touch devfs
+	if [ "$(sysctl -n security.jail.jailed)" = 0 ]; then
+		atf_check devfs -m root/dev ruleset 4
+		atf_check devfs -m root/dev rule applyset
+	fi
+	atf_check -o ignore jail -c name="$FJAIL" vnet persist \
+	    path="$(pwd)/root" vnet.interface="$b"
+	start_daemon
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids \
+	    "{\"group\":\"security\",\"instances\":[{\"name\":\"sec-f\",\"jail\":\"$FJAIL\",\"interfaces\":[\"$b\"],\"spec\":{\"interfaces\":[\"$b\"],\"home\":[\"any\"]},\"rules\":\"alert tcp any any -> any 80 (sid:1000001;)\\n\"}]}"
+	wait_for "grep -qw $b root/var/db/started.ifs"
+	atf_check -o match:"(^| )$b( |$)" cat root/var/db/started.ifs
+	# Removed, its interface given back first (a vnet jail's teardown
+	# with an epair in it is what panics), its Suricata with it.
+	atf_check ifconfig "$b" -vnet "$FJAIL"
+	atf_check jail -r "$FJAIL"
+	wait_for "'$JGC' -c '$SOCK' events | grep -q '\"jail\":\"$FJAIL\",\"state\":\"stopped\"'"
+	: > root/var/db/started.ifs
+	# Made again, its interface moved in by exec.created three seconds
+	# after the kernel made it (and told so): started once it is in.
+	atf_check -o ignore jail -c name="$FJAIL" vnet persist \
+	    path="$(pwd)/root" exec.created="sleep 3; ifconfig $b vnet $FJAIL"
+	for i in $(seq 1 300); do
+		[ -s root/var/db/started.ifs ] && break
+		sleep 0.1
+	done
+	atf_check -o match:"(^| )$b( |$)" cat root/var/db/started.ifs
+	# Said once its apply has returned, after the start.
+	wait_for "grep -q 'suricata: started again in the jail $FJAIL' daemon.out"
+	atf_check -o match:"suricata: started again in the jail $FJAIL, which came back" \
+	    -o not-match:"did not settle" cat daemon.out
+	atf_check -o match:"\"name\":\"sec-f\",\"jail\":\"$FJAIL\",[^}]*\"running\":true" \
+	    "$JGC" -c "$SOCK" sdwan
+	atf_check -o empty "$JGC" -c "$SOCK" sdwan ids '{"group":"security","instances":[]}'
+}
+security_jail_follow_cleanup()
+{
+	[ -f daemon.pid ] && kill "$(cat daemon.pid)" 2>/dev/null
+	sleep 0.5
+	if [ -f epair ]; then
+		ifconfig "$(sed 's/a$/b/' epair)" -vnet "$FJAIL" 2>/dev/null
+		jail -r "$FJAIL" 2>/dev/null
+		ifconfig "$(cat epair)" destroy 2>/dev/null
+	fi
+	[ -f devfs ] && umount root/dev 2>/dev/null
+	true
+}
+
 atf_test_case sdwan_altmark_lab cleanup
 sdwan_altmark_lab_head()
 {
@@ -6640,6 +6739,7 @@ atf_init_test_cases()
 	atf_add_test_case sdwan_probe
 	atf_add_test_case sdwan_control
 	atf_add_test_case sdwan_jail_edge
+	atf_add_test_case security_jail_follow
 	atf_add_test_case sdwan_altmark_lab
 	atf_add_test_case sdwan_flowexp_lab
 	atf_add_test_case sdwan_links

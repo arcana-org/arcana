@@ -14436,11 +14436,13 @@ esac
 exit 0
 EOS
 	# ifconfig(8): the vnet jail's epair0b (-j 7) with its checksums
-	# and LRO on.
+	# and LRO on; the jail's interfaces (-l), epair0b among them once
+	# it has been moved in (./moved).
 	cat > fake-ifconfig <<EOS
 #!/bin/sh
 echo "ifconfig \$*" >> $(pwd)/ifconfig.log
 [ "\$*" = "-j 7 epair0b" ] && printf 'epair0b: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\toptions=8000b<RXCSUM,TXCSUM,VLAN_MTU,LRO>\n'
+[ "\$*" = "-j 7 -l" ] && { [ -f $(pwd)/moved ] && echo "lo0 epair0b" || echo lo0; }
 exit 0
 EOS
 	chmod +x fake-ifconfig
@@ -14523,19 +14525,29 @@ EOS
 	atf_check -s exit:1 -e match:'pcap names no jail' \
 	    "$JGC" -c "$SOCK" -j gw suricata pcap instance=sec-j file=/var/db/arcana-security/sdwan-ids-sec-j.replay.d/captures/up.pcap
 	# Its jail stopped (gone from ./jails, its Suricata with it) and
-	# started again: the agent sees it come back and starts sec-j
-	# there again by itself.
+	# started again: the agent is told of both (EVFILT_JAIL, the
+	# stand-in's), waits for the jail to settle (epair0b moved in,
+	# looked for by ifconfig -j 7 -l), and starts sec-j there again
+	# by itself; the same number back is the jail again.
 	spid=$(cat "$J/sdwan-ids-sec-j.pid")
 	cp jails jails.all
 	grep -v '^gw ' jails.all > jails
 	kill "$spid"
+	wait_match '"kind":"jail-state","data":\{"jail":"gw","state":"stopped","jid":7\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "gw is not told stopped"
 	wait_match '"name":"sec-j","jail":"gw",[^}]*"running":false' "$JGC" -c "$SOCK" sdwan ||
 	    atf_fail "sec-j is still said to run"
-	# Gone long enough for the agent's reader (a second a round) to
-	# see it so: the same number back is the jail again.
-	sleep 3
 	: > jexec.log
+	: > ifconfig.log
 	cp jails.all jails
+	wait_match '"kind":"jail-state","data":\{"jail":"gw","state":"running","jid":7\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "gw is not told running again"
+	# Made, but epair0b not in it yet: waited for, not started.
+	wait_match '^ifconfig -j 7 -l$' cat ifconfig.log ||
+	    atf_fail "the jail's interfaces are not looked for"
+	sleep 2
+	atf_check -o not-match:'suricata -c ' cat jexec.log
+	touch moved
 	wait_match '^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-security/sdwan-ids-sec-j.yaml --pidfile /var/db/arcana-security/sdwan-ids-sec-j.pid --pcap -D$' cat jexec.log ||
 	    atf_fail "sec-j is not started again: $(cat jexec.log)"
 	wait_match '"name":"sec-j","jail":"gw",[^}]*"running":true' "$JGC" -c "$SOCK" sdwan ||
@@ -14652,6 +14664,26 @@ EOS
 	[ "$nq" != "$qpid" ] && alive "$nq" || atf_fail "squid sec-jw was not started again"
 	alive "$ipid" || atf_fail "its c-icap was stopped with it"
 	qpid=$nq
+	# Its jail made again (gone from ./jails, its Squid with it): told
+	# by EVFILT_JAIL (the stand-in's), Squid started there again by
+	# itself, a jail of the host's network settled at once.
+	cp jails jails.all
+	grep -v '^web ' jails.all > jails
+	kill "$qpid"
+	wait_match '"kind":"jail-state","data":\{"jail":"web","state":"stopped","jid":8\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "web is not told stopped"
+	: > jexec.log
+	cp jails.all jails
+	wait_match '^jexec 8 /usr/local/sbin/squid -f /var/db/arcana-security/sdwan-proxy-sec-jw.conf$' cat jexec.log ||
+	    atf_fail "squid sec-jw is not started again with its jail: $(cat jexec.log)"
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ "$(cat "$K/sdwan-proxy-sec-jw.pid")" != "$qpid" ] && break
+		sleep 0.3
+	done
+	qpid=$(cat "$K/sdwan-proxy-sec-jw.pid")
+	alive "$qpid" || atf_fail "squid sec-jw does not run again in its jail"
+	wait_match 'squid: started again in the jail web, which came back' cat daemon.out ||
+	    atf_fail "squid sec-jw's apply is not said done"
 	# freshclam's mirrors, the jail's own freshclam.conf.
 	printf 'Example\nDatabaseMirror database.clamav.net\n' > "$W/usr/local/etc/freshclam.conf.sample"
 	atf_check -o match:'done' "$JGC" -c "$SOCK" -j web clamav mirrors https://mirror.example.org/clamav
@@ -14854,6 +14886,36 @@ EOS
 	atf_check -o match:'"name":"sw2-gw","jail":"gw","fib":2,"mode":"sni","running":true' \
 	    -o match:'"name":"sw2-gw","jail":"gw","interfaces":\["epair0b"\],"mode":"prevent","divert":8002,"running":true' \
 	    "$JGC" -c "$SOCK" sdwan
+	# The edge made again (gone from ./jails, its services with it):
+	# told by EVFILT_JAIL (the stand-in's), its interfaces looked for
+	# in it (ifconfig -j 7 -l, -l -u), then its own kept lists applied
+	# again, Squid and Suricata started there by themselves.
+	cat > fake-ifconfig <<EOS
+#!/bin/sh
+echo "ifconfig \$*" >> $(pwd)/ifconfig.log
+case "\$*" in "-j 7 -l"|"-j 7 -l -u") echo "lo0 epair0b" ;; esac
+exit 0
+EOS
+	chmod +x fake-ifconfig
+	qpid=$(cat "$E/sdwan-proxy-sw2-gw.pid")
+	spid=$(cat "$E/sdwan-ids-sw2-gw.pid")
+	cp jails jails.all
+	grep -v '^gw ' jails.all > jails
+	kill "$qpid" "$spid"
+	wait_match '"kind":"jail-state","data":\{"jail":"gw","state":"stopped","jid":7\}' \
+	    "$JGC" -c "$SOCK" events || atf_fail "gw is not told stopped"
+	: > jexec.log
+	: > ifconfig.log
+	cp jails.all jails
+	wait_match '^jexec 7 /usr/local/bin/suricata -c /var/db/arcana-sdwan/sdwan-ids-sw2-gw.yaml --pidfile /var/db/arcana-sdwan/sdwan-ids-sw2-gw.pid -d 8002 -D$' \
+	    cat jexec.log || atf_fail "suricata sw2-gw is not started again: $(cat jexec.log)"
+	wait_match '/usr/local/sbin/squid -f /var/db/arcana-sdwan/sdwan-proxy-sw2-gw.conf$' \
+	    cat jexec.log || atf_fail "squid sw2-gw is not started again: $(cat jexec.log)"
+	atf_check -o match:'^ifconfig -j 7 -l$' -o match:'^ifconfig -j 7 -l -u$' cat ifconfig.log
+	wait_match '"name":"sw2-gw","jail":"gw","interfaces":\["epair0b"\],"mode":"prevent","divert":8002,"running":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "suricata sw2-gw does not run again"
+	wait_match '"name":"sw2-gw","jail":"gw","fib":2,"mode":"sni","running":true' \
+	    "$JGC" -c "$SOCK" sdwan || atf_fail "squid sw2-gw does not run again"
 	# Emptied: stopped from inside the jail, its files there and its
 	# kept files gone.
 	qpid=$(cat "$E/sdwan-proxy-sw2-gw.pid")

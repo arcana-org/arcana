@@ -36,7 +36,9 @@
  * network of its own has its first address for it), and ClamAV's
  * signatures are the jail's own, as its freshclam keeps them.  A jail
  * not running at the agent's start leaves its instance kept, not
- * started, until the list is applied again.
+ * started, until the jail comes; a jail made again starts those that
+ * ran in it again (ira/jailwatch.c tells each jail made and removed,
+ * and waits for one made to settle: proxy_wants()).
  *
  * An SD-WAN edge that is a vnet jail has its own (the payload's
  * "jail"), each service's run in the jail the same way, in the
@@ -91,6 +93,8 @@ struct instance {
 	char	name[40];
 	char	jail[64];	/* the jail it runs in, "" the host */
 	bool	jaildown;	/* its jail not running at the start */
+	int	jid;		/* its jail's number when it was started
+				 * there, 0 none (or gone since) */
 	char	mode[12];
 	int	fib;
 	bool	icap;		/* scans for malware: c-icap beside it */
@@ -100,7 +104,8 @@ struct instance {
 static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
 static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
-static bool		starting;	/* the kept lists applied at the start */
+/* One apply at a time: a request's, or a jail's come back. */
+static pthread_mutex_t	apply_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void	proxies_watch(struct work *, const ucl_object_t *,
 		    const struct instance *, int, const char *);
@@ -839,9 +844,12 @@ parse(const char *json)
  * SD-WAN's with "jail" are those of an edge that is that vnet jail, run
  * in it; the other edges' are left as they are, and each edge's list
  * is kept in a file of its own.
+ * keepdown (the start, a jail come back): one whose jail is not running
+ * is kept, not started, rather than the list refused.
  */
-int
-do_sdwan_proxy(struct work *w, const char *json, const char **errp)
+static int
+proxy_apply(struct work *w, const char *json, bool keepdown,
+    const char **errp)
 {
 	ucl_object_t		*top, *hashes;
 	const ucl_object_t	*in, *v;
@@ -885,7 +893,7 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	if (edge[0] != '\0') {
 		e = NULL;
 		if (scope_enter(w, edge, &e) != 0) {
-			if (!starting) {
+			if (!keepdown) {
 				ucl_object_unref(top);
 				*errp = wfmt(w, "the edge %s: %s", edge, e);
 				return (-1);
@@ -955,7 +963,7 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 			snprintf(ni[n].jail, sizeof(ni[n].jail), "%s",
 			    ucl_object_tostring(v));
 			if (inst_in(w, ni[n].jail, NULL) != 0) {
-				if (!starting) {
+				if (!keepdown) {
 					ucl_object_unref(top);
 					*errp = wfmt(w, "%s: the jail %s is not "
 					    "running: it runs in it, start the jail "
@@ -1110,6 +1118,9 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 			step_end(w, step, true, NULL);
 			continue;
 		}
+		/* Its jail as it runs now: made again later, it is started
+		 * again with it (proxy_wants()). */
+		ni[k].jid = w->jail != NULL ? w->jid : 0;
 		/* Stopped by the admin: it and its c-icap, files kept. */
 		if (ni[k].stopped) {
 			step = step_begin(w, STEP_DAEMON, "arcana-agent",
@@ -1216,6 +1227,106 @@ do_sdwan_proxy(struct work *w, const char *json, const char **errp)
 	return (0);
 }
 
+int
+do_sdwan_proxy(struct work *w, const char *json, const char **errp)
+{
+	int	rc;
+
+	pthread_mutex_lock(&apply_lock);
+	rc = proxy_apply(w, json, false, errp);
+	pthread_mutex_unlock(&apply_lock);
+	return (rc);
+}
+
+/* A kept list applied again, a jail not running kept: 0, or -1 and why
+ * (prefixed with what). */
+static int
+kept_apply(struct work *w, const char *file, const char *what,
+    const char **errp)
+{
+	const char	*e;
+	char		*json;
+	int		 rc;
+
+	if ((json = sdwan_kept_read(file)) == NULL)
+		return (0);
+	e = NULL;
+	pthread_mutex_lock(&apply_lock);
+	rc = proxy_apply(w, json, true, &e);
+	pthread_mutex_unlock(&apply_lock);
+	free(json);
+	if (rc != 0)
+		*errp = wfmt(w, "%s: %s", what, e);
+	return (rc);
+}
+
+/*
+ * The jails instances run in, followed (ira/jailwatch.c): one made (or
+ * running at the start) that instances not stopped run in, and which
+ * they were not started in (another jid, or none), is wanted, once it
+ * has an interface up besides the loopback (a vnet jail's, where its
+ * clients and c-icap's loopback are); then their kept list is applied
+ * again, a jail edge's its own file's.
+ */
+static int
+proxy_wants(const char *jail, int jid, char (*ifs)[JAIL_IFNAMSIZ] __unused,
+    int max __unused)
+{
+	int	i, n;
+
+	n = -1;
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (strcmp(instances[i].jail, jail) == 0 &&
+		    !instances[i].stopped && instances[i].jid != jid)
+			n = 0;
+	pthread_mutex_unlock(&lock);
+	return (n);
+}
+
+static int
+proxy_follow(struct work *w, const char *jail, const char **errp)
+{
+	const char	*e;
+	int		 i, rc;
+	bool		 sec;
+
+	pthread_mutex_lock(&lock);
+	for (sec = false, i = 0; i < ninstances; i++)
+		sec |= IS_SEC(instances[i].name) && strcmp(instances[i].jail,
+		    jail) == 0;
+	pthread_mutex_unlock(&lock);
+	rc = 0;
+	e = NULL;
+	if (sec && kept_apply(w, SEC_FILE, "security proxy", &e) != 0) {
+		*errp = e;
+		rc = -1;
+	}
+	if (kept_apply(w, wfmt(w, "sdwan-proxy@%s.json", jail), "sdwan proxy",
+	    &e) != 0) {
+		*errp = e;
+		rc = -1;
+	}
+	return (rc);
+}
+
+static void
+proxy_gone(const char *jail, int jid)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (instances[i].jid == jid && strcmp(instances[i].jail, jail) ==
+		    0)
+			instances[i].jid = 0;
+	pthread_mutex_unlock(&lock);
+}
+
+static const struct jail_follower proxy_follower = {
+	"squid", proxy_wants, proxy_follow, proxy_gone
+};
+
 /*
  * The SD-WAN instances' logs of an edge, those not stopped, read for
  * what they blocked (sdblock.c): Squid's access log, c-icap's server
@@ -1273,18 +1384,16 @@ sdwan_proxy_start(void)
 	struct work	 w;
 	struct dirent	*de;
 	DIR		*d;
-	char		*json, dir[MAXPATHLEN], *slash;
+	char		 dir[MAXPATHLEN], *slash;
 	const char	*e;
 	size_t		 n;
 
+	/* The jails followed from now: jailwatch.c starts after. */
+	jail_follow(&proxy_follower);
 	work_init(&w);
-	starting = true;
-	if ((json = sdwan_kept_read(PROXY_FILE)) != NULL) {
-		e = NULL;
-		if (do_sdwan_proxy(&w, json, &e) != 0)
-			logmsg(LOG_WARNING, "sdwan proxy: %s", e);
-		free(json);
-	}
+	e = NULL;
+	if (kept_apply(&w, PROXY_FILE, "sdwan proxy", &e) != 0)
+		logmsg(LOG_WARNING, "%s", e);
 	sdwan_conf_path(PROXY_FILE, dir, sizeof(dir));
 	if ((slash = strrchr(dir, '/')) == NULL)
 		snprintf(dir, sizeof(dir), ".");
@@ -1296,23 +1405,16 @@ sdwan_proxy_start(void)
 			if (strncmp(de->d_name, "sdwan-proxy@", 12) != 0 || n <=
 			    17 || strcmp(de->d_name + n - 5, ".json") != 0)
 				continue;
-			if ((json = sdwan_kept_read(de->d_name)) == NULL)
-				continue;
 			e = NULL;
-			if (do_sdwan_proxy(&w, json, &e) != 0)
-				logmsg(LOG_WARNING, "sdwan proxy: %s: %s",
-				    de->d_name, e);
-			free(json);
+			if (kept_apply(&w, de->d_name, wfmt(&w, "sdwan proxy: %s",
+			    de->d_name), &e) != 0)
+				logmsg(LOG_WARNING, "%s", e);
 		}
 		closedir(d);
 	}
-	if ((json = sdwan_kept_read(SEC_FILE)) != NULL) {
-		e = NULL;
-		if (do_sdwan_proxy(&w, json, &e) != 0)
-			logmsg(LOG_WARNING, "security proxy: %s", e);
-		free(json);
-	}
-	starting = false;
+	e = NULL;
+	if (kept_apply(&w, SEC_FILE, "security proxy", &e) != 0)
+		logmsg(LOG_WARNING, "%s", e);
 	work_free(&w);
 }
 

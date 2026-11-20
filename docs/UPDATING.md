@@ -93,6 +93,21 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Jails followed by EVFILT_JAIL; agent 0.343.0
+
+- A Suricata or Squid instance that runs in a jail (the Security
+  section's, or a jail edge's SD-WAN services) is started again when
+  its jail is made again, as jailwatch.c is told (EVFILT_JAIL), no
+  longer by a reader looking the jail up every second.  A jail made is
+  waited for until it has settled: the interfaces its instances watch
+  inside it (ifconfig -j JID -l; none named, one up besides the
+  loopback), 30 seconds at most, then its kept list is applied again;
+  an apply that fails is tried again three times, later each time.
+- Squid in a jail now follows its jail too (before, it waited for the
+  next apply), and a jail edge's Suricata is started again from the
+  edge's own kept list (sdwan-ids@JAIL.json), not the host edge's.
+- Nothing to do: update the agent.
+
 ### Dry runs, vulnerable packages, instance restart, a job's jail; agent 0.342.0, console 0.485.0
 
 - Dry runs (arcanactl -n, arcana-jobs dry-run) take pkg-upgrade,

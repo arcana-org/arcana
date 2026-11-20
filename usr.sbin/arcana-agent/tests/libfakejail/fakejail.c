@@ -25,6 +25,17 @@
  * (JAIL_CREATE) is the kernel's; nothing else reaches a jail of the
  * host's while FAKEJAIL is set.
  *
+ * And kqueue(2)'s EVFILT_JAIL of the file's jails, while FAKEJAIL is
+ * set, as ira/jailwatch.c reads them: a watch of jail 0 for
+ * NOTE_JAIL_CHILD is told each jail the file gains (NOTE_JAIL_CHILD, its
+ * jid in data), and a watch of one of the file's jails (refused, ESRCH,
+ * when the file has none of that jid) is told when its line goes
+ * (NOTE_JAIL_REMOVE, with the watch's udata), once.  The file is read
+ * again every FK_EVERY ms while kevent(2) waits for events on that
+ * kqueue, the kernel's events of it given as they come; every other
+ * kqueue is the kernel's alone.  A jail whose line goes and comes back
+ * between two reads is not seen to.
+ *
  * And if_nametoindex(3): the interfaces FAKEIFS names, separated by
  * spaces, are there when the host has none of the name, so that the
  * tests' documents may name a host's network card (vtnet0) on a host
@@ -66,10 +77,12 @@
  */
 
 #include <sys/param.h>
+#include <sys/event.h>
 #include <sys/jail.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 
 #include <net/if.h>
@@ -80,6 +93,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <paths.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -576,6 +590,198 @@ jail_remove(int jid)
 	k = fj_write(file, js, nj);
 	free(js);
 	return (k);
+}
+
+/* ---- EVFILT_JAIL ----------------------------------------------- */
+
+#define	FK_EVERY	200	/* ms, the file read again */
+#define	FK_MAX		64
+
+typedef int	kevent_fn(int, const struct kevent *, int, struct kevent *,
+		    int, const struct timespec *);
+
+static pthread_mutex_t	fk_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile int	fk_kq = -1;	/* the kqueue watching, or -1 */
+static int		fk_known[FK_MAX];	/* the file's jids, last read */
+static int		fk_nknown;
+static struct {
+	int	 jid;
+	void	*udata;
+} fk_watch[FK_MAX];			/* jails watched for removal */
+static int		fk_nwatch;
+
+/* The file's jids, in jids (max at most); how many. */
+static int
+fk_jids(const char *file, int *jids, int max)
+{
+	struct fj	*js;
+	int		 nj, m, i, n;
+
+	if ((js = fj_all(&m)) == NULL)
+		return (0);
+	n = 0;
+	if (fj_read(file, js, m, &nj))
+		for (i = 0; i < nj && n < max; i++)
+			jids[n++] = js[i].jid;
+	free(js);
+	return (n);
+}
+
+static bool
+fk_in(const int *jids, int n, int jid)
+{
+	int	i;
+
+	for (i = 0; i < n; i++)
+		if (jids[i] == jid)
+			return (true);
+	return (false);
+}
+
+/* A watch asked: jail 0's for its children, or a jail's.  0, or an
+ * errno. */
+static int
+fk_add(const char *file, int kq, const struct kevent *c)
+{
+	int	jids[FK_MAX], n, i;
+
+	if ((c->flags & EV_DELETE) != 0)
+		return (0);
+	n = fk_jids(file, jids, FK_MAX);
+	if (c->ident == 0) {
+		fk_kq = kq;
+		memcpy(fk_known, jids, sizeof(jids[0]) * (size_t)n);
+		fk_nknown = n;
+		return (0);
+	}
+	if (!fk_in(jids, n, (int)c->ident))
+		return (ESRCH);
+	for (i = 0; i < fk_nwatch; i++)
+		if (fk_watch[i].jid == (int)c->ident)
+			break;
+	if (i == fk_nwatch) {
+		if (fk_nwatch == FK_MAX)
+			return (ENOMEM);
+		fk_nwatch++;
+	}
+	fk_watch[i].jid = (int)c->ident;
+	fk_watch[i].udata = c->udata;
+	if (!fk_in(fk_known, fk_nknown, (int)c->ident) && fk_nknown < FK_MAX)
+		fk_known[fk_nknown++] = (int)c->ident;
+	return (0);
+}
+
+/* What the file says happened since it was read last: a watched jail
+ * gone first, then a jail made; at most nev of them. */
+static int
+fk_events(const char *file, struct kevent *ev, int nev)
+{
+	int	jids[FK_MAX], n, i, k, out;
+
+	n = fk_jids(file, jids, FK_MAX);
+	out = 0;
+	for (i = 0; i < fk_nknown && out < nev; ) {
+		if (fk_in(jids, n, fk_known[i])) {
+			i++;
+			continue;
+		}
+		for (k = 0; k < fk_nwatch; k++)
+			if (fk_watch[k].jid == fk_known[i])
+				break;
+		if (k < fk_nwatch) {
+			EV_SET(&ev[out], fk_known[i], EVFILT_JAIL, 0,
+			    NOTE_JAIL_REMOVE, 0, fk_watch[k].udata);
+			out++;
+			fk_watch[k] = fk_watch[--fk_nwatch];
+		}
+		fk_known[i] = fk_known[--fk_nknown];
+	}
+	for (i = 0; i < n && out < nev; i++) {
+		if (fk_in(fk_known, fk_nknown, jids[i]) || fk_nknown == FK_MAX)
+			continue;
+		fk_known[fk_nknown++] = jids[i];
+		EV_SET(&ev[out], 0, EVFILT_JAIL, 0, NOTE_JAIL_CHILD, jids[i],
+		    NULL);
+		out++;
+	}
+	return (out);
+}
+
+int
+kevent(int kq, const struct kevent *changelist, int nchanges,
+    struct kevent *eventlist, int nevents, const struct timespec *timeout)
+{
+	kevent_fn		*fn;
+	struct kevent		*rest;
+	struct timespec		 slice, now, end;
+	const char		*file;
+	int			 i, n, r, e;
+	bool			 jail;
+
+	if ((fn = (kevent_fn *)real("kevent")) == NULL)
+		return (-1);
+	if ((file = getenv("FAKEJAIL")) == NULL)
+		return (fn(kq, changelist, nchanges, eventlist, nevents,
+		    timeout));
+	for (jail = false, i = 0; i < nchanges; i++)
+		jail |= changelist[i].filter == EVFILT_JAIL;
+	if (!jail && kq != fk_kq)
+		return (fn(kq, changelist, nchanges, eventlist, nevents,
+		    timeout));
+	if (jail) {
+		/* The jail watches the file's, the others the kernel's. */
+		if ((rest = calloc((size_t)nchanges, sizeof(*rest))) == NULL)
+			return (-1);
+		n = 0;
+		e = 0;
+		pthread_mutex_lock(&fk_lock);
+		for (i = 0; i < nchanges; i++)
+			if (changelist[i].filter != EVFILT_JAIL)
+				rest[n++] = changelist[i];
+			else if (e == 0)
+				e = fk_add(file, kq, &changelist[i]);
+		pthread_mutex_unlock(&fk_lock);
+		r = n > 0 ? fn(kq, rest, n, NULL, 0, NULL) : 0;
+		free(rest);
+		if (e != 0) {
+			errno = e;
+			return (-1);
+		}
+		if (r == -1)
+			return (-1);
+	} else if (nchanges > 0 && fn(kq, changelist, nchanges, NULL, 0,
+	    NULL) == -1)
+		return (-1);
+	if (nevents <= 0)
+		return (0);
+	if (timeout != NULL) {
+		(void)clock_gettime(CLOCK_MONOTONIC, &end);
+		end.tv_sec += timeout->tv_sec;
+		end.tv_nsec += timeout->tv_nsec;
+		if (end.tv_nsec >= 1000000000) {
+			end.tv_sec++;
+			end.tv_nsec -= 1000000000;
+		}
+	}
+	for (;;) {
+		pthread_mutex_lock(&fk_lock);
+		n = fk_events(file, eventlist, nevents);
+		pthread_mutex_unlock(&fk_lock);
+		if (n > 0)
+			return (n);
+		slice.tv_sec = 0;
+		slice.tv_nsec = FK_EVERY * 1000000L;
+		if (timeout != NULL) {
+			(void)clock_gettime(CLOCK_MONOTONIC, &now);
+			if (timespeccmp(&now, &end, >=))
+				return (0);
+			timespecsub(&end, &now, &now);
+			if (timespeccmp(&now, &slice, <))
+				slice = now;
+		}
+		if ((r = fn(kq, NULL, 0, eventlist, nevents, &slice)) != 0)
+			return (r);
+	}
 }
 
 /* The host's interface, or one FAKEIFS names: an index past the host's. */

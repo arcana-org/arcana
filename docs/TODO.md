@@ -192,21 +192,26 @@
   pcap-log, captures, replays (the jail's Suricata, a capture the jail
   has) and profiling beneath the jail's root; a vnet jail's interfaces'
   offloading read there (ifconfig -j); started again when its jail
-  comes back (the IDS reader sees the jail gone, or another jid, and
-  applies its group's kept list again once the jail has settled, a jail
-  not running kept); the suricata job, Rules and Sources take a jail
-  (its own suricata-update by jexec, /var/lib/suricata beneath its
-  root, the rules set for it kept as NAME.JAIL), the page's following
-  Runs in.  Left: the jail's restart is seen by polling (the reader's
-  jail_getv each second), not by jailwatch.c's EVFILT_JAIL, which tells
-  a jail made before its vnet interfaces are moved in.
+  comes back, Suricata and Squid alike (agent_test:security_jail,
+  agent_root_test:security_jail_follow): jailwatch.c's EVFILT_JAIL
+  tells each jail made and removed to the services that follow jails
+  (jail_follow()), and a jail made is waited for until it has settled
+  (the interfaces its instances watch inside it, ifconfig -j JID -l;
+  none named, one up besides the loopback; 30 s at most) before its
+  group's kept list is applied again, a jail not running kept; no
+  polling of jail_getv for it; the suricata job, Rules and Sources take
+  a jail (its own suricata-update by jexec, /var/lib/suricata beneath
+  its root, the rules set for it kept as NAME.JAIL), the page's
+  following Runs in.
 - SD-WAN's URL filter and IPS at an edge that is a vnet jail
   (agent_test:sdwan_jail_proxy_ids, console_test:sdwan_jail_security):
   the services' Squid with c-icap and Suricata run in the jail as its
   dnsmasq and unbound do, files in /var/db/arcana-sdwan beneath its
   root, the MD+R's hashes its own ClamAV's, what Suricata prevents
   diverted by the edge's own rules (rule 9 in the jail's ipfw), no
-  idsfw.c rule.  Left: not run yet in a real vnet jail.
+  idsfw.c rule; started again from the edge's own kept files when the
+  jail is made again (jail_follow(), as the Security section's).
+  Left: not run yet in a real vnet jail.
 - Each a task of its own, in no order yet:
   - Disaster recovery across console clusters.
   - Agents in an HA pair on identical hardware and ports, the pair's

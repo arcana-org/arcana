@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.342.0"
+#define	ARCANA_AGENT_VERSION	"0.343.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -1862,6 +1862,29 @@ int		 jail_jid_name(int, char *, size_t, char *, size_t);
 int		 jail_next(int);
 /* ira/jailwatch.c: jail-state events, from EVFILT_JAIL */
 void		 jail_watch_start(void);
+/*
+ * A service that runs in jails and follows them, told by jailwatch.c of
+ * each jail made (and each running at its start) and each removed.  A
+ * jail it wants is applied again once settled: the interfaces named
+ * there inside it (none named: one up besides the loopback), when it
+ * has a network of its own.  Registered before jail_watch_start().
+ */
+#define	JAIL_IFS_MAX	32
+#define	JAIL_IFNAMSIZ	16	/* IFNAMSIZ */
+struct jail_follower {
+	const char	*what;		/* for the log: "security ids" */
+	/* The jail made (name, jid) concerns it: the interfaces its
+	 * instances there need inside, in ifs (max at most), and their
+	 * number; -1 when it has nothing there to start. */
+	int		(*wants)(const char *, int, char (*)[JAIL_IFNAMSIZ],
+			    int);
+	/* The jail settled: its kept lists applied again, a jail not
+	 * running kept.  0, or -1 and why. */
+	int		(*apply)(struct work *, const char *, const char **);
+	/* The jail (name, jid) removed: what ran in it marked gone. */
+	void		(*gone)(const char *, int);
+};
+void		 jail_follow(const struct jail_follower *);
 int		 pcb_helper(int, char **);
 int		 pcb_list(FILE *, bool, int);
 int		 helper_lines(struct work *, const char *, size_t,

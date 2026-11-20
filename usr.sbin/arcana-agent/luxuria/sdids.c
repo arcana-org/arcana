@@ -36,7 +36,11 @@
  * placed in the jail's own ipfw by Arcana (idsfw.c); a jail that shares
  * the host's network may detect by pcap(3) where its devfs shows it
  * bpf(4).  A jail not running at the agent's start leaves its instance
- * kept, not started, until the list is applied again.
+ * kept, not started, until the jail comes; a jail made again starts
+ * those that ran in it again: ira/jailwatch.c tells each jail made and
+ * removed (EVFILT_JAIL), waits for one made to settle (the interfaces
+ * the instances watch moved into it), and the kept list is applied
+ * again (ids_wants()).
  *
  * An SD-WAN edge that is a vnet jail has its own (the payload's
  * "jail"), each service's run in the jail the same way, its files in
@@ -91,8 +95,6 @@
 #define	EDGE_DIR	"/var/db/arcana-sdwan"
 #define	DIR_OF(name)	(IS_SEC(name) ? JAIL_DIR : EDGE_DIR)
 #define	JAIL_RULESET	"/var/lib/suricata/rules/suricata.rules"
-#define	JAIL_SETTLE	3	/* s, a jail come back given to settle */
-#define	JAIL_TRIES	4	/* its instances started, at most */
 #define	START_WAIT	180	/* s, for its engine to start */
 #define	DIVERT_EVERY	10	/* s, ipfw read again for one down */
 #define	CONF_MAX	(256 * 1024)
@@ -167,10 +169,6 @@ static struct instance	instances[INSTANCES_MAX];
 static int		ninstances;
 static bool		reading;
 static bool		ids_started;	/* both groups read at the start */
-/* A jail of instances come back (a restart): their groups to start
- * again, by one thread at a time. */
-static bool		jail_due[2];	/* SD-WAN's, the Security section's */
-static bool		jail_restarting;
 
 static bool	running(const char *, const char *);
 static int	ids_apply(struct work *, const char *, bool, const char **);
@@ -1261,106 +1259,124 @@ guard(struct work *w, struct instance *in, bool there)
 	in->sev = sev;
 }
 
-/*
- * A jail that instances run in started again, or running at last where
- * it was not when they were applied (the agent's start): their group's
- * kept list applied again, once the jail has had time to settle (a vnet
- * jail's interfaces are moved into it after it is made), those of a
- * jail not running kept as at the start.  An apply that fails is tried
- * again, a while later each time, JAIL_TRIES times at most; then not
- * until a jail comes back again.
- */
-static void *
-jail_restart(void *arg __unused)
-{
-	struct work	 w;
-	char		*json;
-	const char	*e;
-	bool		 due[2], failed;
-	int		 g, try;
-
-	try = 0;
-	for (;;) {
-		sleep(JAIL_SETTLE << try);
-		pthread_mutex_lock(&lock);
-		due[0] = jail_due[0];
-		due[1] = jail_due[1];
-		jail_due[0] = jail_due[1] = false;
-		if (!due[0] && !due[1]) {
-			jail_restarting = false;
-			pthread_mutex_unlock(&lock);
-			return (NULL);
-		}
-		pthread_mutex_unlock(&lock);
-		failed = false;
-		for (g = 0; g < 2; g++) {
-			if (!due[g] || (json = sdwan_kept_read(g == 1 ? SEC_FILE :
-			    IDS_FILE)) == NULL)
-				continue;
-			work_init(&w);
-			e = NULL;
-			if (ids_apply(&w, json, true, &e) != 0) {
-				logmsg(LOG_WARNING, "%s ids, a jail started again: "
-				    "%s", g == 1 ? "security" : "sdwan", e);
-				pthread_mutex_lock(&lock);
-				jail_due[g] = try + 1 < JAIL_TRIES;
-				pthread_mutex_unlock(&lock);
-				failed = true;
-			} else
-				logmsg(LOG_INFO, "%s ids: started again in the jails "
-				    "that came back", g == 1 ? "security" : "sdwan");
-			work_free(&w);
-			free(json);
-		}
-		try = failed && try + 1 < JAIL_TRIES ? try + 1 : 0;
-	}
-}
-
 static void *
 reader(void *arg __unused)
 {
 	struct work	w;
-	pthread_t	tid;
-	int		i, jid;
-	bool		there, due[2];
+	int		i;
+	bool		there;
 
 	for (;;) {
 		sleep(1);
-		due[0] = due[1] = false;
 		pthread_mutex_lock(&lock);
 		for (i = 0; i < ninstances; i++) {
-			/* Each where it runs: a jail not running, nothing
-			 * read of it. */
+			/* Each where it runs: a jail not running (gone, as
+			 * jailwatch.c told, or not running at its apply),
+			 * nothing read of it.  Its coming back is told by
+			 * jailwatch.c too (ids_wants()), not looked for. */
 			work_init(&w);
-			there = inst_in(&w, instances[i].jail, NULL) == 0;
-			/* Its jail back, or started again (another number)
-			 * since it was last seen: it is started again with
-			 * its group (jail_restart()). */
-			if (instances[i].jail[0] != '\0') {
-				jid = there ? w.jid : 0;
-				if (jid != 0 && jid != instances[i].jid &&
-				    !instances[i].stopped)
-					due[IS_SEC(instances[i].name)] = true;
-				instances[i].jid = jid;
-			}
+			there = (instances[i].jail[0] == '\0' ||
+			    instances[i].jid != 0) && inst_in(&w,
+			    instances[i].jail, NULL) == 0;
 			if (there)
 				read_eve(&w, &instances[i]);
 			guard(&w, &instances[i], there);
 			work_free(&w);
 		}
-		if (due[0] || due[1]) {
-			jail_due[0] |= due[0];
-			jail_due[1] |= due[1];
-			if (!jail_restarting && pthread_create(&tid, NULL,
-			    jail_restart, NULL) == 0) {
-				(void)pthread_detach(tid);
-				jail_restarting = true;
-			}
-		}
 		pthread_mutex_unlock(&lock);
 	}
 	return (NULL);
 }
+
+/*
+ * The jails instances run in, followed (ira/jailwatch.c): one made (or
+ * running at the start) that instances not stopped run in, and which
+ * they were not started in (another jid, or none: their jail was not
+ * running at their apply, or has gone since), is wanted, the interfaces
+ * they watch to be in it first (any is one of them, em0^ em0); then
+ * their group's kept list is applied again, a jail edge's its own
+ * file's, a jail not running kept as at the start.
+ */
+static int
+ids_wants(const char *jail, int jid, char (*ifs)[JAIL_IFNAMSIZ], int max)
+{
+	struct instance	*in;
+	char		 ifn[JAIL_IFNAMSIZ];
+	int		 i, k, j, n;
+
+	n = -1;
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++) {
+		in = &instances[i];
+		if (strcmp(in->jail, jail) != 0 || in->stopped || in->jid ==
+		    jid)
+			continue;
+		if (n < 0)
+			n = 0;
+		for (k = 0; k < in->nifs; k++) {
+			if (strcmp(in->ifs[k], "any") == 0)
+				continue;
+			snprintf(ifn, sizeof(ifn), "%.*s", (int)strcspn(
+			    in->ifs[k], "^"), in->ifs[k]);
+			for (j = 0; j < n; j++)
+				if (strcmp(ifs[j], ifn) == 0)
+					break;
+			if (j == n && n < max)
+				memcpy(ifs[n++], ifn, sizeof(ifn));
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return (n);
+}
+
+static int
+ids_follow(struct work *w, const char *jail, const char **errp)
+{
+	const char	*files[2], *e;
+	char		*json;
+	int		 i, nf, rc;
+	bool		 sec;
+
+	pthread_mutex_lock(&lock);
+	for (sec = false, i = 0; i < ninstances; i++)
+		sec |= IS_SEC(instances[i].name) && strcmp(instances[i].jail,
+		    jail) == 0;
+	pthread_mutex_unlock(&lock);
+	nf = 0;
+	if (sec)
+		files[nf++] = SEC_FILE;
+	files[nf++] = wfmt(w, "sdwan-ids@%s.json", jail);
+	rc = 0;
+	for (i = 0; i < nf; i++) {
+		if ((json = sdwan_kept_read(files[i])) == NULL)
+			continue;
+		e = NULL;
+		if (ids_apply(w, json, true, &e) != 0) {
+			*errp = wfmt(w, "%s ids: %s", sec && i == 0 ?
+			    "security" : "sdwan", e);
+			rc = -1;
+		}
+		free(json);
+	}
+	return (rc);
+}
+
+static void
+ids_gone(const char *jail, int jid)
+{
+	int	i;
+
+	pthread_mutex_lock(&lock);
+	for (i = 0; i < ninstances; i++)
+		if (instances[i].jid == jid && strcmp(instances[i].jail, jail) ==
+		    0)
+			instances[i].jid = 0;
+	pthread_mutex_unlock(&lock);
+}
+
+static const struct jail_follower ids_follower = {
+	"suricata", ids_wants, ids_follow, ids_gone
+};
 
 /* The divert port an instance runs with now (the lock held); -1 when
  * it is not one of them. */
@@ -1999,8 +2015,9 @@ ids_apply(struct work *w, const char *json, bool keepdown,
 		 * or one before it.  Those that stay keep where they were
 		 * read to. */
 		ni[k].off = eve_size(w, ni[k].name);
-		/* Its jail as it runs now: another number later is the jail
-		 * started again, and it with it (reader()). */
+		/* Its jail as it runs now: made again later (another
+		 * number, or the same after it went), it is started again
+		 * with it (ids_wants()). */
 		ni[k].jid = w->jail != NULL ? w->jid : 0;
 		/* Stopped by the admin: not run, its place kept. */
 		if (ni[k].stopped) {
@@ -2269,6 +2286,8 @@ sdwan_ids_start(void)
 	const char	*e;
 	size_t		 n;
 
+	/* The jails followed from now: jailwatch.c starts after. */
+	jail_follow(&ids_follower);
 	work_init(&w);
 	if ((json = sdwan_kept_read(IDS_FILE)) != NULL) {
 		e = NULL;
