@@ -128,6 +128,9 @@ static const struct bridge {
 #define	H	"data/arcana-console:hosts/host=*/"
 	{ H "drift", NULL, NULL, false },
 	{ H "watch", NULL, NULL, false },
+	{ H "pending-commit", NULL, NULL, false },
+	{ H "keep-commit", "result", NULL, true },
+	{ H "undo-commit", "result", NULL, true },
 	{ H "notifications", NULL, NULL, false },
 	{ H "subscription", NULL, NULL, false },
 	{ H "tls", NULL, NULL, false },

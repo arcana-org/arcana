@@ -144,6 +144,19 @@ module arcana-jobs {
          services or packages it changed, \"*\" every running jail
          (an upgrade of each in turn); absent for the host's.";
     }
+    leaf steps-done {
+      type uint32;
+      description
+        "Running: its progress, the steps of its trace that ended
+         (steps-done of steps-total).";
+    }
+    leaf steps-total {
+      type uint32;
+      description
+        "Running: the steps of its trace so far, begun or ended; a
+         step a program or a part of the job, more coming as it goes
+         on.";
+    }
   }
 
   grouping step {

@@ -43,6 +43,10 @@ typedef struct arcana_jobs_jobs_job yjob;
 		(y)->confirm_by = (j)->confirm_by;			\
 	(y)->user = (j)->user;						\
 	(y)->jail = (j)->jail;						\
+	if (((y)->has_steps_done = (j)->has_steps_done))		\
+		(y)->steps_done = (j)->steps_done;			\
+	if (((y)->has_steps_total = (j)->has_steps_total))		\
+		(y)->steps_total = (j)->steps_total;			\
 } while (0)
 
 /* Job j with its trace (steps) as the read action's output; strings

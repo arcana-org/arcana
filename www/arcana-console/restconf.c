@@ -2697,10 +2697,11 @@ refusal(int error, const char **tag)
 	}
 }
 
-/* An rpc of ietf-netconf's over conn, its input from r's body. */
+/* An rpc of ietf-netconf's over conn, its input from r's body; refused,
+ * why, its app-tag and the node at fault (a commit's edit handler's). */
 static int
 run_rpc(cbl_conn *conn, const struct rcreq *r, char *err, size_t errlen,
-    char *apptag, size_t taglen, ucl_object_t **warnings)
+    char *apptag, size_t taglen, uint64_t *errsid, ucl_object_t **warnings)
 {
 	const struct cbl_ywarning	*w;
 	const struct cbl_ynode		*inode = NULL;
@@ -2715,6 +2716,7 @@ run_rpc(cbl_conn *conn, const struct rcreq *r, char *err, size_t errlen,
 	int				 error;
 
 	err[0] = apptag[0] = '\0';
+	*errsid = 0;
 	*warnings = NULL;
 	for (uint32_t i = 0; i < r->rpc->nchild; i++)
 		if (r->rpc->child[i]->kind == CBL_YN_INPUT)
@@ -2765,6 +2767,8 @@ run_rpc(cbl_conn *conn, const struct rcreq *r, char *err, size_t errlen,
 		if (rep != NULL && cbl_msg_err_apptag(rep) != NULL)
 			snprintf(apptag, taglen, "%s",
 			    cbl_msg_err_apptag(rep));
+		if (rep != NULL)
+			*errsid = cbl_msg_err_sid(rep);
 		cbl_msg_free(rep);
 		return (error);
 	}
@@ -3441,7 +3445,7 @@ done:
  * refused, ietf-restconf's errors. */
 static void
 change_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
-    const char *uri, char **json, int *status)
+    const char *id, const char *uri, char **json, int *status)
 {
 	const ucl_object_t	*in, *v;
 	ucl_object_t		*warnings = NULL, *top;
@@ -3455,7 +3459,7 @@ change_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
 	}
 	apptag[0] = '\0';
 	if ((error = run_rpc(conn, r, err, sizeof(err), apptag,
-	    sizeof(apptag), &warnings)) != 0) {
+	    sizeof(apptag), &errsid, &warnings)) != 0) {
 		*json = refused(r, error, err, errsid, apptag, status);
 		return;
 	}
@@ -3472,6 +3476,24 @@ change_run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *s,
 		tags_changed(uri, DS_RUNNING | DS_CANDIDATE, time(NULL), 0);
 	else
 		tags_changed(uri, DS_CANDIDATE, time(NULL), -1);
+	/* The confirmed commit waiting on the host, who made it
+	 * (pendcommit.c): a page that reloads finds it again. */
+	if (strcmp(r->rpc->name, "commit") == 0) {
+		struct principal	who;
+		char			name[USER_NAME_LEN];
+		int64_t			t = 600;
+
+		hosts_acting(&who);
+		if (principal_nacm(&who, name, sizeof(name)) == NULL)
+			name[0] = '\0';
+		if ((v = ucl_object_lookup(in, "confirm-timeout")) != NULL)
+			t = ucl_object_toint(v);
+		pendc_commit(id, name, ucl_object_lookup(in, "confirmed") !=
+		    NULL, ucl_object_tostring(ucl_object_lookup(in,
+		    "persist")), ucl_object_tostring(ucl_object_lookup(in,
+		    "persist-id")), (uint32_t)t);
+	} else if (strcmp(r->rpc->name, "cancel-commit") == 0)
+		pendc_cancel(id);
 	if (warnings == NULL) {
 		*status = 204;
 		*json = strdup("");
@@ -4125,7 +4147,7 @@ run(cbl_conn *conn, struct rcreq *r, const struct cbl_ysids *ys, const char *id,
 		return;
 	}
 	if (r->method != HTTP_METHOD_GET) {
-		change_run(conn, r, ys, uri, json, status);
+		change_run(conn, r, ys, id, uri, json, status);
 		return;
 	}
 	if (r->cbor) {

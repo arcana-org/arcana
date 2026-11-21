@@ -2,7 +2,7 @@
   "ietf-sid-file:sid-file": {
     "module-name": "arcana-console",
     "module-revision": "2026-11-05",
-    "sid-file-version": 16,
+    "sid-file-version": 17,
     "description": "RFC 9595's experimental range, for now (share/yang/SIDS.md).",
     "dependency-revision": [
       {
@@ -3363,6 +3363,11 @@
       },
       {
         "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/undo-commit/output/result",
+        "sid": "92464"
+      },
+      {
+        "namespace": "data",
         "identifier": "/arcana-console:hosts/host/inspection-ca",
         "sid": "95920"
       },
@@ -3430,6 +3435,46 @@
         "namespace": "data",
         "identifier": "/arcana-console:sdwan/apply/input/edges",
         "sid": "97421"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/keep-commit",
+        "sid": "97422"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/keep-commit/input",
+        "sid": "97423"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/keep-commit/output",
+        "sid": "97424"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/keep-commit/output/result",
+        "sid": "97425"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/pending-commit",
+        "sid": "97426"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/undo-commit",
+        "sid": "97427"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/undo-commit/input",
+        "sid": "97428"
+      },
+      {
+        "namespace": "data",
+        "identifier": "/arcana-console:hosts/host/undo-commit/output",
+        "sid": "97429"
       }
     ]
   }

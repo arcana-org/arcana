@@ -1205,18 +1205,40 @@ place_watch(struct work *w, const char *place)
 	    "host:", place, place[0] != '\0' ? "/" : "");
 	snprintf(where, sizeof(where), "%s%s", place[0] != '\0' ? " in " : "",
 	    place);
+	/* Running or not, by the service's process (its rc.d status), not
+	 * by what smtpctl answers. */
 	enabled = running = false;
 	svc_state(w, &enabled, &running);
 	if (!running) {
-		if (enabled)
+		if (enabled) {
+			/* A lesser one (its counters, its queue) gives way. */
+			if (!fault_open_as("mail", obj, "Major"))
+				fault_clear("mail", obj, "smtpd%s stopped",
+				    where);
 			fault_set("mail", "Major", obj, "smtpd", "smtpd%s is "
 			    "enabled and not running", where);
-		else
+		} else
 			fault_clear("mail", obj, "smtpd%s is turned off", where);
 		return;
 	}
-	if ((text = ctl(w, "show", "stats", NULL)) == NULL)
+	/* It runs: what said it did not is gone, whether its counters can
+	 * be read or not. */
+	if (fault_open_as("mail", obj, "Major"))
+		fault_clear("mail", obj, "smtpd%s runs", where);
+	if ((text = ctl(w, "show", "stats", NULL)) == NULL ||
+	    strchr(text, '=') == NULL) {
+		/* Its counters unread: a warning of its own, the queue's
+		 * fault (Minor) given up for it, as the queue is unknown. */
+		if (fault_open_as("mail", obj, "Minor"))
+			fault_clear("mail", obj, "smtpd%s runs, its queue "
+			    "unknown", where);
+		fault_set("mail", "Warning", obj, "smtpd", "smtpd%s runs; its "
+		    "counters cannot be read (smtpctl show stats)", where);
 		return;
+	}
+	if (fault_open_as("mail", obj, "Warning"))
+		fault_clear("mail", obj, "smtpd%s runs, its counters read "
+		    "again", where);
 	st = stats_json(w, text);
 	memset(&m, 0, sizeof(m));
 	m.t = time(NULL);

@@ -23,7 +23,7 @@
 
 #include "textfit.h"
 
-#define	ARCANA_AGENT_VERSION	"0.350.0"
+#define	ARCANA_AGENT_VERSION	"0.351.0"
 
 /* The nice(1) value of a program a read runs. */
 #define	READ_NICE		10
@@ -380,6 +380,7 @@ void		 step_exec(struct work *, int, char *const [], int,
 void		 step_notrun(struct work *, int, char *const []);
 bool		 work_dry(struct work *, int);
 struct arcana_jobs_step;
+void		 trace_progress(struct work *, uint32_t *, uint32_t *);
 void		 trace_copy(struct work *, struct work *,
 		    const struct arcana_jobs_step **, size_t *);
 void		 trace_tell(struct work *, cbl_req *);
@@ -1566,6 +1567,7 @@ void		 fault_clear(const char *, const char *, const char *, ...)
 		    __printflike(3, 4);
 bool		 fault_update(const char *, const char *, const char *, ...)
 		    __printflike(3, 4);
+bool		 fault_open_as(const char *, const char *, const char *);
 /* What an owner watches now (fault_reconcile()): an object of a type
  * (NULL, the call's), whether its cause is gone (its fault cleared,
  * with reason, NULL the call's line), and back whether a fault of it is

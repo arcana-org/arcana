@@ -4695,6 +4695,64 @@ EOF
 	    atf_fail "not the oldest first: $(ls a/*)"
 }
 
+atf_test_case edit_error_path cleanup
+edit_error_path_head()
+{
+	atf_set "descr" "an edit the agent's handlers refuse names the node at" \
+	    "fault (RFC 8040's error-path, a SID): sysctl, history, jails," \
+	    "services, firewall, SD-WAN; refused at the edit or its commit," \
+	    "nothing committed"
+}
+edit_error_path_body()
+{
+	start_daemon
+	# node, JSON, why, the node at fault.
+	refused_at() {
+		printf '%s\n' "$2" > e.json
+		if "$JGC" -c "$SOCK" edit "$1" @e.json 2> err.txt; then
+			"$JGC" -c "$SOCK" commit > /dev/null 2> err.txt &&
+			    atf_fail "$1: committed: $2"
+		fi
+		grep -q -- "$3" err.txt || atf_fail "$1: not '$3': $(cat err.txt)"
+		grep -qF -- "(at $4)" err.txt ||
+		    atf_fail "$1: not at $4: $(cat err.txt)"
+		"$JGC" -c "$SOCK" discard > /dev/null 2>&1 || true
+	}
+	# The agent's own checks, past the model's.
+	refused_at sysctl '{"arcana-sysctl:sysctl":{"kept":[{"name":"-x.y","value":"1"}]}}' \
+	    'a sysctl is named' /arcana-sysctl:sysctl/kept/name
+	refused_at sysctl '{"arcana-sysctl:sysctl":{"kept":[{"name":"kern.x","value":"1\n2"}]}}' \
+	    'one line' /arcana-sysctl:sysctl/kept/value
+	refused_at jails '{"arcana-jails:jails":{"jail":[{"name":"web","param":[{"name":"bad name","value":["1"]}]}]}}' \
+	    "no parameter's name" /arcana-jails:jails/jail/param/name
+	refused_at jails '{"arcana-jails:jails":{"jail":[{"name":"x..y"}]}}' \
+	    'invalid jail name' /arcana-jails:jails/jail/name
+	refused_at firewall '{"arcana-firewall:firewall":{"rc":{"firewall-enable":"YES"}}}' \
+	    "firewall variables are not committed" /arcana-firewall:firewall/rc
+	refused_at sdwan '{"arcana-sdwan:sdwan":{"jail":[{"name":"x..y"}]}}' \
+	    'invalid jail name' /arcana-sdwan:sdwan/jail/name
+	printf '#!/bin/sh\n' > rc.d/zfoo
+	chmod +x rc.d/zfoo
+	refused_at services '{"arcana-services:services":{"service":[{"name":"zfoo","variable":[{"name":"other_flags","value":"1"}]}]}}' \
+	    'is not a variable of zfoo' /arcana-services:services/service/variable/name
+	# The model's own: a history rule without its limit, or a name
+	# history.c does not take.
+	refused_at history '{"arcana-history:history":{"rule":[{"kind":"net","name":"em0"}]}}' \
+	    'limit' /arcana-history:history/rule/limit
+	refused_at history '{"arcana-history:history":{"rule":[{"kind":"net","name":"em/0","limit":"5"}]}}' \
+	    '' /arcana-history:history/rule/name
+	# A rule with its limit is taken.
+	printf '%s\n' '{"arcana-history:history":{"rule":[{"kind":"net","name":"em0","limit":"125000000"}]}}' > e.json
+	atf_check "$JGC" -c "$SOCK" edit history @e.json
+	atf_check -o ignore "$JGC" -c "$SOCK" commit
+	atf_check -o match:'"rule":\[\{"kind":"net","limit":"125000000","name":"em0"' \
+	    "$JGC" -c "$SOCK" get history
+}
+edit_error_path_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case archive_agent cleanup
 archive_agent_head()
 {
@@ -16318,6 +16376,73 @@ smtpd_cleanup()
 	stop_daemon
 }
 
+atf_test_case smtpd_watch_unread cleanup
+smtpd_watch_unread_head()
+{
+	atf_set "descr" "OpenSMTPD watched: running-ness by its process, not smtpctl; counters it cannot read a Warning of their own, the 'enabled and not running' Major cleared all the same"
+}
+smtpd_watch_unread_body()
+{
+	mkdir -p tools smtpd.d
+	printf '#!/bin/sh\nexit 0\n' > tools/smtpd
+	# smtpctl that cannot talk to smtpd: its control socket refused.
+	cat > tools/smtpctl <<EOS
+#!/bin/sh
+[ -f $(pwd)/stats-ok ] && [ "\$*" = "show stats" ] && { printf 'scheduler.envelope=1\\nsmtp.session=0\\n'; exit 0; }
+echo "smtpctl: connect: /var/run/smtpd.sock: Permission denied" >&2
+exit 1
+EOS
+	chmod +x tools/smtpd tools/smtpctl
+	DAEMON_ARGS="-2 $(pwd)/tools --smtpd-conf $(pwd)/smtpd.conf --smtpd-dir $(pwd)/smtpd.d --smtpd-watch 1"
+	start_daemon
+	printf '#!/bin/sh\n' > rc.d/smtpd
+	chmod +x rc.d/smtpd
+	echo 'smtpd_enable="YES"' >> rc.conf
+	# A fault of host:smtpd, of a severity, said so, cleared or not, in
+	# the faults the agent keeps (each fault's last line).
+	fault_wait() {
+		local i=0
+		while [ $i -lt 100 ]; do
+			"$JGC" -c "$SOCK" sdwan > faults.json 2>&1 &&
+			    python3 -I -c '
+import json, sys
+want, sev, cleared = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+def walk(o):
+	if isinstance(o, dict):
+		if o.get("object") == "host:smtpd" and o.get("type") == "mail" and \
+		    o.get("was") == sev and want in o.get("description", "") and \
+		    o.get("cleared") == cleared:
+			sys.exit(0)
+		for v in o.values():
+			walk(v)
+	elif isinstance(o, list):
+		for v in o:
+			walk(v)
+walk(json.load(open("faults.json")))
+sys.exit(1)' "$1" "$2" "$3" && return 0
+			sleep 0.2; i=$((i + 1))
+		done
+		cat faults.json
+		atf_fail "no fault '$1' ($2, cleared $3)"
+	}
+	# Enabled, not running: the Major.
+	fault_wait "enabled and not running" Major 0
+	# Running, its counters unread: the Major cleared, a Warning said.
+	touch running.smtpd
+	fault_wait "smtpd runs" Major 1
+	fault_wait "counters cannot be read" Warning 0
+	# Its counters read again: the Warning cleared.
+	touch stats-ok
+	fault_wait "counters read again" Warning 1
+	# Stopped again: the Major back.
+	rm -f running.smtpd stats-ok
+	fault_wait "enabled and not running" Major 0
+}
+smtpd_watch_unread_cleanup()
+{
+	stop_daemon
+}
+
 atf_test_case speeder cleanup
 speeder_head()
 {
@@ -25487,6 +25612,7 @@ atf_init_test_cases()
 	atf_add_test_case archive_week
 	atf_add_test_case archive_files
 	atf_add_test_case archive_agent
+	atf_add_test_case edit_error_path
 	atf_add_test_case probe_echo_ids
 	atf_add_test_case probe_open_backoff
 	atf_add_test_case probe_jail_sockets
@@ -25511,6 +25637,7 @@ atf_init_test_cases()
 	atf_add_test_case netstore
 	atf_add_test_case netstore_jail
 	atf_add_test_case smtpd
+	atf_add_test_case smtpd_watch_unread
 	atf_add_test_case speeder
 	atf_add_test_case relay_rc
 	atf_add_test_case sslproxy

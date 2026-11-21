@@ -302,6 +302,23 @@ trace_copy(struct work *dst, struct work *src,
 	*np = (size_t)n;
 }
 
+/* How far src's trace is: the steps that ended, of those begun. */
+void
+trace_progress(struct work *src, uint32_t *done, uint32_t *total)
+{
+	uint32_t	d = 0;
+	int		i, n;
+
+	pthread_mutex_lock(&src->lock);
+	n = src->nsteps;
+	for (i = 0; i < n; i++)
+		if (src->steps[i].done)
+			d++;
+	pthread_mutex_unlock(&src->lock);
+	*done = d;
+	*total = (uint32_t)n;
+}
+
 /*
  * The request's steps are told to the peer that made it, as they begin
  * and end, when it joined group notify; else nothing is (tell()).

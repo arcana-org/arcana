@@ -13,7 +13,7 @@ module: arcana-history
      +--rw rule* [kind name]
      |  +--rw kind     enumeration
      |  +--rw name     string
-     |  +--rw limit?   uint64
+     |  +--rw limit    uint64
      |  +--ro over?    boolean
      +--rw archive
      |  +--rw enabled?   boolean
@@ -87,7 +87,7 @@ module: arcana-history
      |     +--ro rule* [kind name]
      |     |  +--ro kind     enumeration
      |     |  +--ro name     string
-     |     |  +--ro limit?   uint64
+     |     |  +--ro limit    uint64
      |     |  +--ro over?    boolean
      |     +--ro archive
      |     |  +--ro enabled?   boolean

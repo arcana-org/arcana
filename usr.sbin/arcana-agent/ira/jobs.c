@@ -2451,6 +2451,11 @@ fill(struct work *w, struct arc_job *o, struct qjob *j)
 		o->has_confirm_by = true;
 		o->confirm_by = j->confirm_by;
 	}
+	/* Running: how far its trace is, steps ended of steps so far. */
+	if (j->state == ARC_JOB_STATE_RUNNING) {
+		trace_progress(&j->w, &o->steps_done, &o->steps_total);
+		o->has_steps_done = o->has_steps_total = true;
+	}
 	if (j->state == ARC_JOB_STATE_DONE) {
 		o->has_ok = true;
 		o->ok = j->ok;

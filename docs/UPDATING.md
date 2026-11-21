@@ -93,6 +93,30 @@ the program as it is, within its frame. Once the agent is bigger than
 that, such a host cannot be sent it, and the console says so; `pkg
 upgrade arcana` there updates it instead.
 
+### Refusals say where, job progress, a commit waiting to be kept; agent 0.351.0, console 0.494.0
+
+- arcana-history's rule now requires limit (1 to 999999999999999), its
+  name is 1 to 23 of [A-Za-z0-9._:-], and there are at most 32 rules: a
+  rule without a limit, which the agent always refused, is refused by
+  the model at the edit.
+- An agent edit handler's refusal (history, sysctl, kernel, firewall,
+  sdwan, jails, services, jobs) names the node at fault; the console's
+  RESTCONF answer to a refused commit carries it as error-path, and
+  arcanactl says "(at /path)".
+- A running job gives steps-done and steps-total (arcana-jobs; wire job
+  attributes 74847/74848), shown as a bar in the Jobs tab and the trace.
+- A confirmed commit made through the console is listed at
+  arcana-console:hosts/host=<id>/pending-commit (who made it, when, its
+  timeout, seconds left; never its persist-id) and kept or undone by its
+  maker or a console owner with keep-commit / undo-commit, so a page
+  that reloads no longer loses it; host pages show it as a banner.  Kept
+  in the console's memory: after a console restart the host undoes such
+  a commit at its timeout as before.
+- smtpd that runs but whose `smtpctl show stats` cannot be read no
+  longer keeps the Major "enabled and not running" fault: it gets a
+  Warning of its own.
+- Update the agent and the console together.
+
 ### Security instances' forms and files; agent 0.350.0, console 0.493.0
 
 - The Security page's URL filters and Suricata instances fold, below

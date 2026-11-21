@@ -1361,3 +1361,9 @@ attribute-sets:
       - name: jail
         type: text
         doc: The jail it acted on, its spec's; none for the host's.
+      - name: steps-done
+        type: u32
+        doc: With state running, the steps of its trace that ended.
+      - name: steps-total
+        type: u32
+        doc: With state running, the steps of its trace so far.

@@ -539,6 +539,10 @@ view_jobs(struct html *h, struct server *s)
 			h_txt(h, buf);
 			h_raw(h, "</small>");
 		}
+		/* Running: how far its trace is. */
+		if (strcmp(st, "running") == 0)
+			job_progress(h, jint(j, "steps_done", 0), jint(j,
+			    "steps_total", 0));
 		h_raw(h, "</td><td>");
 		h_txt(h, jstr(j, "title"));
 		if (jstr(j, "error") != NULL) {

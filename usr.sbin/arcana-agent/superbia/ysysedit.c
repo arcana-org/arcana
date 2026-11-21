@@ -334,7 +334,7 @@ arcana_sysctl_sysctl_edit(cbl_req *req, const struct arcana_sysctl *before,
 	const char	*conf, *e, *was;
 	char		 path[MAXPATHLEN], err[512], text[512];
 	uint64_t	 sid;
-	bool		 rw, tun, changed = false;
+	bool		 rw, tun, changed = false, at_value = false;
 	int		 error = 0;
 
 	old = before != NULL && before->sysctl != NULL ? before->sysctl : &none;
@@ -343,10 +343,12 @@ arcana_sysctl_sysctl_edit(cbl_req *req, const struct arcana_sysctl *before,
 		const struct arcana_sysctl_sysctl_kept *k = &new->kept.v[i];
 
 		if (!sysctl_name_ok(k->name))
-			return (said(req, "a sysctl is named with letters, "
-			    "digits and . _ - %"));
+			return (ysaid_at(req, "a sysctl is named with letters, "
+			    "digits and . _ - %", "arcana-sysctl", "sysctl",
+			    "kept/name"));
 		if (!sysctl_value_ok(k->value))
-			return (said(req, "a sysctl's value is one line"));
+			return (ysaid_at(req, "a sysctl's value is one line",
+			    "arcana-sysctl", "sysctl", "kept/value"));
 		was = kept_value(old, k->name);
 		if (was != NULL && strcmp(was, k->value) == 0)
 			continue;
@@ -356,7 +358,8 @@ arcana_sysctl_sysctl_edit(cbl_req *req, const struct arcana_sysctl *before,
 			(void)snprintf(err, sizeof(err), "%s is a tunable the "
 			    "loader sets, which sysctl.conf cannot: set it in "
 			    "loader.conf(5)", k->name);
-			return (said(req, err));
+			return (ysaid_at(req, err, "arcana-sysctl", "sysctl",
+			    "kept/name"));
 		}
 	}
 	for (size_t i = 0; !changed && i < old->kept.n; i++)
@@ -396,6 +399,7 @@ arcana_sysctl_sysctl_edit(cbl_req *req, const struct arcana_sysctl *before,
 			(void)snprintf(err, sizeof(err), "%s: %s", k->name, e !=
 			    NULL ? e : "sysctl(8) refused it");
 			error = EIO;
+			at_value = true;
 		}
 	}
 	if (error != 0) {
@@ -413,6 +417,9 @@ arcana_sysctl_sysctl_edit(cbl_req *req, const struct arcana_sysctl *before,
 	}
 	rca_close(&x);
 	work_free(&w);
+	if (error != 0 && at_value)
+		return (ysaid_at(req, err, "arcana-sysctl", "sysctl",
+		    "kept/value"));
 	return (error != 0 ? said(req, err) : 0);
 }
 
@@ -548,8 +555,9 @@ arcana_kernel_kernel_edit(cbl_req *req, const struct arcana_kernel *before,
 	new = after != NULL && after->kernel != NULL ? after->kernel : &none;
 	for (size_t i = 0; i < new->kept.n; i++)
 		if (!kmod_name_ok(new->kept.v[i]))
-			return (said(req, "a module is named as kldload(8) "
-			    "finds it, without a path"));
+			return (ysaid_at(req, "a module is named as kldload(8) "
+			    "finds it, without a path", "arcana-kernel",
+			    "kernel", "kept"));
 	changed = old->kept.n != new->kept.n;
 	for (size_t i = 0; !changed && i < new->kept.n; i++)
 		changed = strcmp(old->kept.v[i], new->kept.v[i]) != 0;

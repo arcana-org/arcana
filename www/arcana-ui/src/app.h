@@ -385,6 +385,11 @@ struct server {
 	int		 nhist;		/* samples in hist, newest last */
 	ucl_object_t	*jobs;		/* the host's own list of jobs */
 	bool		 jobs_loading;
+	ucl_object_t	*pending;	/* the confirmed commit waiting on it
+					 * (arcana-console's pending-commit) */
+	double		 pending_read;	/* ms: when it was read */
+	bool		 pending_loading;
+	bool		 pending_settling;	/* a keep or an undo on its way */
 	double		 restart_until;	/* ms: its agent is restarting after an update; 0 none */
 	double		 restart_asked;	/* ms: when it was last asked how it is */
 	ucl_object_t	*services;	/* last good services reply */
@@ -430,6 +435,8 @@ struct op {
 	bool		 poll_again;	/* told it changed while being read */
 	bool		 waiting;	/* the host does not answer; it runs on */
 	long long	 confirm_by;	/* a safe change waiting: undone then, or 0 */
+	long long	 steps_done;	/* running: its trace's steps ended, */
+	long long	 steps_total;	/* of those so far (0: not said) */
 	int		 what;		/* JOB_*: what to refresh when done */
 	char		*again;		/* a job as it was sent, to send again */
 	char		 target[256];	/* the jail or service */
@@ -863,6 +870,13 @@ void		 telegram_test(void);
 void		 load_schema(void);
 const char	*schema_op(const ucl_object_t *);
 void		 view_schema(struct html *, const char *);
+/* A confirmed commit waiting on the host to be kept (actions.c):
+ * read, its banner on every tab of the host, kept or undone by its
+ * maker after a reload. */
+void		 refresh_pending(struct server *);
+void		 view_pending(struct html *, struct server *);
+void		 pending_settle(struct server *, bool);
+void		 pending_tick(double);
 void		 refresh_jobs(struct server *);
 void		 set_job_lanes(struct server *, int);
 bool		 job_lanes(const struct server *, int *, int *);
@@ -927,6 +941,7 @@ void		 templates_open(const char *);
 void		 template_put(const char *, const ucl_object_t *);
 bool		 hostconf_action(const char *, const char *, const char *);
 bool		 mcast_form(const ucl_object_t *);
+void		 job_progress(struct html *, long long, long long);
 void		 view_jobs(struct html *, struct server *);
 
 /* topo.c: the fleet's network as a map, traffic, routes, netgraph. */

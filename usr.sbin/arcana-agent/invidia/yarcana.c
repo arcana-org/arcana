@@ -143,6 +143,18 @@ said(cbl_req *req, const char *why)
 	return (EIO);
 }
 
+int
+ysaid_at(cbl_req *req, const char *why, const char *mod, const char *top,
+    const char *path)
+{
+	const struct cbl_ynode	*n;
+
+	n = ynet_node(mod, top, path);
+	(void)cbl_req_set_yerr(req, why != NULL ? why : "it failed", n != NULL ?
+	    n->sid : 0);
+	return (EIO);
+}
+
 /* The keys of the list entry an action is on, want of them; NULL: not. */
 static const void **
 keys_of(const struct cbl_bytes *target, size_t want, cbl_yarena *a)
@@ -1557,15 +1569,20 @@ static int
 fw_kept_put(cbl_req *req, const char *jail, const char *was,
     const char *text, bool undo)
 {
+	/* The node a refusal is of: the host's kept text, or a jail's. */
+	const char	*at = jail != NULL ? "jail/text" : "kept/text";
+
 	struct work	 w;
 	const char	*e, *note;
 	int		 rc, root;
 
 	if (!undo && text == NULL)
-		return (said(req, "the kept rules are not taken away by a "
-		    "commit: commit them empty"));
+		return (ysaid_at(req, "the kept rules are not taken away by "
+		    "a commit: commit them empty", "arcana-firewall",
+		    "firewall", at));
 	if (jail != NULL && !valid_jail(jail))
-		return (said(req, "invalid jail name"));
+		return (ysaid_at(req, "invalid jail name", "arcana-firewall",
+		    "firewall", "jail/name"));
 	if (!change_begin("the kept rules"))
 		return (said(req, "not done: arcana-agent is stopping"));
 	work_init(&w);
@@ -1589,7 +1606,7 @@ fw_kept_put(cbl_req *req, const char *jail, const char *was,
 	if (rc == 1)
 		rc = EEXIST;
 	else if (rc != 0)
-		rc = said(req, e);
+		rc = ysaid_at(req, e, "arcana-firewall", "firewall", at);
 	work_free(&w);
 	(void)was;
 	return (rc);
@@ -1620,10 +1637,11 @@ arcana_firewall_firewall_edit(cbl_req *req,
 	    fr->firewall_enable) || !same_text(br->firewall_type,
 	    fr->firewall_type) || !same_text(br->firewall_script,
 	    fr->firewall_script)))
-		return (said(req, "rc.conf's firewall variables are not "
+		return (ysaid_at(req, "rc.conf's firewall variables are not "
 		    "committed: the kept rules' first commit points "
 		    "firewall_script at Arcana's script, and an ipfw job "
-		    "enables the firewall"));
+		    "enables the firewall", "arcana-firewall", "firewall",
+		    "rc"));
 	bt = b != NULL && b->kept != NULL ? b->kept->text : NULL;
 	ft = f != NULL && f->kept != NULL ? f->kept->text : NULL;
 	if (!same_text(bt, ft) && (rc = fw_kept_put(req, NULL, bt, ft, undo)) !=
@@ -2073,24 +2091,50 @@ arcana_history_history_edit(cbl_req *req, const struct arcana_history *before,
 		len += strlen(h->rule.v[i].name) + 32;
 	if ((rl = calloc(1, len)) == NULL)
 		return (ENOMEM);
+	/* Each rule as history.c takes it (rule_parse()), refused here with
+	 * the node at fault: 32 at most, a name of 1 to 23 letters, digits
+	 * and ._:-, a limit above 0 and below 10^15. */
+	if (h != NULL && h->rule.n > 32) {
+		free(rl);
+		return (ysaid_at(req, "32 rules at most", "arcana-history",
+		    "history", "rule"));
+	}
 	for (size_t i = 0; h != NULL && i < h->rule.n; i++) {
 		const struct arcana_history_history_rule *ru = &h->rule.v[i];
+		size_t nl = ru->name != NULL ? strlen(ru->name) : 0;
 
 		if ((size_t)ru->kind >= nitems(kinds)) {
 			free(rl);
-			return (said(req, "a rule's kind is net, disk, jail-cpu "
-			    "or jail-mem"));
+			return (ysaid_at(req, "a rule's kind is net, disk, "
+			    "jail-cpu or jail-mem", "arcana-history", "history",
+			    "rule/kind"));
+		}
+		if (nl == 0 || nl > 23 || ru->name[strspn(ru->name,
+		    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		    "0123456789._:-")] != '\0') {
+			free(rl);
+			return (ysaid_at(req, "a rule's name is 1 to 23 letters, "
+			    "digits, dots, colons, dashes or underscores",
+			    "arcana-history", "history", "rule/name"));
+		}
+		if (!ru->has_limit || ru->limit == 0 || ru->limit >=
+		    1000000000000000ULL) {
+			free(rl);
+			return (ysaid_at(req, "a rule's limit is 1 to "
+			    "999999999999999, in its kind's unit",
+			    "arcana-history", "history", "rule/limit"));
 		}
 		snprintf(rl + strlen(rl), len - strlen(rl), "%s%s:%s=%ju",
 		    i > 0 ? "," : "", kinds[ru->kind], ru->name, (uintmax_t)
-		    (ru->has_limit ? ru->limit : 0));
+		    ru->limit);
 	}
 	/* The archive's first, written down with the rest: the settings
 	 * before kept, in force again when they are not written. */
 	archive_conf_get(&was);
 	if ((e = yarchive_set(h != NULL ? h->archive : NULL)) != NULL) {
 		free(rl);
-		return (said(req, e));
+		return (ysaid_at(req, e, "arcana-history", "history",
+		    "archive"));
 	}
 	work_init(&w);
 	memset(&r, 0, sizeof(r));
@@ -2373,7 +2417,8 @@ arcana_jobs_jobs_edit(cbl_req *req, const struct arcana_jobs *before,
 	    after->jobs->lanes : PKG_LANES;
 	if (n == jobs_lanes())
 		return (0);
-	return ((e = jobs_set_lanes(n)) != NULL ? said(req, e) : 0);
+	return ((e = jobs_set_lanes(n)) != NULL ? ysaid_at(req, e,
+	    "arcana-jobs", "jobs", "lanes") : 0);
 }
 
 int
@@ -3620,6 +3665,9 @@ struct sd_plan {
 	struct sd_step	 v[7 * (SD_JAILS + 1) + 4];
 	size_t		 n;
 	const char	*why;
+	int		 wkind;		/* the part refused: its kind, */
+	const char	*wjail;		/* edge, */
+	bool		 wset;		/* whether one was */
 };
 
 /* A part that changed, planned; was and now taken (NULL: no memory). */
@@ -3633,6 +3681,11 @@ sd_plan(struct sd_plan *p, int kind, const char *jail, char *was, char *now)
 		if (p->why == NULL)
 			p->why = p->n == nitems(p->v) ? "too many edges" :
 			    "no memory, or a spec that is no JSON object";
+		if (!p->wset) {
+			p->wkind = kind;
+			p->wjail = jail;
+			p->wset = true;
+		}
 		return (false);
 	}
 	if (strcmp(was, now) == 0) {
@@ -3716,6 +3769,23 @@ sd_plan_kind(struct sd_plan *p, int kind, int ykind, int group,
 	    bn, bv, &e), ysd_instances_json(ykind, NULL, group, fn, fv, &e)));
 }
 
+/* A refusal of an SD-WAN edit, of a part (kind, the host's edge or a
+ * jail's) or of none (kind -1): its node the error-path. */
+static int
+sd_said(cbl_req *req, const char *why, int kind, const char *jail)
+{
+	static const char *const node[] = { "rules", "steer",
+	    "bird-instance", "dhcp-instance", "dns-instance", "proxy-instance",
+	    "ids-instance" };
+	char	path[64];
+
+	if (kind < 0 || (size_t)kind >= nitems(node))
+		return (said(req, why));
+	(void)snprintf(path, sizeof(path), "%s%s", jail != NULL ? "jail/" :
+	    "", node[kind]);
+	return (ysaid_at(req, why, "arcana-sdwan", "sdwan", path));
+}
+
 static int
 sd_set(struct work *w, int kind, const char *json, const char **errp)
 {
@@ -3754,10 +3824,12 @@ arcana_sdwan_sdwan_edit(cbl_req *req, const struct arcana_sdwan *before,
 	b = before != NULL && before->sdwan != NULL ? before->sdwan : &none;
 	f = after != NULL && after->sdwan != NULL ? after->sdwan : &none;
 	if (f->jail.n > SD_JAILS)
-		return (said(req, "too many edges that are jails"));
+		return (ysaid_at(req, "too many edges that are jails",
+		    "arcana-sdwan", "sdwan", "jail"));
 	for (k = 0; k < f->jail.n; k++)
 		if (!valid_jail(f->jail.v[k].name))
-			return (said(req, "invalid jail name"));
+			return (ysaid_at(req, "invalid jail name",
+			    "arcana-sdwan", "sdwan", "jail/name"));
 	if ((p = calloc(1, sizeof(*p))) == NULL)
 		return (ENOMEM);
 	/* Every part's JSON made before any is set: a spec that is none
@@ -3798,8 +3870,9 @@ arcana_sdwan_sdwan_edit(cbl_req *req, const struct arcana_sdwan *before,
 			free(p->v[k].was);
 			free(p->v[k].now);
 		}
+		rc = sd_said(req, why, p->wset ? p->wkind : -1, p->wjail);
 		free(p);
-		return (said(req, why));
+		return (rc);
 	}
 	if (p->n == 0) {
 		free(p);
@@ -3845,7 +3918,9 @@ arcana_sdwan_sdwan_edit(cbl_req *req, const struct arcana_sdwan *before,
 	change_end();
 	step_end(&w, root, rc == 0, NULL);
 	why = rc == 0 ? NULL : wstrdup(&w, why != NULL ? why : "failed");
-	rc = rc == 0 ? 0 : said(req, why);
+	/* The part that failed, the last tried. */
+	rc = rc == 0 ? 0 : sd_said(req, why, k > 0 ? p->v[k - 1].kind : -1,
+	    k > 0 ? p->v[k - 1].jail : NULL);
 	for (k = 0; k < p->n; k++) {
 		free(p->v[k].was);
 		free(p->v[k].now);

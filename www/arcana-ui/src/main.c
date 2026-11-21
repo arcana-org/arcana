@@ -561,6 +561,7 @@ tick(void *arg)
 			ipsecbase_tick(now);
 			nacm_tick(now);
 			ra_tick(now);
+			pending_tick(now);
 			yform_tick(now);
 			service_commit_tick(now);
 			jail_commit_tick(now);
@@ -627,6 +628,14 @@ tick(void *arg)
 				refresh_jails(s, false);
 			if (sse_due(s, SD_STATS, now, REFRESH_MS, false))
 				refresh_stats(s);
+			/* A confirmed commit waiting on the host: read with
+			 * the rest, and each second near its end. */
+			if (app.node == NODE_HOST && (s->pending_read == 0 ||
+			    now - s->pending_read >= REFRESH_MS ||
+			    (s->pending != NULL && jbool(s->pending,
+			    "waiting") && (long long)jint(s->pending, "left",
+			    0) * 1000 <= now - s->pending_read)))
+				refresh_pending(s);
 			/* The Packages tab says the host's lanes and what
 			 * runs, beside "Upgrade the jails". */
 			if (app.node == NODE_HOST && (app.tab == TAB_JOBS ||
@@ -2088,6 +2097,9 @@ dispatch(const char *act, const char *arg, const char *value)
 		cancel_job(s, atoll(arg), value);
 	} else if (strcmp(act, "jobs-clear") == 0 && s != NULL) {
 		cancel_queued_jobs(s);
+	} else if ((strcmp(act, "pc-keep") == 0 || strcmp(act, "pc-undo") ==
+	    0) && s != NULL) {
+		pending_settle(s, strcmp(act, "pc-keep") == 0);
 	} else if (strcmp(act, "refresh") == 0 && s != NULL) {
 		int	before = app.nextop;
 

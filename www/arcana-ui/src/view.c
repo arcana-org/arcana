@@ -1055,6 +1055,8 @@ stage(struct html *h)
 			    "bird" : "ipsec") : leaf[app.tab]);
 		h_raw(h, "</nav>");
 		hosttab_nav(h, s);
+		/* A confirmed commit waiting to be kept, on every tab. */
+		view_pending(h, s);
 	}
 	if (app.tab == TAB_SUMMARY) {
 		view_summary(h, s);

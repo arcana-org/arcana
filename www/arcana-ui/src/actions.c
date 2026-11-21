@@ -968,7 +968,34 @@ steps_trace(const ucl_object_t *steps)
 static const char *const job_map[] = { "id", "id", "kind", "kind", "title",
     "title", "state", "state", "ok", "ok", "error", "error", "confirm-by",
     "confirm_by", "peer", "peer", "user", "user", "created", "created",
-    "started", "started", "finished", "finished", NULL };
+    "started", "started", "finished", "finished", "steps-done",
+    "steps_done", "steps-total", "steps_total", NULL };
+
+/*
+ * A running job's progress (arcana-jobs' steps-done of steps-total): a
+ * bar and "i of n steps"; nothing where the host says none.  More steps
+ * come as a job goes on, so the bar is of its trace so far.
+ */
+void
+job_progress(struct html *h, long long done, long long total)
+{
+	char	buf[48];
+	int	pct;
+
+	if (total <= 0)
+		return;
+	if (done > total)
+		done = total;
+	pct = (int)(done * 100 / total);
+	snprintf(buf, sizeof(buf), "%lld of %lld steps", done, total);
+	h_fmt(h, "<span class=\"job-progress\" role=\"progressbar\" "
+	    "aria-valuemin=\"0\" aria-valuemax=\"%lld\" aria-valuenow=\""
+	    "%lld\" title=\"Its steps so far: more come as it goes on\">"
+	    "<span class=\"jp-track\"><span class=\"jp-bar\" style=\""
+	    "width:%d%%\"></span></span><small>", total, done, pct);
+	h_txt(h, buf);
+	h_raw(h, "</small></span>");
+}
 
 /* Where job id of host sid is, or its action act. */
 static char *
@@ -1031,6 +1058,9 @@ job_poll_cb(int status, const ucl_object_t *o, const char *err, void *arg)
 	 */
 	op->confirm_by = jstr(o, "state") != NULL && strcmp(jstr(o, "state"),
 	    "unconfirmed") == 0 ? jint(o, "confirm-by", 0) : 0;
+	/* How far it is, while it runs. */
+	op->steps_done = jint(o, "steps-done", 0);
+	op->steps_total = jint(o, "steps-total", 0);
 	/*
 	 * arcana-jobs' on-change subscription tells when it changes
 	 * (sse.c): read then, and now and then; one waiting to be
@@ -2816,6 +2846,151 @@ refresh_jobs(struct server *s)
 	c = ctx_new();
 	snprintf(c->sid, sizeof(c->sid), "%s", s->id);
 	host_yread(s, "arcana-jobs:jobs", NULL, NULL, false, jobs_cb, c);
+}
+
+static void
+pending_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	struct ctx	*c = arg;
+	struct server	*s;
+
+	(void)err;
+	if ((s = server_by_id(c->sid)) != NULL) {
+		s->pending_loading = false;
+		if (status == 200 && o != NULL) {
+			if (s->pending != NULL)
+				ucl_object_unref(s->pending);
+			s->pending = ucl_object_copy(o);
+			s->pending_read = arc_now();
+		}
+	}
+	free(c);
+}
+
+/* The confirmed commit waiting on s, as the console keeps it. */
+void
+refresh_pending(struct server *s)
+{
+	struct ctx	*c;
+	char		 url[300];
+
+	if (!app.online || s->pending_loading)
+		return;
+	s->pending_loading = true;
+	c = ctx_new();
+	snprintf(c->sid, sizeof(c->sid), "%s", s->id);
+	rc_c(url, sizeof(url), "hosts/host=%s/pending-commit", rc_key(s->id));
+	rc_get(url, NULL, pending_cb, c);
+}
+
+/* The seconds left of s's commit waiting, by when it was read; -1: none
+ * waits. */
+static long long
+pending_left(const struct server *s)
+{
+	long long	left;
+
+	if (s->pending == NULL || !jbool(s->pending, "waiting"))
+		return (-1);
+	left = (long long)jint(s->pending, "left", 0) - (long long)((arc_now() -
+	    s->pending_read) / 1000);
+	return (left > 0 ? left : 0);
+}
+
+/*
+ * The banner of a change that waits to be kept: who made it and the
+ * time left, Keep and Undo for its maker (or a console owner); the host
+ * undoes it at the timeout.  Read again as the time runs out.
+ */
+void
+view_pending(struct html *h, struct server *s)
+{
+	char		 buf[96];
+	long long	 left;
+
+	if ((left = pending_left(s)) < 0)
+		return;
+	h_raw(h, "<div class=\"notice warn pc-banner\" role=\"status\">"
+	    "<span><b>A change waits to be kept</b> on ");
+	h_txt(h, s->name);
+	h_raw(h, ": a confirmed commit");
+	if (jstr(s->pending, "user") != NULL) {
+		h_raw(h, " by ");
+		h_txt(h, jstr(s->pending, "user"));
+	}
+	h_raw(h, ", which the host undoes when its time runs out.</span>");
+	snprintf(buf, sizeof(buf), "%lld:%02lld left", left / 60, left % 60);
+	h_raw(h, "<span class=\"pc-left\">");
+	h_txt(h, buf);
+	h_raw(h, "</span>");
+	if (jbool(s->pending, "yours")) {
+		h_fmt(h, "<button type=\"button\" class=\"small\" "
+		    "data-act=\"pc-keep\"%s title=\"Keep the change: the "
+		    "commit that confirms it\">Keep</button><button type=\""
+		    "button\" class=\"ghost small\" data-act=\"pc-undo\"%s "
+		    "title=\"Undo it now (cancel-commit) instead of at the "
+		    "timeout\">Undo</button>", s->pending_settling ?
+		    " disabled" : "", s->pending_settling ? " disabled" : "");
+	} else
+		h_raw(h, "<span class=\"dim\">Only who made it, or an owner "
+		    "of the console, keeps or undoes it.</span>");
+	h_raw(h, "</div>");
+}
+
+static void
+settle_cb(int status, const ucl_object_t *o, const char *err, void *arg)
+{
+	struct ctx	*c = arg;
+	struct server	*s;
+	char		 why[256];
+
+	if ((s = server_by_id(c->sid)) != NULL) {
+		s->pending_settling = false;
+		if (status >= 200 && status < 300) {
+			toast(false, "%s: the change was %s", s->name, c->user ?
+			    "kept" : "undone");
+			if (s->pending != NULL)
+				ucl_object_unref(s->pending);
+			s->pending = NULL;
+		} else
+			toast(true, "%s: not %s: %s", s->name, c->user ? "kept" :
+			    "undone", rc_error(o, why, sizeof(why)) != NULL ?
+			    why : err != NULL ? err : "no answer");
+		refresh_pending(s);
+	}
+	free(c);
+}
+
+/* Its seconds counted down on the host's pages: drawn each second. */
+void
+pending_tick(double now)
+{
+	static double	 last;
+	struct server	*s;
+
+	if (now - last < 1000 || app.node != NODE_HOST || (s = cur_server()) ==
+	    NULL || pending_left(s) < 0)
+		return;
+	last = now;
+	render();
+}
+
+/* s's commit waiting kept (keep) or undone, by the console's verb. */
+void
+pending_settle(struct server *s, bool keep)
+{
+	struct ctx	*c;
+	char		 url[300];
+
+	if (s->pending_settling || pending_left(s) < 0)
+		return;
+	s->pending_settling = true;
+	c = ctx_new();
+	snprintf(c->sid, sizeof(c->sid), "%s", s->id);
+	c->user = keep;
+	rc_c(url, sizeof(url), "hosts/host=%s/%s-commit", rc_key(s->id),
+	    keep ? "keep" : "undo");
+	rc_verb(url, NULL, NULL, settle_cb, c);
 }
 
 /* Show a job of the host in the activity dock, and follow it. */

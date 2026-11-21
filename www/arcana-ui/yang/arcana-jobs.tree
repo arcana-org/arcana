@@ -5,19 +5,21 @@ module: arcana-jobs
      +--ro since?      int64
      +--ro stopping?   boolean
      +--ro job* [id]
-        +--ro id            uint64
-        +--ro kind?         job-kind
-        +--ro title?        string
-        +--ro state?        job-state
-        +--ro ok?           boolean
-        +--ro error?        string
-        +--ro created?      int64
-        +--ro started?      int64
-        +--ro finished?     int64
-        +--ro peer?         string
-        +--ro confirm-by?   int64
-        +--ro user?         string
-        +--ro jail?         string
+        +--ro id             uint64
+        +--ro kind?          job-kind
+        +--ro title?         string
+        +--ro state?         job-state
+        +--ro ok?            boolean
+        +--ro error?         string
+        +--ro created?       int64
+        +--ro started?       int64
+        +--ro finished?      int64
+        +--ro peer?          string
+        +--ro confirm-by?    int64
+        +--ro user?          string
+        +--ro jail?          string
+        +--ro steps-done?    uint32
+        +--ro steps-total?   uint32
         +---x cancel
         |  +--ro output
         |     +--ro state?   job-state
@@ -26,18 +28,20 @@ module: arcana-jobs
         |     +--ro state?   job-state
         +---x read
            +--ro output
-              +--ro kind?         job-kind
-              +--ro title?        string
-              +--ro state?        job-state
-              +--ro ok?           boolean
-              +--ro error?        string
-              +--ro created?      int64
-              +--ro started?      int64
-              +--ro finished?     int64
-              +--ro peer?         string
-              +--ro confirm-by?   int64
-              +--ro user?         string
-              +--ro jail?         string
+              +--ro kind?          job-kind
+              +--ro title?         string
+              +--ro state?         job-state
+              +--ro ok?            boolean
+              +--ro error?         string
+              +--ro created?       int64
+              +--ro started?       int64
+              +--ro finished?      int64
+              +--ro peer?          string
+              +--ro confirm-by?    int64
+              +--ro user?          string
+              +--ro jail?          string
+              +--ro steps-done?    uint32
+              +--ro steps-total?   uint32
               +--ro step* [id]
                  +--ro id              uint32
                  +--ro parent?         int32

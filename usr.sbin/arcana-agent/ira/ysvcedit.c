@@ -226,7 +226,7 @@ arcana_services_services_edit(cbl_req *req,
 	struct rca	*x;
 	struct work	 w;
 	cbl_yarena	*a;
-	const char	*rcvar, *e;
+	const char	*rcvar, *e, *at = NULL;
 	char		 err[512];
 	size_t		 nx = 0;
 	int		 error = 0;
@@ -249,6 +249,7 @@ arcana_services_services_edit(cbl_req *req,
 
 		if (!valid_service(want->name)) {
 			(void)snprintf(err, sizeof(err), "invalid service name");
+			at = "service/name";
 			error = EINVAL;
 			break;
 		}
@@ -257,6 +258,7 @@ arcana_services_services_edit(cbl_req *req,
 		    &nvars)) != 0) {
 			(void)snprintf(err, sizeof(err), "%s: not its own "
 			    "configuration", want->name);
+			at = "service";
 			break;
 		}
 		if (enable == 0 && nvars == 0)
@@ -273,6 +275,7 @@ arcana_services_services_edit(cbl_req *req,
 		if (enable != 0 && rcvar == NULL) {
 			(void)snprintf(err, sizeof(err), "%s", e != NULL ? e :
 			    "no rcvar");
+			at = "service/enabled";
 			error = EINVAL;
 			break;
 		}
@@ -282,12 +285,14 @@ arcana_services_services_edit(cbl_req *req,
 			    !var_of_service(vars[k].key, want->name, rcvar)) {
 				(void)snprintf(err, sizeof(err), "'%s' is not a "
 				    "variable of %s", vars[k].key, want->name);
+				at = "service/variable/name";
 				error = EINVAL;
 			} else if (!vars[k].remove && !rc_value_ok(
 			    vars[k].value)) {
 				(void)snprintf(err, sizeof(err), "the value of "
 				    "%s has a quote, $, ` or \\: rc.conf would "
 				    "read it as more than a value", vars[k].key);
+				at = "service/variable/value";
 				error = EINVAL;
 			}
 		}
@@ -311,8 +316,11 @@ arcana_services_services_edit(cbl_req *req,
 		for (size_t i = nx; i-- > 0; )
 			rca_undo(&x[i]);
 		if (error != EEXIST) {
+			const struct cbl_ynode *n = at != NULL ? ynet_node(
+			    "arcana-services", "services", at) : NULL;
+
 			(void)cbl_req_set_yerr(req, err[0] != '\0' ? err :
-			    strerror(error), 0);
+			    strerror(error), n != NULL ? n->sid : 0);
 			if (nx > 0)
 				logmsg(LOG_WARNING, "services: %s: rc.conf as "
 				    "it was", err);

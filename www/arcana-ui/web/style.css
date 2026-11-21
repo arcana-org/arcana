@@ -5082,6 +5082,13 @@ table.sd-plan tr.sd-edge-head td { background: rgba(var(--surface-rgb), .5); bor
 .sd-progress { display: inline-block; width: 8rem; height: .5rem; vertical-align: middle; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--bg); }
 .sd-progress .bar { display: block; height: 100%; background: var(--green); transition: width .4s; }
 .sd-progress .bar.failed { background: var(--red); }
+/* A running job's steps so far (arcana-jobs' steps-done of steps-total). */
+.job-progress { display: inline-flex; align-items: center; gap: .4rem; margin-left: .4rem; }
+.job-progress .jp-track { display: inline-block; width: 6rem; height: .45rem; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--bg); }
+.job-progress .jp-bar { display: block; height: 100%; background: var(--cyan); transition: width .4s; }
+/* A confirmed commit waiting on the host to be kept (pendcommit.c). */
+.pc-banner { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.pc-banner .pc-left { font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* What is new: the release notes or the commits, in an update box and
  * in Settings. */

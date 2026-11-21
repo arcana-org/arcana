@@ -323,6 +323,7 @@ module arcana-history {
     }
     list rule {
       key "kind name";
+      max-elements 32;
       description
         "A limit of one interface, disk or jail.";
       leaf kind {
@@ -348,14 +349,21 @@ module arcana-history {
           "What is limited.";
       }
       leaf name {
-        type string;
+        type string {
+          length "1..23";
+          pattern '[A-Za-z0-9._:\-]+';
+        }
         description
           "The interface's, the disk's or the jail's name.";
       }
       leaf limit {
-        type uint64;
+        type uint64 {
+          range "1..999999999999999";
+        }
+        mandatory true;
         description
-          "The limit, in the kind's unit.";
+          "The limit, in the kind's unit: a rule has no default, as
+           no one limit fits every interface, disk or jail.";
       }
       leaf over {
         type boolean;

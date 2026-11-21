@@ -2590,6 +2590,156 @@ ATF_TC_BODY(restconf_tag_in_use, tc)
 	    "{\"ietf-netconf:input\":{\"persist-id\":\"p1\"}}", 204, NULL);
 }
 
+/*
+ * An agent's edit handler that refuses a commit names the node at fault:
+ * RFC 8040's error-path in the console's answer, as the host said it
+ * (its SID), the candidate taken back after.
+ */
+CONSOLE_TC(restconf_error_path, "error-path: an agent's refused commit "
+    "names the node at fault (sysctl kept/name and kept/value)")
+ATF_TC_BODY(restconf_error_path, tc)
+{
+	static const struct {
+		const char	*body, *path;
+	} cases[] = {
+		{ "{\"arcana-sysctl:sysctl\":{\"kept\":[{\"name\":\"-x.y\","
+		    "\"value\":\"1\"}]}}", "/arcana-sysctl:sysctl/kept/name" },
+		{ "{\"arcana-sysctl:sysctl\":{\"kept\":[{\"name\":\"kern.x\","
+		    "\"value\":\"1\\n2\"}]}}", "/arcana-sysctl:sysctl/kept/value" },
+	};
+	static const char rules[] = "{\"ietf-netconf-acm:nacm\":{"
+	    "\"groups\":{\"group\":[{\"name\":\"admin\",\"user-name\":"
+	    "[\"admin\",\"console\"]}]},\"rule-list\":[{\"name\":\"admin\","
+	    "\"group\":[\"admin\"],\"rule\":[{\"name\":\"all\",\"module-name\":"
+	    "\"*\",\"access-operations\":\"*\",\"action\":\"permit\"}]}]}}";
+	struct resp	r;
+	char		data[256], cand[256], path[512];
+
+	rc_lab(tc, data, cand, sizeof(cand));
+	/* The admin may change the host: the access rules first. */
+	rc_expect("PUT", cand, NACM, NULL, rules, 204, NULL);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, "{}", 204, NULL);
+	for (size_t i = 0; i < nitems(cases); i++) {
+		snprintf(path, sizeof(path), "%s/arcana-sysctl:sysctl", cand);
+		http("PUT", path, cases[i].body, &r);
+		ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s",
+		    r.status, r.body);
+		resp_free(&r);
+		snprintf(path, sizeof(path), "%s/ietf-netconf:commit", data);
+		http("POST", path, "{}", &r);
+		ATF_CHECK_MSG(r.status >= 400, "%d %s", r.status, r.body);
+		ATF_CHECK_STREQ(cases[i].path, jstr(&r,
+		    "ietf-restconf:errors.error.0.error-path"));
+		resp_free(&r);
+		rc_expect("POST", data, "/ietf-netconf:discard-changes", NULL,
+		    "{}", 204, NULL);
+	}
+}
+
+/*
+ * The confirmed commit waiting on a host, as the console keeps it: who
+ * made it and its time, never its persist-id; kept or undone by its
+ * maker (or a console owner) after a reload, by the console's verbs,
+ * refused to another user.
+ */
+CONSOLE_TC(restconf_pending_commit, "pending-commit: a confirmed commit "
+    "waiting listed per host without its persist-id, kept or undone by "
+    "its maker, refused to another")
+ATF_TC_BODY(restconf_pending_commit, tc)
+{
+	static const char rules[] = "{\"ietf-netconf-acm:nacm\":{"
+	    "\"groups\":{\"group\":[{\"name\":\"admin\",\"user-name\":"
+	    "[\"admin\",\"console\"]}]},\"rule-list\":[{\"name\":\"admin\","
+	    "\"group\":[\"admin\"],\"rule\":[{\"name\":\"all\",\"module-name\":"
+	    "\"*\",\"access-operations\":\"*\",\"action\":\"permit\"}]}]}}";
+	static const char confirmed[] = "{\"ietf-netconf:input\":{"
+	    "\"confirmed\":[null],\"confirm-timeout\":90,\"persist\":"
+	    "\"pc-secret-token\"}}";
+	struct authn	 b;
+	struct resp	 r;
+	char		 data[256], cand[256], pend[160], keep[160], undo[160];
+	char		 admin[160], bob[160];
+	const char	*id;
+
+	rc_lab(tc, data, cand, sizeof(cand));
+	snprintf(admin, sizeof(admin), "%s", cookie);
+	id = strrchr(data, '=') + 1;
+	snprintf(pend, sizeof(pend), CC "hosts/host=%s/pending-commit", id);
+	snprintf(keep, sizeof(keep), CC "hosts/host=%s/keep-commit", id);
+	snprintf(undo, sizeof(undo), CC "hosts/host=%s/undo-commit", id);
+	/* None waits. */
+	http("GET", pend, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"waiting\":false") != NULL, "%s",
+	    r.body);
+	resp_free(&r);
+	http("POST", keep, NULL, &r);
+	ATF_CHECK_MSG(r.status == 404, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* One made: who and when, its timeout, never its token. */
+	rc_expect("PUT", cand, NACM, NULL, rules, 204, NULL);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, confirmed, 204,
+	    NULL);
+	http("GET", pend, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"waiting\":true") != NULL &&
+	    strstr(r.body, "\"user\":\"admin\"") != NULL &&
+	    strstr(r.body, "\"timeout\":90") != NULL &&
+	    strstr(r.body, "\"yours\":true") != NULL &&
+	    strstr(r.body, "\"left\":") != NULL, "%s", r.body);
+	ATF_CHECK_MSG(strstr(r.body, "pc-secret-token") == NULL, "%s", r.body);
+	resp_free(&r);
+	/* Another user sees it, may not keep it nor undo it. */
+	r1_role("ops", "member", "operator");
+	cc_user(&b, "bob", "\"role\":[\"ops\"]", -8);
+	snprintf(bob, sizeof(bob), "%s", cookie);
+	http("GET", pend, NULL, &r);
+	EXPECT(&r, 200);
+	ATF_CHECK_MSG(strstr(r.body, "\"yours\":false") != NULL &&
+	    strstr(r.body, "pc-secret-token") == NULL, "%s", r.body);
+	resp_free(&r);
+	http("POST", keep, NULL, &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("POST", undo, NULL, &r);
+	ATF_CHECK_MSG(r.status == 403, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Its maker, the page reloaded (no token at hand): kept. */
+	snprintf(cookie, sizeof(cookie), "%s", admin);
+	http("POST", keep, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "kept") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", pend, NULL, &r);
+	ATF_CHECK_MSG(strstr(r.body, "\"waiting\":false") != NULL, "%s",
+	    r.body);
+	resp_free(&r);
+	/* Kept: the host has nothing to cancel any more. */
+	snprintf(keep, sizeof(keep), "%s/ietf-netconf:cancel-commit", data);
+	http("POST", keep, "{\"ietf-netconf:input\":{\"persist-id\":"
+	    "\"pc-secret-token\"}}", &r);
+	ATF_CHECK_MSG(r.status >= 400, "%d %s", r.status, r.body);
+	resp_free(&r);
+	/* Another, undone. */
+	snprintf(keep, sizeof(keep), "%s%s/groups/group=extra", cand, NACM);
+	http("PUT", keep, "{\"ietf-netconf-acm:group\":[{\"name\":"
+	    "\"extra\"}]}", &r);
+	ATF_CHECK_MSG(r.status == 201 || r.status == 204, "%d %s", r.status,
+	    r.body);
+	resp_free(&r);
+	rc_expect("POST", data, "/ietf-netconf:commit", NULL, confirmed, 204,
+	    NULL);
+	http("POST", undo, NULL, &r);
+	ATF_CHECK_MSG(r.status == 200 && strstr(r.body, "undone") != NULL,
+	    "%d %s", r.status, r.body);
+	resp_free(&r);
+	http("GET", pend, NULL, &r);
+	ATF_CHECK_MSG(strstr(r.body, "\"waiting\":false") != NULL, "%s",
+	    r.body);
+	resp_free(&r);
+	(void)bob;
+}
+
 CONSOLE_TC(restconf_tag_data_exists, "data-exists: 409, a POST of what "
     "is there")
 ATF_TC_BODY(restconf_tag_data_exists, tc)
@@ -30018,6 +30168,8 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, restconf_tag_operation_not_supported);
 	ATF_TP_ADD_TC(tp, restconf_tag_operation_failed);
 	ATF_TP_ADD_TC(tp, restconf_tag_in_use);
+	ATF_TP_ADD_TC(tp, restconf_error_path);
+	ATF_TP_ADD_TC(tp, restconf_pending_commit);
 	ATF_TP_ADD_TC(tp, restconf_tag_data_exists);
 	ATF_TP_ADD_TC(tp, alarms_shelving);
 	ATF_TP_ADD_TC(tp, restconf_tag_data_missing);

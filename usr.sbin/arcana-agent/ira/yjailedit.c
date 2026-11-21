@@ -597,7 +597,8 @@ arcana_jails_jails_edit(cbl_req *req, const struct arcana_jails *before,
 	for (size_t i = 0; i < nnew; i++) {
 		new = &after->jails->jail.v[i];
 		if (!valid_jail(new->name))
-			return (said(req, "invalid jail name"));
+			return (ysaid_at(req, "invalid jail name",
+			    "arcana-jails", "jails", "jail/name"));
 		old = yjail_named(before, new->name);
 		if (old != NULL && new->scope != NULL && new->scope[0] != '\0'
 		    && (old->scope == NULL || strcmp(old->scope, new->scope) !=
@@ -605,7 +606,8 @@ arcana_jails_jails_edit(cbl_req *req, const struct arcana_jails *before,
 			(void)snprintf(err, sizeof(err), "%s is defined in %s: "
 			    "a jail is not moved to %s", new->name, old->scope
 			    != NULL ? old->scope : "a file", new->scope);
-			return (said(req, err));
+			return (ysaid_at(req, err, "arcana-jails", "jails",
+			    "jail/scope"));
 		}
 		for (size_t k = 0; k < new->param.n; k++) {
 			const yparam *p = &new->param.v[k];
@@ -613,14 +615,17 @@ arcana_jails_jails_edit(cbl_req *req, const struct arcana_jails *before,
 			if (!param_name_ok(p->name)) {
 				(void)snprintf(err, sizeof(err), "%s: '%s' is no "
 				    "parameter's name", new->name, p->name);
-				return (said(req, err));
+				return (ysaid_at(req, err, "arcana-jails",
+				    "jails", "jail/param/name"));
 			}
 			for (size_t m = 0; m < p->value.n; m++)
 				if (!param_value_ok(p->value.v[m])) {
 					(void)snprintf(err, sizeof(err), "%s: a "
 					    "value of %s is more than a line",
 					    new->name, p->name);
-					return (said(req, err));
+					return (ysaid_at(req, err,
+					    "arcana-jails", "jails",
+					    "jail/param/value"));
 				}
 		}
 	}

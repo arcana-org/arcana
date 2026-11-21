@@ -3020,6 +3020,41 @@ module arcana-console {
           }
         }
       }
+      anydata pending-commit {
+        config false;
+        description
+          "The confirmed commit made through the console that waits
+           on the host to be kept (RFC 6241 section 8.4), from its
+           commit to its confirm, its cancel-commit or its timeout:
+           waiting, and where it does, who made it (user), when
+           (made, deadline: seconds since the Epoch), its timeout and
+           the seconds left, and whether the reader may keep or undo
+           it (yours).  Never its persist-id, which the console keeps
+           for its maker.";
+      }
+      action keep-commit {
+        description
+          "The confirmed commit waiting kept: the commit that confirms
+           it, with its persist-id, over a connection of its own.  Its
+           maker's, or an owner of the console's.";
+        output {
+          anydata result {
+            description
+              "state: kept.";
+          }
+        }
+      }
+      action undo-commit {
+        description
+          "The confirmed commit waiting undone: cancel-commit, with its
+           persist-id.  Its maker's, or an owner of the console's.";
+        output {
+          anydata result {
+            description
+              "state: undone.";
+          }
+        }
+      }
     }
   }
 

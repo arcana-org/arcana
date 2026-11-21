@@ -767,6 +767,11 @@ struct work *ywork_told(cbl_req *req, cbl_yarena *a, const char *what,
 struct ucl_object_s;
 const struct cbl_ynode *ynet_node(const char *mod, const char *top,
 	    const char *path);
+/* A refusal of an edit (yarcana.c): why, of the node path ("a/b", NULL
+ * the top itself) under module mod's top-level node top, its SID the
+ * error's error-path (RFC 8040's); EIO. */
+int	ysaid_at(cbl_req *req, const char *why, const char *mod,
+	    const char *top, const char *path);
 /* arcana-firewall's firewall where w is (yarcana.c): EIO and *errp, ipfw's. */
 int	yfw_read(struct work *w, cbl_yarena *a,
 	    struct arcana_firewall_firewall **op, const char **errp);

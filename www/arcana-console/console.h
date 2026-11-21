@@ -49,7 +49,7 @@
 /* The longest an agent update (the program sent, put in place) is
  * waited for. */
 #define	AGENT_UPDATE_WAIT_MS	(5 * 60 * 1000)
-#define	ARCW_VERSION		"0.493.0"
+#define	ARCW_VERSION		"0.494.0"
 #define	ARCW_LOCAL_AGENT	"unix:/var/run/arcana-agent.sock"
 #define	ARCW_RELEASES		"https://api.github.com/repos/arcana-org/arcana/releases/latest"
 #define	ARCW_AGENT_BINARY	"/usr/local/sbin/arcana-agent"
@@ -625,6 +625,12 @@ const char	*agent_build(void);
 const char	*agent_version(void);
 int		 api_agent_build(struct http_request *);
 int		 api_drift(struct http_request *);
+/* pendcommit.c: the confirmed commits waiting, a host each. */
+void		 pendc_commit(const char *, const char *, bool, const char *,
+		    const char *, uint32_t);
+void		 pendc_cancel(const char *);
+int		 api_pending_commit(struct http_request *);
+void		 api_pending_commit_free(struct http_request *);
 /* RESTCONF's reads (restconf.c); a host's part, hosts.c's. */
 int		 api_host_meta(struct http_request *);
 int		 api_restconf(struct http_request *);

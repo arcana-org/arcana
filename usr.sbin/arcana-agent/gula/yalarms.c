@@ -38,7 +38,7 @@ typedef struct ietf_alarms_alarms_alarm_list_alarm yalarm;
 /* Each kind of fault, as faults.c's callers raise it. */
 static const struct kind {
 	const char	*name;
-	int		 sev[2];	/* 0 ends */
+	int		 sev[3];	/* 0 ends */
 	const char	*descr;
 } kinds[] = {
 	{ "tunnel", { 5, 0 }, "an SD-WAN tunnel's far end did not answer" },
@@ -58,7 +58,8 @@ static const struct kind {
 	{ "cpu", { 5, 0 }, "the CPU has been too busy" },
 	{ "memory", { 5, 0 }, "the memory has been too full" },
 	{ "crash", { 5, 0 }, "a process died of a signal that dumps core" },
-	{ "mail", { 4, 5 }, "smtpd stopped, or too much queued" },
+	{ "mail", { 3, 4, 5 }, "smtpd stopped, too much queued, or its "
+	    "counters unread" },
 	{ "undo", { 6, 0 }, "a confirmed commit could not be undone" },
 	{ "nacm-rules", { 4, 5 }, "the access rules have a path rule whose "
 	    "path does not compile" },
@@ -154,11 +155,11 @@ inventory(cbl_yarena *a, struct ietf_alarms_alarms *al)
 		t[i].alarm_type_qualifier = "";
 		t[i].has_will_clear = true;
 		t[i].will_clear = true;
-		for (k = 0; k < 2 && kinds[i].sev[k] != 0; k++)
+		for (k = 0; k < 3 && kinds[i].sev[k] != 0; k++)
 			;
 		if ((sv = cbl_yarena_alloc(a, k * sizeof(*sv))) == NULL)
 			return (ENOMEM);
-		for (k = 0; k < 2 && kinds[i].sev[k] != 0; k++)
+		for (k = 0; k < 3 && kinds[i].sev[k] != 0; k++)
 			sv[k] = kinds[i].sev[k];
 		t[i].severity_level.n = k;
 		t[i].severity_level.v = sv;

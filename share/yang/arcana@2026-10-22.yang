@@ -746,6 +746,16 @@ module arcana {
       description
         "The jail it acted on, its spec's; none for the host's.";
     }
+    leaf steps-done {
+      type uint32;
+      description
+        "With state running, the steps of its trace that ended.";
+    }
+    leaf steps-total {
+      type uint32;
+      description
+        "With state running, the steps of its trace so far.";
+    }
   }
 
   sx:structure jail {

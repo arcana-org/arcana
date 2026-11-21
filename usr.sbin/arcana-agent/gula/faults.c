@@ -744,6 +744,22 @@ fault_update(const char *type, const char *object, const char *fmt, ...)
 	return (true);
 }
 
+/* Whether a fault of the type and object is open, of the severity. */
+bool
+fault_open_as(const char *type, const char *object, const char *severity)
+{
+	bool	is;
+	int	i;
+
+	if (object == NULL)
+		return (false);
+	pthread_mutex_lock(&lock);
+	is = (i = fault_find(type, object)) >= 0 &&
+	    strcasecmp(faults[i].severity, severity) == 0;
+	pthread_mutex_unlock(&lock);
+	return (is);
+}
+
 /* A severity's rank, by its word: Warning 3 to Critical 6 (RFC 8632). */
 static int
 rank(const char *s)

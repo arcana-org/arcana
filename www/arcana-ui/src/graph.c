@@ -384,6 +384,12 @@ view_trace(struct html *h, const struct op *o)
 		h_txt(h, o->error);
 		h_raw(h, "</p>");
 	}
+	/* A job at work: how far its trace is. */
+	if (o->state == OP_RUNNING && o->job > 0 && o->steps_total > 0) {
+		h_raw(h, "<p class=\"dim\">");
+		job_progress(h, o->steps_done, o->steps_total);
+		h_raw(h, "</p>");
+	}
 
 	if (o->trace == NULL) {
 		if (o->state == OP_RUNNING)

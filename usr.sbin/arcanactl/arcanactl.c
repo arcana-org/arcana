@@ -1104,13 +1104,12 @@ ds_named(const char *s)
  * module said where it changes (an augment).
  */
 static void
-at_fault(const cbl_msg *rep, char *err, size_t errlen)
+at_sid(uint64_t sid, char *err, size_t errlen)
 {
 	const struct cbl_ynode	*n, *v[32];
 	size_t			 k, off;
 
-	if (rep == NULL || cbl_msg_err_sid(rep) == 0 || (n =
-	    cbl_yschema_node(&ymodel_schema, cbl_msg_err_sid(rep))) == NULL)
+	if (sid == 0 || (n = cbl_yschema_node(&ymodel_schema, sid)) == NULL)
 		return;
 	for (k = 0; n != NULL && k < nitems(v); n = n->parent)
 		v[k++] = n;
@@ -1125,6 +1124,14 @@ at_fault(const cbl_msg *rep, char *err, size_t errlen)
 		    v[k]->name);
 	if (off + 1 < errlen)
 		(void)snprintf(err + off, errlen - off, ")");
+}
+
+static void
+at_fault(const cbl_msg *rep, char *err, size_t errlen)
+{
+
+	if (rep != NULL)
+		at_sid(cbl_msg_err_sid(rep), err, errlen);
 }
 
 /* A refusal, said with what may accept it; exits. */
@@ -1236,8 +1243,10 @@ cmd_edit(cbl_conn *conn, int argc, char **argv)
 	ucl_object_unref(jtop);
 	ucl_object_unref(top);
 	free(text);
-	if (error != 0)
+	if (error != 0) {
+		at_sid(errsid, err, sizeof(err));
 		refused("edit", err, tag);
+	}
 	return (0);
 }
 
